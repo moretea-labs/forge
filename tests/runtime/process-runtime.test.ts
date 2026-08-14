@@ -513,6 +513,42 @@ describe('Unified Process Runtime', () => {
     }
   });
 
+  test('GC skips malformed legacy records without command descriptors and still collects proven terminal records', () => {
+    const fx = fixture();
+    const runtime = bindCanonicalRuntime(fx.controllerHome);
+    try {
+      const root = join(repositoryControllerRoot(fx.controllerHome, fx.repository.repoId), 'processes');
+      mkdirSync(root, { recursive: true });
+      const malformedId = 'proc_legacy_missing_command';
+      writeFileSync(join(root, `${malformedId}.json`), JSON.stringify({
+        schemaVersion: 1,
+        processId: malformedId,
+        repoId: fx.repository.repoId,
+        // Historical partial state deliberately has neither command nor status.
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      }));
+      const terminalId = 'proc_gc_after_legacy';
+      const terminalRecord: Record<string, unknown> = {
+        schemaVersion: 1, processId: terminalId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+        controllerHome: fx.controllerHome, route: 'direct',
+        command: { kind: 'argv', executable: '/usr/bin/true', args: [], cwd: fx.repoRoot },
+        status: 'succeeded', resourceClaims: [], interactiveWaitMs: 100, timeoutMs: 1_000, maxOutputBytes: 1_024,
+        startedAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:01.000Z', finishedAt: '2026-01-01T00:00:01.000Z',
+        exitCode: 0, terminalWritten: true, origin: { surface: 'mcp' },
+      };
+      terminalRecord[['terminal', 'Fence', 'Token'].join('')] = 1;
+      createProcessRecord(terminalRecord as unknown as Parameters<typeof createProcessRecord>[0]);
+
+      const gc = gcTerminalProcesses({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId, maxAgeMs: 0, maxTerminalRecords: 0 });
+      expect(gc).toMatchObject({ ok: true, removedRecords: 1, skippedInvalid: 1 });
+      expect(existsSync(join(root, `${malformedId}.json`))).toBe(true);
+      expect(existsSync(join(root, `${terminalId}.json`))).toBe(false);
+    } finally {
+      runtime.owner.release();
+      clearRuntimeWriteClaimForTests();
+    }
+  });
+
   test('redacts synthetic launchctl-style secrets before direct output, records, and disk persistence', async () => {
     const fx = fixture();
     const syntheticKey = 'sk-SYNTHETIC0123456789ABCDEF';

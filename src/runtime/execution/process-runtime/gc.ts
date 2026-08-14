@@ -6,10 +6,10 @@
  * - GC failures must not throw into the controller main loop.
  */
 
-import { existsSync, readdirSync, unlinkSync, statSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, unlinkSync, statSync } from 'fs';
 import { join } from 'path';
 import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
-import { getProcessRecord, listActiveProcessIds } from './store';
+import { listActiveProcessIds } from './store';
 import type { ProcessRuntimeStatus } from './types';
 import { assertRuntimeMayWrite } from '../../root/write-fence';
 import { isProcessAlive } from '../../shared/process-tree';
@@ -39,6 +39,8 @@ export interface ProcessGcResult {
   removedRecords: number;
   removedLogs: number;
   skippedActive: number;
+  /** Legacy/corrupt records without enough terminal proof are preserved. */
+  skippedInvalid?: number;
   error?: string;
 }
 
@@ -48,6 +50,54 @@ function processesDir(controllerHome: string, repoId: string): string {
 
 function logDir(controllerHome: string, repoId: string): string {
   return join(processesDir(controllerHome, repoId), 'logs');
+}
+
+interface ProcessGcMetadata {
+  status?: ProcessRuntimeStatus;
+  finishedAt?: string;
+  updatedAt?: string;
+  identity?: { pid: number; processStartTime: string };
+  identityUntrusted?: boolean;
+  reusableCheckEvidence: boolean;
+}
+
+/**
+ * GC deliberately reads only the metadata needed to prove terminality. Historical
+ * Process records can predate today's required command descriptor; feeding those
+ * records through the normal recovery reader would either throw during redaction
+ * or, worse, require manufacturing a fake executable. A malformed/unknown record
+ * is skipped rather than deleted, preserving fail-closed recovery semantics.
+ */
+function readProcessGcMetadata(path: string): ProcessGcMetadata | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    if (raw.schemaVersion !== 1) return undefined;
+    const status = typeof raw.status === 'string' && TERMINAL.has(raw.status as ProcessRuntimeStatus)
+      ? raw.status as ProcessRuntimeStatus
+      : typeof raw.status === 'string'
+        ? raw.status as ProcessRuntimeStatus
+        : undefined;
+    const identityRaw = raw.identity && typeof raw.identity === 'object' && !Array.isArray(raw.identity)
+      ? raw.identity as Record<string, unknown>
+      : undefined;
+    const pid = typeof identityRaw?.pid === 'number' && Number.isInteger(identityRaw.pid) && identityRaw.pid > 0
+      ? identityRaw.pid
+      : undefined;
+    const processStartTime = typeof identityRaw?.processStartTime === 'string' ? identityRaw.processStartTime : undefined;
+    const checkExecution = raw.checkExecution && typeof raw.checkExecution === 'object' && !Array.isArray(raw.checkExecution)
+      ? raw.checkExecution as Record<string, unknown>
+      : undefined;
+    return {
+      status,
+      finishedAt: typeof raw.finishedAt === 'string' ? raw.finishedAt : undefined,
+      updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : undefined,
+      ...(pid && processStartTime ? { identity: { pid, processStartTime } } : {}),
+      identityUntrusted: raw.identityUntrusted === true,
+      reusableCheckEvidence: status === 'succeeded' && typeof checkExecution?.cacheKey === 'string' && checkExecution.cacheKey.length > 0,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function safeUnlink(path: string): boolean {
@@ -89,6 +139,7 @@ export function gcTerminalProcesses(options: ProcessGcOptions): ProcessGcResult 
     const active = new Set(listActiveProcessIds(options.controllerHome, options.repoId));
     const terminal: Array<{ processId: string; finishedAt: number; path: string; reusableCheckEvidence: boolean }> = [];
     let skippedActive = 0;
+    let skippedInvalid = 0;
 
     for (const name of readdirSync(root)) {
       if (!name.endsWith('.json') || name === 'active-index.json') continue;
@@ -97,12 +148,15 @@ export function gcTerminalProcesses(options: ProcessGcOptions): ProcessGcResult 
         skippedActive += 1;
         continue;
       }
-      const record = getProcessRecord(options.controllerHome, options.repoId, processId);
-      if (!record) continue;
+      const metadata = readProcessGcMetadata(join(root, name));
+      if (!metadata?.status) {
+        skippedInvalid += 1;
+        continue;
+      }
       // Skip still-alive identity matches even if status drifted.
-      if (record.identity && !record.identityUntrusted && !record.identity.processStartTime.startsWith('untrusted:')) {
+      if (metadata.identity && !metadata.identityUntrusted && !metadata.identity.processStartTime.startsWith('untrusted:')) {
         try {
-          if (isProcessAlive(record.identity.pid)) {
+          if (isProcessAlive(metadata.identity.pid)) {
             skippedActive += 1;
             continue;
           }
@@ -110,15 +164,15 @@ export function gcTerminalProcesses(options: ProcessGcOptions): ProcessGcResult 
           /* ignore probe failures */
         }
       }
-      if (!TERMINAL.has(record.status)) continue;
+      if (!TERMINAL.has(metadata.status)) continue;
       // Do not delete terminal evidence that has never been read when maxAge is not exceeded
       // unless we are strictly over maxTerminalRecords budget (handled by sort below).
-      const finished = Date.parse(record.finishedAt ?? record.updatedAt);
+      const finished = Date.parse(metadata.finishedAt ?? metadata.updatedAt ?? '');
       terminal.push({
         processId,
         finishedAt: Number.isFinite(finished) ? finished : 0,
         path: join(root, name),
-        reusableCheckEvidence: record.status === 'succeeded' && Boolean(record.checkExecution?.cacheKey),
+        reusableCheckEvidence: metadata.reusableCheckEvidence,
       });
     }
 
@@ -140,7 +194,7 @@ export function gcTerminalProcesses(options: ProcessGcOptions): ProcessGcResult 
       }
     }
 
-    return { ok: true, removedRecords, removedLogs, skippedActive };
+    return { ok: true, removedRecords, removedLogs, skippedActive, skippedInvalid };
   } catch (error) {
     return {
       ok: false,

@@ -308,6 +308,12 @@ function sanitizeProcessRecord(record: ManagedProcessRecord): { record: ManagedP
 function readProcessRecord(path: string): ManagedProcessRecord | undefined {
   const record = readJson<ManagedProcessRecord>(path);
   if (!record || record.schemaVersion !== 1) return undefined;
+  // Legacy/partial Process files can predate the required command descriptor.
+  // They are not executable recovery authority and must never be repaired by
+  // inventing a command. Treat them as unavailable to normal Runtime readers;
+  // bounded GC has its own metadata-only parser so one such file cannot block
+  // cleanup of unrelated proven terminal records.
+  if (!record.command || typeof record.command !== 'object' || Array.isArray(record.command)) return undefined;
   const sanitized = sanitizeProcessRecord(record);
   if (sanitized.changed) atomicWrite(path, sanitized.record);
   return sanitized.record;
