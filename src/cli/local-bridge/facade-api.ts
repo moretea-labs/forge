@@ -414,6 +414,8 @@ export function mapWorkSummary(
     || (work.status === 'running' ? '任务执行中…' : status.label);
   return {
     id: work.workId,
+    repoId: work.repoId,
+    updatedAt: work.updatedAt,
     title: work.objective.slice(0, 160) || '未命名任务',
     objective: work.objective,
     modeLabel: mode.label,

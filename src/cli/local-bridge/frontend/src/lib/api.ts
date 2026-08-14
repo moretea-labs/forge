@@ -1,4 +1,4 @@
-import type { AutomationSettingsView, AutomationsResponse, CommandCenterView, Dict, WorkResponse } from '../types';
+import type { AutomationSettingsView, AutomationsResponse, CommandCenterView, Dict, WorkPortfolioResponse, WorkResponse } from '../types';
 export class ApiError extends Error { constructor(message:string, readonly status:number, readonly payload:unknown){super(message);} }
 export async function requestJson<T>(path:string, init:RequestInit={}):Promise<T>{
   const headers=new Headers(init.headers); if(init.body&&!headers.has('content-type'))headers.set('content-type','application/json');
@@ -9,6 +9,7 @@ export async function requestJson<T>(path:string, init:RequestInit={}):Promise<T
 export const api={
   commandCenter:()=>requestJson<CommandCenterView>('/api/console/command-center'),
   work:()=>requestJson<WorkResponse>('/api/console/requirements'),
+  workPortfolio:()=>requestJson<WorkPortfolioResponse>('/api/console/work-portfolio'),
   automations:()=>requestJson<AutomationsResponse>('/api/console/automations'),
   automationSettings:()=>requestJson<AutomationSettingsView>('/api/console/automation-settings'),
   connector:()=>requestJson<Dict>('/api/console/connector/status'),

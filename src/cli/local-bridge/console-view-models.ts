@@ -100,6 +100,8 @@ export interface ConsoleErrorViewModel {
 
 export interface WorkSummaryViewModel {
   id: string;
+  repoId: string;
+  updatedAt: string;
   title: string;
   objective: string;
   modeLabel: string;

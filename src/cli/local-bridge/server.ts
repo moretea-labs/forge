@@ -1285,6 +1285,34 @@ export async function startLocalBridgeServer(
     }
   });
 
+  app.get("/api/console/work-portfolio", (_request, response) => {
+    try {
+      const repositories = loadRepositoryRegistry(controllerHome).repositories
+        .filter((repository) => repository.enabled && !repository.removedAt);
+      const items = repositories.flatMap((repository) =>
+        listConsoleWork({ controllerHome, repository }, "all").map((work) => ({
+          ...work,
+          repositoryName: repository.displayName,
+        })),
+      ).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+      const statusOf = (item: (typeof items)[number]) => String(item.advanced?.status ?? "");
+      response.json({
+        schemaVersion: 1,
+        generatedAt: new Date().toISOString(),
+        summary: {
+          total: items.length,
+          open: items.filter((item) => ["open", "running", "ready"].includes(statusOf(item))).length,
+          needsAttention: items.filter((item) => ["blocked", "failed"].includes(statusOf(item))).length,
+          completed: items.filter((item) => ["completed", "cancelled"].includes(statusOf(item))).length,
+        },
+        repositories: repositories.map((repository) => ({ repoId: repository.repoId, repositoryName: repository.displayName })),
+        items,
+      });
+    } catch (error) {
+      response.status(400).json({ error: errorMessage(error) });
+    }
+  });
+
   app.get("/api/console/automations", (_request, response) => {
     try {
       const repositories = loadRepositoryRegistry(controllerHome).repositories;
