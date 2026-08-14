@@ -237,8 +237,9 @@ async function triggerDue(
   }
 }
 
-function continuationWorkId(schedule: RepositorySchedule): string | undefined {
-  if (schedule.action.operation !== EXTERNAL_CONTROLLER_WAKE_OPERATION) return undefined;
+function workBoundScheduleWorkId(schedule: RepositorySchedule): string | undefined {
+  if (schedule.action.operation !== EXTERNAL_CONTROLLER_WAKE_OPERATION
+    && schedule.action.operation !== BROWSER_PROBE_OPERATION) return undefined;
   const value = schedule.action.arguments?.work_id;
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
@@ -254,7 +255,7 @@ function executionJobBelongsToWork(job: ReturnType<typeof listExecutionJobs>[num
 
 async function stopReason(controllerHome: string, schedule: RepositorySchedule): Promise<string | undefined> {
   const projection = readRepositoryProjection(controllerHome, schedule.repoId);
-  const workId = continuationWorkId(schedule);
+  const workId = workBoundScheduleWorkId(schedule);
   const work = workId ? getWorkContract({ controllerHome, repoId: schedule.repoId }, workId) : undefined;
   if (schedule.stopConditions.includes('human_review_required')) {
     if (workId) {

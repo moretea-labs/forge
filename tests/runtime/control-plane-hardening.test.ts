@@ -223,6 +223,10 @@ describe('scheduled external Controller wake', () => {
     const first = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'old-noise' });
     expect(first?.decision).toBe('would_execute');
 
+    const browserSchedule = createSchedule(controllerHome, { requestId: 'browser-schedule-stop-scope-request', repoId: repository.repoId, name: 'scoped browser watcher', enabled: true, trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: true }, action: { operation: 'browser_probe', target: 'runtime', arguments: { work_id: workId, controller_type: 'chatgpt', probe_session_id: 'browser-scope-test', wake_on_change: true, keepalive_only: false } }, stopConditions: ['human_review_required', 'external_blocker'] });
+    const browserFirst = await evaluateSchedule(controllerHome, browserSchedule, true, { source: 'manual', eventId: 'browser-old-noise' });
+    expect(browserFirst?.decision).toBe('would_execute');
+
     createHandoffItem({ controllerHome, repoId: repository.repoId }, { id: 'HND-WORK-SCOPE', repoId: repository.repoId, workId, title: 'Current Work needs review', severity: 'needs_review', creationReason: 'ambiguous_outcome', reason: 'Current Work is blocked.', summary: 'Bounded review required.', currentState: { repoId: repository.repoId, workId, statusSummary: 'blocked' }, attemptedActions: [], evidenceRefs: [], recommendedDecision: 'Review current Work.', recommendedPrompt: 'Review current Work.', suggestedNextActions: [] });
     const second = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'current-handoff' });
     expect(second).toMatchObject({ decision: 'stopped', status: 'skipped' });
