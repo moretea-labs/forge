@@ -4,6 +4,8 @@
  */
 
 import type { ResourceClaimSpec } from '../jobs/types';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import type { ControllerCheckEffects } from '../../../cli/controller/check-runner';
 import { classifyRepositoryCommand, fixedShellWrapperCommand } from '../../../cli/repositories/command-classifier';
 import { normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
@@ -157,7 +159,89 @@ function iosSimulatorTestCommandClaims(
   ]);
 }
 
-function hostOnlyCommandClaims(command: string | readonly string[]): ResourceClaimSpec[] | undefined {
+function localHttpServerClaims(command: string | readonly string[]): ResourceClaimSpec[] | undefined {
+  const canonical = normalizeRepositoryCommand(command);
+  if (canonical.kind !== 'argv') return undefined;
+  const program = (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase();
+  if (program !== 'python' && program !== 'python3') return undefined;
+  const args = canonical.args ?? [];
+  if (args[0] !== '-m' || args[1] !== 'http.server' || args.includes('--cgi')) return undefined;
+  let bind = '0.0.0.0';
+  let port = '8000';
+  for (let index = 2; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === '--bind') { bind = args[index + 1] ?? bind; index += 1; continue; }
+    if (arg === '--directory' || arg === '-d' || arg === '--protocol') { index += 1; continue; }
+    if (!arg.startsWith('-') && /^\d{1,5}$/.test(arg)) port = arg;
+  }
+  return [claimHostService(`tcp-listen:${bind}:${port}`, 'write')];
+}
+
+function loopbackCurlClaims(command: string | readonly string[], repoId: string): ResourceClaimSpec[] | undefined {
+  const canonical = normalizeRepositoryCommand(command);
+  if (canonical.kind !== 'argv') return undefined;
+  const program = (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase();
+  if (program !== 'curl') return undefined;
+  const args = canonical.args ?? [];
+  if (args.some((arg) => /^(?:-X|--request|-d|--data|--data-raw|--data-binary|-F|--form|-T|--upload-file|-o|--output|-O|--remote-name)$/i.test(arg))) return undefined;
+  const explicitMethodIndex = args.findIndex((arg) => arg === '-X' || arg === '--request');
+  if (explicitMethodIndex >= 0 && !/^(?:GET|HEAD)$/i.test(args[explicitMethodIndex + 1] ?? '')) return undefined;
+  const urls = args.filter((arg) => /^https?:\/\//i.test(arg));
+  if (urls.length === 0 || urls.some((url) => {
+    try {
+      const host = new URL(url).hostname.toLowerCase();
+      return !['127.0.0.1', 'localhost', '::1'].includes(host);
+    } catch { return true; }
+  })) return undefined;
+  return [claimNetwork(repoId, 'read')];
+}
+
+function simpleViteScript(script: string): boolean {
+  const normalized = script.trim();
+  if (!normalized || /[;&|`$<>\n\r]/.test(normalized)) return false;
+  return /^(?:(?:\.\/)?node_modules\/.bin\/)?vite(?:\s|$)/.test(normalized);
+}
+
+function viteServiceClaims(
+  command: string | readonly string[],
+  repoId: string,
+  checkoutId?: string,
+  repoRoot?: string,
+): ResourceClaimSpec[] | undefined {
+  const canonical = normalizeRepositoryCommand(command);
+  if (canonical.kind !== 'argv') return undefined;
+  const program = (canonical.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase();
+  const args = canonical.args ?? [];
+  let vite = program === 'vite';
+  if (!vite && (program === 'npx' || program === 'bunx') && args[0]?.toLowerCase() === 'vite') vite = true;
+  if (!vite && program === 'bun' && args[0]?.toLowerCase() === 'x' && args[1]?.toLowerCase() === 'vite') vite = true;
+  if (!vite && repoRoot && ['npm', 'pnpm', 'yarn', 'bun'].includes(program ?? '')) {
+    const runIndex = args[0]?.toLowerCase() === 'run' ? 1 : program === 'yarn' ? 0 : -1;
+    const scriptName = runIndex >= 0 ? args[runIndex]?.toLowerCase() : undefined;
+    if (scriptName === 'dev') {
+      try {
+        const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as { scripts?: Record<string, unknown> };
+        const script = typeof pkg.scripts?.dev === 'string' ? pkg.scripts.dev : '';
+        vite = simpleViteScript(script);
+      } catch {
+        vite = false;
+      }
+    }
+  }
+  if (!vite) return undefined;
+  return normalizeClaims([
+    claimBuildCacheWrite(repoId),
+    claimHostService(`vite:${checkoutScope(checkoutId)}`, 'write'),
+  ]);
+}
+
+function hostOnlyCommandClaims(command: string | readonly string[], repoId: string, checkoutId?: string, repoRoot?: string): ResourceClaimSpec[] | undefined {
+  const localServer = localHttpServerClaims(command);
+  if (localServer) return localServer;
+  const loopbackCurl = loopbackCurlClaims(command, repoId);
+  if (loopbackCurl) return loopbackCurl;
+  const vite = viteServiceClaims(command, repoId, checkoutId, repoRoot);
+  if (vite) return vite;
   const canonical = normalizeRepositoryCommand(command);
   if (canonical.kind === 'shell') {
     return browserAppleScriptHeredocClaims(canonical.shellCommand ?? '');
@@ -347,13 +431,14 @@ export function claimsForRepositoryCommand(
   repoId: string,
   checkoutId?: string,
   defaultBranch?: string,
+  repoRoot?: string,
 ): ResourceClaimSpec[] {
   const classification = classifyRepositoryCommand(command, defaultBranch);
   const canonical = normalizeRepositoryCommand(command);
   const focused = isFocusedCheckCommand(command);
   const iosSimulatorClaims = iosSimulatorTestCommandClaims(command, repoId, checkoutId);
   if (iosSimulatorClaims) return iosSimulatorClaims;
-  const hostClaims = hostOnlyCommandClaims(command);
+  const hostClaims = hostOnlyCommandClaims(command, repoId, checkoutId, repoRoot);
   if (hostClaims) return hostClaims;
 
   if (classification.risk === 'readonly') {

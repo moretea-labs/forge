@@ -1029,6 +1029,41 @@ describe('fine-grained resource claims', () => {
     expect(claims.some((c) => c.resourceKey.includes('heavy-check'))).toBe(false);
   });
 
+  test('long-lived local HTTP service and loopback probes avoid checkout-wide leases', () => {
+    const server = ['python3', '-m', 'http.server', '38417', '--bind', '127.0.0.1', '--directory', '/tmp'];
+    const serverClaims = claimsForRepositoryCommand(server, 'repo1', 'co1');
+    expect(serverClaims).toEqual([{ resourceKey: 'host-service:tcp-listen:127.0.0.1:38417', mode: 'write' }]);
+    expect(serverClaims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+
+    const probe = ['curl', 'http://127.0.0.1:38417/health'];
+    expect(classifyRepositoryCommand(probe).risk).toBe('readonly');
+    const probeClaims = claimsForRepositoryCommand(probe, 'repo1', 'co1');
+    expect(probeClaims).toEqual([{ resourceKey: 'network:repo1', mode: 'read' }]);
+    expect(serverClaims.some((left) => probeClaims.some((right) => resourceClaimsConflict(left, right)))).toBe(false);
+
+    expect(claimsForRepositoryCommand(['python3', '-m', 'http.server', '8000', '--cgi'], 'repo1', 'co1'))
+      .toEqual([{ resourceKey: 'workspace:co1', mode: 'write' }]);
+    expect(classifyRepositoryCommand(['curl', '-o', 'response.json', 'http://127.0.0.1:38417/health']).risk).toBe('workspace_write');
+    expect(classifyRepositoryCommand(['curl', '-X', 'POST', 'http://127.0.0.1:38417/action']).risk).toBe('workspace_write');
+  });
+
+  test('simple Vite dev services claim cache and host process ownership instead of the source workspace', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-vite-claims-'));
+    roots.push(root);
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts: { dev: 'vite --host 127.0.0.1' } }));
+    const claims = claimsForRepositoryCommand(['npm', 'run', 'dev', '--', '--host', '127.0.0.1'], 'repo1', 'co1', 'main', root);
+    expect(claims).toEqual(expect.arrayContaining([
+      { resourceKey: 'build-cache:repo1', mode: 'write' },
+      { resourceKey: 'host-service:vite:co1', mode: 'write' },
+    ]));
+    expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+    expect(claims.some((left) => resourceClaimsConflict(left, { resourceKey: 'workspace:co1', mode: 'write' }))).toBe(false);
+
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ scripts: { dev: 'node scripts/rewrite-source.js && vite' } }));
+    expect(claimsForRepositoryCommand(['npm', 'run', 'dev'], 'repo1', 'co1', 'main', root))
+      .toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
+  });
+
   test('host service mutation does not claim the Git checkout workspace', () => {
     const claims = claimsForRepositoryCommand(
       ['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway'],

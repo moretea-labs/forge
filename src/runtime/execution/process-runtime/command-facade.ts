@@ -273,6 +273,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
       executionIdentity.repositoryId,
       executionIdentity.checkoutId,
       input.repository.defaultBranch,
+      input.repository.canonicalRoot,
     ),
     executionIdentity.repositoryId,
     executionIdentity.checkoutId,

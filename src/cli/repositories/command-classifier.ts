@@ -265,6 +265,26 @@ function isReadOnlySegment(segment: string): boolean {
 /** Package scripts that are local validation (not install/publish/mutate deps). */
 const SAFE_PACKAGE_SCRIPT = /^(?:test|check|lint|typecheck|format:check|tsc)(?::|$)/i;
 
+function isReadOnlyLoopbackCurl(words: string[]): boolean {
+  const program = words[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
+  if (program !== 'curl') return false;
+  const args = words.slice(1);
+  const writeFlags = new Set(['-d', '--data', '--data-raw', '--data-binary', '-f', '--form', '-t', '--upload-file', '-o', '--output', '-O', '--remote-name']);
+  if (args.some((arg) => writeFlags.has(arg))) return false;
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === '-X' || args[index] === '--request') {
+      if (!/^(?:GET|HEAD)$/i.test(args[index + 1] ?? '')) return false;
+      index += 1;
+    }
+  }
+  const urls = args.filter((arg) => /^https?:\/\//i.test(arg));
+  if (urls.length === 0) return false;
+  return urls.every((url) => {
+    try { return ['127.0.0.1', 'localhost', '::1'].includes(new URL(url).hostname.toLowerCase()); }
+    catch { return false; }
+  });
+}
+
 function isSafePackageRunner(program: string, words: string[]): boolean {
   if (!['bun', 'npm', 'pnpm', 'yarn', 'node'].includes(program)) return false;
   // bun test <path>, npm test, etc.
@@ -511,6 +531,9 @@ function classifyArgvCommand(
   if (program === 'git' && subcommand === 'push') return { risk: 'remote_write', confirmation: 'authorization', reasons: ['writes Git refs to a remote'] };
   if (program === 'git' && isReadOnlyGitCommand(argv)) {
     return { risk: 'readonly', confirmation: 'none', reasons: ['the argv command is a recognized repository-local read operation'] };
+  }
+  if (program === 'curl' && isReadOnlyLoopbackCurl(argv)) {
+    return { risk: 'readonly', confirmation: 'none', reasons: ['curl performs a read-only loopback HTTP observation without writing response data to disk'] };
   }
   if (program === 'sqlite3' && isSafeReadOnlySqliteWords(argv)) {
     return { risk: 'readonly', confirmation: 'none', reasons: ['sqlite3 is constrained by safe mode, readonly database access, and one read-only SQL statement'] };
