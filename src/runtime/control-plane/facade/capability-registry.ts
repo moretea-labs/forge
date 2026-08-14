@@ -150,7 +150,7 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'unknown',
     exposedVia: 'rh_work',
     schemaExposure: 'stable_static',
-    summary: 'Use typed browser target, snapshot, domain grant, and plugin actions when browser capability is configured.',
+    summary: 'Use typed HTTP(S) browser navigation, snapshot, and interaction actions when browser capability is configured.',
   },
   {
     capabilityId: 'platform.ios',

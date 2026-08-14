@@ -44,36 +44,6 @@ export interface SafePluginSummary {
   };
 }
 
-export interface WebTarget {
-  targetKey: string;
-  domain: string;
-  origin: string;
-  allowed: true;
-  defaultPath: '/';
-}
-
-export interface WebDomainAccessPreview {
-  ticketId: string;
-  normalizedDomain: string;
-  domainKey: string;
-  reason: string;
-  expiresAt: string;
-  alreadyAllowed: boolean;
-  currentAllowedDomainCount: number;
-  risk: 'workspace_write';
-  confirmation: 'authorization';
-  localOnly: true;
-  willChange: {
-    pluginId: 'browser';
-    configField: 'allowedDomains';
-    addDomain: string;
-  };
-  safety: {
-    arbitraryUrlAccepted: false;
-    domainOnly: true;
-    sensitiveConfigReturned: false;
-  };
-}
 
 export interface SafeJobResultSummary {
   jobId: string;

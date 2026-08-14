@@ -61,7 +61,6 @@ function failingJobClass(input: CapabilityRecoveryInput): RecoveryClass {
 function suggestedActionsForClass(recoveryClass: RecoveryClass): RecoveryActionDescriptor[] {
   if (recoveryClass === 'platform_blocked' || recoveryClass === 'dirty_worktree_conflict') return [RECOVERY_ACTIONS.createPatchHandoff];
   if (recoveryClass === 'auth_required') return [RECOVERY_ACTIONS.workspaceAuthLoginPrepare];
-  if (recoveryClass === 'browser_domain_grant_required') return [RECOVERY_ACTIONS.browserDomainAccessPreview];
   if (recoveryClass === 'external_filesystem_grant_required') return [RECOVERY_ACTIONS.externalFilesystemGrantPreview];
   if (recoveryClass === 'agent_runtime_failure') return [RECOVERY_ACTIONS.reconcileJobs];
   if (recoveryClass === 'source_defect_suspected' || recoveryClass === 'external_lifecycle_required') return [];

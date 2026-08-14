@@ -90,8 +90,7 @@ try {
   const two = `http://127.0.0.1:${port}/two`;
   writeFileSync(join(repoRoot, '.forge/plugins/browser.json'), `${JSON.stringify({
     schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
-    cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'],
-    allowedDomains: ['127.0.0.1'], defaultTimeoutMs: 10_000,
+    cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'], defaultTimeoutMs: 10_000,
   }, null, 2)}\n`);
   setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
   setMacOsCapabilityBrokerSocketPathForTest(join(tmpdir(), `forge-browser-live-no-broker-${process.pid}.sock`));

@@ -9,7 +9,6 @@ export type RecoveryClass =
   | 'stale_runtime_state'
   | 'external_lifecycle_required'
   | 'runtime_storage_not_ready'
-  | 'browser_domain_grant_required'
   | 'external_filesystem_grant_required'
   | 'local_jobs_legacy_active'
   | 'local_jobs_unreadable'

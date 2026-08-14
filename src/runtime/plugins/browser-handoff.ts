@@ -38,7 +38,6 @@ export interface BrowserHandoffLaunchSpec {
   profileDirectory?: string;
   browserChannel?: string;
   executablePath?: string;
-  allowedDomains?: string[];
   defaultTimeoutMs: number;
   nativeBrowser?: { product: MacOsBrowserProduct; ref: MacOsBrowserTabRef };
   expiresAt: string;
@@ -57,7 +56,6 @@ export interface BrowserHandoffStartInput {
   profileDirectory?: string;
   browserChannel?: string;
   executablePath?: string;
-  allowedDomains?: string[];
   defaultTimeoutMs: number;
   nativeBrowser?: { product: MacOsBrowserProduct; ref: MacOsBrowserTabRef };
   reason: string;
@@ -326,7 +324,6 @@ export async function startBrowserHandoff(input: BrowserHandoffStartInput): Prom
     profileDirectory: input.profileDirectory,
     browserChannel: input.browserChannel,
     executablePath: input.executablePath,
-    allowedDomains: input.allowedDomains,
     defaultTimeoutMs: input.defaultTimeoutMs,
     nativeBrowser: input.nativeBrowser,
     expiresAt,

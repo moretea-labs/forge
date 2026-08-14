@@ -107,24 +107,6 @@ export function deepSeekFunctionToolManifest(): Array<Record<string, unknown>> {
     {
       type: 'function',
       function: {
-        name: 'forge_web_target_snapshot',
-        description: 'Create a read-only snapshot for a pre-allowed web target by target_key and path. Does not accept arbitrary URLs.',
-        parameters: {
-          type: 'object',
-          properties: {
-            target_key: { type: 'string' },
-            path: { type: 'string' },
-            capture: { type: 'string', enum: ['title', 'text', 'screenshot'] },
-            max_chars: { type: 'number' },
-          },
-          required: ['target_key'],
-          additionalProperties: false,
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
         name: 'forge_plugin_config_summary',
         description: 'Read a redacted plugin configuration and permission summary. Does not return raw config files.',
         parameters: {
@@ -267,20 +249,6 @@ export function prepareDeepSeekToolCall(functionName: string, functionArguments:
     opaquePayloadAccepted: false as const,
   };
   switch (functionName) {
-    case 'forge_web_target_snapshot':
-      return {
-        provider: 'deepseek',
-        accepted: true,
-        functionName,
-        mappedOperation: 'web_target_snapshot',
-        mappedArguments: {
-          target_key: functionArguments.target_key,
-          path: functionArguments.path,
-          capture: functionArguments.capture,
-          max_chars: functionArguments.max_chars,
-        },
-        safety,
-      };
     case 'forge_plugin_config_summary':
       return {
         provider: 'deepseek',

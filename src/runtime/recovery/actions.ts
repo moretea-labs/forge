@@ -131,16 +131,6 @@ export const RECOVERY_ACTIONS = {
     localOnly: true,
     boundedTo: ['google_workspace_auth_handoff'],
   },
-  browserDomainAccessPreview: {
-    id: 'recovery.browser_domain_access_preview',
-    title: 'Preview browser domain grant',
-    description: 'Preview a domain-key browser grant instead of retrying arbitrary URLs.',
-    class: 'browser_domain_grant_required',
-    risk: 'readonly',
-    confirmation: 'none',
-    localOnly: true,
-    boundedTo: ['browser_allowed_domains'],
-  },
   externalFilesystemGrantPreview: {
     id: 'recovery.external_filesystem_grant_preview',
     title: 'Preview external filesystem grant',

@@ -54,8 +54,8 @@ describe('capability recovery classifier', () => {
     expect(classifyFailure('RUNTIME_STORAGE_NOT_READY: local-jobs: active or unreadable Local Jobs must finish before runtime storage can be relocated')).toBe('local_jobs_legacy_active');
   });
 
-  it('classifies browser and external filesystem grants separately from generic policy denial', () => {
-    expect(classifyFailure('WEB_TARGET_NOT_ALLOWED: docs.example.com')).toBe('browser_domain_grant_required');
+  it('classifies external filesystem grants separately from generic policy denial', () => {
+    expect(classifyFailure('Browser action forbidden by policy')).toBe('policy_denied');
     expect(classifyFailure('SELECTED_PATH_SCOPE_DENIED: /Users/me/Downloads/file.txt escapes the selected repository')).toBe('external_filesystem_grant_required');
   });
 });

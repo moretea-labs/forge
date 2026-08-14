@@ -52,13 +52,6 @@ const LOCAL_JOBS_LEGACY_ACTIVE_PATTERNS = [
   /local jobs?.*finish before runtime storage/i,
 ];
 
-const BROWSER_GRANT_PATTERNS = [
-  /web_target_not_allowed/i,
-  /browser.*domain.*not allowed/i,
-  /allowed_domains/i,
-  /domain access.*required/i,
-  /browser domain grant/i,
-];
 
 const EXTERNAL_FILESYSTEM_GRANT_PATTERNS = [
   /external filesystem/i,
@@ -125,7 +118,6 @@ export function classifyFailure(message: string | undefined): RecoveryClass {
   if (LOCAL_JOBS_UNREADABLE_PATTERNS.some((pattern) => pattern.test(text))) return 'local_jobs_unreadable';
   if (RUNTIME_STORAGE_PATTERNS.some((pattern) => pattern.test(text))) return 'runtime_storage_not_ready';
   if (AUTH_PATTERNS.some((pattern) => pattern.test(text))) return 'auth_required';
-  if (BROWSER_GRANT_PATTERNS.some((pattern) => pattern.test(text))) return 'browser_domain_grant_required';
   if (EXTERNAL_FILESYSTEM_GRANT_PATTERNS.some((pattern) => pattern.test(text))) return 'external_filesystem_grant_required';
   if (DIRTY_WORKTREE_CONFLICT_PATTERNS.some((pattern) => pattern.test(text))) return 'dirty_worktree_conflict';
   if (USER_ACTION_PATTERNS.some((pattern) => pattern.test(text))) return 'user_action_required';
@@ -144,7 +136,6 @@ export function dominantRecoveryClass(classes: readonly RecoveryClass[]): Recove
     'local_jobs_legacy_active',
     'local_jobs_unreadable',
     'runtime_storage_not_ready',
-    'browser_domain_grant_required',
     'external_filesystem_grant_required',
     'local_jobs_reconciliation_required',
     'maintenance_executor_required',

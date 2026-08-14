@@ -735,6 +735,14 @@ export class MacOsAppleEventsPage {
       if (this.targetRef) {
         try {
           const metadata = await this.refreshMetadata();
+          const transitionalUrl = !metadata.url
+            || metadata.url === 'about:blank'
+            || metadata.url === 'chrome://newtab/'
+            || metadata.url === 'vivaldi://newtab/';
+          if (transitionalUrl) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            continue;
+          }
           if (metadata.loading === false) return;
         } catch {
           // Fall through to DOM readiness when native loading metadata is unavailable.

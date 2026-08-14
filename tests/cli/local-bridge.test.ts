@@ -1065,6 +1065,7 @@ describe("Local Execution Bridge", () => {
     expect(Array.isArray(plugins.plugins)).toBe(true);
     expect(plugins.summary).toBeTruthy();
     expect(typeof plugins.summary.total).toBe("number");
-    expect(plugins.plugins.some((entry: { id?: string }) => entry.id === "desktop")).toBe(true);
+    expect(plugins.plugins.some((entry: { id?: string }) => entry.id === "browser")).toBe(true);
+    expect(plugins.plugins.some((entry: { id?: string }) => entry.id === "desktop")).toBe(false);
   });
 });

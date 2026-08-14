@@ -109,10 +109,6 @@ import { resolveLocalBridgeSurface, summarizeRecentJobs } from '../../shared/loc
 import { assistantPluginScope, controllerPluginRepository, executeAssistantPluginReadDirect, getAssistantPluginManifest, isDirectPluginReadAction, listAssistantPluginManifests, submitAssistantPluginAction } from '../../plugins/store';
 import { mcpPluginExecutionOrigin } from '../../plugins/execution-origin';
 import {
-  listWebTargets,
-  mergeAllowedDomains,
-  previewBrowserDomainAccess,
-  resolveWebTargetUrl,
   summarizeExecutionJobForMcp,
   summarizeJobResultForLowInterception,
   summarizePluginForLowInterception,
@@ -740,34 +736,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     repo_id: repoId,
     plugin_id: { type: 'string' },
   }, ['plugin_id']),
-  definition('web_targets_list', 'List pre-allowed web targets as domain keys. This avoids arbitrary URL parameters.', {
-    repo_id: repoId,
-  }),
-  definition('web_target_snapshot', 'Create a read-only browser snapshot for a pre-allowed web target by target_key and path. Does not accept arbitrary URLs.', {
-    repo_id: repoId,
-    target_key: { type: 'string' },
-    path: { type: 'string' },
-    query: { type: 'object' },
-    capture: { type: 'string', enum: ['title', 'text', 'screenshot'] },
-    wait_until: { type: 'string', enum: ['load', 'domcontentloaded', 'networkidle'] },
-    max_chars: { type: 'number' },
-    full_page: { type: 'boolean' },
-    request_id: { type: 'string' },
-    timeout_ms: { type: 'number' },
-  }, ['target_key', 'request_id'], false),
-  definition('web_domain_access_preview', 'Preview a browser domain access request without writing plugin config or accepting arbitrary URLs.', {
-    repo_id: repoId,
-    domain: { type: 'string' },
-    reason: { type: 'string' },
-  }, ['domain']),
-  definition('web_domain_access_apply', 'Apply a previously previewed browser domain access request through browser configuration with explicit authorization.', {
-    repo_id: repoId,
-    domain: { type: 'string' },
-    reason: { type: 'string' },
-    preview_ticket_id: { type: 'string' },
-    request_id: { type: 'string' },
-    confirm_authorization: { type: 'boolean' },
-  }, ['domain', 'request_id', 'confirm_authorization'], false),
   definition('work_result_summary', 'Return a redacted job result summary with failure class and suggested next actions. Does not return raw stdout or stderr.', {
     repo_id: repoId,
     job_id: { type: 'string' },
@@ -5282,9 +5250,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           case 'recovery.workspace_auth_login_prepare':
             payload = { skipped: true, nextTool: 'workspace_auth_login_prepare', reason: 'Auth login is a non-secret handoff and should be prepared through the dedicated typed tool.' };
             break;
-          case 'recovery.browser_domain_access_preview':
-            payload = { skipped: true, nextTool: 'web_domain_access_preview', reason: 'Browser access must be granted by domain key before snapshot or interaction.' };
-            break;
           case 'recovery.external_filesystem_grant_preview':
             payload = { skipped: true, nextTool: 'external_filesystem_grant_preview', reason: 'External filesystem access must be converted into a named read-only target first.' };
             break;
@@ -5587,95 +5552,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           plugin: summarizePluginForLowInterception(manifest),
           nonOpaque: true,
           next: manifest.pluginId === 'browser'
-            ? 'Use web_targets_list, web_domain_access_preview, or web_target_snapshot instead of raw browser action names.'
+            ? 'Use rh_context for browser capability schemas and plugin_action_execute for typed HTTP(S) browser actions.'
             : undefined,
-        });
-      }
-      case 'web_targets_list': {
-        const repository = selected(ctx, args);
-        const manifest = getAssistantPluginManifest(ctx.controllerHome, repository, 'browser');
-        return result({
-          pluginId: 'browser',
-          enabled: manifest.enabled,
-          healthState: manifest.health.state,
-          ready: manifest.health.ready,
-          targets: listWebTargets(repository.canonicalRoot, manifest),
-          safety: {
-            arbitraryUrlAccepted: false,
-            returnsRawConfig: false,
-            nextTool: 'web_target_snapshot',
-          },
-        });
-      }
-      case 'web_target_snapshot': {
-        const repository = selected(ctx, args);
-        const manifest = getAssistantPluginManifest(ctx.controllerHome, repository, 'browser');
-        const url = resolveWebTargetUrl(repository.canonicalRoot, String(args.target_key ?? '').trim(), args.path, args.query, manifest);
-        const capture = args.capture === 'screenshot' ? 'screenshot' : args.capture === 'text' ? 'text' : 'title';
-        const actionId = capture === 'screenshot' ? 'screenshot' : 'open_page';
-        const actionArguments: Record<string, unknown> = {
-          url,
-          wait_until: typeof args.wait_until === 'string' ? args.wait_until : 'domcontentloaded',
-          timeout_ms: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-          ...(capture === 'text' ? { extract_text: true, max_chars: typeof args.max_chars === 'number' ? args.max_chars : 4000 } : {}),
-          ...(capture === 'screenshot' ? { full_page: args.full_page === true } : {}),
-        };
-        const requestId = String(args.request_id ?? '').trim();
-        if (!requestId) throw new Error('REQUEST_ID_REQUIRED: web_target_snapshot requires request_id');
-        const submitted = await submitAssistantPluginAction(ctx.controllerHome, repository, {
-          pluginId: 'browser',
-          actionId,
-          requestId,
-          args: actionArguments,
-          timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-          origin: { surface: 'mcp', actor: 'web_target_snapshot', correlationId: requestId },
-        });
-        return result({
-          accepted: true,
-          deduplicated: submitted.deduplicated,
-          webTarget: {
-            targetKey: String(args.target_key ?? '').trim(),
-            capture,
-            path: typeof args.path === 'string' ? args.path : '/',
-            arbitraryUrlAccepted: false,
-          },
-          job: summarizeWork(submitted.job, repository.canonicalRoot),
-          next: `Call work_status_digest with work_ref ${submitted.job.jobId}.`,
-        });
-      }
-      case 'web_domain_access_preview': {
-        const repository = selected(ctx, args);
-        const manifest = getAssistantPluginManifest(ctx.controllerHome, repository, 'browser');
-        return result({
-          preview: previewBrowserDomainAccess(repository.canonicalRoot, args.domain, args.reason, manifest),
-          next: 'After human review, call web_domain_access_apply with confirm_authorization=true.',
-        });
-      }
-      case 'web_domain_access_apply': {
-        const repository = selected(ctx, args);
-        if (args.confirm_authorization !== true) throw new Error('CONFIRM_AUTHORIZATION_REQUIRED: web_domain_access_apply requires confirm_authorization=true');
-        const manifest = getAssistantPluginManifest(ctx.controllerHome, repository, 'browser');
-        const preview = previewBrowserDomainAccess(repository.canonicalRoot, args.domain, args.reason, manifest);
-        const providedTicket = typeof args.preview_ticket_id === 'string' ? args.preview_ticket_id.trim() : '';
-        if (providedTicket && providedTicket !== preview.ticketId) throw new Error('DOMAIN_ACCESS_TICKET_MISMATCH');
-        const requestId = String(args.request_id ?? '').trim();
-        if (!requestId) throw new Error('REQUEST_ID_REQUIRED: web_domain_access_apply requires request_id');
-        const allowedDomains = mergeAllowedDomains(repository.canonicalRoot, args.domain, manifest);
-        const submitted = await submitAssistantPluginAction(ctx.controllerHome, repository, {
-          pluginId: 'browser',
-          actionId: 'configure',
-          requestId,
-          args: { enabled: true, allowed_domains: allowedDomains },
-          confirmAuthorization: true,
-          origin: { surface: 'mcp', actor: 'web_domain_access_apply', correlationId: requestId },
-        });
-        return result({
-          accepted: true,
-          deduplicated: submitted.deduplicated,
-          preview,
-          allowedDomainCount: allowedDomains.length,
-          job: summarizeWork(submitted.job, repository.canonicalRoot),
-          next: `Call work_status_digest with work_ref ${submitted.job.jobId}.`,
         });
       }
       case 'work_result_summary': {

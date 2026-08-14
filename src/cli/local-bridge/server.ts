@@ -171,7 +171,7 @@ import { approveAssistantActionProposal, listAssistantActionProposals, rejectAss
 import { assistantModelReadiness } from "../../runtime/assistant/model-provider";
 import { createAssistantStandingGrant, listAssistantStandingGrants, revokeAssistantStandingGrant } from "../../runtime/assistant/standing-grants";
 import { buildAssistantReadinessReport } from "../../runtime/assistant/readiness";
-import { listWebTargets, previewBrowserDomainAccess, summarizePluginForLowInterception } from "../../runtime/safe-tooling";
+import { summarizePluginForLowInterception } from "../../runtime/safe-tooling";
 import { buildModelClientSummary, buildModelControlPlaneSummary, deepSeekControllerManifest, deepSeekFunctionToolManifest, prepareDeepSeekControllerHandoff, prepareDeepSeekControllerRequest, prepareDeepSeekToolCall } from "../../runtime/model-clients";
 import { applyRuntimeCleanup, previewRuntimeCleanup } from "../../runtime/maintenance/cleanup";
 import { assertRecoveryAuthorized, buildCapabilityRecoverySnapshot, buildRecoveryAuditRecord, recoveryActionById, writeRecoveryAuditRecord } from "../../runtime/recovery";
@@ -2942,24 +2942,6 @@ export async function startLocalBridgeServer(
       response.json({ plugin: summarizePluginForLowInterception(manifest) });
     } catch (error) {
       response.status(404).json({ error: errorMessage(error) });
-    }
-  });
-  app.get("/api/toolchain/web-targets", (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      const manifest = getAssistantPluginManifest(controllerHome, repository, "browser");
-      response.json({ targets: listWebTargets(repository.canonicalRoot, manifest), arbitraryUrlAccepted: false });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/toolchain/web-domain-preview", (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      const manifest = getAssistantPluginManifest(controllerHome, repository, "browser");
-      response.json({ preview: previewBrowserDomainAccess(repository.canonicalRoot, request.body?.domain, request.body?.reason, manifest) });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
     }
   });
   app.get("/api/toolchain/model-clients", (_request, response) => {

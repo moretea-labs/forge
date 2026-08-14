@@ -11,7 +11,6 @@ import {
 const CONTROLLER_CHATGPT_SESSION_ID = 'forge-chatgpt-supercontroller';
 const CHATGPT_PROMPT_SELECTOR = '[name="prompt-textarea"]';
 const CHATGPT_SEND_KEY = 'Enter';
-const CHATGPT_ALLOWED_DOMAINS = ['chatgpt.com', 'www.chatgpt.com'];
 
 export interface WorkChatgptContinuationInput {
   controllerHome: string;
@@ -68,7 +67,6 @@ async function ensureControllerChatgptBrowser(controllerHome: string, workId: st
   const repoRoot = repository.canonicalRoot ?? repository.localRoot;
   if (!repoRoot) throw new Error('CHATGPT_CONTROLLER_BROWSER_ROOT_UNAVAILABLE');
   const existing = readBrowserPluginConfiguration(repoRoot);
-  const allowedDomains = [...new Set([...existing.allowedDomains, ...CHATGPT_ALLOWED_DOMAINS])];
   await controllerBrowserAction(controllerHome, workId, 'configure', {
     enabled: true,
     ...(!existing.enabled ? {
@@ -79,7 +77,6 @@ async function ensureControllerChatgptBrowser(controllerHome: string, workId: st
       native_attach_mode: 'auto',
       native_browser_candidates: ['chrome'],
     } : {}),
-    allowed_domains: allowedDomains,
   });
 }
 

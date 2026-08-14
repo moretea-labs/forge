@@ -69,7 +69,6 @@ interface BrowserPluginConfig {
   nativeAttachMode?: BrowserNativeAttachMode;
   nativeBrowserCandidates?: MacOsBrowserProduct[];
   defaultTimeoutMs?: number;
-  allowedDomains?: string[];
 }
 
 interface BrowserTabResumeState {
@@ -130,7 +129,6 @@ type BrowserContextLike = {
   pages(): PageLike[];
   newPage(): Promise<PageLike>;
   close(): Promise<void>;
-  route(pattern: string, handler: (route: RouteLike) => Promise<void> | void): Promise<void>;
 };
 
 type BrowserLike = {
@@ -166,13 +164,6 @@ type PageLike = {
   on?(event: string, handler: (...args: unknown[]) => void): void;
   bringToFront?(): Promise<void>;
   keyboard?: { press(key: string): Promise<void> };
-};
-
-type RequestLike = { url(): string };
-type RouteLike = {
-  request(): RequestLike;
-  continue(): Promise<void>;
-  abort(errorCode?: string): Promise<void>;
 };
 
 type PlaywrightRuntime = {
@@ -280,13 +271,6 @@ function browserProductList(value: unknown): MacOsBrowserProduct[] | undefined {
   return normalized.length > 0 ? Array.from(new Set(normalized)) : undefined;
 }
 
-function stringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const normalized = value
-    .map((entry) => String(entry).trim().toLowerCase())
-    .filter(Boolean);
-  return normalized.length > 0 ? Array.from(new Set(normalized)) : undefined;
-}
 
 function stringList(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
@@ -362,7 +346,6 @@ function normalizeConfig(raw: Partial<BrowserPluginConfig>): BrowserPluginConfig
     nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'auto',
     nativeBrowserCandidates: browserProductList(raw.nativeBrowserCandidates) ?? ['vivaldi', 'chrome'],
     defaultTimeoutMs: typeof raw.defaultTimeoutMs === 'number' ? positiveNumber(raw.defaultTimeoutMs, DEFAULT_TIMEOUT_MS) : undefined,
-    allowedDomains: stringArray(raw.allowedDomains),
   };
 }
 
@@ -383,9 +366,9 @@ function loadConfig(repoRoot: string): BrowserPluginConfig {
   return normalizeConfig(readJson<Partial<BrowserPluginConfig>>(configPath(repoRoot)) ?? {});
 }
 
-export function readBrowserPluginConfiguration(repoRoot: string): { enabled: boolean; allowedDomains: string[] } {
+export function readBrowserPluginConfiguration(repoRoot: string): { enabled: boolean } {
   const config = loadConfig(repoRoot);
-  return { enabled: config.enabled, allowedDomains: [...(config.allowedDomains ?? [])] };
+  return { enabled: config.enabled };
 }
 
 function saveConfig(repoRoot: string, patch: Partial<BrowserPluginConfig>): BrowserPluginConfig {
@@ -429,27 +412,6 @@ function normalizedUrl(value: unknown): string {
   return parsed.toString();
 }
 
-function isRemoteHttpUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-function isUrlAllowed(url: string, config: BrowserPluginConfig): boolean {
-  if (!config.allowedDomains || config.allowedDomains.length === 0) return true;
-  if (!isRemoteHttpUrl(url)) return true;
-  const hostname = new URL(url).hostname.toLowerCase();
-  return config.allowedDomains.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`));
-}
-
-function assertUrlAllowed(url: string, config: BrowserPluginConfig): void {
-  if (isUrlAllowed(url, config)) return;
-  const hostname = new URL(url).hostname.toLowerCase();
-  throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', `Domain is not allowed: ${hostname}`, { retryable: false });
-}
 
 function waitUntil(value: unknown): WaitUntil {
   return value === 'load' || value === 'networkidle' || value === 'domcontentloaded' ? value : 'domcontentloaded';
@@ -561,9 +523,6 @@ function validateConfig(config: BrowserPluginConfig): string[] {
 
 function configWarnings(config: BrowserPluginConfig): string[] {
   const warnings: string[] = [];
-  if (!config.allowedDomains || config.allowedDomains.length === 0) {
-    warnings.push('allowedDomains is empty; browser actions can target any domain.');
-  }
   if (config.profileMode === 'custom') {
     warnings.push('Custom profile mode uses the configured browser profile directly. If the browser reports the profile is in use, fully close the matching browser instance first.');
     if (!config.executablePath && (config.browserChannel ?? 'chromium') === 'chromium') {
@@ -695,17 +654,6 @@ async function delay(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function applyDomainGuard(context: BrowserContextLike, config: BrowserPluginConfig): Promise<void> {
-  if (!config.allowedDomains || config.allowedDomains.length === 0) return;
-  await context.route('**/*', async (route) => {
-    const url = route.request().url();
-    if (isUrlAllowed(url, config)) {
-      await route.continue();
-      return;
-    }
-    await route.abort('blockedbyclient');
-  });
-}
 
 function selectedProfile(config: BrowserPluginConfig, repoRoot: string, activeMode: BrowserMode = 'managed_persistent', sessionId?: string): BrowserProfileSelection {
   if (activeMode === 'isolated') {
@@ -1103,7 +1051,6 @@ async function openManagedContext(
   assertBrowserProfileAvailable(repoRoot, profile.selectedProfilePath);
   mkdirSync(profile.profileDir, { recursive: true });
   const context = await runtime.chromium.launchPersistentContext(profile.profileDir, launchOptionsForRepo(repoRoot, config, profile));
-  await applyDomainGuard(context, config);
   const selected = await selectPage(context, target);
   const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
   let response: { status?: () => number } | null | undefined;
@@ -1168,7 +1115,6 @@ async function openAttachedContext(
       try {
         const context = browser.contexts()[0] ?? (browser.newContext ? await browser.newContext() : undefined);
         if (!context) throw new Error('CDP connection did not expose a browser context.');
-        await applyDomainGuard(context, config);
         const selected = await selectPage(context, target, { allowBlank: false, allowNewPage: false, requireOwnedToken: true });
       const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
       let response: { status?: () => number } | null | undefined;
@@ -1292,7 +1238,6 @@ async function openNativeAttachedContext(
       await page.waitForLoadState(waitUntil(args.wait_until), { timeout });
     }
     const pageUrl = normalizedUrl(page.url());
-    assertUrlAllowed(pageUrl, config);
     const nativeRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
     if (!nativeRef) throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Native browser did not return a stable plugin-owned tab reference.', { retryable: true });
     const title = matchedBy === 'owned_token' ? (target.existingSession?.title ?? '') : '';
@@ -1386,7 +1331,6 @@ async function withPage<T>(
   run: (page: PageLike, diagnostics: PageDiagnostics, connection: BrowserConnectionSummary) => Promise<T>,
   options: { persistSession?: boolean } = {},
 ): Promise<T> {
-  assertUrlAllowed(target.url, config);
   const retries = Math.min(Math.max(positiveNumber(args.retries, 1), 1), 3);
   let lastError: unknown;
   for (let attempt = 1; attempt <= retries; attempt += 1) {
@@ -1396,7 +1340,6 @@ async function withPage<T>(
       const result = await run(handle.page, handle.diagnostics, handle.connection);
       if (options.persistSession) {
         const identity = await readPageIdentity(handle.page, handle.connection);
-        assertUrlAllowed(identity.url, config);
         saveSession(repoRoot, sessionFromPage(target, identity.url, identity.title, handle.connection));
       }
       return result;
@@ -1590,7 +1533,6 @@ async function finalizeInteractiveAction(
   const identity = await readPageIdentity(page, connection);
   const title = identity.title;
   const pageUrl = identity.url;
-  assertUrlAllowed(pageUrl, config);
   const session = sessionFromPage(target, pageUrl, title, connection);
   saveSession(repoRoot, session);
   let screenshot: BrowserActionScreenshot | undefined;
@@ -1671,7 +1613,7 @@ function capabilities(): AssistantPluginCapability[] {
     {
       capabilityId: 'browser-interaction',
       title: 'Browser Interaction',
-      description: 'Perform explicit form and pointer interactions on allowed domains through the persistent Playwright profile.',
+      description: 'Perform explicit form and pointer interactions on HTTP(S) pages through the persistent Playwright profile.',
       scopes: ['browser.interact', 'browser.profile'],
       actions: [
         'click', 'double_click', 'hover', 'focus', 'type', 'fill', 'select_option',
@@ -1749,8 +1691,6 @@ function actions(): AssistantPluginActionDescriptor[] {
           native_attach_mode: { type: 'string', enum: ['auto', 'disabled'] },
           native_browser_candidates: { type: 'array', items: { type: 'string', enum: ['vivaldi', 'chrome'] }, maxItems: 2 },
           default_timeout_ms: { type: 'number' },
-          allowed_domains: { type: 'array', items: { type: 'string' } },
-          clear_allowed_domains: { type: 'boolean' },
         },
         additionalProperties: false,
       },
@@ -1758,7 +1698,7 @@ function actions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'create_session',
       title: 'Create browser session',
-      description: 'Open an allowed URL and persist a reusable session id.',
+      description: 'Open an HTTP(S) URL and persist a reusable session id.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }, ...readRemote],
       argumentsSchema: sessionTargetSchema({ extract_text: { type: 'boolean' }, max_chars: { type: 'number' } }, ['url']),
@@ -1826,7 +1766,7 @@ function actions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'open_page',
       title: 'Open page',
-      description: 'Open an allowed URL with the persistent profile and save a lightweight session.',
+      description: 'Open an HTTP(S) URL with the persistent profile and save a lightweight session.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['browser.read'], resourceClaims: readRemote,
       argumentsSchema: sessionTargetSchema({ extract_text: { type: 'boolean' }, max_chars: { type: 'number' } }, ['url']),
@@ -1834,7 +1774,7 @@ function actions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'navigate',
       title: 'Navigate',
-      description: 'Navigate an existing session or open a new page to an allowed URL.',
+      description: 'Navigate an existing session or open a new page to an HTTP(S) URL.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['browser.read'], resourceClaims: readRemote,
       argumentsSchema: sessionTargetSchema({}, ['url']),
@@ -2089,7 +2029,6 @@ function browserUserFacingStatus(config: BrowserPluginConfig, ready: boolean, se
   if (!config.enabled) return 'disabled';
   if (!ready) return 'not ready';
   if (sessionCount > 0) return 'session active';
-  if (config.allowedDomains && config.allowedDomains.length > 0) return 'domain restricted';
   return 'ready';
 }
 
@@ -2212,7 +2151,6 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
     details: {
       ...baseDetails,
       nativeAttachObservation: nativeObservation,
-      allowedDomains: config.allowedDomains,
       provider: config.browserMode === 'attach_preferred'
         ? 'cdp-or-macos-active-browser-or-persistent-context'
         : 'playwright-persistent-context',
@@ -2310,7 +2248,6 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           defaultTimeoutMs: typeof args.default_timeout_ms === 'number'
             ? positiveNumber(args.default_timeout_ms, DEFAULT_TIMEOUT_MS)
             : current.defaultTimeoutMs,
-          allowedDomains: args.clear_allowed_domains === true ? undefined : stringArray(args.allowed_domains) ?? current.allowedDomains,
         });
         const configErrors = validateConfig(config);
         if (configErrors.length > 0) {
@@ -2366,7 +2303,6 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       }
       case 'request_human_handoff': {
         const target = resolveActionTarget(input.repoRoot, input.args);
-        assertUrlAllowed(target.url, current);
         const nativeSession = target.existingSession;
         const nativeTab = nativeSession?.browser?.tab;
         const nativeBrowser = nativeSession?.browser?.provider === 'macos-apple-events'
@@ -2398,7 +2334,6 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           profileDirectory: profile.profileDirectory,
           browserChannel: current.browserChannel,
           executablePath: current.executablePath ? resolveConfiguredPath(input.repoRoot, current.executablePath) : undefined,
-          allowedDomains: current.allowedDomains,
           defaultTimeoutMs: current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS,
           nativeBrowser,
           reason: stringValue(input.args.reason) ?? 'manual_review',

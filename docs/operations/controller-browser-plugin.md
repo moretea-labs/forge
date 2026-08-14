@@ -48,7 +48,7 @@ Session metadata is reusable across actions via `session_id`. Any action that re
 - Artifacts stay under `.forge/browser/**` (not arbitrary local paths).
 - CDP attach is bounded to configured loopback endpoints only; the plugin does not scan arbitrary ports or remote hosts. Native discovery checks only the configured Chrome/Vivaldi candidates and does not launch them.
 - CDP browsers are disconnected after the action; Apple Events keeps plugin-owned session tabs open until `close_session`/`close_page` while preserving user-owned tabs; managed contexts are closed after the action. Standard native DOM reads/interactions do not foreground the owned tab and return DOM evidence instead of attempting a screenshot.
-- Health `userFacingStatus` reports `ready`, `domain restricted`, `session active`, or setup states.
+- Health `userFacingStatus` reports `ready`, `session active`, or setup states.
 
 ## Configuration
 
@@ -67,12 +67,11 @@ Example:
   "nativeBrowserCandidates": ["vivaldi", "chrome"],
   "cdpAttachFallback": "managed_persistent",
   "browserChannel": "chromium",
-  "defaultTimeoutMs": 30000,
-  "allowedDomains": ["example.com", "docs.example.com"]
+  "defaultTimeoutMs": 30000
 }
 ```
 
-`allowedDomains` is the safety boundary. If it is empty, the plugin can target any HTTP(S) host. If it is set, the plugin accepts only exact hosts or subdomains of those entries.
+Browser URLs are open by default across hosts. The URL boundary is scheme-based: top-level navigation accepts absolute `http://` and `https://` URLs and rejects `file://`, `data:`, browser-internal pages, and custom schemes. Interaction risk and authorization are enforced by the typed action policy rather than a domain grant.
 
 Additional browser/profile fields:
 
@@ -131,8 +130,7 @@ Example custom Chrome automation-profile binding:
   "browserChannel": "chrome",
   "cdpEndpoint": "http://127.0.0.1:9222",
   "cdpAttachFallback": "fail_closed",
-  "defaultTimeoutMs": 30000,
-  "allowedDomains": ["appstoreconnect.apple.com"]
+  "defaultTimeoutMs": 30000
 }
 ```
 
@@ -152,12 +150,11 @@ Use native attachment when the target session is already logged in:
   "browserMode": "attach_preferred",
   "nativeAttachMode": "auto",
   "nativeBrowserCandidates": ["vivaldi", "chrome"],
-  "cdpAttachFallback": "managed_persistent",
-  "allowedDomains": ["chatgpt.com", "example.com"]
+  "cdpAttachFallback": "managed_persistent"
 }
 ```
 
-The attach order is CDP, then Apple Events, then managed fallback. macOS may require Automation permission for the controller/Node process to control Vivaldi or Google Chrome. The browser must also permit JavaScript from Apple Events for DOM extraction and interaction. If either permission is unavailable or the browser has no window, the attempt is recorded and fallback policy applies. The provider uses the active browser only for discovery, then operates on a plugin-owned tab identified by stable window/tab metadata. It does not read cookies or storage and re-checks the target URL against `allowedDomains` before and after actions.
+The attach order is CDP, then Apple Events, then managed fallback. macOS may require Automation permission for the controller/Node process to control Vivaldi or Google Chrome. The browser must also permit JavaScript from Apple Events for DOM extraction and interaction. If either permission is unavailable or the browser has no window, the attempt is recorded and fallback policy applies. The provider uses the active browser only for discovery, then operates on a plugin-owned tab identified by stable window/tab metadata. It does not read cookies or storage. Top-level Browser actions accept any absolute HTTP(S) URL; non-HTTP(S) schemes fail before launch.
 
 Native limitations are explicit: console/network event capture is unavailable and native file-input/download semantics are not equivalent to Playwright. A screenshot of a plugin-owned background tab fails closed with `PLUGIN_BROWSER_FOREGROUND_REQUIRED`; Forge does not silently activate the tab just to capture evidence. Use explicit foreground/human handoff, CDP, or a managed context for workflows that require screenshots or capabilities not available through background DOM automation.
 
@@ -219,15 +216,14 @@ Risk levels:
 - `click`, `type`, `press` use `risk=remote_write`
 - `wait_for_selector` uses `risk=workspace_write`
 
-## Allowed-domain enforcement
+## URL scheme boundary
 
-The plugin enforces `allowedDomains` in three places:
+Browser no longer maintains per-domain grants or a host allowlist. Any absolute HTTP(S) URL may be opened, redirected to, or reached by an interaction. This avoids configuration churn for normal browsing while preserving the actual trust boundaries:
 
-1. It validates the explicit `url` before opening a page.
-2. It validates any saved `session_id` target before interaction.
-3. It re-checks the resulting page URL after the action and rejects the result if navigation leaves the allowed set.
-
-The plugin does not intentionally provide any action that can bypass this boundary.
+1. top-level Browser targets must use `http:` or `https:`;
+2. local files, browser-internal URLs, `data:` URLs, and custom schemes are rejected as Browser targets;
+3. action risk and confirmation still govern remote writes and interactive operations;
+4. silent native automation stays on plugin-owned background tabs unless an explicit human handoff requires foreground presentation.
 
 ## Dependency requirement
 

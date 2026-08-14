@@ -99,8 +99,6 @@ test("keeps Core and Advanced on the same bounded default ChatGPT surface", () =
   for (const compatibilityOnly of [
     "toolchain_plugin_summary",
     "workspace_auth_login_prepare",
-    "web_domain_access_preview",
-    "web_domain_access_apply",
     "assistant_readiness",
   ]) {
     expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain(compatibilityOnly as never);

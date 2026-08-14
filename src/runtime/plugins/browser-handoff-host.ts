@@ -19,16 +19,10 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function hostnameAllowed(hostname: string, allowedDomains?: string[]): boolean {
-  if (!allowedDomains || allowedDomains.length === 0) return true;
-  const normalized = hostname.toLowerCase();
-  return allowedDomains.some((domain) => normalized === domain || normalized.endsWith(`.${domain}`));
-}
-
-function assertAllowed(url: string, allowedDomains?: string[]): void {
+function assertHttpUrl(url: string): void {
   const parsed = new URL(url);
-  if (!['http:', 'https:'].includes(parsed.protocol) || !hostnameAllowed(parsed.hostname, allowedDomains)) {
-    throw new Error(`URL is outside the browser handoff allowlist: ${url}`);
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error(`Browser handoff only supports HTTP(S) URLs: ${url}`);
   }
 }
 
@@ -105,7 +99,7 @@ async function runNativeHandoff(specPath: string, spec: BrowserHandoffLaunchSpec
       if (resume) {
         removeInteractionCommand(spec.repoRoot, 'browser', spec.interactionId, 'resume');
         metadata = await readMacOsBrowserOwnedTabMetadata(native.product, native.ref, spec.defaultTimeoutMs);
-        assertAllowed(metadata.url, spec.allowedDomains);
+        assertHttpUrl(metadata.url);
         const existing = existsSync(spec.sessionPath)
           ? readJsonFile<Record<string, unknown>>(spec.sessionPath, {})
           : {};
@@ -146,7 +140,7 @@ async function main(): Promise<void> {
   const specPath = process.argv[2];
   if (!specPath) throw new Error('browser handoff launch spec path is required');
   const spec = readJsonFile<BrowserHandoffLaunchSpec>(specPath);
-  assertAllowed(spec.url, spec.allowedDomains);
+  assertHttpUrl(spec.url);
   if (spec.nativeBrowser) {
     await runNativeHandoff(specPath, spec);
     return;
@@ -166,11 +160,6 @@ async function main(): Promise<void> {
           title(): Promise<string>;
           bringToFront?(): Promise<void>;
         }>;
-        route(pattern: string, handler: (route: {
-          request(): { url(): string };
-          continue(): Promise<void>;
-          abort(errorCode?: string): Promise<void>;
-        }) => Promise<void> | void): Promise<void>;
         close(): Promise<void>;
       }>;
     };
@@ -205,20 +194,6 @@ async function main(): Promise<void> {
 
   try {
     context = await playwright.chromium.launchPersistentContext(spec.profileDir, launchOptions);
-    await context.route('**/*', async (route) => {
-      const requestUrl = route.request().url();
-      try {
-        const parsed = new URL(requestUrl);
-        if (['http:', 'https:'].includes(parsed.protocol) && !hostnameAllowed(parsed.hostname, spec.allowedDomains)) {
-          await route.abort('blockedbyclient');
-          return;
-        }
-      } catch {
-        await route.abort('blockedbyclient');
-        return;
-      }
-      await route.continue();
-    });
     let page = context.pages()[0] ?? await context.newPage();
     await page.goto(spec.url, { waitUntil: 'domcontentloaded', timeout: spec.defaultTimeoutMs });
     if (page.bringToFront) await page.bringToFront();
@@ -263,7 +238,7 @@ async function main(): Promise<void> {
       const resume = readInteractionCommand(spec.repoRoot, 'browser', spec.interactionId, 'resume');
       if (resume) {
         removeInteractionCommand(spec.repoRoot, 'browser', spec.interactionId, 'resume');
-        assertAllowed(page.url(), spec.allowedDomains);
+        assertHttpUrl(page.url());
         const existing = existsSync(spec.sessionPath)
           ? readJsonFile<Record<string, unknown>>(spec.sessionPath, {})
           : {};

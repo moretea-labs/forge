@@ -226,7 +226,7 @@ function mockAttachPlaywright(
   } as never;
 }
 
-function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', options: { javaScriptEnabled?: boolean; targetTitleMetadataFails?: boolean } = {}) {
+function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', options: { javaScriptEnabled?: boolean; targetTitleMetadataFails?: boolean; transitionalNewTabReads?: number } = {}) {
   const javaScriptEnabled = options.javaScriptEnabled !== false;
   const separator = '\x1e';
   const userTab = { id: '501', url: 'https://example.com/user-work', title: 'User Work' };
@@ -236,6 +236,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
     closed: [] as string[],
     navigated: [] as Array<{ tabId: string; url: string }>,
     activeTabId: userTab.id,
+    targetMetadataReads: 0,
   };
   let nextTabId = 9001;
   const appName = product === 'chrome' ? 'Google Chrome' : 'Vivaldi';
@@ -244,8 +245,8 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
     const matches = [...script.matchAll(/whose id is "([^"]+)"/g)];
     return matches.at(-1)?.[1];
   };
-  const metadata = (tabId: string, url: string, title: string, active: boolean) =>
-    `true${separator}${url}${separator}${title}${separator}0${separator}25${separator}1280${separator}925${separator}77${separator}${tabId}${separator}${active ? 'true' : 'false'}`;
+  const metadata = (tabId: string, url: string, title: string, active: boolean, loading?: boolean) =>
+    `true${separator}${url}${separator}${title}${separator}0${separator}25${separator}1280${separator}925${separator}77${separator}${tabId}${separator}${active ? 'true' : 'false'}${loading === undefined ? '' : `${separator}${loading ? 'true' : 'false'}`}`;
 
   return {
     events,
@@ -304,7 +305,12 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
           const tabId = tabIdFromScript(script);
           const entry = tabId ? ownedTabs.get(tabId) : undefined;
           if (!tabId || !entry) throw new Error('missing owned tab');
-          return metadata(tabId, entry.url, entry.title, events.activeTabId === tabId);
+          events.targetMetadataReads += 1;
+          if (events.targetMetadataReads <= (options.transitionalNewTabReads ?? 0)) {
+            const newTabUrl = product === 'chrome' ? 'chrome://newtab/' : 'vivaldi://newtab/';
+            return metadata(tabId, newTabUrl, '', events.activeTabId === tabId, false);
+          }
+          return metadata(tabId, entry.url, entry.title, events.activeTabId === tabId, false);
         }
         if (script.includes('set targetTab to active tab of targetWindow')) {
           return metadata(userTab.id, userTab.url, userTab.title, true);
@@ -326,7 +332,6 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
-      allowedDomains: ['example.com'],
     });
 
     setBrowserPluginRuntimeHooksForTest({
@@ -397,7 +402,6 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
-      allowedDomains: ['example.com'],
     });
 
         setBrowserPluginRuntimeHooksForTest({
@@ -433,7 +437,6 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
-      allowedDomains: ['example.com'],
     });
 
     setBrowserPluginRuntimeHooksForTest({
@@ -467,7 +470,6 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
-      allowedDomains: ['example.com'],
     });
 
     let moduleChecks = 0;
@@ -486,13 +488,12 @@ describe('browser plugin', () => {
     expect(moduleChecks).toBe(1);
   });
 
-  test('click returns url, title, summary, and a saved screenshot without bypassing allowed domains', async () => {
+  test('click returns url, title, summary, and a saved screenshot under the HTTP(S) scheme boundary', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
-      allowedDomains: ['example.com'],
     });
 
     setBrowserPluginRuntimeHooksForTest({
@@ -527,7 +528,6 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
-      allowedDomains: ['example.com'],
     });
 
     await expect(executeBrowserPluginAction({
@@ -556,7 +556,6 @@ describe('browser plugin', () => {
       profileMode: 'custom',
       profileDir: chromeProfile,
       browserChannel: 'chrome',
-      allowedDomains: ['example.com'],
     });
     const runtime = mockPlaywright() as unknown as { launches: Array<{ userDataDir: string; options: Record<string, unknown> }> };
 
@@ -595,7 +594,6 @@ describe('browser plugin', () => {
       cdpEndpoint: 'ws://127.0.0.1:9222/devtools/browser/stale',
       cdpAttachFallback: 'managed_persistent',
       nativeAttachMode: 'disabled',
-      allowedDomains: ['example.com'],
     });
     const runtime = mockAttachPlaywright([], { connectError: 'ECONNREFUSED 127.0.0.1:9222' }) as unknown as {
       events: {
@@ -642,7 +640,6 @@ describe('browser plugin', () => {
       cdpEndpoint: 'http://127.0.0.1:9223',
       cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'disabled',
-      allowedDomains: ['example.com'],
     });
     const ownerToken = 'forge-browser-owned:cdp-discovery';
     const sessionId = 'cdp-discovery-session';
@@ -763,7 +760,6 @@ describe('browser plugin', () => {
       cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'auto',
       nativeBrowserCandidates: ['chrome'],
-      allowedDomains: ['example.com'],
     });
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
     setMacOsBrowserRuntimeHooksForTest({
@@ -794,6 +790,32 @@ describe('browser plugin', () => {
     expect(ready.health).toMatchObject({ state: 'ready', ready: true, probed: true });
   });
 
+  test('native open_page waits past transient Chrome new-tab metadata before accepting the final HTTPS URL', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome', { transitionalNewTabReads: 1 });
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const opened = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-native-transient-newtab', args: { url: 'https://example.com/settled' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect((opened.session as Record<string, unknown>).url).toBe('https://example.com/settled');
+    expect(native.events.targetMetadataReads).toBeGreaterThanOrEqual(2);
+    expect(native.events.activeTabId).toBe('501');
+  });
+
   test('attach_preferred creates one plugin-owned Vivaldi tab, preserves the user tab, and reuses it across actions', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {
@@ -804,7 +826,6 @@ describe('browser plugin', () => {
       cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'auto',
       nativeBrowserCandidates: ['vivaldi'],
-      allowedDomains: ['example.com'],
     });
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
     const nativeOptions = { targetTitleMetadataFails: false };
@@ -857,7 +878,6 @@ describe('browser plugin', () => {
       cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'auto',
       nativeBrowserCandidates: ['vivaldi'],
-      allowedDomains: ['example.com'],
     });
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
     const native = mockMacOsOwnedTabRuntime('vivaldi', { javaScriptEnabled: false });
@@ -895,7 +915,6 @@ describe('browser plugin', () => {
       cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'auto',
       nativeBrowserCandidates: ['chrome'],
-      allowedDomains: ['example.com'],
     });
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
     const native = mockMacOsOwnedTabRuntime('chrome');
@@ -928,7 +947,6 @@ describe('browser plugin', () => {
       cdpEndpoint: 'ws://127.0.0.1:9222/devtools/browser/live',
       cdpAttachFallback: 'managed_persistent',
       nativeAttachMode: 'disabled',
-      allowedDomains: ['example.com'],
     });
     const runtime = mockAttachPlaywright([
       { url: 'about:blank', title: 'User New Tab' },
@@ -971,7 +989,6 @@ describe('browser plugin', () => {
       cdpEndpoint: 'ws://127.0.0.1:9222/devtools/browser/stale',
       cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'disabled',
-      allowedDomains: ['example.com'],
     });
     const runtime = mockAttachPlaywright([], { connectError: 'ECONNREFUSED 127.0.0.1:9222' }) as unknown as {
       events: { launches: unknown[] };
@@ -1024,7 +1041,6 @@ describe('browser plugin', () => {
       cdpEndpoint: 'ws://127.0.0.1:9222/devtools/browser/live',
       cdpAttachFallback: 'fail_closed',
       nativeAttachMode: 'disabled',
-      allowedDomains: ['example.com'],
     });
     const ownerToken = 'forge-browser-owned:reuse-session';
     const sessionId = 'explicit-session-id';
@@ -1110,7 +1126,6 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
-      allowedDomains: ['example.com'],
     });
 
         setBrowserPluginRuntimeHooksForTest({
@@ -1147,7 +1162,6 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
-      allowedDomains: ['example.com'],
     });
     mkdirSync(join(repoRoot, '.forge/browser/sessions'), { recursive: true });
     writeFileSync(join(repoRoot, '.forge/browser/sessions/browser_saved.json'), JSON.stringify({
@@ -1171,59 +1185,36 @@ describe('browser plugin', () => {
     })).rejects.toThrow('url does not match the saved session');
   });
 
-  test('route guard aborts requests outside allowed domains', async () => {
+  test('does not install a domain route guard for HTTP(S) subresources', async () => {
     const { repoRoot } = repoFixture();
-    writeBrowserConfig(repoRoot, {
-      schemaVersion: 1,
-      enabled: true,
-      provider: 'playwright',
-      allowedDomains: ['example.com'],
-    });
-    const runtime = mockPlaywright({ routeUrl: 'https://tracker.evil/pixel' }) as unknown as { routeDecisions: string[] };
-
-    setBrowserPluginRuntimeHooksForTest({
-      moduleAvailable: () => true,
-      loadPlaywright: () => runtime as never,
-    });
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright' });
+    const runtime = mockPlaywright({ routeUrl: 'https://tracker.example.net/pixel' }) as unknown as { routeDecisions: string[] };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
 
     await executeBrowserPluginAction({
-      controllerHome: repoRoot,
-      repoId: 'repo',
-      repoRoot,
-      pluginId: 'browser',
-      actionId: 'open_page',
-      requestId: 'browser-route-guard',
-      args: { url: 'https://example.com/' },
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-no-domain-route-guard', args: { url: 'https://example.com/' },
       origin: { surface: 'local-ui', actor: 'test' },
     });
 
-    expect(runtime.routeDecisions).toEqual(['abort:blockedbyclient']);
+    expect(runtime.routeDecisions).toEqual([]);
   });
 
-  test('blocks interaction results that leave the allowed domain set', async () => {
+  test('allows interaction results to navigate to another HTTP(S) domain', async () => {
     const { repoRoot } = repoFixture();
-    writeBrowserConfig(repoRoot, {
-      schemaVersion: 1,
-      enabled: true,
-      provider: 'playwright',
-      allowedDomains: ['example.com'],
-    });
-
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright' });
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
-      loadPlaywright: () => mockPlaywright({ finalUrl: 'https://evil.test/' }),
+      loadPlaywright: () => mockPlaywright({ finalUrl: 'https://other.example.net/' }),
     });
 
-    await expect(executeBrowserPluginAction({
-      controllerHome: repoRoot,
-      repoId: 'repo',
-      repoRoot,
-      pluginId: 'browser',
-      actionId: 'click',
-      requestId: 'browser-click-blocked-domain',
+    const result = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'click',
+      requestId: 'browser-click-cross-domain',
       args: { url: 'https://example.com/', selector: '#cta', post_action_wait_ms: 1 },
       origin: { surface: 'local-ui', actor: 'test' },
-    })).rejects.toThrow('PLUGIN_POLICY_BLOCKED');
+    });
+    expect((result.session as Record<string, unknown>).url).toBe('https://other.example.net/');
   });
 
   test('supports session reuse, fill, selector extraction, and diagnostics capture', async () => {
@@ -1232,7 +1223,6 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
-      allowedDomains: ['example.com'],
     });
 
     const runtime = mockPlaywright({ title: 'Extracted' }) as unknown as { evaluatedExpressions: unknown[] };
@@ -1317,7 +1307,7 @@ describe('browser plugin', () => {
 
   test('keeps a durable handoff, fences its profile, and records explicit resolution', async () => {
     const { repoRoot } = repoFixture();
-    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', allowedDomains: ['example.com'] });
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright' });
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => mockPlaywright() });
     const opened = await executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
@@ -1360,7 +1350,7 @@ describe('browser plugin', () => {
 
   test('reconciles dead and expired hosts without releasing a live profile early', async () => {
     const { repoRoot } = repoFixture();
-    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', allowedDomains: ['example.com'] });
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright' });
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => mockPlaywright() });
     const opened = await executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
@@ -1409,7 +1399,7 @@ describe('browser plugin', () => {
 
   test('fails the request instead of returning a stale starting handoff when the host exits before ready', async () => {
     const { repoRoot } = repoFixture();
-    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', allowedDomains: ['example.com'] });
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright' });
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => mockPlaywright() });
     const opened = await executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
@@ -1441,7 +1431,6 @@ describe('browser plugin', () => {
         enabled: true,
         provider: 'playwright',
         browserChannel: 'chromium',
-        allowedDomains: ['127.0.0.1'],
         defaultTimeoutMs: 15_000,
       });
       const server = Bun.serve({
@@ -1589,27 +1578,14 @@ describe('browser plugin', () => {
     })).toBe(sourceHost);
   });
 
-  test('denies open_page outside allowed domains before launch', async () => {
+  test('rejects non-HTTP(S) open_page URLs before launch', async () => {
     const { repoRoot } = repoFixture();
-    writeBrowserConfig(repoRoot, {
-      schemaVersion: 1,
-      enabled: true,
-      provider: 'playwright',
-      allowedDomains: ['example.com'],
-    });
-    setBrowserPluginRuntimeHooksForTest({
-      moduleAvailable: () => true,
-      loadPlaywright: () => mockPlaywright(),
-    });
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright' });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => mockPlaywright() });
     await expect(executeBrowserPluginAction({
-      controllerHome: repoRoot,
-      repoId: 'repo',
-      repoRoot,
-      pluginId: 'browser',
-      actionId: 'open_page',
-      requestId: 'browser-deny-domain',
-      args: { url: 'https://evil.test/' },
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-deny-non-http-scheme', args: { url: 'file:///tmp/secret.txt' },
       origin: { surface: 'local-ui', actor: 'test' },
-    })).rejects.toThrow('PLUGIN_POLICY_BLOCKED');
+    })).rejects.toThrow('Only http and https URLs are supported');
   });
 });
