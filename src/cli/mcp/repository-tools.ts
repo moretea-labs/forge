@@ -9,6 +9,7 @@ import {
   findIdenticalRepositoryRegistration,
   getRepository,
   listRepositories,
+  reconcileRepositoryCheckouts,
   refreshRepository,
   registerRepository,
   removeRepository,
@@ -636,6 +637,11 @@ export async function callRepositoryTool(
       case 'repository_list':
         return result({ repositories: listRepositories(controllerHome, { includeRemoved: args.include_removed === true }).map(repositorySummary) });
       case 'repository_get': {
+        // Repository inspection is also the bounded reconciliation point for
+        // checkout lifecycle drift caused by worktrees being removed outside
+        // Forge. Reuse the existing registry reconciler so stale worktrees are
+        // not exposed as lifecycle=active to automation callers.
+        reconcileRepositoryCheckouts(repoIdValue, controllerHome);
         const repository = getRepository(repoIdValue, controllerHome, { includeRemoved: args.include_removed === true });
         return result(summarizeRepositoryInspection(repository, args.detail_level === 'detail'));
       }

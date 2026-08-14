@@ -26,7 +26,7 @@ import { getMcpPolicy } from "../../src/cli/mcp/policy";
 import { createMcpToolContext as createMultiRepositoryContext, parseMcpToolset } from "../../src/cli/mcp/multi-repository";
 import { callRepositoryTool } from "../../src/cli/mcp/repository-tools";
 import { repositoryControllerRoot } from "../../src/cli/repositories/controller-home";
-import { registerRepository } from "../../src/cli/repositories/registry";
+import { addRepositoryCheckout, registerRepository } from "../../src/cli/repositories/registry";
 import {
   buildMcpToolDefinitions,
   callMcpTool,
@@ -2419,6 +2419,34 @@ describe("MCP controller profile", () => {
         expect(String(localStatus.value.endpoint)).toContain("127.0.0.1");
       }
       expect(localStatus.value.mode === undefined || typeof localStatus.value.mode === "string").toBe(true);
+    });
+  });
+
+  test("repository_get archives a worktree removed outside Forge before exposing checkout lifecycle", async () => {
+    await withController(async (repoRoot) => {
+      expect(spawnSync("git", ["init", "-b", "main"], { cwd: repoRoot }).status).toBe(0);
+      expect(spawnSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot }).status).toBe(0);
+      expect(spawnSync("git", ["config", "user.name", "Test"], { cwd: repoRoot }).status).toBe(0);
+      writeFileSync(join(repoRoot, "README.md"), "fixture\n");
+      expect(spawnSync("git", ["add", "."], { cwd: repoRoot }).status).toBe(0);
+      expect(spawnSync("git", ["commit", "-m", "initial"], { cwd: repoRoot }).status).toBe(0);
+
+      const controllerHome = join(repoRoot, ".forge-controller-home");
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      const worktreeRoot = join(repoRoot, "stale-worktree");
+      expect(spawnSync("git", ["worktree", "add", "-b", "stale-worktree", worktreeRoot], { cwd: repoRoot }).status).toBe(0);
+      const withWorktree = addRepositoryCheckout({ repoId: repository.repoId, path: worktreeRoot, controllerHome });
+      const checkout = withWorktree.checkouts.find((candidate) => candidate.worktree && candidate.branch === "stale-worktree");
+      expect(checkout?.lifecycle).toBe("active");
+
+      rmSync(worktreeRoot, { recursive: true, force: true });
+      const inspected = await callRepositoryTool(controllerHome, "repository_get", {
+        repo_id: repository.repoId,
+        detail_level: "detail",
+      }).then((result) => JSON.parse(result?.content[0]?.text ?? "{}"));
+      const reconciled = inspected.repository.checkouts.find((candidate: { checkoutId?: string }) => candidate.checkoutId === checkout?.checkoutId);
+      expect(reconciled?.lifecycle).toBe("archived");
+      expect(reconciled?.lifecycleReason).toBe("Managed worktree root no longer exists.");
     });
   });
 
