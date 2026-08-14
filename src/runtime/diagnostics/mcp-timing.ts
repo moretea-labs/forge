@@ -7,6 +7,10 @@ export interface McpTimingTrace {
   traceId?: string;
   requestId?: string;
   rpcId?: string | number;
+  /** Public Connector ingress versus the authoritative loopback Runtime span. */
+  layer?: 'public_gateway' | 'canonical_runtime';
+  /** Wall-clock start for joining nested spans and later client-side timing when available. */
+  startedAt?: string;
   outcome?: 'ok' | 'error' | 'exception';
   errorCode?: string;
   sessionResolutionMs?: number;
@@ -21,6 +25,8 @@ export interface McpTimingTrace {
   sessionId?: string;
   repoId?: string;
   workId?: string;
+  processId?: string;
+  route?: string;
 }
 
 export interface McpIncident {

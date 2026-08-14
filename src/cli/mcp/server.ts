@@ -48,6 +48,38 @@ function recordRequestId(args: Record<string, unknown>, rpcId: string | number |
   return explicit || `mcp-rpc:${rpcId === undefined ? randomUUID() : String(rpcId)}`;
 }
 
+function firstTimingString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function timingIdentity(value: CallToolResult | undefined): {
+  repoId?: string;
+  workId?: string;
+  processId?: string;
+  route?: string;
+} {
+  if (!value?.structuredContent || typeof value.structuredContent !== 'object' || Array.isArray(value.structuredContent)) return {};
+  const structured = value.structuredContent as Record<string, unknown>;
+  const work = structured.work && typeof structured.work === 'object' && !Array.isArray(structured.work)
+    ? structured.work as Record<string, unknown>
+    : undefined;
+  const process = structured.process && typeof structured.process === 'object' && !Array.isArray(structured.process)
+    ? structured.process as Record<string, unknown>
+    : undefined;
+  const resultRef = structured.resultRef && typeof structured.resultRef === 'object' && !Array.isArray(structured.resultRef)
+    ? structured.resultRef as Record<string, unknown>
+    : undefined;
+  return {
+    repoId: firstTimingString(structured.repoId, structured.repo_id, work?.repositoryId, work?.repoId),
+    workId: firstTimingString(structured.workId, structured.work_id, work?.workId),
+    processId: firstTimingString(structured.processId, structured.process_id, process?.processId, resultRef?.processId),
+    route: firstTimingString(structured.route, structured.path, structured.mode, process?.route),
+  };
+}
+
 function tracedResult(
   value: CallToolResult | undefined,
   traceId: string,
@@ -79,15 +111,18 @@ async function traceControllerMcpRequest(
   name: string,
   args: Record<string, unknown>,
   rpcId: string | number | undefined,
-  handler: () => Promise<CallToolResult>,
+  handler: (requestId: string) => Promise<CallToolResult>,
 ): Promise<CallToolResult> {
+  const startedAtWall = new Date().toISOString();
   const startedAt = performance.now();
   const traceId = randomUUID();
   const requestId = recordRequestId(args, rpcId);
   let outcome: 'ok' | 'error' | 'exception' = 'ok';
   let errorCode: string | undefined;
+  let executionIdentity: ReturnType<typeof timingIdentity> = {};
   try {
-    const value = await handler();
+    const value = await handler(requestId);
+    executionIdentity = timingIdentity(value);
     if (value?.isError) {
       outcome = 'error';
       const error = value.structuredContent && typeof value.structuredContent === 'object'
@@ -133,8 +168,11 @@ async function traceControllerMcpRequest(
       traceId,
       requestId,
       ...(rpcId === undefined ? {} : { rpcId }),
+      layer: ctx.runtimeSourceRoot ? 'canonical_runtime' : 'public_gateway',
+      startedAt: startedAtWall,
       outcome,
       ...(errorCode ? { errorCode } : {}),
+      ...executionIdentity,
       totalToolDurationMs: Math.round((performance.now() - startedAt) * 100) / 100,
     });
   }
@@ -279,7 +317,7 @@ export function createForgeMcpServerFromContext(
     const ctx: ServerToolContext = { ...baseContext, signal: extra.signal };
     if (isMultiRepositoryContext(ctx)) {
       const rpcId = (request as unknown as { id?: unknown }).id;
-      return traceControllerMcpRequest(ctx, name, args, typeof rpcId === 'string' || typeof rpcId === 'number' ? rpcId : undefined, async () => {
+      return traceControllerMcpRequest(ctx, name, args, typeof rpcId === 'string' || typeof rpcId === 'number' ? rpcId : undefined, async (requestId) => {
         // The public Gateway only exposes its stable facade schema. It may
         // proxy execution, but it never discovers one Runtime schema and
         // validates calls against another source checkout.
@@ -304,8 +342,11 @@ export function createForgeMcpServerFromContext(
         // Gateway processes from acquiring Process Runtime leases or evaluating
         // Runtime source coherence against their own checkout.
         if (!getRuntimeWriteClaim()) {
-          if (runtimeSchema) return proxyRuntimeToolCall(ctx, name, args);
-          if (observeRuntimeStatus(ctx.controllerHome).ready) return proxyRuntimeToolCall(ctx, name, args);
+          const forwardedArgs = typeof args.request_id === 'string' && args.request_id.trim()
+            ? args
+            : { ...args, request_id: requestId };
+          if (runtimeSchema) return proxyRuntimeToolCall(ctx, name, forwardedArgs);
+          if (observeRuntimeStatus(ctx.controllerHome).ready) return proxyRuntimeToolCall(ctx, name, forwardedArgs);
         }
         const accessResult = callAccessTool(ctx, name, args);
         if (accessResult) return accessResult;

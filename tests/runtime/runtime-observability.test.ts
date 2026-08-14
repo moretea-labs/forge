@@ -320,8 +320,14 @@ describe('runtime observability', () => {
         tool: 'controller_ready',
         traceId,
         requestId,
+        layer: 'public_gateway',
+        startedAt: '2026-08-14T13:00:00.000Z',
         outcome: 'error',
         errorCode: 'PUBLIC_STABLE_ENDPOINT_UNHEALTHY',
+        repoId: 'repo-fixture',
+        workId: 'work-fixture',
+        processId: 'proc-fixture',
+        route: 'process_managed',
         totalToolDurationMs: 12,
       });
       recordMcpIncident(controllerHome, {
@@ -334,7 +340,17 @@ describe('runtime observability', () => {
       });
       const timing = JSON.parse(readFileSync(join(controllerHome, 'audit', 'mcp-timings.jsonl'), 'utf8')) as Record<string, unknown>;
       const incident = JSON.parse(readFileSync(join(controllerHome, 'audit', 'mcp-incidents.jsonl'), 'utf8')) as Record<string, unknown>;
-      expect(timing).toMatchObject({ traceId, requestId, outcome: 'error' });
+      expect(timing).toMatchObject({
+        traceId,
+        requestId,
+        layer: 'public_gateway',
+        startedAt: '2026-08-14T13:00:00.000Z',
+        outcome: 'error',
+        repoId: 'repo-fixture',
+        workId: 'work-fixture',
+        processId: 'proc-fixture',
+        route: 'process_managed',
+      });
       expect(incident).toMatchObject({ traceId, requestId, code: 'PUBLIC_STABLE_ENDPOINT_UNHEALTHY' });
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
@@ -416,8 +432,11 @@ describe('runtime observability', () => {
         .trim().split('\n').map((line) => JSON.parse(line) as { traceId: string; code: string });
       expect(incidents.some((entry) => entry.traceId === traceId && entry.code === 'TOOL_NOT_FOUND')).toBe(true);
       const timings = readFileSync(join(controllerHome, 'audit', 'mcp-timings.jsonl'), 'utf8')
-        .trim().split('\n').map((line) => JSON.parse(line) as { traceId: string });
-      expect(timings.some((entry) => entry.traceId === traceId)).toBe(true);
+        .trim().split('\n').map((line) => JSON.parse(line) as { traceId: string; requestId?: string; layer?: string; startedAt?: string });
+      const timing = timings.find((entry) => entry.traceId === traceId);
+      expect(timing).toMatchObject({ layer: 'public_gateway' });
+      expect(timing?.requestId).toBe(String(meta?.requestId ?? ''));
+      expect(Number.isNaN(Date.parse(timing?.startedAt ?? ''))).toBe(false);
     } finally {
       await client.close();
       await server.close();
