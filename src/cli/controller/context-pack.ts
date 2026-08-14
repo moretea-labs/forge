@@ -573,7 +573,8 @@ export function buildControllerContextPack(
   if (searchQueries.length > 0 && candidates.size < maxFiles * 3) {
     const search = searchRepositoryMany(repoRoot, policy, {
       queries: searchQueries,
-      includeGlobs: scopedExactKnownFileSearch ? exactKnownFiles : searchIncludeGlobs,
+      files: scopedExactKnownFileSearch ? exactKnownFiles : undefined,
+      includeGlobs: scopedExactKnownFileSearch ? undefined : searchIncludeGlobs,
       excludeGlobs,
       maxResultsPerQuery: Math.max(maxFiles * 4, 12),
       maxFiles: scopedExactKnownFileSearch ? exactKnownFiles.length : MAX_TOTAL_SEARCHED_FILES,

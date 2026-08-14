@@ -264,6 +264,8 @@ export interface SearchRepositoryOptions {
 
 export interface SearchRepositoryManyOptions {
   queries: string[];
+  /** Pre-resolved exact candidate files. Skips repository inventory discovery. */
+  files?: string[];
   includeGlobs?: string[];
   excludeGlobs?: string[];
   maxResultsPerQuery?: number;
@@ -327,7 +329,17 @@ export function searchRepositoryMany(
   const maxFiles = Math.min(Math.max(opts.maxFiles ?? 5000, 1), 20_000);
   const includes = opts.includeGlobs ?? [];
   const excludes = [...(includes.length === 0 ? DEFAULT_EXCLUDES : []), ...(opts.excludeGlobs ?? [])];
-  const inventory = searchInventory(repoRoot, includes, excludes, maxFiles, opts.cacheKey);
+  const directFiles = opts.files?.map((path) => path.trim()).filter(Boolean);
+  const directCandidates = directFiles
+    ? Array.from(new Set(directFiles)).filter((path) => !isExcluded(path, excludes))
+    : undefined;
+  const inventory = directCandidates && directCandidates.length > 0
+    ? {
+        files: directCandidates.slice(0, maxFiles),
+        candidateCount: directCandidates.length,
+        cacheHit: false,
+      }
+    : searchInventory(repoRoot, includes, excludes, maxFiles, opts.cacheKey);
   const needles = queries.map((query) => ({ query, needle: opts.caseSensitive ? query : query.toLowerCase() }));
   const counts = new Map(queries.map((query) => [query, 0]));
   const results: SearchRepositoryManyResult['results'] = [];
