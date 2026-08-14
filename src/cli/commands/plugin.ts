@@ -40,6 +40,14 @@ function installerJson(stdout:string):Record<string,unknown>{
   for(let i=lines.length-1;i>=0;i--){try{const x=JSON.parse(lines[i]);if(x&&typeof x==='object'&&!Array.isArray(x)&&x.schemaVersion===1)return x;}catch{}}
   throw new Error('PLUGIN_INSTALLER_OUTPUT_INVALID');
 }
+export function installerNextSteps(result:Record<string,unknown>):string[]{
+  if(!Array.isArray(result.nextSteps))return[];
+  return result.nextSteps
+    .filter((value):value is string=>typeof value==='string')
+    .map(value=>value.replace(/[\u0000-\u001F\u007F]/g,' ').trim().slice(0,1000))
+    .filter(Boolean)
+    .slice(0,10);
+}
 function registrationFrom(result:Record<string,unknown>,entry:RegistryEntry):ExternalPluginRegistrationInput{
   if(result.registration){const input=result.registration as ExternalPluginRegistrationInput;if(input.pluginId!==entry.id)throw new Error('PLUGIN_INSTALLER_ID_MISMATCH');if(input.pluginVersion!==entry.version)throw new Error('PLUGIN_INSTALLER_VERSION_MISMATCH');return input;}
   const facts=result.providerInstall as Record<string,unknown>|undefined;
@@ -62,13 +70,13 @@ function install(entry:RegistryEntry,controllerHome:string):Record<string,unknow
     const installed=installExternalPluginRegistration(controllerHome,registrationFrom(result,entry));
     const repository=controllerPluginRepository(controllerHome);syncAssistantPluginRegistry(controllerHome,repository);const plugin=getAssistantPluginManifest(controllerHome,repository,entry.id);
     if(backed)rmSync(backup,{recursive:true,force:true});
-    return{pluginId:entry.id,version:entry.version,packageRoot:finalRoot,registrationRevision:installed.revision,enabled:plugin.enabled,health:plugin.health};
+    return{pluginId:entry.id,version:entry.version,packageRoot:finalRoot,registrationRevision:installed.revision,enabled:plugin.enabled,health:plugin.health,nextSteps:installerNextSteps(result)};
   }catch(error){rmSync(stage,{recursive:true,force:true});if(backed&&existsSync(finalRoot))rmSync(finalRoot,{recursive:true,force:true});if(backed&&existsSync(backup))renameSync(backup,finalRoot);throw error;}
 }
 export function buildPluginCommand():Command{
   const root=new Command('plugin').description('Discover and install trusted Forge plugins');
   root.command('catalog').description('List official plugins').option('--json','Output JSON').action((o:CliOptions)=>{const items=registry().plugins.map(x=>({...x,compatible:x.platforms.includes(process.platform)}));if(o.json)console.log(JSON.stringify({schemaVersion:1,platform:process.platform,plugins:items},null,2));else items.forEach(x=>console.log(`${x.id}\t${x.version}\t${x.compatible?'compatible':'unsupported'}\t${x.name}`));});
   root.command('list').description('List installed external plugins').option('--json','Output JSON').option('--controller-home <path>','Override Controller Home').option('--refresh','Probe providers').action((o:CliOptions)=>{const home=resolveControllerHome(o.controllerHome),repo=controllerPluginRepository(home);if(o.refresh)syncAssistantPluginRegistry(home,repo);const items=listExternalPluginRegistrations(home).map(r=>{let health:unknown;try{health=getAssistantPluginManifest(home,repo,r.pluginId).health;}catch(e){health={state:'error',message:e instanceof Error?e.message:String(e)};}return{pluginId:r.pluginId,version:r.pluginVersion,provider:r.provider,enabled:r.enabled,transport:r.transport.kind,health};});if(o.json)console.log(JSON.stringify({schemaVersion:1,plugins:items},null,2));else if(!items.length)console.log('No external Forge plugins installed.');else items.forEach(x=>console.log(`${x.pluginId}\t${x.version}\t${x.enabled?'enabled':'disabled'}\t${(x.health as {state?:string})?.state??'unknown'}`));});
-  root.command('install <plugin-id>').description('Install/update an official plugin from a pinned public release').option('--json','Output JSON').option('--controller-home <path>','Override Controller Home').action((id:string,o:CliOptions)=>{const entry=registry().plugins.find(x=>x.id===id);if(!entry)throw new Error(`PLUGIN_NOT_IN_OFFICIAL_CATALOG: ${id}`);const result=install(entry,resolveControllerHome(o.controllerHome));if(o.json)console.log(JSON.stringify(result,null,2));else console.log(`Installed ${entry.name} ${entry.version} (${(result.health as {state?:string})?.state??'unknown'}).`);});
+  root.command('install <plugin-id>').description('Install/update an official plugin from a pinned public release').option('--json','Output JSON').option('--controller-home <path>','Override Controller Home').action((id:string,o:CliOptions)=>{const entry=registry().plugins.find(x=>x.id===id);if(!entry)throw new Error(`PLUGIN_NOT_IN_OFFICIAL_CATALOG: ${id}`);const result=install(entry,resolveControllerHome(o.controllerHome));if(o.json)console.log(JSON.stringify(result,null,2));else{console.log(`Installed ${entry.name} ${entry.version} (${(result.health as {state?:string})?.state??'unknown'}).`);for(const step of (result.nextSteps as string[]|undefined)??[])console.log(`- ${step}`);}});
   return root;
 }
