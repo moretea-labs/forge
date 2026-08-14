@@ -738,7 +738,7 @@ describe("Local Execution Bridge", () => {
     const projectedWatcher = consoleWithWatcher.automations.find((automation: { name: string }) => automation.name === "Apple ICP · QQ Mail Watcher");
     expect(projectedWatcher).toMatchObject({ mode: "browser_watch", modeLabel: "网页变更监听", status: "enabled", schedule: "每天 20:00", delivery: "变化时唤醒 ChatGPT", live: true, targetLabel: "已绑定浏览器会话", boundWorkId: "WORK-ICP", observationStatus: "baseline", lastResult: "已建立基线" });
     expect(projectedWatcher.history).toHaveLength(1);
-    expect(projectedWatcher.history[0]).toMatchObject({ result: "无变化", trigger: "手动", tone: "gray" });
+    expect(projectedWatcher.history[0]).toMatchObject({ result: "无变化", trigger: "手动", tone: "gray", reason: "已建立观察基线；没有唤醒 ChatGPT。" });
     const memory = await fetch(new URL("/api/assistant/memory", handle.url), {
       method: "POST",
       headers,

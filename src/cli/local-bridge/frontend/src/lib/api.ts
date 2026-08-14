@@ -1,10 +1,21 @@
 import type { AutomationSettingsView, AutomationsResponse, CommandCenterView, Dict, WorkPortfolioResponse, WorkResponse } from '../types';
 export class ApiError extends Error { constructor(message:string, readonly status:number, readonly payload:unknown){super(message);} }
-export async function requestJson<T>(path:string, init:RequestInit={}):Promise<T>{
-  const headers=new Headers(init.headers); if(init.body&&!headers.has('content-type'))headers.set('content-type','application/json');
-  const response=await fetch(path,{...init,headers,credentials:'same-origin'}); let payload:unknown={}; try{payload=await response.json();}catch{}
-  if(!response.ok){const r=payload&&typeof payload==='object'?payload as Dict:{}; const message=typeof r.error==='string'?r.error:typeof r.message==='string'?r.message:`Request failed (${response.status})`; throw new ApiError(message,response.status,payload);}
-  return payload as T;
+const CONSOLE_REQUEST_TIMEOUT_MS=15_000;
+export async function requestJson<T>(path:string,init:RequestInit={}):Promise<T>{
+  const headers=new Headers(init.headers);if(init.body&&!headers.has('content-type'))headers.set('content-type','application/json');
+  const controller=new AbortController();let timedOut=false;const callerSignal=init.signal;const abortFromCaller=()=>controller.abort();
+  if(callerSignal){if(callerSignal.aborted)abortFromCaller();else callerSignal.addEventListener('abort',abortFromCaller,{once:true});}
+  const timer=setTimeout(()=>{timedOut=true;controller.abort();},CONSOLE_REQUEST_TIMEOUT_MS);
+  try{
+    const response=await fetch(path,{...init,headers,signal:controller.signal,credentials:'same-origin'});let payload:unknown={};try{payload=await response.json();}catch{}
+    if(!response.ok){const r=payload&&typeof payload==='object'?payload as Dict:{};const message=typeof r.error==='string'?r.error:typeof r.message==='string'?r.message:`Request failed (${response.status})`;throw new ApiError(message,response.status,payload);}
+    return payload as T;
+  }catch(error){
+    if(timedOut)throw new Error('Forge Runtime 暂时没有响应。请在连接恢复后重试。');
+    throw error;
+  }finally{
+    clearTimeout(timer);callerSignal?.removeEventListener('abort',abortFromCaller);
+  }
 }
 export const api={
   commandCenter:()=>requestJson<CommandCenterView>('/api/console/command-center'),

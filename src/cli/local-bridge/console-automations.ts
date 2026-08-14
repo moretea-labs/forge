@@ -110,13 +110,24 @@ function occurrenceTone(occurrence: ScheduleOccurrence): ConsoleAutomationHistor
   return 'gray';
 }
 
+function displayOccurrenceReason(reason?: string): string | undefined {
+  const value = reason?.trim();
+  if (!value) return undefined;
+  if (value === 'Browser session keepalive refreshed successfully.') return '登录会话刷新成功，未发现认证问题。';
+  if (value === 'Browser watcher baseline recorded; no Controller wake was emitted.') return '已建立观察基线；没有唤醒 ChatGPT。';
+  if (value === 'Browser watcher observation is unchanged; no Controller wake was emitted.') return '页面没有变化；保持静默。';
+  if (value.startsWith('Browser watcher requires authentication:')) return '目标登录状态已失效，需要重新认证。';
+  if (value.startsWith('Work ') && value.includes(' is terminal')) return '绑定的 Work 已完成，自动任务已停止。';
+  return value;
+}
+
 function occurrenceHistory(occurrences: ScheduleOccurrence[]): ConsoleAutomationHistoryView[] {
   return occurrences.slice(0, 8).map((occurrence) => ({
     id: occurrence.occurrenceId,
     at: occurrence.updatedAt,
     result: occurrenceResult(occurrence) ?? '已记录',
     tone: occurrenceTone(occurrence),
-    reason: occurrence.reason,
+    reason: displayOccurrenceReason(occurrence.reason),
     trigger: occurrence.triggerContext?.source === 'manual' ? '手动' : occurrence.triggerContext?.source === 'timer' ? '定时' : occurrence.triggerContext?.source,
   }));
 }
