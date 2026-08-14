@@ -551,6 +551,18 @@ function emptyRepositoryMigration(repository: ReturnType<typeof registerReposito
   };
 }
 
+function registrationOnlyMetadataRefresh(
+  match: ReturnType<typeof findIdenticalRepositoryRegistration>,
+): boolean {
+  if (!match || match.identical || match.reasons.length === 0) return false;
+  const metadataReasons = new Set([
+    'remote_identity_changed',
+    'default_branch_changed',
+    'display_name_changed',
+  ]);
+  return match.reasons.every((reason) => metadataReasons.has(reason));
+}
+
 function registrationOnlyAttachedExistingWorktree(repository: ReturnType<typeof registerRepository>): boolean {
   const selected = repository.checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId);
   return selected?.worktree === true
@@ -587,16 +599,17 @@ export async function callRepositoryTool(
             startedAt,
           ));
         }
+        const metadataRefresh = registrationOnlyMetadataRefresh(identical);
         const repository = registerRepository(registerInput);
-        // Adding a worktree checkout to an already registered repository changes
-        // checkout inventory only. Existing Issue/Task entities are already
-        // bound to this repoId, so re-running historical migration is wasted work
-        // and can produce misleading cross-repository rebinding diagnostics.
-        const migration = registrationOnlyAttachedExistingWorktree(repository)
+        // Adding a worktree checkout or changing only display/remote/default-branch
+        // metadata preserves repository + checkout authority. Existing entities
+        // are already bound to the stable repoId, so a historical migration scan
+        // would only add latency and stale unresolved diagnostics.
+        const migration = registrationOnlyAttachedExistingWorktree(repository) || metadataRefresh
           ? emptyRepositoryMigration(repository)
           : bindRepositoryEntities(repository);
         return result(withResponseMeta(
-          summarizeRepositoryRegistration(repository, migration, args.detail_level === 'detail'),
+          summarizeRepositoryRegistration(repository, migration, args.detail_level === 'detail', metadataRefresh),
           startedAt,
         ));
       }

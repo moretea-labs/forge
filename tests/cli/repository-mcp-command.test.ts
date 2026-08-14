@@ -973,6 +973,58 @@ describe("repository_register repeat fast path", () => {
     }
   });
 
+  test("metadata-only refresh preserves authority without rescanning historical entities", async () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-register-metadata-fastpath-"));
+    try {
+      const controllerHome = join(root, "controller-home");
+      const repoRoot = join(root, "repo");
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(join(repoRoot, "tasks", "issues"), { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.email", "forge@example.invalid"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["remote", "add", "origin", "https://github.com/moretea-labs/matea.git"]);
+      writeFileSync(join(repoRoot, "README.md"), "# fixture\n");
+      for (let index = 0; index < 150; index += 1) {
+        writeFileSync(join(repoRoot, "tasks", "issues", `ISS-META-${index}.issue.json`),
+          `${JSON.stringify({ id: `ISS-META-${index}`, status: "open", tasks: [] })}\n`);
+      }
+      git(repoRoot, ["add", "."]);
+      git(repoRoot, ["commit", "-qm", "initial"]);
+
+      const firstResult = await callRepositoryTool(controllerHome, "repository_register", { path: repoRoot, detail_level: "detail" });
+      const first = JSON.parse(firstResult?.content[0]?.text ?? "{}") as {
+        repository?: { repoId?: string; activeCheckoutId?: string };
+        migration?: { scanned?: number };
+        responseMeta?: { serverDurationMs?: number };
+      };
+      expect(first.migration?.scanned).toBeGreaterThanOrEqual(150);
+
+      const refreshedResult = await callRepositoryTool(controllerHome, "repository_register", {
+        path: repoRoot,
+        display_name: "Forge",
+        remote_url: "https://github.com/moretea-labs/forge.git",
+        default_branch: "main",
+        detail_level: "detail",
+      });
+      const refreshed = JSON.parse(refreshedResult?.content[0]?.text ?? "{}") as {
+        fastPath?: boolean;
+        repository?: { repoId?: string; activeCheckoutId?: string; displayName?: string; canonicalRemote?: string };
+        migration?: { scanned?: number; updated?: number; unresolved?: number };
+        responseMeta?: { serverDurationMs?: number };
+      };
+      expect(refreshed.fastPath).toBe(true);
+      expect(refreshed.repository?.repoId).toBe(first.repository?.repoId);
+      expect(refreshed.repository?.activeCheckoutId).toBe(first.repository?.activeCheckoutId);
+      expect(refreshed.repository?.displayName).toBe("Forge");
+      expect(refreshed.repository?.canonicalRemote).toBe("github.com/moretea-labs/forge");
+      expect(refreshed.migration).toMatchObject({ scanned: 0, updated: 0, unresolved: 0 });
+      expect(refreshed.responseMeta?.serverDurationMs ?? Infinity).toBeLessThan(first.responseMeta?.serverDurationMs ?? 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("repeat returns the same identity without a historical migration scan", async () => {
     const root = mkdtempSync(join(tmpdir(), "forge-register-fastpath-"));
     try {
