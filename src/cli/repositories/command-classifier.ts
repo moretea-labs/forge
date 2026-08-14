@@ -484,6 +484,12 @@ function classifyArgvCommand(
     || (['npm', 'bun', 'pnpm', 'yarn'].includes(program) && ['install', 'add', 'remove', 'update', 'run'].includes(subcommand ?? ''))) {
     return { risk: 'workspace_write', confirmation: 'authorization', reasons: ['writes repository files'] };
   }
+  // Package-manager `version` is a mutation command (for example
+  // `npm version 1.5.1 --no-git-tag-version` updates package metadata). Keep
+  // flag-style queries such as `npm --version` on the readonly path below.
+  if (['npm', 'pnpm', 'yarn'].includes(program) && subcommand === 'version') {
+    return { risk: 'workspace_write', confirmation: 'authorization', reasons: ['package-manager version command may update package metadata'] };
+  }
   // Lightweight project script info queries stay readonly when they only request help/version.
   if (['bun', 'node', 'npm', 'pnpm', 'yarn', 'python', 'python3', 'cargo', 'go', 'swift'].includes(program)
     && argv.slice(1).some((word) => word === '--help' || word === '-h' || word === '--version' || word === '-V' || word === 'version' || word === 'help')) {
