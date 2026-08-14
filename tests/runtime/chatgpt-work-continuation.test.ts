@@ -12,6 +12,7 @@ import {
 import {
   resolveChatgptWorkBrowserSessionId,
   runWorkChatgptContinuation,
+  stableChatgptAutomationBrowserSessionId,
   stableChatgptWorkBrowserSessionId,
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
 import { migrateChatgptAutomationSchedule } from '../../src/runtime/workflow/schedules/chatgpt-automation-migration';
@@ -66,6 +67,13 @@ describe('ChatGPT Work conversation binding', () => {
     expect(resolveChatgptWorkBrowserSessionId({ repoId: 'repo-1', workId: 'WORK-1', tabPolicy: 'new' })).toStartWith(`${first}-`);
   });
 
+  test('uses a stable per-automation browser session for standalone scheduled prompts', () => {
+    const first = stableChatgptAutomationBrowserSessionId('repo-1', 'SCH-1');
+    expect(first).toBe(stableChatgptAutomationBrowserSessionId('repo-1', 'SCH-1'));
+    expect(first).not.toBe(stableChatgptAutomationBrowserSessionId('repo-1', 'SCH-2'));
+    expect(first).toStartWith('forge-chatgpt-automation-');
+  });
+
   test('lets only the exact target ChatGPT conversation claim a bridge task', () => {
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/c/target-id', 'https://chatgpt.com/c/target-id?model=current')).toBe(true);
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/c/target-id', 'https://chatgpt.com/c/other-id')).toBe(false);
@@ -98,6 +106,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_MODEL = 'gpt-5.6'");
     expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_REASONING = 'high'");
     expect(source).toContain('CHATGPT_REASONING_LABEL_SELECTOR');
+    expect(source).toContain('runScheduledChatgptPrompt');
     expect(source).not.toContain('[data-testid=\"send-button\"]');
   });
 

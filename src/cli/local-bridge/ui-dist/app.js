@@ -10854,7 +10854,7 @@ function wv(o) {
   return o === "high" ? "高" : o === "medium" ? "中" : o === "xhigh" ? "超高" : o ?? "—";
 }
 function $v(o) {
-  return o === "auto" ? "自动 · 同一 Work 优先复用" : o === "reuse" ? "始终复用已绑定会话" : o === "new" ? "每次新开标签页" : o ?? "—";
+  return o === "auto" ? "自动 · 同一任务优先复用" : o === "reuse" ? "始终复用已绑定会话" : o === "new" ? "每次新开标签页" : o ?? "—";
 }
 function Wv(o) {
   return o.agentModel ? [

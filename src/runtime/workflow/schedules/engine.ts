@@ -13,6 +13,7 @@ import { listCandidateFindings } from '../findings/store';
 import { getControllerSession, getWorkContract, isTerminalWorkContractStatus, listHandoffItems } from '../../control-plane/facade';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
 import { getExternalControllerLaunchReservation } from '../../control-plane/launcher/launch-reservation-store';
+import { runScheduledChatgptPrompt } from '../../control-plane/launcher/chatgpt-work-continuation';
 import {
   getOccurrence,
   getSchedule,
@@ -36,13 +37,15 @@ import type {
 const execFileAsync = promisify(execFile);
 const LIVE_MAINTENANCE_OPERATION = 'runtime_maintenance_apply';
 const EXTERNAL_CONTROLLER_WAKE_OPERATION = 'external_controller_wake';
+const CHATGPT_BROWSER_PROMPT_OPERATION = 'chatgpt_browser_prompt';
 const BROWSER_PROBE_OPERATION = 'browser_probe';
 
 function isDeterministicSchedule(schedule: RepositorySchedule): boolean {
-  // Kernel may execute only fully deterministic, allowlisted schedule operations.
-  // Semantic / model-backed schedules remain external-controller handoffs.
+  // Kernel may execute only allowlisted, deterministic dispatch operations.
+  // ChatGPT owns semantic work; the Scheduler only dispatches the configured prompt.
   return schedule.action.operation === LIVE_MAINTENANCE_OPERATION
     || schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION
+    || schedule.action.operation === CHATGPT_BROWSER_PROMPT_OPERATION
     || schedule.action.operation === BROWSER_PROBE_OPERATION;
 }
 
@@ -360,6 +363,80 @@ function externalControllerLaunchArgs(args: Record<string, unknown>, controllerT
   add('--reasoning', args.reasoning);
   add('--tab-policy', args.tab_policy);
   return launchArgs;
+}
+
+async function executeChatgptBrowserPrompt(
+  controllerHome: string,
+  schedule: RepositorySchedule,
+  occurrence: ScheduleOccurrence,
+  timestamp: string,
+  args: Record<string, unknown>,
+): Promise<ScheduleOccurrence> {
+  const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : '';
+  if (!prompt) {
+    return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', 'CHATGPT_BROWSER_PROMPT_REQUIRED');
+  }
+  const model = typeof args.model === 'string' ? args.model : 'gpt-5.6';
+  const reasoning = args.reasoning === 'medium' || args.reasoning === 'xhigh' ? args.reasoning : 'high';
+  const tabPolicy = args.tab_policy === 'reuse' || args.tab_policy === 'new' ? args.tab_policy : 'auto';
+  const dispatching = decideOccurrence(
+    controllerHome,
+    schedule,
+    occurrence,
+    'execute',
+    'running',
+    'Forge Scheduler is dispatching the configured prompt through the controller-owned ChatGPT browser session.',
+    occurrenceDecisionEvidence({ operation: CHATGPT_BROWSER_PROMPT_OPERATION, model, reasoning, tabPolicy }),
+  );
+  const result = await runScheduledChatgptPrompt({
+    controllerHome,
+    repoId: schedule.repoId,
+    automationId: schedule.scheduleId,
+    prompt,
+    title: schedule.name,
+    browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
+    model,
+    reasoning,
+    tabPolicy,
+    timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+  });
+  if (result.status === 'failed') {
+    const reason = result.error?.message ?? 'ChatGPT browser prompt dispatch failed.';
+    const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
+      outcome: 'failed',
+      decision: 'execute',
+      reason,
+      handoff: {
+        title: `ChatGPT scheduled prompt ${occurrence.occurrenceId} failed`,
+        summary: 'Forge recorded the trigger but could not dispatch the configured ChatGPT prompt.',
+        reason,
+        creationReason: 'repeated_infrastructure_failure',
+        blockingDecision: 'Repair ChatGPT/browser readiness before unattended prompt dispatch resumes.',
+        recommendedDecision: 'Inspect browser attachment and ChatGPT execution preference verification, then retrigger this automation.',
+        recommendedPrompt: `Inspect failed ChatGPT prompt occurrence ${occurrence.occurrenceId} for schedule ${schedule.scheduleId}.`,
+        statusSummary: 'Scheduled ChatGPT prompt dispatch failed.',
+        blockedBy: ['chatgpt_browser_prompt_failed'],
+        attemptedActions: [`schedule:${schedule.scheduleId}`, `browser-session:${result.browserSessionId}`],
+      },
+    });
+    const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
+    saveSchedule(controllerHome, { ...latest, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
+    return failed.occurrence ?? saveOccurrence(controllerHome, { ...dispatching, status: 'failed', reason });
+  }
+  const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
+  saveSchedule(controllerHome, {
+    ...latest,
+    lastTriggeredAt: timestamp,
+    lastOccurrenceId: occurrence.occurrenceId,
+    consecutiveFailures: 0,
+    nextEligibleAt: undefined,
+    pausedReason: undefined,
+  });
+  return saveOccurrence(controllerHome, {
+    ...dispatching,
+    status: 'succeeded',
+    reason: `ChatGPT prompt dispatched via ${result.browserSessionId}${result.reusedSession ? ' (reused)' : ' (new session)'}; execution preference ${result.executionPreferenceVerified ? 'verified' : 'not verified'}.`,
+  });
 }
 
 async function executeExternalControllerWake(
@@ -680,6 +757,10 @@ export async function evaluateSchedule(
   const args = schedule.action.arguments ?? {};
   if (schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION) {
     return executeExternalControllerWake(controllerHome, schedule, occurrence, timestamp, args);
+  }
+
+  if (schedule.action.operation === CHATGPT_BROWSER_PROMPT_OPERATION) {
+    return executeChatgptBrowserPrompt(controllerHome, schedule, occurrence, timestamp, args);
   }
 
   if (schedule.action.operation === BROWSER_PROBE_OPERATION) {

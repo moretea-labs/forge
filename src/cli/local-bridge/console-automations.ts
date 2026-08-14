@@ -7,7 +7,7 @@ import { evaluateSchedule } from '../../runtime/workflow/schedules/engine';
 import { getSchedule, listOccurrences, listSchedules, saveSchedule } from '../../runtime/workflow/schedules/store';
 import type { RepositorySchedule, ScheduleOccurrence } from '../../runtime/workflow/schedules/types';
 
-export type ConsoleAutomationMode = 'browser_watch' | 'browser_keepalive' | 'continuation' | 'routine' | 'schedule';
+export type ConsoleAutomationMode = 'browser_watch' | 'browser_keepalive' | 'continuation' | 'chatgpt_prompt' | 'routine' | 'schedule';
 
 export interface ConsoleAutomationHistoryView {
   id: string;
@@ -137,6 +137,7 @@ function occurrenceHistory(occurrences: ScheduleOccurrence[]): ConsoleAutomation
 
 function scheduleMode(schedule: RepositorySchedule): ConsoleAutomationMode {
   if (schedule.action.operation === 'external_controller_wake') return 'continuation';
+  if (schedule.action.operation === 'chatgpt_browser_prompt') return 'chatgpt_prompt';
   if (schedule.action.operation === 'browser_probe') return schedule.action.arguments?.keepalive_only === true ? 'browser_keepalive' : 'browser_watch';
   return 'schedule';
 }
@@ -145,6 +146,7 @@ function modeLabel(mode: ConsoleAutomationMode): string {
   if (mode === 'browser_watch') return '网页变更监听';
   if (mode === 'browser_keepalive') return '登录保活';
   if (mode === 'continuation') return '自动继续 Work';
+  if (mode === 'chatgpt_prompt') return 'ChatGPT 自动任务';
   if (mode === 'routine') return '助手例行任务';
   return '自动任务';
 }
@@ -153,6 +155,7 @@ function scheduleSummary(mode: ConsoleAutomationMode): string {
   if (mode === 'browser_watch') return '静默观察目标页面；只有内容发生变化时才恢复 ChatGPT。';
   if (mode === 'browser_keepalive') return '静默刷新登录态；正常时不打扰，认证失效时再恢复 ChatGPT。';
   if (mode === 'continuation') return '按计划恢复绑定的 Work，让外部 Controller 继续未完成目标。';
+  if (mode === 'chatgpt_prompt') return '由 Forge 定时唤醒 ChatGPT 执行保存的任务提示，不占用 ChatGPT Schedule 名额。';
   return '由 Forge Schedule Engine 管理的持久自动任务。';
 }
 
@@ -161,14 +164,15 @@ function scheduleDelivery(schedule: RepositorySchedule, mode: ConsoleAutomationM
   if (mode === 'browser_watch') return `变化时唤醒 ${controller === 'chatgpt' ? 'ChatGPT' : controller}`;
   if (mode === 'browser_keepalive') return `登录失效时唤醒 ${controller === 'chatgpt' ? 'ChatGPT' : controller}`;
   if (mode === 'continuation') return `恢复 ${controller === 'chatgpt' ? 'ChatGPT' : controller}`;
+  if (mode === 'chatgpt_prompt') return '发送到 ChatGPT';
   return undefined;
 }
 
 function chatgptExecutionProfile(schedule: RepositorySchedule, mode: ConsoleAutomationMode): { agentModel?: string; reasoningLevel?: string; tabPolicy?: string } {
-  if (mode !== 'continuation') return {};
+  if (mode !== 'continuation' && mode !== 'chatgpt_prompt') return {};
   const args = schedule.action.arguments ?? {};
   const controller = typeof args.controller_type === 'string' ? args.controller_type : 'chatgpt';
-  if (controller !== 'chatgpt') return {};
+  if (mode === 'continuation' && controller !== 'chatgpt') return {};
   return {
     agentModel: typeof args.model === 'string' && args.model.trim() ? args.model.trim() : 'gpt-5.6',
     reasoningLevel: typeof args.reasoning === 'string' && args.reasoning.trim() ? args.reasoning.trim() : 'high',

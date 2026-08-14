@@ -40,7 +40,7 @@ function reasoningLabel(value?: string): string {
 }
 
 function tabPolicyLabel(value?: string): string {
-  if (value === 'auto') return '自动 · 同一 Work 优先复用';
+  if (value === 'auto') return '自动 · 同一任务优先复用';
   if (value === 'reuse') return '始终复用已绑定会话';
   if (value === 'new') return '每次新开标签页';
   return value ?? '—';
