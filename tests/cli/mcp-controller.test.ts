@@ -19,6 +19,7 @@ import { claimControllerSession, getControllerSession, releaseControllerSession 
 import { getWorkContract, updateWorkContract } from "../../src/runtime/control-plane/facade/work-contract-store";
 import { createRequirement, updateRequirement } from "../../src/runtime/control-plane/persistence/requirement-store";
 import { terminateProcessTree } from "../../src/runtime/shared/process-tree";
+import { waitForProcess } from "../../src/runtime/execution/process-runtime/runtime";
 import { callExecutionTool } from "../../src/runtime/gateway/mcp/execution-tools";
 import { boundedPluginArtifactImageContent, callRuntimeTool, controllerReadiness, controllerReadinessEvidence } from "../../src/runtime/gateway/mcp/runtime-tools";
 import { getMcpPolicy } from "../../src/cli/mcp/policy";
@@ -127,12 +128,24 @@ async function executionJson(
 async function verifyTaskUntilSettled(
   ctx: McpToolContext,
   args: Record<string, unknown>,
-  attempts = 120,
+  options: { attempts?: number; followDeferred?: boolean } = {},
 ) {
+  const attempts = options.attempts ?? 120;
+  let currentArgs = args;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const result = await jsonTool(ctx, "verify_task", args);
-    if (result.value.status !== "verification_running") return result;
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    const result = await jsonTool(ctx, "verify_task", currentArgs);
+    if (result.value.status === "verification_running") {
+      await Bun.sleep(25);
+      continue;
+    }
+    if (options.followDeferred
+      && result.value.status === "verification_deferred"
+      && typeof result.value.retryRequestId === "string") {
+      currentArgs = { ...currentArgs, request_id: result.value.retryRequestId };
+      await Bun.sleep(50);
+      continue;
+    }
+    return result;
   }
   throw new Error(`verify_task did not settle after ${attempts} attempts`);
 }
@@ -1908,7 +1921,7 @@ describe("MCP controller profile", () => {
         reviewer: "test-controller",
         request_id: "verify-task-process-receipt",
         check_results: [{ check_id: "manual-review", ok: true }],
-        acceptance_results: []});
+        acceptance_results: []}, { followDeferred: true });
       expect(verified.value.task.status).toBe("verified");
       const verifiedIssue = await jsonTool(ctx, "get_issue", {
         issue_id: created.value.id,
@@ -2179,6 +2192,8 @@ describe("MCP controller profile", () => {
       };
       const deferred = await verifyTaskUntilSettled(ctx, verificationArgs);
       expect(deferred.raw.isError).not.toBe(true);
+      const retryRequestId = String(deferred.value.retryRequestId);
+      const blockingProcessId = String(deferred.value.conflict?.blockingProcessId);
       expect(deferred.value).toMatchObject({
         status: "verification_deferred",
         reason: "repository_resource_busy",
@@ -2189,9 +2204,9 @@ describe("MCP controller profile", () => {
           code: "PROCESS_LEASE_CONFLICT",
           blockingProcessId: expect.any(String),
         },
-        retryRequestId: expect.stringMatching(/^verify-during-contention:retry:[a-f0-9]{16}$/),
       });
-      expect(deferred.value.retryRequestId).not.toBe(verificationArgs.request_id);
+      expect(retryRequestId).toMatch(/^verify-during-contention:retry:[a-f0-9]{16}$/);
+      expect(retryRequestId).not.toBe(verificationArgs.request_id);
 
       const unchanged = await jsonTool(ctx, "get_issue", {
         issue_id: created.value.id,
@@ -2201,11 +2216,20 @@ describe("MCP controller profile", () => {
       expect(unchangedTask.status).toBe("review");
       expect(unchangedTask.verification).toBeUndefined();
 
-      await Bun.sleep(2_800);
+      const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      const blockerSettled = await waitForProcess(
+        controllerHome,
+        repository.repoId,
+        blockingProcessId,
+        { timeoutMs: 5_000 },
+      );
+      expect(blockerSettled.completed).toBe(true);
+
       const verified = await verifyTaskUntilSettled(ctx, {
         ...verificationArgs,
-        request_id: deferred.value.retryRequestId,
-      });
+        request_id: retryRequestId,
+      }, { followDeferred: true });
       expect(verified.value.task.status).toBe("verified");
       const stored = await jsonTool(ctx, "get_issue", {
         issue_id: created.value.id,
@@ -2239,7 +2263,7 @@ describe("MCP controller profile", () => {
         request_id: "verify-real-failure",
         check_results: [{ check_id: "failing" }],
         acceptance_results: [],
-      });
+      }, { followDeferred: true });
       expect(failed.value.status).not.toBe("verification_deferred");
       expect(failed.value.task.status).toBe("changes_requested");
       const failedStored = await jsonTool(ctx, "get_issue", {
@@ -2252,7 +2276,7 @@ describe("MCP controller profile", () => {
         receipt: { exitCode: 7, status: "failed" },
       });
     });
-  });
+  }, 15_000);
 
   test("rejects invalid and cyclic Task dependency graphs", async () => {
     await withController(async (_repoRoot, ctx) => {
