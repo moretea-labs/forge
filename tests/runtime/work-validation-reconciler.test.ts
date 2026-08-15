@@ -177,19 +177,18 @@ describe('Work validation receipt convergence', () => {
     expect(contractFor(fx)).toMatchObject({ evidenceState: 'stale' });
   });
 
-  test('timeout and missing Process records become terminal cleanup candidates', () => {
+  test('timeout and missing Process records keep validation infrastructure retryable', () => {
     const timedOut = fixture('timed_out');
     const timedOutResult = reconcileWorkValidation(timedOut.controllerHome, timedOut.handle);
     expect(timedOutResult).toMatchObject({ outcome: 'infrastructure_failure', handle: { state: 'failed' } });
-    expect(timedOutResult.handle.finalization.validation).toBe('failed');
-    expect(timedOutResult.handle.validationRun).toBeUndefined();
-    expect(contractFor(timedOut)).toMatchObject({ status: 'failed', phase: 'cleanup', evidenceState: 'partial' });
+    expect(timedOutResult.handle.finalization.validation).toBe('failed'); expect(timedOutResult.handle.validationRun).toBeUndefined();
+    expect(contractFor(timedOut)).toMatchObject({ status: 'running', phase: 'verification', evidenceState: 'partial' });
 
     const missing = fixture('succeeded', { createProcess: false });
     const missingResult = reconcileWorkValidation(missing.controllerHome, missing.handle);
     expect(missingResult).toMatchObject({ outcome: 'infrastructure_failure', handle: { state: 'failed' } });
     expect(missingResult.handle.validationRun).toBeUndefined();
-    expect(contractFor(missing)).toMatchObject({ status: 'failed', phase: 'cleanup', evidenceState: 'partial' });
+    expect(contractFor(missing)).toMatchObject({ status: 'running', phase: 'verification', evidenceState: 'partial' });
   });
 });
 

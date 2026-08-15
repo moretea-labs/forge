@@ -98,10 +98,10 @@ export function projectWorkValidationOutcome(
   }
 
   transitionWorkContractPhase(options, contractId, {
-    phase: 'cleanup',
-    status: 'failed',
-    state: 'failed',
-    summary: summary ?? 'Validation infrastructure failed; terminal cleanup is required without treating this as an acceptance failure.',
+    phase: 'verification',
+    status: 'running',
+    state: 'blocked',
+    summary: summary ?? 'Validation infrastructure failed; retain the finite Work for retry without treating this as an acceptance failure.',
     evidenceRefs: contract.evidenceRefs,
   });
   updateWorkContract(options, contractId, {
@@ -127,8 +127,8 @@ function settleInfrastructureFailure(
  * Converge a persisted Work validation run from durable Process receipts.
  *
  * No command is launched here. Missing/running bindings stay pending; timeout,
- * cancellation, missing process state, or malformed receipt makes the Work
- * terminally failed for cleanup without classifying it as an acceptance failure.
+ * cancellation, missing process state, or malformed receipt makes the execution
+ * attempt retryable without classifying it as an acceptance failure or destroying Work.
  */
 export function reconcileWorkValidation(
   controllerHome: string,

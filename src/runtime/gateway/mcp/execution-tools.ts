@@ -1212,6 +1212,11 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
         workId: handle.workId,
         commandId: processRequestId,
         verificationBinding: { executionSessionId: session.sessionId },
+        verificationSnapshot: contract && contract.allowedPaths.length > 0 ? {
+          workId: contract.workId,
+          allowedPaths: contract.allowedPaths,
+          forbiddenPaths: contract.forbiddenPaths,
+        } : undefined,
       });
       if (executed.mode === 'durable') {
         checks.push({ checkId, ok: undefined, status: 'deferred', summary: executed.durable?.reason, durable: executed.durable });
@@ -1314,21 +1319,25 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       failureSummary,
     );
   }
-  if (completed && !passed) {
-    const cleanup = await reconcileTerminalCleanup(
-      ctx,
-      session,
-      next,
-      args,
-      infrastructureFailure ? 'infrastructure_failed' : 'validation_failed',
-    );
+  if (completed && acceptedFailure) {
+    const cleanup = await reconcileTerminalCleanup(ctx, session, next, args, 'validation_failed');
     const value = {
       ...cleanup,
       validation: { passed, completed, checks, targeted: true, changedPaths, cleanupTriggered: true },
     };
     return makeBoundedResult(ctx, session, handle.repositoryId, handle.workId, 'validation', value);
   }
-  const value = { work: compactHandle(next), validation: { passed, completed, checks, targeted: true, changedPaths } };
+  const value = {
+    work: compactHandle(next),
+    validation: {
+      passed,
+      completed,
+      checks,
+      targeted: true,
+      changedPaths,
+      ...(infrastructureFailure ? { retryable: true, cleanupTriggered: false } : {}),
+    },
+  };
   return makeBoundedResult(ctx, session, handle.repositoryId, handle.workId, 'validation', value);
 }
 
