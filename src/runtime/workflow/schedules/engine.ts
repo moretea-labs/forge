@@ -13,7 +13,7 @@ import { listCandidateFindings } from '../findings/store';
 import { getControllerSession, getWorkContract, isTerminalWorkContractStatus, listHandoffItems } from '../../control-plane/facade';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
 import { getExternalControllerLaunchReservation } from '../../control-plane/launcher/launch-reservation-store';
-import { runScheduledChatgptPrompt } from '../../control-plane/launcher/chatgpt-work-continuation';
+import { runScheduledChatgptPrompt, runWorkChatgptContinuation } from '../../control-plane/launcher/chatgpt-work-continuation';
 import {
   getOccurrence,
   getSchedule,
@@ -496,11 +496,47 @@ async function executeExternalControllerWake(
   );
   try {
     const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
+    const continuationPrompt = typeof args.continuation_prompt === 'string'
+      ? args.continuation_prompt
+      : `Scheduled continuation ${occurrence.occurrenceId} from ${schedule.scheduleId}. Read current Forge state and continue only the bounded Work objective.`;
+    if (controllerType === 'chatgpt') {
+      const reasoning = args.reasoning === 'medium' || args.reasoning === 'xhigh' ? args.reasoning : 'high';
+      const tabPolicy = args.tab_policy === 'reuse' || args.tab_policy === 'new' ? args.tab_policy : 'auto';
+      const dispatched = await runWorkChatgptContinuation({
+        controllerHome,
+        repoId: schedule.repoId,
+        repoRoot: repository.canonicalRoot,
+        workId,
+        prompt: continuationPrompt,
+        title: schedule.name,
+        browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
+        conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
+        model: typeof args.model === 'string' ? args.model : 'gpt-5.6',
+        reasoning,
+        tabPolicy,
+        timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+      });
+      if (dispatched.status === 'failed') throw new Error(dispatched.error?.message ?? 'CHATGPT_WORK_CONTINUATION_FAILED');
+      const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
+      saveSchedule(controllerHome, {
+        ...latest,
+        lastTriggeredAt: timestamp,
+        lastOccurrenceId: occurrence.occurrenceId,
+        consecutiveFailures: 0,
+        nextEligibleAt: undefined,
+        pausedReason: undefined,
+      });
+      return saveOccurrence(controllerHome, {
+        ...wakeDecision,
+        status: 'succeeded',
+        reason: `ChatGPT Work continuation dispatched via ${dispatched.browserSessionId}; execution preference verified.`,
+      });
+    }
     const launched = launchSuperController({
       work: { controllerHome, repoId: schedule.repoId },
       handoff: { controllerHome, repoId: schedule.repoId },
     }, {
-      controllerType: controllerType as 'chatgpt' | 'codex' | 'claude' | 'grok',
+      controllerType: controllerType as 'codex' | 'claude' | 'grok',
       executable: typeof args.executable === 'string' ? args.executable : undefined,
       args: externalControllerLaunchArgs(args, controllerType),
       workId,
@@ -508,9 +544,7 @@ async function executeExternalControllerWake(
       browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
       conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
       launchReservationMs: typeof args.launch_reservation_ms === 'number' ? args.launch_reservation_ms : typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
-      continuationPrompt: typeof args.continuation_prompt === 'string'
-        ? args.continuation_prompt
-        : `Scheduled continuation ${occurrence.occurrenceId} from ${schedule.scheduleId}. Read current Forge state and continue only the bounded Work objective.`,
+      continuationPrompt,
       cwd: repository.canonicalRoot,
     });
     const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
