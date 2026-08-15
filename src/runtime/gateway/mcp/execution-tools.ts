@@ -659,7 +659,11 @@ function terminalCleanupOutcome(
   if (contract?.status === 'cancelled') return 'cancelled';
   const reason = `${handle.failureReason ?? ''} ${handle.finalization.lastError ?? ''}`.toLowerCase();
   if (contract?.status === 'blocked' && reason.includes('terminal')) return 'blocked_terminal';
-  if (contract?.status === 'failed' || handle.state === 'failed' || handle.state === 'failed_terminal_cleanup') {
+  // `failed` is a retryable execution-handle state (its transition table allows
+  // failed -> validating/editing). Do not reinterpret it as terminal cleanup
+  // unless the durable Work itself is terminal. `failed_terminal_cleanup` is
+  // the explicit point of no return for resource cleanup reconciliation.
+  if (contract?.status === 'failed' || handle.state === 'failed_terminal_cleanup') {
     if (reason.includes('infrastructure') || reason.includes('timed out') || reason.includes('unavailable')) {
       return 'infrastructure_failed';
     }

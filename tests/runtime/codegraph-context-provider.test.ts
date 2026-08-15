@@ -127,6 +127,7 @@ describe('CodeGraph read provider', () => {
     });
     expect(calls).toBe(0);
     expect(pack.structuralContext).toMatchObject({ requestedMode: 'off', status: 'disabled', requiredSatisfied: true });
+    expect(pack.impactContext).toMatchObject({ status: 'not_requested', freshness: { structuralStatus: 'disabled', changedFileCount: 0 } });
   });
 
   test('scans lexical candidates once for multiple Context Pack search terms', () => {
@@ -216,37 +217,9 @@ describe('CodeGraph read provider', () => {
     expect(pack.files[0]?.reasons).toContain(`search:${query}`);
   });
 
-  test('merges ready structural candidates but still returns current raw source through Forge policy', () => {
-    const root = contextRepo();
-    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
-      description: 'How does runService work?',
-      structuralContext: 'auto',
-      maxFiles: 4,
-    }, { queryCodeGraph: () => structuralResponse() });
-    expect(pack.structuralContext).toMatchObject({ requestedMode: 'auto', status: 'ready', requiredSatisfied: true });
-    const service = pack.files.find((file) => file.path === 'src/service.ts');
-    expect(service?.reasons.some((reason) => reason.startsWith('codegraph:'))).toBe(true);
-    expect(service?.snippets[0]?.content).toContain('return 42');
-  });
+  test('builds bounded impact context from ready structural entry points and file dependents', () => { const root = contextRepo(); writeFileSync(join(root, 'src/helper.ts'), 'export const helper = true;\n'); mkdirSync(join(root, 'tests'), { recursive: true }); writeFileSync(join(root, 'tests/service.test.ts'), "import { runService } from '../src/service';\nvoid runService();\n"); const pack = buildControllerContextPack(root, getMcpPolicy('controller'), { description: 'How does runService work?', structuralContext: 'auto', maxFiles: 6 }, { queryCodeGraph: (_repoRoot, request) => request.operation === 'file_dependencies' ? structuralResponse({ operation: 'file_dependencies', result: { filePath: 'src/service.ts', dependencies: ['src/helper.ts'], dependents: ['tests/service.test.ts'] } }) : structuralResponse() }); expect(pack.structuralContext).toMatchObject({ requestedMode: 'auto', status: 'ready', requiredSatisfied: true }); expect(pack.impactContext).toMatchObject({ status: 'ready', confidence: 'high', primaryTargets: ['src/service.ts'], relevantTests: ['tests/service.test.ts'], freshness: { structuralStatus: 'ready', changedFileCount: 0 } }); expect(pack.impactContext.mustInspect).toEqual(expect.arrayContaining(['src/service.ts', 'src/helper.ts', 'tests/service.test.ts'])); expect(pack.impactContext.relationSources).toEqual(expect.arrayContaining(['codegraph', 'lexical'])); expect(pack.files.find((file) => file.path === 'src/helper.ts')?.reasons).toContain('codegraph:dependency:src/service.ts'); expect(pack.files.find((file) => file.path === 'tests/service.test.ts')?.reasons).toContain('codegraph:dependent:src/service.ts'); const service = pack.files.find((file) => file.path === 'src/service.ts'); expect(service?.reasons.some((reason) => reason.startsWith('codegraph:'))).toBe(true); expect(service?.snippets[0]?.content).toContain('return 42'); });
 
-  test('keeps bounded text fallback visible when required structural context is unavailable', () => {
-    const root = contextRepo();
-    const unavailable = structuralResponse({
-      ok: false,
-      status: 'unavailable',
-      metadata: undefined,
-      result: undefined,
-      error: { code: 'CODEGRAPH_PLATFORM_BUNDLE_MISSING', message: 'not installed' },
-    });
-    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
-      description: 'runService',
-      searchTerms: ['runService'],
-      structuralContext: 'required',
-    }, { queryCodeGraph: () => unavailable });
-    expect(pack.structuralContext).toMatchObject({ requestedMode: 'required', status: 'unavailable', requiredSatisfied: false });
-    expect(pack.next[0]).toContain('Structural context was required');
-    expect(pack.files.some((file) => file.path === 'src/service.ts')).toBe(true);
-  });
+  test('keeps bounded text fallback visible when required structural context is unavailable', () => { const root = contextRepo(); const unavailable = structuralResponse({ ok: false, status: 'unavailable', metadata: undefined, result: undefined, error: { code: 'CODEGRAPH_PLATFORM_BUNDLE_MISSING', message: 'not installed' } }); const pack = buildControllerContextPack(root, getMcpPolicy('controller'), { description: 'runService', searchTerms: ['runService'], structuralContext: 'required' }, { queryCodeGraph: () => unavailable }); expect(pack.structuralContext).toMatchObject({ requestedMode: 'required', status: 'unavailable', requiredSatisfied: false }); expect(pack.impactContext).toMatchObject({ status: 'degraded', confidence: 'medium' }); expect(pack.impactContext.coverageGaps).toContain('structural_provider_unavailable'); expect(pack.next[0]).toContain('Structural context was required'); expect(pack.files.some((file) => file.path === 'src/service.ts')).toBe(true); });
 
   test('rechecks graph-selected paths through Forge policy before returning source', () => {
     const root = contextRepo();

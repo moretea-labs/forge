@@ -1,6 +1,8 @@
 # Controller Runtime System Overview
 
 > Status: **Runtime Authority**
+>
+> Routing convergence: execution depth, semantic ownership, and resource placement are independent decisions. `RouteDecision` owns Direct/Process/Durable selection; unrelated active Work never upgrades a Direct request. CodeGraph/lexical/Forge relations are combined inside the Context Plane as bounded impact evidence, not as another execution authority.
 
 ## 1. System Definition
 

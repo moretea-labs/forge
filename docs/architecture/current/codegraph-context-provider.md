@@ -1,6 +1,6 @@
 # CodeGraph Context Provider
 
-Status: reviewed for Phase 1 implementation  
+Status: **Runtime Authority — impact-context convergence implemented**
 Source baseline: `a49465096c4e2532da37ab2f9d10dca2238217ac`  
 Scope: Controller Context Plane only
 
@@ -99,12 +99,14 @@ Default is `off` to preserve current Direct performance and behavior.
 
 Expected mode usage:
 
-- ordinary Direct: `off`
+- ordinary Direct: `off` (zero CodeGraph provider calls)
 - explicit `-debug`: `auto`
 - explicit `-plan`: `required` when a CodeGraph index is present; otherwise return a clear degraded-plan warning and use bounded text search
 - Goal/Plan planning and review: `auto` or `required` when structural evidence materially improves the decision
 
-When enabled, graph results augment candidate ranking. They do not replace raw source reads. Important files selected through CodeGraph still pass through `resolveMcpPath` and `readRepositoryRange` before implementation.
+When enabled, graph results augment candidate ranking and the bounded impact contract. They do not replace raw source reads. Important files selected through CodeGraph still pass through `resolveMcpPath` and `readRepositoryRange` before implementation.
+
+After the initial structural `context` query, the Context Plane may issue bounded `file_dependencies` queries for a small number of entry-point files. Dependencies and dependents are folded into the same policy-filtered Context Pack; they are not exposed as another ChatGPT tool flow. The pack derives an `impactContext` containing primary targets, must-inspect and likely-affected files, related tests/checks, architecture contracts, coverage gaps, freshness, and confidence. These remain discovery evidence: ChatGPT is still the semantic-sufficiency authority.
 
 Context Pack gains a bounded `structuralContext` section containing:
 

@@ -146,6 +146,23 @@ export interface ControllerContextPackProjection {
     timingsMs?: CodeGraphReadProviderResponse["timingsMs"];
     truncated: boolean;
   };
+  impactContext: {
+    status: "not_requested" | "ready" | "degraded";
+    confidence: "low" | "medium" | "high";
+    primaryTargets: string[];
+    mustInspect: string[];
+    likelyAffected: string[];
+    relevantTests: string[];
+    relevantChecks: string[];
+    architectureContracts: string[];
+    coverageGaps: string[];
+    relationSources: Array<"codegraph" | "lexical" | "forge_checks">;
+    freshness: {
+      structuralStatus: "disabled" | "ready" | "stale" | "unavailable" | "degraded";
+      lastIndexedAt?: number | null;
+      changedFileCount: number;
+    };
+  };
   files: ControllerContextPackFile[];
   deniedPaths: Array<{ path: string; reason: string }>;
   omitted: Array<{ path: string; reason: string }>;
@@ -453,6 +470,7 @@ export function buildControllerContextPack(
   let skippedBinaryFiles = 0;
   let searchTruncated = false;
   const structuralMode = options.structuralContext ?? "off";
+  const graphImpactFiles = new Set<string>();
   let structuralContext: ControllerContextPackProjection["structuralContext"] = {
     provider: "codegraph",
     requestedMode: structuralMode,
@@ -530,6 +548,31 @@ export function buildControllerContextPack(
         addStructuralPath(node.filePath, `codegraph:entry:${node.name}`, node.startLine);
       }
       for (const path of graph.relatedFiles.slice(0, maxFiles * 6)) addStructuralPath(path, "codegraph:related");
+      // Context search identifies the structural entry points. For a bounded
+      // number of those files, enrich the same Context Plane call with direct
+      // file dependencies/dependents. This is impact evidence, not a second
+      // routing/tool surface, and remains completely off for ordinary Direct.
+      if (structural.status === "ready") {
+        const primaryFiles = Array.from(new Set(graph.entryPoints.map((node) => node.filePath).filter(Boolean))).slice(0, 4);
+        for (const filePath of primaryFiles) {
+          const adjacency = queryCodeGraph(repoRoot, { operation: "file_dependencies", filePath, limit: 40 });
+          if (!adjacency.ok || adjacency.status !== "ready") continue;
+          const dependencies = Array.isArray(adjacency.result?.dependencies)
+            ? adjacency.result.dependencies.filter((value): value is string => typeof value === "string")
+            : [];
+          const dependents = Array.isArray(adjacency.result?.dependents)
+            ? adjacency.result.dependents.filter((value): value is string => typeof value === "string")
+            : [];
+          for (const path of dependencies.slice(0, 40)) {
+            graphImpactFiles.add(path);
+            addStructuralPath(path, `codegraph:dependency:${filePath}`);
+          }
+          for (const path of dependents.slice(0, 40)) {
+            graphImpactFiles.add(path);
+            addStructuralPath(path, `codegraph:dependent:${filePath}`);
+          }
+        }
+      }
       for (const path of metadata?.changedFiles.added ?? []) addStructuralPath(path, "codegraph:changed-file", 1);
       for (const path of metadata?.changedFiles.modified ?? []) addStructuralPath(path, "codegraph:changed-file", 1);
       for (const path of metadata?.changedFiles.removed ?? []) omitted.push({ path, reason: "codegraph reports file removed since index" });
@@ -703,6 +746,60 @@ export function buildControllerContextPack(
   const rawCodeRequiredForImplementation = retrievalMode !== "implementation"
     || files.length === 0
     || rawSnippetTruncated;
+  const primaryTargets = Array.from(new Set(structuralContext.entryPoints.map((entry) => entry.filePath).filter(Boolean))).slice(0, 20);
+  const structuralUniverse = Array.from(new Set([
+    ...primaryTargets,
+    ...graphImpactFiles,
+    ...structuralContext.relatedFiles,
+    ...selected.map((entry) => entry.path),
+  ])).slice(0, 160);
+  const relevantTests = structuralUniverse.filter((path) => /(^|\/)(__tests__|tests?|spec)(\/|$)|\.(test|spec)\.[^.]+$/i.test(path)).slice(0, 40);
+  const architectureContracts = structuralUniverse.filter((path) =>
+    path === "AGENTS.md"
+    || path === "CLAUDE.md"
+    || path.startsWith("docs/architecture/")
+    || path.startsWith(".ai/context/"),
+  ).slice(0, 40);
+  const mustInspect = Array.from(new Set([...primaryTargets, ...graphImpactFiles, ...relevantTests, ...architectureContracts])).slice(0, 80);
+  const mustInspectSet = new Set(mustInspect);
+  const likelyAffected = structuralUniverse.filter((path) => !mustInspectSet.has(path)).slice(0, 80);
+  const changedFileCount = structuralContext.metadata
+    ? structuralContext.metadata.changedFiles.added.length
+      + structuralContext.metadata.changedFiles.modified.length
+      + structuralContext.metadata.changedFiles.removed.length
+    : 0;
+  const coverageGaps = [
+    ...(structuralContext.status === "stale" ? ["structural_index_stale"] : []),
+    ...(structuralContext.status === "unavailable" || structuralContext.status === "degraded" ? ["structural_provider_unavailable"] : []),
+    ...(structuralContext.truncated ? ["structural_result_truncated"] : []),
+    ...(changedFileCount > 0 ? ["structural_index_has_unindexed_changes"] : []),
+    ...impactCoverage.filter((coverage) => coverage.status !== "selected").map((coverage) => `impact_domain_${coverage.status}:${coverage.domain}`),
+  ];
+  const impactContext: ControllerContextPackProjection["impactContext"] = {
+    status: structuralMode === "off" ? "not_requested" : structuralContext.status === "ready" ? "ready" : "degraded",
+    confidence: structuralContext.status === "ready" && primaryTargets.length > 0 && !structuralContext.truncated
+      ? "high"
+      : structuralContext.status === "ready" || files.length > 0
+        ? "medium"
+        : "low",
+    primaryTargets,
+    mustInspect,
+    likelyAffected,
+    relevantTests,
+    relevantChecks: taskChecks,
+    architectureContracts,
+    coverageGaps: Array.from(new Set(coverageGaps)).slice(0, 40),
+    relationSources: [
+      ...(structuralMode !== "off" ? ["codegraph" as const] : []),
+      ...(files.length > 0 ? ["lexical" as const] : []),
+      ...(taskChecks.length > 0 ? ["forge_checks" as const] : []),
+    ],
+    freshness: {
+      structuralStatus: structuralContext.status,
+      lastIndexedAt: structuralContext.metadata?.lastIndexedAt,
+      changedFileCount,
+    },
+  };
 
   return {
     schemaVersion: CONTEXT_PACK_SCHEMA_VERSION,
@@ -730,6 +827,7 @@ export function buildControllerContextPack(
       truncated: searchTruncated,
     },
     structuralContext,
+    impactContext,
     files,
     deniedPaths: deniedPaths.slice(0, 20),
     omitted: omitted.slice(0, 30),
@@ -750,7 +848,7 @@ export function buildControllerContextPack(
         retrievalMode === "implementation"
           ? "The pack already contains policy-approved current raw source snippets with file SHA identities. Request wider/exact ranges only when ChatGPT judges the impact surface ambiguous or an expansion signal makes the raw evidence mechanically incomplete."
           : "Investigation modes may intentionally expand exact ranges, structural relationships, tests, and neighboring modules before any implementation decision.",
-        "Search/CodeGraph ranking is discovery evidence, not a business-semantics authority. Forge never decides that the returned files are the complete semantic impact surface.",
+        "Search/CodeGraph ranking is discovery evidence, not a business-semantics authority. impactContext makes the bounded evidence surface and coverage gaps explicit; ChatGPT still decides semantic sufficiency.",
         impactDomains.length > 0 ? `Impact domains were selected by ChatGPT and expanded mechanically in this same retrieval call: ${impactDomains.join(", ")}. Missing or omitted domain evidence is an ambiguity signal, not proof that the domain is irrelevant.` : "No explicit cross-cutting impact domains were requested; ChatGPT may add them when state, scheduling, notifications, events, caching, API, or concurrency could materially change the implementation.",
         "CodeGraph structural evidence is discovery evidence. Raw source access still passes through Forge repository policy and current-file reads.",
         structuralContext.status === "stale" ? "CodeGraph reports stale structural evidence. Treat graph relationships as hints and prefer the returned current raw source for changed files." : structuralContext.status === "unavailable" || structuralContext.status === "degraded" ? "Structural context was unavailable or degraded; bounded text search remains the fallback." : structuralContext.status === "ready" ? "CodeGraph structural context was queried read-only with index sync disabled." : "Structural context was not requested.",

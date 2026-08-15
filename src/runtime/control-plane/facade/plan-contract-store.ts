@@ -387,7 +387,10 @@ export function completePlanStepForWork(
     const steps = [...current.steps];
     steps[stepIndex] = {
       ...step,
-      status: completed ? 'completed' : 'validating',
+      // A failed/cancelled Work is not validating anything. The Plan owns the
+      // replanning state; reset the slice to ready so a replacement finite Work
+      // can be materialized after the Plan is reviewed/re-approved.
+      status: completed ? 'completed' : 'ready',
       evidenceRefs: input.work.evidenceRefs.length > 0
         ? input.work.evidenceRefs.slice(0, 20)
         : step.evidenceRefs,

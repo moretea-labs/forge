@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { existsSync } from 'fs';
 import { dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
 import {
   controllerCheckExecutionIdentity,
   listControllerChecks,
@@ -37,7 +38,10 @@ export function resolvePersistedCheckCliInvocation(
 }
 
 export function resolveRuntimeCliTarget(controllerHome?: string): CliRuntimeTarget {
-  const moduleSourceRoot = resolve(import.meta.dir, '..', '..', '..', '..');
+  const moduleDir = typeof import.meta.dir === 'string' && import.meta.dir
+    ? import.meta.dir
+    : dirname(fileURLToPath(import.meta.url));
+  const moduleSourceRoot = resolve(moduleDir, '..', '..', '..', '..');
   const sourceEntry = resolve(moduleSourceRoot, 'src', 'cli', 'index.ts');
   const source = resolveControllerRuntimeSourceRoot({
     explicitRoot: existsSync(sourceEntry) ? moduleSourceRoot : undefined,

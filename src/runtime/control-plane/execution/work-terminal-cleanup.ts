@@ -544,6 +544,38 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
   current = persist(input.controllerHome, current, receipt);
   if (receipt.blockers.length > 0) return { handle: current, receipt };
 
+  // A Work running in the selected/current checkout owns lifecycle and process
+  // leases, but it does not own the checkout/branch as disposable resources.
+  // Closing that Work therefore releases ownership without attempting git
+  // worktree removal, branch deletion, checkout-registry removal, or prune.
+  if (!current.managedWorktree) {
+    receipt.worktree.status = 'already_removed';
+    receipt.worktree.reason = 'Not applicable: Work did not create a managed worktree.';
+    receipt.branchCleanup.status = 'retained';
+    receipt.branchCleanup.reason = 'Current checkout branch is repository-owned, not Work-owned.';
+    receipt.checkoutRegistry.status = 'already_removed';
+    receipt.checkoutRegistry.reason = 'Not applicable: current checkout registration is retained.';
+    receipt.prune.status = 'done';
+    receipt.prune.reason = 'Not applicable: no managed worktree was removed.';
+    receipt.complete = true;
+    receipt.partial = false;
+    receipt.completedAt = receipt.completedAt ?? nowIso();
+    const finalization = {
+      ...current.finalization,
+      commit: current.finalization.commit === 'pending' ? 'skipped' as const : current.finalization.commit,
+      merge: current.finalization.merge === 'pending' ? 'skipped' as const : current.finalization.merge,
+      branchCleanup: 'skipped' as const,
+      worktreeCleanup: 'skipped' as const,
+      lastError: preservedFailure,
+    };
+    current = transitionWorkHandle(input.controllerHome, current, 'cleaned', {
+      failureReason: landed ? undefined : preservedFailure,
+      cleanupReceipt: receipt,
+      finalization,
+    });
+    return { handle: current, receipt };
+  }
+
   const target = selectTerminalCleanupTarget(repository, current);
   let registeredPath: string | undefined;
   try {

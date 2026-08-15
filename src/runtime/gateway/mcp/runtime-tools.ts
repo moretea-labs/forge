@@ -17,7 +17,7 @@ import { waitForExecutionJob } from '../../execution/jobs/wait';
 import type { ExecutionJob } from '../../execution/jobs/types';
 import { getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
-import { readWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
+import { readWorkHandle, writeWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
 import { executionIdentityForRepository } from '../../control-plane/execution/execution-identity';
 import { reconcileFinalizedDirectEditWorksAfterCommit } from '../../control-plane/execution/direct-edit-work-completion';
 import { readJobEvents } from '../../evidence/event-ledger';
@@ -298,8 +298,8 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'controller_claim', 'controller_release', 'controller_get_owner', 'launcher_start', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_supersede', 'schedule_create', 'schedule_list', 'schedule_get', 'schedule_pause', 'schedule_resume', 'schedule_trigger'], description: 'Defaults to start. Complex starts require plan_id and plan_step_id. schedule_* manages Work-bound continuation, browser watchers, and browser keepalive.' },
     objective: { type: 'string' },
     work_id: { type: 'string' },
-    related_work_id: { type: 'string', description: 'Active Work selected during pre-execution intent resolution when work_relation is continue or extend.' },
-    work_relation: { type: 'string', enum: ['continue', 'extend', 'parallel', 'new_goal'], description: 'Pre-execution relationship to active Work: reuse unchanged, extend serially, run an independent parallel sibling, or create a genuinely new goal. Omit on first pass to receive active candidates when resolution is needed.' },
+    related_work_id: { type: 'string', description: 'Optional explicit existing Work ownership target for continue/extend semantics. Unrelated active Work is never inferred as a semantic target.' },
+    work_relation: { type: 'string', enum: ['continue', 'extend', 'parallel', 'new_goal'], description: 'Optional semantic relation to an explicitly related Work. This field never selects Direct/Process/Durable execution depth; checkout conflicts are resolved by placement.' },
     related_plan_id: { type: 'string', description: 'Existing active Plan selected when resolving another slice under the same Requirement.' },
     plan_relation: { type: 'string', enum: ['extend', 'parallel'], description: 'Relationship to another active Plan under the same Requirement. Omit to receive candidates first. parallel explicitly permits a distinct Plan slice; extend reuses the existing Plan authority and requires replanning/supersession instead of creating another draft.' },
     requested_by: { type: 'string', enum: ['chatgpt', 'user', 'system', 'scheduler'], description: 'Origin of the request. Scheduler-origin starts are continuation-only and cannot create new durable Work.' },
@@ -1604,6 +1604,64 @@ function authenticatedFacadeControllerIdentity(
     controllerType: transportControllerType ?? requestedControllerType ?? 'chatgpt',
     controllerInstanceId: ctx.controllerInstanceId?.trim() || currentControllerInstanceId(),
   };
+}
+
+function ensureFacadeWorkHandle(
+  ctx: MultiRepositoryMcpToolContext,
+  repository: ReturnType<typeof selected>,
+  workId: string,
+  args: Record<string, unknown>,
+): WorkHandleState | undefined {
+  const existing = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
+  if (existing) return existing;
+  const contract = getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, workId);
+  if (!contract || contract.workKind !== 'repository_change' || contract.mode !== 'goal_workloop' || !contract.checkoutId) return undefined;
+  const executionRepository = resolveRepositorySelection({ repoId: repository.repoId, checkoutId: contract.checkoutId, controllerHome: ctx.controllerHome, allowSoleRepository: false });
+  const checkout = selectRepositoryCheckout(executionRepository, contract.checkoutId, { allowArchived: true });
+  const status = repositoryGitStatus(checkout);
+  if (!status.branch) throw new Error(`WORKTREE_DETACHED: ${contract.checkoutId} has no branch`);
+  const identity = authenticatedFacadeControllerIdentity(ctx, args);
+  const at = new Date().toISOString();
+  const managedWorktree = Boolean(contract.worktreeRef) && resolve(contract.worktreeRef!) === resolve(checkout.canonicalRoot) && resolve(checkout.canonicalRoot) !== resolve(repository.canonicalRoot);
+  return writeWorkHandle(ctx.controllerHome, {
+    schemaVersion: 1,
+    workId,
+    sessionId: identity.sessionId,
+    principalId: identity.principalId,
+    repositoryId: repository.repoId,
+    checkoutId: contract.checkoutId,
+    worktreePath: checkout.canonicalRoot,
+    branch: status.branch,
+    sourceCheckoutId: repository.activeCheckoutId,
+    managedWorktree,
+    workContractId: contract.workId,
+    baseCommit: contract.baseRevision ?? status.head ?? undefined,
+    expectedHead: status.head ?? contract.baseRevision,
+    permissionSnapshotVersion: currentPermissionSnapshotVersion(ctx.controllerHome, repository.repoId),
+    state: 'prepared',
+    createdAt: at,
+    updatedAt: at,
+    finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+    cleanupResponsibility: { owner: 'work_finalizer', registeredAt: at },
+  });
+}
+
+function claimNewFacadeWork(
+  ctx: MultiRepositoryMcpToolContext,
+  repository: ReturnType<typeof selected>,
+  workId: string,
+  args: Record<string, unknown>,
+) {
+  const identity = authenticatedFacadeControllerIdentity(ctx, args);
+  return resumeControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, {
+    workId,
+    controllerId: identity.controllerId,
+    controllerType: identity.controllerType,
+    sessionId: identity.sessionId,
+    principalId: identity.principalId,
+    controllerInstanceId: identity.controllerInstanceId,
+    leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
+  });
 }
 
 function bindFacadeExecutionSession(
@@ -3908,12 +3966,28 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         }
 
         const facade = runGoalWorkloop({ ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined }, operation as 'start' | 'continue', args);
+        const facadeData = facade.data && typeof facade.data === 'object' ? facade.data as Record<string, unknown> : {};
+        const facadeWorkId = contextText(contextRecord(facadeData.work).workId, 200);
+        if (facade.status === 'ok' && facadeWorkId) {
+          try {
+            const handle = ensureFacadeWorkHandle(ctx, repository, facadeWorkId, args);
+            if (handle) facadeData.executionHandle = { workId: handle.workId, checkoutId: handle.checkoutId, managedWorktree: handle.managedWorktree, state: handle.state };
+            if (facadeData.workContractCreated === true) {
+              const owner = claimNewFacadeWork(ctx, repository, facadeWorkId, args);
+              facadeData.controllerSession = owner;
+              facadeData.ownershipClaimed = true;
+            }
+          } catch (error) {
+            const blocked = buildFacadeResult({ status: 'blocked', summary: `WORK_HANDLE_MATERIALIZATION_FAILED: ${error instanceof Error ? error.message : String(error)}`, data: { ...facadeData, workId: facadeWorkId, executionStarted: false } });
+            return result(blocked as unknown as Record<string, unknown>, true);
+          }
+        }
         const response = resumedControllerSession
           ? {
               ...facade,
               summary: `Controller ownership resumed for ${resumedControllerSession.workId}. ${facade.summary}`,
               data: {
-                ...(facade.data && typeof facade.data === 'object' ? facade.data : {}),
+                ...facadeData,
                 ownershipResumed: true,
                 controllerSession: resumedControllerSession,
               },

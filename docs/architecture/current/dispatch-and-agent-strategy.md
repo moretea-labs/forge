@@ -41,6 +41,20 @@ humanBoundary
 
 Repository search is an information-gathering step, not by itself a reason to start an Agent or create a durable Issue.
 
+### 2.1 Orthogonal routing dimensions
+
+Forge keeps three decisions separate:
+
+```text
+semantic ownership   = unbound | continue/extend an explicit Work | Plan/Requirement binding
+execution depth      = Direct | Process | Durable Work | Handoff
+resource placement   = visible checkout | isolated Worktree | external provider resource
+```
+
+`RouteDecision` is the sole authority for execution depth. An unrelated active Work, an existing Plan, or a checkout writer MUST NOT reinterpret an already-safe Direct operation as Durable Work. Explicit Work ownership may be attached to a Direct Edit or Process for attribution/evidence without changing its execution depth. A real checkout writer conflict changes placement or waits for a resource; it does not manufacture a semantic `parallel`/`new_goal` relation.
+
+When `rh_work start` actually creates a Durable repository Work, the facade materializes the same-ID execution `WorkHandle` for the selected checkout/worktree and atomically claims that new Work for the authenticated initiating Controller. `work_prepare` remains a lower-level execution/compatibility primitive; a normal new Work does not require a second mechanical prepare/claim round trip before useful execution can begin.
+
 ## 3. Execution Modes
 
 ### 3.1 Direct Edit
@@ -315,6 +329,8 @@ Use when:
 
 The default `auto` placement policy chooses Workspace for one local serial writer and Worktree when concurrency exists. It MUST still honor explicit claims and dirty-state safety.
 
+Placement is evaluated after execution depth and semantic ownership. A new durable objective may therefore create a new finite Work and select a Worktree purely because the visible checkout already has a writer; the caller does not need to classify that resource conflict as a semantic `parallel` relation first. Only a managed Worktree/branch is a disposable Work-owned resource: stopping a Work on the current checkout closes lifecycle/process ownership but never removes the repository's current checkout or branch.
+
 ## 11. Review and Continuation
 
 After execution:
@@ -347,7 +363,7 @@ The dispatch layer MUST avoid:
 
 ## 13. Current Implementation
 
-The repository implements Direct Edit, Quick Agent and Requirement/Work assessment; runtime Agent selection; bounded Task scope; persistent Runs; Workspace/Worktree placement; and risk-adaptive verification.
+The repository implements one canonical Route Policy for execution depth, Direct Edit, Process Runtime, finite Requirement/Work execution, optional Plan decomposition, runtime Agent selection, bounded Task scope, persistent Runs, Workspace/Worktree placement, and risk-adaptive verification.
 
 The Thin Gateway keeps deterministic local commands on Direct Edit or Process Runtime paths. Agent dispatch is now an explicit external-Controller handoff; the Kernel no longer creates Execution Jobs for ordinary Agent launches. Work ownership, repository placement, and resource claims remain durable Controller state, while provider selection and model execution belong to the claimed external Controller.
 

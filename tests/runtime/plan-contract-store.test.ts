@@ -100,7 +100,7 @@ test('rejects nonterminal Work and replans from failed Work', () => {
     stepId: 'step-1',
     work: { workId: 'work-terminal', status: 'failed', phase: 'cleanup', evidenceState: 'failed', completionOutcome: undefined, completionReceipt: undefined, evidenceRefs: [] },
   });
-  expect(failed).toMatchObject({ status: 'replanning', steps: [{ workId: 'work-terminal', status: 'validating' }] });
+  expect(failed).toMatchObject({ status: 'replanning', steps: [{ workId: 'work-terminal', status: 'ready' }] });
 });
 
 test('completes a PlanStep only from the exact terminal Work receipt', () => {

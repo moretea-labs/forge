@@ -20,6 +20,7 @@ export interface Requirement {
   outcomeStatement: string;
   acceptanceCriteria: string[];
   requiredDeliveryReferences: string[];
+  /** @deprecated Migration compatibility pointer only. Current Plan.requirementId is the relationship authority. */
   activePlanId?: string;
   state: RequirementState;
   needsAttention: boolean;
@@ -164,6 +165,7 @@ export function updateRequirement(
   });
 }
 
+/** @deprecated Migration/legacy compatibility only. New Plan creation must bind Plan.requirementId and derive active Plan slices by query. */
 export function setRequirementPlan(
   options: RequirementStoreOptions,
   input: { requirementId: string; planId: string; action?: string },

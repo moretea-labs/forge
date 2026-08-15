@@ -44,7 +44,7 @@ export function assertWorkHandleLifecycle(handle: WorkHandleState, operation: 'i
   const allowed: Record<typeof operation, readonly WorkHandleState['state'][]> = {
     inspect: ['prepared', 'editing', 'validating', 'committed', 'merged', 'failed', 'failed_terminal_cleanup', 'cleaned'],
     execute: ['prepared', 'editing'],
-    validate: ['prepared', 'editing', 'validating', 'committed', 'merged'],
+    validate: ['prepared', 'editing', 'validating', 'committed', 'merged', 'failed'],
     finalize: ['prepared', 'editing', 'validating', 'committed', 'merged', 'failed_terminal_cleanup', 'cleaned', 'failed'],
   };
   if (!allowed[operation].includes(handle.state)) {

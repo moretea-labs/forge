@@ -290,33 +290,31 @@ export function routeWorkStart(
   }
   let mode = applyForcedMode(selectedMode);
 
-  // Semantic/lifecycle admission precedes Direct-vs-Durable topology. A small
-  // mutation must not bypass an existing authoritative Work merely because the
-  // Route Policy would otherwise classify the edit as fast/direct. The external
-  // semantic controller chooses the relationship; Forge resolves deterministic
-  // Plan/Requirement bindings and presents bounded candidates before execution.
-  const mutationRequested = effectiveModeInput.mutation !== false;
-  if (mutationRequested && mode.mode === 'direct_control') {
-    const activeWorks = listWorkContracts({ ...ctx.workStore, status: 'active', limit: 100 })
-    .filter((candidate) => (candidate.lifecycleRole ?? 'primary') === 'primary');
-    const requestedRelation = input.workRelation ?? (input.modeInput.requiresParallelism === true ? 'parallel' : undefined);
-    const hasAdmissionContext = activeWorks.length > 0
-      || Boolean(input.relatedWorkId || input.planId || input.requirementId)
-      || input.requestedBy === 'scheduler';
-    if (hasAdmissionContext) {
-      const independentConcurrentWork = activeWorks.length > 0 && (requestedRelation === 'parallel' || requestedRelation === 'new_goal');
-      if (independentConcurrentWork) {
-        const durableSelection = selectExecutionMode({ ...effectiveModeInput, requiresRecovery: true });
-        const durablePolicy = evaluateAccessPolicy(durableSelection);
-        return startGoalWorkloop(ctx, input, durablePolicy, 'goal_workloop', durableSelection.routeDecision);
-      }
-      return startGoalWorkloop(ctx, input, policy, 'goal_workloop', mode.routeDecision);
-    }
-  }
+  // Route Policy is the sole execution-depth authority. Existing Work is
+  // ownership context, not a reason to upgrade an otherwise Direct operation
+  // into Durable Work. Explicit Work/Plan ownership is resolved only after a
+  // durable route has already been selected; checkout writer conflicts affect
+  // placement, not semantic task identity.
 
   if (mode.mode === 'direct_control') {
     const available = ctx.availableChecks ?? [];
     const normalized = normalizeCheckIds(input.checks ?? [], available);
+    // Explicit ownership may annotate a Direct operation, but it never changes
+    // the RouteDecision. The actual repository mutation can pass this Work id
+    // to repository_safe_patch_apply / repository_command_execute for evidence
+    // attribution while staying on the Direct/Process path.
+    const directOwnershipCandidates = input.relatedWorkId || (input.planId && input.planStepId)
+      ? listWorkContracts({ ...ctx.workStore, status: 'active', limit: 100 })
+          .filter((candidate) => (candidate.lifecycleRole ?? 'primary') === 'primary')
+      : [];
+    const directPlan = input.planId && ctx.planStore ? getPlanContract(ctx.planStore, input.planId) : undefined;
+    const directPlanStep = directPlan && input.planStepId ? directPlan.steps.find((step) => step.id === input.planStepId) : undefined;
+    const directOwner = (input.relatedWorkId
+      ? directOwnershipCandidates.find((candidate) => candidate.workId === input.relatedWorkId)
+      : undefined)
+      ?? (directPlanStep?.workId
+        ? directOwnershipCandidates.find((candidate) => candidate.workId === directPlanStep.workId)
+        : undefined);
     const suggested = validateSuggestedNextActions([
       {
         label: 'Apply bounded direct edit',
@@ -347,6 +345,13 @@ export function routeWorkStart(
         directControlPreserved: true,
         objective: input.objective.slice(0, 1_000),
         normalizedChecks: normalized,
+        ...(directOwner ? {
+          ownership: {
+            workId: directOwner.workId,
+            relation: input.workRelation ?? 'continue',
+            executionDepthPreserved: true,
+          },
+        } : {}),
       },
       warnings: [...policy.warnings, ...normalized.warnings],
       suggestedNextActions: suggested,
@@ -489,8 +494,11 @@ export function startGoalWorkloop(
     : [];
   const deterministicTarget = explicitRelatedWork ?? planStepWork ?? (requirementWorks.length === 1 ? requirementWorks[0] : undefined);
   const requestedRelation = input.workRelation ?? (input.modeInput.requiresParallelism === true ? 'parallel' : undefined);
+  // Only strong semantic bindings participate in ownership resolution. An
+  // unrelated active Work or a checkout writer is a placement fact, not a
+  // semantic candidate for continue/extend/parallel/new_goal.
   const candidateWorks = [...new Map(
-    [explicitRelatedWork, planStepWork, ...requirementWorks, workspaceOwner, ...activeWorks]
+    [explicitRelatedWork, planStepWork, ...requirementWorks]
       .filter((candidate): candidate is WorkContract => Boolean(candidate))
       .map((candidate) => [candidate.workId, candidate]),
   ).values()].slice(0, 8);
@@ -590,10 +598,10 @@ export function startGoalWorkloop(
     );
   }
 
-  const createSeparateWork = requestedRelation === 'parallel' || requestedRelation === 'new_goal';
+  const placementConflict = Boolean(workspaceOwner);
   const needsWorktree = executionMode === 'goal_workloop' && (input.constraints?.requireWorktree
     ?? (workspaceMode === 'isolated'
-      || createSeparateWork && Boolean(workspaceOwner)
+      || placementConflict
       || (workspaceMode === 'auto' && routeDecision.requiresIsolation === true)));
   if (!needsWorktree && workspaceOwner) {
     return buildFacadeResult({

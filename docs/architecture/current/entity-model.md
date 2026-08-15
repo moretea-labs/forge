@@ -13,6 +13,26 @@ Forge separates four kinds of truth:
 
 Entities from different categories must not be collapsed merely because they are currently stored in adjacent files or exposed by one tool.
 
+The current Controller model also separates semantic ownership from execution depth and placement. Requirement/Plan/Work describe intent and finite delivery lineage; Direct/Process/Agent describe execution mechanisms; Workspace/Worktree/provider resources describe placement. None of those dimensions substitutes for another.
+
+### 1.1 Current intent hierarchy
+
+```text
+Requirement?          long-lived user outcome
+  -> Plan?            optional decomposition/replanning contract
+       -> Work         finite recoverable objective
+            -> Edit Session / Process / Run / Verification evidence
+
+Schedule              long-lived trigger/policy
+  -> Occurrence        one bounded terminal firing
+```
+
+A Requirement may have more than one active Plan slice. Current Plan rows own the forward `requirementId` relation; `Requirement.activePlanId` is migration compatibility only and MUST NOT become a second lifecycle authority. A failed/cancelled Work moves its Plan to `replanning`; a reusable slice returns to `ready` rather than pretending to be in verification.
+
+A Durable repository Work has one execution `WorkHandle` with the same Work identity. The handle records the selected checkout/worktree, execution-session binding, permission snapshot and finalization stages; it is execution state, not another user objective. New `rh_work start` creation materializes this handle and claims the initiating authenticated Controller in the same facade flow. `managedWorktree=false` means the Work does not own the current checkout/branch as disposable resources, so terminal cleanup releases lifecycle/process ownership without deleting them.
+
+Conversation/session bindings are transport and presentation preferences. They may help resume a Controller, but Work/Schedule identity survives a changed or missing conversation.
+
 ## 2. Identity Hierarchy
 
 ```text

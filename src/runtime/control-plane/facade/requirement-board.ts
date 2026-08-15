@@ -28,7 +28,9 @@ export interface RequirementBoardItem {
   maintenanceSummary?: string;
   blocker?: string;
   requiredUserDecision?: string;
+  /** Compatibility projection for older UI clients; derived from activePlanIds. */
   activePlanId?: string;
+  activePlanIds: string[];
   latestDelivery?: {
     workId: string;
     receiptId: string;
@@ -55,10 +57,14 @@ function explicitUserDecision(requirement: Requirement): string | undefined {
   return decision || undefined;
 }
 
-function projectedRequirementState(requirement: Requirement): RequirementState {
+function activePlansForRequirement(requirementId: string, plans: readonly PlanContract[]): PlanContract[] {
+  return plans.filter((plan) => plan.requirementId === requirementId);
+}
+
+function projectedRequirementState(requirement: Requirement, activePlans: readonly PlanContract[]): RequirementState {
   if (requirement.state !== 'waiting_for_user') return requirement.state;
   if (explicitUserDecision(requirement)) return 'waiting_for_user';
-  return requirement.activePlanId ? 'active' : 'planned';
+  return activePlans.length > 0 ? 'active' : 'planned';
 }
 
 function loadScopedWork(options: RequirementBoardOptions): WorkContract[] {
@@ -92,8 +98,10 @@ function latestDelivery(requirementId: string, work: readonly WorkContract[]): R
   };
 }
 
-function projectRequirement(requirement: Requirement, work: readonly WorkContract[]): RequirementBoardItem {
-  const state = projectedRequirementState(requirement);
+function projectRequirement(requirement: Requirement, work: readonly WorkContract[], plans: readonly PlanContract[] = []): RequirementBoardItem {
+  const activePlans = activePlansForRequirement(requirement.requirementId, plans);
+  const activePlanIds = activePlans.map((plan) => plan.planId);
+  const state = projectedRequirementState(requirement, activePlans);
   const requiredUserDecision = explicitUserDecision(requirement);
   const maintenanceSummary = requirement.needsAttention
     ? boundedText(requirement.attentionSummary, 1_000) || 'This Requirement has a maintenance finding.'
@@ -108,7 +116,8 @@ function projectRequirement(requirement: Requirement, work: readonly WorkContrac
     maintenanceSummary,
     blocker: requirement.needsAttention && state !== 'waiting_for_user' ? maintenanceSummary : undefined,
     requiredUserDecision,
-    activePlanId: requirement.activePlanId,
+    activePlanId: activePlanIds[0],
+    activePlanIds,
     latestDelivery: latestDelivery(requirement.requirementId, work),
     updatedAt: requirement.updatedAt,
     detailPointer: {
@@ -132,7 +141,10 @@ function requirementCounts(requirements: readonly RequirementBoardItem[]): Recor
 
 export function buildRequirementBoard(options: RequirementBoardOptions): Record<string, unknown> {
   const work = loadScopedWork(options);
-  const allRequirements = loadRequirements(options).map((requirement) => projectRequirement(requirement, work));
+  const activePlans = options.repoId?.trim()
+    ? listPlanContracts({ controllerHome: options.controllerHome, repoId: options.repoId, status: 'active', limit: 100 })
+    : [];
+  const allRequirements = loadRequirements(options).map((requirement) => projectRequirement(requirement, work, activePlans));
   const requirements = allRequirements.slice(0, DEFAULT_REQUIREMENT_LIMIT);
   const counts = requirementCounts(allRequirements);
   return {
@@ -229,9 +241,13 @@ export function buildExecutionDiagnostics(
     : [];
   const scopedPlans = options.requirementId
     ? allPlans.filter((plan) => plan.requirementId === options.requirementId
-      || selectedRequirements.some((requirement) => requirement.activePlanId === plan.planId))
+      // Legacy migration compatibility only: current Plans own the forward
+      // requirementId relation, so the persisted Requirement pointer is not an
+      // execution/lifecycle authority.
+      || (!plan.requirementId && selectedRequirements.some((requirement) => requirement.activePlanId === plan.planId)))
     : allPlans;
-  const requirements = selectedRequirements.map((requirement) => projectRequirement(requirement, allWork));
+  const activePlans = allPlans.filter((plan) => !['finalized', 'superseded', 'cancelled', 'invalidated_by_drift'].includes(plan.status));
+  const requirements = selectedRequirements.map((requirement) => projectRequirement(requirement, allWork, activePlans));
   const works = scopedWork.slice(0, limit).map(summarizeDiagnosticWork);
   const plans = scopedPlans.slice(0, limit).map((plan) => summarizeDiagnosticPlan(plan, options.detailLevel));
   const maintenanceFindings = requirements
