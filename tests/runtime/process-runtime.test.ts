@@ -1045,23 +1045,7 @@ describe('command classifier safe shell combinations', () => {
     expect(classifyRepositoryCommand(['bash', '-lc', "python3 - <<'PY'\nprint('read only')\nPY"]).risk).toBe('workspace_write');
   });
 
-  test('routes only CodeGraph status as a readonly observation', () => {
-    const status = ['node_modules/.bin/codegraph', 'status', '.'];
-    expect(classifyRepositoryCommand(status).risk).toBe('readonly');
-    expect(classifyRepositoryCommand('node_modules/.bin/codegraph status .').risk).toBe('readonly');
-    expect(classifyRepositoryCommandRoute(status)).toEqual({
-      route: 'process_direct',
-      reason: 'readonly_fast_path',
-    });
-    for (const subcommand of ['init', 'sync']) {
-      const mutation = ['node_modules/.bin/codegraph', subcommand, '.'];
-      expect(classifyRepositoryCommand(mutation).risk).toBe('workspace_write');
-      expect(classifyRepositoryCommandRoute(mutation)).toEqual({
-        route: 'process_managed',
-        reason: 'local_workspace_mutation',
-      });
-    }
-  });
+  test('routes only CodeGraph status as a readonly observation', () => { const status = ['node_modules/.bin/codegraph', 'status', '.']; expect(classifyRepositoryCommand(status).risk).toBe('readonly'); expect(classifyRepositoryCommand('node_modules/.bin/codegraph status .').risk).toBe('readonly'); expect(classifyRepositoryCommandRoute(status)).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' }); for (const subcommand of ['init', 'sync']) { const mutation = ['node_modules/.bin/codegraph', subcommand, '.']; expect(classifyRepositoryCommand(mutation).risk).toBe('workspace_write'); expect(classifyRepositoryCommandRoute(mutation)).toEqual({ route: 'process_managed', reason: 'local_workspace_mutation' }); } });
 
   test('recognizes common wrapped and host observation commands as readonly', () => {
     expect(classifyRepositoryCommand(['git', 'check-ignore', '-q', '.codegraph']).risk).toBe('readonly');
