@@ -248,9 +248,48 @@ export function repositoryGitFinishWorkflow(controllerHome: string, repository: 
     steps.push({ name: 'switch_target', execution: switchTarget });
     if (switchTarget.status !== 'executed' || switchTarget.ok !== true) return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_SWITCH_TARGET_FAILED', message: switchTarget.stderr || 'git switch failed' } };
   }
-  const merge = executeRepositoryGitCommand(controllerHome, repository, { args: ['merge', ...(input.noFf === true ? ['--no-ff'] : ['--ff-only']), featureBranch], authorization: 'explicit_user_request', ...input });
+  const protectTrackedChanges = alreadyOnTarget && (before.staged.length > 0 || before.unstaged.length > 0);
+  const finishAuthorization = 'explicit_user_request' as const;
+  let stashRef: string | null = null;
+  if (protectTrackedChanges) {
+    const stash = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'push', '-m', `forge-finish:${input.workId ?? featureBranch}`], authorization: finishAuthorization, ...input });
+    steps.push({ name: 'stash_target_changes', execution: stash });
+    if (stash.status !== 'executed' || stash.ok !== true) return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_STASH_LOCAL_CHANGES_FAILED', message: stash.stderr || 'git stash push failed' } };
+    stashRef = gitText(repository, ['rev-parse', 'refs/stash']);
+    if (!stashRef) return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_STASH_REFERENCE_MISSING', message: 'Tracked changes were stashed but the stash reference could not be resolved.' } };
+    const workingTreeMerge = runGit(repository, ['merge-tree', '--write-tree', featureBranch, stashRef], 128 * 1024);
+    const indexTreeMerge = runGit(repository, ['merge-tree', '--write-tree', featureBranch, `${stashRef}^2`], 128 * 1024);
+    if (!workingTreeMerge.ok || !indexTreeMerge.ok) {
+      const restore = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'apply', '--index', stashRef], authorization: finishAuthorization, ...input });
+      steps.push({ name: 'restore_target_changes_after_preflight_conflict', execution: restore });
+      if (restore.status !== 'executed' || restore.ok !== true) return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_LOCAL_CHANGES_RESTORE_FAILED', message: restore.stderr || 'Tracked target changes could not be restored after integration preflight; recovery stash was retained.' } };
+      const drop = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'drop', stashRef], authorization: finishAuthorization, ...input });
+      steps.push({ name: 'drop_target_stash', execution: drop });
+      return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_LOCAL_CHANGES_REAPPLY_CONFLICT', message: workingTreeMerge.stderr || indexTreeMerge.stderr || 'Tracked target changes conflict with the feature branch; target branch was left unchanged and local changes were restored.' } };
+    }
+  }
+  const applyTrackedStash = (name: string): RepositoryGitExecution | undefined => {
+    if (!stashRef) return undefined;
+    const execution = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'apply', '--index', stashRef], authorization: finishAuthorization, ...input });
+    steps.push({ name, execution });
+    return execution;
+  };
+  const dropTrackedStash = (): void => {
+    if (!stashRef) return;
+    const execution = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'drop', stashRef], authorization: finishAuthorization, ...input });
+    steps.push({ name: 'drop_target_stash', execution });
+  };
+  const merge = executeRepositoryGitCommand(controllerHome, repository, { args: ['merge', ...(input.noFf === true ? ['--no-ff'] : ['--ff-only']), featureBranch], authorization: finishAuthorization, ...input });
   steps.push({ name: 'merge_feature', execution: merge });
-  if (merge.status !== 'executed' || merge.ok !== true) return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_MERGE_FAILED', message: merge.stderr || 'git merge failed' } };
+  if (merge.status !== 'executed' || merge.ok !== true) {
+    const restore = applyTrackedStash('restore_target_changes_after_merge_failure');
+    if (restore && (restore.status !== 'executed' || restore.ok !== true)) return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_LOCAL_CHANGES_RESTORE_FAILED', message: restore.stderr || 'git stash apply failed while restoring the pre-merge target state' } };
+    dropTrackedStash();
+    return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_MERGE_FAILED', message: merge.stderr || 'git merge failed' } };
+  }
+  const reapply = applyTrackedStash('reapply_target_changes');
+  if (reapply && (reapply.status !== 'executed' || reapply.ok !== true)) return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_LOCAL_CHANGES_RESTORE_FAILED', message: reapply.stderr || 'Tracked target changes passed merge-tree preflight but could not be reapplied after merge; recovery stash was retained.' } };
+  dropTrackedStash();
   if (input.deleteBranch !== false) {
     const del = executeRepositoryGitCommand(controllerHome, repository, { args: ['branch', '-d', featureBranch], authorization: 'explicit_user_request', ...input });
     steps.push({ name: 'delete_feature_branch', execution: del });
