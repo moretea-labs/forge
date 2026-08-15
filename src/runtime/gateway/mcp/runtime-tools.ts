@@ -15,7 +15,7 @@ import { repositoryControllerRoot } from '../../../cli/repositories/controller-h
 import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../execution/jobs/store';
 import { waitForExecutionJob } from '../../execution/jobs/wait';
 import type { ExecutionJob } from '../../execution/jobs/types';
-import { getProcessHandle, getProcessRecord, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
+import { getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
 import { executionIdentityForRepository } from '../../control-plane/execution/execution-identity';
@@ -202,7 +202,8 @@ import {
   releaseControllerSession,
   resumeControllerSession,
 } from '../../control-plane/facade';
-import { currentControllerInstanceId, startExecutionSession, updateExecutionSession } from '../../control-plane/execution/session-store';
+import { currentControllerInstanceId, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../control-plane/execution/session-store';
+import { currentPermissionSnapshotVersion } from '../../control-plane/execution/validation';
 import { observeRuntimeStatus } from '../../root/status';
 import { reconcileWorkValidation } from './work-validation-reconciler';
 import { callExecutionTool } from './execution-tools';
@@ -2986,6 +2987,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const activeContracts = listWorkContracts({ ...store, status: 'active', limit: 200 });
         const activePrimaryWork = activeContracts.filter((contract) => (contract.lifecycleRole ?? 'primary') === 'primary');
         const activeExecutionChildren = activeContracts.filter((contract) => contract.lifecycleRole === 'execution_child');
+        const activeProcessRecords = listProcessRecords(ctx.controllerHome, repository.repoId, 500).filter((process) => isManagedProcessActive(process));
+        const activeProcessWorkIds = new Set(activeProcessRecords.map((process) => process.workId).filter((workId): workId is string => Boolean(workId)));
+        const activeControllerWorkIds = new Set(activePrimaryWork.filter((contract) => Boolean(getControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId))).map((contract) => contract.workId));
+        const executingPrimaryWorkIds = new Set([...activeProcessWorkIds, ...activeControllerWorkIds].filter((workId) => activePrimaryWork.some((contract) => contract.workId === workId)));
         const preferredFacadeTools = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'] as const;
         const facade = buildFacadeResult({
           status: effectiveReady ? 'ok' : 'blocked',
@@ -3019,6 +3024,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             activeWorkCount: activePrimaryWork.length,
             activePrimaryWorkCount: activePrimaryWork.length,
             activeExecutionChildCount: activeExecutionChildren.length,
+            activeProcessCount: activeProcessRecords.length,
+            executingPrimaryWorkCount: executingPrimaryWorkIds.size,
+            waitingPrimaryWorkCount: Math.max(0, activePrimaryWork.length - executingPrimaryWorkIds.size),
             activeContractCount: activeContracts.length,
             // Summary keeps the stable facade surface only; detail expands to the full registered schema.
             toolSurface: detailLevel === 'detail'
@@ -3235,6 +3243,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             .filter((job) => timestampIsCurrent(job.updatedAt, currentCutoffMs))
             .slice(0, 5)
           : [];
+        const processScan = listProcessRecords(ctx.controllerHome, repository.repoId, workId ? 100 : 50);
+        const relevantProcesses = processScan.filter((process) => workId ? process.workId === workId : timestampIsCurrent(process.updatedAt, currentCutoffMs));
+        const activeProcesses = relevantProcesses.filter((process) => isManagedProcessActive(process));
+        const workController = work ? getControllerSession(store, work.workId) : undefined;
         const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, {
           preferStored: true,
         });
@@ -3272,6 +3284,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             || timestampIsCurrent(item.updatedAt, currentCutoffMs)
           ))
           : pendingAttention;
+        const workAttention = work ? currentAttentionScan.find((item) => item.workId === work.workId) : undefined;
         const currentAttentionItems = isSummary
           ? currentAttentionScan.slice(0, 3)
           : pendingAttention;
@@ -3327,6 +3340,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               }
             : undefined,
           executionJob: executionJob ? summarizeWorkListItem(executionJob) : undefined,
+          executionState: work ? (workAttention ? 'blocked' : activeProcesses.length > 0 ? 'executing' : workController ? 'controller_active' : 'waiting_trigger') : undefined,
+          activeController: workController ? { controllerType: workController.controllerType, sessionId: workController.sessionId, leaseExpiresAt: workController.leaseExpiresAt } : undefined,
+          activeProcesses: activeProcesses.slice(0, 3).map((process) => ({ processId: process.processId, workId: process.workId, status: process.status, route: process.route, startedAt: process.startedAt, updatedAt: process.updatedAt })),
+          recentProcesses: relevantProcesses.slice(0, 5).map((process) => ({ processId: process.processId, workId: process.workId, status: process.status, route: process.route, startedAt: process.startedAt, updatedAt: process.updatedAt })),
           activeWork: activeContracts.map((entry) => ({
             workId: entry.workId,
             status: entry.status,
@@ -3349,6 +3366,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             historicalNonTerminalWork: Math.max(0, activeContractScan.length - currentContractScan.length),
             currentAttention: currentAttentionScan.length,
             currentAttentionShown: attention.length,
+            activeProcesses: activeProcesses.length,
+            recentProcesses: relevantProcesses.length,
             pendingAttentionScanned: pendingAttention.length,
             historicalPendingAttention: Math.max(0, pendingAttention.length - currentAttentionScan.length),
             omittedCurrentAttention: Math.max(0, currentAttentionScan.length - attention.length),
@@ -3386,6 +3405,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           },
           work: work ? { ...work, continuation: buildWorkContinuationSnapshot(work) } : undefined,
           executionJob: executionJob ? summarizeWorkListItem(executionJob) : undefined,
+          executionState: work ? (workAttention ? 'blocked' : activeProcesses.length > 0 ? 'executing' : workController ? 'controller_active' : 'waiting_trigger') : undefined,
+          activeController: workController,
+          activeProcesses: activeProcesses.slice(0, 10),
+          recentProcesses: relevantProcesses.slice(0, 20),
           activeWork: activeContracts.map((entry) => ({
             workId: entry.workId,
             status: entry.status,
@@ -3401,6 +3424,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             capabilities: capabilities.length,
             activeWork: activeContracts.length,
             recentExecutionJobs: recentJobs.length,
+            activeProcesses: activeProcesses.length,
+            recentProcesses: relevantProcesses.length,
             activeAttention: attention.length,
           },
           bounded: true,
@@ -3536,7 +3561,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         if (operation === 'controller_claim') {
           try {
             const workId = String(args.work_id ?? '').trim();
-            if (!getWorkContract(store, workId)) throw new Error(`WORK_NOT_FOUND: ${workId}`);
+            const work = getWorkContract(store, workId);
+            if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
             const identity = authenticatedFacadeControllerIdentity(ctx, args);
             const session = resumeControllerSession(store, {
               workId,
@@ -3546,6 +3572,24 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               principalId: identity.principalId,
               controllerInstanceId: identity.controllerInstanceId,
               leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
+            });
+            const permissionSnapshotVersion = currentPermissionSnapshotVersion(ctx.controllerHome, repository.repoId);
+            const executionSession = startExecutionSession(ctx.controllerHome, {
+              sessionId: identity.sessionId,
+              principalId: identity.principalId,
+              controllerInstanceId: identity.controllerInstanceId,
+              permissionSnapshotVersion,
+            });
+            updateExecutionSession(ctx.controllerHome, {
+              sessionId: executionSession.sessionId,
+              principalId: executionSession.principalId,
+              controllerInstanceId: executionSession.controllerInstanceId,
+            }, {
+              activeRepositoryId: repository.repoId,
+              activeCheckoutId: work.checkoutId || repository.activeCheckoutId,
+              activeWorkId: work.workId,
+              permissionSnapshotVersion,
+              lastValidatedAt: new Date().toISOString(),
             });
             return result(buildFacadeResult({ summary: `Controller ${session.controllerId} claimed ${session.workId}.`, data: { session } }) as unknown as Record<string, unknown>);
           } catch (error) {
@@ -3561,6 +3605,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workId} is owned by ${owner.controllerId}`);
             }
             releaseControllerSession(store, workId, identity.controllerId);
+            const executionSession = readExecutionSession(ctx.controllerHome, identity);
+            if (executionSession?.activeWorkId === workId) {
+              updateExecutionSession(ctx.controllerHome, identity, { activeWorkId: undefined, lastValidatedAt: new Date().toISOString() });
+            }
             return result(buildFacadeResult({ summary: 'Controller lease released.', data: {} }) as unknown as Record<string, unknown>);
           } catch (error) {
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller release failed.', data: {} }) as unknown as Record<string, unknown>, true);

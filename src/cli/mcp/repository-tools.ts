@@ -2,6 +2,10 @@ import { bindRepositoryEntities } from '../repositories/entity-migration';
 import { bootstrapLocalProject, diagnoseLatestLocalProjectSource } from '../repositories/local-project-onboarding';
 import { resolveEphemeralWorkspaceTarget } from '../repositories/ephemeral-workspace';
 import type { ResolvedExecutionIdentity } from '../../runtime/control-plane/execution/execution-identity';
+import { readExecutionSession } from '../../runtime/control-plane/execution/session-store';
+import { getWorkContract } from '../../runtime/control-plane/facade/work-contract-store';
+import { getControllerSession } from '../../runtime/control-plane/facade/controller-session-store';
+import { isTerminalWorkContractStatus } from '../../runtime/control-plane/facade/types';
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../repositories/command-executor';
 import { withControllerLock } from '../repositories/locks';
 import {
@@ -20,7 +24,7 @@ import {
 } from '../repositories/registry';
 import { buildControllerWorkbench } from '../repositories/workbench';
 import { applySafePatch, buildSafePatchPlan } from '../repositories/safe-patch';
-import { getEditSessionDiff } from '../editing/edit-session';
+import { getEditSessionDiff, type EditSessionBinding } from '../editing/edit-session';
 import { buildSyncOperationDigest, classifyUserFacingError } from '../../runtime/control-plane/facade/operation-digest';
 import { diagnoseRepositoryStuckState, listRepositoryGoalRuns, readRepositoryGoalRegistry, runRepositoryGoal, upsertRepositoryGoal } from '../repositories/goal-registry';
 import {
@@ -50,6 +54,7 @@ import {
   executeRepositoryCommandViaProcessRuntime,
 } from '../../runtime/execution/process-runtime/command-facade';
 import { assessWorkMode, parseExplicitTaskMode } from '../controller/work-mode';
+import { normalizeRepositoryCommand } from '../repositories/command-normalization';
 import type { CallToolResult, McpToolDefinition } from './tools';
 import {
   boundUtf8,
@@ -303,10 +308,68 @@ function withResponseMeta(payload: Record<string, unknown>, startedAt: number): 
   return response;
 }
 
+export interface RepositoryToolCallerContext {
+  sessionId?: string;
+  principalId?: string;
+  controllerInstanceId?: string;
+}
+
+function claimedSessionWorkId(
+  controllerHome: string,
+  repository: ReturnType<typeof resolveRepositorySelection>,
+  caller?: RepositoryToolCallerContext,
+): string | undefined {
+  if (!caller?.sessionId?.trim() || !caller.principalId?.trim()) return undefined;
+  const executionSession = readExecutionSession(controllerHome, {
+    sessionId: caller.sessionId,
+    principalId: caller.principalId,
+    controllerInstanceId: caller.controllerInstanceId,
+  });
+  const workId = executionSession?.activeWorkId?.trim();
+  if (!workId || executionSession?.activeRepositoryId !== repository.repoId || (executionSession.activeCheckoutId && executionSession.activeCheckoutId !== repository.activeCheckoutId)) return undefined;
+  const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
+  if (!work || isTerminalWorkContractStatus(work.status)) return undefined;
+  const owner = getControllerSession({ controllerHome, repoId: repository.repoId }, workId);
+  if (!owner || owner.sessionId !== caller.sessionId || (owner.principalId?.trim() || owner.controllerId) !== caller.principalId.trim()) return undefined;
+  return workId;
+}
+
+function claimedSessionEditBinding(
+  controllerHome: string,
+  repository: ReturnType<typeof resolveRepositorySelection>,
+  caller?: RepositoryToolCallerContext,
+): EditSessionBinding | undefined {
+  const workId = claimedSessionWorkId(controllerHome, repository, caller);
+  if (!workId || !caller?.principalId?.trim()) return undefined;
+  const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
+  if (!work) return undefined;
+  return {
+    workId,
+    repoId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
+    principalId: caller.principalId.trim(),
+    controllerInstanceId: caller.controllerInstanceId,
+    routeDecisionFingerprint: work.routeDecisionFingerprint,
+  };
+}
+
+function activeWorkflowRawDefaultMergeBlocked(repository: ReturnType<typeof resolveRepositorySelection>, workId: string | undefined, command: unknown): boolean {
+  if (!workId || !repository.defaultBranch) return false;
+  const checkout = repository.checkouts.find((entry) => entry.checkoutId === repository.activeCheckoutId);
+  if (checkout?.branch !== repository.defaultBranch) return false;
+  const normalized = normalizeRepositoryCommand(command);
+  if (normalized.kind === 'argv') {
+    const executable = normalized.executable?.split('/').pop();
+    return executable === 'git' && normalized.args?.[0] === 'merge';
+  }
+  return /(?:^|[;&|]\s*)git\s+merge\b/.test(normalized.shellCommand ?? '');
+}
+
 function resolveRepositoryCommandTarget(
   controllerHome: string,
   args: Record<string, unknown>,
   repoIdValue: string,
+  caller?: RepositoryToolCallerContext,
 ): {
   repository: ReturnType<typeof resolveRepositorySelection>;
   executionIdentity: ResolvedExecutionIdentity;
@@ -337,6 +400,7 @@ function resolveRepositoryCommandTarget(
     controllerHome,
     allowSoleRepository: true,
   });
+  const workId = claimedSessionWorkId(controllerHome, repository, caller);
   return {
     repository,
     executionIdentity: {
@@ -345,6 +409,7 @@ function resolveRepositoryCommandTarget(
       repositoryId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
       canonicalRoot: repository.canonicalRoot,
+      ...(workId ? { workId } : {}),
     },
   };
 }
@@ -574,6 +639,7 @@ export async function callRepositoryTool(
   controllerHome: string,
   name: string,
   args: Record<string, unknown>,
+  caller?: RepositoryToolCallerContext,
 ): Promise<RepositoryToolResult | undefined> {
   if (!name.startsWith('repository_')) return undefined;
   try {
@@ -834,6 +900,7 @@ export async function callRepositoryTool(
           controllerHome,
           allowSoleRepository: true,
         });
+        const binding = claimedSessionEditBinding(controllerHome, repository, caller);
         const applied = withControllerLock(
           controllerHome,
           { scope: 'repository', repoId: repository.repoId },
@@ -848,6 +915,7 @@ export async function callRepositoryTool(
             continueOnError: args.continue_on_error,
             refreshFingerprints: args.refresh_fingerprints,
             recoverStaleSession: args.recover_stale_session,
+            binding,
           }),
           60_000,
         );
@@ -911,7 +979,7 @@ export async function callRepositoryTool(
         return ok ? result(payload) : { ...result(payload), isError: true };
       }
       case 'repository_command_preview': {
-        const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue);
+        const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
         const { repository } = target;
         const execution = withControllerLock(
           controllerHome,
@@ -931,8 +999,11 @@ export async function callRepositoryTool(
         });
       }
       case 'repository_command_execute': {
-        const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue);
+        const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
         const { repository, executionIdentity } = target;
+        if (activeWorkflowRawDefaultMergeBlocked(repository, executionIdentity.workId, args.command)) {
+          throw new Error(`WORK_DELIVERY_REQUIRES_FINALIZE: ${executionIdentity.workId} must pass Work verification and use rh_work finalize before default-branch integration`);
+        }
         const timeoutMs = typeof args.timeout_ms === 'number'
           ? args.timeout_ms
           : typeof args.timeout_ms === 'string'
@@ -991,6 +1062,7 @@ export async function callRepositoryTool(
                 maxOutputBytes,
                 returnHandleImmediately,
                 requestId: typeof args.request_id === 'string' ? args.request_id : undefined,
+                workId: executionIdentity.workId,
                 executionIdentity,
                 allowNonGitWorkspace: target.workspace !== undefined,
               });
@@ -1130,6 +1202,7 @@ export async function callRepositoryTool(
                 timeoutMs,
                 maxOutputBytes,
                 requestId: typeof args.request_id === 'string' ? args.request_id : undefined,
+                workId: executionIdentity.workId,
                 executionIdentity,
               });
               if (processResult.route === 'process_direct') {

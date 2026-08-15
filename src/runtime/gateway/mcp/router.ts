@@ -898,7 +898,7 @@ export async function routeDurableMcpCall(
       }, validation.isError === true);
     }
 
-    const applied = await callRepositoryTool(ctx.controllerHome, name, args);
+    const applied = await callRepositoryTool(ctx.controllerHome, name, args, ctx);
     if (!applied || applied.isError === true) return applied;
     const patchPayload = (applied.structuredContent ?? {}) as Record<string, unknown>;
     if (patchPayload.status !== 'applied') return applied;

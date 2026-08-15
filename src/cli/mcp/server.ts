@@ -466,7 +466,7 @@ export function createForgeMcpServerFromContext(
         if (runtimeResult) return runtimeResult;
         const durableResult = await routeDurableMcpCall(ctx, name, args);
         if (durableResult) return durableResult;
-        const repositoryResult = await callRepositoryTool(ctx.controllerHome, name, args);
+        const repositoryResult = await callRepositoryTool(ctx.controllerHome, name, args, ctx);
         if (repositoryResult) return repositoryResult;
         return callMultiRepositoryTool(ctx, name, args);
       });

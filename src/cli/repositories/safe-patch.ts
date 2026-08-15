@@ -7,6 +7,7 @@ import {
   getEditSession,
   type EditOperation,
   type EditSession,
+  type EditSessionBinding,
   type EditSessionPatchError,
 } from '../editing/edit-session';
 import { getMcpPolicy } from '../mcp/policy';
@@ -345,6 +346,7 @@ export function applySafePatch(repository: RepositoryRecord, input: {
   continueOnError?: unknown;
   refreshFingerprints?: unknown;
   recoverStaleSession?: unknown;
+  binding?: EditSessionBinding;
 }): SafePatchApplyResult {
   const operations = normalizedSafePatchOperations(input.operations);
   if (operations.length === 0) throw new Error('SAFE_PATCH_OPERATIONS_REQUIRED: provide at least one operation');
@@ -356,7 +358,7 @@ export function applySafePatch(repository: RepositoryRecord, input: {
   const allowedPaths = Array.isArray(input.allowedPaths) ? input.allowedPaths.map((item) => String(item).trim()).filter(Boolean) : undefined;
   let session = sessionId
     ? getEditSession(repository.canonicalRoot, sessionId)
-    : beginEditSession(repository.canonicalRoot, { purpose: String(input.purpose ?? 'Safe repository patch').trim() || 'Safe repository patch', allowedPaths });
+    : beginEditSession(repository.canonicalRoot, { purpose: String(input.purpose ?? 'Safe repository patch').trim() || 'Safe repository patch', allowedPaths, binding: input.binding });
   const createdSession = !sessionId;
   let recoveredSession: SafePatchRecoveredSession | undefined;
   const appliedChunks: SafePatchAppliedChunk[] = [];
@@ -376,17 +378,17 @@ export function applySafePatch(repository: RepositoryRecord, input: {
       continue;
     }
     try {
-      session = applyEditOperations(repository.canonicalRoot, policy, session.sessionId, preflight.operations.map(stripInternalIndex), { expectedRevision, maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE });
+      session = applyEditOperations(repository.canonicalRoot, policy, session.sessionId, preflight.operations.map(stripInternalIndex), { expectedRevision, maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE, binding: input.binding });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!sessionId && input.recoverStaleSession !== false && message.includes('EDIT_SESSION_FINGERPRINT_STALE')) {
         const previousSessionId = session.sessionId;
-        session = beginEditSession(repository.canonicalRoot, { purpose: `${String(input.purpose ?? 'Safe repository patch').trim() || 'Safe repository patch'} (recovered)`, allowedPaths });
+        session = beginEditSession(repository.canonicalRoot, { purpose: `${String(input.purpose ?? 'Safe repository patch').trim() || 'Safe repository patch'} (recovered)`, allowedPaths, binding: input.binding });
         expectedRevision = session.currentRevision;
         recoveredSession = { reason: 'Previous edit session fingerprints were stale; remaining chunks were moved into a fresh session.', previousSessionId, newSessionId: session.sessionId };
         const retry = preflightChunk(repository, group, chunkIndex, refresh);
         if (retry.failures.length === 0) {
-          session = applyEditOperations(repository.canonicalRoot, policy, session.sessionId, retry.operations.map(stripInternalIndex), { expectedRevision, maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE });
+          session = applyEditOperations(repository.canonicalRoot, policy, session.sessionId, retry.operations.map(stripInternalIndex), { expectedRevision, maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE, binding: input.binding });
         } else {
           failures.push(...retry.failures);
           failedChunk = chunkIndex;
