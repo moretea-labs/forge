@@ -12,9 +12,9 @@ const LEGACY_CONTROLLER_CHATGPT_SESSION_ID = 'forge-chatgpt-supercontroller';
 export const DEFAULT_CHATGPT_AUTOMATION_MODEL = 'gpt-5.6';
 export const DEFAULT_CHATGPT_AUTOMATION_REASONING = 'high';
 export const DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY = 'auto';
+export const DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge';
 const CHATGPT_PROMPT_SELECTOR = '[name="prompt-textarea"]';
 const CHATGPT_SEND_KEY = 'Enter';
-const CHATGPT_WORK_MODE_RADIO_SELECTOR = 'button[role="radio"]';
 const CHATGPT_INTELLIGENCE_CONTROL_SELECTOR = 'main button';
 const CHATGPT_CAPABILITY_SLIDER_SELECTOR = '[role="slider"]';
 const CHATGPT_CAPABILITY_MENUITEM_SELECTOR = '[role="menuitem"][aria-keyshortcuts~="ArrowLeft"][aria-keyshortcuts~="ArrowRight"]';
@@ -213,37 +213,6 @@ async function findChatgptIntelligenceControl(
   return queryMatches(result).find((match) => /(?:gpt-)?5\.6\s*sol/i.test(matchText(match)));
 }
 
-async function ensureChatgptWorkMode(
-  controllerHome: string,
-  workId: string,
-  browserSessionId: string,
-  timeoutMs?: number,
-): Promise<BrowserQueryMatch> {
-  const existing = await findChatgptIntelligenceControl(controllerHome, workId, browserSessionId, timeoutMs);
-  if (existing) return existing;
-  const radios = await controllerBrowserAction(controllerHome, workId, 'query_all', {
-    session_id: browserSessionId,
-    selector: CHATGPT_WORK_MODE_RADIO_SELECTOR,
-    limit: 10,
-    timeout_ms: timeoutMs ?? 60_000,
-  }, timeoutMs);
-  const workMode = queryMatches(radios).find((match) => {
-    const text = matchText(match).toLowerCase();
-    return text === '工作' || text === 'work';
-  });
-  const workSelector = matchSelector(workMode);
-  if (!workSelector) throw new Error('CHATGPT_AUTOMATION_WORK_MODE_UNAVAILABLE');
-  await controllerBrowserAction(controllerHome, workId, 'click', {
-    session_id: browserSessionId,
-    selector: workSelector,
-    timeout_ms: timeoutMs ?? 60_000,
-    post_action_wait_ms: 500,
-  }, timeoutMs);
-  const selected = await findChatgptIntelligenceControl(controllerHome, workId, browserSessionId, timeoutMs);
-  if (!selected) throw new Error('CHATGPT_AUTOMATION_WORK_MODE_NOT_VERIFIED');
-  return selected;
-}
-
 async function ensureChatgptExecutionPreference(
   controllerHome: string,
   workId: string,
@@ -253,7 +222,8 @@ async function ensureChatgptExecutionPreference(
   timeoutMs?: number,
 ): Promise<boolean> {
   if (model !== DEFAULT_CHATGPT_AUTOMATION_MODEL) throw new Error(`CHATGPT_AUTOMATION_MODEL_UNSUPPORTED:${model}`);
-  let control = await ensureChatgptWorkMode(controllerHome, workId, browserSessionId, timeoutMs);
+  let control = await findChatgptIntelligenceControl(controllerHome, workId, browserSessionId, timeoutMs);
+  if (!control) throw new Error('CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE');
   if (!modelLabelMatches(matchText(control), model)) throw new Error(`CHATGPT_AUTOMATION_MODEL_NOT_VERIFIED:${model}`);
   let controlSelector = matchSelector(control);
   if (!controlSelector) throw new Error('CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE');
@@ -323,6 +293,13 @@ function resultUrl(result: Record<string, unknown>): string | undefined {
     ?? stringField((result.session as Record<string, unknown> | undefined)?.url);
 }
 
+export function withForgePluginMention(prompt: string): string {
+  const value = prompt.trim();
+  if (!value) throw new Error('CHATGPT_AUTOMATION_PROMPT_REQUIRED');
+  if (/^@forge(?:\s|$)/i.test(value)) return value;
+  return `${DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION} ${value}`;
+}
+
 export async function runScheduledChatgptPrompt(input: ScheduledChatgptPromptInput): Promise<ScheduledChatgptPromptResult> {
   const model = normalizeModel(input.model);
   const reasoning = normalizeReasoning(input.reasoning);
@@ -368,7 +345,7 @@ export async function runScheduledChatgptPrompt(input: ScheduledChatgptPromptInp
     await controllerBrowserAction(input.controllerHome, input.automationId, 'fill', {
       session_id: sessionId,
       selector: CHATGPT_PROMPT_SELECTOR,
-      text: input.prompt,
+      text: withForgePluginMention(input.prompt),
       timeout_ms: input.timeoutMs ?? 60_000,
       post_action_wait_ms: 100,
     }, input.timeoutMs);
@@ -461,7 +438,7 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
     await controllerBrowserAction(input.controllerHome, input.workId, 'fill', {
       session_id: sessionId,
       selector: CHATGPT_PROMPT_SELECTOR,
-      text: input.prompt,
+      text: withForgePluginMention(input.prompt),
       timeout_ms: input.timeoutMs ?? 60_000,
       post_action_wait_ms: 100,
     }, input.timeoutMs);

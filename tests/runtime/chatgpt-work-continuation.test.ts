@@ -99,13 +99,13 @@ describe('ChatGPT Work conversation binding', () => {
     expect(result.error?.message).toContain('CHATGPT_WORK_CONTRACT_NOT_FOUND: repo-chatgpt-work:WORK-missing');
   });
 
-  test('submits continuation from the stable prompt editor instead of a send-button selector', () => {
+  test('keeps automation in Chat mode, prefixes @forge, and submits from the stable prompt editor', () => {
     const source = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
     expect(source).toContain("controllerBrowserAction(input.controllerHome, input.workId, 'press'");
     expect(source).toContain('key: CHATGPT_SEND_KEY');
     expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_MODEL = 'gpt-5.6'");
     expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_REASONING = 'high'");
-    expect(source).toContain('CHATGPT_WORK_MODE_RADIO_SELECTOR');
+    expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge'"); expect(source).not.toContain('CHATGPT_WORK_MODE_RADIO_SELECTOR');
     expect(source).toContain('CHATGPT_CAPABILITY_MENUITEM_SELECTOR');
     expect(source).toContain('aria-keyshortcuts~=\"ArrowRight\"');
     expect(source).not.toContain(':has-text(');
