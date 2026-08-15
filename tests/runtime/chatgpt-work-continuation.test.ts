@@ -105,7 +105,10 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain('key: CHATGPT_SEND_KEY');
     expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_MODEL = 'gpt-5.6'");
     expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_REASONING = 'high'");
-    expect(source).toContain('CHATGPT_REASONING_LABEL_SELECTOR');
+    expect(source).toContain('CHATGPT_WORK_MODE_RADIO_SELECTOR');
+    expect(source).toContain('CHATGPT_CAPABILITY_MENUITEM_SELECTOR');
+    expect(source).toContain('aria-keyshortcuts~=\"ArrowRight\"');
+    expect(source).not.toContain(':has-text(');
     expect(source).toContain('runScheduledChatgptPrompt');
     expect(source).not.toContain('[data-testid=\"send-button\"]');
   });

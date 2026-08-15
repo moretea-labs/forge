@@ -14,8 +14,10 @@ export const DEFAULT_CHATGPT_AUTOMATION_REASONING = 'high';
 export const DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY = 'auto';
 const CHATGPT_PROMPT_SELECTOR = '[name="prompt-textarea"]';
 const CHATGPT_SEND_KEY = 'Enter';
-const CHATGPT_REASONING_TRIGGER_SELECTOR = 'button:has([data-animated-slider-trigger="true"])';
-const CHATGPT_REASONING_LABEL_SELECTOR = '[data-animated-slider-trigger="true"]';
+const CHATGPT_WORK_MODE_RADIO_SELECTOR = 'button[role="radio"]';
+const CHATGPT_INTELLIGENCE_CONTROL_SELECTOR = 'main button';
+const CHATGPT_CAPABILITY_SLIDER_SELECTOR = '[role="slider"]';
+const CHATGPT_CAPABILITY_MENUITEM_SELECTOR = '[role="menuitem"][aria-keyshortcuts~="ArrowLeft"][aria-keyshortcuts~="ArrowRight"]';
 
 export type ChatgptAutomationReasoning = 'medium' | 'high' | 'xhigh';
 export type ChatgptAutomationTabPolicy = 'auto' | 'reuse' | 'new';
@@ -166,25 +168,80 @@ export function resolveChatgptWorkBrowserSessionId(input: {
   return stable;
 }
 
-function reasoningLabelMatches(label: string | undefined, reasoning: ChatgptAutomationReasoning): boolean {
-  const value = label?.replace(/\s+/g, '').toLowerCase();
-  if (!value) return false;
-  if (reasoning === 'high') return value === 'high' || value === '高';
-  if (reasoning === 'medium') return value === 'medium' || value === '中';
-  return value === 'xhigh' || value === 'extrahigh' || value === '超高';
+interface BrowserQueryMatch {
+  text?: string;
+  selectorHint?: string;
 }
 
-function reasoningSelectors(reasoning: ChatgptAutomationReasoning): string[] {
-  const labels = reasoning === 'high'
-    ? ['High', '高']
-    : reasoning === 'medium'
-      ? ['Medium', '中']
-      : ['Extra high', 'XHigh', '超高'];
-  return labels.flatMap((label) => [
-    `[role="menuitemradio"]:has-text("${label}")`,
-    `[role="menuitem"]:has-text("${label}")`,
-    `[role="option"]:has-text("${label}")`,
-  ]);
+function queryMatches(result: Record<string, unknown> | undefined): BrowserQueryMatch[] {
+  if (!result || !Array.isArray(result.matches)) return [];
+  return result.matches.filter((value): value is BrowserQueryMatch => Boolean(value) && typeof value === 'object');
+}
+
+function matchText(value: BrowserQueryMatch): string {
+  return typeof value.text === 'string' ? value.text.trim() : '';
+}
+
+function matchSelector(value: BrowserQueryMatch | undefined): string | undefined {
+  return typeof value?.selectorHint === 'string' && value.selectorHint.trim() ? value.selectorHint.trim() : undefined;
+}
+
+function modelLabelMatches(label: string | undefined, model: string): boolean {
+  if (model !== DEFAULT_CHATGPT_AUTOMATION_MODEL || !label) return false;
+  const normalized = label.toLowerCase().replace(/\s+/g, '');
+  return normalized.includes('5.6sol') || normalized.includes('gpt-5.6sol');
+}
+
+function reasoningSliderValue(reasoning: ChatgptAutomationReasoning): number {
+  if (reasoning === 'medium') return 2;
+  if (reasoning === 'high') return 3;
+  return 4;
+}
+
+async function findChatgptIntelligenceControl(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  timeoutMs?: number,
+): Promise<BrowserQueryMatch | undefined> {
+  const result = await controllerBrowserAction(controllerHome, workId, 'query_all', {
+    session_id: browserSessionId,
+    selector: CHATGPT_INTELLIGENCE_CONTROL_SELECTOR,
+    limit: 50,
+    timeout_ms: timeoutMs ?? 60_000,
+  }, timeoutMs);
+  return queryMatches(result).find((match) => /(?:gpt-)?5\.6\s*sol/i.test(matchText(match)));
+}
+
+async function ensureChatgptWorkMode(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  timeoutMs?: number,
+): Promise<BrowserQueryMatch> {
+  const existing = await findChatgptIntelligenceControl(controllerHome, workId, browserSessionId, timeoutMs);
+  if (existing) return existing;
+  const radios = await controllerBrowserAction(controllerHome, workId, 'query_all', {
+    session_id: browserSessionId,
+    selector: CHATGPT_WORK_MODE_RADIO_SELECTOR,
+    limit: 10,
+    timeout_ms: timeoutMs ?? 60_000,
+  }, timeoutMs);
+  const workMode = queryMatches(radios).find((match) => {
+    const text = matchText(match).toLowerCase();
+    return text === '工作' || text === 'work';
+  });
+  const workSelector = matchSelector(workMode);
+  if (!workSelector) throw new Error('CHATGPT_AUTOMATION_WORK_MODE_UNAVAILABLE');
+  await controllerBrowserAction(controllerHome, workId, 'click', {
+    session_id: browserSessionId,
+    selector: workSelector,
+    timeout_ms: timeoutMs ?? 60_000,
+    post_action_wait_ms: 500,
+  }, timeoutMs);
+  const selected = await findChatgptIntelligenceControl(controllerHome, workId, browserSessionId, timeoutMs);
+  if (!selected) throw new Error('CHATGPT_AUTOMATION_WORK_MODE_NOT_VERIFIED');
+  return selected;
 }
 
 async function ensureChatgptExecutionPreference(
@@ -196,45 +253,68 @@ async function ensureChatgptExecutionPreference(
   timeoutMs?: number,
 ): Promise<boolean> {
   if (model !== DEFAULT_CHATGPT_AUTOMATION_MODEL) throw new Error(`CHATGPT_AUTOMATION_MODEL_UNSUPPORTED:${model}`);
-  const current = await controllerBrowserAction(controllerHome, workId, 'get_text', {
-    session_id: browserSessionId,
-    selector: CHATGPT_REASONING_LABEL_SELECTOR,
-    max_chars: 128,
-    timeout_ms: timeoutMs ?? 60_000,
-  }, timeoutMs).catch(() => undefined);
-  if (reasoningLabelMatches(stringField(current?.text), reasoning)) return true;
+  let control = await ensureChatgptWorkMode(controllerHome, workId, browserSessionId, timeoutMs);
+  if (!modelLabelMatches(matchText(control), model)) throw new Error(`CHATGPT_AUTOMATION_MODEL_NOT_VERIFIED:${model}`);
+  let controlSelector = matchSelector(control);
+  if (!controlSelector) throw new Error('CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE');
 
-  await controllerBrowserAction(controllerHome, workId, 'click', {
+  const expanded = await controllerBrowserAction(controllerHome, workId, 'get_attribute', {
     session_id: browserSessionId,
-    selector: CHATGPT_REASONING_TRIGGER_SELECTOR,
-    timeout_ms: timeoutMs ?? 60_000,
-    post_action_wait_ms: 250,
-  }, timeoutMs);
-  let selected = false;
-  for (const selector of reasoningSelectors(reasoning)) {
-    try {
-      await controllerBrowserAction(controllerHome, workId, 'click', {
-        session_id: browserSessionId,
-        selector,
-        timeout_ms: Math.min(timeoutMs ?? 60_000, 3_000),
-        post_action_wait_ms: 250,
-      }, timeoutMs);
-      selected = true;
-      break;
-    } catch {
-      // ChatGPT labels differ by locale. Continue through bounded known labels.
-    }
-  }
-  if (!selected) throw new Error(`CHATGPT_AUTOMATION_REASONING_SELECTION_FAILED:${reasoning}`);
-  const verified = await controllerBrowserAction(controllerHome, workId, 'get_text', {
-    session_id: browserSessionId,
-    selector: CHATGPT_REASONING_LABEL_SELECTOR,
-    max_chars: 128,
+    selector: controlSelector,
+    attribute: 'aria-expanded',
     timeout_ms: timeoutMs ?? 60_000,
   }, timeoutMs).catch(() => undefined);
-  if (!reasoningLabelMatches(stringField(verified?.text), reasoning)) {
+  if (stringField(expanded?.value) !== 'true') {
+    await controllerBrowserAction(controllerHome, workId, 'press', {
+      session_id: browserSessionId,
+      selector: controlSelector,
+      key: 'ArrowDown',
+      timeout_ms: timeoutMs ?? 60_000,
+      post_action_wait_ms: 150,
+    }, timeoutMs);
+  }
+
+  const currentValueResult = await controllerBrowserAction(controllerHome, workId, 'get_attribute', {
+    session_id: browserSessionId,
+    selector: CHATGPT_CAPABILITY_SLIDER_SELECTOR,
+    attribute: 'aria-valuenow',
+    timeout_ms: timeoutMs ?? 60_000,
+  }, timeoutMs).catch(() => undefined);
+  const currentValue = Number(stringField(currentValueResult?.value));
+  const targetValue = reasoningSliderValue(reasoning);
+  if (!Number.isInteger(currentValue) || currentValue < 0 || currentValue > 4) {
+    throw new Error(`CHATGPT_AUTOMATION_REASONING_STATE_UNAVAILABLE:${reasoning}`);
+  }
+  const direction = targetValue > currentValue ? 'ArrowRight' : 'ArrowLeft';
+  for (let index = 0; index < Math.abs(targetValue - currentValue); index += 1) {
+    await controllerBrowserAction(controllerHome, workId, 'press', {
+      session_id: browserSessionId,
+      selector: CHATGPT_CAPABILITY_MENUITEM_SELECTOR,
+      key: direction,
+      timeout_ms: timeoutMs ?? 60_000,
+      post_action_wait_ms: 120,
+    }, timeoutMs);
+  }
+
+  const verifiedValueResult = await controllerBrowserAction(controllerHome, workId, 'get_attribute', {
+    session_id: browserSessionId,
+    selector: CHATGPT_CAPABILITY_SLIDER_SELECTOR,
+    attribute: 'aria-valuenow',
+    timeout_ms: timeoutMs ?? 60_000,
+  }, timeoutMs).catch(() => undefined);
+  if (Number(stringField(verifiedValueResult?.value)) !== targetValue) {
     throw new Error(`CHATGPT_AUTOMATION_REASONING_NOT_VERIFIED:${reasoning}`);
   }
+  control = await findChatgptIntelligenceControl(controllerHome, workId, browserSessionId, timeoutMs) ?? control;
+  if (!modelLabelMatches(matchText(control), model)) throw new Error(`CHATGPT_AUTOMATION_MODEL_NOT_VERIFIED:${model}`);
+  controlSelector = matchSelector(control) ?? controlSelector;
+  await controllerBrowserAction(controllerHome, workId, 'press', {
+    session_id: browserSessionId,
+    selector: controlSelector,
+    key: 'Escape',
+    timeout_ms: timeoutMs ?? 60_000,
+    post_action_wait_ms: 100,
+  }, timeoutMs).catch(() => undefined);
   return true;
 }
 
