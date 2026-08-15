@@ -45,11 +45,6 @@ import { applyScheduleDedupe, buildScheduleDedupeReport, createSchedule, getSche
 import { evaluateSchedule } from '../../workflow/schedules/engine';
 import {
   createWorkContinuationSchedule,
-  getWorkContinuationSchedule,
-  listWorkContinuationSchedules,
-  pauseWorkContinuationSchedule,
-  resumeWorkContinuationSchedule,
-  triggerWorkContinuationSchedule,
   type ContinuationControllerType,
 } from '../../workflow/schedules/work-continuation';
 import { createPortfolioWorkflow, getPortfolioWorkflow, listPortfolioWorkflows } from '../../workflow/portfolio/store';
@@ -295,7 +290,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
   }),
   definition('rh_work', 'Preferred ChatGPT facade: bounded planning, direct control, controller ownership, and external SuperController launch.', {
     repo_id: repoId,
-    operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'controller_claim', 'controller_release', 'controller_get_owner', 'launcher_start', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_supersede', 'schedule_create', 'schedule_list', 'schedule_get', 'schedule_pause', 'schedule_resume', 'schedule_trigger'], description: 'Defaults to start. Complex starts require plan_id and plan_step_id. schedule_* manages Work-bound continuation, browser watchers, and browser keepalive.' },
+    operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'controller_claim', 'controller_release', 'controller_get_owner', 'launcher_start', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_supersede', 'schedule_create', 'schedule_list', 'schedule_get', 'schedule_pause', 'schedule_resume', 'schedule_trigger'], description: 'Defaults to start. Complex starts require plan_id and plan_step_id. schedule_* manages generic recurring ChatGPT workflow schedules plus Work-bound continuation/browser subtypes.' },
     objective: { type: 'string' },
     work_id: { type: 'string' },
     related_work_id: { type: 'string', description: 'Optional explicit existing Work ownership target for continue/extend semantics. Unrelated active Work is never inferred as a semantic target.' },
@@ -314,11 +309,11 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     launch_args: { type: 'array', items: { type: 'string' }, description: 'Provider-specific arguments for launcher_start.' },
     browser_session_id: { type: 'string', description: 'Saved Forge ChatGPT browser session to continue when controller_type=chatgpt.' },
     conversation_url: { type: 'string', description: 'Explicit https://chatgpt.com conversation URL used when no saved Forge browser session exists.' },
-    continuation_prompt: { type: 'string', description: 'Additional bounded continuation instruction appended to the Work/Handoff prompt.' },
+    continuation_prompt: { type: 'string', description: 'Bounded Work continuation instruction, or the recurring ChatGPT prompt when schedule_mode=workflow and objective is omitted.' },
     schedule_id: { type: 'string', description: 'Schedule identity for schedule_get/pause/resume/trigger.' },
-    schedule_name: { type: 'string', description: 'Human-readable schedule name; defaults to Continue Work <work_id>.' },
+    schedule_name: { type: 'string', description: 'Human-readable schedule name; generic workflow schedules use the objective/prompt when omitted.' },
     schedule_request_id: { type: 'string', description: 'Stable idempotency key for schedule_create.' },
-    schedule_mode: { type: 'string', enum: ['continuation', 'browser_watch', 'browser_keepalive'], description: 'Defaults to continuation. browser_watch compares a deterministic text fingerprint and wakes the bound Controller only on change; browser_keepalive only refreshes/checks auth.' },
+    schedule_mode: { type: 'string', enum: ['workflow', 'continuation', 'browser_watch', 'browser_keepalive'], description: 'Defaults to workflow when work_id is omitted and continuation when work_id is present. workflow dispatches one bounded ChatGPT prompt per finite Occurrence without requiring Work; continuation/browser modes remain Work-bound.' },
     probe_url: { type: 'string', description: 'Allowed URL to navigate or refresh for browser_watch/browser_keepalive.' },
     probe_browser_session_id: { type: 'string', description: 'Existing Forge browser session used as the external observation target.' },
     probe_selector: { type: 'string', description: 'Optional selector limiting text extraction for browser_watch.' },
@@ -3558,8 +3553,56 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               const triggerType = ['interval', 'cron', 'calendar', 'condition', 'repository-event', 'dependency-checkpoint', 'manual'].includes(triggerTypeRaw)
                 ? triggerTypeRaw as 'interval' | 'cron' | 'calendar' | 'condition' | 'repository-event' | 'dependency-checkpoint' | 'manual'
                 : undefined;
-              const scheduleModeRaw = String(args.schedule_mode ?? 'continuation').trim();
-              if (!['continuation', 'browser_watch', 'browser_keepalive'].includes(scheduleModeRaw)) throw new Error('SCHEDULE_MODE_INVALID');
+              const scheduleModeRaw = String(args.schedule_mode ?? (workId ? 'continuation' : 'workflow')).trim();
+              if (!['workflow', 'continuation', 'browser_watch', 'browser_keepalive'].includes(scheduleModeRaw)) throw new Error('SCHEDULE_MODE_INVALID');
+              if (scheduleModeRaw === 'workflow') {
+                if (controllerType !== 'chatgpt') throw new Error('WORKFLOW_SCHEDULE_CONTROLLER_TYPE_UNSUPPORTED');
+                const prompt = (typeof args.objective === 'string' ? args.objective : typeof args.continuation_prompt === 'string' ? args.continuation_prompt : '').trim();
+                if (!prompt) throw new Error('WORKFLOW_SCHEDULE_PROMPT_REQUIRED');
+                const trigger = {
+                  type: triggerType ?? (typeof args.every_minutes === 'number' ? 'interval' : 'manual'),
+                  everyMinutes: typeof args.every_minutes === 'number' ? Math.max(1, Math.trunc(args.every_minutes)) : undefined,
+                  cronExpression: typeof args.cron_expression === 'string' ? args.cron_expression : undefined,
+                  timezone: typeof args.schedule_timezone === 'string' ? args.schedule_timezone : undefined,
+                  catchUpMinutes: typeof args.catch_up_minutes === 'number' ? Math.max(0, Math.trunc(args.catch_up_minutes)) : undefined,
+                  calendarAt: typeof args.calendar_at === 'string' ? args.calendar_at : undefined,
+                  condition: args.condition && typeof args.condition === 'object' && !Array.isArray(args.condition) ? args.condition as never : undefined,
+                  eventName: typeof args.event_name === 'string' ? args.event_name : undefined,
+                  dependencyJobIds: Array.isArray(args.dependency_job_ids) ? args.dependency_job_ids.map(String) : undefined,
+                };
+                const policy = {
+                  maxActiveOccurrences: 1,
+                  maxFailures: typeof args.max_failures === 'number' ? Math.max(1, Math.trunc(args.max_failures)) : 3,
+                  cooldownMinutes: typeof args.cooldown_minutes === 'number' ? Math.max(0, Math.trunc(args.cooldown_minutes)) : 120,
+                  dailyBudgetMinutes: typeof args.daily_budget_minutes === 'number' ? Math.max(1, Math.trunc(args.daily_budget_minutes)) : 180,
+                  shadowMode: args.shadow_mode !== false,
+                  backoffBaseMinutes: typeof args.backoff_base_minutes === 'number' ? Math.max(1, Math.trunc(args.backoff_base_minutes)) : 5,
+                  backoffMaxMinutes: typeof args.backoff_max_minutes === 'number' ? Math.max(1, Math.trunc(args.backoff_max_minutes)) : 24 * 60,
+                };
+                const actionArguments = {
+                  prompt,
+                  ...(typeof args.browser_session_id === 'string' && args.browser_session_id.trim() ? { browser_session_id: args.browser_session_id.trim() } : {}),
+                  ...(typeof args.conversation_url === 'string' && args.conversation_url.trim() ? { conversation_url: args.conversation_url.trim() } : {}),
+                };
+                assertAutomatedOperationAllowed('chatgpt_browser_prompt', actionArguments);
+                const name = typeof args.schedule_name === 'string' && args.schedule_name.trim() ? args.schedule_name.trim() : `Workflow: ${prompt.slice(0, 80)}`;
+                const stopConditions = Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : [];
+                const semantic = JSON.stringify({ repoId: repository.repoId, name, trigger, policy, actionArguments, stopConditions });
+                const requestId = typeof args.schedule_request_id === 'string' && args.schedule_request_id.trim()
+                  ? args.schedule_request_id.trim()
+                  : `workflow-schedule:${repository.repoId}:${createHash('sha256').update(semantic).digest('hex').slice(0, 20)}`;
+                const schedule = createSchedule(ctx.controllerHome, {
+                  requestId,
+                  repoId: repository.repoId,
+                  name,
+                  enabled: true,
+                  trigger,
+                  policy,
+                  action: { operation: 'chatgpt_browser_prompt', target: 'runtime', arguments: actionArguments, resourceClaims: [] },
+                  stopConditions,
+                });
+                return result(buildFacadeResult({ summary: `Workflow schedule ${schedule.scheduleId} is configured without a durable Work.`, data: { schedule } }) as unknown as Record<string, unknown>);
+              }
               const created = createWorkContinuationSchedule(ctx.controllerHome, repository.repoId, {
                 workId,
                 scheduleMode: scheduleModeRaw as 'continuation' | 'browser_watch' | 'browser_keepalive',
@@ -3605,30 +3648,38 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               return result(buildFacadeResult({ summary: `Work schedule ${created.schedule.scheduleId} is configured for Work ${workId}.`, data: { schedule: created.schedule, work: buildWorkContinuationSnapshot(created.work) } }) as unknown as Record<string, unknown>);
             }
             if (operation === 'schedule_list') {
-              const listed = listWorkContinuationSchedules(ctx.controllerHome, repository.repoId, { workId: workId || undefined, includeOccurrences: args.include_occurrences === true });
-              return result(buildFacadeResult({ summary: `Found ${listed.schedules.length} Work continuation schedule(s).`, data: listed }) as unknown as Record<string, unknown>);
+              const schedules = listSchedules(ctx.controllerHome, repository.repoId)
+                .filter((entry) => !workId || entry.action.arguments?.work_id === workId);
+              const data = args.include_occurrences === true
+                ? { schedules, occurrences: listOccurrences(ctx.controllerHome, repository.repoId, undefined, 100).filter((entry) => schedules.some((schedule) => schedule.scheduleId === entry.scheduleId)) }
+                : { schedules };
+              return result(buildFacadeResult({ summary: `Found ${schedules.length} schedule(s).`, data }) as unknown as Record<string, unknown>);
             }
             if (!scheduleId) throw new Error('SCHEDULE_ID_REQUIRED');
             if (operation === 'schedule_get') {
-              const fetched = getWorkContinuationSchedule(ctx.controllerHome, repository.repoId, scheduleId, args.include_occurrences === true);
-              return result(buildFacadeResult({ summary: `Continuation schedule ${scheduleId}.`, data: fetched }) as unknown as Record<string, unknown>);
+              const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
+              const data = args.include_occurrences === true ? { schedule, occurrences: listOccurrences(ctx.controllerHome, repository.repoId, scheduleId, 50) } : { schedule };
+              return result(buildFacadeResult({ summary: `Schedule ${scheduleId}.`, data }) as unknown as Record<string, unknown>);
             }
             if (operation === 'schedule_pause') {
-              const schedule = pauseWorkContinuationSchedule(ctx.controllerHome, repository.repoId, scheduleId, typeof args.reason === 'string' ? args.reason : undefined);
-              return result(buildFacadeResult({ summary: `Continuation schedule ${scheduleId} is paused.`, data: { schedule } }) as unknown as Record<string, unknown>);
+              const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
+              const saved = saveSchedule(ctx.controllerHome, { ...schedule, enabled: false, pausedReason: typeof args.reason === 'string' && args.reason.trim() ? args.reason.trim() : 'Paused by ChatGPT.' });
+              return result(buildFacadeResult({ summary: `Schedule ${scheduleId} is paused.`, data: { schedule: saved } }) as unknown as Record<string, unknown>);
             }
             if (operation === 'schedule_resume') {
-              const schedule = resumeWorkContinuationSchedule(ctx.controllerHome, repository.repoId, scheduleId);
-              return result(buildFacadeResult({ summary: `Continuation schedule ${scheduleId} is resumed.`, data: { schedule } }) as unknown as Record<string, unknown>);
+              const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
+              const saved = saveSchedule(ctx.controllerHome, { ...schedule, enabled: true, pausedReason: undefined, consecutiveFailures: 0, nextEligibleAt: undefined });
+              return result(buildFacadeResult({ summary: `Schedule ${scheduleId} is resumed.`, data: { schedule: saved } }) as unknown as Record<string, unknown>);
             }
             if (operation === 'schedule_trigger') {
-              const occurrence = await triggerWorkContinuationSchedule(ctx.controllerHome, repository.repoId, scheduleId, {
+              const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
+              const occurrence = await evaluateSchedule(ctx.controllerHome, schedule, true, {
                 source: typeof args.event_name === 'string' && args.event_name.trim() ? 'repository-event' : 'manual',
                 eventName: typeof args.event_name === 'string' ? args.event_name : undefined,
                 eventId: typeof args.event_id === 'string' ? args.event_id : undefined,
                 data: args.event_data && typeof args.event_data === 'object' && !Array.isArray(args.event_data) ? args.event_data as Record<string, unknown> : undefined,
               });
-              return result(buildFacadeResult({ summary: occurrence ? `Continuation schedule ${scheduleId} produced ${occurrence.decision}.` : `Continuation schedule ${scheduleId} produced no occurrence.`, data: { occurrence } }) as unknown as Record<string, unknown>);
+              return result(buildFacadeResult({ summary: occurrence ? `Schedule ${scheduleId} produced ${occurrence.decision}.` : `Schedule ${scheduleId} produced no occurrence.`, data: { occurrence } }) as unknown as Record<string, unknown>);
             }
           } catch (error) {
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Schedule operation failed.', data: {} }) as unknown as Record<string, unknown>, true);
