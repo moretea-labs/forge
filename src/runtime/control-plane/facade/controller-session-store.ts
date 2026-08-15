@@ -68,8 +68,10 @@ function claimedSession(
   const leaseExpiresAt = new Date(
     Date.parse(claimedAt) + Math.max(1_000, Math.min(input.leaseMs ?? 300_000, 3_600_000)),
   ).toISOString();
+  const previousPrincipal = previous?.principalId?.trim() || previous?.controllerId;
+  const inputPrincipal = input.principalId?.trim() || input.controllerId;
   const sameOwner = previous?.controllerId === input.controllerId
-    && previous.sessionId === input.sessionId
+    && previousPrincipal === inputPrincipal
     && (previous.controllerInstanceId ?? '') === (input.controllerInstanceId?.trim() ?? '');
   const claimGeneration = sameOwner
     ? Math.max(1, previous?.claimGeneration ?? 1)
@@ -147,10 +149,10 @@ export function claimControllerSession(
 }
 
 /**
- * Resume a claim after transport replacement without allowing same-epoch stealing.
- * The authenticated principal must remain identical, and a different session id
- * is accepted only when the previous execution session is gone/invalidated or
- * belongs to a different Controller instance (the normal rollout boundary).
+ * Resume a claim after transport replacement. Durable Work ownership belongs to
+ * the authenticated principal/controller epoch, not to one MCP transport session.
+ * A same-principal session rotation therefore preserves ownership generation;
+ * a controller-epoch change is recovery and advances the generation fence.
  */
 export function resumeControllerSession(
   options: ControllerSessionStoreOptions,
@@ -176,14 +178,6 @@ export function resumeControllerSession(
       }
       if (current.controllerId !== input.controllerId) {
         throw new Error(`WORK_ALREADY_CLAIMED: ${input.workId} is owned by ${current.controllerId}`);
-      }
-      if (current.sessionId !== input.sessionId) {
-        const priorInstance = current.controllerInstanceId?.trim() || priorExecution?.controllerInstanceId?.trim();
-        const priorSessionUnavailable = !priorExecution || Boolean(priorExecution.invalidatedAt);
-        const crossedControllerEpoch = Boolean(priorInstance && priorInstance !== input.controllerInstanceId.trim());
-        if (!priorSessionUnavailable && !crossedControllerEpoch) {
-          throw new Error(`WORK_ALREADY_CLAIMED: ${input.workId} has an active session ${current.sessionId}`);
-        }
       }
       return persistClaim(options, store, input, current);
     },

@@ -49,16 +49,18 @@ describe('controller Work ownership fencing', () => {
     expect(resumed.claimGeneration).toBe(2);
   });
 
-  test('does not steal a live same-instance session', () => {
+  test('rotates MCP transport session without moving same-principal ownership', () => {
     const home = controllerHome();
     startExecutionSession(home, { sessionId: 'session-a', principalId: 'principal-a', controllerInstanceId: 'instance-a' });
     startExecutionSession(home, { sessionId: 'session-b', principalId: 'principal-a', controllerInstanceId: 'instance-a' });
     const first = claimControllerSession({ controllerHome: home, repoId: 'repo-a' }, claimInput('session-a', 'principal-a', 'instance-a'));
 
-    expect(() => resumeControllerSession({ controllerHome: home, repoId: 'repo-a' }, {
+    const resumed = resumeControllerSession({ controllerHome: home, repoId: 'repo-a' }, {
       ...claimInput('session-b', 'principal-a', 'instance-a'),
       expectedClaimGeneration: first.claimGeneration,
-    })).toThrow(/WORK_ALREADY_CLAIMED/);
+    });
+    expect(resumed.sessionId).toBe('session-b');
+    expect(resumed.claimGeneration).toBe(first.claimGeneration);
   });
 
   test('rejects another principal and stale recovery generation', () => {
