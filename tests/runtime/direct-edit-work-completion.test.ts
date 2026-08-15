@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { applyEditOperations, beginEditSession, finalizeEditSession } from '../../src/cli/editing/edit-session';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
-import { reconcileFinalizedDirectEditWorksAfterCommit } from '../../src/runtime/control-plane/execution/direct-edit-work-completion';
+import { acceptReviewedDirectEditWorkReconciliation, reconcileFinalizedDirectEditWorksAfterCommit } from '../../src/runtime/control-plane/execution/direct-edit-work-completion';
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 
 const roots: string[] = [];
@@ -32,6 +32,7 @@ function fixture() {
     workId,
     repoId,
     checkoutId,
+    baseRevision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim(),
     mode: 'direct_control',
     objective: 'Complete a standalone Direct Edit through WorkContract authority.',
     acceptanceCriteria: [],
@@ -95,6 +96,50 @@ describe('standalone Direct Edit Work completion', () => {
         cleanup: { status: 'complete', blockers: [] },
       },
     });
+  });
+
+  test('closes historically delivered Work through explicit reviewed revision and path proof', () => {
+    const fx = fixture();
+    commitExample(fx.repoRoot);
+    const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    const result = acceptReviewedDirectEditWorkReconciliation({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repoId,
+      checkoutId: fx.checkoutId,
+      repoRoot: fx.repoRoot,
+      workId: fx.workId,
+      targetBranch: 'main',
+      targetRevision,
+      comparedPaths: ['src/example.ts'],
+      reviewer: 'reviewer-test',
+      rationale: 'The exact owned path tree is already integrated at the accepted target revision.',
+      cleanupOwnershipProof: 'This current-checkout Work owns no managed branch or worktree cleanup.',
+    });
+
+    expect(result.reconciliation).toMatchObject({ method: 'owned_path_tree', outcome: 'accepted_equivalence', comparedPaths: ['src/example.ts'] });
+    expect(result.receipt).toMatchObject({ source: 'direct_edit_work', reconciliationId: result.reconciliation.reconciliationId, targetRevision });
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)).toMatchObject({ status: 'completed', completionOutcome: 'completed_changed' });
+  });
+
+  test('rejects reviewed reconciliation unless the supplied path set is exact', () => {
+    const fx = fixture();
+    commitExample(fx.repoRoot);
+    const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    expect(() => acceptReviewedDirectEditWorkReconciliation({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repoId,
+      checkoutId: fx.checkoutId,
+      repoRoot: fx.repoRoot,
+      workId: fx.workId,
+      targetBranch: 'main',
+      targetRevision,
+      comparedPaths: ['src/other.ts'],
+      reviewer: 'reviewer-test',
+      rationale: 'Invalid incomplete review set.',
+      cleanupOwnershipProof: 'No managed cleanup remains.',
+    })).toThrow('DIRECT_EDIT_WORK_RECONCILIATION_PATH_COMPARISON_MISMATCH');
   });
 
   test('does not complete Work when the committed content no longer matches the finalized edit', () => {

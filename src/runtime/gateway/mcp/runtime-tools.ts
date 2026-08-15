@@ -17,9 +17,9 @@ import { waitForExecutionJob } from '../../execution/jobs/wait';
 import type { ExecutionJob } from '../../execution/jobs/types';
 import { getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
-import { readWorkHandle, writeWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
+import { readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
 import { executionIdentityForRepository } from '../../control-plane/execution/execution-identity';
-import { reconcileFinalizedDirectEditWorksAfterCommit } from '../../control-plane/execution/direct-edit-work-completion';
+import { acceptReviewedDirectEditWorkReconciliation, reconcileFinalizedDirectEditWorksAfterCommit } from '../../control-plane/execution/direct-edit-work-completion';
 import { readJobEvents } from '../../evidence/event-ledger';
 import { readExecutionArtifact } from '../../evidence/artifact-store';
 import { readExecutionEvidence } from '../../evidence/evidence-store';
@@ -401,6 +401,11 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     no_ff: { type: 'boolean' },
     completion_outcome: { type: 'string', enum: ['completed_changed', 'completed_no_change'] },
     no_change_evidence: { type: 'string', description: 'Optional explicit proof for a no-change completion; otherwise the lifecycle coordinator derives proof only for an unchanged validated HEAD.' },
+    reconcile_historical_delivery: { type: 'boolean', description: 'Explicitly request reviewed reconciliation for a historically delivered Direct Edit Work whose original Work binding/receipt is missing.' },
+    reconcile_target_revision: { type: 'string', description: 'Exact already-integrated commit accepted by the reviewer.' },
+    reconcile_compared_paths: { type: 'array', items: { type: 'string' }, description: 'Complete exact path set changed from the Work base revision to reconcile_target_revision.' },
+    reconcile_rationale: { type: 'string', description: 'Bounded reviewer rationale for accepting the historical delivery.' },
+    reconcile_cleanup_proof: { type: 'string', description: 'Concrete proof that no owned cleanup remains or that cleanup is complete.' },
     detail_level: { type: 'string', enum: ['summary', 'detail'] },
     reason: { type: 'string', description: 'Bounded reason for a work stop or repair record.' },
   }, [], false),
@@ -3911,7 +3916,43 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
 
         if (operation === 'finalize') {
           const workId = String(args.work_id ?? '').trim();
-          const before = workId ? getWorkContract(store, workId) : undefined;
+          let before = workId ? getWorkContract(store, workId) : undefined;
+          if (before && !before.completionReceipt && args.reconcile_historical_delivery === true) {
+            try {
+              const identity = authenticatedFacadeControllerIdentity(ctx, args);
+              const owner = getControllerSession(store, workId);
+              if (!owner || (owner.principalId?.trim() || owner.controllerId) !== identity.principalId) {
+                throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CONTROLLER_CLAIM_REQUIRED: ${workId}`);
+              }
+              const historicalHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
+              if (historicalHandle?.managedWorktree) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_MANAGED_CLEANUP_REQUIRED: ${workId}`);
+              const reconciliation = acceptReviewedDirectEditWorkReconciliation({
+                controllerHome: ctx.controllerHome,
+                repoId: repository.repoId,
+                checkoutId: before.checkoutId ?? repository.activeCheckoutId,
+                repoRoot: repository.canonicalRoot,
+                workId,
+                targetBranch: typeof args.target_branch === 'string' && args.target_branch.trim() ? args.target_branch.trim() : repository.defaultBranch || 'main',
+                targetRevision: String(args.reconcile_target_revision ?? ''),
+                comparedPaths: Array.isArray(args.reconcile_compared_paths) ? args.reconcile_compared_paths.map(String) : [],
+                reviewer: identity.principalId,
+                rationale: String(args.reconcile_rationale ?? ''),
+                cleanupOwnershipProof: String(args.reconcile_cleanup_proof ?? ''),
+              });
+              if (historicalHandle && historicalHandle.state !== 'cleaned') {
+                const finalization: WorkHandleState['finalization'] = { validation: 'done', commit: 'done', merge: 'skipped', branchCleanup: 'skipped', worktreeCleanup: 'skipped' };
+                const delivered = historicalHandle.state === 'committed' || historicalHandle.state === 'merged' || historicalHandle.state === 'failed_terminal_cleanup'
+                  ? historicalHandle
+                  : transitionWorkHandle(ctx.controllerHome, historicalHandle, 'committed', { expectedHead: reconciliation.receipt.targetRevision, finalization, failureReason: undefined });
+                transitionWorkHandle(ctx.controllerHome, delivered, 'cleaned', { expectedHead: reconciliation.receipt.targetRevision, finalization, failureReason: undefined });
+              }
+              releaseControllerSession(store, workId, owner.controllerId);
+              before = getWorkContract(store, workId);
+            } catch (error) {
+              const blocked = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Historical Work delivery reconciliation failed.', data: { workId, lifecycleClosed: false } });
+              return result(blocked as unknown as Record<string, unknown>, true);
+            }
+          }
           if (before && !before.completionReceipt) {
             try {
               const physical = await finalizeFacadeWorkHandle(ctx, repository, args, 'finalize');

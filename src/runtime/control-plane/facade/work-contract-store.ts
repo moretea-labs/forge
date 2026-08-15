@@ -286,7 +286,8 @@ function validateWorkSemantics(contract: WorkContract): WorkContract {
       if (receipt.delivery.status !== 'integrated' || !receipt.delivery.reachable) throw new Error('WORK_COMPLETION_RECEIPT_DELIVERY_NOT_PROVEN');
       if (!['complete', 'maintenance_warning'].includes(receipt.cleanup.status) || receipt.cleanup.blockers.length > 0) throw new Error('WORK_COMPLETION_RECEIPT_CLEANUP_NOT_PROVEN');
     } else if (isDirectEditWorkCompletionReceipt(receipt)) {
-      if (!receipt.editSessionId.trim()) throw new Error('WORK_COMPLETION_RECEIPT_DIRECT_EDIT_SESSION_REQUIRED');
+      const directEditAuthorityCount = Number(Boolean(receipt.editSessionId?.trim())) + Number(Boolean(receipt.reconciliationId?.trim()));
+      if (directEditAuthorityCount !== 1) throw new Error('WORK_COMPLETION_RECEIPT_DIRECT_EDIT_AUTHORITY_REQUIRED');
       if (!receipt.targetBranch.trim() || !receipt.targetRevision.trim()) throw new Error('WORK_COMPLETION_RECEIPT_TARGET_REQUIRED');
       if (receipt.delivery.status !== 'integrated' || !receipt.delivery.reachable) throw new Error('WORK_COMPLETION_RECEIPT_DELIVERY_NOT_PROVEN');
       if (!['complete', 'maintenance_warning'].includes(receipt.cleanup.status) || receipt.cleanup.blockers.length > 0) throw new Error('WORK_COMPLETION_RECEIPT_CLEANUP_NOT_PROVEN');

@@ -1,8 +1,11 @@
 import { createHash } from 'crypto';
 import { getEditSession, listEditSessions, type EditSession } from '../../../cli/editing/edit-session';
+import { globMatches } from '../../../cli/mcp/paths';
 import { runProcess } from '../../../effects/process-runner';
-import { getWorkContract, recordWorkCompletionReceipt } from '../facade/work-contract-store';
-import { isTerminalWorkContractStatus, type DirectEditWorkCompletionReceipt } from '../facade/types';
+import { completeRequirementFromWork } from '../persistence/requirement-store';
+import { getWorkContract, recordWorkCompletionReceipt, updateWorkContract } from '../facade/work-contract-store';
+import { isDirectEditWorkCompletionReceipt, isTerminalWorkContractStatus, type DirectEditWorkCompletionReceipt, type WorkReconciliationRecord } from '../facade/types';
+import { effectiveVerificationEvidence } from './verification-evidence';
 
 export interface DirectEditWorkCompletionReconciliation {
   completedWorkIds: string[];
@@ -148,4 +151,156 @@ export function reconcileFinalizedDirectEditWorksAfterCommit(input: {
   }
 
   return { completedWorkIds, examinedSessionIds, skipped, targetBranch, targetRevision };
+}
+
+export interface ReviewedDirectEditWorkReconciliationInput {
+  controllerHome: string;
+  repoId: string;
+  checkoutId: string;
+  repoRoot: string;
+  workId: string;
+  targetBranch: string;
+  targetRevision: string;
+  comparedPaths: string[];
+  reviewer: string;
+  rationale: string;
+  cleanupOwnershipProof: string;
+  reviewedAt?: string;
+}
+
+function exactCommit(repoRoot: string, revision: string, label: string): string {
+  const result = git(repoRoot, ['rev-parse', '--verify', `${revision}^{commit}`]);
+  if (!result.ok || !result.stdout.trim()) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_${label}_INVALID`);
+  return result.stdout.trim();
+}
+
+function comparedRevisionPaths(repoRoot: string, baseRevision: string, targetRevision: string): string[] {
+  const result = git(repoRoot, ['diff', '--name-only', '-z', baseRevision, targetRevision]);
+  if (!result.ok) throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_CHANGED_PATHS_UNAVAILABLE');
+  return [...new Set(result.stdout.split('\0').filter(Boolean))].sort((left, right) => left.localeCompare(right));
+}
+
+function normalizedComparedPaths(paths: string[]): string[] {
+  const normalized = [...new Set(paths.map((path) => path.trim()))].sort((left, right) => left.localeCompare(right));
+  if (normalized.length === 0 || normalized.length > 100 || normalized.some((path) => !path || path.startsWith('/') || path.includes('\0') || path.split('/').some((part) => part === '' || part === '.' || part === '..'))) {
+    throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_PATHS_INVALID');
+  }
+  return normalized;
+}
+
+/**
+ * Explicitly close a historically delivered Direct Edit Work whose original
+ * edit-session binding was missed. This is never inferred: the caller must
+ * supply the exact accepted revision and the complete reviewed path set.
+ */
+export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirectEditWorkReconciliationInput): {
+  workId: string;
+  reconciliation: WorkReconciliationRecord;
+  receipt: DirectEditWorkCompletionReceipt;
+} {
+  const work = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repoId }, input.workId);
+  if (!work || work.repoId !== input.repoId) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_WORK_NOT_FOUND: ${input.workId}`);
+  if (work.checkoutId && work.checkoutId !== input.checkoutId) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CHECKOUT_MISMATCH: ${input.workId}`);
+  if (work.completionReceipt) {
+    const completionReceipt = work.completionReceipt;
+    if (isDirectEditWorkCompletionReceipt(completionReceipt) && completionReceipt.reconciliationId) {
+      const existing = work.reconciliations.find((entry) => entry.reconciliationId === completionReceipt.reconciliationId);
+      if (existing) return { workId: work.workId, reconciliation: existing, receipt: completionReceipt };
+    }
+    throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_WORK_TERMINAL: ${input.workId}`);
+  }
+  if (isTerminalWorkContractStatus(work.status) || work.workKind !== 'repository_change') {
+    throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_WORK_NOT_ELIGIBLE: ${input.workId}`);
+  }
+  if (!work.baseRevision?.trim()) throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_BASE_REVISION_MISSING');
+
+  const baseRevision = exactCommit(input.repoRoot, work.baseRevision, 'BASE_REVISION');
+  const targetRevision = exactCommit(input.repoRoot, input.targetRevision.trim(), 'TARGET_REVISION');
+  const targetBranch = input.targetBranch.trim();
+  if (!targetBranch) throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_TARGET_BRANCH_REQUIRED');
+  if (!git(input.repoRoot, ['merge-base', '--is-ancestor', baseRevision, targetRevision]).ok) {
+    throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_TARGET_NOT_DESCENDANT');
+  }
+  if (!git(input.repoRoot, ['merge-base', '--is-ancestor', targetRevision, targetBranch]).ok) {
+    throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_TARGET_UNREACHABLE');
+  }
+
+  const comparedPaths = normalizedComparedPaths(input.comparedPaths);
+  const actualPaths = comparedRevisionPaths(input.repoRoot, baseRevision, targetRevision);
+  if (comparedPaths.length !== actualPaths.length || comparedPaths.some((path, index) => path !== actualPaths[index])) {
+    throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_PATH_COMPARISON_MISMATCH');
+  }
+  for (const path of comparedPaths) {
+    if (work.forbiddenPaths.some((pattern) => globMatches(pattern, path))) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_FORBIDDEN_PATH: ${path}`);
+    if (work.allowedPaths.length > 0 && !work.allowedPaths.some((pattern) => globMatches(pattern, path))) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_PATH_OUT_OF_SCOPE: ${path}`);
+  }
+  const dirty = git(input.repoRoot, ['status', '--porcelain=v1', '--', ...comparedPaths]);
+  if (!dirty.ok || dirty.stdout.trim()) throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_OWNED_PATHS_DIRTY');
+
+  let verifiedAt = new Date().toISOString();
+  for (const checkId of work.checks) {
+    const current = effectiveVerificationEvidence(work.checkRefs, {
+      sourceRevision: targetRevision,
+      checkId,
+      requestedChecks: work.checks,
+    }).find((entry) => entry.current && entry.record.outcome === 'valid_pass');
+    if (!current) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CHECK_EVIDENCE_STALE: ${checkId}`);
+    verifiedAt = current.record.completedAt ?? current.record.recordedAt ?? verifiedAt;
+  }
+
+  const reviewer = input.reviewer.trim();
+  const rationale = input.rationale.trim();
+  const cleanupOwnershipProof = input.cleanupOwnershipProof.trim();
+  const reviewedAt = input.reviewedAt ?? new Date().toISOString();
+  if (!reviewer || !rationale || !cleanupOwnershipProof || Number.isNaN(Date.parse(reviewedAt))) {
+    throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_REVIEW_METADATA_INVALID');
+  }
+  const reconciliationId = `RECNC-${createHash('sha256').update([input.repoId, input.workId, baseRevision, targetRevision, comparedPaths.join('\0'), reviewer, reviewedAt].join('\0')).digest('hex').slice(0, 16)}`;
+  const reconciliation: WorkReconciliationRecord = {
+    schemaVersion: 1,
+    reconciliationId,
+    originalExpectedRevision: targetRevision,
+    observedTargetRevision: targetRevision,
+    baseRevision,
+    targetBranch,
+    reachable: true,
+    method: 'owned_path_tree',
+    comparedPaths,
+    reviewer: reviewer.slice(0, 200),
+    reviewedAt,
+    unrecoverableStages: ['receipt'],
+    cleanupOwnershipProof: cleanupOwnershipProof.slice(0, 2_000),
+    rationale: rationale.slice(0, 2_000),
+    outcome: 'accepted_equivalence',
+  };
+  updateWorkContract({ controllerHome: input.controllerHome, repoId: input.repoId }, input.workId, {
+    reconciliations: [reconciliation, ...work.reconciliations.filter((entry) => entry.reconciliationId !== reconciliationId)],
+  });
+
+  const recordedAt = new Date().toISOString();
+  const receipt: DirectEditWorkCompletionReceipt = {
+    schemaVersion: 1,
+    receiptId: `REC-direct-edit-reconciled-${createHash('sha256').update(`${input.repoId}\0${input.workId}\0${reconciliationId}\0${targetRevision}`).digest('hex').slice(0, 20)}`,
+    source: 'direct_edit_work',
+    workId: input.workId,
+    reconciliationId,
+    targetBranch,
+    targetRevision,
+    sourceRevision: targetRevision,
+    baseRevision,
+    changedPaths: comparedPaths,
+    delivery: { kind: 'commit', status: 'integrated', strategy: 'already_integrated', reachable: true, recordedAt },
+    cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
+    verifiedAt,
+    recordedAt,
+  };
+  const recorded = recordWorkCompletionReceipt(
+    { controllerHome: input.controllerHome, repoId: input.repoId },
+    input.workId,
+    receipt,
+    'completed_changed',
+    'repository_change',
+  );
+  if (recorded.requirementId) completeRequirementFromWork({ controllerHome: input.controllerHome }, { requirementId: recorded.requirementId, work: recorded });
+  return { workId: input.workId, reconciliation, receipt };
 }

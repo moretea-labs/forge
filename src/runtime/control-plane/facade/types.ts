@@ -173,16 +173,18 @@ export interface RemoteEffectCompletionReceipt {
 
 /**
  * Completion authority for a standalone Direct Edit that is not bound to the
- * retired Issue/Task completion model. The receipt proves that one finalized
- * edit session is present at an exact reachable Git revision with clean owned
- * paths, while keeping the WorkContract as the canonical lifecycle authority.
+ * retired Issue/Task completion model. Normal completion proves one finalized
+ * edit session at an exact reachable Git revision. Historical completion may
+ * instead reference one explicit reviewed reconciliation after exact revision,
+ * path-scope, verification, reachability, and cleanup proof checks.
  */
 export interface DirectEditWorkCompletionReceipt {
   schemaVersion: 1;
   receiptId: string;
   source: 'direct_edit_work';
   workId: string;
-  editSessionId: string;
+  editSessionId?: string;
+  reconciliationId?: string;
   targetBranch: string;
   targetRevision: string;
   sourceRevision?: string;
