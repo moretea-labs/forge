@@ -768,7 +768,7 @@ render_prompt_guard_action() {
       exit 0
       ;;
     plan_status_no_active_block)
-      echo "[PlanStatusGuard] Advisory: No active plan found in plans/. Implementation edits will be blocked at the edit layer until a plan is captured."
+      echo "[PlanStatusGuard] Legacy advisory: no active Plan found. Ordinary implementation is not gated by Plan presence."
       echo "[PlanStatusGuard] Capture the approved planning output with: bash scripts/capture-plan.sh --slug <slug> --title <title> --status Approved --execute"
       echo "[PlanStatusGuard] If there is no captured planning output yet, run: bash scripts/ensure-task-workflow.sh --slug <slug> --title <title>"
       exit 0
@@ -780,7 +780,7 @@ render_prompt_guard_action() {
       exit 0
       ;;
     plan_status_not_approved_block)
-      echo "[PlanStatusGuard] Advisory: plan status is '$plan_status' in $active_plan. Complete the annotation cycle and move the plan to Approved; implementation edits are blocked at the edit layer until then."
+      echo "[PlanStatusGuard] Legacy advisory: plan status is '$plan_status' in $active_plan. This does not authorize or block ordinary implementation."
       exit 0
       ;;
     evidence_contract_block)

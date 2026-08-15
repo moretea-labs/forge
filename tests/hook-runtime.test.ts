@@ -1639,7 +1639,7 @@ describe("Hook runtime behavior", () => {
     }
   });
 
-  test("run-hook preserves Codex failure status without surfacing telemetry JSON", () => {
+  test("run-hook preserves Codex output suppression when legacy Plan enforcement is advisory", () => {
     const cwd = tmpWorkspace("run-hook-codex-failure");
     try {
       installHooks(cwd);
@@ -1658,11 +1658,9 @@ describe("Hook runtime behavior", () => {
         },
       });
 
-      expect(blockRes.status).toBe(2);
+      expect(blockRes.status).toBe(0);
       expect(blockRes.stdout).toBe("");
-      expect(blockRes.stderr).toContain("[PlanStatusGuard]");
-      expect(blockRes.stderr).not.toContain('{"guard":');
-      expect(blockRes.stderr).not.toContain('"guard":"PlanStatusGuard"');
+      expect(blockRes.stderr).toBe("");
 
       const reviewRes = spawnSync("bash", [join(cwd, ".ai/hooks/run-hook.sh"), "prompt-guard.sh"], {
         cwd,
@@ -1701,8 +1699,8 @@ describe("Hook runtime behavior", () => {
       });
 
       // Without bun/CLI the prompt layer cannot classify; it must degrade to
-      // a one-shot advisory instead of guessing. The edit layer can still
-      // enforce the deterministic plan gate when the repo opts into enforce.
+      // a one-shot advisory instead of guessing. Plan lifecycle stays advisory
+      // at the edit layer too; hard safety gates remain independent.
       expect(res.status).toBe(0);
       expect(res.stdout).toContain("degraded to advisory");
       expect(res.stdout).not.toContain("[PromptGuard] Decision engine unavailable or failed.");
@@ -1719,8 +1717,9 @@ describe("Hook runtime behavior", () => {
           FORGE_EDIT_PLAN_GATE: "enforce",
         },
       });
-      expect(editRes.status).toBe(2);
-      expect(editRes.stderr).toContain("[PlanStatusGuard]");
+      expect(editRes.status).toBe(0);
+      expect(editRes.stdout).toContain("[PlanStatusGuard] Advisory");
+      expect(editRes.stderr).toBe("");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -1873,36 +1872,6 @@ describe("Hook runtime behavior", () => {
     }
   });
 
-  test("prompt-guard: advises (not blocks) implement intent when plan status is Draft", () => {
-    const cwd = tmpWorkspace("prompt-guard-status");
-    try {
-      initGitRepo(cwd);
-      installHooks(cwd);
-      mkdirSync(join(cwd, "docs"), { recursive: true });
-      mkdirSync(join(cwd, "plans"), { recursive: true });
-      writeFileSync(join(cwd, "docs/spec.md"), "# Product Spec\n");
-
-      writeFileSync(
-        join(cwd, "plans/plan-20260304-1300-demo.md"),
-        "# Plan: demo\n\n> **Status**: Draft\n"
-      );
-      writeActivePlan(cwd, "plans/plan-20260304-1300-demo.md");
-
-      expect(run("git", ["add", "."], cwd).status).toBe(0);
-      expect(run("git", ["commit", "-m", "seed plan"], cwd).status).toBe(0);
-
-      const res = runHook("prompt-guard.sh", cwd, {
-        stdin: JSON.stringify({ user_message: "implement it all now" }),
-      });
-
-      expect(res.status).toBe(0);
-      expect(res.stdout).toContain("[PlanStatusGuard]");
-      expect(res.stdout).not.toContain('"guard":"PlanStatusGuard"');
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  });
-
   test("prompt-guard: routes explicit plan execution on Draft plan to capture gate", () => {
     const cwd = tmpWorkspace("prompt-guard-draft-plan-execution-approval");
     try {
@@ -1933,36 +1902,6 @@ describe("Hook runtime behavior", () => {
         expect(res.stdout).not.toContain("[PlanStatusGuard]");
         expect(res.stdout).not.toContain('"guard":"PlanStatusGuard"');
       }
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  });
-
-  test("prompt-guard: advises (not blocks) implement intent when approved plan lacks evidence contract", () => {
-    const cwd = tmpWorkspace("prompt-guard-evidence-contract");
-    try {
-      initGitRepo(cwd);
-      installHooks(cwd);
-      mkdirSync(join(cwd, "docs"), { recursive: true });
-      mkdirSync(join(cwd, "plans"), { recursive: true });
-      writeFileSync(join(cwd, "docs/spec.md"), "# Product Spec\n");
-
-      writeFileSync(
-        join(cwd, "plans/plan-20260304-1310-demo.md"),
-        "# Plan: demo\n\n> **Status**: Approved\n"
-      );
-      writeActivePlan(cwd, "plans/plan-20260304-1310-demo.md");
-
-      expect(run("git", ["add", "."], cwd).status).toBe(0);
-      expect(run("git", ["commit", "-m", "seed approved plan"], cwd).status).toBe(0);
-
-      const res = runHook("prompt-guard.sh", cwd, {
-        stdin: JSON.stringify({ user_message: "implement it all now" }),
-      });
-
-      expect(res.status).toBe(0);
-      expect(res.stdout).toContain("[EvidenceContractGuard]");
-      expect(res.stdout).not.toContain('"guard":"EvidenceContractGuard"');
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -2137,31 +2076,6 @@ describe("Hook runtime behavior", () => {
       expect(res.stdout).not.toContain("[PlanStartGate]");
       expect(res.stdout).not.toContain("[PlanStatusGuard]");
       expect(afterPlans).toEqual(beforePlans);
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  });
-
-  test("prompt-guard: explicit execution with fresh pending plan asks for capture instead of hard-blocking", () => {
-    const cwd = tmpWorkspace("prompt-guard-pending-plan-execute");
-    try {
-      initGitRepo(cwd);
-      installHooks(cwd);
-      installPlanWorkflowHelpers(cwd);
-
-      const start = runHook("prompt-guard.sh", cwd, {
-        stdin: JSON.stringify({ user_message: "plan this hook capture flow with $think" }),
-      });
-      expect(start.status).toBe(0);
-
-      const res = runHook("prompt-guard.sh", cwd, {
-        stdin: JSON.stringify({ user_message: "开始实现" }),
-      });
-
-      expect(res.status).toBe(0);
-      expect(res.stdout).toContain("[PlanCaptureGate] Implementation requested while a pending plan/orchestration discussion has not been captured.");
-      expect(res.stdout).toContain("capture-plan.sh");
-      expect(res.stdout).not.toContain('"guard":"PlanStatusGuard"');
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -2656,7 +2570,7 @@ describe("Hook runtime behavior", () => {
     }
   });
 
-  test("prompt-guard: advises (not blocks) implement intent when no active plan exists", () => {
+  test("prompt-guard: ordinary implementation does not require an active Plan", () => {
     const cwd = tmpWorkspace("prompt-guard-missing-plan");
     try {
       initGitRepo(cwd);
@@ -2669,10 +2583,8 @@ describe("Hook runtime behavior", () => {
       });
 
       expect(res.status).toBe(0);
-      expect(res.stdout).toContain("No active plan found in plans/");
-      expect(res.stdout).toContain("capture-plan.sh");
-      expect(res.stdout).toContain("ensure-task-workflow.sh");
-      expect(res.stdout).not.toContain('"guard":"PlanStatusGuard"');
+      expect(res.stdout).not.toContain("[PlanStatusGuard]");
+      expect(res.stdout).not.toContain("[PlanCaptureGate]");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -2702,7 +2614,7 @@ describe("Hook runtime behavior", () => {
     }
   });
 
-  test("prompt-guard: stale pending plan marker does not bypass missing active-plan guard", () => {
+  test("prompt-guard: stale pending Plan marker does not affect ordinary implementation", () => {
     const cwd = tmpWorkspace("prompt-guard-stale-pending-plan");
     try {
       initGitRepo(cwd);
@@ -2736,14 +2648,14 @@ describe("Hook runtime behavior", () => {
       });
 
       expect(res.status).toBe(0);
-      expect(res.stdout).toContain("[PlanStatusGuard]");
-      expect(res.stdout).not.toContain("[PlanCaptureGate] Implementation requested while a pending plan");
+      expect(res.stdout).not.toContain("[PlanStatusGuard]");
+      expect(res.stdout).not.toContain("[PlanCaptureGate]");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
 
-  test("prompt-guard: bug-fix execution wording stays on hard plan gate even with pending plan marker", () => {
+  test("prompt-guard: bug-fix execution stays independent from pending Plan state", () => {
     const cwd = tmpWorkspace("prompt-guard-pending-bug-fix");
     try {
       initGitRepo(cwd);
@@ -2761,8 +2673,9 @@ describe("Hook runtime behavior", () => {
       });
 
       expect(res.status).toBe(0);
-      expect(res.stdout).toContain("[PlanStatusGuard]");
-      expect(res.stdout).not.toContain("[PlanCaptureGate] Implementation requested while a pending plan");
+      expect(res.stdout).not.toContain("[PlanStatusGuard]");
+      expect(res.stdout).not.toContain("[PlanCaptureGate]");
+      expect(res.stdout).toContain("[TDD]");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -2795,7 +2708,7 @@ describe("Hook runtime behavior", () => {
         stdin: JSON.stringify({ user_message: "开始执行" }),
       });
       expect(executeRes.status).toBe(0);
-      expect(executeRes.stdout).toContain("[PlanStatusGuard]");
+      expect(executeRes.stdout).not.toContain("[PlanStatusGuard]");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -2924,7 +2837,7 @@ describe("Hook runtime behavior", () => {
           stdin: JSON.stringify({ user_message: prompt }),
         });
 
-        // Pure discussion questions must not trigger PlanStatusGuard hard-block,
+        // Pure discussion questions must not trigger legacy PlanStatus routing,
         // even though they contain "实现/执行/implement/execute" tokens.
         expect(res.status).toBe(0);
         expect(res.stdout).not.toContain("[PlanStatusGuard] No active plan found");
@@ -2987,7 +2900,7 @@ describe("Hook runtime behavior", () => {
       });
 
       expect(explicitExecution.status).toBe(0);
-      expect(explicitExecution.stdout).toContain("[PlanStatusGuard] Advisory: No active plan found");
+      expect(explicitExecution.stdout).not.toContain("[PlanStatusGuard]");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -3019,7 +2932,7 @@ describe("Hook runtime behavior", () => {
       });
 
       expect(explicitRes.status).toBe(0);
-      expect(explicitRes.stdout).toContain("[PlanStatusGuard] Advisory: No active plan found");
+      expect(explicitRes.stdout).not.toContain("[PlanStatusGuard]");
 
       expect(run("git", ["worktree", "add", worktreePath, "-b", "codex/demo"], cwd).status).toBe(0);
       mkdirSync(join(worktreePath, "plans"), { recursive: true });
@@ -3083,7 +2996,7 @@ describe("Hook runtime behavior", () => {
       });
 
       expect(explicitRes.status).toBe(0);
-      expect(explicitRes.stdout).toContain("[PlanStatusGuard] Advisory: No active plan found");
+      expect(explicitRes.stdout).not.toContain("[PlanStatusGuard]");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -3136,7 +3049,7 @@ describe("Hook runtime behavior", () => {
       });
 
       expect(explicitRes.status).toBe(0);
-      expect(explicitRes.stdout).toContain("[PlanStatusGuard] Advisory: No active plan found");
+      expect(explicitRes.stdout).not.toContain("[PlanStatusGuard]");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -3264,7 +3177,7 @@ describe("Hook runtime behavior", () => {
     }
   });
 
-  test("prompt-guard: keeps broad bug-fix wording out of approval capture", () => {
+  test("prompt-guard: broad bug-fix wording stays Direct and out of Plan approval capture", () => {
     const cwd = tmpWorkspace("prompt-guard-go-ahead-bug-fix");
     try {
       initGitRepo(cwd);
@@ -3277,8 +3190,9 @@ describe("Hook runtime behavior", () => {
       });
 
       expect(res.status).toBe(0);
-      expect(res.stdout).toContain("[PlanStatusGuard]");
+      expect(res.stdout).not.toContain("[PlanStatusGuard]");
       expect(res.stdout).not.toContain("[PlanCaptureGate]");
+      expect(res.stdout).toContain("[TDD]");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -3709,7 +3623,7 @@ describe("Hook runtime behavior", () => {
     }
   });
 
-  test("pre-edit-guard: plan state is advisory by default and enforce remains opt-in", () => {
+  test("pre-edit-guard: Plan state is advisory and legacy enforce normalizes to advice", () => {
     const cwd = tmpWorkspace("pre-edit-plan-gate");
     try {
       initGitRepo(cwd);
@@ -3730,15 +3644,17 @@ describe("Hook runtime behavior", () => {
       });
       expect(workflowRes.status).toBe(0);
 
-      // Repositories may still explicitly opt into enforcement.
+      // Legacy enforcement configuration is normalized to advisory so semantic
+      // Plan state cannot become a write permission boundary.
       const enforceRes = runHook("pre-edit-guard.sh", cwd, {
         stdin: JSON.stringify({ tool_input: { file_path: "src/app.ts" } }),
         env: { FORGE_EDIT_PLAN_GATE: "enforce" },
       });
-      expect(enforceRes.status).toBe(2);
-      expect(enforceRes.stderr).toContain("[PlanStatusGuard]");
+      expect(enforceRes.status).toBe(0);
+      expect(enforceRes.stdout).toContain("[PlanStatusGuard] Advisory");
+      expect(enforceRes.stderr).toBe("");
 
-      // Draft plan advises by default and blocks only under explicit enforcement.
+      // Draft Plan remains advisory even under legacy explicit enforcement.
       const planPath = "plans/plan-20260610-1000-gate.md";
       writeFileSync(join(cwd, planPath), "# Plan: gate\n\n> **Status**: Draft\n");
       writeActivePlan(cwd, planPath);
@@ -3751,7 +3667,8 @@ describe("Hook runtime behavior", () => {
         stdin: JSON.stringify({ tool_input: { file_path: "src/app.ts" } }),
         env: { FORGE_EDIT_PLAN_GATE: "enforce" },
       });
-      expect(draftEnforced.status).toBe(2);
+      expect(draftEnforced.status).toBe(0);
+      expect(draftEnforced.stdout).toContain("[PlanStatusGuard] Advisory");
 
       writeFileSync(join(cwd, planPath), "# Plan: gate\n\n> **Status**: Approved\n");
       const approvedRes = runHook("pre-edit-guard.sh", cwd, {

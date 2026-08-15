@@ -2,11 +2,34 @@
 
 > Status: **Runtime Authority**
 >
-> Routing convergence: execution depth, semantic ownership, and resource placement are independent decisions. `RouteDecision` owns Direct/Process/Durable selection; unrelated active Work never upgrades a Direct request. CodeGraph/lexical/Forge relations are combined inside the Context Plane as bounded impact evidence, not as another execution authority.
+> Control convergence: ChatGPT/human Controller owns semantic understanding and commits Direct/Process/Durable Work/Plan only after sufficient context; Forge does not classify every request at ingress. `RouteDecision` owns execution mechanics after that commitment, while unrelated Work/Plan state never upgrades or blocks ordinary Direct execution. Semantic ownership, execution depth, and resource placement stay independent. CodeGraph/lexical/Forge relations are bounded impact evidence, not another decision authority.
 
 ## 1. System Definition
 
-Forge Controller Runtime is an Agent Engineering Control Plane for one or more local Git repositories. ChatGPT, Local UI, CLI and optional GitHub integrations submit decisions and commands. The runtime persists accepted work, schedules it under repository-owned conflict rules, executes it outside the Gateway process and records evidence for recovery, acceptance and release.
+Forge Controller Runtime is an Agent Engineering Control Plane for one or more local Git repositories. ChatGPT is the primary semantic Controller: it may inspect first, then choose whether a request needs only a Direct action, a Process, finite durable Work, a Plan, or a Workflow. Local UI, CLI and integrations can submit the same explicit decisions and commands. Forge supplies bounded context, hard policy/resource constraints, persistence, execution and machine evidence; it does not replace the Controller with prompt classifiers or Plan/Work ceremony.
+
+### 1.1 End-to-end authority map
+
+```text
+User request
+  -> ChatGPT / human Controller
+       -> Explore when needed: rh_context + raw reads + CodeGraph/Runtime/history evidence
+       -> semantic commitment: answer | Direct | Process | finite Work | Plan | Workflow
+  -> Forge execution boundary
+       -> hard policy / authorization / claims / leases / fencing
+       -> placement and executor mechanics; no semantic reinterpretation
+  -> execution
+       -> Direct mutation: SafePatch -> EditSession -> MutationGate
+       -> command/check: Unified Process Runtime
+       -> durable responsibility: finite Work using the same execution primitives
+       -> recurrence: Workflow/Schedule -> bounded Occurrence -> Controller decision
+  -> machine evidence
+       -> diff / Process receipt / check / delivery / cleanup facts
+  -> ChatGPT / user acceptance
+       -> accept, continue, replan, or close the semantic goal
+```
+
+Authority rule: Context providers return evidence, RoutePolicy selects mechanics from a Controller commitment, Plan/Requirement/Work persist explicitly chosen durable semantics, and Process/EditSession/Evidence record execution facts. None of those layers may infer that a missing Plan/Work makes ordinary implementation unauthorized, or that a successful/failed cleanup receipt by itself proves the user's goal accepted/rejected.
 
 ## 2. Canonical Runtime Topology
 

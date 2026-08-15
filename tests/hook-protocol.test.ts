@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
+import { decidePromptGuardAction, type PromptGuardState } from "../src/cli/hook/prompt-guard-decision";
 
 const HOOK_PROTOCOL_TIMEOUT_MS = 60000;
 
@@ -82,6 +83,20 @@ function writeActivePlan(cwd: string, planPath: string) {
 }
 
 describe("Claude Code hook protocol compliance", () => {
+  test("semantic Plan state never authorizes ordinary implementation", () => {
+    const states: PromptGuardState[] = [
+      { spec: "missing", plan: "none", pending: "none", worktree: "current", contract: "missing", contractPath: "missing", evidence: "unchecked" },
+      { spec: "present", plan: "draft", pending: "none", worktree: "current", contract: "missing", contractPath: "missing", evidence: "unchecked" },
+      { spec: "present", plan: "approved", pending: "none", worktree: "current", contract: "missing", contractPath: "missing", evidence: "incomplete" },
+      { spec: "present", plan: "executing", pending: "none", worktree: "current", contract: "present", contractPath: "present", evidence: "incomplete" },
+    ];
+    for (const state of states) {
+      expect(decidePromptGuardAction("general_execution", state)).toBe("allow");
+      expect(decidePromptGuardAction("bug_fix_execution", state)).toBe("allow");
+    }
+    expect(decidePromptGuardAction("plan_execution_projection", states[0]!)).toBe("plan_capture_missing_active_advice");
+  });
+
   // Background: Claude Code's PreToolUse / UserPromptSubmit hook protocol treats
   // exit code 2 as the "blocking" signal and feeds stderr to the model.
   // Non-zero non-2 exits are surfaced as "non-blocking status code: No stderr output"
@@ -214,7 +229,7 @@ describe("Claude Code hook protocol compliance", () => {
     }
   });
 
-  test("prompt-guard: PlanStatusGuard uses exit 2 with reason on stderr", () => {
+  test("Plan lifecycle is advisory while hard edit guards remain authoritative", () => {
     const cwd = tmpWorkspace("hook-proto-plan-status");
     try {
       initGitRepo(cwd);
@@ -228,20 +243,21 @@ describe("Claude Code hook protocol compliance", () => {
       );
       writeActivePlan(cwd, "plans/plan-20260528-1300-demo.md");
 
-      // Prompt layer is advisory for plan status; the edit-layer plan gate is
-      // the blocking enforcement point.
+      // Plan lifecycle is advisory at both prompt and edit layers; hard safety
+      // boundaries are enforced independently of Plan presence/status.
       const promptRes = runHook("prompt-guard.sh", cwd, {
         stdin: JSON.stringify({ user_message: "implement it all now" }),
       });
       expect(promptRes.status).toBe(0);
-      expect(promptRes.stdout).toContain("[PlanStatusGuard]");
+      expect(promptRes.stdout).not.toContain("[PlanStatusGuard]");
 
       const res = runHook("pre-edit-guard.sh", cwd, {
         stdin: JSON.stringify({ tool_input: { file_path: "src/app.ts" } }),
         env: { FORGE_EDIT_PLAN_GATE: "enforce" },
       });
-      expect(res.status).toBe(2);
-      expect(res.stderr).toContain("[PlanStatusGuard]");
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain("[PlanStatusGuard] Advisory");
+      expect(res.stderr).toBe("");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

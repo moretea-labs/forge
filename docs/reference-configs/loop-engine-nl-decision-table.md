@@ -75,7 +75,7 @@ Allowed `intent` values:
 - `plan_execution_projection`
 - `general_execution`
 
-Allowed `action` values:
+Allowed `action` values (some historical `*_block` names remain wire-compatible but are not semantic authorization for ordinary execution):
 
 - `allow`
 - `spec_block`
@@ -105,28 +105,17 @@ Allowed `action` values:
    - otherwise enter the done gate and verify artifacts.
 2. If intent is not an execution intent, allow it. Planning and review prompts
    should not create or require a plan unless the agent explicitly captures one.
-3. For execution intents with `states.spec=missing`, block at the spec gate.
-4. For execution intents with `states.plan=none`:
-   - if pending orchestration is fresh and the intent is not bug-fix execution,
-     ask the agent to capture the pending plan;
-   - if the prompt names a linked worktree target, route the user to that
-     worktree;
-   - if the intent is explicit plan execution, ask the agent to capture or
-     select the approved plan;
-   - otherwise require an active plan before implementation.
-5. For `stale_marker` or `foreign_worktree`, emit stale-marker advice and clear
-   the stale active markers before the next implementation attempt.
-6. For `draft` or `annotating` plans:
-   - explicit plan execution should ask for plan capture/approval;
-   - other execution should report that the active plan is not approved.
-7. For `approved` or `executing` plans:
-   - incomplete Evidence Contract blocks execution;
-   - explicit plan execution without a contract should scaffold/project the
-     contract;
-   - any other execution without a contract should block;
-   - otherwise allow the prompt layer and leave enforcement to edit guards.
-8. For `unknown` plan status, allow at the prompt layer and rely on deterministic
-   edit-layer guards and contract checks to stop unsafe changes.
+3. Product spec, active Plan, Plan status, contract presence, and Plan evidence are semantic Controller context. They do not authorize ordinary `general_execution` or `bug_fix_execution`; those intents are allowed independently of Plan state.
+4. Only explicit Plan execution (`embedded_approved_plan` or `plan_execution_projection`) consumes Plan lifecycle guidance:
+   - with no active Plan, advise capture/select of the intended Plan;
+   - with fresh pending orchestration, advise capture rather than inventing a new execution path;
+   - with Draft/Annotating Plan, advise capture/approval;
+   - with Approved/Executing Plan but no projected contract, advise scaffold/projection;
+   - otherwise allow.
+5. A linked worktree may produce placement advice, but placement advice does not imply a semantic Plan/Work requirement.
+6. `stale_marker`, `foreign_worktree`, and other legacy Plan states may be surfaced or self-healed for compatibility; they must not block ordinary implementation.
+7. Hard path/private-surface, authorization, destructive-action, resource-claim, lease, and fencing boundaries remain independent enforcement points.
+8. Completion (`done`) remains a separate compatibility gate until machine evidence and semantic goal acceptance are decoupled.
 
 ## Non-Rules
 

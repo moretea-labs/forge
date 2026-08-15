@@ -79,17 +79,13 @@ is_workflow_surface_path() {
 
 edit_plan_gate_mode() {
   local mode="${FORGE_EDIT_PLAN_GATE:-}"
-  if [[ -z "$mode" ]]; then
-    mode="$(workflow_policy_get '.guards.edit_plan_gate' 'advice')"
-  fi
-  printf '%s' "$mode"
+  [[ -z "$mode" ]] && mode="$(workflow_policy_get '.guards.edit_plan_gate' 'advice')"
+  [[ "$mode" == "off" ]] && printf 'off' || printf 'advice'
 }
 
-# Edit-layer plan gate: the deterministic enforcement point for "no
-# implementation edits without an approved plan". The prompt layer only
-# advises (natural-language intent guessing is unreliable); this gate keys
-# off path + plan state. Modes: advice (default) | enforce | off, via
-# FORGE_EDIT_PLAN_GATE or policy .guards.edit_plan_gate.
+# Plan/spec lifecycle is Controller context, never write authorization. This
+# compatibility hook may advise; real enforcement remains path/private-surface,
+# authorization, lease and fencing boundaries.
 run_edit_plan_gate() {
   local mode gate_plan gate_status
   mode="$(edit_plan_gate_mode)"
@@ -99,31 +95,13 @@ run_edit_plan_gate() {
 
   if [[ ! -f "docs/spec.md" ]]; then
     echo "[SpecGuard] Implementation edit without docs/spec.md: $FILE_PATH"
-    if [[ "$mode" == "advice" ]]; then
-      echo "[SpecGuard] Advisory: run bash scripts/new-spec.sh and capture stable product intent."
-    else
-      hook_structured_error \
-        "SpecGuard" \
-        "Implementation edit to $FILE_PATH without docs/spec.md." \
-        "Run bash scripts/new-spec.sh and capture stable product intent before implementing." \
-        "missing_artifact"
-      exit 2
-    fi
+    echo "[SpecGuard] Advisory: capture stable product intent when it materially helps this change."
   fi
 
   gate_plan="$(get_active_plan || true)"
   if [[ -z "$gate_plan" || ! -f "$gate_plan" ]]; then
     echo "[PlanStatusGuard] No active plan covers implementation edit: $FILE_PATH"
-    if [[ "$mode" == "advice" ]]; then
-      echo "[PlanStatusGuard] Advisory: capture the approved plan with bash scripts/capture-plan.sh --slug <slug> --title <title> --status Approved --execute"
-    else
-      hook_structured_error \
-        "PlanStatusGuard" \
-        "Implementation edit to $FILE_PATH without an active plan." \
-        "Capture the approved planning output with bash scripts/capture-plan.sh --slug <slug> --title <title> --status Approved --execute, or set policy .guards.edit_plan_gate to advice/off for this repo." \
-        "missing_artifact"
-      exit 2
-    fi
+    echo "[PlanStatusGuard] Advisory: use a Plan only when ChatGPT has chosen staged/dependency coordination."
     return 0
   fi
 
@@ -131,16 +109,7 @@ run_edit_plan_gate() {
   case "$gate_status" in
     Draft|Annotating)
       echo "[PlanStatusGuard] Plan status is '$gate_status' in $gate_plan; implementation edit: $FILE_PATH"
-      if [[ "$mode" == "advice" ]]; then
-        echo "[PlanStatusGuard] Advisory: complete the annotation cycle and move the plan to Approved before implementation."
-      else
-        hook_structured_error \
-          "PlanStatusGuard" \
-          "Implementation edit to $FILE_PATH while plan status is $gate_status in $gate_plan." \
-          "Complete the annotation cycle and move the plan to Approved before implementation." \
-          "state_violation"
-        exit 2
-      fi
+      echo "[PlanStatusGuard] Advisory: this Plan is not execution-ready; ordinary Direct work remains independent."
       ;;
   esac
 }

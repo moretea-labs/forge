@@ -112,40 +112,38 @@ function isExecutionIntent(
   );
 }
 
+function explicitPlanExecution(intent: PromptGuardExecutionIntent): boolean {
+  return intent === 'embedded_approved_plan' || intent === 'plan_execution_projection';
+}
+
 function decideNoActivePlanAction(
   intent: PromptGuardExecutionIntent,
   state: PromptGuardState,
 ): PromptGuardAction {
-  if (intent !== 'bug_fix_execution' && state.pending === 'fresh') {
-    return 'plan_capture_pending_advice';
+  // Host hooks never decide that ordinary implementation requires a Plan.
+  // ChatGPT may inspect first and then explicitly commit to Plan execution.
+  if (!explicitPlanExecution(intent)) {
+    return state.worktree === 'linked_target' ? 'worktree_execution_advice' : 'allow';
   }
+  if (state.pending === 'fresh') return 'plan_capture_pending_advice';
   if (state.worktree === 'linked_target') return 'worktree_execution_advice';
-  if (intent === 'plan_execution_projection') {
-    return 'plan_capture_missing_active_advice';
-  }
-  return 'plan_status_no_active_block';
+  return 'plan_capture_missing_active_advice';
 }
 
 function decideDraftPlanAction(
   intent: PromptGuardExecutionIntent,
 ): PromptGuardAction {
-  if (intent === 'plan_execution_projection') return 'plan_capture_draft_advice';
-  return 'plan_status_not_approved_block';
+  return explicitPlanExecution(intent) ? 'plan_capture_draft_advice' : 'allow';
 }
 
 function decideApprovedPlanAction(
   intent: PromptGuardExecutionIntent,
   state: PromptGuardState,
 ): PromptGuardAction {
-  if (state.evidence === 'incomplete') return 'evidence_contract_block';
-  if (
-    state.plan === 'approved' &&
-    intent === 'plan_execution_projection' &&
-    state.contract !== 'present'
-  ) {
-    return 'plan_execution_scaffold_advice';
-  }
-  if (state.contract !== 'present') return 'contract_missing_block';
+  // Plan contracts may guide an explicitly selected Plan execution, but their
+  // presence/evidence is not a semantic permission gate for ordinary edits.
+  if (!explicitPlanExecution(intent)) return 'allow';
+  if (state.contract !== 'present') return 'plan_execution_scaffold_advice';
   return 'allow';
 }
 
@@ -233,6 +231,7 @@ export function decidePromptGuardAction(
 ): PromptGuardAction {
   if (intent === 'done') return decideDoneAction(state);
   if (!isExecutionIntent(intent)) return 'allow';
-  if (state.spec === 'missing') return 'spec_block';
+  // Product/spec/Plan state is context for the Controller, not execution
+  // authorization. Hard path, permission and resource safety live elsewhere.
   return PROMPT_GUARD_EXECUTION_TABLE[state.plan][intent](state);
 }

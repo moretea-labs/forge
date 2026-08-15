@@ -916,8 +916,8 @@ ARCHITECTURE_INDEX_EOF
   },
   "guards": {
     "edit_plan_gate": "advice",
-    "edit_plan_gate_modes": ["enforce", "advice", "off"],
-    "rule": "pre-edit-guard advises when implementation lacks an active plan; execution remains available unless a real safety boundary blocks it"
+    "edit_plan_gate_modes": ["advice", "off"],
+    "rule": "pre-edit-guard may expose Plan/spec context, but Plan lifecycle never authorizes implementation; only real safety/resource boundaries block execution"
   },
   "sidecar_research": {
     "default": true,

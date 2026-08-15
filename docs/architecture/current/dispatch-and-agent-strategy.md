@@ -10,7 +10,9 @@ The Controller owns dispatch decisions. Workers and Agents execute scoped contra
 
 ## 2. Work Assessment
 
-Every change request is assessed before execution using:
+The Controller commits an execution mode only after it has enough evidence to do so. An already-explicit bounded request may commit immediately; an ambiguous or architectural request starts with read-only exploration and is assessed only after that context is available. Forge does not create a Plan/Work merely to perform this exploration.
+
+When an execution commitment is needed, the Controller assesses:
 
 ```text
 objective clarity
@@ -39,7 +41,7 @@ verificationClass
 humanBoundary
 ```
 
-Repository search is an information-gathering step, not by itself a reason to start an Agent or create a durable Issue.
+Repository search, CodeGraph impact analysis, Runtime state reads, and history/evidence lookup are information-gathering steps. They are not by themselves reasons to start an Agent, create Work, or create a Plan. ChatGPT/human Controller owns semantic sufficiency and the Direct/Work/Plan choice; Forge Route/Hook compatibility code may supply mechanics, safety facts, or advice but MUST NOT become a second semantic decision authority.
 
 ### 2.1 Orthogonal routing dimensions
 
@@ -102,7 +104,7 @@ Quick Agent work may carry ephemeral diagnostic metadata, but Job and Run eviden
 
 ### 3.3 Requirement, Plan, and Work
 
-A durable Requirement/Plan/Work graph is required when work has one or more of:
+Requirement, Plan, Work, and Workflow are independent durable tools rather than a mandatory graph. The Controller introduces only the minimum durable object justified by the task. A finite Work is useful when one bounded responsibility needs cross-session recovery/ownership; a Plan is useful for real staged/dependency coordination; a Requirement represents longer-lived intent; Workflow/Schedule represents recurrence. Durable state is commonly justified by one or more of:
 
 - multiple independently verifiable objectives;
 - dependencies or ordered migration phases;
@@ -111,24 +113,25 @@ A durable Requirement/Plan/Work graph is required when work has one or more of:
 - protected or release-sensitive surfaces;
 - cross-repository work;
 - long-running verification or environment dependencies;
-- schedule-driven recurrence;
 - a need for review and recovery across multiple sessions;
 - release or rollout coordination.
 
-A durable Work contract is not ceremony. It owns bounded execution scope, dependencies, evidence, retry history, and completion receipts; Requirement owns user-visible intent and acceptance outcome.
+A durable Work contract is optional, not ceremony and not a universal task wrapper. When explicitly chosen it owns a bounded recoverable responsibility and its execution attribution; Process/ExecutionJob/EditSession remain the technical execution truth. Requirement owns longer-lived user intent; ChatGPT/user review owns semantic acceptance. A Schedule/Occurrence does not require Work unless a particular occurrence needs durable responsibility.
 
 ## 4. Decision Order
 
-The Controller applies this order:
+The Controller follows a late-commit order rather than classifying every request at ingress:
 
 ```text
-1. Is the request read-only?
-2. Can bounded Direct Edit safely satisfy it?
-3. Is one scoped Agent attempt sufficient?
-4. Does the work require durable Requirement/Plan/Work state?
-5. Does it cross repositories or require a Schedule?
-6. Does any external or destructive boundary require human authorization?
+1. Is the request already explicit and bounded enough to act safely?
+2. If not, gather the minimum read-only context first.
+3. After context is sufficient, can Direct/Process satisfy it?
+4. Does this bounded responsibility genuinely need durable Work recovery/ownership?
+5. Does coordination genuinely need a Plan, or recurrence a Workflow/Schedule?
+6. Independently, do hard authorization/resource/destructive boundaries constrain execution?
 ```
+
+Steps 1-5 are semantic Controller decisions. Step 6 and execution mechanics are Forge authority. A later hard-safety rejection may stop an unsafe action, but Forge must not force an A→B execution-mode switch merely because a Plan/Work artifact is absent.
 
 The system MUST NOT default to Agent execution merely because an Agent is available.
 
