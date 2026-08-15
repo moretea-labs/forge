@@ -236,15 +236,18 @@ export function repositoryGitFinishWorkflow(controllerHome: string, repository: 
   const featureBranch = assertSafeBranchName(input.featureBranch ?? before.branch);
   const targetBranch = assertSafeBranchName(input.targetBranch ?? repository.defaultBranch ?? 'main');
   const steps: RepositoryGitFinishResult['steps'] = [];
-  if (!before.clean) {
-    return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: before, completed: false, error: { code: 'GIT_WORKTREE_NOT_CLEAN', message: 'Commit or revert all changes before finishing a workflow.' } };
+  const alreadyOnTarget = before.branch === targetBranch;
+  if (!before.clean && !alreadyOnTarget) {
+    return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: before, completed: false, error: { code: 'GIT_WORKTREE_NOT_CLEAN', message: 'Commit or revert changes before switching branches to finish a workflow.' } };
   }
   if (featureBranch === targetBranch) {
     return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: before, completed: false, error: { code: 'GIT_ALREADY_ON_TARGET', message: 'Current/feature branch equals target branch; nothing to merge or delete.' } };
   }
-  const switchTarget = executeRepositoryGitCommand(controllerHome, repository, { args: ['switch', targetBranch], authorization: 'explicit_user_request', ...input });
-  steps.push({ name: 'switch_target', execution: switchTarget });
-  if (switchTarget.status !== 'executed' || switchTarget.ok !== true) return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_SWITCH_TARGET_FAILED', message: switchTarget.stderr || 'git switch failed' } };
+  if (!alreadyOnTarget) {
+    const switchTarget = executeRepositoryGitCommand(controllerHome, repository, { args: ['switch', targetBranch], authorization: 'explicit_user_request', ...input });
+    steps.push({ name: 'switch_target', execution: switchTarget });
+    if (switchTarget.status !== 'executed' || switchTarget.ok !== true) return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_SWITCH_TARGET_FAILED', message: switchTarget.stderr || 'git switch failed' } };
+  }
   const merge = executeRepositoryGitCommand(controllerHome, repository, { args: ['merge', ...(input.noFf === true ? ['--no-ff'] : ['--ff-only']), featureBranch], authorization: 'explicit_user_request', ...input });
   steps.push({ name: 'merge_feature', execution: merge });
   if (merge.status !== 'executed' || merge.ok !== true) return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_MERGE_FAILED', message: merge.stderr || 'git merge failed' } };
