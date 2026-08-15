@@ -79,6 +79,8 @@ export interface WorkChatgptContinuationResult {
   error?: { code: string; message: string };
 }
 
+const workflowToolAttributionInstruction = (workId: string): string => `Forge Workflow execution contract: first claim exact Work ${workId}. For every repository_command_execute and repository_safe_patch_apply call in this turn, pass work_id=${workId} explicitly. MCP transport sessions may change between tool calls; never omit this Work id.`;
+
 function requestId(workId: string, actionId: string): string {
   return `chatgpt-work:${workId}:${actionId}:${randomUUID()}`;
 }
@@ -481,7 +483,7 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
       reasoning,
       input.timeoutMs,
     );
-    const observedUrl = await submitChatgptPrompt(input.controllerHome, input.workId, sessionId, input.prompt, targetUrl, input.timeoutMs);
+    const observedUrl = await submitChatgptPrompt(input.controllerHome, input.workId, sessionId, `${workflowToolAttributionInstruction(input.workId)}\n\n${input.prompt}`, targetUrl, input.timeoutMs);
     if (/\/c\/[^/?#]+/.test(observedUrl)) {
       binding = bindChatgptWorkConversation(store, {
         workId: input.workId,

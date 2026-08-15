@@ -109,7 +109,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain('aria-keyshortcuts~=\"ArrowRight\"');
     expect(source).not.toContain(':has-text(');
     expect(source).toContain('waitForChatgptIntelligenceControl'); expect(source).toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('runWorkChatgptContinuation'); expect(engine).toContain("if (controllerType === 'chatgpt')"); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("input.conversationUrl?.trim() || 'https://chatgpt.com/'"); expect(engine).toContain("conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined"); expect(engine).toContain('conversation_url: durableConversationUrl');
-    expect(source).toContain('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED');
+    expect(source).toContain('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'); expect(source).toContain('workflowToolAttributionInstruction'); expect(source).toContain('repository_command_execute and repository_safe_patch_apply');
   });
 
   test('migrates legacy ChatGPT schedules idempotently without changing task state', () => {

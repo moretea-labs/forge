@@ -246,6 +246,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
   definition('repository_safe_patch_apply', 'Apply one coherent deterministic edit batch and return bounded review evidence. Checks are opt-in: pass check_ids only when the batch is stable. Long checks return managed Process handles instead of blocking the MCP call; use validation_only with the returned session/request ids to join later without replaying the patch.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
+    work_id: { type: 'string', description: 'Optional durable Work identity. Workflow controllers should pass the exact claimed Work id so attribution survives transient MCP transport sessions.' },
     session_id: { type: 'string', description: 'Existing edit session id. Required for validation_only; otherwise omit to create one.' },
     purpose: { type: 'string', description: 'Purpose for a newly created edit session.' },
     operations: { type: 'array', items: { type: 'object' }, description: 'Edit operations using the same shape as apply_patch. Required unless validation_only=true.' },
@@ -272,6 +273,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
   definition('repository_command_execute', 'Execute one repository-scoped local command through Full Access, Goal delegation, or a resumable approval request. Legacy preview-token callers remain compatible.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
+    work_id: { type: 'string', description: 'Optional durable Work identity. Workflow controllers should pass the exact claimed Work id so attribution survives transient MCP transport sessions.' },
     command: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Legacy shell string or typed argv array. Typed argv executes without a shell.' },
     cwd: { type: 'string', description: 'Optional root-relative working directory.' },
     workspace_root: { type: 'string', description: 'Absolute existing local directory used as an ephemeral execution root. Mutually exclusive with repo_id/checkout_id; does not register or initialize the directory.' },
@@ -318,8 +320,20 @@ function claimedSessionWorkId(
   controllerHome: string,
   repository: ReturnType<typeof resolveRepositorySelection>,
   caller?: RepositoryToolCallerContext,
+  explicitWorkId?: unknown,
 ): string | undefined {
-  if (!caller?.sessionId?.trim() || !caller.principalId?.trim()) return undefined;
+  if (!caller?.principalId?.trim()) return undefined;
+  const requestedWorkId = typeof explicitWorkId === 'string' ? explicitWorkId.trim() : '';
+  if (requestedWorkId) {
+    const work = getWorkContract({ controllerHome, repoId: repository.repoId }, requestedWorkId);
+    if (!work || isTerminalWorkContractStatus(work.status)) throw new Error(`WORK_ATTRIBUTION_INVALID: ${requestedWorkId}`);
+    if (work.checkoutId && work.checkoutId !== repository.activeCheckoutId) throw new Error(`WORK_CHECKOUT_MISMATCH: ${requestedWorkId}:${repository.activeCheckoutId}`);
+    const owner = getControllerSession({ controllerHome, repoId: repository.repoId }, requestedWorkId);
+    if (!owner) throw new Error(`WORK_CONTROLLER_CLAIM_REQUIRED: ${requestedWorkId}`);
+    if ((owner.principalId?.trim() || owner.controllerId) !== caller.principalId.trim()) throw new Error(`WORK_CONTROLLER_OWNERSHIP_MISMATCH: ${requestedWorkId}`);
+    return requestedWorkId;
+  }
+  if (!caller.sessionId?.trim()) return undefined;
   const executionSession = readExecutionSession(controllerHome, {
     sessionId: caller.sessionId,
     principalId: caller.principalId,
@@ -338,8 +352,9 @@ function claimedSessionEditBinding(
   controllerHome: string,
   repository: ReturnType<typeof resolveRepositorySelection>,
   caller?: RepositoryToolCallerContext,
+  explicitWorkId?: unknown,
 ): EditSessionBinding | undefined {
-  const workId = claimedSessionWorkId(controllerHome, repository, caller);
+  const workId = claimedSessionWorkId(controllerHome, repository, caller, explicitWorkId);
   if (!workId || !caller?.principalId?.trim()) return undefined;
   const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
   if (!work) return undefined;
@@ -400,7 +415,7 @@ function resolveRepositoryCommandTarget(
     controllerHome,
     allowSoleRepository: true,
   });
-  const workId = claimedSessionWorkId(controllerHome, repository, caller);
+  const workId = claimedSessionWorkId(controllerHome, repository, caller, args.work_id);
   return {
     repository,
     executionIdentity: {
@@ -900,7 +915,7 @@ export async function callRepositoryTool(
           controllerHome,
           allowSoleRepository: true,
         });
-        const binding = claimedSessionEditBinding(controllerHome, repository, caller);
+        const binding = claimedSessionEditBinding(controllerHome, repository, caller, args.work_id);
         const applied = withControllerLock(
           controllerHome,
           { scope: 'repository', repoId: repository.repoId },
