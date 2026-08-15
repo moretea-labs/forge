@@ -213,6 +213,23 @@ async function findChatgptIntelligenceControl(
   return queryMatches(result).find((match) => /(?:gpt-)?5\.6\s*sol/i.test(matchText(match)));
 }
 
+async function waitForChatgptIntelligenceControl(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  timeoutMs?: number,
+): Promise<BrowserQueryMatch | undefined> {
+  const waitBudgetMs = Math.min(Math.max(timeoutMs ?? 12_000, 1_000), 12_000);
+  const deadline = Date.now() + waitBudgetMs;
+  do {
+    const control = await findChatgptIntelligenceControl(controllerHome, workId, browserSessionId, Math.min(waitBudgetMs, 5_000));
+    if (control) return control;
+    if (Date.now() >= deadline) break;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+  } while (Date.now() < deadline);
+  return undefined;
+}
+
 async function ensureChatgptExecutionPreference(
   controllerHome: string,
   workId: string,
@@ -222,7 +239,7 @@ async function ensureChatgptExecutionPreference(
   timeoutMs?: number,
 ): Promise<boolean> {
   if (model !== DEFAULT_CHATGPT_AUTOMATION_MODEL) throw new Error(`CHATGPT_AUTOMATION_MODEL_UNSUPPORTED:${model}`);
-  let control = await findChatgptIntelligenceControl(controllerHome, workId, browserSessionId, timeoutMs);
+  let control = await waitForChatgptIntelligenceControl(controllerHome, workId, browserSessionId, timeoutMs);
   if (!control) throw new Error('CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE');
   if (!modelLabelMatches(matchText(control), model)) throw new Error(`CHATGPT_AUTOMATION_MODEL_NOT_VERIFIED:${model}`);
   let controlSelector = matchSelector(control);

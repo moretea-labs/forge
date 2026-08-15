@@ -109,7 +109,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain('CHATGPT_CAPABILITY_MENUITEM_SELECTOR');
     expect(source).toContain('aria-keyshortcuts~=\"ArrowRight\"');
     expect(source).not.toContain(':has-text(');
-    expect(source).toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('runWorkChatgptContinuation'); expect(engine).toContain("if (controllerType === 'chatgpt')");
+    expect(source).toContain('waitForChatgptIntelligenceControl'); expect(source).toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('runWorkChatgptContinuation'); expect(engine).toContain("if (controllerType === 'chatgpt')");
     expect(source).not.toContain('[data-testid=\"send-button\"]');
   });
 
