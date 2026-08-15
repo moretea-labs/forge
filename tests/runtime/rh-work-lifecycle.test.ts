@@ -177,9 +177,11 @@ describe('rh_work managed lifecycle closure', () => {
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toMatchObject({ status: 'completed', completionOutcome: 'completed_changed' });
   });
 
-  test('rh_work start materializes the WorkHandle that finalize uses to commit, merge, and clean', async () => {
+  test('rh_work finalize owns exact validation, commit, merge, and cleanup without exposing work_validate', async () => {
     const fx = fixture('finalize');
-    const started = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'start', objective: 'Add one lifecycle acceptance file', scope_clear: true, expected_files: 4, expected_changed_lines: 200, requires_recovery: true, constraints: { requireWorktree: true } });
+    writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({ scripts: { 'check:finalize': 'node -e "process.exit(0)"' } }, null, 2));
+    git(fx.repoRoot, ['add', 'package.json']); git(fx.repoRoot, ['commit', '-m', 'add finalize check']);
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'start', objective: 'Add one lifecycle acceptance file', scope_clear: true, expected_files: 4, expected_changed_lines: 200, requires_recovery: true, check_ids: ['package:check:finalize'], constraints: { requireWorktree: true } });
     expect(started?.isError).not.toBe(true);
     const workId = String((started?.structuredContent as { data?: { work?: { workId?: string }; executionHandle?: { workId?: string } } })?.data?.work?.workId ?? '');
     expect((started?.structuredContent as { data?: { executionHandle?: { workId?: string; managedWorktree?: boolean }; ownershipClaimed?: boolean } })?.data).toMatchObject({ executionHandle: { workId, managedWorktree: true }, ownershipClaimed: true });
@@ -187,15 +189,18 @@ describe('rh_work managed lifecycle closure', () => {
     const work = { workId, worktreePath: contract.worktreeRef!, branch: git(contract.worktreeRef!, ['branch', '--show-current']) };
     writeFileSync(join(work.worktreePath, 'lifecycle.txt'), 'closed-loop\n');
 
-    const finalized = await callRuntimeTool(fx.ctx, 'rh_work', {
-      repo_id: fx.repository.repoId,
-      operation: 'finalize',
-      work_id: work.workId,
-    });
+    let finalized = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'finalize', work_id: work.workId });
+    for (let attempt = 0; attempt < 4 && (finalized?.structuredContent as { status?: string })?.status !== 'ok'; attempt += 1) {
+      expect(finalized?.isError).not.toBe(true);
+      const validation = finalized?.structuredContent as { validation?: { checks?: Array<{ process?: { processId?: string } }> } };
+      const processId = validation.validation?.checks?.find((entry) => entry.process?.processId)?.process?.processId;
+      expect(processId).toBeTruthy();
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, processId!, { timeoutMs: 5_000 });
+      finalized = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'finalize', work_id: work.workId });
+    }
     expect(finalized?.isError).not.toBe(true);
     const payload = finalized?.structuredContent as { status?: string; data?: { lifecycleClosed?: boolean } };
-    expect(payload.status).toBe('ok');
-    expect(payload.data?.lifecycleClosed).toBe(true);
+    expect(payload.status).toBe('ok'); expect(payload.data?.lifecycleClosed).toBe(true);
     expect(readFileSync(join(fx.repoRoot, 'lifecycle.txt'), 'utf8')).toBe('closed-loop\n');
     expect(existsSync(work.worktreePath)).toBe(false);
     expect(branchExists(fx.repoRoot, work.branch)).toBe(false);

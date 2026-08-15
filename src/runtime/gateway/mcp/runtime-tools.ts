@@ -1749,14 +1749,7 @@ async function finalizeFacadeWorkHandle(
     ...(noChangeEvidence ? { no_change_evidence: noChangeEvidence } : {}),
   };
 
-  let physical = await callExecutionTool(ctx, 'work_finalize', finalizeArgs);
-  let payload = contextRecord(physical?.structuredContent);
-  if (
-    physical
-    && physical.isError !== true
-    && typeof payload.continuation === 'string'
-    && payload.continuation.startsWith('WORK_COMMITTED_REVALIDATION_REQUIRED')
-  ) {
+  const validateExactWorkspace = async (): Promise<CallToolResult | undefined> => {
     const contract = getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, workId);
     const validation = await callExecutionTool(ctx, 'work_validate', {
       session_id: session.sessionId,
@@ -1766,9 +1759,26 @@ async function finalizeFacadeWorkHandle(
     });
     if (!validation || validation.isError === true) return validation;
     const validationPayload = contextRecord(validation.structuredContent);
-    if (contextRecord(validationPayload.validation).passed !== true) return validation;
+    return contextRecord(validationPayload.validation).passed === true ? undefined : validation;
+  };
+
+  let physical = await callExecutionTool(ctx, 'work_finalize', finalizeArgs);
+  let payload = contextRecord(physical?.structuredContent);
+  if (physical?.isError === true && contextRecord(payload.error).code === 'WORK_VALIDATION_REQUIRED') {
+    const validationFailure = await validateExactWorkspace();
+    if (validationFailure) return validationFailure;
     physical = await callExecutionTool(ctx, 'work_finalize', finalizeArgs);
     payload = contextRecord(physical?.structuredContent);
+  }
+  if (
+    physical
+    && physical.isError !== true
+    && typeof payload.continuation === 'string'
+    && payload.continuation.startsWith('WORK_COMMITTED_REVALIDATION_REQUIRED')
+  ) {
+    const validationFailure = await validateExactWorkspace();
+    if (validationFailure) return validationFailure;
+    physical = await callExecutionTool(ctx, 'work_finalize', finalizeArgs);
   }
   return physical;
 }
