@@ -395,6 +395,7 @@ async function executeChatgptBrowserPrompt(
     prompt,
     title: schedule.name,
     browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
+    conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
     model,
     reasoning,
     tabPolicy,
@@ -424,8 +425,17 @@ async function executeChatgptBrowserPrompt(
     return failed.occurrence ?? saveOccurrence(controllerHome, { ...dispatching, status: 'failed', reason });
   }
   const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
+  const durableConversationUrl = result.conversationUrl && /\/c\/[^/?#]+/.test(result.conversationUrl)
+    ? result.conversationUrl
+    : undefined;
   saveSchedule(controllerHome, {
     ...latest,
+    action: durableConversationUrl && tabPolicy !== 'new'
+      ? {
+          ...latest.action,
+          arguments: { ...latest.action.arguments, conversation_url: durableConversationUrl },
+        }
+      : latest.action,
     lastTriggeredAt: timestamp,
     lastOccurrenceId: occurrence.occurrenceId,
     consecutiveFailures: 0,

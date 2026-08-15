@@ -44,6 +44,7 @@ export interface ScheduledChatgptPromptInput {
   prompt: string;
   title?: string;
   browserSessionId?: string;
+  conversationUrl?: string;
   model?: string;
   reasoning?: ChatgptAutomationReasoning;
   tabPolicy?: ChatgptAutomationTabPolicy;
@@ -326,6 +327,9 @@ export async function runScheduledChatgptPrompt(input: ScheduledChatgptPromptInp
   const sessionId = tabPolicy === 'new'
     ? `${stableSessionId}-${randomUUID().slice(0, 8)}`
     : explicitSessionId || stableSessionId;
+  const targetUrl = tabPolicy === 'new'
+    ? 'https://chatgpt.com/'
+    : input.conversationUrl?.trim() || 'https://chatgpt.com/';
   let reusedSession = false;
   try {
     await ensureControllerChatgptBrowser(input.controllerHome, input.automationId);
@@ -345,7 +349,7 @@ export async function runScheduledChatgptPrompt(input: ScheduledChatgptPromptInp
     if (!reusedSession) {
       await controllerBrowserAction(input.controllerHome, input.automationId, 'open_page', {
         session_id: sessionId,
-        url: 'https://chatgpt.com/',
+        url: targetUrl,
         wait_until: 'domcontentloaded',
         timeout_ms: input.timeoutMs ?? 60_000,
         retries: 1,

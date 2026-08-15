@@ -9,6 +9,7 @@ import {
   appendWorkHandoffRef,
   createWorkContract,
   getWorkContract,
+  listWorkContracts,
   summarizeWorkContract,
   transitionWorkContractPhase,
   updateWorkContract,
@@ -442,6 +443,35 @@ export function startGoalWorkloop(
   const needsWorktree = executionMode === 'goal_workloop' && (input.constraints?.requireWorktree
     ?? (workspaceMode === 'isolated'
       || (workspaceMode === 'auto' && routeDecision.requiresIsolation === true)));
+  if (!needsWorktree && ctx.checkoutId) {
+    const existingWorkspaceOwner = listWorkContracts({ ...ctx.workStore, status: 'active', limit: 100 })
+      .find((candidate) => candidate.checkoutId === ctx.checkoutId
+        && candidate.worktreePolicy.required !== true
+        && !candidate.worktreeRef);
+    if (existingWorkspaceOwner) {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `WORKSPACE_ALREADY_OWNED: checkout ${ctx.checkoutId} is already owned by active Work ${existingWorkspaceOwner.workId}; continue that Work or explicitly request an isolated worktree.`,
+        data: {
+          executionStarted: false,
+          workContractCreated: false,
+          conflictType: 'workspace_single_writer',
+          existingWork: summarizeWorkContract(existingWorkspaceOwner),
+        },
+        evidenceRefs: existingWorkspaceOwner.evidenceRefs,
+        suggestedNextActions: [{
+          label: 'Continue existing Work',
+          tool: 'rh_work',
+          operation: 'continue',
+          payload: { work_id: existingWorkspaceOwner.workId },
+          risk: 'readonly',
+          confidence: 'high',
+          reason: 'The current checkout is single-writer while an active Work owns it.',
+        }],
+        rawAvailable: false,
+      });
+    }
+  }
   const generatedWorkId = workIdFor(input.objective);
   if (input.planId || input.planStepId) {
     if (!input.planId || !input.planStepId || !ctx.planStore || !ctx.sourceRevision) {
