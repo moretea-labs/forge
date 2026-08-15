@@ -324,57 +324,7 @@ describe('single Route Policy authority', () => {
     expect(result.summary).toContain('Goal workloop started');
     expect(result.summary).not.toContain('PLAN_REQUIRED');
     expect(result.data).toMatchObject({ workContractCreated: true });
-  });
-
-  test('enforces one current-workspace writer per checkout while allowing explicit isolated parallel work', () => {
-    const root = temp('route-workspace-single-writer-');
-    const context = {
-      workStore: { root: join(root, 'work') },
-      handoffStore: { root: join(root, 'handoff') },
-      repoId: 'repo-a',
-      checkoutId: 'checkout-a',
-      principalId: 'principal-a',
-      controllerInstanceId: 'controller-a',
-      sourceRevision: 'revision-a',
-    };
-    const modeInput = {
-      scopeClear: true,
-      mutation: true,
-      expectedFiles: 4,
-      expectedChangedLines: 200,
-      requiresRecovery: true,
-      risk: 'local_repo_write' as const,
-    };
-
-    const first = routeWorkStart(context, {
-      objective: 'Implement the primary repository change',
-      modeInput,
-    });
-    expect(first.status).toBe('ok');
-    const firstWorkId = (first.data as { work?: { workId?: string } }).work?.workId;
-    expect(firstWorkId).toBeTruthy();
-
-    const duplicate = routeWorkStart(context, {
-      objective: 'Start a second change on the same current checkout',
-      modeInput,
-    });
-    expect(duplicate.status).toBe('blocked');
-    expect(duplicate.summary).toContain('WORKSPACE_ALREADY_OWNED');
-    expect(duplicate.data).toMatchObject({
-      executionStarted: false,
-      workContractCreated: false,
-      conflictType: 'workspace_single_writer',
-      existingWork: { workId: firstWorkId },
-    });
-
-    const isolated = routeWorkStart(context, {
-      objective: 'Run an explicitly isolated parallel change',
-      constraints: { workspaceMode: 'isolated' },
-      modeInput,
-    });
-    expect(isolated.status).toBe('ok');
-    expect(isolated.data).toMatchObject({ workContractCreated: true, worktreeRequired: true });
-  });
+  }); test('enforces one current-workspace writer per checkout while allowing explicit isolated parallel work', () => { const root = temp('route-workspace-single-writer-'); const context = { workStore: { root: join(root, 'work') }, handoffStore: { root: join(root, 'handoff') }, repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a', controllerInstanceId: 'controller-a', sourceRevision: 'revision-a' }; const modeInput = { scopeClear: true, mutation: true, expectedFiles: 4, expectedChangedLines: 200, requiresRecovery: true, risk: 'local_repo_write' as const }; const first = routeWorkStart(context, { objective: 'Implement the primary repository change', modeInput }); expect(first.status).toBe('ok'); const firstWorkId = (first.data as { work?: { workId?: string } }).work?.workId; expect(firstWorkId).toBeTruthy(); const duplicate = routeWorkStart(context, { objective: 'Start a second change on the same current checkout', modeInput }); expect(duplicate.status).toBe('blocked'); expect(duplicate.summary).toContain('WORKSPACE_ALREADY_OWNED'); expect(duplicate.data).toMatchObject({ executionStarted: false, workContractCreated: false, conflictType: 'workspace_single_writer', existingWork: { workId: firstWorkId } }); const isolated = routeWorkStart(context, { objective: 'Run an explicitly isolated parallel change', constraints: { workspaceMode: 'isolated' }, modeInput }); expect(isolated.status).toBe('ok'); expect(isolated.data).toMatchObject({ workContractCreated: true, worktreeRequired: true }); });
 
   test('still binds an explicitly approved Plan step while old Plan and Work shapes remain readable', () => {
     const root = temp('route-planned-workloop-');
