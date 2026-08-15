@@ -796,6 +796,14 @@ function comparableUrl(value: string): string {
   }
 }
 
+function sameOrigin(left: string, right: string): boolean {
+  try {
+    return new URL(left).origin === new URL(right).origin;
+  } catch {
+    return false;
+  }
+}
+
 function isBlankPage(url: string): boolean {
   return !url || url === 'about:blank' || url === 'chrome://newtab/';
 }
@@ -1221,7 +1229,11 @@ async function openNativeAttachedContext(
     }
     if (comparableUrl(page.url()) !== comparableUrl(target.url)) {
       const currentRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
-      if (!currentRef) {
+      const sessionTargetUnchanged = Boolean(target.existingSession?.url) && comparableUrl(target.url) === comparableUrl(target.existingSession?.url ?? '');
+      const preserveOwnedSameOriginDrift = matchedBy === 'owned_token' && sessionTargetUnchanged && sameOrigin(page.url(), target.url);
+      if (preserveOwnedSameOriginDrift) {
+        sessionResume = { sessionId: target.sessionId, status: 'matched', reason: 'Plugin-owned tab navigated within the same origin; preserved the live tab and refreshed its session URL.', savedTab };
+      } else if (!currentRef) {
         await page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout });
       } else {
         const replacement = await createMacOsBrowserOwnedPage(discovered.attachment, target.url, timeout) as unknown as PageLike;

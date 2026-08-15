@@ -13,8 +13,8 @@ export const DEFAULT_CHATGPT_AUTOMATION_MODEL = 'gpt-5.6';
 export const DEFAULT_CHATGPT_AUTOMATION_REASONING = 'high';
 export const DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY = 'auto';
 export const DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge';
-const CHATGPT_PROMPT_SELECTOR = '[name="prompt-textarea"]';
-const CHATGPT_SEND_KEY = 'Enter';
+const CHATGPT_PROMPT_SELECTOR = 'div#prompt-textarea[contenteditable="true"]';
+const CHATGPT_SEND_SELECTOR = '[data-testid="send-button"]';
 const CHATGPT_INTELLIGENCE_CONTROL_SELECTOR = 'main button';
 const CHATGPT_CAPABILITY_SLIDER_SELECTOR = '[role="slider"]';
 const CHATGPT_CAPABILITY_MENUITEM_SELECTOR = '[role="menuitem"][aria-keyshortcuts~="ArrowLeft"][aria-keyshortcuts~="ArrowRight"]';
@@ -311,6 +311,44 @@ function resultUrl(result: Record<string, unknown>): string | undefined {
     ?? stringField((result.session as Record<string, unknown> | undefined)?.url);
 }
 
+async function submitChatgptPrompt(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  prompt: string,
+  targetUrl: string,
+  timeoutMs?: number,
+): Promise<string> {
+  await controllerBrowserAction(controllerHome, workId, 'fill', {
+    session_id: browserSessionId,
+    selector: CHATGPT_PROMPT_SELECTOR,
+    text: withForgePluginMention(prompt),
+    timeout_ms: timeoutMs ?? 60_000,
+    post_action_wait_ms: 100,
+  }, timeoutMs);
+  const sent = await controllerBrowserAction(controllerHome, workId, 'click', {
+    session_id: browserSessionId,
+    selector: CHATGPT_SEND_SELECTOR,
+    timeout_ms: timeoutMs ?? 60_000,
+    post_action_wait_ms: 1_000,
+  }, timeoutMs);
+  let observedUrl = resultUrl(sent) ?? targetUrl;
+  if (/\/c\/[^/?#]+/.test(observedUrl)) return observedUrl;
+  const deadline = Date.now() + Math.min(Math.max(timeoutMs ?? 8_000, 2_000), 8_000);
+  do {
+    const observed = await controllerBrowserAction(controllerHome, workId, 'query_all', {
+      session_id: browserSessionId,
+      selector: 'main',
+      limit: 1,
+      timeout_ms: Math.min(timeoutMs ?? 3_000, 3_000),
+    }, timeoutMs).catch(() => undefined);
+    observedUrl = observed ? resultUrl(observed) ?? observedUrl : observedUrl;
+    if (/\/c\/[^/?#]+/.test(observedUrl)) return observedUrl;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  } while (Date.now() < deadline);
+  throw new Error(`CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED:${observedUrl}`);
+}
+
 export function withForgePluginMention(prompt: string): string {
   const value = prompt.trim();
   if (!value) throw new Error('CHATGPT_AUTOMATION_PROMPT_REQUIRED');
@@ -363,25 +401,12 @@ export async function runScheduledChatgptPrompt(input: ScheduledChatgptPromptInp
       reasoning,
       input.timeoutMs,
     );
-    await controllerBrowserAction(input.controllerHome, input.automationId, 'fill', {
-      session_id: sessionId,
-      selector: CHATGPT_PROMPT_SELECTOR,
-      text: withForgePluginMention(input.prompt),
-      timeout_ms: input.timeoutMs ?? 60_000,
-      post_action_wait_ms: 100,
-    }, input.timeoutMs);
-    const sent = await controllerBrowserAction(input.controllerHome, input.automationId, 'press', {
-      session_id: sessionId,
-      selector: CHATGPT_PROMPT_SELECTOR,
-      key: CHATGPT_SEND_KEY,
-      timeout_ms: input.timeoutMs ?? 60_000,
-      post_action_wait_ms: 1_500,
-    }, input.timeoutMs);
+    const observedUrl = await submitChatgptPrompt(input.controllerHome, input.automationId, sessionId, input.prompt, targetUrl, input.timeoutMs);
     return {
       status: 'dispatched',
       provider: 'controller-browser',
       browserSessionId: sessionId,
-      conversationUrl: resultUrl(sent),
+      conversationUrl: observedUrl,
       model,
       reasoning,
       tabPolicy,
@@ -456,21 +481,7 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
       reasoning,
       input.timeoutMs,
     );
-    await controllerBrowserAction(input.controllerHome, input.workId, 'fill', {
-      session_id: sessionId,
-      selector: CHATGPT_PROMPT_SELECTOR,
-      text: withForgePluginMention(input.prompt),
-      timeout_ms: input.timeoutMs ?? 60_000,
-      post_action_wait_ms: 100,
-    }, input.timeoutMs);
-    const sent = await controllerBrowserAction(input.controllerHome, input.workId, 'press', {
-      session_id: sessionId,
-      selector: CHATGPT_PROMPT_SELECTOR,
-      key: CHATGPT_SEND_KEY,
-      timeout_ms: input.timeoutMs ?? 60_000,
-      post_action_wait_ms: 1_500,
-    }, input.timeoutMs);
-    const observedUrl = resultUrl(sent) ?? targetUrl;
+    const observedUrl = await submitChatgptPrompt(input.controllerHome, input.workId, sessionId, input.prompt, targetUrl, input.timeoutMs);
     if (/\/c\/[^/?#]+/.test(observedUrl)) {
       binding = bindChatgptWorkConversation(store, {
         workId: input.workId,

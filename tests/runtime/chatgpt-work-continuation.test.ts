@@ -101,8 +101,7 @@ describe('ChatGPT Work conversation binding', () => {
 
   test('keeps automation in Chat mode, prefixes @forge, and submits from the stable prompt editor', () => {
     const source = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
-    expect(source).toContain("controllerBrowserAction(input.controllerHome, input.workId, 'press'");
-    expect(source).toContain('key: CHATGPT_SEND_KEY');
+    expect(source).toContain("CHATGPT_PROMPT_SELECTOR = 'div#prompt-textarea[contenteditable=\"true\"]'"); expect(source).toContain("CHATGPT_SEND_SELECTOR = '[data-testid=\"send-button\"]'");
     expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_MODEL = 'gpt-5.6'");
     expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_REASONING = 'high'");
     expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge'"); expect(source).not.toContain('CHATGPT_WORK_MODE_RADIO_SELECTOR');
@@ -110,7 +109,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain('aria-keyshortcuts~=\"ArrowRight\"');
     expect(source).not.toContain(':has-text(');
     expect(source).toContain('waitForChatgptIntelligenceControl'); expect(source).toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('runWorkChatgptContinuation'); expect(engine).toContain("if (controllerType === 'chatgpt')"); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("input.conversationUrl?.trim() || 'https://chatgpt.com/'"); expect(engine).toContain("conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined"); expect(engine).toContain('conversation_url: durableConversationUrl');
-    expect(source).not.toContain('[data-testid=\"send-button\"]');
+    expect(source).toContain('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED');
   });
 
   test('migrates legacy ChatGPT schedules idempotently without changing task state', () => {
