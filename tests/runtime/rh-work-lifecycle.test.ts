@@ -167,6 +167,54 @@ describe('rh_work managed lifecycle closure', () => {
     expect(parallelSlice?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new', plan: { planId: 'PLAN-slice-b', requirementId: 'REQ-primary' } } });
   });
 
+  test('stopping a Plan-bound Work moves its Plan out of ghost executing state', async () => {
+    const fx = fixture('plan-stop-reconcile');
+    const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim();
+    const created = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'PLAN-stop-reconcile',
+      scope_key: 'plan-stop-reconcile',
+      source_revision: sourceRevision,
+      objective: 'Run one stoppable planned slice',
+      plan_steps: [{
+        id: 'step-a', objective: 'Execute stoppable work', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [],
+        check_ids: ['package:check:type'], acceptance_criteria: ['finish or explicitly replan'],
+      }],
+    });
+    expect(created?.isError).not.toBe(true);
+    const approved = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_approve', plan_id: 'PLAN-stop-reconcile' });
+    expect(approved?.isError).not.toBe(true);
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      plan_id: 'PLAN-stop-reconcile',
+      plan_step_id: 'step-a',
+      objective: 'Execute stoppable work',
+      scope_clear: true,
+      expected_files: 4,
+      expected_changed_lines: 200,
+      requires_recovery: true,
+    });
+    expect(started?.isError).not.toBe(true);
+    const workId = (started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId;
+    expect(workId).toBeTruthy();
+
+    const stopped = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, reason: 'user intentionally stopped this planned slice',
+    });
+    expect(stopped?.isError).not.toBe(true);
+    expect(stopped?.structuredContent).toMatchObject({
+      status: 'ok',
+      data: {
+        finalStatus: 'cancelled',
+        plan: { planId: 'PLAN-stop-reconcile', status: 'replanning', steps: [{ id: 'step-a', status: 'validating', workId }] },
+      },
+    });
+    const fetched = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_get', plan_id: 'PLAN-stop-reconcile', detail_level: 'detail' });
+    expect(fetched?.structuredContent).toMatchObject({ data: { plan: { status: 'replanning', steps: [{ id: 'step-a', status: 'validating', workId }] } } });
+  });
+
   test('finalize commits, merges, removes the managed worktree, and deletes the branch', async () => {
     const fx = fixture('finalize');
     const work = await prepareManagedWork(fx, 'Add one lifecycle acceptance file');

@@ -1285,6 +1285,9 @@ export function stopGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopSt
     // cleanup handler verifies ownership, cleanliness and successful removal.
     worktreeRef: work.worktreeRef,
   });
+  const plan = updated.planId && updated.planStepId && ctx.planStore
+    ? completePlanStepForWork(ctx.planStore, { planId: updated.planId, stepId: updated.planStepId, work: updated })
+    : undefined;
 
   return buildFacadeResult({
     status: 'ok',
@@ -1296,6 +1299,7 @@ export function stopGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopSt
       worktreeDeleted: false,
       cleanupPending: destructiveCleanup && Boolean(work.worktreeRef),
       destructiveCleanupAuthorized: destructiveCleanup,
+      ...(plan ? { plan } : {}),
     },
     evidenceRefs: work.evidenceRefs.slice(0, 5),
     suggestedNextActions: [
