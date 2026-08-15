@@ -248,11 +248,17 @@ function readOnlyGitSegment(words: string[], _segment: string): boolean {
   return isReadOnlyGitCommand(words);
 }
 
+function isReadOnlyCodegraphCommand(words: string[]): boolean {
+  const program = words[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
+  return program === 'codegraph' && words[1]?.toLowerCase() === 'status';
+}
+
 function isReadOnlySegment(segment: string): boolean {
   const words = firstWords(segment);
   const program = words[0]?.toLowerCase();
   if (!program) return false;
   if (program === 'git') return readOnlyGitSegment(words, segment);
+  if (isReadOnlyCodegraphCommand(words)) return true;
   if (program === 'sqlite3') return isSafeReadOnlySqliteSegment(segment);
   if (program === 'find') return !/(?:-delete|-exec|-execdir|-ok|-okdir)\b/.test(segment);
   if (program === 'sed') return !isSedInPlaceSegment(segment);
@@ -531,6 +537,9 @@ function classifyArgvCommand(
   if (program === 'git' && subcommand === 'push') return { risk: 'remote_write', confirmation: 'authorization', reasons: ['writes Git refs to a remote'] };
   if (program === 'git' && isReadOnlyGitCommand(argv)) {
     return { risk: 'readonly', confirmation: 'none', reasons: ['the argv command is a recognized repository-local read operation'] };
+  }
+  if (isReadOnlyCodegraphCommand(argv)) {
+    return { risk: 'readonly', confirmation: 'none', reasons: ['CodeGraph status only observes the local semantic index'] };
   }
   if (program === 'curl' && isReadOnlyLoopbackCurl(argv)) {
     return { risk: 'readonly', confirmation: 'none', reasons: ['curl performs a read-only loopback HTTP observation without writing response data to disk'] };
