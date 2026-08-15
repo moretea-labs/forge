@@ -2987,7 +2987,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const activeContracts = listWorkContracts({ ...store, status: 'active', limit: 200 });
         const activePrimaryWork = activeContracts.filter((contract) => (contract.lifecycleRole ?? 'primary') === 'primary');
         const activeExecutionChildren = activeContracts.filter((contract) => contract.lifecycleRole === 'execution_child');
-        const activeProcessRecords = listProcessRecords(ctx.controllerHome, repository.repoId, 500).filter((process) => isManagedProcessActive(process));
+        const activeRuntimeInstanceId = currentControllerInstanceId();
+        const activeProcessRecords = listProcessRecords(ctx.controllerHome, repository.repoId, 500).filter((process) => isManagedProcessActive(process) && (!process.runtimeInstanceId || process.runtimeInstanceId === activeRuntimeInstanceId));
         const activeProcessWorkIds = new Set(activeProcessRecords.map((process) => process.workId).filter((workId): workId is string => Boolean(workId)));
         const activeControllerWorkIds = new Set(activePrimaryWork.filter((contract) => Boolean(getControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId))).map((contract) => contract.workId));
         const executingPrimaryWorkIds = new Set([...activeProcessWorkIds, ...activeControllerWorkIds].filter((workId) => activePrimaryWork.some((contract) => contract.workId === workId)));
@@ -3245,7 +3246,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           : [];
         const processScan = listProcessRecords(ctx.controllerHome, repository.repoId, workId ? 100 : 50);
         const relevantProcesses = processScan.filter((process) => workId ? process.workId === workId : timestampIsCurrent(process.updatedAt, currentCutoffMs));
-        const activeProcesses = relevantProcesses.filter((process) => isManagedProcessActive(process));
+        const activeRuntimeInstanceId = currentControllerInstanceId();
+        const activeProcesses = relevantProcesses.filter((process) => isManagedProcessActive(process) && (!process.runtimeInstanceId || process.runtimeInstanceId === activeRuntimeInstanceId));
         const workController = work ? getControllerSession(store, work.workId) : undefined;
         const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, {
           preferStored: true,
