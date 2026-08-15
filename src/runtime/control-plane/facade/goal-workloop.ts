@@ -59,6 +59,7 @@ export interface GoalWorkloopContext {
   controllerInstanceId?: string;
   workspaceFingerprint?: string;
   now?: () => string;
+  materializeIsolatedWorkspace?: (input: { workId: string; title: string; baseRef?: string }) => { checkoutId: string; root: string; baseRevision?: string | null; managed: true };
 }
 
 export type WorkAdmissionRelation = 'continue' | 'extend' | 'parallel' | 'new_goal';
@@ -609,6 +610,20 @@ export function startGoalWorkloop(
     });
   }
   const generatedWorkId = workIdFor(input.objective);
+  let isolatedWorkspace: ReturnType<NonNullable<GoalWorkloopContext['materializeIsolatedWorkspace']>> | undefined;
+  if (needsWorktree) {
+    if (!ctx.materializeIsolatedWorkspace) {
+      return buildFacadeResult({ status: 'blocked', summary: 'ISOLATED_WORKSPACE_MATERIALIZER_REQUIRED: isolated Work cannot enter running state without a concrete managed checkout.', data: { executionStarted: false, workContractCreated: false, worktreeRequired: true } });
+    }
+    try {
+      isolatedWorkspace = ctx.materializeIsolatedWorkspace({ workId: generatedWorkId, title: input.objective, baseRef: ctx.sourceRevision });
+      if (!isolatedWorkspace.checkoutId || !isolatedWorkspace.root || isolatedWorkspace.checkoutId === ctx.checkoutId) {
+        throw new Error('ISOLATED_WORKSPACE_NOT_DISTINCT');
+      }
+    } catch (error) {
+      return buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? `ISOLATED_WORKSPACE_MATERIALIZATION_FAILED: ${error.message}` : 'ISOLATED_WORKSPACE_MATERIALIZATION_FAILED', data: { executionStarted: false, workContractCreated: false, worktreeRequired: true } });
+    }
+  }
   if (input.planId || input.planStepId) {
     if (!input.planId || !input.planStepId || !ctx.planStore || !ctx.sourceRevision) {
       return buildFacadeResult({ status: 'blocked', summary: 'PLAN_CONTEXT_REQUIRED: plan_id, plan_step_id and a current source revision are required.', data: { executionStarted: false } });
@@ -639,11 +654,11 @@ export function startGoalWorkloop(
   const work = createWorkContract(ctx.workStore, {
     workId: generatedWorkId,
     repoId: ctx.repoId,
-    checkoutId: ctx.checkoutId,
+    checkoutId: isolatedWorkspace?.checkoutId ?? ctx.checkoutId,
     principalId: ctx.principalId,
     controllerInstanceId: ctx.controllerInstanceId,
-    baseRevision: ctx.sourceRevision,
-    workspaceFingerprint: ctx.workspaceFingerprint,
+    baseRevision: isolatedWorkspace?.baseRevision ?? ctx.sourceRevision,
+    workspaceFingerprint: isolatedWorkspace ? undefined : ctx.workspaceFingerprint,
     routeDecisionFingerprint: routeDecision.inputFingerprint,
     routeDecision,
     mode: executionMode,
@@ -679,6 +694,7 @@ export function startGoalWorkloop(
         ? 'Isolation was explicitly requested or required for parallel execution.'
         : 'Current workspace is the stability-first default; isolation remains opt-in.',
     },
+    worktreeRef: isolatedWorkspace?.root,
     evidencePolicy: {
       defaultDetailLevel: 'summary',
       allowRawOptIn: true,

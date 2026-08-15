@@ -203,6 +203,7 @@ import {
   resumeControllerSession,
 } from '../../control-plane/facade';
 import { currentControllerInstanceId, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../control-plane/execution/session-store';
+import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { currentPermissionSnapshotVersion } from '../../control-plane/execution/validation';
 import { observeRuntimeStatus } from '../../root/status';
 import { reconcileWorkValidation } from './work-validation-reconciler';
@@ -3648,6 +3649,11 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           controllerInstanceId: ctx.controllerInstanceId,
           availableChecks: checks,
           sourceRevision: gitSnapshot(repository.canonicalRoot).head ?? undefined,
+          materializeIsolatedWorkspace: ({ workId, title, baseRef }: { workId: string; title: string; baseRef?: string }) => {
+            const workspace = ensureManagedWorkspace(ctx.controllerHome, repository, { requestId: workId, title, baseRef });
+            if (!workspace.managed || !workspace.checkoutId || !workspace.root) throw new Error('MANAGED_WORKSPACE_NOT_MATERIALIZED');
+            return { checkoutId: workspace.checkoutId, root: workspace.root, baseRevision: workspace.baseRevision, managed: true as const };
+          },
         };
 
         if (operation.startsWith('plan_')) {
