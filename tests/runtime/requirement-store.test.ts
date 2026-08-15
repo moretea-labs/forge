@@ -179,12 +179,20 @@ test('requires a Work-owned receipt before completing an active Requirement', ()
     'completed_no_change',
     'completed_no_change',
   );
-  const done = completeRequirementFromWork(options, {
+  const waiting = completeRequirementFromWork(options, {
     requirementId: 'req-work-completion',
     work: completedWork,
   });
+  expect(waiting.state).toBe('waiting_for_user');
+  expect(waiting.auditRefs).toContain(receipt.receiptId);
+  expect(waiting.attentionSummary).toContain('semantic acceptance is still required');
+  const repeated = completeRequirementFromWork(options, { requirementId: 'req-work-completion', work: completedWork });
+  expect(repeated.revision).toBe(waiting.revision);
+  const done = updateRequirement(options, {
+    requirementId: 'req-work-completion', action: 'semantic_acceptance',
+    mutate: (current) => ({ ...current, state: 'done', attentionSummary: undefined }),
+  });
   expect(done.state).toBe('done');
-  expect(done.auditRefs).toContain(receipt.receiptId);
 
   const historicalCancelled = completeRequirementFromWork(options, {
     requirementId: 'req-work-completion',

@@ -125,7 +125,7 @@ export function createRequirement(
 const ALLOWED_TRANSITIONS: Readonly<Record<RequirementState, readonly RequirementState[]>> = {
   planned: ['planned', 'active', 'waiting_for_user', 'cancelled'],
   active: ['active', 'waiting_for_user', 'done', 'cancelled'],
-  waiting_for_user: ['waiting_for_user', 'planned', 'active', 'cancelled'],
+  waiting_for_user: ['waiting_for_user', 'planned', 'active', 'done', 'cancelled'],
   done: ['done', 'cancelled'],
   cancelled: ['cancelled'],
 };
@@ -191,12 +191,13 @@ export interface RequirementCompletionInput {
 }
 
 /**
- * Complete a Requirement only from the Work-owned completion record.
+ * Project machine-complete Work delivery into a Requirement without asserting
+ * semantic acceptance. The Requirement waits for an explicit ChatGPT/user
+ * decision; a previously audited `done` Requirement is never reopened by
+ * historical execution evidence.
  *
- * This intentionally short-circuits an already audited `done` Requirement
- * before inspecting historical execution facts. A cancelled Run, missing
- * legacy Task receipt, or stale Work projection therefore cannot reopen or
- * rewrite a completed user outcome.
+ * The legacy function name is retained for compatibility with completion
+ * callers. Its authority is evidence projection only, not semantic completion.
  */
 export function completeRequirementFromWork(
   options: RequirementStoreOptions,
@@ -223,19 +224,20 @@ export function completeRequirementFromWork(
   if (receipt.delivery.kind === 'superseded' || receipt.delivery.status !== 'integrated' || !receipt.delivery.reachable) throw new Error('REQUIREMENT_WORK_DELIVERY_NOT_PROVEN');
   if (!['complete', 'maintenance_warning'].includes(receipt.cleanup.status) || receipt.cleanup.blockers.length > 0) throw new Error('REQUIREMENT_WORK_CLEANUP_NOT_PROVEN');
 
+  if (current.value.state === 'waiting_for_user' && current.value.auditRefs.includes(receipt.receiptId)) return current.value;
   return updateRequirement(options, {
     requirementId,
-    action: 'requirement_completed_from_work_receipt',
+    action: 'requirement_delivery_evidence_recorded',
     mutate: (latest) => {
-      // Preserve a concurrent audited completion; stale execution evidence is
-      // never allowed to move a terminal Requirement backwards.
+      // Preserve a concurrent explicit semantic completion; stale execution
+      // evidence is never allowed to move a terminal Requirement backwards.
       if (latest.state === 'done') return latest;
       if (latest.state === 'cancelled') throw new Error('REQUIREMENT_CANCELLED');
       return {
         ...latest,
-        state: 'done',
+        state: 'waiting_for_user',
         needsAttention: false,
-        attentionSummary: undefined,
+        attentionSummary: `Work ${work.workId} delivered machine-valid evidence (${receipt.receiptId}); ChatGPT/user semantic acceptance is still required.`,
         auditRefs: Array.from(new Set([...latest.auditRefs, receipt.receiptId])).slice(-50),
       };
     },

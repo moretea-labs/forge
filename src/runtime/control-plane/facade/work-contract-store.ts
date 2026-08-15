@@ -196,7 +196,7 @@ function legacyPhaseEvidence(
       state,
       source: completedByReceipt ? 'recorded' : source,
       summary: completedByReceipt
-        ? `Phase ${phase} accepted by Work completion receipt ${contract.completionReceipt!.receiptId}.`
+        ? `Phase ${phase} satisfied by Work completion receipt ${contract.completionReceipt!.receiptId}.`
         : index < currentIndex
           ? `Legacy Work advanced beyond ${phase}.`
           : `Legacy Work phase ${phase} is ${state}.`,

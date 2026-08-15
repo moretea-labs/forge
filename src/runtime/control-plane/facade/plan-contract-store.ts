@@ -376,31 +376,48 @@ export function completePlanStepForWork(
     if (stepIndex < 0) throw new Error(`PLAN_STEP_NOT_FOUND: ${input.stepId}`);
     const step = current.steps[stepIndex];
     if (step.workId !== input.work.workId) throw new Error(`PLAN_STEP_WORK_MISMATCH: ${input.stepId}`);
-    const completed = input.work.status === 'completed'
+    if (step.status === 'completed') return current;
+    const delivered = input.work.status === 'completed'
       && input.work.phase === 'cleanup'
       && input.work.evidenceState === 'valid'
       && Boolean(input.work.completionOutcome && input.work.completionOutcome !== 'superseded')
       && Boolean(input.work.completionReceipt);
     const failed = input.work.status === 'failed' || input.work.status === 'cancelled';
-    if (!completed && !failed) throw new Error(`PLAN_STEP_WORK_NOT_TERMINAL: ${input.work.workId}`);
+    if (!delivered && !failed) throw new Error(`PLAN_STEP_WORK_NOT_TERMINAL: ${input.work.workId}`);
     const at = nowIso(options);
     const steps = [...current.steps];
     steps[stepIndex] = {
       ...step,
-      // A failed/cancelled Work is not validating anything. The Plan owns the
-      // replanning state; reset the slice to ready so a replacement finite Work
-      // can be materialized after the Plan is reviewed/re-approved.
-      status: completed ? 'completed' : 'ready',
-      evidenceRefs: input.work.evidenceRefs.length > 0
-        ? input.work.evidenceRefs.slice(0, 20)
-        : step.evidenceRefs,
+      // Work completion proves machine delivery only. The Plan step remains in
+      // semantic validation until an explicit Controller acceptance records it.
+      // Failed/cancelled Work returns the slice to ready for replanning.
+      status: delivered ? 'validating' : 'ready',
+      evidenceRefs: input.work.evidenceRefs.length > 0 ? input.work.evidenceRefs.slice(0, 20) : step.evidenceRefs,
+    };
+    return { ...current, status: delivered ? 'verifying' : 'replanning', steps, updatedAt: at };
+  });
+}
+
+export function acceptPlanStepEvidence(
+  options: PlanContractStoreOptions,
+  input: { planId: string; stepId: string; reviewer: string; rationale: string },
+): PlanContract {
+  const reviewer = input.reviewer.trim();
+  const rationale = input.rationale.trim();
+  if (!reviewer || !rationale) throw new Error('PLAN_STEP_SEMANTIC_ACCEPTANCE_METADATA_REQUIRED');
+  return updatePlanContract(options, input.planId, (current) => {
+    const stepIndex = current.steps.findIndex((step) => step.id === sanitizeFileComponent(input.stepId));
+    if (stepIndex < 0) throw new Error(`PLAN_STEP_NOT_FOUND: ${input.stepId}`);
+    const step = current.steps[stepIndex];
+    if (step.status === 'completed') return current;
+    if (step.status !== 'validating') throw new Error(`PLAN_STEP_NOT_READY_FOR_SEMANTIC_ACCEPTANCE: ${step.id} is ${step.status}`);
+    const steps = [...current.steps];
+    steps[stepIndex] = {
+      ...step,
+      status: 'completed',
+      evidenceRefs: [{ title: 'semantic acceptance', summary: `${reviewer}: ${rationale}`, detailLevel: 'summary' as const }, ...step.evidenceRefs].slice(0, 20),
     };
     const allCompleted = steps.every((candidate) => candidate.status === 'completed');
-    return {
-      ...current,
-      status: completed ? (allCompleted ? 'ready_to_finalize' : 'executing') : 'replanning',
-      steps,
-      updatedAt: at,
-    };
+    return { ...current, status: allCompleted ? 'ready_to_finalize' : 'executing', steps, updatedAt: nowIso(options) };
   });
 }

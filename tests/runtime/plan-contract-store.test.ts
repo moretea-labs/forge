@@ -4,6 +4,7 @@ import { join } from 'path';
 import {
   approvePlanContract,
   claimPlanStepForWork,
+  acceptPlanStepEvidence,
   completePlanStepForWork,
   createPlanContract,
   getPlanContract,
@@ -103,7 +104,7 @@ test('rejects nonterminal Work and replans from failed Work', () => {
   expect(failed).toMatchObject({ status: 'replanning', steps: [{ workId: 'work-terminal', status: 'ready' }] });
 });
 
-test('completes a PlanStep only from the exact terminal Work receipt', () => {
+test('projects terminal Work evidence to validating and requires explicit semantic acceptance to complete the PlanStep', () => {
   const home = mkdtempSync(join('/tmp', 'forge-plan-store-'));
   homes.push(home);
   const options = { controllerHome: home, repoId: 'repo-1', now: () => '2026-08-03T00:00:00.000Z' };
@@ -123,7 +124,7 @@ test('completes a PlanStep only from the exact terminal Work receipt', () => {
     verifiedAt: '2026-08-03T00:00:00.000Z',
     recordedAt: '2026-08-03T00:00:00.000Z',
   };
-  const completed = completePlanStepForWork(options, {
+  const verifying = completePlanStepForWork(options, {
     planId: 'plan-work-receipt',
     stepId: 'step-1',
     work: {
@@ -136,5 +137,9 @@ test('completes a PlanStep only from the exact terminal Work receipt', () => {
       evidenceRefs: [{ evidenceId: receipt.receiptId, title: 'Exact Work completion receipt.', summary: 'PlanStep completion is derived from the Work-owned receipt.' }],
     },
   });
-  expect(completed).toMatchObject({ status: 'ready_to_finalize', steps: [{ workId: 'work-receipt', status: 'completed' }] });
+  expect(verifying).toMatchObject({ status: 'verifying', steps: [{ workId: 'work-receipt', status: 'validating' }] });
+  expect(() => acceptPlanStepEvidence(options, { planId: 'plan-work-receipt', stepId: 'step-1', reviewer: '', rationale: 'looks good' })).toThrow(/PLAN_STEP_SEMANTIC_ACCEPTANCE_METADATA_REQUIRED/);
+  const accepted = acceptPlanStepEvidence(options, { planId: 'plan-work-receipt', stepId: 'step-1', reviewer: 'chatgpt', rationale: 'Acceptance criteria reviewed against Work evidence.' });
+  expect(accepted).toMatchObject({ status: 'ready_to_finalize', steps: [{ workId: 'work-receipt', status: 'completed' }] });
+  expect(accepted.steps[0]?.evidenceRefs[0]?.title).toBe('semantic acceptance');
 });
