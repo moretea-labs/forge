@@ -116,6 +116,11 @@ export function getControllerSession(options: ControllerSessionStoreOptions, wor
   return activeSession(read(options), workId);
 }
 
+export function listControllerSessions(options: ControllerSessionStoreOptions): ControllerSession[] {
+  const at = Date.now();
+  return read(options).sessions.filter((session) => Date.parse(session.leaseExpiresAt) > at);
+}
+
 /**
  * Strict claim used for first ownership acquisition and explicit release/reclaim flows.
  * A live claim with any different controller or transport session remains fenced.

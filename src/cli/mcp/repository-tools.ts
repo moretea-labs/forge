@@ -4,7 +4,7 @@ import { resolveEphemeralWorkspaceTarget } from '../repositories/ephemeral-works
 import type { ResolvedExecutionIdentity } from '../../runtime/control-plane/execution/execution-identity';
 import { readExecutionSession } from '../../runtime/control-plane/execution/session-store';
 import { getWorkContract } from '../../runtime/control-plane/facade/work-contract-store';
-import { getControllerSession } from '../../runtime/control-plane/facade/controller-session-store';
+import { getControllerSession, listControllerSessions } from '../../runtime/control-plane/facade/controller-session-store';
 import { isTerminalWorkContractStatus } from '../../runtime/control-plane/facade/types';
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../repositories/command-executor';
 import { withControllerLock } from '../repositories/locks';
@@ -333,19 +333,27 @@ function claimedSessionWorkId(
     if ((owner.principalId?.trim() || owner.controllerId) !== caller.principalId.trim()) throw new Error(`WORK_CONTROLLER_OWNERSHIP_MISMATCH: ${requestedWorkId}`);
     return requestedWorkId;
   }
-  if (!caller.sessionId?.trim()) return undefined;
-  const executionSession = readExecutionSession(controllerHome, {
-    sessionId: caller.sessionId,
-    principalId: caller.principalId,
-    controllerInstanceId: caller.controllerInstanceId,
-  });
-  const workId = executionSession?.activeWorkId?.trim();
-  if (!workId || executionSession?.activeRepositoryId !== repository.repoId || (executionSession.activeCheckoutId && executionSession.activeCheckoutId !== repository.activeCheckoutId)) return undefined;
-  const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
-  if (!work || isTerminalWorkContractStatus(work.status)) return undefined;
-  const owner = getControllerSession({ controllerHome, repoId: repository.repoId }, workId);
-  if (!owner || owner.sessionId !== caller.sessionId || (owner.principalId?.trim() || owner.controllerId) !== caller.principalId.trim()) return undefined;
-  return workId;
+  if (caller.sessionId?.trim()) {
+    const executionSession = readExecutionSession(controllerHome, {
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+    });
+    const workId = executionSession?.activeWorkId?.trim();
+    if (workId && executionSession?.activeRepositoryId === repository.repoId && (!executionSession.activeCheckoutId || executionSession.activeCheckoutId === repository.activeCheckoutId)) {
+      const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
+      const owner = getControllerSession({ controllerHome, repoId: repository.repoId }, workId);
+      if (work && !isTerminalWorkContractStatus(work.status) && owner?.sessionId === caller.sessionId && (owner.principalId?.trim() || owner.controllerId) === caller.principalId.trim()) return workId;
+    }
+  }
+  const principal = caller.principalId.trim();
+  const candidates = listControllerSessions({ controllerHome, repoId: repository.repoId })
+    .filter((owner) => (owner.principalId?.trim() || owner.controllerId) === principal)
+    .map((owner) => ({ owner, work: getWorkContract({ controllerHome, repoId: repository.repoId }, owner.workId) }))
+    .filter((entry): entry is { owner: ReturnType<typeof listControllerSessions>[number]; work: NonNullable<ReturnType<typeof getWorkContract>> } => Boolean(entry.work && !isTerminalWorkContractStatus(entry.work.status) && (!entry.work.checkoutId || entry.work.checkoutId === repository.activeCheckoutId)));
+  if (candidates.length === 1) return candidates[0].work.workId;
+  if (candidates.length > 1) throw new Error(`WORK_ATTRIBUTION_AMBIGUOUS: principal ${principal} owns ${candidates.length} active Works on checkout ${repository.activeCheckoutId}`);
+  return undefined;
 }
 
 function claimedSessionEditBinding(
