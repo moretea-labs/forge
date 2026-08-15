@@ -313,20 +313,23 @@ describe('single Route Policy authority', () => {
       planId: 'plan-a', repoId: 'repo-a', scopeKey: 'route-policy', sourceRevision: 'revision-a', goal: 'Review the routing strategy first',
       steps: [{
         id: 'step-a', objective: 'Implement the approved route policy', dependencies: [], authoritativeFiles: [],
-        allowedPaths: ['src/runtime/control-plane/**'], forbiddenPaths: [], checks: ['package:check:type'],
+        allowedPaths: ['src/runtime/control-plane/**'], forbiddenPaths: ['src/private/**'], checks: ['package:check:type'],
         acceptanceCriteria: ['One route authority'],
       }],
     });
     approvePlanContract(planStore, 'plan-a');
-    const result = routeWorkStart({
-      workStore: { root: join(root, 'work') },
-      handoffStore: { root: join(root, 'handoff') },
-      planStore,
+    const context = {
+      workStore: { root: join(root, 'work') }, handoffStore: { root: join(root, 'handoff') }, planStore,
       repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a', controllerInstanceId: 'controller-a',
       sourceRevision: 'revision-a', availableChecks: [{ id: 'package:check:type' }],
-    }, {
+    };
+    const mismatch = routeWorkStart(context, {
+      objective: 'Implement the approved route policy', planId: 'plan-a', planStepId: 'step-a', allowedPaths: ['src/other/**'],
+      modeInput: { scopeClear: true, mutation: true, expectedFiles: 8, expectedChangedLines: 500, requiresRecovery: true, risk: 'local_repo_write' },
+    });
+    expect(mismatch.summary).toContain('PLAN_STEP_WORK_CONTRACT_MISMATCH'); expect(mismatch.data).toMatchObject({ executionStarted: false, workContractCreated: false });
+    const result = routeWorkStart(context, {
       objective: 'Implement the approved route policy', planId: 'plan-a', planStepId: 'step-a',
-      acceptanceCriteria: ['One route authority'], allowedPaths: ['src/runtime/control-plane/**'], checks: ['package:check:type'],
       modeInput: { scopeClear: true, mutation: true, expectedFiles: 8, expectedChangedLines: 500, requiresRecovery: true, risk: 'local_repo_write' },
     });
     const workId = (result.data as { work?: { workId?: string } }).work?.workId;
@@ -335,6 +338,7 @@ describe('single Route Policy authority', () => {
     expect(getPlanContract(planStore, 'plan-a')?.steps[0]).toMatchObject({ status: 'executing', workId });
     expect(getWorkContract({ root: join(root, 'work') }, workId!)).toMatchObject({
       repoId: 'repo-a', planId: 'plan-a', planStepId: 'step-a', mode: 'goal_workloop',
+      acceptanceCriteria: ['One route authority'], allowedPaths: ['src/runtime/control-plane/**'], forbiddenPaths: ['src/private/**'], checks: ['package:check:type'],
     });
     const resumed = routeWorkStart({
       workStore: { root: join(root, 'work') }, handoffStore: { root: join(root, 'handoff') }, planStore,

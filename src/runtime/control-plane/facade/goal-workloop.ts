@@ -474,7 +474,6 @@ export function startGoalWorkloop(
 ): FacadeResult {
   const at = nowIso(ctx);
   const available = ctx.availableChecks ?? [];
-  const normalized = normalizeCheckIds(input.checks ?? [], available);
   const workspaceMode = input.constraints?.workspaceMode ?? 'auto';
   const activeWorks = listWorkContracts({ ...ctx.workStore, status: 'active', limit: 100 })
     .filter((candidate) => (candidate.lifecycleRole ?? 'primary') === 'primary');
@@ -488,6 +487,32 @@ export function startGoalWorkloop(
     : undefined;
   const plan = input.planId && ctx.planStore ? getPlanContract(ctx.planStore, input.planId) : undefined;
   const planStep = plan && input.planStepId ? plan.steps.find((step) => step.id === input.planStepId) : undefined;
+  const sameStringSet = (provided: string[] | undefined, frozen: string[]): boolean => {
+    if (provided === undefined) return true;
+    const actual = [...new Set(provided)].sort();
+    const expected = [...new Set(frozen)].sort();
+    return actual.length === expected.length && actual.every((value, index) => value === expected[index]);
+  };
+  if (planStep) {
+    const mismatches = [
+      !sameStringSet(input.acceptanceCriteria, planStep.acceptanceCriteria) && 'acceptance_criteria',
+      !sameStringSet(input.allowedPaths, planStep.allowedPaths) && 'allowed_paths',
+      !sameStringSet(input.forbiddenPaths, planStep.forbiddenPaths) && 'forbidden_paths',
+      !sameStringSet(input.checks, planStep.checks) && 'check_ids',
+    ].filter((value): value is string => Boolean(value));
+    if (mismatches.length > 0) {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `PLAN_STEP_WORK_CONTRACT_MISMATCH: ${input.planId}/${input.planStepId} conflicts with frozen Plan step field(s): ${mismatches.join(', ')}. Replan instead of widening or narrowing Work admission.`,
+        data: { executionStarted: false, workContractCreated: false, planId: input.planId, planStepId: input.planStepId, mismatches },
+      });
+    }
+  }
+  const effectiveAcceptanceCriteria = planStep?.acceptanceCriteria ?? input.acceptanceCriteria ?? [];
+  const effectiveAllowedPaths = planStep?.allowedPaths ?? input.allowedPaths ?? [];
+  const effectiveForbiddenPaths = planStep?.forbiddenPaths ?? input.forbiddenPaths ?? [];
+  const effectiveChecks = planStep?.checks ?? input.checks ?? [];
+  const normalized = normalizeCheckIds(effectiveChecks, available);
   const planStepWork = planStep?.workId ? activeWorks.find((candidate) => candidate.workId === planStep.workId) : undefined;
   const requirementWorks = input.requirementId
     ? activeWorks.filter((candidate) => candidate.requirementId === input.requirementId)
@@ -671,7 +696,7 @@ export function startGoalWorkloop(
     routeDecision,
     mode: executionMode,
     objective: input.objective,
-    acceptanceCriteria: input.acceptanceCriteria ?? [],
+    acceptanceCriteria: effectiveAcceptanceCriteria,
     constraints: input.constraints ?? { requireHandoffOnAmbiguity: true },
     risk: workRiskFor(input),
     workKind: input.modeInput.requiresExternalEffect === true && input.modeInput.remoteWrite === true
@@ -686,8 +711,8 @@ export function startGoalWorkloop(
     planStepId: input.planStepId,
     planSourceRevision: input.planId ? ctx.sourceRevision : undefined,
     scopeSummary: input.modeInput.scopeClear ? 'scope declared at start' : 'scope incomplete',
-    allowedPaths: input.allowedPaths ?? [],
-    forbiddenPaths: input.forbiddenPaths ?? [],
+    allowedPaths: effectiveAllowedPaths,
+    forbiddenPaths: effectiveForbiddenPaths,
     checks: normalized.validCheckIds,
     driver: {
       preferred: executionMode === 'direct_control'

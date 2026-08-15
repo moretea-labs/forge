@@ -2213,34 +2213,14 @@ describe("Hook runtime behavior", () => {
     }
   });
 
-  test("prompt-guard: starts a Draft plan workflow for plain new-feature requests", () => {
-    const cwd = tmpWorkspace("prompt-guard-feature-plan-start");
+  test("prompt-guard: plain new-feature requests stay execution/advisory and do not auto-create Draft plans", () => {
+    const cwd = tmpWorkspace("prompt-guard-feature-direct");
     try {
-      initGitRepo(cwd);
-      installHooks(cwd);
-      installPlanWorkflowHelpers(cwd);
-
-      const res = runHook("prompt-guard.sh", cwd, {
-        stdin: JSON.stringify({ user_message: "我要开发新功能：做一个设置页" }),
-      });
-
-      expect(res.status).toBe(0);
-      expect(res.stdout).toContain("[PlanStartGate]");
-      expect(res.stdout).toContain("Created plan:");
-      expect(res.stdout).toContain("[BDD] Feature intent detected");
-      const plans = readdirSync(join(cwd, "plans")).filter((name) =>
-        /^plan-\d{8}-\d{4}-feature-plan-\d{6}\.md$/.test(name)
-      );
-      expect(plans).toHaveLength(1);
-      const plan = readFileSync(join(cwd, "plans", plans[0]), "utf-8");
-      expect(plan).toContain("# Plan: 我要开发新功能：做一个设置页");
-      expect(plan).toContain("> **Status**: Draft");
-      const todo = readFileSync(join(cwd, "tasks/todos.md"), "utf-8");
-      expect(todo).toContain("# Deferred Goal Ledger");
-      expect(todo).toContain("> **Status**: Backlog");
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-    }
+      initGitRepo(cwd); installHooks(cwd); installPlanWorkflowHelpers(cwd);
+      const res = runHook("prompt-guard.sh", cwd, { stdin: JSON.stringify({ user_message: "我要开发新功能：做一个设置页" }) });
+      expect(res.status).toBe(0); expect(res.stdout).not.toContain("[PlanStartGate]"); expect(res.stdout).not.toContain("Created plan:"); expect(res.stdout).toContain("[BDD] Feature intent detected");
+      const plansDir = join(cwd, "plans"); expect(existsSync(plansDir) ? readdirSync(plansDir).filter((name) => /^plan-.*\.md$/.test(name)) : []).toHaveLength(0);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
   test("prompt-guard: starts a Draft plan workflow when Waza think prompt includes expanded skill context", () => {

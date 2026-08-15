@@ -401,7 +401,7 @@ export function isThinkPlanStartIntent(ctx: PromptIntentContext): boolean {
   if (isBugOrHuntIntent(ctx)) return false;
   if (THINK_COMMAND.test(ctx.text)) return true;
   if (isPlanConsultationIntent(ctx)) return false;
-  return THINK_PLAN_PHRASE.test(ctx.text) || isPlainFeaturePlanStartIntent(ctx);
+  return THINK_PLAN_PHRASE.test(ctx.text);
 }
 
 export function normalizePlanSlug(value: string): string {
