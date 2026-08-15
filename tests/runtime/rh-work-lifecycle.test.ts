@@ -135,37 +135,36 @@ function branchExists(root: string, branch: string): boolean {
 }
 
 describe('rh_work managed lifecycle closure', () => {
-  test('reuses active Plan authority before creating a duplicate draft', async () => {
+  test('reuses exact Plan scope but resolves distinct slices under the same Requirement before creation', async () => {
     const fx = fixture('plan-admission');
     const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim();
+    const step = (id: string) => [{ id, objective: 'Implement it', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [], check_ids: [], acceptance_criteria: ['done'] }];
     const first = await callRuntimeTool(fx.ctx, 'rh_work', {
-      repo_id: fx.repository.repoId,
-      operation: 'plan_create',
-      plan_id: 'PLAN-primary',
-      requirement_id: 'REQ-primary',
-      scope_key: 'primary-scope',
-      source_revision: sourceRevision,
-      objective: 'Implement the primary requirement',
-      plan_steps: [{ id: 'step-a', objective: 'Implement it', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [], check_ids: [], acceptance_criteria: ['done'] }],
+      repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-primary', requirement_id: 'REQ-primary', scope_key: 'primary-scope', source_revision: sourceRevision,
+      objective: 'Implement the primary requirement', plan_steps: step('step-a'),
     });
     expect(first?.isError).not.toBe(true);
     expect(first?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new' } });
 
-    const duplicate = await callRuntimeTool(fx.ctx, 'rh_work', {
-      repo_id: fx.repository.repoId,
-      operation: 'plan_create',
-      plan_id: 'PLAN-duplicate',
-      requirement_id: 'REQ-primary',
-      scope_key: 'renamed-but-same-requirement',
-      source_revision: sourceRevision,
-      objective: 'A renamed plan for the same requirement',
-      plan_steps: [{ id: 'step-b', objective: 'Do it again', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [], check_ids: [], acceptance_criteria: ['done'] }],
+    const exactDuplicate = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-duplicate', requirement_id: 'REQ-primary', scope_key: 'primary-scope', source_revision: sourceRevision,
+      objective: 'Duplicate exact scope', plan_steps: step('step-dup'),
     });
-    expect(duplicate?.isError).not.toBe(true);
-    expect(duplicate?.structuredContent).toMatchObject({
-      status: 'ok',
-      data: { planContractCreated: false, admissionDecision: 'reuse_existing', plan: { planId: 'PLAN-primary', requirementId: 'REQ-primary' } },
+    expect(exactDuplicate?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: false, admissionDecision: 'reuse_existing', plan: { planId: 'PLAN-primary' } } });
+
+    const ambiguousSlice = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-slice-b', requirement_id: 'REQ-primary', scope_key: 'parallel-scope', source_revision: sourceRevision,
+      objective: 'A distinct slice under the same broad requirement', plan_steps: step('step-b'),
     });
+    expect(ambiguousSlice?.structuredContent).toMatchObject({
+      status: 'ok', data: { planContractCreated: false, admissionDecision: 'resolution_required', resolutionRequired: true, allowedPlanRelations: ['extend', 'parallel'] },
+    });
+
+    const parallelSlice = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-slice-b', requirement_id: 'REQ-primary', scope_key: 'parallel-scope', plan_relation: 'parallel', source_revision: sourceRevision,
+      objective: 'A distinct explicitly parallel slice', plan_steps: step('step-b'),
+    });
+    expect(parallelSlice?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new', plan: { planId: 'PLAN-slice-b', requirementId: 'REQ-primary' } } });
   });
 
   test('finalize commits, merges, removes the managed worktree, and deletes the branch', async () => {
