@@ -113,9 +113,10 @@ function contractFor(fx: ReturnType<typeof fixture>) {
 }
 
 describe('Work validation receipt convergence', () => {
-  test('returns a successful terminal check to the prior WorkHandle state and advances Work delivery', () => {
+  test('returns a successful terminal check across MCP transport rotation and advances Work delivery', () => {
     const fx = fixture('succeeded');
-    const result = reconcileWorkValidation(fx.controllerHome, fx.handle);
+    const rotatedHandle = { ...fx.handle, sessionId: 'session-validation-next' };
+    const result = reconcileWorkValidation(fx.controllerHome, rotatedHandle);
     expect(result).toMatchObject({ outcome: 'passed', changed: true, handle: { state: 'editing' } });
     expect(result.handle.finalization.validation).toBe('done');
     expect(result.handle.validationRun).toBeUndefined();

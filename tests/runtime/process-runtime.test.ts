@@ -891,21 +891,16 @@ describe('Unified Process Runtime', () => {
 });
 
 describe('run_check Process Runtime facade', () => {
-  test('semantic scope fences verification owners without disabling unbound reuse', () => {
-    const scope = (input: Parameters<typeof persistedCheckSemanticScopeKey>[0]) =>
-      persistedCheckSemanticScopeKey(input, 'checkout');
-    expect(scope({ checkoutId: 'checkout-a' })).toBe(scope({ checkoutId: 'checkout-a' }));
-    expect(scope({ checkoutId: 'checkout-a', workId: 'work-a', verificationBinding: { executionSessionId: 'session-a' } }))
-      .toBe(scope({ checkoutId: 'checkout-a', workId: 'work-a', verificationBinding: { executionSessionId: 'session-a' } }));
-    expect(scope({ checkoutId: 'checkout-a', workId: 'work-a', verificationBinding: { executionSessionId: 'session-a' } }))
-      .not.toBe(scope({ checkoutId: 'checkout-a', workId: 'work-b', verificationBinding: { executionSessionId: 'session-a' } }));
-    expect(scope({ checkoutId: 'checkout-a', workId: 'work-a', verificationBinding: { executionSessionId: 'session-a' } }))
-      .not.toBe(scope({ checkoutId: 'checkout-a', workId: 'work-a', verificationBinding: { executionSessionId: 'session-b' } }));
-    expect(scope({ checkoutId: 'checkout-a', verificationBinding: { editSessionId: 'edit-a', editRevision: 1 } }))
-      .not.toBe(scope({ checkoutId: 'checkout-a', verificationBinding: { editSessionId: 'edit-a', editRevision: 2 } }));
+  test('semantic scope is physical Check scope, not consumer or transport identity', () => {
+    const checkoutScope = persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a' }, 'checkout');
+    expect(checkoutScope).toBe('checkout:checkout-a');
+    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a', workId: 'work-a', verificationBinding: { executionSessionId: 'session-a' } }, 'checkout')).toBe(checkoutScope);
+    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a', workId: 'work-b', verificationBinding: { editSessionId: 'edit-b', editRevision: 2 } }, 'checkout')).toBe(checkoutScope);
+    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-b' }, 'checkout')).not.toBe(checkoutScope);
+    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a', workId: 'work-a' }, 'repository')).toBe('repository');
   });
 
-  test('does not reuse Edit Session Process evidence for Work validation on the same checkout', async () => {
+  test('reuses identical Check Process evidence across Edit Session and Work consumers', async () => {
     const fx = fixture();
     const common = {
       controllerHome: fx.controllerHome, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
@@ -913,10 +908,11 @@ describe('run_check Process Runtime facade', () => {
     };
     const edit = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'edit-check', commandId: 'edit-check', verificationBinding: { editSessionId: 'edit-a', editRevision: 1 } });
     const work = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'work-check', commandId: 'work-check', workId: 'work-a', verificationBinding: { executionSessionId: 'session-a' } });
-    const repeat = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'work-check-repeat', commandId: 'work-check-repeat', workId: 'work-a', verificationBinding: { executionSessionId: 'session-a' } });
+    const repeat = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'work-check-repeat', commandId: 'work-check-repeat', workId: 'work-a', verificationBinding: { executionSessionId: 'session-b' } });
     expect(edit.process?.completed).toBe(true);
     expect(work.process?.completed).toBe(true);
-    expect(work.process?.processId).not.toBe(edit.process?.processId);
+    expect(work.process?.processId).toBe(edit.process?.processId);
+    expect(work.process?.semanticDeduplicated).toBe(true);
     expect(repeat.process?.processId).toBe(work.process?.processId);
     expect(repeat.process?.semanticDeduplicated).toBe(true);
   });

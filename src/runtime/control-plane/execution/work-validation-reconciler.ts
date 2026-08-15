@@ -173,7 +173,6 @@ export function reconcileWorkValidation(
         repoId: handle.repositoryId,
         checkoutId: handle.checkoutId,
         workId: handle.workId,
-        executionSessionId: handle.sessionId,
         checkId,
         processId: binding.processId,
         ...(currentIdentity ? {

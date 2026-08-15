@@ -64,16 +64,7 @@ export function processCheckSemanticScopeKey(
   input: Pick<RunCheckFacadeInput, 'workId' | 'verificationBinding' | 'checkoutId'>,
   reuseScope: 'repository' | 'checkout',
 ): string {
-  const base = reuseScope === 'repository' ? 'repository' : `checkout:${input.checkoutId ?? 'unknown'}`;
-  const binding = input.verificationBinding;
-  const owner = [
-    input.workId ? `work:${input.workId}` : undefined,
-    binding?.executionSessionId ? `execution:${binding.executionSessionId}` : undefined,
-    binding?.editSessionId ? `edit:${binding.editSessionId}:r${binding.editRevision ?? 'unknown'}` : undefined,
-    binding?.issueId ? `issue:${binding.issueId}` : undefined,
-    binding?.taskId ? `task:${binding.taskId}` : undefined,
-  ].filter(Boolean).join('|') || 'unbound';
-  return `${base}|owner:${owner}`;
+  return reuseScope === 'repository' ? 'repository' : `checkout:${input.checkoutId ?? 'unknown'}`;
 }
 
 export interface RunCheckFacadeResult {

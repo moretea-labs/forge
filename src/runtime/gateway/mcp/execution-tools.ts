@@ -1240,7 +1240,6 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       repoId: handle.repositoryId,
       checkoutId: handle.checkoutId,
       workId: handle.workId,
-      executionSessionId: session.sessionId,
       checkId,
       processId: process.processId,
     });
