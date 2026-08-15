@@ -3252,6 +3252,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               goal: pack.goal,
               search: pack.search,
               structuralContext: pack.structuralContext,
+              impactContext: pack.impactContext,
               files: pack.files,
               deniedPaths: pack.deniedPaths,
               omitted: pack.omitted,
