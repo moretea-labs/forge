@@ -2695,15 +2695,18 @@ async function runFacadeVerify(
     const requestId = typeof args.request_id === 'string' && args.request_id.trim()
       ? args.request_id.trim()
       : undefined;
-    const observedGitHead = repositoryGitStatus(repository).head;
     const workContract = workId ? getWorkContract(store, workId) : undefined;
     if (workId && !workContract) throw new Error(`WORK_NOT_FOUND: ${workId}`);
+    const verificationRepository = workContract?.checkoutId
+      ? selectRepositoryCheckout(repository, workContract.checkoutId, { allowArchived: true })
+      : repository;
+    const observedGitHead = repositoryGitStatus(verificationRepository).head;
     const executed = await runPersistedCheckViaProcessRuntime({
       controllerHome: ctx.controllerHome,
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      repoRoot: repository.canonicalRoot,
-      executionIdentity: executionIdentityForRepository(repository, workId ? { workId } : {}),
+      repoId: verificationRepository.repoId,
+      checkoutId: verificationRepository.activeCheckoutId,
+      repoRoot: verificationRepository.canonicalRoot,
+      executionIdentity: executionIdentityForRepository(verificationRepository, workId ? { workId } : {}),
       checkId: normalizedCheckId,
       timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
       // rh_work.verify is a control-plane continuation primitive: callers should
@@ -2746,7 +2749,7 @@ async function runFacadeVerify(
 
     const handle = executed.process;
     if (!handle) throw new Error(`PROCESS_CHECK_HANDLE_MISSING: ${normalizedCheckId}`);
-    const record = getProcessRecord(ctx.controllerHome, repository.repoId, handle.processId);
+    const record = getProcessRecord(ctx.controllerHome, verificationRepository.repoId, handle.processId);
     const checkContentRevision = record?.checkExecution?.revision;
 
     if (!handle.completed) {
@@ -2777,11 +2780,11 @@ async function runFacadeVerify(
 
     if (!record) throw new Error(`PROCESS_CHECK_RECORD_MISSING: ${handle.processId}`);
     const receipt = processCheckCompletionReceipt(record, {
-      repoId: repository.repoId,
+      repoId: verificationRepository.repoId,
       checkId: normalizedCheckId,
       processId: handle.processId,
       ...(record.checkExecution ? {
-        checkoutId: repository.activeCheckoutId,
+        checkoutId: verificationRepository.activeCheckoutId,
         workId: workId || undefined,
         requestId,
         checkExecution: {
@@ -2803,7 +2806,7 @@ async function runFacadeVerify(
     );
     const legacyEvidence = record.origin?.checkResultReceiptPath
       ? undefined
-      : readLatestControllerCheckEvidence(repository.canonicalRoot, normalizedCheckId);
+      : readLatestControllerCheckEvidence(verificationRepository.canonicalRoot, normalizedCheckId);
     const legacyEvidenceMatchesProcess = Boolean(
       legacyEvidence?.cacheKey
       && record.checkExecution?.cacheKey
