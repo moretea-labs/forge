@@ -370,8 +370,8 @@ export function runAssistantRoutineNow(
     relatedRoutineId: routine.routineId,
     relatedRequestId: requestId,
     jobIds: [],
-    recommendations: ['Claim or create Work for this routine, then execute it through an explicit external Controller.'],
-    data: { routine: touched, externalControllerRequired: true },
+    recommendations: ['Resume this existing Routine authority through its external Controller context. Do not create a new Work merely because the timer fired.'],
+    data: { routine: touched, externalControllerRequired: true, createWorkOnTrigger: false },
   });
   return {
     schemaVersion: 1,
@@ -381,7 +381,7 @@ export function runAssistantRoutineNow(
     requestId,
     understoodIntent: 'run_routine',
     displayTitle: `Routine requires an external Controller: ${routine.name}`,
-    displayText: 'No ExecutionJob was created. Continue this routine from the recorded Inbox item with an explicitly claimed Controller session.',
+    displayText: 'No ExecutionJob or new Work was created. Continue the existing Routine authority from the recorded Inbox item with an explicitly claimed Controller session.',
     requiresConfirmation: false,
     plan: [],
     routine: touched,

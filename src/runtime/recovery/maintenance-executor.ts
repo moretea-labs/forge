@@ -6,7 +6,11 @@ import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } f
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
 import { getWorkContract, readWorkContractStore, transitionWorkContractPhase } from '../control-plane/facade/work-contract-store';
-import { isTerminalWorkContractStatus } from '../control-plane/facade/types';
+import { getControllerSession } from '../control-plane/facade/controller-session-store';
+import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
+import { readRequirement } from '../control-plane/persistence/requirement-store';
+import { isTerminalWorkContractStatus, type WorkContract } from '../control-plane/facade/types';
+import { listSchedules } from '../workflow/schedules/store';
 import {
   collectRuntimeProcesses,
   removeRuntimeTempEntry,
@@ -397,6 +401,29 @@ function normalizedOptions(options: RuntimeMaintenanceOptions = {}): Required<Ru
   };
 }
 
+function activeWorkAuthorityRefs(
+  repository: RuntimeMaintenanceRepository,
+  controllerHome: string,
+  contract: WorkContract,
+): string[] {
+  const refs: string[] = [];
+  if (getControllerSession({ controllerHome, repoId: repository.repoId }, contract.workId)) refs.push('controller_session');
+  const activePlans = listPlanContracts({ controllerHome, repoId: repository.repoId, status: 'active', limit: 100 });
+  const plan = activePlans.find((candidate) => candidate.planId === contract.planId || candidate.steps.some((step) => step.workId === contract.workId));
+  if (plan) refs.push(`plan:${plan.planId}`);
+  if (contract.requirementId) {
+    const requirement = readRequirement({ controllerHome }, contract.requirementId)?.value;
+    if (requirement && !['done', 'cancelled'].includes(requirement.state)) refs.push(`requirement:${requirement.requirementId}:${requirement.state}`);
+  }
+  const boundSchedule = listSchedules(controllerHome, repository.repoId).find((schedule) => {
+    if (!schedule.enabled) return false;
+    const args = schedule.action.arguments as Record<string, unknown> | undefined;
+    return args?.work_id === contract.workId;
+  });
+  if (boundSchedule) refs.push(`schedule:${boundSchedule.scheduleId}`);
+  return refs;
+}
+
 function scanStaleWorkContractCandidates(
   repository: RuntimeMaintenanceRepository,
   controllerHome: string,
@@ -413,16 +440,21 @@ function scanStaleWorkContractCandidates(
     .filter(({ ageMinutes }) => ageMinutes >= options.minAgeMinutes)
     .sort((left, right) => right.ageMinutes - left.ageMinutes)
     .slice(0, options.maxCandidates)
-    .map(({ contract, ageMinutes }) => ({
-      kind: 'stale_work_contract' as const,
-      id: contract.workId,
-      status: contract.status,
-      safe: true,
-      reason: 'Nonterminal WorkContract exceeded the explicit maintenance age threshold; cancellation preserves durable evidence and does not delete source or remote state.',
-      ageMinutes,
-      suggestedAction: 'full_maintenance_pass' as const,
-      ownershipStatus: 'explicit' as const,
-    }));
+    .map(({ contract, ageMinutes }) => {
+      const authorityRefs = activeWorkAuthorityRefs(repository, controllerHome, contract);
+      return {
+        kind: 'stale_work_contract' as const,
+        id: contract.workId,
+        status: contract.status,
+        safe: authorityRefs.length === 0,
+        reason: authorityRefs.length > 0
+          ? `Nonterminal WorkContract is old but still has active lifecycle authority (${authorityRefs.join(', ')}); maintenance must not cancel it from age alone.`
+          : 'Nonterminal WorkContract exceeded the explicit maintenance age threshold and has no active Plan, Requirement, Schedule, or Controller authority; explicit full maintenance may cancel it while retaining evidence.',
+        ageMinutes,
+        suggestedAction: 'full_maintenance_pass' as const,
+        ownershipStatus: 'explicit' as const,
+      };
+    });
 }
 
 function scanStaleEditSessionCandidates(

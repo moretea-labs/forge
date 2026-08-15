@@ -452,6 +452,10 @@ export interface WorkContract {
   phaseEvidence: WorkPhaseEvidenceMap;
   /** Explicit v2 execution semantics. `status` is retained for compatibility. */
   workKind: WorkKind;
+  /** Primary is an objective-level business execution lane; execution_child is a resumable low-level operation handle owned by a primary Work or standalone caller. */
+  lifecycleRole?: 'primary' | 'execution_child';
+  /** Optional objective-level parent when this Work is only an execution child. */
+  parentWorkId?: string;
   dispatchState: DispatchState;
   evidenceState: EvidenceState;
   completionOutcome?: CompletionOutcome;

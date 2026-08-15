@@ -18,6 +18,7 @@ import {
 import {
   claimPlanStepForWork,
   completePlanStepForWork,
+  getPlanContract,
   type PlanContractStoreOptions,
 } from './plan-contract-store';
 import {
@@ -60,6 +61,8 @@ export interface GoalWorkloopContext {
   now?: () => string;
 }
 
+export type WorkAdmissionRelation = 'continue' | 'extend' | 'parallel' | 'new_goal';
+
 export interface GoalWorkloopStartInput {
   objective: string;
   acceptanceCriteria?: string[];
@@ -69,6 +72,9 @@ export interface GoalWorkloopStartInput {
   constraints?: WorkContract['constraints'];
   modeInput: ExecutionModeSelectionInput;
   requestedBy?: WorkContract['requestedBy'];
+  relatedWorkId?: string;
+  workRelation?: WorkAdmissionRelation;
+  requirementId?: string;
   taskId?: string;
   issueId?: string;
   approvalConfirmed?: boolean;
@@ -281,7 +287,31 @@ export function routeWorkStart(
     selectedMode = selectExecutionMode({ ...effectiveModeInput, approvalConfirmed: true });
     policy = evaluateAccessPolicy(selectedMode);
   }
-  const mode = applyForcedMode(selectedMode);
+  let mode = applyForcedMode(selectedMode);
+
+  // Semantic/lifecycle admission precedes Direct-vs-Durable topology. A small
+  // mutation must not bypass an existing authoritative Work merely because the
+  // Route Policy would otherwise classify the edit as fast/direct. The external
+  // semantic controller chooses the relationship; Forge resolves deterministic
+  // Plan/Requirement bindings and presents bounded candidates before execution.
+  const mutationRequested = effectiveModeInput.mutation !== false;
+  if (mutationRequested && mode.mode === 'direct_control') {
+    const activeWorks = listWorkContracts({ ...ctx.workStore, status: 'active', limit: 100 })
+    .filter((candidate) => (candidate.lifecycleRole ?? 'primary') === 'primary');
+    const requestedRelation = input.workRelation ?? (input.modeInput.requiresParallelism === true ? 'parallel' : undefined);
+    const hasAdmissionContext = activeWorks.length > 0
+      || Boolean(input.relatedWorkId || input.planId || input.requirementId)
+      || input.requestedBy === 'scheduler';
+    if (hasAdmissionContext) {
+      const independentConcurrentWork = activeWorks.length > 0 && (requestedRelation === 'parallel' || requestedRelation === 'new_goal');
+      if (independentConcurrentWork) {
+        const durableSelection = selectExecutionMode({ ...effectiveModeInput, requiresRecovery: true });
+        const durablePolicy = evaluateAccessPolicy(durableSelection);
+        return startGoalWorkloop(ctx, input, durablePolicy, 'goal_workloop', durableSelection.routeDecision);
+      }
+      return startGoalWorkloop(ctx, input, policy, 'goal_workloop', mode.routeDecision);
+    }
+  }
 
   if (mode.mode === 'direct_control') {
     const available = ctx.availableChecks ?? [];
@@ -440,37 +470,143 @@ export function startGoalWorkloop(
   const available = ctx.availableChecks ?? [];
   const normalized = normalizeCheckIds(input.checks ?? [], available);
   const workspaceMode = input.constraints?.workspaceMode ?? 'auto';
-  const needsWorktree = executionMode === 'goal_workloop' && (input.constraints?.requireWorktree
-    ?? (workspaceMode === 'isolated'
-      || (workspaceMode === 'auto' && routeDecision.requiresIsolation === true)));
-  if (!needsWorktree && ctx.checkoutId) {
-    const existingWorkspaceOwner = listWorkContracts({ ...ctx.workStore, status: 'active', limit: 100 })
-      .find((candidate) => candidate.checkoutId === ctx.checkoutId
-        && candidate.worktreePolicy.required !== true
-        && !candidate.worktreeRef);
-    if (existingWorkspaceOwner) {
-      return buildFacadeResult({
-        status: 'blocked',
-        summary: `WORKSPACE_ALREADY_OWNED: checkout ${ctx.checkoutId} is already owned by active Work ${existingWorkspaceOwner.workId}; continue that Work or explicitly request an isolated worktree.`,
-        data: {
-          executionStarted: false,
-          workContractCreated: false,
-          conflictType: 'workspace_single_writer',
-          existingWork: summarizeWorkContract(existingWorkspaceOwner),
-        },
-        evidenceRefs: existingWorkspaceOwner.evidenceRefs,
-        suggestedNextActions: [{
+  const activeWorks = listWorkContracts({ ...ctx.workStore, status: 'active', limit: 100 })
+    .filter((candidate) => (candidate.lifecycleRole ?? 'primary') === 'primary');
+  const workspaceOwner = ctx.checkoutId
+    ? activeWorks.find((candidate) => candidate.checkoutId === ctx.checkoutId
+      && candidate.worktreePolicy.required !== true
+      && !candidate.worktreeRef)
+    : undefined;
+  const explicitRelatedWork = input.relatedWorkId
+    ? activeWorks.find((candidate) => candidate.workId === input.relatedWorkId)
+    : undefined;
+  const plan = input.planId && ctx.planStore ? getPlanContract(ctx.planStore, input.planId) : undefined;
+  const planStep = plan && input.planStepId ? plan.steps.find((step) => step.id === input.planStepId) : undefined;
+  const planStepWork = planStep?.workId ? activeWorks.find((candidate) => candidate.workId === planStep.workId) : undefined;
+  const requirementWorks = input.requirementId
+    ? activeWorks.filter((candidate) => candidate.requirementId === input.requirementId)
+    : [];
+  const deterministicTarget = explicitRelatedWork ?? planStepWork ?? (requirementWorks.length === 1 ? requirementWorks[0] : undefined);
+  const requestedRelation = input.workRelation ?? (input.modeInput.requiresParallelism === true ? 'parallel' : undefined);
+  const candidateWorks = [...new Map(
+    [explicitRelatedWork, planStepWork, ...requirementWorks, workspaceOwner, ...activeWorks]
+      .filter((candidate): candidate is WorkContract => Boolean(candidate))
+      .map((candidate) => [candidate.workId, candidate]),
+  ).values()].slice(0, 8);
+
+  const resolutionRequired = (reason: string, target = deterministicTarget): FacadeResult => buildFacadeResult({
+    status: 'ok',
+    summary: reason,
+    data: {
+      executionStarted: false,
+      workContractCreated: false,
+      admissionDecision: 'resolution_required',
+      resolutionRequired: true,
+      requestedBy: input.requestedBy ?? 'chatgpt',
+      ...(target ? { recommendedWork: summarizeWorkContract(target) } : {}),
+      candidates: candidateWorks.map(summarizeWorkContract),
+      allowedRelations: ['continue', 'extend', 'parallel', 'new_goal'],
+    },
+    evidenceRefs: target?.evidenceRefs ?? [],
+    suggestedNextActions: target
+      ? [{
           label: 'Continue existing Work',
           tool: 'rh_work',
           operation: 'continue',
-          payload: { work_id: existingWorkspaceOwner.workId },
+          payload: { work_id: target.workId },
           risk: 'readonly',
-          confidence: 'high',
-          reason: 'The current checkout is single-writer while an active Work owns it.',
-        }],
-        rawAvailable: false,
-      });
+          confidence: planStepWork || explicitRelatedWork ? 'high' : 'medium',
+          reason: 'Resolve intent before execution; do not create a second Work until the relationship is explicit.',
+        }]
+      : [],
+    rawAvailable: false,
+  });
+
+  if ((input.requestedBy ?? 'chatgpt') === 'scheduler') {
+    return resolutionRequired(
+      deterministicTarget
+        ? `SCHEDULER_CONTINUATION_REQUIRED: scheduler-triggered execution must continue its bound Work ${deterministicTarget.workId}; it must not create a new durable Work.`
+        : 'SCHEDULER_WORK_BINDING_REQUIRED: scheduler-triggered execution must bind and wake an existing durable Work; it must not invent a new Work from a prompt.',
+    );
+  }
+
+  if (planStepWork && !requestedRelation) {
+    return buildFacadeResult({
+      status: 'ok',
+      summary: `PLAN_STEP_REUSES_ACTIVE_WORK: ${input.planId}/${input.planStepId} already executes as ${planStepWork.workId}; reuse that Work instead of creating another.`,
+      data: {
+        executionStarted: false,
+        workContractCreated: false,
+        admissionDecision: 'reuse_existing',
+        resolutionRequired: false,
+        work: summarizeWorkContract(planStepWork),
+      },
+      evidenceRefs: planStepWork.evidenceRefs,
+      suggestedNextActions: [{ label: 'Continue existing Work', tool: 'rh_work', operation: 'continue', payload: { work_id: planStepWork.workId }, risk: 'readonly', confidence: 'high' }],
+      rawAvailable: false,
+    });
+  }
+
+  if (requestedRelation === 'continue' || requestedRelation === 'extend') {
+    if (!deterministicTarget) {
+      return resolutionRequired(`${requestedRelation.toUpperCase()}_TARGET_REQUIRED: select related_work_id or bind the request to an active Plan/Requirement before execution.`);
     }
+    if (requestedRelation === 'extend' && deterministicTarget.planId) {
+      return resolutionRequired(
+        `PLAN_EXTENSION_REQUIRES_REPLAN: Work ${deterministicTarget.workId} is governed by Plan ${deterministicTarget.planId}; extend the authoritative Plan/Requirement before continuing rather than silently widening Work scope.`,
+        deterministicTarget,
+      );
+    }
+    const selected = requestedRelation === 'extend'
+      ? updateWorkContract(ctx.workStore, deterministicTarget.workId, {
+          acceptanceCriteria: [...new Set([...deterministicTarget.acceptanceCriteria, ...(input.acceptanceCriteria ?? [])])].slice(0, 30),
+          allowedPaths: [...new Set([...deterministicTarget.allowedPaths, ...(input.allowedPaths ?? [])])].slice(0, 50),
+          forbiddenPaths: [...new Set([...deterministicTarget.forbiddenPaths, ...(input.forbiddenPaths ?? [])])].slice(0, 50),
+          checks: [...new Set([...deterministicTarget.checks, ...normalized.validCheckIds])].slice(0, 30),
+          scopeSummary: `Extended serially: ${input.objective}`.slice(0, 500),
+          continuationPrompt: `Continue work ${ctx.repoId}: ${deterministicTarget.objective.slice(0, 160)}. Additional requested scope: ${input.objective.slice(0, 500)}`,
+        })
+      : deterministicTarget;
+    return buildFacadeResult({
+      status: 'ok',
+      summary: `${requestedRelation === 'extend' ? 'Existing Work extended' : 'Existing Work selected'}: ${selected.workId}. No new WorkContract was created.`,
+      data: {
+        executionStarted: false,
+        workContractCreated: false,
+        admissionDecision: requestedRelation === 'extend' ? 'extend_existing' : 'reuse_existing',
+        resolutionRequired: false,
+        work: summarizeWorkContract(selected),
+      },
+      evidenceRefs: selected.evidenceRefs,
+      suggestedNextActions: [{ label: 'Continue existing Work', tool: 'rh_work', operation: 'continue', payload: { work_id: selected.workId }, risk: 'readonly', confidence: 'high' }],
+      rawAvailable: false,
+    });
+  }
+
+  if (!requestedRelation && candidateWorks.length > 0) {
+    return resolutionRequired(
+      `WORK_ADMISSION_RESOLUTION_REQUIRED: ${candidateWorks.length} active Work candidate(s) exist. Classify this request as continue, extend, parallel, or new_goal before any durable Work is created.`,
+    );
+  }
+
+  const createSeparateWork = requestedRelation === 'parallel' || requestedRelation === 'new_goal';
+  const needsWorktree = executionMode === 'goal_workloop' && (input.constraints?.requireWorktree
+    ?? (workspaceMode === 'isolated'
+      || createSeparateWork && Boolean(workspaceOwner)
+      || (workspaceMode === 'auto' && routeDecision.requiresIsolation === true)));
+  if (!needsWorktree && workspaceOwner) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `WORKSPACE_OWNERSHIP_INVARIANT: unresolved admission reached checkout ${ctx.checkoutId} while active Work ${workspaceOwner.workId} owns it. This is an internal routing invariant, not a normal fallback path.`,
+      data: {
+        executionStarted: false,
+        workContractCreated: false,
+        conflictType: 'workspace_single_writer_invariant',
+        existingWork: summarizeWorkContract(workspaceOwner),
+      },
+      evidenceRefs: workspaceOwner.evidenceRefs,
+      rawAvailable: false,
+    });
   }
   const generatedWorkId = workIdFor(input.objective);
   if (input.planId || input.planStepId) {
@@ -522,6 +658,7 @@ export function startGoalWorkloop(
     phase: 'implementation',
     issueId: input.issueId,
     taskId: input.taskId,
+    requirementId: input.requirementId,
     planId: input.planId,
     planStepId: input.planStepId,
     planSourceRevision: input.planId ? ctx.sourceRevision : undefined,

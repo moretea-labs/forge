@@ -8,7 +8,7 @@ import { applyEditOperations, beginEditSession, finalizeEditSession } from '../.
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { routeWorkStart } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { approvePlanContract, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
-import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { selectExecutionMode } from '../../src/runtime/control-plane/facade/types';
 import { routeExecutor } from '../../src/runtime/control-plane/goal-loop/executor-router';
 import { decideRoute, type RoutePolicyInput } from '../../src/runtime/control-plane/routing/route-policy';
@@ -324,7 +324,102 @@ describe('single Route Policy authority', () => {
     expect(result.summary).toContain('Goal workloop started');
     expect(result.summary).not.toContain('PLAN_REQUIRED');
     expect(result.data).toMatchObject({ workContractCreated: true });
-  }); test('enforces one current-workspace writer per checkout while allowing explicit isolated parallel work', () => { const root = temp('route-workspace-single-writer-'); const context = { workStore: { root: join(root, 'work') }, handoffStore: { root: join(root, 'handoff') }, repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a', controllerInstanceId: 'controller-a', sourceRevision: 'revision-a' }; const modeInput = { scopeClear: true, mutation: true, expectedFiles: 4, expectedChangedLines: 200, requiresRecovery: true, risk: 'local_repo_write' as const }; const first = routeWorkStart(context, { objective: 'Implement the primary repository change', modeInput }); expect(first.status).toBe('ok'); const firstWorkId = (first.data as { work?: { workId?: string } }).work?.workId; expect(firstWorkId).toBeTruthy(); const duplicate = routeWorkStart(context, { objective: 'Start a second change on the same current checkout', modeInput }); expect(duplicate.status).toBe('blocked'); expect(duplicate.summary).toContain('WORKSPACE_ALREADY_OWNED'); expect(duplicate.data).toMatchObject({ executionStarted: false, workContractCreated: false, conflictType: 'workspace_single_writer', existingWork: { workId: firstWorkId } }); const isolated = routeWorkStart(context, { objective: 'Run an explicitly isolated parallel change', constraints: { workspaceMode: 'isolated' }, modeInput }); expect(isolated.status).toBe('ok'); expect(isolated.data).toMatchObject({ workContractCreated: true, worktreeRequired: true }); });
+  });
+
+  test('resolves active Work before creation and routes explicit parallel work to isolation', () => {
+    const root = temp('route-work-admission-');
+    const context = {
+      workStore: { root: join(root, 'work') },
+      handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a', controllerInstanceId: 'controller-a', sourceRevision: 'revision-a',
+    };
+    const modeInput = { scopeClear: true, mutation: true, expectedFiles: 4, expectedChangedLines: 200, requiresRecovery: true, risk: 'local_repo_write' as const };
+    const first = routeWorkStart(context, { objective: 'Implement the primary repository change', modeInput });
+    expect(first.status).toBe('ok');
+    const firstWorkId = (first.data as { work?: { workId?: string } }).work?.workId;
+    expect(firstWorkId).toBeTruthy();
+
+    const unresolved = routeWorkStart(context, { objective: 'Add another repository change', modeInput });
+    expect(unresolved.status).toBe('ok');
+    expect(unresolved.data).toMatchObject({ executionStarted: false, workContractCreated: false, admissionDecision: 'resolution_required', resolutionRequired: true });
+    expect((unresolved.data as { candidates?: Array<{ workId?: string }> }).candidates).toContainEqual(expect.objectContaining({ workId: firstWorkId }));
+
+    const reused = routeWorkStart(context, { objective: 'Continue the primary change', relatedWorkId: firstWorkId, workRelation: 'continue', modeInput });
+    expect(reused.status).toBe('ok');
+    expect(reused.data).toMatchObject({ workContractCreated: false, admissionDecision: 'reuse_existing', work: { workId: firstWorkId } });
+
+    const extended = routeWorkStart(context, { objective: 'Also cover the new acceptance case', relatedWorkId: firstWorkId, workRelation: 'extend', acceptanceCriteria: ['New acceptance case'], allowedPaths: ['src/new/**'], modeInput });
+    expect(extended.status).toBe('ok');
+    expect(extended.data).toMatchObject({ workContractCreated: false, admissionDecision: 'extend_existing', work: { workId: firstWorkId } });
+    expect(getWorkContract({ root: join(root, 'work') }, firstWorkId!)).toMatchObject({ acceptanceCriteria: ['New acceptance case'], allowedPaths: ['src/new/**'] });
+
+    const parallel = routeWorkStart(context, { objective: 'Run an independent parallel change', workRelation: 'parallel', modeInput });
+    expect(parallel.status).toBe('ok');
+    expect(parallel.data).toMatchObject({ workContractCreated: true, worktreeRequired: true });
+  });
+
+  test('resolves active Work before a small mutation can take the Direct fast path', () => {
+    const root = temp('route-direct-admission-');
+    const context = {
+      workStore: { root: join(root, 'work') }, handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a', controllerInstanceId: 'controller-a', sourceRevision: 'revision-a',
+    };
+    const durable = routeWorkStart(context, {
+      objective: 'Own the long-running repository change',
+      modeInput: { scopeClear: true, mutation: true, expectedFiles: 5, expectedChangedLines: 250, requiresRecovery: true, risk: 'local_repo_write' },
+    });
+    const workId = (durable.data as { work?: { workId?: string } }).work?.workId;
+    expect(workId).toBeTruthy();
+
+    const ambiguousSmallEdit = routeWorkStart(context, {
+      objective: 'Make one tiny related edit',
+      modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 5, risk: 'local_repo_write' },
+    });
+    expect(ambiguousSmallEdit.status).toBe('ok');
+    expect(ambiguousSmallEdit.data).toMatchObject({ workContractCreated: false, admissionDecision: 'resolution_required', resolutionRequired: true });
+    expect(ambiguousSmallEdit.summary).not.toContain('Direct control recommended');
+
+    const continuedSmallEdit = routeWorkStart(context, {
+      objective: 'Make one tiny related edit', relatedWorkId: workId, workRelation: 'continue',
+      modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 5, risk: 'local_repo_write' },
+    });
+    expect(continuedSmallEdit.data).toMatchObject({ workContractCreated: false, admissionDecision: 'reuse_existing', work: { workId } });
+
+    const separateSmallEdit = routeWorkStart(context, {
+      objective: 'Make an independent tiny fix concurrently', workRelation: 'new_goal',
+      modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 5, risk: 'local_repo_write' },
+    });
+    expect(separateSmallEdit.status).toBe('ok');
+    expect(separateSmallEdit.data).toMatchObject({ workContractCreated: true, worktreeRequired: true });
+  });
+
+  test('ignores low-level execution-child Work when resolving a new business task', () => {
+    const root = temp('route-execution-child-admission-');
+    const workStore = { root: join(root, 'work') };
+    createWorkContract(workStore, {
+      workId: 'WORK-child', repoId: 'repo-a', mode: 'direct_control', lifecycleRole: 'execution_child',
+      objective: 'Accepted operation run_check', acceptanceCriteria: [], constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [], forbiddenPaths: [], checks: [], requestedBy: 'system',
+    });
+    const result = routeWorkStart({ workStore, handoffStore: { root: join(root, 'handoff') }, repoId: 'repo-a', checkoutId: 'checkout-a', sourceRevision: 'revision-a' }, {
+      objective: 'Make one independent tiny product edit',
+      modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 4, risk: 'local_repo_write' },
+    });
+    expect(result.status).toBe('ok');
+    expect(result.summary).toContain('Direct control recommended');
+    expect(result.data).toMatchObject({ directControlPreserved: true, workContractCreated: false });
+  });
+
+  test('never lets scheduler-origin start invent a new durable Work', () => {
+    const root = temp('route-scheduler-admission-');
+    const result = routeWorkStart({ workStore: { root: join(root, 'work') }, handoffStore: { root: join(root, 'handoff') }, repoId: 'repo-a', checkoutId: 'checkout-a', sourceRevision: 'revision-a' }, {
+      objective: 'Wake scheduled maintenance', requestedBy: 'scheduler',
+      modeInput: { scopeClear: true, mutation: true, expectedFiles: 4, expectedChangedLines: 200, requiresRecovery: true, risk: 'local_repo_write' },
+    });
+    expect(result.status).toBe('ok');
+    expect(result.summary).toContain('SCHEDULER_WORK_BINDING_REQUIRED');
+    expect(result.data).toMatchObject({ executionStarted: false, workContractCreated: false, admissionDecision: 'resolution_required' });
+  });
 
   test('still binds an explicitly approved Plan step while old Plan and Work shapes remain readable', () => {
     const root = temp('route-planned-workloop-');
@@ -356,6 +451,17 @@ describe('single Route Policy authority', () => {
     expect(getWorkContract({ root: join(root, 'work') }, workId!)).toMatchObject({
       repoId: 'repo-a', planId: 'plan-a', planStepId: 'step-a', mode: 'goal_workloop',
     });
+
+    const resumed = routeWorkStart({
+      workStore: { root: join(root, 'work') }, handoffStore: { root: join(root, 'handoff') }, planStore,
+      repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-b', controllerInstanceId: 'controller-b', sourceRevision: 'revision-a',
+    }, {
+      objective: 'Implement the approved route policy', planId: 'plan-a', planStepId: 'step-a',
+      modeInput: { scopeClear: true, mutation: true, expectedFiles: 8, expectedChangedLines: 500, requiresRecovery: true, risk: 'local_repo_write' },
+    });
+    expect(resumed.status).toBe('ok');
+    expect(resumed.summary).toContain('PLAN_STEP_REUSES_ACTIVE_WORK');
+    expect(resumed.data).toMatchObject({ workContractCreated: false, admissionDecision: 'reuse_existing', work: { workId } });
   });
 
   test('does not let missing Plan bypass policy, destructive, or remote-write approval', () => {

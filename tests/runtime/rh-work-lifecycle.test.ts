@@ -135,6 +135,39 @@ function branchExists(root: string, branch: string): boolean {
 }
 
 describe('rh_work managed lifecycle closure', () => {
+  test('reuses active Plan authority before creating a duplicate draft', async () => {
+    const fx = fixture('plan-admission');
+    const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim();
+    const first = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'PLAN-primary',
+      requirement_id: 'REQ-primary',
+      scope_key: 'primary-scope',
+      source_revision: sourceRevision,
+      objective: 'Implement the primary requirement',
+      plan_steps: [{ id: 'step-a', objective: 'Implement it', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [], check_ids: [], acceptance_criteria: ['done'] }],
+    });
+    expect(first?.isError).not.toBe(true);
+    expect(first?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new' } });
+
+    const duplicate = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'PLAN-duplicate',
+      requirement_id: 'REQ-primary',
+      scope_key: 'renamed-but-same-requirement',
+      source_revision: sourceRevision,
+      objective: 'A renamed plan for the same requirement',
+      plan_steps: [{ id: 'step-b', objective: 'Do it again', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [], check_ids: [], acceptance_criteria: ['done'] }],
+    });
+    expect(duplicate?.isError).not.toBe(true);
+    expect(duplicate?.structuredContent).toMatchObject({
+      status: 'ok',
+      data: { planContractCreated: false, admissionDecision: 'reuse_existing', plan: { planId: 'PLAN-primary', requirementId: 'REQ-primary' } },
+    });
+  });
+
   test('finalize commits, merges, removes the managed worktree, and deletes the branch', async () => {
     const fx = fixture('finalize');
     const work = await prepareManagedWork(fx, 'Add one lifecycle acceptance file');
@@ -243,9 +276,23 @@ describe('rh_work managed lifecycle closure', () => {
     const duplicatePayload = duplicate?.structuredContent as { data?: { schedule?: { scheduleId: string } } };
     expect(duplicatePayload.data?.schedule?.scheduleId).toBe(scheduleId);
 
+    const reconfigured = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_create',
+      work_id: work.workId,
+      controller_type: 'chatgpt',
+      trigger_type: 'interval',
+      every_minutes: 15,
+      continuation_prompt: 'Continue the same authoritative Work with the updated scope.',
+    });
+    const reconfiguredPayload = reconfigured?.structuredContent as { data?: { schedule?: { scheduleId: string; trigger?: { everyMinutes?: number }; action?: { arguments?: Record<string, unknown> } } } };
+    expect(reconfiguredPayload.data?.schedule?.scheduleId).toBe(scheduleId);
+    expect(reconfiguredPayload.data?.schedule?.trigger?.everyMinutes).toBe(15);
+    expect(reconfiguredPayload.data?.schedule?.action?.arguments?.continuation_prompt).toContain('same authoritative Work');
+
     const listed = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'schedule_list', work_id: work.workId });
-    const listedPayload = listed?.structuredContent as { data?: { schedules?: Array<{ scheduleId: string }> } };
-    expect(listedPayload.data?.schedules?.map((entry) => entry.scheduleId)).toEqual([scheduleId]);
+    const listedPayload = listed?.structuredContent as { data?: { schedules?: Array<{ scheduleId: string; enabled?: boolean }> } };
+    expect(listedPayload.data?.schedules?.filter((entry) => entry.enabled !== false).map((entry) => entry.scheduleId)).toEqual([scheduleId]);
 
     const paused = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'schedule_pause', schedule_id: scheduleId, reason: 'test pause' });
     const pausedPayload = paused?.structuredContent as { data?: { schedule?: { enabled: boolean; pausedReason?: string } } };

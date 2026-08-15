@@ -161,9 +161,14 @@ export function runGoalWorkloop(
       secretAccess: args.secret_access === true,
       risk: typeof args.risk === 'string' ? args.risk as CapabilityRisk : undefined,
     },
-    requestedBy: args.requested_by === 'user' || args.requested_by === 'system' || args.requested_by === 'scheduler'
+    requestedBy: args.requested_by === 'chatgpt' || args.requested_by === 'user' || args.requested_by === 'system' || args.requested_by === 'scheduler'
       ? args.requested_by
-      : 'chatgpt',
+      : 'user',
+    relatedWorkId: typeof args.related_work_id === 'string' ? args.related_work_id : undefined,
+    workRelation: args.work_relation === 'continue' || args.work_relation === 'extend' || args.work_relation === 'parallel' || args.work_relation === 'new_goal'
+      ? args.work_relation
+      : undefined,
+    requirementId: typeof args.requirement_id === 'string' ? args.requirement_id : undefined,
     taskId: typeof args.task_id === 'string' ? args.task_id : undefined,
     issueId: typeof args.issue_id === 'string' ? args.issue_id : undefined,
     approvalConfirmed: args.approval_confirmed === true,

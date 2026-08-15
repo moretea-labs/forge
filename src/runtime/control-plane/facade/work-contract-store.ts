@@ -382,6 +382,12 @@ function validateWorkSemanticTransition(current: WorkContract, next: WorkContrac
   if (current.completionOutcome && current.completionOutcome !== next.completionOutcome) {
     throw new Error(`WORK_SEMANTICS_TRANSITION_INVALID: completion outcome ${current.completionOutcome} is immutable`);
   }
+  if ((current.lifecycleRole ?? 'primary') !== (next.lifecycleRole ?? 'primary')) {
+    throw new Error('WORK_SEMANTICS_TRANSITION_INVALID: lifecycleRole is immutable');
+  }
+  if (current.parentWorkId !== next.parentWorkId) {
+    throw new Error('WORK_SEMANTICS_TRANSITION_INVALID: parentWorkId is immutable');
+  }
   return next;
 }
 
@@ -554,6 +560,8 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       constraints: input.constraints ?? { requireHandoffOnAmbiguity: true },
       risk: input.risk ?? 'medium',
       workKind: input.workKind ?? 'repository_change',
+      lifecycleRole: input.lifecycleRole ?? 'primary',
+      parentWorkId: input.parentWorkId?.trim() || undefined,
       dispatchState: input.dispatchState ?? inferredDispatchState(input.status ?? 'open'),
       evidenceState: input.evidenceState ?? inferredEvidenceState(input.status ?? 'open'),
       completionOutcome: input.completionOutcome,
@@ -641,6 +649,7 @@ function workRequestIndexPath(controllerHome: string, requestId: string): string
 export interface AcceptSubmittedWorkInput {
   requestId: string;
   repoId: string;
+  parentWorkId?: string;
   semanticKey: string;
   operation: SubmittedWorkOperation;
   objective?: string;
@@ -700,6 +709,13 @@ export function acceptSubmittedWorkContract(
   if (!input.operation?.name?.trim()) {
     throw new Error('INVALID_ARGUMENT: work_submit is missing required argument(s): operation');
   }
+  const parentWorkId = input.parentWorkId?.trim() || undefined;
+  if (parentWorkId) {
+    const parent = getWorkContract({ controllerHome: home, repoId: input.repoId, now: options.now }, parentWorkId);
+    if (!parent) throw new Error(`PARENT_WORK_NOT_FOUND: ${parentWorkId}`);
+    if (isTerminalWorkContractStatus(parent.status)) throw new Error(`PARENT_WORK_TERMINAL: ${parentWorkId}:${parent.status}`);
+    if ((parent.lifecycleRole ?? 'primary') !== 'primary') throw new Error(`PARENT_WORK_NOT_PRIMARY: ${parentWorkId}`);
+  }
 
   const requestLockId = createHash('sha256').update(normalizedRequestId).digest('hex').slice(0, 24);
   return withControllerLock(home, { scope: 'global', resource: `work-request-${requestLockId}` }, `accept-work:${normalizedRequestId}`, () => {
@@ -725,6 +741,8 @@ export function acceptSubmittedWorkContract(
       principalId: input.principalId,
       controllerInstanceId: input.controllerInstanceId,
       mode: input.mode ?? 'direct_control',
+      lifecycleRole: 'execution_child',
+      parentWorkId,
       objective: (input.objective ?? `Accepted operation ${input.operation.name}`).slice(0, 2_000),
       acceptanceCriteria: input.acceptanceCriteria ?? [],
       workKind: input.workKind,

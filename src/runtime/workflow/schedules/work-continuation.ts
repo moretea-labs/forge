@@ -160,6 +160,49 @@ export function createWorkContinuationSchedule(
     || (scheduleMode === 'browser_watch' ? `Watch external state for Work ${work.workId}`
       : scheduleMode === 'browser_keepalive' ? `Keep browser session alive for Work ${work.workId}`
         : `Continue Work ${work.workId}`);
+  const policy = {
+    maxActiveOccurrences: 1,
+    maxFailures: input.maxFailures !== undefined ? Math.max(1, Math.trunc(input.maxFailures)) : 3,
+    cooldownMinutes: input.cooldownMinutes !== undefined ? Math.max(0, Math.trunc(input.cooldownMinutes)) : 120,
+    dailyBudgetMinutes: input.dailyBudgetMinutes !== undefined ? Math.max(1, Math.trunc(input.dailyBudgetMinutes)) : 180,
+    shadowMode: input.shadowMode !== false,
+    backoffBaseMinutes: input.backoffBaseMinutes !== undefined ? Math.max(1, Math.trunc(input.backoffBaseMinutes)) : 5,
+    backoffMaxMinutes: input.backoffMaxMinutes !== undefined ? Math.max(1, Math.trunc(input.backoffMaxMinutes)) : 24 * 60,
+  };
+  const stopConditions = input.stopConditions ?? ['work_terminal', 'human_review_required', 'external_blocker'];
+
+  // A durable Work has one authoritative continuation lane. Changing cadence,
+  // prompt, controller, or policy updates that lane instead of minting another
+  // Workflow. Browser watches/keepalives are intentionally excluded because one
+  // Work may legitimately observe several independent external targets.
+  if (scheduleMode === 'continuation') {
+    const existing = listSchedules(controllerHome, repoId)
+      .filter((candidate) => candidate.action.operation === 'external_controller_wake')
+      .filter((candidate) => candidate.action.arguments?.work_id === work.workId);
+    const authoritative = [...existing].reverse().find((candidate) => candidate.enabled) ?? existing.at(-1);
+    if (authoritative) {
+      const schedule = saveSchedule(controllerHome, {
+        ...authoritative,
+        name,
+        enabled: true,
+        trigger,
+        policy,
+        action: { operation, target: 'runtime', arguments: actionArguments, resourceClaims: [] },
+        stopConditions,
+        pausedReason: undefined,
+      });
+      for (const duplicate of existing) {
+        if (duplicate.scheduleId === schedule.scheduleId || !duplicate.enabled) continue;
+        saveSchedule(controllerHome, {
+          ...duplicate,
+          enabled: false,
+          pausedReason: `Superseded by authoritative continuation ${schedule.scheduleId} for Work ${work.workId}.`,
+        });
+      }
+      return { schedule, work };
+    }
+  }
+
   const semantic = JSON.stringify({
     repoId,
     workId: work.workId,
@@ -168,15 +211,8 @@ export function createWorkContinuationSchedule(
     trigger,
     name,
     actionArguments,
-    policy: {
-      maxFailures: input.maxFailures,
-      cooldownMinutes: input.cooldownMinutes,
-      dailyBudgetMinutes: input.dailyBudgetMinutes,
-      shadowMode: input.shadowMode,
-      backoffBaseMinutes: input.backoffBaseMinutes,
-      backoffMaxMinutes: input.backoffMaxMinutes,
-    },
-    stopConditions: input.stopConditions,
+    policy,
+    stopConditions,
   });
   const requestId = input.requestId?.trim()
     || `work-continuation:${repoId}:${work.workId}:${createHash('sha256').update(semantic).digest('hex').slice(0, 16)}`;
@@ -186,19 +222,11 @@ export function createWorkContinuationSchedule(
     name,
     enabled: true,
     trigger,
-    policy: {
-      maxActiveOccurrences: 1,
-      maxFailures: input.maxFailures !== undefined ? Math.max(1, Math.trunc(input.maxFailures)) : 3,
-      cooldownMinutes: input.cooldownMinutes !== undefined ? Math.max(0, Math.trunc(input.cooldownMinutes)) : 120,
-      dailyBudgetMinutes: input.dailyBudgetMinutes !== undefined ? Math.max(1, Math.trunc(input.dailyBudgetMinutes)) : 180,
-      shadowMode: input.shadowMode !== false,
-      backoffBaseMinutes: input.backoffBaseMinutes !== undefined ? Math.max(1, Math.trunc(input.backoffBaseMinutes)) : 5,
-      backoffMaxMinutes: input.backoffMaxMinutes !== undefined ? Math.max(1, Math.trunc(input.backoffMaxMinutes)) : 24 * 60,
-    },
+    policy,
     // Work-bound schedules only perform a deterministic wake or a bounded read-only
     // browser probe. Controller/Work write ownership is acquired separately.
     action: { operation, target: 'runtime', arguments: actionArguments, resourceClaims: [] },
-    stopConditions: input.stopConditions ?? ['work_terminal', 'human_review_required', 'external_blocker'],
+    stopConditions,
   });
   return { schedule, work };
 }

@@ -296,6 +296,10 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'controller_claim', 'controller_release', 'controller_get_owner', 'launcher_start', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_supersede', 'schedule_create', 'schedule_list', 'schedule_get', 'schedule_pause', 'schedule_resume', 'schedule_trigger'], description: 'Defaults to start. Complex starts require plan_id and plan_step_id. schedule_* manages Work-bound continuation, browser watchers, and browser keepalive.' },
     objective: { type: 'string' },
     work_id: { type: 'string' },
+    related_work_id: { type: 'string', description: 'Active Work selected during pre-execution intent resolution when work_relation is continue or extend.' },
+    work_relation: { type: 'string', enum: ['continue', 'extend', 'parallel', 'new_goal'], description: 'Pre-execution relationship to active Work: reuse unchanged, extend serially, run an independent parallel sibling, or create a genuinely new goal. Omit on first pass to receive active candidates when resolution is needed.' },
+    requested_by: { type: 'string', enum: ['chatgpt', 'user', 'system', 'scheduler'], description: 'Origin of the request. Scheduler-origin starts are continuation-only and cannot create new durable Work.' },
+    requirement_id: { type: 'string', description: 'Stable Requirement authority used to find related active Work before creation.' },
     handoff_id: { type: 'string', description: 'Optional existing HandoffItem used to resume controller context.' },
     controller_id: { type: 'string', description: 'Stable external SuperController identity for controller_claim/release.' },
     controller_type: { type: 'string', enum: ['chatgpt', 'codex', 'grok', 'claude', 'human'], description: 'Controller kind for claims and launcher_start.' },
@@ -398,7 +402,8 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
   }, [], false),
   definition('work_submit', 'Submit one durable repository operation and return a resumable Work handle.', {
     repo_id: repoId,
-    request_id: { type: 'string', description: 'Stable idempotency key used to resume the same Work after reconnecting.' },
+    request_id: { type: 'string', description: 'Stable idempotency key used to resume the same execution-child Work after reconnecting.' },
+    parent_work_id: { type: 'string', description: 'Optional active primary Work that owns this low-level execution child. work_submit never creates a second business-workflow authority.' },
     operation: { type: 'string', description: 'Existing durable controller operation, for example run_check, dispatch_task, or create_issue.' },
     arguments: { type: 'object', description: 'Arguments passed to the durable operation.' },
     timeout_ms: { type: 'number' },
@@ -2976,7 +2981,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         });
         const capabilities = listCapabilityDescriptors(manifests);
         const pendingHandoffs = listHandoffItems({ ...store, status: 'pending', limit: 20 });
-        const activeWork = listWorkContracts({ ...store, status: 'active', limit: 20 });
+        const activeContracts = listWorkContracts({ ...store, status: 'active', limit: 200 });
+        const activePrimaryWork = activeContracts.filter((contract) => (contract.lifecycleRole ?? 'primary') === 'primary');
+        const activeExecutionChildren = activeContracts.filter((contract) => contract.lifecycleRole === 'execution_child');
         const preferredFacadeTools = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'] as const;
         const facade = buildFacadeResult({
           status: effectiveReady ? 'ok' : 'blocked',
@@ -3005,7 +3012,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               dynamicDomainSchemaLoadingSupported: false,
             },
             pendingHandoffCount: pendingHandoffs.length,
-            activeWorkCount: activeWork.length,
+            // User-facing Work count means objective-level primary lanes. Low-level
+            // resumable operation handles are reported separately.
+            activeWorkCount: activePrimaryWork.length,
+            activePrimaryWorkCount: activePrimaryWork.length,
+            activeExecutionChildCount: activeExecutionChildren.length,
+            activeContractCount: activeContracts.length,
             // Summary keeps the stable facade surface only; detail expands to the full registered schema.
             toolSurface: detailLevel === 'detail'
               ? exposure.actualToolNames
@@ -3590,9 +3602,30 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           try {
             if (operation === 'plan_create') {
               const rawSteps = Array.isArray(args.plan_steps) ? args.plan_steps : [];
+              const requestedRequirementId = typeof args.requirement_id === 'string' && args.requirement_id.trim() ? args.requirement_id.trim() : undefined;
+              const requestedScopeKey = String(args.scope_key ?? '').trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 160);
+              const activePlans = listPlanContracts({ ...store, status: 'active', limit: 100 });
+              const existingAuthority = activePlans.find((candidate) =>
+                (requestedRequirementId && candidate.requirementId === requestedRequirementId)
+                || (requestedScopeKey && candidate.scopeKey === requestedScopeKey));
+              if (existingAuthority) {
+                const facade = buildFacadeResult({
+                  summary: `PLAN_AUTHORITY_REUSED: active Plan ${existingAuthority.planId} already owns ${requestedRequirementId ? `Requirement ${requestedRequirementId}` : `scope ${requestedScopeKey}`}; no duplicate draft was created.`,
+                  data: {
+                    plan: summarizePlanContract(existingAuthority),
+                    executionStarted: false,
+                    planContractCreated: false,
+                    admissionDecision: 'reuse_existing',
+                    resolutionRequired: false,
+                  },
+                  suggestedNextActions: [{ label: 'Read active Plan', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: existingAuthority.planId }, risk: 'readonly', confidence: 'high' }],
+                });
+                return result(facade as unknown as Record<string, unknown>);
+              }
               const plan = createPlanContract(store, {
                 planId: String(args.plan_id ?? ''),
                 repoId: repository.repoId,
+                requirementId: requestedRequirementId,
                 scopeKey: String(args.scope_key ?? ''),
                 sourceRevision: String(args.source_revision ?? ''),
                 goal: String(args.objective ?? ''),
@@ -3614,8 +3647,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 })),
               });
               const facade = buildFacadeResult({
-                summary: `PlanContract ${plan.planId} created as draft; no execution was started.`,
-                data: { plan: summarizePlanContract(plan), executionStarted: false },
+                summary: `PlanContract ${plan.planId} created as draft after authority preflight; no execution was started.`,
+                data: { plan: summarizePlanContract(plan), executionStarted: false, planContractCreated: true, admissionDecision: 'create_new' },
                 suggestedNextActions: [{ label: 'Approve reviewed plan', tool: 'rh_work', operation: 'plan_approve', payload: { plan_id: plan.planId }, risk: 'workspace_write', confidence: 'medium' }],
               });
               return result(facade as unknown as Record<string, unknown>);
@@ -3850,6 +3883,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const accepted = acceptSubmittedWorkContract(ctx.controllerHome, {
           requestId,
           repoId: repository.repoId,
+          parentWorkId: typeof args.parent_work_id === 'string' && args.parent_work_id.trim() ? args.parent_work_id.trim() : undefined,
           semanticKey,
           operation: {
             name: operation,
