@@ -11,6 +11,7 @@ import {
   rebindChatgptWorkConversation,
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
 import {
+  isChatgptConversationUrl,
   resolveChatgptWorkBrowserSessionId,
   runWorkChatgptContinuation,
   stableChatgptAutomationBrowserSessionId,
@@ -96,6 +97,14 @@ describe('ChatGPT Work conversation binding', () => {
     expect(resolveChatgptWorkBrowserSessionId({ repoId: 'repo-1', workId: 'WORK-1', tabPolicy: 'new' })).toStartWith(`${first}-`);
   });
 
+  test('recognizes only canonical ChatGPT conversation URLs for stale-binding recovery', () => {
+    expect(isChatgptConversationUrl('https://chatgpt.com/c/WEB:abc-123')).toBe(true);
+    expect(isChatgptConversationUrl('https://www.chatgpt.com/c/abc-123?model=current')).toBe(true);
+    expect(isChatgptConversationUrl('https://chatgpt.com/')).toBe(false);
+    expect(isChatgptConversationUrl('https://example.com/c/abc-123')).toBe(false);
+    expect(isChatgptConversationUrl('javascript:alert(1)')).toBe(false);
+  });
+
   test('uses a stable per-automation browser session for standalone scheduled prompts', () => {
     const first = stableChatgptAutomationBrowserSessionId('repo-1', 'SCH-1');
     expect(first).toBe(stableChatgptAutomationBrowserSessionId('repo-1', 'SCH-1'));
@@ -137,7 +146,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain('CHATGPT_CAPABILITY_MENUITEM_SELECTOR');
     expect(source).toContain('aria-keyshortcuts~=\"ArrowRight\"');
     expect(source).not.toContain(':has-text(');
-    expect(source).toContain('waitForChatgptIntelligenceControl'); expect(source).toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('runWorkChatgptContinuation'); expect(engine).toContain("if (controllerType === 'chatgpt')"); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("input.conversationUrl?.trim() || 'https://chatgpt.com/'"); expect(engine).toContain("conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined"); expect(engine).toContain('conversation_url: durableConversationUrl');
+    expect(source).toContain('waitForChatgptIntelligenceControl'); expect(source).toContain('reasoningLabelMatches'); expect(source).toContain("['high', '高']"); expect(source).toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('runWorkChatgptContinuation'); expect(engine).toContain("if (controllerType === 'chatgpt')"); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("input.conversationUrl?.trim() || 'https://chatgpt.com/'"); expect(engine).toContain("conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined"); expect(engine).toContain('conversation_url: durableConversationUrl');
     expect(source).toContain('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'); expect(source).toContain('workflowToolAttributionInstruction'); expect(source).toContain('repository_command_execute and repository_safe_patch_apply');
   });
 

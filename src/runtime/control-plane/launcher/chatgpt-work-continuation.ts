@@ -191,10 +191,27 @@ function matchSelector(value: BrowserQueryMatch | undefined): string | undefined
   return typeof value?.selectorHint === 'string' && value.selectorHint.trim() ? value.selectorHint.trim() : undefined;
 }
 
+function normalizeExecutionControlLabel(label: string | undefined): string {
+  return (label ?? '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+}
+
 function modelLabelMatches(label: string | undefined, model: string): boolean {
   if (model !== DEFAULT_CHATGPT_AUTOMATION_MODEL || !label) return false;
-  const normalized = label.toLowerCase().replace(/\s+/g, '');
-  return normalized.includes('5.6sol') || normalized.includes('gpt-5.6sol');
+  const normalized = normalizeExecutionControlLabel(label);
+  return normalized.includes('5.6sol') || normalized.includes('gpt5.6sol');
+}
+
+function reasoningLabelMatches(label: string | undefined, reasoning: ChatgptAutomationReasoning): boolean {
+  const normalized = normalizeExecutionControlLabel(label);
+  if (reasoning === 'medium') return ['medium', '中', '中等'].includes(normalized);
+  if (reasoning === 'high') return ['high', '高'].includes(normalized);
+  return ['xhigh', 'extrahigh', '超高', '极高'].includes(normalized);
+}
+
+function isReasoningControlLabel(label: string | undefined): boolean {
+  return reasoningLabelMatches(label, 'medium')
+    || reasoningLabelMatches(label, 'high')
+    || reasoningLabelMatches(label, 'xhigh');
 }
 
 function reasoningSliderValue(reasoning: ChatgptAutomationReasoning): number {
@@ -215,7 +232,10 @@ async function findChatgptIntelligenceControl(
     limit: 50,
     timeout_ms: timeoutMs ?? 60_000,
   }, timeoutMs);
-  return queryMatches(result).find((match) => /(?:gpt-)?5\.6\s*sol/i.test(matchText(match)));
+  return queryMatches(result).find((match) => {
+    const label = matchText(match);
+    return modelLabelMatches(label, DEFAULT_CHATGPT_AUTOMATION_MODEL) || isReasoningControlLabel(label);
+  });
 }
 
 async function waitForChatgptIntelligenceControl(
@@ -246,7 +266,11 @@ async function ensureChatgptExecutionPreference(
   if (model !== DEFAULT_CHATGPT_AUTOMATION_MODEL) throw new Error(`CHATGPT_AUTOMATION_MODEL_UNSUPPORTED:${model}`);
   let control = await waitForChatgptIntelligenceControl(controllerHome, workId, browserSessionId, timeoutMs);
   if (!control) throw new Error('CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE');
-  if (!modelLabelMatches(matchText(control), model)) throw new Error(`CHATGPT_AUTOMATION_MODEL_NOT_VERIFIED:${model}`);
+  // Current ChatGPT UI exposes the reasoning level (for example `高`) on the
+  // composer control instead of the model label. The model remains fail-closed
+  // through normalizeModel above; only the user-adjustable reasoning control is
+  // required to be observable in the page before unattended dispatch proceeds.
+  if (reasoningLabelMatches(matchText(control), reasoning)) return true;
   let controlSelector = matchSelector(control);
   if (!controlSelector) throw new Error('CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE');
 
@@ -298,7 +322,9 @@ async function ensureChatgptExecutionPreference(
     throw new Error(`CHATGPT_AUTOMATION_REASONING_NOT_VERIFIED:${reasoning}`);
   }
   control = await findChatgptIntelligenceControl(controllerHome, workId, browserSessionId, timeoutMs) ?? control;
-  if (!modelLabelMatches(matchText(control), model)) throw new Error(`CHATGPT_AUTOMATION_MODEL_NOT_VERIFIED:${model}`);
+  if (isReasoningControlLabel(matchText(control)) && !reasoningLabelMatches(matchText(control), reasoning)) {
+    throw new Error(`CHATGPT_AUTOMATION_REASONING_NOT_VERIFIED:${reasoning}`);
+  }
   controlSelector = matchSelector(control) ?? controlSelector;
   await controllerBrowserAction(controllerHome, workId, 'press', {
     session_id: browserSessionId,
@@ -313,6 +339,46 @@ async function ensureChatgptExecutionPreference(
 function resultUrl(result: Record<string, unknown>): string | undefined {
   return stringField(result.url)
     ?? stringField((result.session as Record<string, unknown> | undefined)?.url);
+}
+
+export function isChatgptConversationUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:'
+      && ['chatgpt.com', 'www.chatgpt.com', 'chat.openai.com'].includes(url.hostname)
+      && /\/c\/[^/?#]+/.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+async function navigateWorkConversation(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  targetUrl: string,
+  timeoutMs?: number,
+): Promise<{ submissionTargetUrl: string; recoveredFromStaleBinding: boolean }> {
+  const navigate = async (url: string) => controllerBrowserAction(controllerHome, workId, 'navigate', {
+    session_id: browserSessionId,
+    url,
+    wait_until: 'domcontentloaded',
+    timeout_ms: timeoutMs ?? 60_000,
+    retries: 1,
+  }, timeoutMs);
+  try {
+    await navigate(targetUrl);
+    return { submissionTargetUrl: targetUrl, recoveredFromStaleBinding: false };
+  } catch (error) {
+    // A Work binding is machine transport context, not authority. If its exact
+    // ChatGPT conversation is no longer navigable, do not adopt any unrelated
+    // saved tab. Start from ChatGPT home, submit the same Work continuation,
+    // then let the existing compare-and-swap rebind accept only the conversation
+    // created/redirected by that verified submission.
+    if (!isChatgptConversationUrl(targetUrl)) throw error;
+    await navigate('https://chatgpt.com/');
+    return { submissionTargetUrl: 'https://chatgpt.com/', recoveredFromStaleBinding: true };
+  }
 }
 
 async function submitChatgptPrompt(
@@ -470,13 +536,13 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
       });
     }
     const targetUrl = binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/';
-    await controllerBrowserAction(input.controllerHome, input.workId, 'navigate', {
-      session_id: sessionId,
-      url: targetUrl,
-      wait_until: 'domcontentloaded',
-      timeout_ms: input.timeoutMs ?? 60_000,
-      retries: 1,
-    }, input.timeoutMs);
+    const navigation = await navigateWorkConversation(
+      input.controllerHome,
+      input.workId,
+      sessionId,
+      targetUrl,
+      input.timeoutMs,
+    );
     const executionPreferenceVerified = await ensureChatgptExecutionPreference(
       input.controllerHome,
       input.workId,
@@ -485,7 +551,7 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
       reasoning,
       input.timeoutMs,
     );
-    const observedUrl = await submitChatgptPrompt(input.controllerHome, input.workId, sessionId, `${workflowToolAttributionInstruction(input.workId)}\n\n${input.prompt}`, targetUrl, input.timeoutMs);
+    const observedUrl = await submitChatgptPrompt(input.controllerHome, input.workId, sessionId, `${workflowToolAttributionInstruction(input.workId)}\n\n${input.prompt}`, navigation.submissionTargetUrl, input.timeoutMs);
     if (/\/c\/[^/?#]+/.test(observedUrl)) {
       const observedIdentity = parseChatgptConversationIdentity(observedUrl);
       binding = binding && binding.conversationId !== observedIdentity.conversationId
