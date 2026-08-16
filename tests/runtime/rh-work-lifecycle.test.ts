@@ -406,8 +406,9 @@ describe('rh_work managed lifecycle closure', () => {
     expect(JSON.stringify(failed?.structuredContent)).toContain('WORK_MERGE_UNCOMMITTED_CHANGES');
     expect(existsSync(worktreePath)).toBe(true);
     expect(branchExists(fx.repoRoot, branch)).toBe(true);
+    expect(contract.checkoutId).toBeTruthy();
     const afterFailure = resolveRepositorySelection({ repoId: fx.repository.repoId, checkoutId: contract.checkoutId, controllerHome: fx.controllerHome, allowSoleRepository: false });
-    expect(afterFailure.activeCheckoutId).toBe(contract.checkoutId);
+    expect(afterFailure.activeCheckoutId).toBe(contract.checkoutId!);
 
     const retried = await callRuntimeTool(fx.ctx, 'rh_work', {
       repo_id: fx.repository.repoId,

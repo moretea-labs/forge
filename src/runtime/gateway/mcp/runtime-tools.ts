@@ -2883,7 +2883,7 @@ async function runFacadeVerify(
       const facade = verifyGoalWorkloop(workloopCtx, {
         workId,
         checkId: normalizedCheckId,
-        sourceRevision: observedGitHead,
+        sourceRevision: observedGitHead ?? undefined,
         receipt,
         infrastructureFailed,
         checkFailed,
