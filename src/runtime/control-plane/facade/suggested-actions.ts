@@ -26,6 +26,7 @@ function expectedActionRisk(action: SuggestedNextAction): SuggestedNextAction['r
     case 'plan_list':
       return 'readonly';
     case 'plan_approve':
+    case 'plan_accept_step':
     case 'plan_supersede':
       return 'workspace_write';
     case 'finalize':
@@ -40,7 +41,7 @@ const ALLOWED_FACADE_OPERATIONS: Record<FacadeTool, readonly string[]> = {
   rh_status: ['list', 'get', 'repair'],
   rh_inbox: ['list', 'get', 'ack', 'accept', 'resolve', 'dismiss', 'create'],
   rh_context: ['list', 'get', 'search'],
-  rh_work: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'controller_claim', 'controller_release', 'controller_get_owner', 'launcher_start', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_supersede', 'schedule_create', 'schedule_list', 'schedule_get', 'schedule_pause', 'schedule_resume', 'schedule_trigger'],
+  rh_work: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'controller_claim', 'controller_release', 'controller_get_owner', 'launcher_start', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_accept_step', 'plan_supersede', 'schedule_create', 'schedule_list', 'schedule_get', 'schedule_pause', 'schedule_resume', 'schedule_trigger'],
 };
 
 export interface SuggestedActionValidationOptions {

@@ -184,6 +184,7 @@ import {
   getWorkContractByRequestId,
   buildWorkContinuationSnapshot,
   acceptSubmittedWorkContract,
+  acceptPlanStepEvidence,
   approvePlanContract,
   createPlanContract,
   getPlanContract,
@@ -290,7 +291,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
   }),
   definition('rh_work', 'Preferred ChatGPT facade: bounded planning, direct control, controller ownership, and external SuperController launch.', {
     repo_id: repoId,
-    operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'controller_claim', 'controller_release', 'controller_get_owner', 'launcher_start', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_supersede', 'schedule_create', 'schedule_list', 'schedule_get', 'schedule_pause', 'schedule_resume', 'schedule_trigger'], description: 'Defaults to start. Complex starts require plan_id and plan_step_id. schedule_* manages generic recurring ChatGPT workflow schedules plus Work-bound continuation/browser subtypes.' },
+    operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'controller_claim', 'controller_release', 'controller_get_owner', 'launcher_start', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_accept_step', 'plan_supersede', 'schedule_create', 'schedule_list', 'schedule_get', 'schedule_pause', 'schedule_resume', 'schedule_trigger'], description: 'Defaults to start. Complex starts require plan_id and plan_step_id. plan_accept_step records explicit Controller semantic acceptance after machine delivery leaves a step validating. schedule_* manages generic recurring ChatGPT workflow schedules plus Work-bound continuation/browser subtypes.' },
     objective: { type: 'string' },
     work_id: { type: 'string' },
     related_work_id: { type: 'string', description: 'Optional explicit existing Work ownership target for continue/extend semantics. Unrelated active Work is never inferred as a semantic target.' },
@@ -345,7 +346,8 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     backoff_max_minutes: { type: 'number' },
     include_occurrences: { type: 'boolean' },
     plan_id: { type: 'string' },
-    plan_step_id: { type: 'string', description: 'Approved PlanContract step to bind to a complex Goal Workloop start.' },
+    plan_step_id: { type: 'string', description: 'PlanContract step identity. Used to bind a complex Goal Workloop start and to accept a validating step.' },
+    acceptance_rationale: { type: 'string', description: 'Controller rationale for plan_accept_step after reviewing the completed Work evidence against the Plan step acceptance criteria.' },
     scope_key: { type: 'string', description: 'Stable normalized scope identity used to prevent overlapping active plans.' },
     source_revision: { type: 'string', description: 'Repository revision observed during read-only planning preflight.' },
     plan_steps: { type: 'array', items: { type: 'object' }, description: 'Bounded plan steps with id, objective, dependencies, authoritative_files, allowed_paths, forbidden_paths, check_ids, and acceptance_criteria.' },
@@ -3908,6 +3910,26 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               const facade = buildFacadeResult({
                 summary: `PlanContract ${plan.planId} approved at source revision ${plan.sourceRevision}; execution remains explicit.`,
                 data: { plan: summarizePlanContract(plan), executionStarted: false },
+              });
+              return result(facade as unknown as Record<string, unknown>);
+            }
+            if (operation === 'plan_accept_step') {
+              const identity = authenticatedFacadeControllerIdentity(ctx, args);
+              const planId = String(args.plan_id ?? '').trim();
+              const stepId = String(args.plan_step_id ?? '').trim();
+              const rationale = String(args.acceptance_rationale ?? '').trim();
+              const plan = acceptPlanStepEvidence(store, {
+                planId,
+                stepId,
+                reviewer: identity.principalId,
+                rationale,
+              });
+              const facade = buildFacadeResult({
+                summary: `Plan step ${stepId} semantically accepted by the current Controller.`,
+                data: { plan: summarizePlanContract(plan), semanticAcceptanceRecorded: true, reviewer: identity.principalId },
+                suggestedNextActions: plan.status === 'finalized'
+                  ? []
+                  : [{ label: 'Continue the next approved Plan step', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: plan.planId }, risk: 'readonly', confidence: 'high' }],
               });
               return result(facade as unknown as Record<string, unknown>);
             }
