@@ -1884,7 +1884,41 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       failureReason: undefined,
     }));
   } else if (!wants.merge && current.finalization.merge === 'pending') {
-    current = transact('merge-skipped', (fresh) => writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, merge: 'skipped', branchCleanup: 'skipped' } }));
+    current = transact('merge-skipped', (fresh) => writeWorkHandle(ctx.controllerHome, {
+      ...fresh,
+      finalization: {
+        ...fresh.finalization,
+        merge: 'skipped',
+        branchCleanup: requestedOutcome === 'completed_no_change' && wants.cleanup && args.delete_branch !== false ? 'pending' : 'skipped',
+      },
+    }));
+  }
+
+  if (
+    requestedOutcome === 'completed_no_change'
+    && current.finalization.validation === 'done'
+    && current.finalization.commit === 'skipped'
+    && current.finalization.merge === 'skipped'
+    && current.state !== 'merged'
+    && current.state !== 'cleaned'
+  ) {
+    // `merged` is the WorkHandle's durable integrated-delivery boundary. A
+    // no-change completion has no Git merge, but it must cross that boundary
+    // before physical cleanup so an earlier failure preserves retryability.
+    if (current.state === 'prepared') {
+      current = transact('no-change-validation-state', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, 'validating', {
+        finalization: fresh.finalization,
+        failureReason: undefined,
+      }));
+    }
+    if (current.state === 'editing' || current.state === 'validating' || current.state === 'committed') {
+      current = transact('no-change-delivery-integrated', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, 'merged', {
+        finalization: fresh.finalization,
+        failureReason: undefined,
+      }));
+    } else if (current.state !== 'merged') {
+      throw new Error(`WORK_NO_CHANGE_DELIVERY_STATE_INVALID: cannot establish no-change delivery from ${current.state}`);
+    }
   }
 
   if (wants.cleanup && current.finalization.worktreeCleanup === 'pending') {
@@ -1906,7 +1940,11 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     current = transact('worktree-cleanup-skipped', (fresh) => writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, worktreeCleanup: 'skipped' } }));
   }
 
-  if (wants.cleanup && current.finalization.branchCleanup === 'pending' && current.finalization.merge === 'done') {
+  if (
+    wants.cleanup
+    && current.finalization.branchCleanup === 'pending'
+    && (current.finalization.merge === 'done' || requestedOutcome === 'completed_no_change')
+  ) {
     const target = selectWorkFinalizationTarget(getRepository(current.repositoryId, ctx.controllerHome), current);
     const deleted = repositoryGitDeleteBranch(ctx.controllerHome, target, { branch: current.branch, force: false, authorizationDecision: gitAuthorization, sessionId: session.sessionId, principalId: session.principalId, workId: current.workId, goalId: current.goalId });
     if (deleted.execution.authorizationDecision?.decision === 'user_confirmation_required') return { authorization: deleted.execution.authorizationDecision, work: compactHandle(current), stages: current.finalization };

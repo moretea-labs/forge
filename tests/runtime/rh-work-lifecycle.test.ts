@@ -5,7 +5,7 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { createMcpToolContext } from '../../src/cli/mcp/server';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
-import { addRepositoryCheckout, registerRepository, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
+import { addRepositoryCheckout, registerRepository, resolveRepositorySelection, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
 import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { getProcessRecord, waitForProcess } from '../../src/runtime/execution/process-runtime';
@@ -297,6 +297,86 @@ describe('rh_work managed lifecycle closure', () => {
     expect(readFileSync(join(fx.repoRoot, 'lifecycle.txt'), 'utf8')).toBe('closed-loop\n');
     expect(existsSync(work.worktreePath)).toBe(false);
     expect(branchExists(fx.repoRoot, work.branch)).toBe(false);
+  });
+
+  test('failed finalize preserves checkout resources and the same Work can retry successfully', async () => {
+    const fx = fixture('finalize-retry-preserves-worktree');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Retry one failed finalize without losing its worktree',
+      scope_clear: true,
+      expected_files: 2,
+      expected_changed_lines: 20,
+      requires_recovery: true,
+      constraints: { requireWorktree: true },
+    });
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
+    const worktreePath = contract.worktreeRef!;
+    const branch = git(worktreePath, ['branch', '--show-current']);
+    writeFileSync(join(worktreePath, 'retry.txt'), 'retryable\n');
+
+    const failed = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'finalize',
+      work_id: workId,
+      commit: false,
+      merge: true,
+      cleanup: true,
+    });
+    expect(failed?.isError).toBe(true);
+    expect(JSON.stringify(failed?.structuredContent)).toContain('WORK_MERGE_UNCOMMITTED_CHANGES');
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(branchExists(fx.repoRoot, branch)).toBe(true);
+    const afterFailure = resolveRepositorySelection({ repoId: fx.repository.repoId, checkoutId: contract.checkoutId, controllerHome: fx.controllerHome, allowSoleRepository: false });
+    expect(afterFailure.activeCheckoutId).toBe(contract.checkoutId);
+
+    const retried = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'finalize',
+      work_id: workId,
+    });
+    expect(retried?.isError).not.toBe(true);
+    expect(retried?.structuredContent).toMatchObject({ status: 'ok', data: { lifecycleClosed: true } });
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(branchExists(fx.repoRoot, branch)).toBe(false);
+  });
+
+  test('no-change finalize establishes delivery before cleanup and closes cleanly', async () => {
+    const fx = fixture('finalize-no-change');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Prove no repository change is required',
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 1,
+      requires_recovery: true,
+      constraints: { requireWorktree: true },
+    });
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
+    const worktreePath = contract.worktreeRef!;
+    const branch = git(worktreePath, ['branch', '--show-current']);
+
+    const finalized = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'finalize',
+      work_id: workId,
+      commit: false,
+      merge: false,
+      cleanup: true,
+      completion_outcome: 'completed_no_change',
+      no_change_evidence: 'Inspection and verification prove the requested behavior already exists with no repository delta.',
+    });
+    expect(finalized?.isError).not.toBe(true);
+    expect(finalized?.structuredContent).toMatchObject({
+      status: 'ok',
+      data: { lifecycleClosed: true, completionReceipt: { delivery: { kind: 'no_change', status: 'integrated' } } },
+    });
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(branchExists(fx.repoRoot, branch)).toBe(false);
   });
 
   test('stop can close a legacy Work after its source checkout registry entry was removed', async () => {
