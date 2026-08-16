@@ -63,6 +63,56 @@ export function getChatgptWorkConversationBinding(
   return record(options, workId)?.value;
 }
 
+export function rebindChatgptWorkConversation(
+  options: ChatgptWorkBindingStoreOptions,
+  input: {
+    workId: string;
+    previousConversationId: string;
+    conversationUrl: string;
+    latestBrowserSessionId?: string;
+    localAlias?: string;
+  },
+): ChatgptWorkConversationBinding {
+  if (!input.workId.trim()) throw new Error('CHATGPT_WORK_BINDING_WORK_REQUIRED');
+  if (!input.previousConversationId.trim()) throw new Error('CHATGPT_WORK_REBIND_PREVIOUS_CONVERSATION_REQUIRED');
+  const identity = parseChatgptConversationIdentity(input.conversationUrl);
+  return withControllerLock(
+    options.controllerHome,
+    { scope: 'task', repoId: options.repoId, taskId: `chatgpt-work-binding-${input.workId}` },
+    `chatgpt-work-rebind:${input.workId}`,
+    () => {
+      const existing = record(options, input.workId);
+      if (!existing) throw new Error(`CHATGPT_WORK_CONVERSATION_BINDING_NOT_FOUND: ${input.workId}`);
+      if (existing.value.conversationId !== input.previousConversationId.trim()) {
+        throw new Error(`CHATGPT_WORK_CONVERSATION_REBIND_STALE: ${input.workId}:${existing.value.conversationId}`);
+      }
+      const now = nowIso(options);
+      const binding: ChatgptWorkConversationBinding = {
+        schemaVersion: 1,
+        repoId: options.repoId,
+        workId: input.workId,
+        conversationUrl: identity.conversationUrl,
+        conversationId: identity.conversationId,
+        localAlias: (input.localAlias?.trim() || existing.value.localAlias).slice(0, 180),
+        latestBrowserSessionId: input.latestBrowserSessionId ?? existing.value.latestBrowserSessionId,
+        createdAt: existing.value.createdAt,
+        updatedAt: now,
+        lastContinuedAt: now,
+      };
+      writeControlPlaneRecord(options.controllerHome, {
+        namespace: NAMESPACE,
+        scope: options.repoId,
+        key: input.workId,
+        schemaVersion: 1,
+        value: binding,
+        action: 'chatgpt_work_conversation_rebind',
+        expectedRevision: existing.revision,
+      });
+      return binding;
+    },
+  );
+}
+
 export function bindChatgptWorkConversation(
   options: ChatgptWorkBindingStoreOptions,
   input: {

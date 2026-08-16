@@ -5,6 +5,8 @@ import { getWorkContract } from '../facade/work-contract-store';
 import {
   bindChatgptWorkConversation,
   getChatgptWorkConversationBinding,
+  parseChatgptConversationIdentity,
+  rebindChatgptWorkConversation,
   type ChatgptWorkConversationBinding,
 } from './chatgpt-work-binding-store';
 
@@ -485,12 +487,21 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
     );
     const observedUrl = await submitChatgptPrompt(input.controllerHome, input.workId, sessionId, `${workflowToolAttributionInstruction(input.workId)}\n\n${input.prompt}`, targetUrl, input.timeoutMs);
     if (/\/c\/[^/?#]+/.test(observedUrl)) {
-      binding = bindChatgptWorkConversation(store, {
-        workId: input.workId,
-        conversationUrl: observedUrl,
-        latestBrowserSessionId: sessionId,
-        localAlias: binding?.localAlias ?? input.title,
-      });
+      const observedIdentity = parseChatgptConversationIdentity(observedUrl);
+      binding = binding && binding.conversationId !== observedIdentity.conversationId
+        ? rebindChatgptWorkConversation(store, {
+          workId: input.workId,
+          previousConversationId: binding.conversationId,
+          conversationUrl: observedUrl,
+          latestBrowserSessionId: sessionId,
+          localAlias: binding.localAlias ?? input.title,
+        })
+        : bindChatgptWorkConversation(store, {
+          workId: input.workId,
+          conversationUrl: observedUrl,
+          latestBrowserSessionId: sessionId,
+          localAlias: binding?.localAlias ?? input.title,
+        });
     }
     return {
       status: 'dispatched',

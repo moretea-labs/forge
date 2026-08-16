@@ -8,6 +8,7 @@ import {
   bindChatgptWorkConversation,
   getChatgptWorkConversationBinding,
   parseChatgptConversationIdentity,
+  rebindChatgptWorkConversation,
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
 import {
   resolveChatgptWorkBrowserSessionId,
@@ -56,6 +57,34 @@ describe('ChatGPT Work conversation binding', () => {
       workId: 'WORK-1',
       conversationUrl: 'https://chatgpt.com/c/other-conversation',
     })).toThrow('CHATGPT_WORK_CONVERSATION_REBIND_REQUIRED');
+  });
+
+  test('allows an explicit compare-and-swap rebind after a verified continuation redirect', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-work-rebind-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    ensureControllerHome(controllerHome);
+    const options = { controllerHome, repoId: 'repo-chatgpt-work' };
+    bindChatgptWorkConversation(options, {
+      workId: 'WORK-REBIND',
+      conversationUrl: 'https://chatgpt.com/c/conversation-old',
+      latestBrowserSessionId: 'session-old',
+      localAlias: 'Forge workflow',
+    });
+    const rebound = rebindChatgptWorkConversation(options, {
+      workId: 'WORK-REBIND',
+      previousConversationId: 'conversation-old',
+      conversationUrl: 'https://chatgpt.com/c/conversation-new',
+      latestBrowserSessionId: 'session-new',
+    });
+    expect(rebound.conversationId).toBe('conversation-new');
+    expect(rebound.latestBrowserSessionId).toBe('session-new');
+    expect(rebound.localAlias).toBe('Forge workflow');
+    expect(() => rebindChatgptWorkConversation(options, {
+      workId: 'WORK-REBIND',
+      previousConversationId: 'conversation-old',
+      conversationUrl: 'https://chatgpt.com/c/conversation-third',
+    })).toThrow('CHATGPT_WORK_CONVERSATION_REBIND_STALE');
   });
 
   test('uses a stable per-Work browser session and migrates away from the legacy global tab', () => {
