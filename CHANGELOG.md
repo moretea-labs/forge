@@ -4,6 +4,26 @@ All notable public Forge changes are recorded here. Release entries are tied to 
 
 ## Unreleased
 
+## 1.6.0 - 2026-08-16
+
+### Architecture V2 and execution governance
+
+- Complete the V2 Direct / bounded Work / Plan execution model, including isolated Work materialization, authoritative finalization, dead-Plan recovery, duplicate-writer prevention, and safer Work validation.
+- Decouple durable Work ownership from transient MCP transport sessions so scheduled and interactive ChatGPT execution can resume against stable controller leases and checkout identity.
+- Add bounded impact context and CodeGraph-aware retrieval while keeping routing, semantic context, and repository authority converged on one deterministic control path.
+
+### Performance and Runtime
+
+- Reduce controller hot-path overhead with canonical repository-root reuse, exact-file retrieval fast paths, Runtime proxy session reuse, batched Process identity probes, narrower service claims, and read-only SQLite diagnostics.
+- Preserve resumable Process/check execution while improving persisted-check retry idempotency, stale-process handling, worktree reconciliation, and release/runtime identity safety.
+- Keep the stable 19-tool ChatGPT surface while moving more domain behavior behind typed capability and plugin contracts.
+
+### Automation and plugins
+
+- Add Forge-native ChatGPT workflows, schedules, Work-bound browser watchers, cross-session workflow attribution, and more reliable ChatGPT mode/reasoning selection.
+- Add trusted external-plugin registration lifecycle support and official Forge Figma Bridge catalog installation; retire the bundled desktop helper in favor of the external provider boundary.
+- Improve plugin scope/compatibility handling, browser URL behavior, image artifact delivery, Gmail Unicode subjects, and automation history/configuration surfaces.
+
 ## 1.5.1 - 2026-08-13
 
 ### ChatGPT Secure Tunnel and package setup

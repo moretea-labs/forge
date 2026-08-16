@@ -17,7 +17,7 @@ describe('repository command entry', () => {
     expect(result.stdout).toContain('global Controller');
   });
 
-  test('repo help exposes the rollout command', () => {
+  test('repo help exposes current repository workflows while keeping rollout retired', () => {
     const result = spawnSync('bun', [CLI, 'repo', '--help'], {
       cwd: ROOT,
       encoding: 'utf-8',
@@ -25,9 +25,8 @@ describe('repository command entry', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('diagnose-local');
     expect(result.stdout).toContain('bootstrap-local');
-    expect(result.stdout).toContain('rollout');
-    expect(result.stdout).toContain('Apply the latest forge workflow to');
-    expect(result.stdout).toContain('registered repositories and restart');
-    expect(result.stdout).toContain('configured MCP controllers');
+    expect(result.stdout).toContain('workbench');
+    expect(result.stdout).toContain('umbrella');
+    expect(result.stdout).not.toMatch(/^\s+rollout\b/m);
   });
 });

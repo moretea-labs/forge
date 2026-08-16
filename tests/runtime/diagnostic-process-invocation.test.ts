@@ -178,7 +178,7 @@ describe('typed CLI child invocation', () => {
     const installed = currentCliRuntimeTarget({
       argv: [],
       env: {},
-      moduleUrl: 'file:///Applications/Repo%20Harness/lib/diagnostics.js',
+      moduleUrl: 'file:///Applications/Forge%20Runtime/lib/diagnostics.js',
       runtimeExecutable: '/usr/bin/node',
       sourceRevision: 'package-1',
       entryExists: (path) => existing.has(path),

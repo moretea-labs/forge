@@ -21,11 +21,11 @@ Usage:
 
 Program-level sprint backlog helper. PRDs live in plans/prds/ as the upper
 planning layer; sprints live in plans/sprints/ as ordered execution backlogs.
-Each backlog row is expanded with $think before the existing plan -> contract
+Each backlog row is expanded with /plan before the existing plan -> contract
 -> worktree flow. tasks/todos.md stays the deferred-goal ledger.
 
 start-task reserves the next (or named) pending backlog row and can capture a
-thin plan seed. The coding agent must still use `$think` to expand the row into
+thin plan seed. The coding agent must still use `/plan` to expand the row into
 a decision-complete plan before code edits.
 --sprint overrides the active-sprint marker (still confined to the sprints
 dir), which finish back-fill uses inside worktrees where the runtime marker
@@ -218,7 +218,7 @@ render_sprint_file() {
 
 Program-level sprint container. The Source PRD summary and ordered backlog
 decompose product intent into task-contract slices; each backlog row is a
-long-task waypoint that must be expanded with `$think` before code edits.
+long-task waypoint that must be expanded with `/plan` before code edits.
 `tasks/todos.md` stays the deferred-goal ledger and never carries this backlog.
 
 ## PRD
@@ -740,12 +740,12 @@ Deliver backlog task \`${target_task}\` so that the acceptance line holds: ${tar
 
 ## Planning Expansion
 
-Before editing code, use \`\$think\` to expand this sprint row into a decision-complete implementation plan. The \`\$think\` pass should read the sprint file, preserve the acceptance line, name concrete files or commands, and produce the detailed \`plans/plan-*.md\` body that drives contract execution.
+Before editing code, use \`/plan\` to expand this sprint row into a decision-complete implementation plan. The \`/plan\` pass should read the sprint file, preserve the acceptance line, name concrete files or commands, and produce the detailed \`plans/plan-*.md\` body that drives contract execution.
 
 ## Task Breakdown
 
-- [ ] Run \`\$think\` for backlog task \`${target_task}\` using sprint \`${sprint_file}\` and acceptance: ${target_acceptance}
-- [ ] Capture the approved Forge \`/plan\` output with \`scripts/capture-plan.sh --source forge-plan --source-ref sprint:${sprint_file}#${target_task}\`
+- [ ] Run \`/plan\` for backlog task \`${target_task}\` using sprint \`${sprint_file}\` and acceptance: ${target_acceptance}
+- [ ] Capture the approved \`/plan\` output with \`scripts/capture-plan.sh --source forge-plan --source-ref sprint:${sprint_file}#${target_task}\`
 - [ ] Verify acceptance: ${target_acceptance}
 BODY_EOF
 

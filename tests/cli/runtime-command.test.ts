@@ -42,25 +42,15 @@ describe('runtime command surface', () => {
     expect(install.stdout).not.toMatch(/^\s+keepalive\b/m);
   });
 
-  test('root and controller command surfaces expose no legacy lifecycle or component rollout owner', () => {
+  test('root public surface keeps the legacy controller lifecycle and component rollout owner retired', () => {
     const root = spawnSync('bun', [CLI, '--help'], { cwd: ROOT, encoding: 'utf-8' });
     expect(root.status).toBe(0);
-    expect(root.stdout).toContain('controller');
     expect(root.stdout).toContain('runtime');
+    expect(root.stdout).not.toMatch(/^\s+controller\b/m);
     expect(root.stdout).not.toMatch(/^\s+supervisor\b/m);
     const rootSource = readFileSync(join(ROOT, 'src/cli/index.ts'), 'utf8');
     expect(rootSource).not.toContain("'supervisor'");
     expect(rootSource).not.toContain('bindInheritedRuntimeWriterClaimFromEnvironment');
-
-    const controller = spawnSync('bun', [CLI, 'controller', '--help'], { cwd: ROOT, encoding: 'utf-8' });
-    expect(controller.status).toBe(0);
-    expect(controller.stdout).toContain('board');
-    expect(controller.stdout).toContain('runs');
-    expect(controller.stdout).toContain('change-verify');
-    for (const legacy of ['start', 'stop', 'status', 'restart', 'logs', 'rollout', 'restart-verify', 'feature-verify']) {
-      expect(controller.stdout).not.toMatch(new RegExp(`^\\s+${legacy}\\b`, 'm'));
-    }
-    expect(controller.stdout).not.toMatch(/^\s+rollback\s/m);
   });
 
   test('package scripts expose no legacy lifecycle or component rollout owner', () => {

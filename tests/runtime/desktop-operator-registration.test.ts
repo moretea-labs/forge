@@ -47,8 +47,9 @@ describe('Desktop Operator trusted external registration', () => {
       expect(action.confirmation).toBe('authorization');
     }
     const press = input.actions.find((action) => action.actionId === 'desktop_press');
-    const pressSchema = press?.argumentsSchema as { properties?: { force_coordinate?: { type?: string } } } | undefined;
-    expect(pressSchema?.properties?.force_coordinate).toEqual({ type: 'boolean' });
+    const pressSchema = press?.argumentsSchema as { properties?: Record<string, unknown> } | undefined;
+    expect(pressSchema?.properties?.force_coordinate).toBeUndefined();
+    expect(press?.description).toContain('pointer/coordinate fallback is intentionally unavailable');
     const observe = input.actions.find((action) => action.actionId === 'desktop_observe');
     const observeSchema = observe?.argumentsSchema as { properties?: {
       root_selector?: { properties?: { ref?: { type?: string } } };
@@ -64,7 +65,8 @@ describe('Desktop Operator trusted external registration', () => {
     for (const actionId of ['desktop_copy', 'desktop_paste']) {
       const action = input.actions.find((candidate) => candidate.actionId === actionId);
       expect(action?.argumentsSchema?.required).toEqual(['interaction_id']);
-      expect(action?.description).toContain('foregrounds the target application');
+      expect(action?.description).toContain('already foreground');
+      expect(action?.description).toContain('never activates it');
     }
     expect(input.permissions.some((permission) => permission.scope === 'desktop.clipboard' && permission.granted)).toBe(true);
     const permissionRequest = input.actions.find((action) => action.actionId === 'desktop_permissions_request');

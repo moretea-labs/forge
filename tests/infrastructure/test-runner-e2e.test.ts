@@ -132,11 +132,12 @@ describe('test runner infrastructure', () => {
 
   test('retries infrastructure once but never retries a source assertion', async () => {
     const repo = mkdtempSync(join(tmpdir(), 'forge-test-runner-retry-'));
+    const markerDir = mkdtempSync(join(tmpdir(), 'forge-test-runner-retry-markers-'));
     mkdirSync(join(repo, 'tests'), { recursive: true });
     const infraPath = 'tests/infra-retry.test.ts';
     const sourcePath = 'tests/source-no-retry.test.ts';
-    const infraMarker = join(repo, 'infra-attempt');
-    const sourceMarker = join(repo, 'source-attempt');
+    const infraMarker = join(markerDir, 'infra-attempt');
+    const sourceMarker = join(markerDir, 'source-attempt');
     writeFileSync(join(repo, infraPath),
       'import { expect, test } from "bun:test";\n' +
       'import { appendFileSync, existsSync } from "fs";\n' +
@@ -171,6 +172,7 @@ describe('test runner infrastructure', () => {
       expect(readFileSync(sourceMarker, 'utf8')).toBe('x');
     } finally {
       rmSync(repo, { recursive: true, force: true });
+      rmSync(markerDir, { recursive: true, force: true });
     }
   }, 15_000);
 

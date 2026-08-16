@@ -84,7 +84,7 @@ describe("Bootstrap Script Contracts", () => {
     const pkg = JSON.parse(read("package.json"));
     const cliEntry = read("src/cli/index.ts");
     expect(pkg.name).toBe("@moretea-labs/forge");
-    expect(pkg.version).toMatch(/^1\.5\.0(?:-rc\.\d+)?$/);
+    expect(pkg.version).toMatch(/^1\.\d+\.\d+(?:-rc\.\d+)?$/);
     expect(pkg.private).toBeUndefined();
     expect(pkg.bin).toEqual({
       forge: "bin/forge.mjs",

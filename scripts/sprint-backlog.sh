@@ -21,7 +21,7 @@ Usage:
 
 Program-level sprint backlog helper. PRDs live in plans/prds/ as the upper
 planning layer; sprints live in plans/sprints/ as ordered execution backlogs.
-Each backlog row is expanded with $think before the existing plan -> contract
+Each backlog row is expanded with /plan before the existing plan -> contract
 -> worktree flow. tasks/todos.md stays the deferred-goal ledger.
 
 start-task reserves the next (or named) pending backlog row and can capture a

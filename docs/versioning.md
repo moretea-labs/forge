@@ -21,7 +21,7 @@ For every public release, these values must agree:
 - `publishConfig.tag` is intentionally omitted so package metadata cannot silently force a stable package to `next` or an RC to `latest`.
 - `publishConfig.provenance` remains `true`; protected GitHub OIDC publishing is the normal provenance path after bootstrap.
 
-The current stable release line is `1.5.1`. Future release candidates use the same `X.Y.Z-rc.N` → `next` contract before promotion to `latest`.
+The current stable release line is `1.6.0`. Future release candidates use the same `X.Y.Z-rc.N` → `next` contract before promotion to `latest`.
 
 ## Runtime compatibility
 

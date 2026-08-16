@@ -302,8 +302,8 @@ describe("sprint-backlog helper", () => {
       expect(plan).toContain("> **Status**: Approved");
       expect(plan).toContain("> **Planning Source**: forge-sprint");
       expect(plan).toContain(`> **Source Ref**: sprint:${sprintPath}#task-a`);
-      expect(plan).toContain("use `$think` to expand this sprint row");
-      expect(plan).toContain("Run `$think` for backlog task `task-a`");
+      expect(plan).toContain("use `/plan` to expand this sprint row");
+      expect(plan).toContain("Run `/plan` for backlog task `task-a`");
       expect(plan).toContain("Verify acceptance: unit tests pass");
 
       const sprintAfterContract = readFileSync(join(cwd, sprintPath), "utf-8");
@@ -610,7 +610,7 @@ describe("sprint projection", () => {
       expect(active.stdout).toContain("Active Sprint");
       expect(active.stdout).toContain("backlog=0/2");
       expect(active.stdout).toContain("task-a");
-      expect(active.stdout).toContain("Use `$think` to expand the next sprint task");
+      expect(active.stdout).toContain("Use `/plan` to expand the next sprint task");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

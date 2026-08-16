@@ -1,6 +1,6 @@
 {
-  "version": "1.5.1",
-  "templateVersion": "1.5.1",
+  "version": "1.6.0",
+  "templateVersion": "1.6.0",
   "skillName": "forge",
   "contractId": "tasks-first-harness-v1",
   "compatibility": {
