@@ -1,4 +1,6 @@
 import { randomUUID, timingSafeEqual } from 'crypto';
+import { existsSync, watch } from 'fs';
+import { dirname } from 'path';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { tokenHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/token.js';
 import { revocationHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/revoke.js';
@@ -37,7 +39,7 @@ import { readForgeRuntimeStatus } from '../../../runtime/control-plane/runtime-s
 import { runtimeIdentitySnapshot } from '../../../runtime/gateway/mcp/runtime-tools';
 import { projectionBlocksReadiness, readRepositoryProjectionSnapshot } from '../../../runtime/projections/materialized-view';
 import { readRuntimeGeneration } from '../../../runtime/control-plane/runtime-generation';
-import { readRuntimeStatusSnapshot } from '../../../runtime/root/status';
+import { readRuntimeStatusSnapshot, runtimeStatusPath } from '../../../runtime/root/status';
 import { getRepository, listRepositories } from '../../repositories/registry';
 import { buildControllerTaskLedgerProjection } from '../../controller/task-ledger';
 import { legacyIssueAuthorityRetired } from '../../controller/legacy-issue-cutover';
@@ -740,6 +742,7 @@ async function handleMcpPost(
         principalId,
       });
       const runtimeSchema = await resolveRuntimeSchema?.(sessionContext);
+      let server: ReturnType<typeof createForgeMcpServerFromContext> | undefined;
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (newSessionId: string): void => {
@@ -752,6 +755,7 @@ async function handleMcpPost(
             clientIdentity,
             toolSurfaceFingerprint: runtimeSchema?.fingerprint ?? currentToolSurfaceFingerprint(),
             toolNames: runtimeSchema?.toolNames,
+            notifyToolListChanged: async () => { await server?.sendToolListChanged(); },
           });
           initializedSessionId = newSessionId;
         },
@@ -759,7 +763,7 @@ async function handleMcpPost(
       transport.onclose = () => {
         if (transport?.sessionId) registry.detach(transport.sessionId);
       };
-      const server = createForgeMcpServerFromContext(sessionContext, runtimeSchema);
+      server = createForgeMcpServerFromContext(sessionContext, runtimeSchema);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     } finally {
@@ -917,6 +921,23 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   const currentRuntimeToolSurfaceFingerprint = () => runtimeControllerHome
     ? readRuntimeStatusSnapshot(runtimeControllerHome)?.toolSurfaceFingerprint
     : undefined;
+  let observedRuntimeToolSurfaceFingerprint = currentRuntimeToolSurfaceFingerprint();
+  let toolSurfaceNotificationTimer: ReturnType<typeof setTimeout> | undefined;
+  const runtimeStatusDirectory = runtimeControllerHome ? dirname(runtimeStatusPath(runtimeControllerHome)) : undefined;
+  const runtimeStatusWatcher = runtimeStatusDirectory && existsSync(runtimeStatusDirectory)
+    ? watch(runtimeStatusDirectory, { persistent: false }, (_event, filename) => {
+      if (String(filename ?? '') !== 'status.json') return;
+      if (toolSurfaceNotificationTimer) clearTimeout(toolSurfaceNotificationTimer);
+      toolSurfaceNotificationTimer = setTimeout(() => {
+        const currentFingerprint = currentRuntimeToolSurfaceFingerprint();
+        if (!currentFingerprint || currentFingerprint === observedRuntimeToolSurfaceFingerprint) return;
+        observedRuntimeToolSurfaceFingerprint = currentFingerprint;
+        void sessionRegistry.notifyToolListChanged(currentFingerprint);
+      }, 25);
+      toolSurfaceNotificationTimer.unref();
+    })
+    : undefined;
+  runtimeStatusWatcher?.on('error', () => undefined);
   const resolveRuntimeSchema = runtimeControllerHome
     ? async (context: McpToolContext): Promise<CanonicalRuntimeToolSchema | undefined> => {
       if (!('controllerHome' in context)) return undefined;
@@ -1260,6 +1281,8 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
 
   httpServer.on('close', () => {
     clearInterval(cleanupTimer);
+    if (toolSurfaceNotificationTimer) clearTimeout(toolSurfaceNotificationTimer);
+    runtimeStatusWatcher?.close();
     void sessionRegistry.closeAll('shutdown');
   });
 

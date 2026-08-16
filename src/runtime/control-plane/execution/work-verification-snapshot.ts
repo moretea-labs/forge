@@ -18,7 +18,7 @@ import { globMatches, normalizeMcpRelativePath } from '../../../cli/mcp/paths';
 import { sanitizeFileComponent } from '../../shared/json-files';
 
 const STALE_SNAPSHOT_MS = 6 * 60 * 60_000;
-const SNAPSHOT_MARKER = '.forge-work-verification-snapshot.json';
+const SNAPSHOT_MARKER = '.ai/harness/controller/work-verification-snapshot.json';
 
 export interface WorkVerificationSnapshotScope {
   workId: string;
@@ -156,6 +156,7 @@ export function materializeWorkVerificationSnapshot(input: {
       allowedPaths: [...input.scope.allowedPaths].sort(),
       forbiddenPaths: [...input.scope.forbiddenPaths].sort(),
     })).digest('hex');
+    mkdirSync(dirname(join(root, SNAPSHOT_MARKER)), { recursive: true });
     writeFileSync(join(root, SNAPSHOT_MARKER), `${JSON.stringify({ schemaVersion: 1, ...input.scope, sourceHead, includedPaths, excludedPaths, ownershipDigest }, null, 2)}\n`);
     return { root, sourceHead, includedPaths, excludedPaths, ownershipDigest };
   } catch (error) {

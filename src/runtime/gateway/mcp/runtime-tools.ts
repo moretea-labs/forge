@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { existsSync, readFileSync, statSync } from 'fs';
-import { basename, isAbsolute, relative, resolve, sep } from 'path';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { CallToolResult as SdkCallToolResult } from '@modelcontextprotocol/sdk/types.js';
@@ -1778,6 +1778,14 @@ async function finalizeFacadeWorkHandle(
   return physical;
 }
 
+function structuralIndexRoot(repository: ReturnType<typeof resolveRepositorySelection>): string | undefined {
+  if (existsSync(join(repository.canonicalRoot, '.codegraph', 'codegraph.db'))) return repository.canonicalRoot;
+  return repository.checkouts
+    .filter((checkout) => checkout.checkoutId !== repository.activeCheckoutId && checkout.worktree !== true)
+    .map((checkout) => checkout.canonicalRoot)
+    .find((root) => existsSync(join(root, '.codegraph', 'codegraph.db')));
+}
+
 function selected(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>) {
   return resolveRepositorySelection({
     repoId: typeof args.repo_id === 'string' ? args.repo_id : undefined,
@@ -3248,6 +3256,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             maxFiles: typeof args.max_files === 'number' ? args.max_files : undefined,
             maxSnippets: typeof args.max_snippets === 'number' ? args.max_snippets : undefined,
             structuralContext,
+            structuralIndexRoot: structuralContext === 'off' ? undefined : structuralIndexRoot(repository),
             retrievalMode,
             impactDomains,
           });

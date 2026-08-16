@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
@@ -13,7 +13,7 @@ import {
   workspaceValidationFingerprint,
   workValidationInputFingerprint,
 } from '../../src/runtime/control-plane/execution/verification-evidence';
-import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
+import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types'; import { execFileSync } from 'child_process'; import { currentControllerCheckRevision } from '../../src/cli/controller/check-runner'; import { materializeWorkVerificationSnapshot } from '../../src/runtime/control-plane/execution/work-verification-snapshot';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -127,8 +127,7 @@ describe('Work validation receipt convergence', () => {
     expect(repeated).toMatchObject({ outcome: 'not_validating', changed: false, handle: { state: 'editing' } });
     expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'delivery', evidenceState: 'valid' });
   });
-
-
+  test('verification snapshot metadata does not change Check content identity', () => { const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-controller-')); const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-repo-')); roots.push(controllerHome, repoRoot); writeFileSync(join(repoRoot, 'source.ts'), 'export const value = 1;\n'); execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot }); execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot }); execFileSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot }); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot }); const sourceIdentity = currentControllerCheckRevision(repoRoot); const snapshot = materializeWorkVerificationSnapshot({ controllerHome, repoId: 'repo-validation-snapshot', sourceRoot: repoRoot, scope: { workId: 'work-validation-snapshot', allowedPaths: ['**'], forbiddenPaths: [] } }); expect(existsSync(join(snapshot.root, '.ai/harness/controller/work-verification-snapshot.json'))).toBe(true); expect(currentControllerCheckRevision(snapshot.root)).toBe(sourceIdentity); });
   test('background reconciliation settles completed long-check receipts without a polling tool call', () => {
     const fx = fixture('succeeded');
     const summary = reconcilePendingWorkValidations(fx.controllerHome, fx.repoId);

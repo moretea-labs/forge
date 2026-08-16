@@ -31,6 +31,9 @@ export interface ManagedMcpSession<
   toolSurfaceFingerprint?: string;
   /** Exact tool names returned by the Canonical Runtime at initialize time. */
   toolNames?: string[];
+  /** Standard MCP tools/list_changed notification bound to this session's connected Server. */
+  notifyToolListChanged?: () => Promise<void> | void;
+  lastNotifiedToolSurfaceFingerprint?: string;
   createdAt: number;
   lastActivityAt: number;
   streamOpenedAt?: number;
@@ -88,6 +91,7 @@ interface RegisterMcpSession<TTransport extends ClosableMcpTransport, TContext> 
   clientIdentity: string;
   toolSurfaceFingerprint?: string;
   toolNames?: string[];
+  notifyToolListChanged?: () => Promise<void> | void;
   initialPost?: boolean;
 }
 
@@ -204,6 +208,26 @@ export class McpSessionRegistry<
   touch(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (session) session.lastActivityAt = this.now();
+  }
+
+  async notifyToolListChanged(currentFingerprint: string | undefined): Promise<number> {
+    if (!currentFingerprint) return 0;
+    let notified = 0;
+    await Promise.all(Array.from(this.sessions.values()).map(async (session) => {
+      if (!session.toolSurfaceFingerprint
+        || session.toolSurfaceFingerprint === currentFingerprint
+        || session.lastNotifiedToolSurfaceFingerprint === currentFingerprint
+        || !session.notifyToolListChanged) return;
+      try {
+        await session.notifyToolListChanged();
+        session.lastNotifiedToolSurfaceFingerprint = currentFingerprint;
+        notified += 1;
+      } catch {
+        // Fingerprint fencing remains authoritative. A broken notification
+        // stream must not mark a stale session as refreshed or close active work.
+      }
+    }));
+    return notified;
   }
 
   beginPost(sessionId: string): ManagedMcpSession<TTransport, TContext> | undefined {

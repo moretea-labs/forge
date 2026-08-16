@@ -140,6 +140,16 @@ If the provider reports changed files, stale extraction, or an index built by an
 
 A later typed maintenance action may perform refresh. That action is separate from planning and may write only derived `.codegraph` state, never source files.
 
+### Isolated checkout baseline overlay
+
+CodeGraph binds source root and `.codegraph` database root to the same `projectRoot`; the embedded API does not expose a separate read-only database path. Forge therefore does **not** copy or synchronously build an 84MB-class structural index for every managed worktree.
+
+When structural context is requested for an isolated checkout that has no local index, the Context Plane may reuse an indexed non-worktree checkout from the same Repository Registry family as **repository-baseline structural evidence**. Current-checkout lexical/raw source remains authoritative. Forge overlays the selected checkout's current Git-changed paths on the graph candidates and reports `indexSource=repository_baseline` plus explicit coverage gaps.
+
+The baseline is never presented as current-checkout truth. A dirty current checkout or a baseline/current HEAD mismatch marks the structural evidence stale and prevents `structural_context=required` from being satisfied. Optional structural requests may still use the graph as bounded discovery evidence while raw current-checkout reads cover changed files.
+
+This fallback executes only when structural context was already requested. Ordinary Direct routing remains `structural_context=off`, performs zero CodeGraph provider calls, and pays no baseline lookup or structural refresh cost.
+
 ## Packaging and platform behavior
 
 The provider locates the matching optional platform package:

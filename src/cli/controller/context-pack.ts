@@ -67,6 +67,8 @@ export interface ControllerContextPackOptions {
   maxSnippets?: number;
   maxCharsPerSnippet?: number;
   structuralContext?: StructuralContextMode;
+  /** Optional repository-level CodeGraph root used as structural baseline when the selected checkout has no local index. */
+  structuralIndexRoot?: string;
   retrievalMode?: ControllerContextRetrievalMode;
   /** GPT-selected cross-cutting evidence dimensions. Forge expands mechanically and never treats them as semantic completeness proof. */
   impactDomains?: ControllerContextImpactDomain[];
@@ -138,6 +140,9 @@ export interface ControllerContextPackProjection {
     requestedMode: StructuralContextMode;
     status: "disabled" | "ready" | "stale" | "unavailable" | "degraded";
     requiredSatisfied: boolean;
+    indexSource: "current_checkout" | "repository_baseline";
+    overlayChangedFiles: string[];
+    baselineRevisionMatches: boolean;
     query?: string;
     entryPoints: Array<Pick<CodeGraphNodeSummary, "id" | "kind" | "name" | "filePath" | "startLine" | "endLine">>;
     relatedFiles: string[];
@@ -161,6 +166,9 @@ export interface ControllerContextPackProjection {
       structuralStatus: "disabled" | "ready" | "stale" | "unavailable" | "degraded";
       lastIndexedAt?: number | null;
       changedFileCount: number;
+      indexSource: "current_checkout" | "repository_baseline";
+      overlayChangedFileCount: number;
+      baselineRevisionMatches: boolean;
     };
   };
   files: ControllerContextPackFile[];
@@ -288,6 +296,18 @@ function looksLikeGlob(path: string): boolean {
 
 function coveredByGlob(path: string, globs: string[]): boolean {
   return globs.length === 0 || globs.some((glob) => globMatches(glob, path));
+}
+
+function gitStatusChangedPaths(status: string): string[] {
+  const paths: string[] = [];
+  for (const line of status.split(/\r?\n/)) {
+    if (!line.trim() || line.startsWith("##") || line.length < 4) continue;
+    let path = line.slice(3).trim();
+    if (path.includes(" -> ")) path = path.slice(path.lastIndexOf(" -> ") + 4).trim();
+    if (path.startsWith('"') && path.endsWith('"')) path = path.slice(1, -1);
+    if (path && !paths.includes(path)) paths.push(path);
+  }
+  return paths;
 }
 
 function addReason(map: Map<string, { reasons: Set<string>; lines: Set<number> }>, path: string, reason: string, line?: number): void {
@@ -470,12 +490,19 @@ export function buildControllerContextPack(
   let skippedBinaryFiles = 0;
   let searchTruncated = false;
   const structuralMode = options.structuralContext ?? "off";
+  const structuralIndexRoot = options.structuralIndexRoot?.trim() || repoRoot;
+  const indexSource = structuralIndexRoot === repoRoot ? "current_checkout" : "repository_baseline";
+  const overlayChangedFiles = indexSource === "repository_baseline" ? gitStatusChangedPaths(git.status) : [];
+  const baselineRevisionMatches = indexSource === "current_checkout" || gitSnapshot(structuralIndexRoot).head === git.head;
   const graphImpactFiles = new Set<string>();
   let structuralContext: ControllerContextPackProjection["structuralContext"] = {
     provider: "codegraph",
     requestedMode: structuralMode,
     status: "disabled",
     requiredSatisfied: structuralMode !== "required",
+    indexSource,
+    overlayChangedFiles,
+    baselineRevisionMatches,
     entryPoints: [],
     relatedFiles: [],
     truncated: false,
@@ -492,7 +519,7 @@ export function buildControllerContextPack(
       };
     } else {
       const queryCodeGraph = dependencies.queryCodeGraph ?? queryCodeGraphReadProvider;
-      const structural = queryCodeGraph(repoRoot, {
+      const structural = queryCodeGraph(structuralIndexRoot, {
         operation: "context",
         query: structuralQuery,
         limit: Math.min(Math.max(maxFiles, 4), 12),
@@ -514,8 +541,11 @@ export function buildControllerContextPack(
       structuralContext = {
         provider: "codegraph",
         requestedMode: structuralMode,
-        status: structural.status,
-        requiredSatisfied: structuralMode !== "required" || structural.status === "ready",
+        status: indexSource === "repository_baseline" && (!baselineRevisionMatches || overlayChangedFiles.length > 0) && structural.status === "ready" ? "stale" : structural.status,
+        requiredSatisfied: structuralMode !== "required" || (structural.status === "ready" && baselineRevisionMatches && overlayChangedFiles.length === 0),
+        indexSource,
+        overlayChangedFiles,
+        baselineRevisionMatches,
         query: structuralQuery,
         entryPoints: graph.entryPoints.slice(0, 12).map((node) => ({
           id: node.id,
@@ -555,7 +585,7 @@ export function buildControllerContextPack(
       if (structural.status === "ready") {
         const primaryFiles = Array.from(new Set(graph.entryPoints.map((node) => node.filePath).filter(Boolean))).slice(0, 4);
         for (const filePath of primaryFiles) {
-          const adjacency = queryCodeGraph(repoRoot, { operation: "file_dependencies", filePath, limit: 40 });
+          const adjacency = queryCodeGraph(structuralIndexRoot, { operation: "file_dependencies", filePath, limit: 40 });
           if (!adjacency.ok || adjacency.status !== "ready") continue;
           const dependencies = Array.isArray(adjacency.result?.dependencies)
             ? adjacency.result.dependencies.filter((value): value is string => typeof value === "string")
@@ -576,6 +606,7 @@ export function buildControllerContextPack(
       for (const path of metadata?.changedFiles.added ?? []) addStructuralPath(path, "codegraph:changed-file", 1);
       for (const path of metadata?.changedFiles.modified ?? []) addStructuralPath(path, "codegraph:changed-file", 1);
       for (const path of metadata?.changedFiles.removed ?? []) omitted.push({ path, reason: "codegraph reports file removed since index" });
+      for (const path of overlayChangedFiles) addStructuralPath(path, "worktree:changed-file", 1);
     }
   }
 
@@ -770,6 +801,8 @@ export function buildControllerContextPack(
     : 0;
   const coverageGaps = [
     ...(structuralContext.status === "stale" ? ["structural_index_stale"] : []),
+    ...(structuralContext.indexSource === "repository_baseline" ? ["structural_repository_baseline_overlay"] : []),
+    ...(!structuralContext.baselineRevisionMatches ? ["structural_baseline_revision_mismatch"] : []),
     ...(structuralContext.status === "unavailable" || structuralContext.status === "degraded" ? ["structural_provider_unavailable"] : []),
     ...(structuralContext.truncated ? ["structural_result_truncated"] : []),
     ...(changedFileCount > 0 ? ["structural_index_has_unindexed_changes"] : []),
@@ -798,6 +831,9 @@ export function buildControllerContextPack(
       structuralStatus: structuralContext.status,
       lastIndexedAt: structuralContext.metadata?.lastIndexedAt,
       changedFileCount,
+      indexSource: structuralContext.indexSource,
+      overlayChangedFileCount: structuralContext.overlayChangedFiles.length,
+      baselineRevisionMatches: structuralContext.baselineRevisionMatches,
     },
   };
 

@@ -174,6 +174,16 @@ bounded child process (process group) / yielded search
 - Timeout/cancel: SIGTERM process group → grace → SIGKILL via `terminateProcessTree`.
 - stdout/stderr collectors cap while streaming.
 
+## MCP tool-surface freshness
+
+The Canonical Runtime `tools/list` schema fingerprint is the tool-surface identity. Release identity alone does not invalidate a session, while any exposed schema change does.
+
+HTTP MCP sessions capture the exact Canonical Runtime fingerprint and tool names at initialize time. The Gateway also observes the existing atomic `runtime/status.json` publication; when its published tool-surface fingerprint changes, it sends the standard MCP `notifications/tools/list_changed` notification to connected sessions whose captured fingerprint is stale. This is event-driven over the existing Runtime status publication—there is no schema poller, refresh daemon, or extra control-plane entity.
+
+The notification is an optimization hint, not authority. It never rewrites a session's captured fingerprint. Until the client re-runs discovery/reinitializes, the existing per-request fingerprint fence still rejects stale-schema execution. A lost notification therefore cannot make an obsolete tool call valid; it only risks falling back to the deterministic reinitialize path.
+
+This removes the normal stale-tool extra round trip for clients that honor standard MCP list-changed notifications while retaining the same fail-closed schema fence for clients that do not.
+
 ## Process output confidentiality
 
 Process Runtime applies one shared bounded redaction policy before stdout/stderr
