@@ -418,6 +418,6 @@ export function acceptPlanStepEvidence(
       evidenceRefs: [{ title: 'semantic acceptance', summary: `${reviewer}: ${rationale}`, detailLevel: 'summary' as const }, ...step.evidenceRefs].slice(0, 20),
     };
     const allCompleted = steps.every((candidate) => candidate.status === 'completed');
-    return { ...current, status: allCompleted ? 'ready_to_finalize' : 'executing', steps, updatedAt: nowIso(options) };
+    return { ...current, status: allCompleted ? 'finalized' : 'executing', steps, updatedAt: nowIso(options) };
   });
 }

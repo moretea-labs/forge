@@ -140,6 +140,6 @@ test('projects terminal Work evidence to validating and requires explicit semant
   expect(verifying).toMatchObject({ status: 'verifying', steps: [{ workId: 'work-receipt', status: 'validating' }] });
   expect(() => acceptPlanStepEvidence(options, { planId: 'plan-work-receipt', stepId: 'step-1', reviewer: '', rationale: 'looks good' })).toThrow(/PLAN_STEP_SEMANTIC_ACCEPTANCE_METADATA_REQUIRED/);
   const accepted = acceptPlanStepEvidence(options, { planId: 'plan-work-receipt', stepId: 'step-1', reviewer: 'chatgpt', rationale: 'Acceptance criteria reviewed against Work evidence.' });
-  expect(accepted).toMatchObject({ status: 'ready_to_finalize', steps: [{ workId: 'work-receipt', status: 'completed' }] });
+  expect(accepted).toMatchObject({ status: 'finalized', steps: [{ workId: 'work-receipt', status: 'completed' }] });
   expect(accepted.steps[0]?.evidenceRefs[0]?.title).toBe('semantic acceptance');
 });
