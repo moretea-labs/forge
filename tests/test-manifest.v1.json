@@ -23,8 +23,8 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 115,
-    "maxTestLines": 44861,
+    "maxTestFiles": 116,
+    "maxTestLines": 45234,
     "maxPureFiles": 35,
     "maxTempIsolatedFiles": 46,
     "maxProcessTreeFiles": 16,
@@ -242,6 +242,10 @@
     "tests/cli/repository-mcp-command.test.ts": {
       "module": "repository",
       "resource": "git-worktree"
+    },
+    "tests/cli/repository-command-scope.test.ts": {
+      "module": "repository",
+      "resource": "pure"
     },
     "tests/cli/repository-runtime-storage-v81.test.ts": {
       "module": "repository",
