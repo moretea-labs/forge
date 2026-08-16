@@ -2648,7 +2648,24 @@ async function runFacadeVerify(
     availableChecks: checks,
   };
   const workId = typeof args.work_id === 'string' ? args.work_id : '';
-  const checkId = String(args.check_id ?? args.checkId ?? '');
+  const checkId = String(args.check_id ?? args.checkId ?? '').trim();
+  if (!checkId) {
+    return result(buildFacadeResult({
+      status: 'blocked',
+      summary: 'rh_work verify requires a registered check_id.',
+      data: {
+        verification: {
+          outcome: 'check_id_required',
+          isAcceptanceFailure: false,
+          isInfrastructureIssue: true,
+          doesNotRequestTaskChanges: true,
+        },
+        registeredCheckCount: checks.length,
+      },
+      warnings: ['CHECK_ID_REQUIRED: pass check_id for one registered repository check.'],
+      suggestedNextActions: normalizeCheckIds(checks.slice(0, 3).map((check) => check.id), checks).suggestedNextActions,
+    }) as unknown as Record<string, unknown>, true);
+  }
   const classified = classifyVerificationOutcome({
     checkId,
     available: checks,
