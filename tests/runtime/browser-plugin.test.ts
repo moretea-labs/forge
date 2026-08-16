@@ -238,6 +238,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
     navigated: [] as Array<{ tabId: string; url: string }>,
     activeTabId: userTab.id,
     targetMetadataReads: 0,
+    localFileInput: undefined as { name: string; size: number } | undefined,
   };
   let nextTabId = 9001;
   const appName = product === 'chrome' ? 'Google Chrome' : 'Vivaldi';
@@ -292,6 +293,15 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
             const token = source.match(/forge-browser-owned:[a-f0-9]+/)?.[0];
             if (token) entry.ownerToken = token;
             return JSON.stringify({ ok: true, value: { __forgeUndefined: true } });
+          }
+          if (source.includes('const expectedName =') && source.includes('const expectedSize =')) {
+            const encodedName = source.match(/const expectedName = ("(?:[^"\\]|\\.)*");/)?.[1];
+            const encodedSize = source.match(/const expectedSize = (\d+);/)?.[1];
+            events.localFileInput = {
+              name: encodedName ? JSON.parse(encodedName) as string : '',
+              size: Number(encodedSize ?? 0),
+            };
+            return JSON.stringify({ ok: true, value: events.localFileInput });
           }
           return JSON.stringify({ ok: true, value: true });
         }
@@ -1613,4 +1623,61 @@ describe('browser plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     })).rejects.toThrow('Only http and https URLs are supported');
   });
+  test('explicitly adopted native tab remains user-owned and supports local file input', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const first = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'browser-native-adopt-seed', args: { url: 'https://example.com/native-adopt' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const firstConnection = first.browserConnection as Record<string, any>;
+    const ref = firstConnection.tab as { windowId: string; tabId: string };
+
+    const adopted = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
+      requestId: 'browser-native-adopt-existing',
+      args: {
+        url: 'https://example.com/native-adopt',
+        native_browser_product: 'chrome',
+        native_window_id: ref.windowId,
+        native_tab_id: ref.tabId,
+      },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const adoptedSession = adopted.session as Record<string, any>;
+    expect(adoptedSession.browser.tab.ownership).toBe('user_owned');
+    expect(native.events.created).toEqual(['9001']);
+
+    const fixtureName = 'fixture-native-upload.pdf';
+    writeFileSync(join(repoRoot, fixtureName), 'fixture-native-upload');
+    await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'attach_local_file',
+      requestId: 'browser-native-adopt-attach-file',
+      args: { session_id: adoptedSession.sessionId, selector: 'input[type=file]', file_path: fixtureName, post_action_wait_ms: 1 },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(native.events.localFileInput).toEqual({ name: fixtureName, size: Buffer.byteLength('fixture-native-upload') });
+    expect(native.events.created).toEqual(['9001']);
+
+    await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'close_session',
+      requestId: 'browser-native-adopt-close-session', args: { session_id: adoptedSession.sessionId },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(native.events.closed).toEqual([]);
+  });
+
 });

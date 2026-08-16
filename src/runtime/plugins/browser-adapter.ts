@@ -1186,8 +1186,10 @@ async function openNativeAttachedContext(
   if (config.nativeAttachMode === 'disabled') return { attempts: [] };
   const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
   const savedTab = target.existingSession?.browser?.tab;
+  const savedOwnership = savedTab?.ownership;
   const savedProduct = target.existingSession?.browser?.provider === 'macos-apple-events'
-    && savedTab?.ownership === 'plugin_owned'
+    && savedTab
+    && (savedOwnership === 'plugin_owned' || savedOwnership === 'user_owned')
     && typeof savedTab.windowId === 'string'
     && typeof savedTab.tabId === 'string'
     ? target.existingSession.browser.browserProduct
@@ -1203,8 +1205,15 @@ async function openNativeAttachedContext(
       const reattached = await reattachMacOsBrowserOwnedPage(savedProduct, ref, timeout);
       page = reattached.page as unknown as PageLike;
       discovered = { attachment: reattached.attachment, attempts: reattached.attachment.attempts };
-      matchedBy = 'owned_token';
-      sessionResume = { sessionId: target.sessionId, status: 'matched', reason: 'Reattached directly to the saved plugin-owned macOS browser tab.', savedTab };
+      matchedBy = savedOwnership === 'user_owned' ? 'saved_url' : 'owned_token';
+      sessionResume = {
+        sessionId: target.sessionId,
+        status: 'matched',
+        reason: savedOwnership === 'user_owned'
+          ? 'Reattached directly to the explicitly adopted user-owned macOS browser tab.'
+          : 'Reattached directly to the saved plugin-owned macOS browser tab.',
+        savedTab,
+      };
     } catch {
       sessionResume = { sessionId: target.sessionId, status: 'stale_tab', reason: 'Saved plugin-owned macOS tab no longer exists; one replacement tab was created.', savedTab };
     }
@@ -1229,6 +1238,13 @@ async function openNativeAttachedContext(
     }
     if (comparableUrl(page.url()) !== comparableUrl(target.url)) {
       const currentRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
+      if (savedOwnership === 'user_owned') {
+        throw new AssistantPluginError(
+          'PLUGIN_BROWSER_ADOPTED_TAB_URL_MISMATCH',
+          'Explicitly adopted user-owned tab no longer matches the saved session URL; refusing to navigate, replace, or close the user tab.',
+          { retryable: true, details: { sessionId: target.sessionId, expectedUrl: target.url, actualUrl: page.url(), windowId: savedTab?.windowId, tabId: savedTab?.tabId } },
+        );
+      }
       const sessionTargetUnchanged = Boolean(target.existingSession?.url) && comparableUrl(target.url) === comparableUrl(target.existingSession?.url ?? '');
       const preserveOwnedSameOriginDrift = matchedBy === 'owned_token' && sessionTargetUnchanged && sameOrigin(page.url(), target.url);
       if (preserveOwnedSameOriginDrift) {
@@ -1269,7 +1285,9 @@ async function openNativeAttachedContext(
       tabInventory: inventory,
       sessionResume,
     }, pageUrl, title, matchedBy, {
-      ownership: 'plugin_owned', windowId: nativeRef.windowId, tabId: nativeRef.tabId,
+      ownership: savedOwnership === 'user_owned' && matchedBy === 'saved_url' ? 'user_owned' : 'plugin_owned',
+      windowId: nativeRef.windowId,
+      tabId: nativeRef.tabId,
     });
     const diagnostics: PageDiagnostics = { consoleErrors: [], failedRequests: [], navigation: { url: pageUrl } };
     if (replacedRef) await closeMacOsBrowserOwnedTab(metadata.product, replacedRef, timeout);
@@ -1713,7 +1731,13 @@ function actions(): AssistantPluginActionDescriptor[] {
       description: 'Open an HTTP(S) URL and persist a reusable session id.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }, ...readRemote],
-      argumentsSchema: sessionTargetSchema({ extract_text: { type: 'boolean' }, max_chars: { type: 'number' } }, ['url']),
+      argumentsSchema: sessionTargetSchema({
+        extract_text: { type: 'boolean' },
+        max_chars: { type: 'number' },
+        native_browser_product: { type: 'string', enum: ['chrome', 'vivaldi'] },
+        native_window_id: { type: 'string' },
+        native_tab_id: { type: 'string' },
+      }, ['url']),
     },
     {
       actionId: 'list_sessions',
@@ -2390,6 +2414,52 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const target: BrowserActionTarget = existingSessionId
           ? { sessionId: existingSessionId, url, existingSession: findSession(input.repoRoot, existingSessionId) }
           : { sessionId: sessionIdFor(url), url };
+        const nativeProduct = stringValue(input.args.native_browser_product);
+        const nativeWindowId = stringValue(input.args.native_window_id);
+        const nativeTabId = stringValue(input.args.native_tab_id);
+        const hasNativeAdoption = Boolean(nativeProduct || nativeWindowId || nativeTabId);
+        if (hasNativeAdoption) {
+          if (input.actionId !== 'create_session' || !nativeProduct || !nativeWindowId || !nativeTabId || (nativeProduct !== 'chrome' && nativeProduct !== 'vivaldi')) {
+            throw new AssistantPluginError(
+              'PLUGIN_ACTION_ARGUMENT_INVALID',
+              'Explicit native tab adoption requires create_session with native_browser_product, native_window_id, and native_tab_id.',
+              { retryable: false },
+            );
+          }
+          const timeout = positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
+          const adopted = await reattachMacOsBrowserOwnedPage(nativeProduct, { windowId: nativeWindowId, tabId: nativeTabId }, timeout);
+          const metadata = adopted.attachment.metadata;
+          const pageUrl = normalizedUrl(metadata.url);
+          if (comparableUrl(pageUrl) !== comparableUrl(url)) {
+            throw new AssistantPluginError(
+              'PLUGIN_BROWSER_ADOPTED_TAB_URL_MISMATCH',
+              'Explicitly adopted native tab URL does not match the requested session URL.',
+              { retryable: false, details: { requestedUrl: url, actualUrl: pageUrl, browserProduct: nativeProduct, windowId: nativeWindowId, tabId: nativeTabId } },
+            );
+          }
+          const title = metadata.title || '';
+          const connection = refreshConnectionTab({
+            requestedMode: 'attach_preferred',
+            mode: 'attach_preferred',
+            provider: 'macos-apple-events',
+            attached: true,
+            browserProduct: nativeProduct,
+            profile: { selectedProfilePath: `macos:${nativeProduct}:user-tab` },
+            tabInventory: [{ index: 0, key: tabKey(pageUrl, title), url: pageUrl, title }],
+            sessionResume: { sessionId: target.sessionId, status: 'matched', reason: 'Explicitly adopted an existing user-owned native browser tab.' },
+          }, pageUrl, title, 'saved_url', { ownership: 'user_owned', windowId: nativeWindowId, tabId: nativeTabId });
+          const session = sessionFromPage(target, pageUrl, title, connection);
+          saveSession(input.repoRoot, session);
+          return {
+            provider: 'macos-apple-events',
+            session,
+            navigation: { url: pageUrl },
+            browserConnection: { ...connection, tab: session.browser?.tab, sessionResume: session.browser?.sessionResume },
+            ...(input.args.extract_text === true
+              ? { text: await extractText(adopted.page as unknown as PageLike, undefined, positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS)) }
+              : {}),
+          };
+        }
         return await withPage(input.repoRoot, current, target, input.args, async (page, diagnostics, connection) => {
           const identity = await readPageIdentity(page, connection);
           const session = sessionFromPage(target, identity.url, identity.title, connection);
@@ -2686,9 +2756,6 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Executable file attachments are not allowed.', { retryable: false });
         }
         return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
-          if (connection.provider === 'macos-apple-events') {
-            throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_ACTION_UNSUPPORTED', 'Native Apple Events attachment does not support local file input. Use CDP or a managed browser context.', { retryable: false });
-          }
           await page.evaluate((payload) => {
             const args = payload as { selector: string; path: string };
             const el = document.querySelector(args.selector) as HTMLInputElement | null;
