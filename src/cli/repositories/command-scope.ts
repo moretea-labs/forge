@@ -77,8 +77,43 @@ export function assertRepositoryCommandAllowed(command: string): string {
   return normalized;
 }
 
-export function assertRepositoryCommandInputAllowed(input: unknown): CanonicalRepositoryCommand {
+function macOsTccSensitiveShellTool(command: string): string | undefined {
+  const match = command.match(/(?:^|[\n;&|])\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*(?:(?:command|exec|sudo|nohup)\s+)?(?:\/usr\/(?:bin|sbin)\/)?(osascript|screencapture)(?=\s|$)/i);
+  return match?.[1]?.toLowerCase();
+}
+
+function macOsTccSensitiveArgvTool(command: CanonicalRepositoryCommand): string | undefined {
+  if (command.kind !== 'argv') return undefined;
+  const executableName = command.executable!.split(/[\\/]/).at(-1)?.toLowerCase() ?? '';
+  if (executableName === 'osascript' || executableName === 'screencapture') return executableName;
+  if (!['bash', 'sh', 'zsh', 'fish', 'dash', 'cmd', 'powershell', 'pwsh'].includes(executableName)) return undefined;
+  const args = command.args ?? [];
+  const commandFlagIndex = args.findIndex((arg) => /^(?:-[^-]*c[^-]*|\/c|-Command)$/i.test(arg));
+  if (commandFlagIndex < 0) return undefined;
+  const shellPayload = args[commandFlagIndex + 1];
+  return typeof shellPayload === 'string' ? macOsTccSensitiveShellTool(shellPayload) : undefined;
+}
+
+/**
+ * Runtime releases live at release-specific executable paths. Never let those
+ * binaries become macOS TCC principals: GUI automation and screen capture must
+ * be owned by the stable Forge Desktop Operator / typed browser provider.
+ */
+export function assertRepositoryCommandStableHostIdentity(input: unknown): CanonicalRepositoryCommand {
   const command = normalizeRepositoryCommand(input);
+  const tool = command.kind === 'shell'
+    ? macOsTccSensitiveShellTool(command.shellCommand!)
+    : macOsTccSensitiveArgvTool(command);
+  if (tool) {
+    throw new Error(
+      `COMMAND_POLICY_DENIED: ${tool} is macOS TCC-sensitive and must run through the stable Forge Desktop Operator/browser capability; forge-runtime must not become the permission identity`,
+    );
+  }
+  return command;
+}
+
+export function assertRepositoryCommandInputAllowed(input: unknown): CanonicalRepositoryCommand {
+  const command = assertRepositoryCommandStableHostIdentity(input);
   if (command.kind === 'shell') {
     assertRepositoryCommandAllowed(command.shellCommand!);
     return command;

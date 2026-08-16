@@ -14,6 +14,7 @@ import {
   type RepositoryCommandExecution,
 } from '../../../cli/repositories/command-executor';
 import { normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
+import { assertRepositoryCommandStableHostIdentity } from '../../../cli/repositories/command-scope';
 import { claimsForRepositoryCommand, scopeResourceClaims, toProcessClaims } from './resource-claims';
 import {
   spawnManagedProcess,
@@ -153,6 +154,11 @@ export function classifyRepositoryCommandRoute(
 export async function executeRepositoryCommandViaProcessRuntime(
   input: RepositoryCommandProcessInput,
 ): Promise<RepositoryCommandProcessResult> {
+  // Process Runtime intentionally supports some command forms that the legacy
+  // repository executor rejects (for example bounded typed eval). Keep that
+  // surface, but fail closed before routing any macOS TCC-sensitive host tool:
+  // a release-specific forge-runtime executable must never own those grants.
+  assertRepositoryCommandStableHostIdentity(input.command);
   const decision = classifyRepositoryCommandRoute(input.command, {
     forceDurable: input.forceDurable,
     defaultBranch: input.repository.defaultBranch,
