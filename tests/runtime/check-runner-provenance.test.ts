@@ -38,6 +38,48 @@ function fixture(checks: Record<string, { command: string[]; effects?: unknown }
 }
 
 describe('controller check provenance and failure classification', () => {
+  test('inherits tracked legacy checks into isolated worktrees and keeps .forge precedence', () => {
+    const container = mkdtempSync(join(tmpdir(), 'forge-check-portable-'));
+    roots.push(container);
+    const repoRoot = join(container, 'repo');
+    const worktreeRoot = join(container, 'worktree');
+    mkdirSync(repoRoot, { recursive: true });
+    spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+    writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({ name: 'portable-check-fixture' }));
+    mkdirSync(join(repoRoot, '.repo-harness'), { recursive: true });
+    writeFileSync(join(repoRoot, '.repo-harness/checks.json'), JSON.stringify({
+      version: 1,
+      checks: {
+        portable: { command: [process.execPath, '-e', 'process.exit(0)'] },
+        legacy_only: { command: [process.execPath, '-e', 'process.exit(0)'] },
+      },
+    }));
+    spawnSync('git', ['add', 'package.json', '.repo-harness/checks.json'], { cwd: repoRoot, stdio: 'ignore' });
+    spawnSync('git', ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'portable checks'], {
+      cwd: repoRoot,
+      stdio: 'ignore',
+    });
+    const added = spawnSync('git', ['worktree', 'add', '-b', 'isolated', worktreeRoot], { cwd: repoRoot, encoding: 'utf8' });
+    expect(added.status).toBe(0);
+
+    const inherited = listControllerChecks(worktreeRoot);
+    expect(inherited.find((entry) => entry.id === 'portable')?.source).toBe('repo-config');
+    expect(snapshotControllerCheck(worktreeRoot, 'portable').command).toEqual([process.execPath, '-e', 'process.exit(0)']);
+
+    mkdirSync(join(worktreeRoot, '.forge'), { recursive: true });
+    writeFileSync(join(worktreeRoot, '.forge/checks.json'), JSON.stringify({
+      version: 1,
+      checks: {
+        portable: { command: [process.execPath, '-e', 'process.exit(7)'] },
+        current_only: { command: [process.execPath, '-e', 'process.exit(0)'] },
+      },
+    }));
+    const current = listControllerChecks(worktreeRoot);
+    expect(current.find((entry) => entry.id === 'portable')?.command).toEqual([process.execPath, '-e', 'process.exit(7)']);
+    expect(current.some((entry) => entry.id === 'current_only')).toBe(true);
+    expect(current.some((entry) => entry.id === 'legacy_only')).toBe(false);
+  });
+
   test('normalizes declared effects and binds them into check snapshots', () => {
     const repoRoot = fixture({
       effects: {

@@ -72,6 +72,7 @@ interface CheckConfig {
 }
 
 const CHECK_CONFIG = '.forge/checks.json';
+const LEGACY_TRACKED_CHECK_CONFIG = '.repo-harness/checks.json';
 const CHECK_EVIDENCE_ROOT = '.ai/harness/checks/controller';
 const HEAVY_CHECK_LOCK = '.ai/harness/controller/heavy-check.lock';
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -187,8 +188,15 @@ function inferredPackageCheckEffects(name: string): ControllerCheckEffects | und
 }
 
 function configuredChecks(repoRoot: string): ControllerCheck[] {
-  const path = join(repoRoot, CHECK_CONFIG);
-  if (!existsSync(path)) return [];
+  // `.forge/` may intentionally be machine-local/ignored. Preserve it as the
+  // authoritative current location, but inherit the tracked legacy registry in
+  // isolated Git checkouts when the current file is absent. Never merge both:
+  // deterministic precedence prevents checkout-local definitions from being
+  // silently combined with portable repository policy.
+  const currentPath = join(repoRoot, CHECK_CONFIG);
+  const legacyPath = join(repoRoot, LEGACY_TRACKED_CHECK_CONFIG);
+  const path = existsSync(currentPath) ? currentPath : existsSync(legacyPath) ? legacyPath : undefined;
+  if (!path) return [];
   const config = JSON.parse(readFileSync(path, 'utf-8')) as CheckConfig;
   return Object.entries(config.checks ?? {}).flatMap(([id, value]) => {
     if (!Array.isArray(value.command) || value.command.length === 0 || value.command.some((part) => typeof part !== 'string' || part.length === 0)) return [];
