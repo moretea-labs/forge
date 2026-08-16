@@ -93,6 +93,10 @@ export interface GoalWorkloopContinueInput {
 export interface GoalWorkloopVerifyInput {
   workId: string;
   checkId: string;
+  /** Exact Git revision observed by the authoritative Work-bound verification Process. */
+  sourceRevision?: string;
+  /** Persistence-safe Process receipt. Accepted only when its Work/repo/check identity matches this verification. */
+  receipt?: VerificationRecord['receipt'];
   /** When true, simulate infrastructure failure rather than acceptance fail. */
   infrastructureFailed?: boolean;
   /** When true and check is valid, record acceptance failure. */
@@ -191,14 +195,42 @@ interface WorkCompletionEvidenceEvaluation {
   reasons: string[];
 }
 
+function verificationRecordAppliesToRevision(record: VerificationRecord, currentRevision?: string): boolean {
+  if (!currentRevision || !record.sourceRevision) return true;
+  return record.sourceRevision === currentRevision;
+}
+
+function isAuthoritativeCurrentWorkVerification(
+  work: WorkContract,
+  record: VerificationRecord,
+  currentRevision?: string,
+): boolean {
+  const receipt = record.receipt;
+  return Boolean(
+    currentRevision
+    && record.outcome === 'valid_pass'
+    && record.sourceRevision === currentRevision
+    && receipt
+    && receipt.repoId === work.repoId
+    && receipt.workId === work.workId
+    && receipt.checkId === record.checkId
+    && receipt.ok === true
+    && receipt.timedOut === false
+    && receipt.cancelled === false,
+  );
+}
+
 function evaluateWorkCompletionEvidence(
   work: WorkContract,
-  history: ReconciledVerificationHistory = reconcileVerificationHistory(
-    work.checkRefs.map((record) => ({ checkId: record.checkId, outcome: record.outcome, recordedAt: record.recordedAt })),
-  ),
+  currentRevision?: string,
 ): WorkCompletionEvidenceEvaluation {
+  const applicableCheckRefs = work.checkRefs.filter((record) => verificationRecordAppliesToRevision(record, currentRevision));
+  const history = reconcileVerificationHistory(
+    applicableCheckRefs.map((record) => ({ checkId: record.checkId, outcome: record.outcome, recordedAt: record.recordedAt })),
+  );
   const missingChecks = work.checks.filter((checkId) => !history.validPasses.includes(checkId));
-  const durableResultEvidence = work.evidenceRefs.some((evidence) => Boolean(evidence.evidenceId || evidence.artifactId));
+  const durableResultEvidence = work.evidenceRefs.some((evidence) => Boolean(evidence.evidenceId || evidence.artifactId))
+    || applicableCheckRefs.some((record) => isAuthoritativeCurrentWorkVerification(work, record, currentRevision));
   const reasons: string[] = [];
 
   if (history.acceptanceFailures.length > 0) {
@@ -215,7 +247,11 @@ function evaluateWorkCompletionEvidence(
     reasons.push(`Declared checks are missing valid_pass evidence: ${missingChecks.join(', ')}.`);
   }
   if (work.checks.length === 0 && !durableResultEvidence) {
-    reasons.push('No durable result evidence (evidenceId or artifactId) was recorded for this no-check WorkContract.');
+    const staleWorkVerification = Boolean(currentRevision && work.checkRefs.some((record) =>
+      record.receipt && record.sourceRevision && record.sourceRevision !== currentRevision));
+    reasons.push(staleWorkVerification
+      ? `Work-bound verification evidence is stale for current revision ${currentRevision}.`
+      : 'No durable result evidence (evidenceId, artifactId, or current Work-bound verification receipt) was recorded for this no-check WorkContract.');
   }
 
   const complete = history.infrastructureIssues.length === 0
@@ -966,7 +1002,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
-  const completionEvidence = evaluateWorkCompletionEvidence(work, history);
+  const completionEvidence = evaluateWorkCompletionEvidence(work, ctx.sourceRevision);
   if (completionEvidence.status !== 'complete') {
     const suggested = validateSuggestedNextActions([
       {
@@ -1060,14 +1096,29 @@ export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
   });
 
   const at = nowIso(ctx);
+  const resolvedCheckId = classified.normalizedCheckId ?? classified.checkId;
+  const receipt = input.receipt
+    && input.receipt.repoId === work.repoId
+    && input.receipt.workId === work.workId
+    && input.receipt.checkId === resolvedCheckId
+    ? input.receipt
+    : undefined;
+  const sourceRevision = receipt && input.sourceRevision?.trim() ? input.sourceRevision.trim() : undefined;
+  const verificationSummary = receipt
+    ? `${classified.summary} Durable Process receipt ${receipt.receiptId}.`
+    : classified.summary;
   const record: VerificationRecord = {
-    checkId: classified.normalizedCheckId ?? classified.checkId,
+    checkId: resolvedCheckId,
     outcome: classified.outcome,
-    summary: classified.summary,
+    summary: verificationSummary,
     recordedAt: at,
+    sourceRevision,
+    startedAt: receipt?.startedAt,
+    completedAt: receipt?.finishedAt,
+    receipt,
     evidenceRef: {
       title: `verification:${classified.outcome}`,
-      summary: classified.summary,
+      summary: verificationSummary,
       detailLevel: 'summary',
     },
   };
@@ -1189,7 +1240,7 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
-  const completionEvidence = evaluateWorkCompletionEvidence(work);
+  const completionEvidence = evaluateWorkCompletionEvidence(work, ctx.sourceRevision);
   const history = completionEvidence.history;
 
   if (input.forceFailed || completionEvidence.status === 'failed') {

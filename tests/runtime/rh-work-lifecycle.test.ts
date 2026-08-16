@@ -10,6 +10,7 @@ import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { getProcessRecord, waitForProcess } from '../../src/runtime/execution/process-runtime';
 import { getWorkContract, listWorkContracts } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { continueGoalWorkloop, finalizeGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { getSchedule, saveSchedule } from '../../src/runtime/workflow/schedules/store';
@@ -179,6 +180,82 @@ describe('rh_work managed lifecycle closure', () => {
     const after = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
     expect(after.checkRefs).toEqual(before.checkRefs);
   });
+  test('persists current Work-bound verification receipt and rejects it after revision drift', async () => {
+    const fx = fixture('work-bound-verification-evidence');
+    writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({
+      scripts: { 'check:work-evidence': 'node -e "process.exit(0)"' },
+    }, null, 2));
+    git(fx.repoRoot, ['add', 'package.json']);
+    git(fx.repoRoot, ['commit', '-m', 'add work evidence check']);
+
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Prove a no-check Work with one authoritative Work-bound verification receipt',
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 1,
+      requires_recovery: true,
+      constraints: { requireWorktree: true },
+    });
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const initial = getWorkContract(store, workId)!;
+    expect(initial.checks).toEqual([]);
+    const verifiedRevision = git(initial.worktreeRef!, ['rev-parse', 'HEAD']);
+    const verifyArgs = {
+      repo_id: fx.repository.repoId,
+      operation: 'verify',
+      work_id: workId,
+      check_id: 'package:check:work-evidence',
+    };
+    let verified = await callRuntimeTool(fx.ctx, 'rh_work', verifyArgs);
+    let verification = (verified?.structuredContent as { data?: { verification?: { processId?: string; outcome?: string } } })?.data?.verification;
+    if (verification?.processId && verification.outcome === 'running') {
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, verification.processId, { timeoutMs: 5_000 });
+      verified = await callRuntimeTool(fx.ctx, 'rh_work', verifyArgs);
+      verification = (verified?.structuredContent as { data?: { verification?: { processId?: string; outcome?: string } } })?.data?.verification;
+    }
+    expect(verification?.outcome).toBe('valid_pass');
+
+    const afterVerify = getWorkContract(store, workId)!;
+    const persisted = afterVerify.checkRefs.find((record) => record.checkId === 'package:check:work-evidence' && record.outcome === 'valid_pass');
+    expect(persisted?.sourceRevision).toBe(verifiedRevision);
+    expect(persisted?.receipt).toMatchObject({
+      repoId: fx.repository.repoId,
+      workId,
+      checkId: 'package:check:work-evidence',
+      ok: true,
+      timedOut: false,
+      cancelled: false,
+    });
+    expect(persisted?.summary).toContain(String(persisted?.receipt?.receiptId));
+
+    const currentEvidence = continueGoalWorkloop({
+      workStore: store,
+      handoffStore: store,
+      repoId: fx.repository.repoId,
+      sourceRevision: verifiedRevision,
+    }, { workId });
+    expect(currentEvidence.status).toBe('ok');
+    expect(currentEvidence.data).toMatchObject({ nextStep: 'finalize' });
+
+    writeFileSync(join(initial.worktreeRef!, 'revision-drift.txt'), 'new revision\n');
+    git(initial.worktreeRef!, ['add', 'revision-drift.txt']);
+    git(initial.worktreeRef!, ['commit', '-m', 'drift after verification']);
+    const driftedRevision = git(initial.worktreeRef!, ['rev-parse', 'HEAD']);
+    expect(driftedRevision).not.toBe(verifiedRevision);
+    const staleFinalize = finalizeGoalWorkloop({
+      workStore: store,
+      handoffStore: store,
+      repoId: fx.repository.repoId,
+      sourceRevision: driftedRevision,
+    }, { workId });
+    expect(staleFinalize.status).toBe('blocked');
+    expect(staleFinalize.summary).toContain('verification evidence is stale');
+    expect(staleFinalize.data).toMatchObject({ validPasses: [], durableResultEvidence: false });
+  });
+
   test('requires Work finalize instead of raw default-branch merge for an active Workflow', async () => { const fx = fixture('workflow-delivery-guard'); const started = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'start', objective: 'Own a recoverable default-checkout change', scope_clear: true, expected_files: 2, expected_changed_lines: 20, requires_recovery: true }); const workId = (started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId; expect(workId).toBeTruthy(); const claimed = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId, controller_type: 'chatgpt' }); expect(claimed?.isError).not.toBe(true); const blocked = await (await import('../../src/cli/mcp/repository-tools')).callRepositoryTool(fx.controllerHome, 'repository_command_execute', { repo_id: fx.repository.repoId, command: ['git', 'merge', '--ff-only', 'nonexistent'] }, fx.ctx); expect(blocked?.isError).toBe(true); expect((blocked?.structuredContent as { error?: { code?: string } }).error?.code).toBe('WORK_DELIVERY_REQUIRES_FINALIZE'); });
   test('reuses exact Plan scope but resolves distinct slices under the same Requirement before creation', async () => { const fx = fixture('plan-admission'); const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim(); const step = (id: string) => [{ id, objective: 'Implement it', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [], check_ids: [], acceptance_criteria: ['done'] }]; const first = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-primary', requirement_id: 'REQ-primary', scope_key: 'primary-scope', source_revision: sourceRevision, objective: 'Implement the primary requirement', plan_steps: step('step-a'), }); expect(first?.isError).not.toBe(true); expect(first?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new' } }); const exactDuplicate = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-duplicate', requirement_id: 'REQ-primary', scope_key: 'primary-scope', source_revision: sourceRevision, objective: 'Duplicate exact scope', plan_steps: step('step-dup'), }); expect(exactDuplicate?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: false, admissionDecision: 'reuse_existing', plan: { planId: 'PLAN-primary' } } }); const ambiguousSlice = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-slice-b', requirement_id: 'REQ-primary', scope_key: 'parallel-scope', source_revision: sourceRevision, objective: 'A distinct slice under the same broad requirement', plan_steps: step('step-b'), }); expect(ambiguousSlice?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: false, admissionDecision: 'resolution_required', resolutionRequired: true, allowedPlanRelations: ['extend', 'parallel'] }, }); const parallelSlice = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-slice-b', requirement_id: 'REQ-primary', scope_key: 'parallel-scope', plan_relation: 'parallel', source_revision: sourceRevision, objective: 'A distinct explicitly parallel slice', plan_steps: step('step-b'), }); expect(parallelSlice?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new', plan: { planId: 'PLAN-slice-b', requirementId: 'REQ-primary' } } }); });
   test('exposes explicit Controller semantic acceptance for a delivered validating Plan step', async () => {
