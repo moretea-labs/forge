@@ -12,6 +12,7 @@ import { getProcessRecord, waitForProcess } from '../../src/runtime/execution/pr
 import { getWorkContract, listWorkContracts } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
+import { getSchedule, saveSchedule } from '../../src/runtime/workflow/schedules/store';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
@@ -383,10 +384,20 @@ describe('rh_work managed lifecycle closure', () => {
     expect(pausedPayload.data?.schedule?.enabled).toBe(false);
     expect(pausedPayload.data?.schedule?.pausedReason).toBe('test pause');
 
+    const fused = getSchedule(fx.controllerHome, fx.repository.repoId, scheduleId);
+    saveSchedule(fx.controllerHome, {
+      ...fused,
+      enabled: false,
+      consecutiveFailures: fused.policy.maxFailures,
+      nextEligibleAt: '2099-01-01T00:00:00.000Z',
+      pausedReason: 'Maximum consecutive failures reached.',
+    });
     const resumed = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'schedule_resume', schedule_id: scheduleId });
-    const resumedPayload = resumed?.structuredContent as { data?: { schedule?: { enabled: boolean; pausedReason?: string } } };
+    const resumedPayload = resumed?.structuredContent as { data?: { schedule?: { enabled: boolean; pausedReason?: string; consecutiveFailures?: number; nextEligibleAt?: string } } };
     expect(resumedPayload.data?.schedule?.enabled).toBe(true);
     expect(resumedPayload.data?.schedule?.pausedReason).toBeUndefined();
+    expect(resumedPayload.data?.schedule?.consecutiveFailures).toBe(0);
+    expect(resumedPayload.data?.schedule?.nextEligibleAt).toBeUndefined();
   });
 
   test('rh_work creates a Work-bound browser watcher and stops it before browser access when Work is terminal', async () => {

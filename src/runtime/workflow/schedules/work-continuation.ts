@@ -277,7 +277,13 @@ export function resumeWorkContinuationSchedule(controllerHome: string, repoId: s
   const schedule = continuationSchedule(getSchedule(controllerHome, repoId, scheduleId));
   const workId = typeof schedule.action.arguments?.work_id === 'string' ? schedule.action.arguments.work_id : '';
   activeWork(controllerHome, repoId, workId);
-  return saveSchedule(controllerHome, { ...schedule, enabled: true, pausedReason: undefined });
+  return saveSchedule(controllerHome, {
+    ...schedule,
+    enabled: true,
+    pausedReason: undefined,
+    consecutiveFailures: 0,
+    nextEligibleAt: undefined,
+  });
 }
 
 export async function triggerWorkContinuationSchedule(
