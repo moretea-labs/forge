@@ -1206,7 +1206,10 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
         repoId: handle.repositoryId,
         checkoutId: handle.checkoutId,
         repoRoot: validated.worktreeRepository.canonicalRoot,
-        executionIdentity: executionIdentityForWork(validated.worktreeRepository, handle),
+        executionIdentity: Object.freeze({
+          ...executionIdentityForWork(validated.worktreeRepository, handle),
+          expectedHead: validationHead === 'unknown' ? handle.expectedHead : validationHead,
+        }),
         checkId,
         requestId: processRequestId,
         workId: handle.workId,

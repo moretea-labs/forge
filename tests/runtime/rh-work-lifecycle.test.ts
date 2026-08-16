@@ -187,6 +187,9 @@ describe('rh_work managed lifecycle closure', () => {
     expect((started?.structuredContent as { data?: { executionHandle?: { workId?: string; managedWorktree?: boolean }; ownershipClaimed?: boolean } })?.data).toMatchObject({ executionHandle: { workId, managedWorktree: true }, ownershipClaimed: true });
     const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
     const work = { workId, worktreePath: contract.worktreeRef!, branch: git(contract.worktreeRef!, ['branch', '--show-current']) };
+    writeFileSync(join(work.worktreePath, 'lifecycle.txt'), 'precommitted\n');
+    git(work.worktreePath, ['add', 'lifecycle.txt']);
+    git(work.worktreePath, ['commit', '-m', 'Work-owned progress']);
     writeFileSync(join(work.worktreePath, 'lifecycle.txt'), 'closed-loop\n');
 
     let finalized = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'finalize', work_id: work.workId });

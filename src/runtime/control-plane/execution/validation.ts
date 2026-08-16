@@ -32,6 +32,10 @@ function gitText(root: string, args: string[]): string | undefined {
     : undefined;
 }
 
+function gitSucceeds(root: string, args: string[]): boolean {
+  return spawnSync('git', ['-C', root, ...args], { stdio: 'ignore', timeout: 10_000 }).status === 0;
+}
+
 function fail(code: string, message: string): never {
   throw new Error(`${code}: ${message}`);
 }
@@ -99,7 +103,16 @@ export function validateWorkHandle(
   const currentBranch = gitText(root, ['branch', '--show-current']);
   const currentHead = gitText(root, ['rev-parse', '--verify', 'HEAD']);
   if (currentBranch !== handle.branch) fail('WORK_HANDLE_BRANCH_CHANGED', `expected ${handle.branch}, found ${currentBranch ?? 'detached'}`);
-  if (handle.expectedHead && currentHead !== handle.expectedHead) fail('WORK_HANDLE_HEAD_CHANGED', `expected ${handle.expectedHead}, found ${currentHead ?? 'missing'}`);
+  const managedWorkProgress = (operation === 'validate' || operation === 'finalize')
+    && handle.managedWorktree
+    && Boolean(handle.expectedHead && currentHead)
+    && gitSucceeds(root, ['merge-base', '--is-ancestor', handle.expectedHead!, currentHead!]);
+  if (handle.expectedHead && currentHead !== handle.expectedHead && !managedWorkProgress) {
+    fail('WORK_HANDLE_HEAD_CHANGED', `expected ${handle.expectedHead}, found ${currentHead ?? 'missing'}`);
+  }
+  if (managedWorkProgress && currentHead !== handle.expectedHead) {
+    warnings.push('Managed Worktree HEAD advanced from the prepared revision by Work-owned descendant commits; validation/finalization will use the current Work state.');
+  }
 
   if (level === 'full') {
     const validation = validateRepository(repository.repoId, controllerHome);
