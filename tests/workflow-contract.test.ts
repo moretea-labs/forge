@@ -41,7 +41,9 @@ describe("workflow contract manifest", () => {
     const contract = loadWorkflowContract(contractPath);
     expect(contract.version).toBe("1.4.0");
     expect(contract.contractId).toBeTruthy();
-    expect(existsSync(join(ROOT, ".ai/harness/workflow-contract.json"))).toBe(false);
+    const trackedContract = spawnSync("git", ["-C", ROOT, "ls-files", "--", ".ai/harness/workflow-contract.json"], { encoding: "utf8" });
+    expect(trackedContract.status).toBe(0);
+    expect(trackedContract.stdout.trim()).toBe("");
     expect(contract.artifacts.requiredFiles).toContain(".ai/harness/workflow-contract.json");
   });
 
@@ -51,7 +53,9 @@ describe("workflow contract manifest", () => {
     expect(assetFiles).toContain("./hook-input.sh");
     expect(assetFiles).toContain("./lib/session-state.sh");
     expect(assetFiles).toContain("./lib/workflow-state.sh");
-    expect(existsSync(join(ROOT, ".ai/hooks"))).toBe(false);
+    const trackedHooks = spawnSync("git", ["-C", ROOT, "ls-files", "--", ".ai/hooks"], { encoding: "utf8" });
+    expect(trackedHooks.status).toBe(0);
+    expect(trackedHooks.stdout.trim()).toBe("");
   });
 
   test("helper inventory should come from the workflow contract", () => {
