@@ -739,6 +739,36 @@ describe("Local Execution Bridge", () => {
     expect(projectedWatcher).toMatchObject({ mode: "browser_watch", modeLabel: "网页变更监听", status: "enabled", schedule: "每天 20:00", delivery: "变化时唤醒 ChatGPT", live: true, targetLabel: "已绑定浏览器会话", boundWorkId: "WORK-ICP", observationStatus: "baseline", lastResult: "已建立基线" });
     expect(projectedWatcher.history).toHaveLength(1);
     expect(projectedWatcher.history[0]).toMatchObject({ result: "无变化", trigger: "手动", tone: "gray", reason: "已建立观察基线；没有唤醒 ChatGPT。" });
+
+    const failedWorkflow = createSchedule(controllerHome, {
+      requestId: "console-hourly-workflow-failed",
+      repoId: registeredRepository!.repoId,
+      name: "Forge 新问题自动修复 Workflow",
+      enabled: true,
+      trigger: { type: "cron", cronExpression: "0 * * * *", timezone: "Asia/Shanghai" },
+      policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 5, dailyBudgetMinutes: 240, shadowMode: false },
+      action: { operation: "external_controller_wake", target: "runtime", arguments: { work_id: "WORK-ISSUE-REPAIR", controller_type: "chatgpt" } },
+      stopConditions: [],
+    });
+    saveSchedule(controllerHome, { ...failedWorkflow, enabled: false, consecutiveFailures: 3, pausedReason: "Maximum consecutive failures reached." });
+    const completedWorkflow = createSchedule(controllerHome, {
+      requestId: "console-completed-workflow",
+      repoId: registeredRepository!.repoId,
+      name: "有限任务",
+      enabled: false,
+      trigger: { type: "interval", everyMinutes: 180 },
+      policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 10, dailyBudgetMinutes: 240, shadowMode: false },
+      action: { operation: "external_controller_wake", target: "runtime", arguments: { work_id: "WORK-DONE", controller_type: "chatgpt" } },
+      stopConditions: ["work_terminal"],
+    });
+    saveSchedule(controllerHome, { ...completedWorkflow, pausedReason: "Work WORK-DONE is terminal (completed)." });
+    const consoleStateSemantics = await fetch(new URL("/api/console/automations", handle.url), { headers }).then((response) => response.json());
+    const projectedFailedWorkflow = consoleStateSemantics.automations.find((automation: { name: string }) => automation.name === "Forge 新问题自动修复 Workflow");
+    expect(projectedFailedWorkflow).toMatchObject({ status: "attention", schedule: "每小时整点", attentionMessage: "连续执行失败达到上限，任务已自动暂停。", pausedReason: "连续执行失败达到上限，已自动暂停。修复问题后可以恢复任务。", actions: ["resume"] });
+    const projectedCompletedWorkflow = consoleStateSemantics.automations.find((automation: { name: string }) => automation.name === "有限任务");
+    expect(projectedCompletedWorkflow).toMatchObject({ status: "completed", pausedReason: "关联工作已经完成，这个自动任务不会再触发。", actions: [] });
+    expect(consoleStateSemantics.summary.completed).toBeGreaterThanOrEqual(1);
+
     const memory = await fetch(new URL("/api/assistant/memory", handle.url), {
       method: "POST",
       headers,

@@ -25,7 +25,7 @@ export interface ConsoleAutomationView {
   repositoryName: string;
   name: string;
   summary?: string;
-  status: 'enabled' | 'paused' | 'attention' | 'disabled';
+  status: 'enabled' | 'paused' | 'attention' | 'completed' | 'disabled';
   schedule: string;
   timezone?: string;
   delivery?: string;
@@ -46,24 +46,34 @@ export interface ConsoleAutomationView {
   lastResult?: string;
   nextRunHint?: string;
   pausedReason?: string;
+  attentionMessage?: string;
   history: ConsoleAutomationHistoryView[];
   actions: Array<'run' | 'pause' | 'resume'>;
 }
 
-function dailyCronLabel(expression?: string): string | undefined {
-  const match = /^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+\*$/.exec(expression?.trim() ?? '');
-  if (!match) return undefined;
-  const minute = Number(match[1]);
-  const hour = Number(match[2]);
-  if (minute > 59 || hour > 23) return undefined;
-  return `每天 ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+function cronLabel(expression?: string): string | undefined {
+  const value = expression?.trim() ?? '';
+  const daily = /^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+\*$/.exec(value);
+  if (daily) {
+    const minute = Number(daily[1]);
+    const hour = Number(daily[2]);
+    if (minute <= 59 && hour <= 23) return `每天 ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  }
+  const hourly = /^(\d{1,2})\s+\*\s+\*\s+\*\s+\*$/.exec(value);
+  if (hourly) {
+    const minute = Number(hourly[1]);
+    if (minute <= 59) return minute === 0 ? '每小时整点' : `每小时 ${String(minute).padStart(2, '0')} 分`;
+  }
+  const everyMinutes = /^\*\/(\d{1,2})\s+\*\s+\*\s+\*\s+\*$/.exec(value);
+  if (everyMinutes && Number(everyMinutes[1]) > 0) return `每 ${Number(everyMinutes[1])} 分钟`;
+  return undefined;
 }
 
 function triggerLabel(schedule: RepositorySchedule): string {
   const trigger = schedule.trigger;
   switch (trigger.type) {
     case 'interval': return `每 ${trigger.everyMinutes ?? '?'} 分钟`;
-    case 'cron': return dailyCronLabel(trigger.cronExpression) ?? `Cron ${trigger.cronExpression ?? '—'}`;
+    case 'cron': return cronLabel(trigger.cronExpression) ?? '自定义时间计划';
     case 'calendar': return trigger.calendarAt ? `单次 · ${trigger.calendarAt}` : '指定时间';
     case 'condition': return `条件满足时 · ${trigger.condition?.kind ?? 'condition'}`;
     case 'repository-event': return `仓库事件 · ${trigger.eventName ?? 'repository event'}`;
@@ -83,8 +93,8 @@ function nextScheduleHint(schedule: RepositorySchedule): string | undefined {
       return next > Date.now() ? new Date(next).toISOString() : '下一次调度周期';
     }
   }
-  if (schedule.trigger.type === 'cron') return dailyCronLabel(schedule.trigger.cronExpression) ?? '由 Scheduler 计算';
-  if (schedule.trigger.type === 'condition') return '条件满足时';
+  if (schedule.trigger.type === 'cron') return cronLabel(schedule.trigger.cronExpression) ?? '按自定义时间计划';
+  if (schedule.trigger.type === 'condition') return '等待条件满足';
   return undefined;
 }
 
@@ -207,17 +217,34 @@ function scheduleNeedsAttention(schedule: RepositorySchedule): boolean {
   return Boolean(schedule.pausedReason && /(?:fail|error|auth|login|block|attention|maximum)/i.test(schedule.pausedReason));
 }
 
-function scheduleStatus(schedule: RepositorySchedule): ConsoleAutomationView['status'] {
+function scheduleStatus(schedule: RepositorySchedule, workStatus?: string): ConsoleAutomationView['status'] {
+  if (workStatus === 'completed' || /is terminal \(completed\)/i.test(schedule.pausedReason ?? '')) return 'completed';
+  if (workStatus === 'failed') return 'attention';
   if (schedule.enabled) return scheduleNeedsAttention(schedule) ? 'attention' : 'enabled';
   return scheduleNeedsAttention(schedule) ? 'attention' : 'paused';
 }
 
-function workBinding(controllerHome: string, repoId: string, schedule: RepositorySchedule): { id?: string; objective?: string } {
+function workBinding(controllerHome: string, repoId: string, schedule: RepositorySchedule): { id?: string; objective?: string; status?: string } {
   const value = schedule.action.arguments?.work_id;
   const workId = typeof value === 'string' && value.trim() ? value.trim() : undefined;
   if (!workId) return {};
   const work = getWorkContract({ controllerHome, repoId }, workId);
-  return { id: workId, objective: work?.objective };
+  return { id: workId, objective: work?.objective, status: work?.status };
+}
+
+function displayPauseReason(schedule: RepositorySchedule, workStatus?: string): string | undefined {
+  if (workStatus === 'completed' || /is terminal \(completed\)/i.test(schedule.pausedReason ?? '')) return '关联工作已经完成，这个自动任务不会再触发。';
+  if (schedule.lastObservationStatus === 'auth_required') return '目标登录状态已失效，完成重新登录后即可恢复。';
+  if (schedule.consecutiveFailures >= schedule.policy.maxFailures || /maximum consecutive failures/i.test(schedule.pausedReason ?? '')) return '连续执行失败达到上限，已自动暂停。修复问题后可以恢复任务。';
+  if (/canary completed/i.test(schedule.pausedReason ?? '')) return '验收任务已经完成。';
+  return schedule.pausedReason;
+}
+
+function attentionMessage(schedule: RepositorySchedule, workStatus?: string): string | undefined {
+  if (schedule.lastObservationStatus === 'auth_required') return '需要重新登录后才能继续自动执行。';
+  if (workStatus === 'failed') return '关联工作执行失败，需要检查失败原因后再恢复。';
+  if (schedule.consecutiveFailures >= schedule.policy.maxFailures) return '连续执行失败达到上限，任务已自动暂停。';
+  return undefined;
 }
 
 function policySummary(schedule: RepositorySchedule): string {
@@ -245,7 +272,7 @@ export function listConsoleAutomations(controllerHome: string, repositories: Rep
         repositoryName: repository.displayName,
         name: schedule.name,
         summary: scheduleSummary(mode),
-        status: scheduleStatus(schedule),
+        status: scheduleStatus(schedule, work.status),
         schedule: triggerLabel(schedule),
         timezone: schedule.trigger.timezone,
         delivery: scheduleDelivery(schedule, mode),
@@ -263,9 +290,10 @@ export function listConsoleAutomations(controllerHome: string, repositories: Rep
         lastRunAt: last?.updatedAt ?? schedule.lastTriggeredAt,
         lastResult: observationResult(schedule, last),
         nextRunHint: nextScheduleHint(schedule),
-        pausedReason: schedule.pausedReason,
+        pausedReason: displayPauseReason(schedule, work.status),
+        attentionMessage: attentionMessage(schedule, work.status),
         history: occurrenceHistory(occurrences),
-        actions: schedule.enabled ? ['run', 'pause'] : ['resume'],
+        actions: scheduleStatus(schedule, work.status) === 'completed' ? [] : schedule.enabled ? ['run', 'pause'] : ['resume'],
       });
     }
 
@@ -311,6 +339,7 @@ export function summarizeConsoleAutomations(items: ConsoleAutomationView[]) {
     total: items.length,
     enabled: items.filter((item) => item.status === 'enabled').length,
     paused: items.filter((item) => item.status === 'paused' || item.status === 'disabled').length,
+    completed: items.filter((item) => item.status === 'completed').length,
     needsAttention: items.filter((item) => item.status === 'attention').length,
   };
 }
@@ -334,7 +363,7 @@ export async function applyConsoleAutomationAction(
   if (source === 'schedule') {
     const schedule = getSchedule(controllerHome, repoId, id);
     if (action === 'pause') return saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: undefined });
-    if (action === 'resume') return saveSchedule(controllerHome, { ...schedule, enabled: true, pausedReason: undefined, consecutiveFailures: 0 });
+    if (action === 'resume') return saveSchedule(controllerHome, { ...schedule, enabled: true, pausedReason: undefined, consecutiveFailures: 0, consecutiveNoops: 0, nextEligibleAt: undefined });
     if (action === 'run') return evaluateSchedule(controllerHome, schedule, true, { source: 'manual' });
     throw new Error(`AUTOMATION_ACTION_UNSUPPORTED: schedule/${action}`);
   }

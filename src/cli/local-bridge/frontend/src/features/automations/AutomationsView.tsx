@@ -7,12 +7,13 @@ import { StatusText } from '../../components/StatusText';
 import { Button } from '../../components/Button';
 import { formatDate, compact } from '../../lib/format';
 
-type Filter = 'enabled' | 'paused' | 'attention' | 'all';
+type Filter = 'enabled' | 'paused' | 'attention' | 'completed' | 'all';
 
 function statusLabel(status: AutomationView['status']): string {
   if (status === 'enabled') return '运行中';
   if (status === 'paused') return '已暂停';
   if (status === 'attention') return '需要处理';
+  if (status === 'completed') return '已完成';
   return '已停用';
 }
 
@@ -20,6 +21,7 @@ function statusTone(status: AutomationView['status']): string {
   if (status === 'enabled') return 'success';
   if (status === 'attention') return 'danger';
   if (status === 'paused') return 'warning';
+  if (status === 'completed') return 'success';
   return 'neutral';
 }
 
@@ -50,8 +52,14 @@ function executionDetails(automation: AutomationView): Array<[string, string]> {
   if (!automation.agentModel) return [];
   return [
     ['执行模型', `${automation.agentModel} · ${reasoningLabel(automation.reasoningLevel)}推理`],
-    ['浏览器会话', tabPolicyLabel(automation.tabPolicy)],
+    ['标签页策略', tabPolicyLabel(automation.tabPolicy)],
   ];
+}
+
+function nextRunLabel(value?: string, completed = false): string {
+  if (completed) return '不会再次触发';
+  if (!value) return '等待下一次计划';
+  return Number.isFinite(Date.parse(value)) ? formatDate(value) : value;
 }
 
 function historyTone(tone: AutomationHistoryView['tone']): string {
@@ -90,24 +98,25 @@ export function AutomationsView({ data, busy, onRefresh, onAction }: {
   const observation = selected ? observationLabel(selected.observationStatus) : undefined;
 
   return <>
-    <CommandBar eyebrow="AUTOMATION" title="Automations" description="查看长期任务如何触发、当前是否正常，以及每一次实际执行发生了什么。" refreshedAt={data.automations.generatedAt} busy={busy} onRefresh={onRefresh} />
+    <CommandBar eyebrow="AUTOMATION" title="自动任务" description="查看哪些任务正在运行、何时再次执行、是否需要处理，以及最近实际发生了什么。" refreshedAt={data.automations.generatedAt} busy={busy} onRefresh={onRefresh} />
     <div className="toolbar automation-toolbar">
       <Segmented value={filter} onChange={setFilter} items={[
         { id: 'enabled', label: '运行中', count: all.filter((item) => item.status === 'enabled').length },
         { id: 'paused', label: '已暂停', count: all.filter((item) => item.status === 'paused' || item.status === 'disabled').length },
         { id: 'attention', label: '需要处理', count: all.filter((item) => item.status === 'attention').length },
+        { id: 'completed', label: '已完成', count: all.filter((item) => item.status === 'completed').length },
         { id: 'all', label: '全部', count: all.length },
       ]} />
     </div>
     <div className="split-workspace automation-layout">
       <div className="table-wrap">
         <table className="data-table automation-table">
-          <thead><tr><th>Automation</th><th>触发</th><th>行为</th><th>状态</th><th>最近结果</th></tr></thead>
+          <thead><tr><th>自动任务</th><th>触发</th><th>行为</th><th>状态</th><th>最近结果</th></tr></thead>
           <tbody>{list.map((automation) => <tr key={key(automation)} className={selected && key(selected) === key(automation) ? 'selected' : ''} onClick={() => setSelectedKey(key(automation))}>
             <td><strong>{automation.name}</strong><small>{automation.repositoryName} · {automation.modeLabel}</small></td>
             <td><span>{automation.schedule}</span><small>{automation.timezone ?? '本地时区'}</small></td>
             <td><span>{automation.delivery ?? '本地执行'}</span>{automation.targetLabel && <small>{automation.targetLabel}</small>}</td>
-            <td><StatusText label={statusLabel(automation.status)} tone={statusTone(automation.status)} />{automation.live !== undefined && <small>{automation.live ? 'Live' : 'Shadow'}</small>}</td>
+            <td><StatusText label={statusLabel(automation.status)} tone={statusTone(automation.status)} />{automation.live !== undefined && <small>{automation.live ? '实际执行' : '仅预演'}</small>}</td>
             <td><span>{compact(automation.lastResult, 26) || '—'}</span><small>{formatDate(automation.lastRunAt)}</small></td>
           </tr>)}</tbody>
         </table>
@@ -116,25 +125,26 @@ export function AutomationsView({ data, busy, onRefresh, onAction }: {
       <DetailPane title={selected?.name} subtitle={selected?.summary} empty="选择一个 Automation 查看配置与执行历史">
         {selected && <>
           <div className="automation-detail-status">
-            <div><span className="eyebrow">CURRENT STATE</span><StatusText label={statusLabel(selected.status)} tone={statusTone(selected.status)} /></div>
+            <div><span className="eyebrow">当前状态</span><StatusText label={statusLabel(selected.status)} tone={statusTone(selected.status)} /></div>
             <div className="automation-result"><strong>{selected.lastResult ?? '尚未执行'}</strong><small>{formatDate(selected.observationAt ?? selected.lastRunAt)}</small></div>
           </div>
           <DefinitionList items={[
             ['类型', selected.modeLabel],
             ['触发计划', `${selected.schedule}${selected.timezone ? ` · ${selected.timezone}` : ''}`],
             ['触发后的行为', selected.delivery ?? '本地执行'],
+            ['下次执行', nextRunLabel(selected.nextRunHint, selected.status === 'completed')],
             ['观察目标', selected.targetLabel ?? '—'],
             ['观察状态', observation ?? '—'],
-            ['绑定 Work', selected.boundWorkObjective ? compact(selected.boundWorkObjective, 96) : selected.boundWorkId ?? '—'],
-            ['运行模式', selected.live === undefined ? '—' : selected.live ? 'Live · 会产生实际动作' : 'Shadow · 只记录预演'],
+            ['关联工作', selected.boundWorkObjective ? compact(selected.boundWorkObjective, 96) : selected.boundWorkId ?? '—'],
+            ['执行方式', selected.live === undefined ? '—' : selected.live ? '实际执行' : '仅预演'],
             ...executionDetails(selected),
-            ['运行策略', selected.policySummary ?? '—'],
           ]} />
-          {selected.pausedReason && <div className="detail-callout warning"><strong>暂停原因</strong><p>{selected.pausedReason}</p></div>}
-          <div className="detail-button-row">{selected.actions.map((action) => <Button key={action} disabled={busy} className={action === 'pause' ? 'danger-text' : ''} onClick={() => void onAction(selected, action)}>{action === 'run' ? '立即运行' : action === 'pause' ? '暂停任务' : '开启任务'}</Button>)}</div>
-          <div className="automation-section-head"><div><span className="eyebrow">EXECUTION HISTORY</span><h3>最近执行</h3></div><span>{selected.history.length} 条</span></div>
+          {selected.attentionMessage && <div className="detail-callout danger"><strong>需要处理</strong><p>{selected.attentionMessage}</p></div>}
+          {!selected.attentionMessage && selected.pausedReason && <div className={`detail-callout ${selected.status === 'completed' ? 'success' : 'warning'}`}><strong>{selected.status === 'completed' ? '任务已完成' : '暂停原因'}</strong><p>{selected.pausedReason}</p></div>}
+          <div className="detail-button-row">{selected.actions.map((action) => <Button key={action} disabled={busy} className={action === 'pause' ? 'danger-text' : ''} onClick={() => void onAction(selected, action)}>{action === 'run' ? '立即运行' : action === 'pause' ? '暂停任务' : '恢复任务'}</Button>)}</div>
+          <div className="automation-section-head"><div><span className="eyebrow">执行记录</span><h3>最近执行</h3></div><span>{selected.history.length} 条</span></div>
           <History items={selected.history} />
-          <details className="advanced automation-advanced"><summary>技术信息</summary><pre>{JSON.stringify({ scheduleId: selected.source === 'schedule' ? selected.id : undefined, workId: selected.boundWorkId, source: selected.source, next: selected.nextRunHint, failureCount: selected.failureCount }, null, 2)}</pre></details>
+          <details className="advanced automation-advanced"><summary>技术信息</summary><pre>{JSON.stringify({ scheduleId: selected.source === 'schedule' ? selected.id : undefined, workId: selected.boundWorkId, source: selected.source, next: selected.nextRunHint, failureCount: selected.failureCount, policy: selected.policySummary }, null, 2)}</pre></details>
           <p className="detail-note">这里只展示配置、状态与执行摘要；邮件正文、浏览器 Cookie、登录凭据和 continuation prompt 不会复制到控制台。</p>
         </>}
       </DetailPane>

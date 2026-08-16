@@ -117,10 +117,12 @@ export function OverviewView({ data, busy, onRefresh }: { data: ConsoleData; bus
     ? `${portfolio.summary.open} open · ${portfolio.summary.needsAttention} need attention`
     : `${portfolio.summary.open} open · no attention needed`;
   const automationSummary = automations.needsAttention
-    ? `${automations.enabled} enabled · ${automations.needsAttention} need attention`
+    ? `${automations.enabled} 个运行中 · ${automations.needsAttention} 个需要处理`
     : automations.paused
-      ? `${automations.enabled} enabled · ${automations.paused} paused`
-      : `${automations.enabled} enabled · healthy`;
+      ? `${automations.enabled} 个运行中 · ${automations.paused} 个已暂停`
+      : (automations.completed ?? 0) > 0
+        ? `${automations.enabled} 个运行中 · ${automations.completed} 个已完成`
+        : `${automations.enabled} 个运行中 · 状态正常`;
   const capabilitySummary = (plugins.needsAttention ?? 0) > 0
     ? `${plugins.ready ?? 0} / ${capabilityTotal} ready · ${plugins.needsAttention} need attention`
     : `${plugins.ready ?? 0} / ${capabilityTotal} ready`;
