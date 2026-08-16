@@ -46,10 +46,10 @@
     {
       "id": "figma",
       "name": "Forge Figma Bridge",
-      "version": "0.1.1",
-      "description": "Direct Figma Plugin API bridge for typed Forge canvas inspection and editing.",
+      "version": "0.3.0",
+      "description": "Direct Figma Plugin API bridge for typed canvas inspection, editing and native review capture.",
       "repository": "https://github.com/moretea-labs/forge-figma-bridge.git",
-      "ref": "v0.1.1",
+      "ref": "v0.3.0",
       "installer": "forge-plugin-install.mjs",
       "platforms": [
         "darwin"

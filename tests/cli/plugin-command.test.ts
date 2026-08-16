@@ -8,7 +8,7 @@ describe('official plugin catalog', () => {
     const registry = JSON.parse(readFileSync(resolve(import.meta.dir, '../../assets/plugin-registry.v1.json'), 'utf8')) as { plugins: Array<Record<string, unknown>> };
     const figma = registry.plugins.find((entry) => entry.id === 'figma');
     expect(figma).toMatchObject({
-      id: 'figma', version: '0.1.1', ref: 'v0.1.1', installer: 'forge-plugin-install.mjs',
+      id: 'figma', version: '0.3.0', ref: 'v0.3.0', installer: 'forge-plugin-install.mjs',
       repository: 'https://github.com/moretea-labs/forge-figma-bridge.git', platforms: ['darwin'],
     });
   });
