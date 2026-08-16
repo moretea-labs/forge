@@ -227,7 +227,7 @@ function mockAttachPlaywright(
   } as never;
 }
 
-function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', options: { javaScriptEnabled?: boolean; targetTitleMetadataFails?: boolean; transitionalNewTabReads?: number } = {}) {
+function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', options: { javaScriptEnabled?: boolean; targetTitleMetadataFails?: boolean; transitionalNewTabReads?: number; transitionalUrl?: string } = {}) {
   const javaScriptEnabled = options.javaScriptEnabled !== false;
   const separator = '\x1e';
   const userTab = { id: '501', url: 'https://example.com/user-work', title: 'User Work' };
@@ -318,8 +318,8 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
           if (!tabId || !entry) throw new Error('missing owned tab');
           events.targetMetadataReads += 1;
           if (events.targetMetadataReads <= (options.transitionalNewTabReads ?? 0)) {
-            const newTabUrl = product === 'chrome' ? 'chrome://newtab/' : 'vivaldi://newtab/';
-            return metadata(tabId, newTabUrl, '', events.activeTabId === tabId, false);
+            const transitionalUrl = options.transitionalUrl ?? (product === 'chrome' ? 'chrome://newtab/' : 'vivaldi://newtab/');
+            return metadata(tabId, transitionalUrl, '', events.activeTabId === tabId, false);
           }
           return metadata(tabId, entry.url, entry.title, events.activeTabId === tabId, false);
         }
@@ -848,6 +848,35 @@ describe('browser plugin', () => {
 
     expect((opened.session as Record<string, unknown>).url).toBe('https://example.com/settled');
     expect(native.events.targetMetadataReads).toBeGreaterThanOrEqual(2);
+    expect(native.events.activeTabId).toBe('501');
+  });
+
+  test('native open_page treats other Chrome internal URLs as transitional before final HTTPS identity', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome', {
+      transitionalNewTabReads: 2,
+      transitionalUrl: 'chrome-error://chromewebdata/',
+    });
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const opened = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-native-transient-internal-url', args: { url: 'https://chatgpt.com/' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect((opened.session as Record<string, unknown>).url).toBe('https://chatgpt.com/');
+    expect(native.events.targetMetadataReads).toBeGreaterThanOrEqual(3);
     expect(native.events.activeTabId).toBe('501');
   });
 

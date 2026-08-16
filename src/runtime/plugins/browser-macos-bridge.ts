@@ -791,10 +791,13 @@ export class MacOsAppleEventsPage {
       if (this.targetRef) {
         try {
           const metadata = await this.refreshMetadata();
-          const transitionalUrl = !metadata.url
-            || metadata.url === 'about:blank'
-            || metadata.url === 'chrome://newtab/'
-            || metadata.url === 'vivaldi://newtab/';
+          // Browser actions only admit HTTP(S) targets. Native Chrome/Vivaldi can
+          // expose several internal URLs (new-tab, error/interstitial, extension
+          // bootstrap pages) while navigation is still settling. Treat every
+          // non-HTTP(S) metadata URL as transitional here; the adapter still
+          // applies the strict final HTTP(S) URL validator before persisting a
+          // session, so this does not widen the accepted navigation surface.
+          const transitionalUrl = !/^https?:\/\//i.test(metadata.url ?? '');
           if (transitionalUrl) {
             await new Promise((resolve) => setTimeout(resolve, 100));
             continue;
@@ -812,7 +815,7 @@ export class MacOsAppleEventsPage {
       } catch (error) {
         if (error instanceof AssistantPluginError && error.code === 'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED') {
           const metadata = await this.refreshMetadata();
-          if (metadata.url && metadata.url !== 'about:blank' && metadata.url !== 'chrome://newtab/' && metadata.url !== 'vivaldi://newtab/') return;
+          if (/^https?:\/\//i.test(metadata.url ?? '')) return;
         }
         // Navigation can transiently invalidate the current JavaScript execution context.
       }
