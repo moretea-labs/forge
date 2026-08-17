@@ -296,6 +296,24 @@ function probeStatus(repoRoot?: string) {
   };
 }
 
+function unprobedAgentDeviceStatus(repoRoot?: string): ReturnType<typeof probeStatus> {
+  const backendMode = configuredAgentDeviceBackendMode();
+  const typedClient = typedAgentDeviceIdentity({ repoRoot });
+  return {
+    available: false,
+    expectedVersion: IOS_AGENT_DEVICE_VERSION,
+    supportedVersionPolicy: '>=0.19.3 <0.21.0 with reviewed command contract',
+    detectedVersion: undefined,
+    executable: executable(repoRoot),
+    resolvedExecutable: resolvedExecutable(repoRoot),
+    platform: hooks.platform(),
+    capabilityProfile: detectAgentDeviceCapabilities('', {}),
+    backendMode,
+    typedClient: { ...typedClient, cliVersion: undefined, cliVersionCompatible: false },
+    reason: 'agent-device readiness has not been probed by an explicit asynchronous action in this runtime yet.',
+  };
+}
+
 export function iosAgentDeviceStatus(options: { forceRefresh?: boolean; repoRoot?: string } = {}) {
   const nowMs = hooks.now().getTime();
   const cacheKey = statusProbeCacheKey(options.repoRoot);
@@ -303,13 +321,91 @@ export function iosAgentDeviceStatus(options: { forceRefresh?: boolean; repoRoot
     && statusCache
     && statusCache.cacheKey === cacheKey
     && statusCache.expiresAt > nowMs) return statusCache.value;
-  const value = probeStatus(options.repoRoot);
+  if (hooks.platform() !== 'darwin') return probeStatus(options.repoRoot);
+  return unprobedAgentDeviceStatus(options.repoRoot);
+}
+
+async function probeStatusAsync(input: Pick<AssistantPluginActionExecutionInput, 'repoRoot' | 'signal'>): Promise<ReturnType<typeof probeStatus>> {
+  const repoRoot = input.repoRoot;
+  const backendMode = configuredAgentDeviceBackendMode();
+  const typedClient = typedAgentDeviceIdentity({ repoRoot });
+  if (hooks.platform() !== 'darwin') return probeStatus(repoRoot);
+  const runtimeEnv = withTrustedNodePath({ ...process.env });
+  const result = await hooks.runCommandAsync(executable(repoRoot), ['--version'], {
+    cwd: repoRoot,
+    env: runtimeEnv,
+    timeoutMs: 3_000,
+    signal: input.signal,
+  });
+  const detectedVersion = result.ok ? result.stdout.trim() : undefined;
+  const help: AgentDeviceHelpContract = {};
+  if (result.ok && detectedVersion) {
+    const rootHelp = await hooks.runCommandAsync(executable(repoRoot), ['help'], {
+      cwd: repoRoot, env: runtimeEnv, timeoutMs: 3_000, signal: input.signal,
+    });
+    if (rootHelp.ok) help.root = rootHelp.stdout || rootHelp.stderr;
+    for (const topic of ['snapshot', 'press', 'fill', 'batch', 'keyboard'] as const) {
+      const topicResult = await hooks.runCommandAsync(executable(repoRoot), ['help', topic], {
+        cwd: repoRoot, env: runtimeEnv, timeoutMs: 3_000, signal: input.signal,
+      });
+      if (topicResult.ok) help[topic] = topicResult.stdout || topicResult.stderr;
+    }
+  }
+  const capabilityProfile = detectAgentDeviceCapabilities(detectedVersion ?? '', help);
+  const typedClientWithCompatibility = {
+    ...typedClient,
+    cliVersion: detectedVersion,
+    cliVersionCompatible: agentDeviceProviderVersionsMatch(typedClient.version, detectedVersion),
+  };
+  const available = result.ok
+    && capabilityProfile.versionSupported
+    && Boolean(capabilityProfile.snapshot.interactiveFlag)
+    && capabilityProfile.press.supported
+    && capabilityProfile.fill.supported
+    && capabilityProfile.batch.supported;
+  return {
+    available,
+    expectedVersion: IOS_AGENT_DEVICE_VERSION,
+    supportedVersionPolicy: '>=0.19.3 <0.21.0 with reviewed command contract',
+    detectedVersion,
+    executable: executable(repoRoot),
+    resolvedExecutable: resolvedExecutable(repoRoot),
+    platform: hooks.platform(),
+    capabilityProfile,
+    backendMode,
+    typedClient: typedClientWithCompatibility,
+    reason: !result.ok
+      ? (result.stderr || result.stdout || 'agent-device is not installed.')
+      : !capabilityProfile.versionSupported
+        ? `Unsupported agent-device version ${detectedVersion || 'unknown'}; expected the reviewed >=0.19.3 <0.21.0 contract.`
+        : !available
+          ? 'The installed agent-device command contract is missing required snapshot, press, fill, or batch capabilities.'
+          : undefined,
+  };
+}
+
+async function iosAgentDeviceActionStatus(input: AssistantPluginActionExecutionInput): Promise<ReturnType<typeof probeStatus>> {
+  const nowMs = hooks.now().getTime();
+  const cacheKey = statusProbeCacheKey(input.repoRoot);
+  if (statusCache && statusCache.cacheKey === cacheKey && statusCache.expiresAt > nowMs) return statusCache.value;
+  const value = await probeStatusAsync(input);
   statusCache = { cacheKey, expiresAt: nowMs + STATUS_TTL_MS, value };
   return value;
 }
 
 function requireDependency(repoRoot?: string): ReturnType<typeof probeStatus> {
   const status = iosAgentDeviceStatus({ repoRoot });
+  if (!status.available) {
+    throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', status.reason ?? 'A compatible agent-device provider is unavailable.', {
+      retryable: false,
+      details: status,
+    });
+  }
+  return status;
+}
+
+async function requireDependencyAsync(input: AssistantPluginActionExecutionInput): Promise<ReturnType<typeof probeStatus>> {
+  const status = await iosAgentDeviceActionStatus(input);
   if (!status.available) {
     throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', status.reason ?? 'A compatible agent-device provider is unavailable.', {
       retryable: false,
@@ -2136,7 +2232,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
   if (input.deadlineAtMs === undefined && typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)) {
     input = { ...input, deadlineAtMs: Date.now() + Math.max(1, Math.trunc(input.timeoutMs)) };
   }
-  if (input.actionId === 'agent_device_status') return { provider: 'agent-device', ...iosAgentDeviceStatus({ repoRoot: input.repoRoot }) };
+  if (input.actionId === 'agent_device_status') return { provider: 'agent-device', ...await iosAgentDeviceActionStatus(input) };
   if (input.actionId === 'agent_device_close') {
     const interactionId = requireString(input.args.interaction_id, 'interaction_id');
     const existing = readAgentDeviceInteraction(input.repoRoot, interactionId);
@@ -2144,7 +2240,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       return { provider: 'agent-device', interaction: existing, alreadyClosed: true };
     }
   }
-  const dependency = requireDependency(input.repoRoot);
+  const dependency = await requireDependencyAsync(input);
 
   if (input.actionId === 'agent_device_jd_search') return executeJdSearch(input);
 

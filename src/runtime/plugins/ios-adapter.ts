@@ -13,6 +13,7 @@ import {
   iosSimulatorsList,
   iosSmokeReview,
   iosXcodeStatus,
+  iosXcodeStatusSnapshot,
 } from '../safe-tooling/ios-development';
 import type {
   AssistantPluginActionDescriptor,
@@ -62,7 +63,7 @@ function controllerArtifactRoot(input: AssistantPluginActionExecutionInput): str
 }
 
 function userFacingIosStatus(): Record<string, unknown> {
-  const xcode = iosXcodeStatus();
+  const xcode = iosXcodeStatusSnapshot().status;
   const discovery = iosProjectDiscover({
     repoId: 'probe',
     canonicalRoot: process.cwd(),
@@ -87,7 +88,8 @@ function userFacingIosStatus(): Record<string, unknown> {
 }
 
 function health(repoRoot: string): AssistantPluginHealth {
-  const xcode = iosXcodeStatus();
+  const xcodeSnapshot = iosXcodeStatusSnapshot();
+  const xcode = xcodeSnapshot.status;
   const discovery = iosProjectDiscover({
     repoId: 'probe',
     canonicalRoot: repoRoot,
@@ -98,14 +100,15 @@ function health(repoRoot: string): AssistantPluginHealth {
   const toolingReady = platformOk && Boolean(xcode && 'ready' in xcode && xcode.ready);
   const warnings: string[] = [];
   if (!platformOk) warnings.push('iOS plugin requires macOS with Xcode and Simulator.');
-  if (platformOk && !toolingReady) warnings.push('Xcode/simctl is not fully ready on this host.');
+  if (platformOk && !xcodeSnapshot.probed) warnings.push('Xcode/simctl readiness has not been explicitly probed in this runtime yet.');
+  else if (platformOk && !toolingReady) warnings.push('Xcode/simctl is not fully ready on this host.');
   if (!discovery.ready) warnings.push('No .xcworkspace/.xcodeproj/Package.swift discovered in this repository yet.');
   const status = userFacingStatusFrom(toolingReady, discovery.ready, Boolean(xcode && 'simctlAvailable' in xcode && xcode.simctlAvailable));
   return {
     state: !platformOk ? 'disabled' : toolingReady ? 'ready' : 'degraded',
     checkedAt: now(),
     ready: toolingReady,
-    probed: true,
+    probed: xcodeSnapshot.probed,
     errors: [],
     warnings,
     details: {
@@ -119,6 +122,8 @@ function health(repoRoot: string): AssistantPluginHealth {
         xcodeSelectPath: 'xcodeSelectPath' in xcode ? xcode.xcodeSelectPath : undefined,
         xcodebuildVersion: 'xcodebuildVersion' in xcode ? xcode.xcodebuildVersion : undefined,
         simctlAvailable: 'simctlAvailable' in xcode ? xcode.simctlAvailable : undefined,
+        probed: xcodeSnapshot.probed,
+        cached: xcodeSnapshot.cached,
       } : xcode,
       agentDevice: iosAgentDeviceStatus({ repoRoot }),
       physicalDevice: iosPhysicalDeviceStatus(),

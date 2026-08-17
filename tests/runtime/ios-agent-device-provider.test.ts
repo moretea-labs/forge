@@ -11,7 +11,11 @@ import {
   setIosAgentDeviceRuntimeHooksForTest,
 } from '../../src/runtime/plugins/ios-agent-device';
 import { readInteractionSession, writeInteractionSession } from '../../src/runtime/plugins/interaction-session';
-import { resetIosDevelopmentHooksForTest, setIosDevelopmentHooksForTest } from '../../src/runtime/safe-tooling';
+import { iosXcodeStatus, resetIosDevelopmentHooksForTest, setIosDevelopmentHooksForTest } from '../../src/runtime/safe-tooling';
+import {
+  resetIosPhysicalDeviceRuntimeHooksForTest,
+  setIosPhysicalDeviceRuntimeHooksForTest,
+} from '../../src/runtime/plugins/ios-physical-device';
 import jdHomeDepth20 from '../fixtures/ios/jd-home-depth20.json';
 import {
   resetAgentDeviceTypedProviderHooksForTest,
@@ -37,6 +41,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetIosAgentDeviceRuntimeHooksForTest();
+  resetIosPhysicalDeviceRuntimeHooksForTest();
   resetIosDevelopmentHooksForTest();
   resetAgentDeviceTypedProviderHooksForTest();
   delete process.env.FORGE_AGENT_DEVICE_EXECUTABLE;
@@ -67,6 +72,7 @@ function readyIosTooling(): void {
       return { ok: true, status: 0, stdout: '', stderr: '', command: [command, ...args] };
     },
   });
+  iosXcodeStatus();
 }
 
 function pluginInput(
@@ -106,6 +112,72 @@ function device(
 }
 
 describe('optional agent-device iOS Simulator provider', () => {
+  it('builds cold iOS manifest health without spawning host dependency probes', () => {
+    const value = fixture();
+    const xcodeCommands: string[][] = [];
+    const agentCommands: string[][] = [];
+    const physicalCommands: string[][] = [];
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        xcodeCommands.push([command, ...args]);
+        throw new Error('cold manifest must not run Xcode commands');
+      },
+    });
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        agentCommands.push([command, ...args]);
+        throw new Error('cold manifest must not run agent-device commands');
+      },
+    });
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        physicalCommands.push([command, ...args]);
+        throw new Error('cold manifest must not run CoreDevice commands');
+      },
+    });
+
+    const manifest = buildIosPluginManifest(0, undefined, value.repoRoot);
+    expect(xcodeCommands).toEqual([]);
+    expect(agentCommands).toEqual([]);
+    expect(physicalCommands).toEqual([]);
+    expect(manifest.enabled).toBe(true);
+    expect(manifest.health.probed).toBe(false);
+    expect(manifest.lifecycle.state).toBe('degraded');
+    expect(manifest.actions.map((action) => action.actionId)).toContain('physical_device_list');
+    expect(manifest.actions.map((action) => action.actionId)).toContain('agent_device_status');
+    expect((manifest.health.details?.physicalDevice as Record<string, unknown>).probed).toBe(false);
+  });
+
+  it('yields the event loop while agent-device readiness is asynchronously probed', async () => {
+    const value = fixture();
+    readyIosTooling();
+    let releaseProbe!: () => void;
+    const probeGate = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    let timerFired = false;
+    let asyncCalls = 0;
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: () => { throw new Error('agent-device action readiness must not use the sync hook'); },
+      runCommandAsync: async (command, args) => {
+        asyncCalls += 1;
+        await probeGate;
+        return { ok: false, status: 127, stdout: '', stderr: 'not found', command: [command, ...args] };
+      },
+    });
+
+    const pending = executeIosPluginAction(pluginInput(value, 'agent_device_status', {}));
+    setTimeout(() => { timerFired = true; }, 0);
+    await Bun.sleep(10);
+    expect(timerFired).toBe(true);
+    expect(asyncCalls).toBe(1);
+    releaseProbe();
+    const status = await pending;
+    expect(status.available).toBe(false);
+  });
+
   it('keeps existing iOS readiness unchanged when the optional CLI is absent', () => {
     const value = fixture();
     readyIosTooling();
@@ -579,6 +651,7 @@ describe('optional agent-device iOS Simulator provider', () => {
         return { ok: true, status: 0, stdout: success({ command: args[0] }), stderr: '', command: [command, ...args] };
       },
       runCommandAsync: async (command, args, options) => {
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
         if (args[0] !== 'press') {
           return { ok: true, status: 0, stdout: success({ command: args[0] }), stderr: '', command: [command, ...args] };
         }
@@ -633,6 +706,7 @@ describe('optional agent-device iOS Simulator provider', () => {
         return { ok: true, status: 0, stdout: success({ command: args[0] }), stderr: '', command: [command, ...args] };
       },
       runCommandAsync: async (command, args) => {
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
         if (args[0] !== 'press') {
           return { ok: true, status: 0, stdout: success({ command: args[0] }), stderr: '', command: [command, ...args] };
         }
@@ -692,6 +766,7 @@ describe('optional agent-device iOS Simulator provider', () => {
       },
       runCommandAsync: async (command, args) => {
         commands.push([command, ...args]);
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
         if (args[0] === 'press') {
           return {
             ok: false,

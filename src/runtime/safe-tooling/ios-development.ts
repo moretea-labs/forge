@@ -172,6 +172,28 @@ function probeIosXcodeStatus() {
   };
 }
 
+export function iosXcodeStatusSnapshot() {
+  const unsupported = assertDarwin();
+  if (unsupported) return { status: unsupported, probed: true, cached: false };
+  const currentMs = currentTimeMs();
+  if (xcodeStatusCache && xcodeStatusCache.expiresAt > currentMs) {
+    return { status: xcodeStatusCache.value, probed: true, cached: true };
+  }
+  return {
+    status: {
+      ready: false,
+      platform: platform(),
+      simctlAvailable: false,
+      problems: [{
+        code: 'XCODE_STATUS_NOT_PROBED',
+        message: 'Xcode readiness has not been probed asynchronously or explicitly in this runtime yet.',
+      }],
+    },
+    probed: false,
+    cached: false,
+  };
+}
+
 export function iosXcodeStatus(options: { forceRefresh?: boolean } = {}) {
   const currentMs = currentTimeMs();
   if (!options.forceRefresh && xcodeStatusCache && xcodeStatusCache.expiresAt > currentMs) {

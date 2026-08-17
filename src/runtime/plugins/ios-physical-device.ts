@@ -181,6 +181,7 @@ interface CoreDeviceStatus {
   coreDeviceReady: boolean;
   devicectlVersion?: string;
   reason?: string;
+  probed?: boolean;
 }
 
 type TimingStages = Record<string, { ms: number; cached?: boolean }>;
@@ -638,6 +639,7 @@ function physicalDeviceStatusFromResult(result: CommandResult, platform: NodeJS.
     coreDeviceReady: result.ok,
     devicectlVersion: result.ok ? result.stdout.trim() : undefined,
     reason: result.ok ? undefined : (result.stderr || result.stdout || 'xcrun devicectl is unavailable.'),
+    probed: true,
   };
 }
 
@@ -650,14 +652,18 @@ export function iosPhysicalDeviceStatus(): CoreDeviceStatus {
       platform,
       coreDeviceReady: false,
       reason: 'Physical iOS device support requires macOS and Xcode.',
+      probed: true,
     };
   }
-  const status = physicalDeviceStatusFromResult(
-    hooks.runCommand('xcrun', ['devicectl', '--version'], { timeoutMs: 5_000 }),
+  const cached = coreDeviceReadyCache;
+  if (cached && hooks.now().getTime() - cached.checkedAtMs <= CORE_DEVICE_READY_CACHE_MS) return cached.status;
+  return {
+    available: false,
     platform,
-  );
-  coreDeviceReadyCache = status.coreDeviceReady ? { checkedAtMs: hooks.now().getTime(), status } : undefined;
-  return status;
+    coreDeviceReady: false,
+    reason: 'CoreDevice readiness has not been probed by an explicit asynchronous action in this runtime yet.',
+    probed: false,
+  };
 }
 
 async function iosPhysicalDeviceActionStatus(input: AssistantPluginActionExecutionInput): Promise<CoreDeviceStatus> {
