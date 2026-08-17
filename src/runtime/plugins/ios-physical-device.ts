@@ -3,6 +3,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
+import { runBoundedProcess } from '../execution/thin-harness/async-process';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import {
@@ -40,39 +41,64 @@ interface CommandOptions {
   cwd?: string;
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }
 
 export interface IosPhysicalDeviceRuntimeHooks {
   platform(): NodeJS.Platform;
   now(): Date;
   runCommand(command: string, args: string[], options?: CommandOptions): CommandResult;
+  runCommandAsync(command: string, args: string[], options?: CommandOptions): Promise<CommandResult>;
+}
+
+function runCommandSync(command: string, args: string[], options: CommandOptions = {}): CommandResult {
+  const result = spawnSync(command, args, {
+    cwd: options.cwd,
+    env: options.env,
+    encoding: 'utf8',
+    timeout: options.timeoutMs ?? 30_000,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  return {
+    ok: result.status === 0,
+    status: result.status,
+    stdout: String(result.stdout ?? ''),
+    stderr: String(result.stderr ?? result.error?.message ?? ''),
+    command: [command, ...args],
+  };
+}
+
+async function runCommandAsync(command: string, args: string[], options: CommandOptions = {}): Promise<CommandResult> {
+  const result = await runBoundedProcess(command, args, {
+    cwd: options.cwd ?? process.cwd(),
+    env: options.env,
+    timeoutMs: options.timeoutMs ?? 30_000,
+    maxOutputBytes: 4 * 1024 * 1024,
+    signal: options.signal,
+  });
+  return {
+    ok: result.ok,
+    status: result.exitCode,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    command: [command, ...args],
+  };
 }
 
 const defaultHooks: IosPhysicalDeviceRuntimeHooks = {
   platform: () => process.platform,
   now: () => new Date(),
-  runCommand: (command, args, options = {}) => {
-    const result = spawnSync(command, args, {
-      cwd: options.cwd,
-      env: options.env,
-      encoding: 'utf8',
-      timeout: options.timeoutMs ?? 30_000,
-      maxBuffer: 4 * 1024 * 1024,
-    });
-    return {
-      ok: result.status === 0,
-      status: result.status,
-      stdout: String(result.stdout ?? ''),
-      stderr: String(result.stderr ?? result.error?.message ?? ''),
-      command: [command, ...args],
-    };
-  },
+  runCommand: runCommandSync,
+  runCommandAsync,
 };
 
 let hooks: IosPhysicalDeviceRuntimeHooks = { ...defaultHooks };
 
 export function setIosPhysicalDeviceRuntimeHooksForTest(overrides: Partial<IosPhysicalDeviceRuntimeHooks>): void {
   hooks = { ...defaultHooks, ...overrides };
+  if (overrides.runCommand && !overrides.runCommandAsync) {
+    hooks.runCommandAsync = async (command, args, options = {}) => overrides.runCommand!(command, args, options);
+  }
 }
 
 export function resetIosPhysicalDeviceRuntimeHooksForTest(): void {
@@ -239,18 +265,19 @@ function commandFailure(result: CommandResult, code: string, fallback: string): 
   });
 }
 
-function runCoreJson(
+async function runCoreJson(
   input: AssistantPluginActionExecutionInput,
   args: string[],
   code: string,
   timeoutMs = 30_000,
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   if (hooks.platform() !== 'darwin') {
     throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', 'Physical iOS device support requires macOS and Xcode CoreDevice.', { retryable: false });
   }
-  const result = hooks.runCommand('xcrun', ['devicectl', ...args, '--json-output', '-'], {
+  const result = await hooks.runCommandAsync('xcrun', ['devicectl', ...args, '--json-output', '-'], {
     cwd: input.repoRoot,
     timeoutMs,
+    signal: input.signal,
   });
   if (!result.ok) return commandFailure(result, code, 'CoreDevice command failed.');
   let parsed: Record<string, unknown> | undefined;
@@ -295,8 +322,8 @@ function capabilitySummary(names: string[]): PhysicalDeviceCapabilitySummary {
   };
 }
 
-function physicalDevices(input: AssistantPluginActionExecutionInput): PhysicalDevice[] {
-  const response = runCoreJson(input, ['list', 'devices'], 'IOS_DEVICE_LIST_FAILED');
+async function physicalDevices(input: AssistantPluginActionExecutionInput): Promise<PhysicalDevice[]> {
+  const response = await runCoreJson(input, ['list', 'devices'], 'IOS_DEVICE_LIST_FAILED');
   const result = objectValue(response.result);
   const entries = Array.isArray(result.devices) ? result.devices : [];
   return entries
@@ -342,9 +369,9 @@ function physicalDevices(input: AssistantPluginActionExecutionInput): PhysicalDe
     .map(({ reality: _reality, platform: _platform, ...entry }) => entry);
 }
 
-function selectDevice(input: AssistantPluginActionExecutionInput, selectorValue: unknown): PhysicalDevice {
+async function selectDevice(input: AssistantPluginActionExecutionInput, selectorValue: unknown): Promise<PhysicalDevice> {
   const selector = requireString(selectorValue, 'device');
-  const inventory = physicalDevices(input);
+  const inventory = await physicalDevices(input);
   const matches = inventory.filter((entry) => entry.identifier === selector || entry.udid === selector || entry.name === selector);
   if (matches.length === 0) {
     throw new AssistantPluginError('IOS_DEVICE_NOT_FOUND', 'No paired physical iPhone matches the exact device selector.', {
@@ -365,15 +392,15 @@ function selectDevice(input: AssistantPluginActionExecutionInput, selectorValue:
   return selected;
 }
 
-function physicalDeviceLockState(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): Record<string, unknown> {
-  const response = runCoreJson(input, [
+async function physicalDeviceLockState(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): Promise<Record<string, unknown>> {
+  const response = await runCoreJson(input, [
     'device', 'info', 'lockState', '--device', device.identifier,
   ], 'IOS_DEVICE_LOCK_STATE_FAILED', 30_000);
   return objectValue(response.result);
 }
 
-function requirePhysicalDeviceUnlocked(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): void {
-  const lockState = physicalDeviceLockState(input, device);
+async function requirePhysicalDeviceUnlocked(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): Promise<void> {
+  const lockState = await physicalDeviceLockState(input, device);
   if (lockState.passcodeRequired !== true) return;
   throw new AssistantPluginError(
     'IOS_DEVICE_LOCKED',
@@ -388,8 +415,8 @@ function requirePhysicalDeviceUnlocked(input: AssistantPluginActionExecutionInpu
   );
 }
 
-function physicalDisplayGeometry(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): { width: number; height: number; pointScale?: number } {
-  const displayResponse = runCoreJson(input, [
+async function physicalDisplayGeometry(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): Promise<{ width: number; height: number; pointScale?: number }> {
+  const displayResponse = await runCoreJson(input, [
     'device', 'info', 'displays', '--device', device.identifier,
   ], 'IOS_DEVICE_DISPLAY_INFO_FAILED', 30_000);
   const result = objectValue(displayResponse.result);
@@ -416,16 +443,16 @@ function physicalDisplayGeometry(input: AssistantPluginActionExecutionInput, dev
   };
 }
 
-function physicalDeviceInfo(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): Record<string, unknown> {
-  const detailsResponse = runCoreJson(input, [
+async function physicalDeviceInfo(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): Promise<Record<string, unknown>> {
+  const detailsResponse = await runCoreJson(input, [
     'device', 'info', 'details', '--device', device.identifier,
   ], 'IOS_DEVICE_DETAILS_FAILED', 60_000);
   const details = objectValue(detailsResponse.result);
   const deviceProperties = objectValue(details.deviceProperties);
   const names = capabilityNames(details.capabilities);
 
-  const lockState = physicalDeviceLockState(input, device);
-  const displayResponse = runCoreJson(input, [
+  const lockState = await physicalDeviceLockState(input, device);
+  const displayResponse = await runCoreJson(input, [
     'device', 'info', 'displays', '--device', device.identifier,
   ], 'IOS_DEVICE_DISPLAY_INFO_FAILED', 30_000);
 
@@ -440,14 +467,14 @@ function physicalDeviceInfo(input: AssistantPluginActionExecutionInput, device: 
   };
 }
 
-function installedApps(
+async function installedApps(
   input: AssistantPluginActionExecutionInput,
   device: PhysicalDevice,
   bundleId: string,
-): InstalledApp[] {
+): Promise<InstalledApp[]> {
   let response: Record<string, unknown>;
   try {
-    response = runCoreJson(input, [
+    response = await runCoreJson(input, [
       'device', 'info', 'apps', '--device', device.identifier,
       '--include-all-apps', '--bundle-id', bundleId,
     ], 'IOS_DEVICE_APPS_FAILED', 60_000);
@@ -507,6 +534,16 @@ function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal
   return { record, state };
 }
 
+function physicalDeviceStatusFromResult(result: CommandResult, platform: NodeJS.Platform) {
+  return {
+    available: result.ok,
+    platform,
+    coreDeviceReady: result.ok,
+    devicectlVersion: result.ok ? result.stdout.trim() : undefined,
+    reason: result.ok ? undefined : (result.stderr || result.stdout || 'xcrun devicectl is unavailable.'),
+  };
+}
+
 export function iosPhysicalDeviceStatus() {
   if (hooks.platform() !== 'darwin') {
     return {
@@ -516,14 +553,20 @@ export function iosPhysicalDeviceStatus() {
       reason: 'Physical iOS device support requires macOS and Xcode.',
     };
   }
-  const result = hooks.runCommand('xcrun', ['devicectl', '--version'], { timeoutMs: 5_000 });
-  return {
-    available: result.ok,
-    platform: hooks.platform(),
-    coreDeviceReady: result.ok,
-    devicectlVersion: result.ok ? result.stdout.trim() : undefined,
-    reason: result.ok ? undefined : (result.stderr || result.stdout || 'xcrun devicectl is unavailable.'),
-  };
+  return physicalDeviceStatusFromResult(
+    hooks.runCommand('xcrun', ['devicectl', '--version'], { timeoutMs: 5_000 }),
+    hooks.platform(),
+  );
+}
+
+async function iosPhysicalDeviceActionStatus(input: AssistantPluginActionExecutionInput) {
+  if (hooks.platform() !== 'darwin') return iosPhysicalDeviceStatus();
+  const result = await hooks.runCommandAsync('xcrun', ['devicectl', '--version'], {
+    cwd: input.repoRoot,
+    timeoutMs: Math.min(5_000, input.timeoutMs ?? 5_000),
+    signal: input.signal,
+  });
+  return physicalDeviceStatusFromResult(result, hooks.platform());
 }
 
 export function isIosPhysicalDeviceAction(actionId: string): boolean {
@@ -645,32 +688,32 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
 
 export async function executeIosPhysicalDeviceAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
   if (input.actionId === 'physical_device_status') {
-    return { provider: 'coredevice', ...iosPhysicalDeviceStatus() };
+    return { provider: 'coredevice', ...await iosPhysicalDeviceActionStatus(input) };
   }
-  const status = iosPhysicalDeviceStatus();
+  const status = await iosPhysicalDeviceActionStatus(input);
   if (!status.coreDeviceReady) {
     throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', status.reason ?? 'Xcode CoreDevice is unavailable.', { retryable: false, details: status });
   }
   if (input.actionId === 'physical_device_list') {
-    return { provider: 'coredevice', devices: physicalDevices(input) };
+    return { provider: 'coredevice', devices: await physicalDevices(input) };
   }
   if (input.actionId === 'physical_device_info') {
-    const selected = selectDevice(input, input.args.device);
-    return { provider: 'coredevice', ...physicalDeviceInfo(input, selected) };
+    const selected = await selectDevice(input, input.args.device);
+    return { provider: 'coredevice', ...await physicalDeviceInfo(input, selected) };
   }
   if (input.actionId === 'physical_device_apps') {
-    const selected = selectDevice(input, input.args.device);
+    const selected = await selectDevice(input, input.args.device);
     const bundleId = requireBundleId(input.args.bundle_id);
-    return { provider: 'coredevice', device: selected, apps: installedApps(input, selected, bundleId) };
+    return { provider: 'coredevice', device: selected, apps: await installedApps(input, selected, bundleId) };
   }
   if (input.actionId === 'physical_device_open') {
-    const selected = selectDevice(input, input.args.device);
+    const selected = await selectDevice(input, input.args.device);
     const bundleId = requireBundleId(input.args.bundle_id);
-    const apps = installedApps(input, selected, bundleId);
+    const apps = await installedApps(input, selected, bundleId);
     if (apps.length !== 1) {
       throw new AssistantPluginError('IOS_DEVICE_APP_NOT_INSTALLED', `The app ${bundleId} is not installed on the selected iPhone.`, { retryable: false });
     }
-    requirePhysicalDeviceUnlocked(input, selected);
+    await requirePhysicalDeviceUnlocked(input, selected);
     const selectedAliases = [selected.identifier, selected.udid];
     const conflict = listInteractionSessions(input.repoRoot, PROVIDER).find((entry) =>
       isInteractionSessionActive(entry.status) && interactionMayOwnTarget(entry, selectedAliases));
@@ -717,7 +760,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       const args = ['device', 'process', 'launch', '--device', selected.identifier];
       if (input.args.relaunch === true) args.push('--terminate-existing');
       args.push(bundleId);
-      const launch = runCoreJson(input, args, 'IOS_DEVICE_LAUNCH_FAILED', 60_000);
+      const launch = await runCoreJson(input, args, 'IOS_DEVICE_LAUNCH_FAILED', 60_000);
       appendEvent(input, interactionId, 'app_launched', { bundleId, relaunch: input.args.relaunch === true });
       const inputPrewarm = input.args.prewarm_input === true && selected.udid
         ? prewarmRemoteXpcHid({ controllerHome: input.controllerHome, deviceIdentifier: selected.identifier, udid: selected.udid })
@@ -758,8 +801,8 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
   }
 
   const { record, state } = requireRecord(input, input.actionId === 'physical_device_close');
-  const reactivateTargetApp = (): unknown => {
-    const reactivation = runCoreJson(input, [
+  const reactivateTargetApp = async (): Promise<unknown> => {
+    const reactivation = await runCoreJson(input, [
       'device', 'process', 'launch', '--device', state.device.identifier, state.bundleId,
     ], 'IOS_DEVICE_REACTIVATE_FAILED', 30_000);
     appendEvent(input, record.interactionId, 'app_reactivated', { bundleId: state.bundleId, terminateExisting: false });
@@ -769,7 +812,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
     case 'physical_device_screenshot': {
       const label = sanitize(optionalString(input.args.label) ?? 'screenshot');
       const path = join(artifactDir(input, record.interactionId), `${label}-${hooks.now().getTime()}.png`);
-      const result = runCoreJson(input, [
+      const result = await runCoreJson(input, [
         'device', 'capture', 'screenshot', '--device', state.device.identifier, '--destination', path,
       ], 'IOS_DEVICE_SCREENSHOT_FAILED', 60_000);
       if (!existsSync(path)) {
@@ -782,12 +825,12 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       };
     }
     case 'physical_device_tap': {
-      requirePhysicalDeviceUnlocked(input, state.device);
+      await requirePhysicalDeviceUnlocked(input, state.device);
       if (!state.device.udid) throw new AssistantPluginError('IOS_HID_UDID_MISSING', 'The selected iPhone does not expose a hardware UDID for RemoteXPC HID.', { retryable: false });
-      const display = physicalDisplayGeometry(input, state.device);
+      const display = await physicalDisplayGeometry(input, state.device);
       const x = requireFiniteNumber(input.args.x, 'x');
       const y = requireFiniteNumber(input.args.y, 'y');
-      const foregroundFence = reactivateTargetApp();
+      const foregroundFence = await reactivateTargetApp();
       const result = await executeRemoteXpcHidInput({
         controllerHome: input.controllerHome,
         deviceIdentifier: state.device.identifier,
@@ -800,15 +843,15 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       return { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, foregroundFence, result: bounded(result) };
     }
     case 'physical_device_swipe': {
-      requirePhysicalDeviceUnlocked(input, state.device);
+      await requirePhysicalDeviceUnlocked(input, state.device);
       if (!state.device.udid) throw new AssistantPluginError('IOS_HID_UDID_MISSING', 'The selected iPhone does not expose a hardware UDID for RemoteXPC HID.', { retryable: false });
-      const display = physicalDisplayGeometry(input, state.device);
+      const display = await physicalDisplayGeometry(input, state.device);
       const x = requireFiniteNumber(input.args.x, 'x');
       const y = requireFiniteNumber(input.args.y, 'y');
       const x2 = requireFiniteNumber(input.args.to_x, 'to_x');
       const y2 = requireFiniteNumber(input.args.to_y, 'to_y');
       const durationMs = typeof input.args.duration_ms === 'number' ? Math.trunc(input.args.duration_ms) : 250;
-      const foregroundFence = reactivateTargetApp();
+      const foregroundFence = await reactivateTargetApp();
       const result = await executeRemoteXpcHidInput({
         controllerHome: input.controllerHome,
         deviceIdentifier: state.device.identifier,
@@ -821,11 +864,11 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       return { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, foregroundFence, result: bounded(result) };
     }
     case 'physical_device_type_text': {
-      requirePhysicalDeviceUnlocked(input, state.device);
+      await requirePhysicalDeviceUnlocked(input, state.device);
       if (!state.device.udid) throw new AssistantPluginError('IOS_HID_UDID_MISSING', 'The selected iPhone does not expose a hardware UDID for RemoteXPC HID.', { retryable: false });
       const text = requireString(input.args.text, 'text');
-      const display = physicalDisplayGeometry(input, state.device);
-      const foregroundFence = reactivateTargetApp();
+      const display = await physicalDisplayGeometry(input, state.device);
+      const foregroundFence = await reactivateTargetApp();
       const result = await executeRemoteXpcHidInput({
         controllerHome: input.controllerHome,
         deviceIdentifier: state.device.identifier,

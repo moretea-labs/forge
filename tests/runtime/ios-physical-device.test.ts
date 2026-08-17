@@ -88,6 +88,40 @@ afterEach(() => {
 });
 
 describe('CoreDevice-first physical iPhone provider', () => {
+  it('yields the event loop while a CoreDevice action subprocess is pending', async () => {
+    const value = fixture();
+    let releaseList!: () => void;
+    let markListStarted!: () => void;
+    const listGate = new Promise<void>((resolve) => { releaseList = resolve; });
+    const listStarted = new Promise<void>((resolve) => { markListStarted = resolve; });
+
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommandAsync: async (command, args) => {
+        if (args[0] === 'devicectl' && args[1] === '--version') {
+          return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
+        }
+        if (args.join(' ').includes('list devices')) {
+          markListStarted();
+          await listGate;
+          return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        }
+        throw new Error(`unexpected async command: ${[command, ...args].join(' ')}`);
+      },
+    });
+
+    const action = executeIosPhysicalDeviceAction(input(value, 'physical_device_list', {}));
+    await listStarted;
+    let timerFired = false;
+    setTimeout(() => { timerFired = true; }, 0);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(timerFired).toBe(true);
+
+    releaseList();
+    const result = await action;
+    expect((result.devices as Array<{ identifier: string }>)[0]?.identifier).toBe('CORE-DEVICE-1');
+  });
+
   it('opens and screenshots without probing or creating a semantic Runner session', async () => {
     const value = fixture();
     const commands: string[][] = [];
