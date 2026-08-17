@@ -5,7 +5,8 @@ import { join } from "path";
 import { spawnSync } from "child_process";
 import { getRepository, listRepositories, registerRepository } from "../../src/cli/repositories/registry";
 import { callMcpTool } from "../../src/cli/mcp/tools";
-import { callRepositoryTool } from "../../src/cli/mcp/repository-tools";
+import { callRepositoryTool, repositoryToolDefinitions } from "../../src/cli/mcp/repository-tools";
+import { runtimeToolDefinitions } from "../../src/runtime/gateway/mcp/runtime-tools";
 import { createMcpToolContext } from "../../src/cli/mcp/multi-repository";
 import { getLocalBridgeJob, readLocalBridgeJobOutput, readLocalBridgeJobOutputSnapshot } from "../../src/cli/local-bridge/job-store";
 import { routeDurableMcpCall } from "../../src/runtime/gateway/mcp/router";
@@ -47,6 +48,46 @@ function writeLocalJobFixture(
 }
 
 describe("repository MCP command tools", () => {
+  test("documents the facade-first shortest path without widening the tool surface", () => {
+    const rhContext = runtimeToolDefinitions.find((tool) => tool.name === "rh_context");
+    const rhWork = runtimeToolDefinitions.find((tool) => tool.name === "rh_work");
+    const command = repositoryToolDefinitions.find((tool) => tool.name === "repository_command_execute");
+    expect(rhContext?.description).toContain("default repository code-discovery/read path");
+    expect(rhContext?.description).toContain("fallback-only");
+    expect(rhWork?.description).toContain("Do not create a Plan merely because work is complex");
+    expect(command?.description).toContain("Use rh_context for routine code discovery/reading");
+  });
+
+  test("guides chained shell code browsing back to one rh_context search", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-mcp-fragmented-read-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "sample-repo");
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      writeFileSync(join(repoRoot, "tracked.txt"), "marker\n");
+      git(repoRoot, ["add", "tracked.txt"]);
+      git(repoRoot, ["commit", "-m", "init"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      const response = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        command: "grep marker tracked.txt; cat tracked.txt",
+        request_id: "fragmented-read-guidance",
+      }));
+      expect(response.ok).toBe(true);
+      expect(response.guidance).toMatchObject({
+        code: "FRAGMENTED_REPOSITORY_EXPLORATION",
+        recommendedTool: "rh_context",
+        recommendedOperation: "search",
+      });
+      expect(response.suggestedOperation).toBe("rh_context");
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("git snapshot skips diff-stat subprocess when status cannot produce an unstaged diff", () => {
     const repoRoot = mkdtempSync(join(tmpdir(), "forge-git-snapshot-fast-"));
     try {

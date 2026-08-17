@@ -271,7 +271,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     detail_level: { type: 'string', enum: ['summary', 'detail'] },
     limit: { type: 'number' },
   }),
-  definition('rh_context', 'Preferred ChatGPT facade: bounded repository context and the default code retrieval router, with optional CodeGraph structural augmentation.', {
+  definition('rh_context', 'Preferred ChatGPT facade and default repository code-discovery/read path. Use one bounded search/context call before shell exploration; it combines lexical retrieval, current raw snippets, checks, and optional CodeGraph structural evidence. Shell rg/grep/sed/cat loops are fallback-only when this Context Plane is insufficient.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple worktrees.' },
     operation: { type: 'string', enum: ['list', 'get', 'search'], description: 'Defaults to get. Use search as the default code-location path when an exact file is unknown.' },
@@ -289,9 +289,9 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     work_id: { type: 'string' },
     detail_level: { type: 'string', enum: ['summary', 'detail', 'raw'], description: 'Defaults to summary; raw is still bounded.' },
   }),
-  definition('rh_work', 'Preferred ChatGPT facade: bounded planning, direct control, controller ownership, and external SuperController launch.', {
+  definition('rh_work', 'Preferred ChatGPT facade for bounded execution, optional planning, controller ownership, and external SuperController launch. Do not create a Plan merely because work is complex: gather minimum read-only context first, start explicit bounded work directly when safe, and use Plan only for real decomposition, dependency ordering, or replanning.', {
     repo_id: repoId,
-    operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'controller_claim', 'controller_release', 'controller_get_owner', 'launcher_start', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_accept_step', 'plan_supersede', 'schedule_create', 'schedule_list', 'schedule_get', 'schedule_pause', 'schedule_resume', 'schedule_trigger'], description: 'Defaults to start. Complex starts require plan_id and plan_step_id. plan_accept_step records explicit Controller semantic acceptance after machine delivery leaves a step validating. schedule_* manages generic recurring ChatGPT workflows, Work-bound continuation/browser watches, and standalone browser session keepalive.' },
+    operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'controller_claim', 'controller_release', 'controller_get_owner', 'launcher_start', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_accept_step', 'plan_supersede', 'schedule_create', 'schedule_list', 'schedule_get', 'schedule_pause', 'schedule_resume', 'schedule_trigger'], description: 'Defaults to start. Plan-bound starts require plan_id and plan_step_id, but Plan is a late semantic commitment for real decomposition/replanning rather than a universal complex-task wrapper. plan_accept_step records explicit Controller semantic acceptance after machine delivery leaves a step validating. schedule_* manages generic recurring ChatGPT workflows, Work-bound continuation/browser watches, and standalone browser session keepalive.' },
     objective: { type: 'string' },
     work_id: { type: 'string' },
     related_work_id: { type: 'string', description: 'Optional explicit existing Work ownership target for continue/extend semantics. Unrelated active Work is never inferred as a semantic target.' },

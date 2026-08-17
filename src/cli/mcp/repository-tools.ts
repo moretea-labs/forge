@@ -270,7 +270,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     cwd: { type: 'string', description: 'Optional root-relative working directory.' },
     workspace_root: { type: 'string', description: 'Absolute existing local directory used as an ephemeral execution root. Mutually exclusive with repo_id/checkout_id; does not register or initialize the directory.' },
   }, ['command'], true),
-  definition('repository_command_execute', 'Execute one repository-scoped local command through Full Access, Goal delegation, or a resumable approval request. Legacy preview-token callers remain compatible.', {
+  definition('repository_command_execute', 'Execute one real repository-scoped local command through Full Access, Goal delegation, or a resumable approval request. Use rh_context for routine code discovery/reading; shell rg/grep/sed/cat exploration is fallback-only. Legacy preview-token callers remain compatible.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
     work_id: { type: 'string', description: 'Optional durable Work identity. Workflow controllers should pass the exact claimed Work id so attribution survives transient MCP transport sessions.' },
@@ -523,6 +523,33 @@ function failure(error: unknown): RepositoryToolResult {
   return { ...result({ error: { code, message, ...(compactDetails !== undefined ? { details: compactDetails } : {}) } }), isError: true };
 }
 
+interface RepositoryExplorationGuidance {
+  code: 'FRAGMENTED_REPOSITORY_EXPLORATION';
+  recommendedTool: 'rh_context';
+  recommendedOperation: 'search';
+  message: string;
+}
+
+function fragmentedRepositoryExplorationGuidance(command: unknown): RepositoryExplorationGuidance | undefined {
+  if (typeof command !== 'string') return undefined;
+  const segments = command.split(/(?:&&|\|\||[;|])/g);
+  const readPrograms = new Set<string>();
+  let readStepCount = 0;
+  for (const segment of segments) {
+    const match = segment.trim().match(/^(?:(?:command|env)\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*(rg|grep|sed|cat|head|tail)\b/i);
+    if (!match) continue;
+    readStepCount += 1;
+    readPrograms.add(match[1]!.toLowerCase());
+  }
+  if (readStepCount < 2) return undefined;
+  return {
+    code: 'FRAGMENTED_REPOSITORY_EXPLORATION',
+    recommendedTool: 'rh_context',
+    recommendedOperation: 'search',
+    message: `Detected ${readStepCount} chained repository read steps (${[...readPrograms].join(', ')}). Prefer one bounded rh_context search/context request; keep shell search as fallback when the Context Plane is insufficient.`,
+  };
+}
+
 function compactProcessCommandPayload(input: {
   accepted?: boolean;
   mode: string;
@@ -545,6 +572,7 @@ function compactProcessCommandPayload(input: {
   /** summary (default) omits nested process / routing dumps; detail restores diagnostics. */
   detailLevel?: 'summary' | 'detail';
   includeFullProcess?: boolean;
+  guidance?: RepositoryExplorationGuidance;
 }): Record<string, unknown> {
   const output = compactCommandOutput(input.stdout, input.stderr, { ok: input.ok === true });
   const detail = input.detailLevel === 'detail' || input.includeFullProcess === true;
@@ -576,6 +604,7 @@ function compactProcessCommandPayload(input: {
       stderr: output.stderr ?? '',
       ...(output.stdoutTruncated ? { stdoutTruncated: true, stdoutBytes: output.stdoutBytes } : {}),
       ...(output.stderrTruncated ? { stderrTruncated: true, stderrBytes: output.stderrBytes } : {}),
+      ...(input.guidance ? { guidance: input.guidance, suggestedOperation: 'rh_context' } : {}),
     };
     if (completed && !ok) {
       payload.error = {
@@ -623,6 +652,7 @@ function compactProcessCommandPayload(input: {
       }
       : {}),
     durableSideEffects: effects,
+    ...(input.guidance ? { guidance: input.guidance, suggestedOperation: 'rh_context' } : {}),
     next: input.next,
     detailLevel: 'detail',
   };
@@ -1022,6 +1052,7 @@ export async function callRepositoryTool(
         });
       }
       case 'repository_command_execute': {
+        const explorationGuidance = fragmentedRepositoryExplorationGuidance(args.command);
         const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
         const { repository, executionIdentity } = target;
         if (activeWorkflowRawDefaultMergeBlocked(repository, executionIdentity.workId, args.command)) {
@@ -1147,6 +1178,7 @@ export async function callRepositoryTool(
                   stdout: processResult.stdout,
                   stderr: processResult.stderr,
                   durableSideEffects: processResult.durableSideEffects,
+                  guidance: explorationGuidance,
                   next: directWithoutHandle
                     ? processResult.reason === 'readonly_fast_path'
                       ? 'Bounded readonly execution completed without Process record / Lease / Local Job / ExecutionJob / Worker.'
