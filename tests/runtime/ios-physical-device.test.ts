@@ -757,7 +757,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const opened = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', { device: 'greyson', bundle_id: 'com.xingin.discover' }));
     const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
     await observeAndConfirmForeground(value, interactionId);
-    now = new Date('2026-08-17T08:00:16.000Z');
+    now = new Date('2026-08-17T08:00:31.000Z');
     await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_type_text', { interaction_id: interactionId, text: 'must-not-dispatch' })))
       .rejects.toMatchObject({ code: 'IOS_DEVICE_FOREGROUND_OBSERVATION_REQUIRED', retryable: true });
     expect(hidDispatched).toBe(false);
