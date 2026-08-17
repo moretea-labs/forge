@@ -1,9 +1,10 @@
 import { spawn } from 'child_process';
-import { accessSync, constants, existsSync } from 'fs';
-import { delimiter, dirname, isAbsolute, join, resolve } from 'path';
+import { existsSync } from 'fs';
+import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import type { AssistantPluginActionExecutionInput } from './types';
 import { AssistantPluginError } from './errors';
+import { resolveTrustedNodeExecutable } from '../shared/trusted-node-executable';
 
 const BRIDGE_SCHEMA_VERSION = 1;
 const MAX_REQUEST_BYTES = 1_048_576;
@@ -43,42 +44,13 @@ interface BridgeFailure {
 
 type BridgeResponse = BridgeSuccess | BridgeFailure;
 
-function isExecutable(path: string): boolean {
-  try {
-    accessSync(path, constants.X_OK);
-    return existsSync(path);
-  } catch {
-    return false;
-  }
-}
-
-function pathCandidates(env: NodeJS.ProcessEnv): string[] {
-  const candidates = [
-    env.FORGE_NODE_EXECUTABLE,
-    env.VOLTA_HOME ? join(env.VOLTA_HOME, 'bin', 'node') : undefined,
-    '/opt/homebrew/bin/node',
-    '/usr/local/bin/node',
-    '/usr/bin/node',
-  ];
-  for (const entry of (env.PATH ?? '').split(delimiter)) {
-    if (entry.trim()) candidates.push(join(entry, process.platform === 'win32' ? 'node.exe' : 'node'));
-  }
-  return candidates.filter((value): value is string => Boolean(value));
-}
-
 export function resolveBrowserBridgeNodeExecutable(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.FORGE_NODE_EXECUTABLE) {
-    const configured = isAbsolute(env.FORGE_NODE_EXECUTABLE)
-      ? env.FORGE_NODE_EXECUTABLE
-      : resolve(env.FORGE_NODE_EXECUTABLE);
-    if (isExecutable(configured)) return configured;
+  const resolution = resolveTrustedNodeExecutable(env);
+  if (resolution.executable) return resolution.executable;
+  if (resolution.configuredInvalid) {
     throw new AssistantPluginError('PLUGIN_BROWSER_NODE_UNAVAILABLE', 'The configured Browser bridge Node executable is not executable.', {
       retryable: false,
     });
-  }
-  for (const candidate of pathCandidates(env)) {
-    const absolute = isAbsolute(candidate) ? candidate : resolve(candidate);
-    if (isExecutable(absolute)) return absolute;
   }
   throw new AssistantPluginError('PLUGIN_BROWSER_NODE_UNAVAILABLE', 'Browser attach operations require a trusted Node executable, but none was found.', {
     retryable: false,

@@ -1,11 +1,12 @@
 import { randomUUID } from 'crypto';
 import { existsSync, mkdirSync, realpathSync } from 'fs';
-import { isAbsolute, join } from 'path';
+import { delimiter, dirname, isAbsolute, join } from 'path';
 import { spawnSync } from 'child_process';
 import { performance } from 'perf_hooks';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import { runBoundedProcess } from '../execution/thin-harness/async-process';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
+import { resolveTrustedNodeExecutable } from '../shared/trusted-node-executable';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import {
   interactionAutomationEngine,
@@ -197,12 +198,19 @@ function resolvedExecutable(repoRoot?: string): string {
   if (isAbsolute(configured)) {
     try { return realpathSync(configured); } catch { return configured; }
   }
-  for (const directory of (process.env.PATH ?? '').split(':').filter(Boolean)) {
+  for (const directory of (process.env.PATH ?? '').split(delimiter).filter(Boolean)) {
     const candidate = join(directory, configured);
     if (!existsSync(candidate)) continue;
     try { return realpathSync(candidate); } catch { return candidate; }
   }
   return configured;
+}
+
+function withTrustedNodePath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const node = resolveTrustedNodeExecutable(env).executable;
+  if (!node) return env;
+  const path = [dirname(node), env.PATH].filter((value): value is string => Boolean(value)).join(delimiter);
+  return { ...env, PATH: path };
 }
 
 function timestamp(): string {
@@ -243,14 +251,15 @@ function probeStatus(repoRoot?: string) {
       reason: 'agent-device iOS support requires macOS.',
     };
   }
-  const result = hooks.runCommand(executable(repoRoot), ['--version'], { cwd: repoRoot, timeoutMs: 3_000 });
+  const runtimeEnv = withTrustedNodePath({ ...process.env });
+  const result = hooks.runCommand(executable(repoRoot), ['--version'], { cwd: repoRoot, env: runtimeEnv, timeoutMs: 3_000 });
   const detectedVersion = result.ok ? result.stdout.trim() : undefined;
   const help: AgentDeviceHelpContract = {};
   if (result.ok && detectedVersion) {
-    const rootHelp = hooks.runCommand(executable(repoRoot), ['help'], { cwd: repoRoot, timeoutMs: 3_000 });
+    const rootHelp = hooks.runCommand(executable(repoRoot), ['help'], { cwd: repoRoot, env: runtimeEnv, timeoutMs: 3_000 });
     if (rootHelp.ok) help.root = rootHelp.stdout || rootHelp.stderr;
     for (const topic of ['snapshot', 'press', 'fill', 'batch', 'keyboard'] as const) {
-      const topicResult = hooks.runCommand(executable(repoRoot), ['help', topic], { cwd: repoRoot, timeoutMs: 3_000 });
+      const topicResult = hooks.runCommand(executable(repoRoot), ['help', topic], { cwd: repoRoot, env: runtimeEnv, timeoutMs: 3_000 });
       if (topicResult.ok) help[topic] = topicResult.stdout || topicResult.stderr;
     }
   }
@@ -364,7 +373,7 @@ function artifactDir(input: AssistantPluginActionExecutionInput, interactionId: 
 
 function sessionEnv(input: AssistantPluginActionExecutionInput, record: InteractionSessionRecord): NodeJS.ProcessEnv {
   const config = readSigningConfig(input, record.interactionId);
-  return {
+  return withTrustedNodePath({
     ...process.env,
     ...signingEnv(config),
     AGENT_DEVICE_STATE_DIR: stateDir(input, record.interactionId),
@@ -378,13 +387,13 @@ function sessionEnv(input: AssistantPluginActionExecutionInput, record: Interact
       process.env.FORGE_AGENT_DEVICE_DAEMON_IDLE_TIMEOUT_MS?.trim() || DEFAULT_AGENT_DEVICE_IDLE_MS,
     AGENT_DEVICE_IOS_RUNNER_IDLE_STOP_MS:
       process.env.FORGE_AGENT_DEVICE_IOS_RUNNER_IDLE_STOP_MS?.trim() || DEFAULT_AGENT_DEVICE_IDLE_MS,
-  };
+  });
 }
 
 function probeEnv(input: AssistantPluginActionExecutionInput, config?: AgentDeviceSigningConfig): NodeJS.ProcessEnv {
   const path = join(controllerRoot(input), 'interactions', 'ios-agent-device', 'probe-state');
   mkdirSync(path, { recursive: true });
-  return {
+  return withTrustedNodePath({
     ...process.env,
     ...signingEnv(config),
     AGENT_DEVICE_STATE_DIR: path,
@@ -393,7 +402,7 @@ function probeEnv(input: AssistantPluginActionExecutionInput, config?: AgentDevi
       process.env.FORGE_AGENT_DEVICE_DAEMON_IDLE_TIMEOUT_MS?.trim() || DEFAULT_AGENT_DEVICE_IDLE_MS,
     AGENT_DEVICE_IOS_RUNNER_IDLE_STOP_MS:
       process.env.FORGE_AGENT_DEVICE_IOS_RUNNER_IDLE_STOP_MS?.trim() || DEFAULT_AGENT_DEVICE_IDLE_MS,
-  };
+  });
 }
 
 function bounded(value: unknown): unknown {
