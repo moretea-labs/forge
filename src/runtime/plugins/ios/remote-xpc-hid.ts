@@ -175,7 +175,26 @@ async def main():
             rsd_services = sorted((getattr(rsd, 'peer_info', {}) or {}).get('Services', {}).keys())
             keyboard_started = time.perf_counter()
             keyboard_service = args.keyboard_service_id
-            keyboard_reused = os.path.exists(args.keyboard_state)
+            keyboard_reused = False
+            if os.path.exists(args.keyboard_state):
+                try:
+                    with open(args.keyboard_state, 'r', encoding='utf-8') as stream:
+                        keyboard_state = json.load(stream)
+                    marker_service = keyboard_state.get('serviceId') if isinstance(keyboard_state, dict) else None
+                    marker_valid = (
+                        isinstance(keyboard_state, dict)
+                        and keyboard_state.get('schemaVersion') == 1
+                        and keyboard_state.get('host') == args.host
+                        and keyboard_state.get('port') == args.port
+                        and isinstance(marker_service, int)
+                        and marker_service > 0
+                    )
+                    if not marker_valid:
+                        raise ValueError('keyboard endpoint marker does not match the active RSD endpoint')
+                    keyboard_service = int(marker_service)
+                    keyboard_reused = True
+                except Exception as error:
+                    raise RuntimeError(f'invalid keyboard endpoint marker: {type(error).__name__}: {error}') from error
             if not keyboard_reused:
                 keyboard_service = await hid.create_keyboard_service(
                     args.keyboard_service_id,
