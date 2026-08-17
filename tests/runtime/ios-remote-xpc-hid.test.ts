@@ -51,6 +51,25 @@ describe('RemoteXPC HID backend', () => {
     });
   });
 
+  it('types without requiring display geometry', async () => {
+    let observed: Record<string, unknown> | undefined;
+    setRemoteXpcHidExecutorForTest(async (input) => {
+      observed = { ...input, text: '<redacted>' };
+      return {
+        backend: 'remote-xpc-hid', reusedWorker: true,
+        endpoint: { host: 'fd00::1', port: 53194 }, result: { action: input.action },
+        timings: { workerStartupMs: 0, workerReadyMs: 0, requestMs: 40, hidMs: 36 },
+      };
+    });
+    await executeRemoteXpcHidInput({
+      controllerHome: '/controller', deviceIdentifier: 'device', udid: 'UDID',
+      action: 'type', text: 'Forge123',
+    });
+    expect(observed).toMatchObject({ action: 'type', text: '<redacted>' });
+    expect(observed).not.toHaveProperty('width');
+    expect(observed).not.toHaveProperty('height');
+  });
+
   it('rejects off-screen coordinates before dispatching to the input worker', async () => {
     let dispatched = false;
     setRemoteXpcHidExecutorForTest(async (input) => {

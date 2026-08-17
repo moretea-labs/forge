@@ -21,8 +21,8 @@ export interface RemoteXpcHidInput {
   controllerHome: string;
   deviceIdentifier: string;
   udid: string;
-  width: number;
-  height: number;
+  width?: number;
+  height?: number;
   action: 'tap' | 'swipe' | 'type';
   x?: number;
   y?: number;
@@ -536,9 +536,9 @@ async function workerRequest(worker: WorkerRecord, input: RemoteXpcHidInput): Pr
   const payload: Record<string, unknown> = {
     id,
     action: input.action,
-    width: input.width,
-    height: input.height,
   };
+  if (input.width !== undefined) payload.width = input.width;
+  if (input.height !== undefined) payload.height = input.height;
   if (input.x !== undefined) payload.x = input.x;
   if (input.y !== undefined) payload.y = input.y;
   if (input.x2 !== undefined) payload.x2 = input.x2;
@@ -572,8 +572,9 @@ async function workerRequest(worker: WorkerRecord, input: RemoteXpcHidInput): Pr
 
 function validateInput(input: RemoteXpcHidInput): void {
   if (!input.udid) throw new AssistantPluginError('IOS_HID_UDID_MISSING', 'RemoteXPC HID requires the physical iPhone hardware UDID.', { retryable: false });
-  if (!Number.isFinite(input.width) || !Number.isFinite(input.height) || input.width <= 1 || input.height <= 1) {
-    throw new AssistantPluginError('IOS_HID_DISPLAY_INVALID', 'RemoteXPC HID requires current positive display pixel dimensions.', { retryable: true });
+  const requiresDisplay = input.action === 'tap' || input.action === 'swipe';
+  if (requiresDisplay && (!Number.isFinite(input.width) || !Number.isFinite(input.height) || input.width! <= 1 || input.height! <= 1)) {
+    throw new AssistantPluginError('IOS_HID_DISPLAY_INVALID', 'RemoteXPC touch input requires current positive display pixel dimensions.', { retryable: true });
   }
   const points = input.action === 'tap'
     ? [[input.x, input.y, 'tap'] as const]
@@ -584,7 +585,7 @@ function validateInput(input: RemoteXpcHidInput): void {
     if (typeof x !== 'number' || !Number.isFinite(x) || typeof y !== 'number' || !Number.isFinite(y)) {
       throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `${label} coordinates must be finite display pixels.`, { retryable: false });
     }
-    if (x < 0 || y < 0 || x > input.width - 1 || y > input.height - 1) {
+    if (x < 0 || y < 0 || x > input.width! - 1 || y > input.height! - 1) {
       throw new AssistantPluginError('IOS_HID_COORDINATE_OUT_OF_BOUNDS', `${label} coordinates are outside the current CoreDevice display.`, {
         retryable: false,
         details: { x, y, width: input.width, height: input.height },

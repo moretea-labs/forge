@@ -688,6 +688,28 @@ async function cachedIosPhysicalDeviceActionStatus(input: AssistantPluginActionE
   return { status: await iosPhysicalDeviceActionStatus(input), cached: false };
 }
 
+function requireConfirmedPhysicalTargetActivation(
+  activation: Record<string, unknown>,
+  state: PhysicalSessionState,
+): void {
+  const launchOptions = objectValue(objectValue(activation.result).launchOptions);
+  if (launchOptions.activatedWhenStarted !== true) {
+    throw new AssistantPluginError(
+      'IOS_DEVICE_FOREGROUND_ACTIVATION_UNCONFIRMED',
+      `CoreDevice did not confirm foreground activation for ${state.bundleId}; no HID input was sent.`,
+      {
+        retryable: true,
+        details: {
+          bundleId: state.bundleId,
+          deviceIdentifier: state.device.identifier,
+          hidMutationDispatched: false,
+          launchOptions: bounded(launchOptions),
+        },
+      },
+    );
+  }
+}
+
 async function reactivatePhysicalTargetApp(
   input: AssistantPluginActionExecutionInput,
   state: PhysicalSessionState,
@@ -714,22 +736,7 @@ async function reactivatePhysicalTargetApp(
       },
     });
   }
-  const launchOptions = objectValue(objectValue(activation.result).launchOptions);
-  if (launchOptions.activatedWhenStarted !== true) {
-    throw new AssistantPluginError(
-      'IOS_DEVICE_FOREGROUND_ACTIVATION_UNCONFIRMED',
-      `CoreDevice did not confirm foreground activation for ${state.bundleId}; no HID input was sent.`,
-      {
-        retryable: true,
-        details: {
-          bundleId: state.bundleId,
-          deviceIdentifier: state.device.identifier,
-          hidMutationDispatched: false,
-          launchOptions: bounded(launchOptions),
-        },
-      },
-    );
-  }
+  requireConfirmedPhysicalTargetActivation(activation, state);
   return activation;
 }
 
@@ -949,6 +956,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       args.push(bundleId);
       const launchStartedAt = performance.now();
       const launch = await runCoreJson(input, args, 'IOS_DEVICE_LAUNCH_FAILED', 60_000);
+      requireConfirmedPhysicalTargetActivation(launch, state);
       recordTiming(timingStages, 'foregroundReactivate', launchStartedAt, false);
       const launchEventStartedAt = performance.now();
       appendEvent(input, interactionId, 'app_launched', { bundleId, relaunch: input.args.relaunch === true });
@@ -1090,10 +1098,6 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       recordTiming(timingStages, 'lockState', lockStartedAt, unlock.cached);
       if (!state.device.udid) throw new AssistantPluginError('IOS_HID_UDID_MISSING', 'The selected iPhone does not expose a hardware UDID for RemoteXPC HID.', { retryable: false });
       const text = requireString(input.args.text, 'text');
-      const displayStartedAt = performance.now();
-      const geometry = await sessionDisplayGeometry(input, state);
-      recordTiming(timingStages, 'displayInfo', displayStartedAt, geometry.cached);
-      const display = geometry.display;
       const foregroundStartedAt = performance.now();
       await reactivatePhysicalTargetApp(input, state);
       recordTiming(timingStages, 'foregroundReactivate', foregroundStartedAt, false);
@@ -1102,8 +1106,6 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         controllerHome: input.controllerHome,
         deviceIdentifier: state.device.identifier,
         udid: state.device.udid,
-        width: display.width,
-        height: display.height,
         action: 'type', text,
       });
       timingStages.hidWorkerReady = { ms: result.timings.workerStartupMs + result.timings.workerReadyMs, cached: result.reusedWorker };

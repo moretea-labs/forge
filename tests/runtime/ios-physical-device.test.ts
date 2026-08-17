@@ -122,9 +122,14 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect((result.devices as Array<{ identifier: string }>)[0]?.identifier).toBe('CORE-DEVICE-1');
   });
 
-  it('opens and screenshots without probing or creating a semantic Runner session', async () => {
+  it('opens, types, and screenshots without probing or creating a semantic Runner session', async () => {
     const value = fixture();
     const commands: string[][] = [];
+    setRemoteXpcHidExecutorForTest(async (request) => ({
+      backend: 'remote-xpc-hid', reusedWorker: true,
+      endpoint: { host: 'fd00::1', port: 53194 }, result: { action: request.action },
+      timings: { workerStartupMs: 0, workerReadyMs: 0, requestMs: 40, hidMs: 36 },
+    }));
 
     setIosPhysicalDeviceRuntimeHooksForTest({
       platform: () => 'darwin',
@@ -149,7 +154,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
           return { ok: true, status: 0, stdout: json({ passcodeRequired: false, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
         }
         if (joined.includes('device process launch')) {
-          return { ok: true, status: 0, stdout: json({ processIdentifier: 123 }), stderr: '', command: [command, ...args] };
+          return { ok: true, status: 0, stdout: json({ processIdentifier: 123, launchOptions: { activatedWhenStarted: true } }), stderr: '', command: [command, ...args] };
         }
         if (joined.includes('device capture screenshot')) {
           const destination = args[args.indexOf('--destination') + 1]!;
@@ -166,6 +171,11 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
     expect(opened.provider).toBe('coredevice');
     expect(opened.controlPlane).toMatchObject({ lifecycle: 'coredevice', observation: 'coredevice', semanticFallback: 'agent-device', runnerOwned: false });
+    const typed = await executeIosPhysicalDeviceAction(input(value, 'physical_device_type_text', {
+      interaction_id: interactionId, text: 'Forge123',
+    }));
+    expect(typed.text).toBe('<redacted>');
+    expect(commands.some((argv) => argv.join(' ').includes('device info displays'))).toBe(false);
 
     const screenshot = await executeIosPhysicalDeviceAction(input(value, 'physical_device_screenshot', {
       interaction_id: interactionId, label: 'xhs',
@@ -176,6 +186,39 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(commands.some((argv) => argv.includes('prepare'))).toBe(false);
 
     await executeIosPhysicalDeviceAction(input(value, 'physical_device_close', { interaction_id: interactionId }));
+  });
+
+  it('fails initial open when CoreDevice does not confirm foreground activation and releases the failed interaction fence', async () => {
+    const value = fixture();
+    let launchCount = 0;
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\\n', stderr: '', command: [command, ...args] };
+        const joined = args.join(' ');
+        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: '小红书', bundleIdentifier: 'com.xingin.discover' }] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: false, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device process launch')) {
+          launchCount += 1;
+          return {
+            ok: true, status: 0,
+            stdout: json({ processIdentifier: 123, launchOptions: { activatedWhenStarted: launchCount > 1 } }),
+            stderr: '', command: [command, ...args],
+          };
+        }
+        throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
+      },
+    });
+
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
+      device: 'greyson', bundle_id: 'com.xingin.discover',
+    }))).rejects.toMatchObject({ code: 'IOS_DEVICE_FOREGROUND_ACTIVATION_UNCONFIRMED', retryable: true });
+    const opened = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
+      device: 'greyson', bundle_id: 'com.xingin.discover',
+    }));
+    expect((opened.interaction as Record<string, unknown>).status).toBe('waiting_for_user');
+    expect(launchCount).toBe(2);
   });
 
   it('fails early with a retryable lock-state error instead of misclassifying CoreDevice launch failure', async () => {
@@ -274,6 +317,8 @@ describe('CoreDevice-first physical iPhone provider', () => {
     });
     expect(hidCalls[1]).toMatchObject({ action: 'swipe', x: 600, y: 2100, x2: 600, y2: 600, durationMs: 280 });
     expect(hidCalls[2]).toMatchObject({ action: 'type', text: '<redacted>' });
+    expect(hidCalls[2]).not.toHaveProperty('width');
+    expect(hidCalls[2]).not.toHaveProperty('height');
     const launches = commands.filter((argv) => argv.join(' ').includes('device process launch'));
     expect(launches).toHaveLength(4);
     expect(launches[0]).toContain('--terminate-existing');
