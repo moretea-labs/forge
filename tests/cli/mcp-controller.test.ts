@@ -1005,6 +1005,70 @@ describe("MCP controller profile", () => {
     });
   });
 
+  test("finalizes no-change Work against a concurrently advanced target without attributing unrelated paths", async () => {
+    await withController(async (repoRoot, _ctx) => {
+      const controllerHome = join(repoRoot, ".controller-home");
+      spawnSync("git", ["config", "user.email", "forge@example.com"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["config", "user.name", "Forge Test"], { cwd: repoRoot, stdio: "ignore" });
+      writeFileSync(join(repoRoot, "base.txt"), "base\n");
+      spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
+      expect(spawnSync("git", ["commit", "-m", "base"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      persistControllerAccessMode(controllerHome, "full_access", repoRoot);
+      const advanced = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", toolset: "advanced", controllerHome });
+      const started = await executionJson(advanced, "session_start", {});
+      const sessionId = String(started.session.sessionId);
+      await executionJson(advanced, "session_bind_repository", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: repository.activeCheckoutId,
+      });
+      const prepared = await executionJson(advanced, "work_prepare", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: repository.activeCheckoutId,
+        request_id: "no-change-concurrent-target",
+        objective: "Prove a no-change completion remains isolated from concurrent target commits",
+        isolation: "new_worktree",
+      });
+      expect(prepared.error).toBeUndefined();
+      const workId = String(prepared.work.workId);
+      const handle = readWorkHandle(controllerHome, repository.repoId, workId)!;
+
+      writeFileSync(join(repoRoot, "unrelated.txt"), "other work\n");
+      spawnSync("git", ["add", "unrelated.txt"], { cwd: repoRoot, stdio: "ignore" });
+      expect(spawnSync("git", ["commit", "-m", "concurrent target"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);
+      const targetRevision = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf-8" }).stdout.trim();
+
+      const finalized = await executionJson(advanced, "work_finalize", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        work_id: workId,
+        commit: false,
+        merge: false,
+        cleanup: true,
+        delete_branch: true,
+        target_branch: "main",
+        completion_outcome: "completed_no_change",
+        no_change_evidence: "The isolated Work remained clean and intentionally changed no repository files.",
+      });
+      expect(finalized.error).toBeUndefined();
+      expect(finalized).toMatchObject({
+        completed: true,
+        work: { state: "cleaned" },
+        stages: { validation: "done", commit: "skipped", merge: "skipped", branchCleanup: "done", worktreeCleanup: "done" },
+      });
+      expect(existsSync(handle.worktreePath)).toBe(false);
+      const contract = getWorkContract({ controllerHome, repoId: repository.repoId }, handle.workContractId!)!;
+      expect(contract.completionReceipt).toMatchObject({
+        targetRevision,
+        changedPaths: [],
+        delivery: { kind: "no_change", status: "integrated", reachable: true },
+      });
+      expect(getControllerSession({ controllerHome, repoId: repository.repoId }, handle.workContractId!)).toBeUndefined();
+    });
+  });
+
   test("exposes the supervised advanced surface and resumes idempotent Work by request id", async () => {
     await withController(async (repoRoot, _ctx) => {
       const controllerHome = join(repoRoot, ".controller-home");

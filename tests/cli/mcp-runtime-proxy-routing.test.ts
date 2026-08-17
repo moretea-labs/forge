@@ -9,8 +9,39 @@ import {
   mcpSessionToolSurfaceFingerprintIsCurrent,
   resolveMcpSessionCurrentFingerprint,
 } from '../../src/cli/mcp/transports/http';
+import { closeRuntimeMcpTransportResources } from '../../src/runtime/root/mcp-transport';
 
 describe('MCP canonical Runtime proxy routing', () => {
+  test('gracefully drains an in-flight Runtime request before closing sessions and forcing residual connections', async () => {
+    const events: string[] = [];
+    let releaseRequest!: () => void;
+    let releaseListener!: () => void;
+    const requestDrain = new Promise<void>((resolve) => { releaseRequest = resolve; });
+    const listenerClosed = new Promise<void>((resolve) => { releaseListener = resolve; });
+    const closing = closeRuntimeMcpTransportResources({
+      closeListener: async () => {
+        events.push('listener');
+        await listenerClosed;
+      },
+      waitForRequestDrain: async () => {
+        events.push('request-drain');
+        await requestDrain;
+      },
+      closeSessions: [async () => { events.push('session'); }],
+      forceCloseConnections: () => {
+        events.push('force');
+        releaseListener();
+      },
+      requestDrainTimeoutMs: 1_000,
+      sessionCloseTimeoutMs: 1_000,
+    });
+    await Bun.sleep(10);
+    expect(events).toEqual(['listener', 'request-drain']);
+    releaseRequest();
+    await closing;
+    expect(events).toEqual(['listener', 'request-drain', 'session', 'force']);
+  });
+
   test('keeps loopback connect fail-fast without capping valid tool work at five seconds', () => {
     expect(CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS).toBe(5_000);
     expect(CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS).toBeGreaterThan(CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS);

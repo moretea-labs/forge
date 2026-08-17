@@ -65,35 +65,46 @@ function authMiddleware(token: string) {
 }
 
 const SESSION_CLOSE_TIMEOUT_MS = 1_000;
+const REQUEST_DRAIN_TIMEOUT_MS = 250;
 
 function closeServer(server: NodeHttpServer): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());
+    // Stop keep-alive sockets that have no request in flight. Active requests
+    // receive a bounded graceful drain before the shutdown path forces them.
     server.closeIdleConnections?.();
-    // Runtime shutdown is terminal for all MCP connections. Force active HTTP
-    // streams closed after withdrawing the listener so release activation cannot
-    // be held hostage by a long-lived client connection.
-    server.closeAllConnections?.();
   });
+}
+
+function boundedDrain(wait: Promise<void>, timeoutMs: number): Promise<void> {
+  if (timeoutMs <= 0) return Promise.resolve();
+  return Promise.race([
+    wait.catch(() => undefined),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
 }
 
 export async function closeRuntimeMcpTransportResources(input: {
   closeListener: () => Promise<void>;
   closeSessions: Array<() => Promise<void>>;
+  waitForRequestDrain?: () => Promise<void>;
+  forceCloseConnections?: () => void;
+  requestDrainTimeoutMs?: number;
   sessionCloseTimeoutMs?: number;
 }): Promise<void> {
-  // Withdraw the TCP listener first. Session transports may be backed by
-  // long-lived streams whose close path is not guaranteed to settle promptly.
+  // Withdraw the TCP listener first so no new request can enter. Allow ordinary
+  // short MCP calls to finish before closing their session transport; long SSE
+  // streams remain bounded and are force-closed after the drain window.
   const listenerClose = input.closeListener();
+  void listenerClose.catch(() => undefined);
+  await boundedDrain(
+    input.waitForRequestDrain?.() ?? Promise.resolve(),
+    Math.max(0, input.requestDrainTimeoutMs ?? REQUEST_DRAIN_TIMEOUT_MS),
+  );
   const sessionDrain = Promise.allSettled(input.closeSessions.map(async (close) => await close()));
-  const timeoutMs = Math.max(0, input.sessionCloseTimeoutMs ?? SESSION_CLOSE_TIMEOUT_MS);
-  const boundedSessionDrain = timeoutMs === 0
-    ? Promise.resolve()
-    : Promise.race([
-        sessionDrain.then(() => undefined),
-        new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
-      ]);
-  await Promise.all([listenerClose, boundedSessionDrain]);
+  await boundedDrain(sessionDrain.then(() => undefined), Math.max(0, input.sessionCloseTimeoutMs ?? SESSION_CLOSE_TIMEOUT_MS));
+  input.forceCloseConnections?.();
+  await listenerClose;
 }
 
 export async function startRuntimeMcpTransport(
@@ -101,8 +112,29 @@ export async function startRuntimeMcpTransport(
 ): Promise<RuntimeMcpTransportHandle> {
   if (!options.authToken.trim()) throw new Error('MCP_AUTH_TOKEN_REQUIRED');
   const sessions = new Map<string, ManagedSession>();
+  let activeRequests = 0;
+  const requestDrainWaiters = new Set<() => void>();
   const app = express();
   app.disable('x-powered-by');
+  app.use((_req, res, next) => {
+    activeRequests += 1;
+    let settled = false;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      activeRequests = Math.max(0, activeRequests - 1);
+      if (activeRequests === 0) {
+        for (const resolve of requestDrainWaiters) resolve();
+        requestDrainWaiters.clear();
+      }
+    };
+    res.once('finish', settle);
+    res.once('close', settle);
+    next();
+  });
+  const waitForRequestDrain = (): Promise<void> => activeRequests === 0
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => requestDrainWaiters.add(resolve));
   app.get('/ready', (_req, res) => {
     const readiness = options.readiness();
     res.status(readiness.ready ? 200 : 503).json(readiness);
@@ -221,13 +253,17 @@ export async function startRuntimeMcpTransport(
     host: options.host,
     port: address.port,
     close: async () => {
-      const closeSessions = [...sessions.values()].map(({ transport }) => async () => {
-        await transport.close().catch(() => undefined);
-      });
-      sessions.clear();
       await closeRuntimeMcpTransportResources({
         closeListener: async () => await closeServer(httpServer),
-        closeSessions,
+        waitForRequestDrain,
+        // Snapshot sessions only after the request drain: an initialize request
+        // already in flight may register its session while shutdown is starting.
+        closeSessions: [async () => {
+          const activeSessions = [...sessions.values()];
+          await Promise.allSettled(activeSessions.map(async ({ transport }) => await transport.close().catch(() => undefined)));
+          sessions.clear();
+        }],
+        forceCloseConnections: () => httpServer.closeAllConnections?.(),
       });
     },
   };

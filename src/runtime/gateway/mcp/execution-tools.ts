@@ -243,17 +243,24 @@ function completionReceiptForFinalizedWork(
     : repository.defaultBranch || 'main';
   const targetRevision = gitHead(target.canonicalRoot);
   if (!targetRevision) throw new Error('WORK_COMPLETION_RECEIPT_TARGET_REQUIRED: target HEAD is unavailable');
-  const reachable = spawnSync('git', ['-C', target.canonicalRoot, 'merge-base', '--is-ancestor', targetRevision, targetBranch], {
+  const noChange = args.completion_outcome === 'completed_no_change';
+  // For no-change Work, delivery authority is the Work's own unchanged revision,
+  // not the target branch's newest revision. The target may have advanced because
+  // of unrelated concurrent Work; those paths must never be attributed here.
+  const deliveryRevision = noChange ? (handle.expectedHead ?? handle.baseCommit) : targetRevision;
+  if (!deliveryRevision) throw new Error('WORK_COMPLETION_RECEIPT_SOURCE_REQUIRED: Work delivery revision is unavailable');
+  const reachable = deliveryRevision === targetRevision || spawnSync('git', ['-C', target.canonicalRoot, 'merge-base', '--is-ancestor', deliveryRevision, targetBranch], {
     encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
   }).status === 0;
-  if (!reachable) throw new Error(`WORK_COMPLETION_RECEIPT_DELIVERY_NOT_PROVEN: ${targetRevision} is not reachable from ${targetBranch}`);
-  const changedPaths = handle.baseCommit
-    ? Array.from(new Set(String(spawnSync('git', ['-C', target.canonicalRoot, 'diff', '--name-only', `${handle.baseCommit}..${targetRevision}`], {
-        encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
-      }).stdout ?? '').split('\n').map((entry) => entry.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right))
-    : [];
+  if (!reachable) throw new Error(`WORK_COMPLETION_RECEIPT_DELIVERY_NOT_PROVEN: ${deliveryRevision} is not reachable from ${targetBranch}`);
+  const changedPaths = noChange
+    ? []
+    : handle.baseCommit
+      ? Array.from(new Set(String(spawnSync('git', ['-C', target.canonicalRoot, 'diff', '--name-only', `${handle.baseCommit}..${targetRevision}`], {
+          encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+        }).stdout ?? '').split('\n').map((entry) => entry.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right))
+      : [];
   const recordedAt = new Date().toISOString();
-  const noChange = args.completion_outcome === 'completed_no_change';
   const warnings = [
     ...(handle.finalization.branchCleanup === 'skipped' ? [{ code: 'cleanup_retained_by_request' as const, message: 'Branch cleanup was skipped by the finalization request.', resourceKind: 'branch' as const, resourceId: handle.branch, recordedAt }] : []),
     ...(handle.finalization.worktreeCleanup === 'skipped' && handle.managedWorktree ? [{ code: 'cleanup_retained_by_request' as const, message: 'Managed worktree cleanup was skipped by the finalization request.', resourceKind: 'worktree' as const, resourceId: handle.worktreePath, recordedAt }] : []),
@@ -1587,6 +1594,10 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     throw new Error('WORK_NO_CHANGE_PROOF_REQUIRED: completed_no_change requires objective-specific evidence and forbids commit/merge');
   }
   const wants = { commit: args.commit === true, merge: args.merge === true, cleanup: args.cleanup === true };
+  const noChangeFastPath = requestedOutcome === 'completed_no_change'
+    && !wants.commit
+    && !wants.merge
+    && current.state !== 'failed';
 
   const transact = (label: string, update: (fresh: WorkHandleState) => WorkHandleState): WorkHandleState =>
     withControllerLock(ctx.controllerHome, { scope: 'worktree', repoId: current.repositoryId, worktreeId: current.checkoutId }, `work-finalize:${current.workId}:${label}`, () => {
@@ -1615,7 +1626,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     throw new Error('WORK_FAILED_CLEANUP_UNSAFE: failed Work cleanup requires exact checkout/branch ownership and an unchanged clean controller-owned managed worktree whose exact HEAD is already contained in the target branch');
   }
 
-  if (!failedCleanupRequested) {
+  if (!failedCleanupRequested && !noChangeFastPath) {
     current = transact('begin', (fresh) => writeWorkHandle(ctx.controllerHome, {
       ...fresh,
       state: fresh.state === 'failed' ? 'validating' : fresh.state,
@@ -1797,6 +1808,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
   }
 
   const terminalCleanupOnly = Boolean(cleanupReconciliation && wants.cleanup && !wants.commit && !wants.merge);
+  let exactValidationInput: ReturnType<typeof currentWorkValidationInput> | undefined;
   if (terminalCleanupOnly) {
     current = transact('terminal-cleanup-validation-skipped', (fresh) => writeWorkHandle(ctx.controllerHome, {
       ...fresh,
@@ -1812,12 +1824,15 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     const validationContract = contractFor(ctx, current);
     if (!validationContract) throw new Error(`WORK_VALIDATION_CONTRACT_MISSING: ${current.workContractId ?? current.workId}`);
     const validationInput = currentWorkValidationInput(validatedRepository, current, validationContract.checks);
+    exactValidationInput = validationInput;
     if (validationContract.checks.length === 0) {
-      current = transact('validation-no-checks', (fresh) => writeWorkHandle(ctx.controllerHome, {
-        ...fresh,
-        validatedInputFingerprint: validationInput.fingerprint,
-        finalization: { ...fresh.finalization, validation: 'done', lastError: undefined },
-      }));
+      if (!noChangeFastPath) {
+        current = transact('validation-no-checks', (fresh) => writeWorkHandle(ctx.controllerHome, {
+          ...fresh,
+          validatedInputFingerprint: validationInput.fingerprint,
+          finalization: { ...fresh.finalization, validation: 'done', lastError: undefined },
+        }));
+      }
       projectWorkValidationOutcome(ctx.controllerHome, current, 'passed', 'No validation checks were required.');
     } else if (!hasCurrentWorkValidationAuthority({
       finalizationValidation: current.finalization.validation,
@@ -1838,10 +1853,33 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     }
   }
 
-  if (requestedOutcome === 'completed_no_change') {
-    const inspected = validateWorkHandle(ctx.controllerHome, current, identity, 'full', 'finalize');
-    if (!repositoryGitStatus(inspected.worktreeRepository).clean) {
+  if (noChangeFastPath) {
+    if (!exactValidationInput?.clean) {
       throw new Error('WORK_NO_CHANGE_DIRTY: completed_no_change cannot retain an owned dirty worktree');
+    }
+    const noChangeFinalization: WorkFinalizationStages = {
+      ...current.finalization,
+      validation: 'done',
+      commit: 'skipped',
+      merge: 'skipped',
+      branchCleanup: wants.cleanup && args.delete_branch !== false ? 'pending' : 'skipped',
+      lastError: undefined,
+    };
+    // Collapse the no-op Git stages into the same durable lifecycle write used
+    // to enter/establish the delivery boundary. Physical cleanup remains
+    // separately persisted because it has real side effects and crash semantics.
+    if (current.state === 'prepared') {
+      current = transact('no-change-validated', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, 'validating', {
+        finalization: noChangeFinalization,
+        validatedInputFingerprint: exactValidationInput.fingerprint,
+        failureReason: undefined,
+      }));
+    } else if (current.state === 'editing' || current.state === 'validating' || current.state === 'committed') {
+      current = transact('no-change-delivery-integrated', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, 'merged', {
+        finalization: noChangeFinalization,
+        validatedInputFingerprint: exactValidationInput.fingerprint,
+        failureReason: undefined,
+      }));
     }
   }
 
