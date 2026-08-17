@@ -40,8 +40,9 @@ Forge iOS plugin
 4. Physical `agent-device` state is keyed by stable provider device identity, not logical interaction id. Repeated interactions on the same iPhone therefore reuse one daemon/Runner cache and lease domain. Simulator state remains interaction-isolated.
 5. Visual truth comes from CoreDevice screenshot/display state. Accessibility evidence is an optional semantic enhancement and is not a prerequisite for default physical-device observation, coordinate input, or workflow verification.
 6. Physical coordinate input is expressed in current CoreDevice framebuffer pixels. The RemoteXPC worker normalizes those pixels to the HID UInt16 coordinate space and rejects off-screen coordinates instead of silently clamping them.
-7. One RemoteXPC HID worker is keyed by stable CoreDevice device identity and stays warm for bounded reuse across logical interactions; a gesture must not recreate the RSD transport.
-8. Device mutations remain fenced by the shared `ios-device` interaction ownership domain so CoreDevice/HID and XCTest cannot concurrently claim the same physical target.
+7. One RemoteXPC HID worker is keyed by stable CoreDevice device identity and stays warm for bounded reuse across logical interactions; a gesture must not recreate the RSD transport. `physical_device_open` may request `prewarm_input:true`, which starts trusted-tunnel discovery and worker startup without making app-open wait for that cold path.
+8. Immediately before tap/swipe/type, the physical provider reactivates the session-bound bundle through CoreDevice without `--terminate-existing`. This preserves navigation state while fencing the HID mutation against another app stealing foreground between visual evidence and input delivery.
+9. Device mutations remain fenced by the shared `ios-device` interaction ownership domain so CoreDevice/HID and XCTest cannot concurrently claim the same physical target.
 
 ## Why CoreDevice is the default
 
@@ -51,7 +52,7 @@ Xcode 27 exposes the current device-management substrate through `devicectl` and
 
 ## Input strategy
 
-The production input backend reuses the RSD endpoint already established by macOS `remotepairingd` for CoreDevice. Forge discovers the exact device's current trusted tunnel from the bounded unified-log evidence recommended by the upstream RemoteXPC implementation, then opens one persistent HID worker per stable CoreDevice device identity. A stale worker is discarded and the newest bounded endpoint candidates are retried; each individual gesture does not create a new tunnel.
+The production input backend reuses the RSD endpoint already established by macOS `remotepairingd` for CoreDevice. Forge discovers the exact device's current trusted tunnel asynchronously from bounded unified-log evidence, then opens one persistent HID worker per stable CoreDevice device identity. A stale worker is discarded and the newest bounded endpoint candidates are retried; each individual gesture does not create a new tunnel. App open can trigger this discovery as a nonblocking prewarm so a normal open → screenshot → input flow does not put trusted-tunnel cold-start latency on the first mutation's synchronous request budget.
 
 The worker is materialized in Controller-owned runtime storage and runs from a versioned Controller-owned `pymobiledevice3` 10.2.1 toolchain. The TypeScript Runtime passes only a minimal environment (`PATH`, `HOME`, `TMPDIR`, and Python runtime flags), so unrelated Runtime credentials are not inherited by the helper process. The dependency is not vendored into Runtime source.
 
@@ -88,6 +89,7 @@ For the default physical path, a successful workflow should prove all of the fol
 - screenshot produced via CoreDevice;
 - physical tap/swipe uses RemoteXPC HID against the current CoreDevice display geometry;
 - repeated input in one warm period reuses the same per-device worker;
+- every input reactivates the session-bound bundle without terminating its existing process before emitting HID;
 - no `agent-device`, `XCTRunner`, WebDriverAgent, or XCTest `xcodebuild` process was created by the workflow;
 - no new Runner app appeared on the device;
 - interaction ownership was released cleanly.

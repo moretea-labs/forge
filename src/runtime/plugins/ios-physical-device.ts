@@ -21,7 +21,7 @@ import type {
   AssistantPluginActionExecutionInput,
   AssistantPluginCapability,
 } from './types';
-import { executeRemoteXpcHidInput, remoteXpcHidStatus } from './ios/remote-xpc-hid';
+import { executeRemoteXpcHidInput, prewarmRemoteXpcHid, remoteXpcHidStatus } from './ios/remote-xpc-hid';
 
 const PROVIDER = 'ios-device' as const;
 const SESSION_EXPIRY_MS = 2 * 60 * 60_000;
@@ -576,10 +576,10 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_open', title: 'Open physical iOS app session',
-      description: 'Launch one installed third-party app through CoreDevice and create a bounded interaction session. This action never starts, installs, probes, or attaches an XCTest/WDA Runner.',
+      description: 'Launch one installed third-party app through CoreDevice and create a bounded interaction session. Optionally start a nonblocking runnerless HID warmup. This action never starts, installs, probes, or attaches an XCTest/WDA Runner.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 2 * 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
-      argumentsSchema: { type: 'object', properties: { device: { type: 'string' }, bundle_id: { type: 'string' }, relaunch: { type: 'boolean' } }, required: ['device', 'bundle_id'], additionalProperties: false },
+      argumentsSchema: { type: 'object', properties: { device: { type: 'string' }, bundle_id: { type: 'string' }, relaunch: { type: 'boolean' }, prewarm_input: { type: 'boolean' } }, required: ['device', 'bundle_id'], additionalProperties: false },
     },
     {
       actionId: 'physical_device_screenshot', title: 'Capture physical iOS screenshot',
@@ -719,6 +719,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       args.push(bundleId);
       const launch = runCoreJson(input, args, 'IOS_DEVICE_LAUNCH_FAILED', 60_000);
       appendEvent(input, interactionId, 'app_launched', { bundleId, relaunch: input.args.relaunch === true });
+      const inputPrewarm = input.args.prewarm_input === true && selected.udid
+        ? prewarmRemoteXpcHid({ controllerHome: input.controllerHome, deviceIdentifier: selected.identifier, udid: selected.udid })
+        : { backend: 'remote-xpc-hid', state: 'not_requested', runnerOwned: false };
       // CoreDevice is the default physical-device substrate. Never probe, start,
       // build, install, or attach an XCTest/WDA runner during ordinary app open.
       // Semantic automation is an explicit opt-in action so repeated computer-use
@@ -730,6 +733,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         device: selected,
         app: apps[0],
         launch: bounded(launch),
+        inputPrewarm,
         controlPlane: {
           lifecycle: 'coredevice',
           observation: 'coredevice',
@@ -754,6 +758,13 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
   }
 
   const { record, state } = requireRecord(input, input.actionId === 'physical_device_close');
+  const reactivateTargetApp = (): unknown => {
+    const reactivation = runCoreJson(input, [
+      'device', 'process', 'launch', '--device', state.device.identifier, state.bundleId,
+    ], 'IOS_DEVICE_REACTIVATE_FAILED', 30_000);
+    appendEvent(input, record.interactionId, 'app_reactivated', { bundleId: state.bundleId, terminateExisting: false });
+    return bounded(reactivation);
+  };
   switch (input.actionId) {
     case 'physical_device_screenshot': {
       const label = sanitize(optionalString(input.args.label) ?? 'screenshot');
@@ -776,6 +787,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       const display = physicalDisplayGeometry(input, state.device);
       const x = requireFiniteNumber(input.args.x, 'x');
       const y = requireFiniteNumber(input.args.y, 'y');
+      const foregroundFence = reactivateTargetApp();
       const result = await executeRemoteXpcHidInput({
         controllerHome: input.controllerHome,
         deviceIdentifier: state.device.identifier,
@@ -785,7 +797,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         action: 'tap', x, y,
       });
       appendEvent(input, record.interactionId, 'tap', { x, y, width: display.width, height: display.height, reusedWorker: result.reusedWorker });
-      return { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, result: bounded(result) };
+      return { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, foregroundFence, result: bounded(result) };
     }
     case 'physical_device_swipe': {
       requirePhysicalDeviceUnlocked(input, state.device);
@@ -796,6 +808,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       const x2 = requireFiniteNumber(input.args.to_x, 'to_x');
       const y2 = requireFiniteNumber(input.args.to_y, 'to_y');
       const durationMs = typeof input.args.duration_ms === 'number' ? Math.trunc(input.args.duration_ms) : 250;
+      const foregroundFence = reactivateTargetApp();
       const result = await executeRemoteXpcHidInput({
         controllerHome: input.controllerHome,
         deviceIdentifier: state.device.identifier,
@@ -805,13 +818,14 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         action: 'swipe', x, y, x2, y2, durationMs,
       });
       appendEvent(input, record.interactionId, 'swipe', { from: [x, y], to: [x2, y2], durationMs, reusedWorker: result.reusedWorker });
-      return { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, result: bounded(result) };
+      return { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, foregroundFence, result: bounded(result) };
     }
     case 'physical_device_type_text': {
       requirePhysicalDeviceUnlocked(input, state.device);
       if (!state.device.udid) throw new AssistantPluginError('IOS_HID_UDID_MISSING', 'The selected iPhone does not expose a hardware UDID for RemoteXPC HID.', { retryable: false });
       const text = requireString(input.args.text, 'text');
       const display = physicalDisplayGeometry(input, state.device);
+      const foregroundFence = reactivateTargetApp();
       const result = await executeRemoteXpcHidInput({
         controllerHome: input.controllerHome,
         deviceIdentifier: state.device.identifier,
@@ -821,7 +835,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         action: 'type', text,
       });
       appendEvent(input, record.interactionId, 'type_text', { length: text.length, reusedWorker: result.reusedWorker });
-      return { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, result: bounded(result), text: '<redacted>' };
+      return { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, foregroundFence, result: bounded(result), text: '<redacted>' };
     }
     case 'physical_device_events': {
       const limit = Math.max(1, Math.min(MAX_EVENTS, typeof input.args.limit === 'number' ? Math.trunc(input.args.limit) : 50));

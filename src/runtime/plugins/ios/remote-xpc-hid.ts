@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { createInterface } from 'readline';
 import { AssistantPluginError } from '../errors';
 
@@ -59,6 +59,7 @@ interface WorkerRecord {
 type TestExecutor = (input: RemoteXpcHidInput) => Promise<RemoteXpcHidResult>;
 let testExecutor: TestExecutor | undefined;
 const workers = new Map<string, WorkerRecord>();
+const warmups = new Map<string, Promise<void>>();
 
 export function setRemoteXpcHidExecutorForTest(executor: TestExecutor | undefined): void {
   testExecutor = executor;
@@ -68,6 +69,7 @@ export function resetRemoteXpcHidForTest(): void {
   testExecutor = undefined;
   for (const worker of workers.values()) stopWorker(worker);
   workers.clear();
+  warmups.clear();
 }
 
 export function remoteXpcHidStatus(controllerHome: string, env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
@@ -241,25 +243,55 @@ export function parseMacOSTrustedRsdEndpoints(output: string, udid: string): Rsd
   return [...unique.values()].slice(-12).reverse();
 }
 
-function discoverEndpoints(udid: string): RsdEndpoint[] {
+function trustedTunnelLogArgs(udid: string): string[] {
   if (!/^[A-Za-z0-9-]+$/.test(udid)) {
     throw new AssistantPluginError('IOS_HID_DEVICE_ID_INVALID', 'The physical iPhone UDID cannot be used for trusted-tunnel discovery.', { retryable: false });
   }
   const predicate = `process == "remotepairingd" AND eventMessage CONTAINS "${udid}" AND (eventMessage CONTAINS "Tunnel established" OR eventMessage CONTAINS "Creating RSD backend client device for server port")`;
-  const result = spawnSync('/usr/bin/log', ['show', '--last', '12h', '--style', 'compact', '--predicate', predicate], {
-    encoding: 'utf8', timeout: 15_000, maxBuffer: 2 * 1024 * 1024,
-  });
-  if (result.status !== 0) {
-    throw new AssistantPluginError('IOS_HID_RSD_DISCOVERY_FAILED', String(result.stderr || result.stdout || 'macOS trusted-tunnel discovery failed.'), { retryable: true });
-  }
-  const endpoints = parseMacOSTrustedRsdEndpoints(String(result.stdout ?? ''), udid);
-  if (endpoints.length === 0) {
-    throw new AssistantPluginError('IOS_HID_RSD_UNAVAILABLE', 'No current macOS trusted CoreDevice RSD endpoint was found for the selected iPhone.', {
-      retryable: true,
-      details: { udid },
+  return ['show', '--last', '12h', '--style', 'compact', '--predicate', predicate];
+}
+
+async function discoverEndpoints(udid: string): Promise<RsdEndpoint[]> {
+  const args = trustedTunnelLogArgs(udid);
+  return await new Promise<RsdEndpoint[]>((resolve, reject) => {
+    const child = spawn('/usr/bin/log', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      try { child.kill('SIGTERM'); } catch {}
+      finish(new Error('macOS trusted-tunnel discovery timed out after 15000ms.'));
+    }, 15_000);
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) {
+        reject(new AssistantPluginError('IOS_HID_RSD_DISCOVERY_FAILED', error.message, { retryable: true }));
+        return;
+      }
+      const endpoints = parseMacOSTrustedRsdEndpoints(stdout, udid);
+      if (endpoints.length === 0) {
+        reject(new AssistantPluginError('IOS_HID_RSD_UNAVAILABLE', 'No current macOS trusted CoreDevice RSD endpoint was found for the selected iPhone.', {
+          retryable: true,
+          details: { udid },
+        }));
+        return;
+      }
+      resolve(endpoints);
+    };
+    child.stdout.on('data', (chunk) => {
+      stdout = `${stdout}${String(chunk)}`.slice(-2 * 1024 * 1024);
     });
-  }
-  return endpoints;
+    child.stderr.on('data', (chunk) => {
+      stderr = `${stderr}${String(chunk)}`.slice(-MAX_STDERR);
+    });
+    child.on('error', (error) => finish(error));
+    child.on('close', (code) => {
+      if (code === 0) finish();
+      else finish(new Error(stderr.trim() || `macOS trusted-tunnel discovery exited with code ${code}.`));
+    });
+  });
 }
 
 function stopWorker(worker: WorkerRecord): void {
@@ -280,7 +312,7 @@ function scheduleIdleStop(worker: WorkerRecord): void {
   worker.idleTimer.unref?.();
 }
 
-function startWorker(input: RemoteXpcHidInput, endpoint: RsdEndpoint): WorkerRecord {
+function startWorker(input: Pick<RemoteXpcHidInput, 'controllerHome' | 'deviceIdentifier'>, endpoint: RsdEndpoint): WorkerRecord {
   const python = resolvePython(input.controllerHome, process.env);
   if (!python) {
     throw new AssistantPluginError('IOS_HID_TOOLCHAIN_MISSING', `The Controller-owned pymobiledevice3 ${TOOLCHAIN_VERSION} toolchain is unavailable.`, {
@@ -424,24 +456,15 @@ function validateInput(input: RemoteXpcHidInput): void {
   }
 }
 
-async function executeDefault(input: RemoteXpcHidInput): Promise<RemoteXpcHidResult> {
-  const existing = workers.get(input.deviceIdentifier);
-  if (existing) {
-    try {
-      const result = await workerRequest(existing, input);
-      return { backend: 'remote-xpc-hid', reusedWorker: true, endpoint: existing.endpoint, result };
-    } catch {
-      stopWorker(existing);
-    }
-  }
-
-  const endpoints = discoverEndpoints(input.udid);
+async function establishWorker(input: Pick<RemoteXpcHidInput, 'controllerHome' | 'deviceIdentifier' | 'udid'>): Promise<void> {
+  if (workers.has(input.deviceIdentifier)) return;
+  const endpoints = await discoverEndpoints(input.udid);
   let lastError: unknown;
   for (const endpoint of endpoints) {
     const worker = startWorker(input, endpoint);
     try {
-      const result = await workerRequest(worker, input);
-      return { backend: 'remote-xpc-hid', reusedWorker: false, endpoint, result };
+      await worker.ready;
+      return;
     } catch (error) {
       lastError = error;
       stopWorker(worker);
@@ -451,6 +474,54 @@ async function executeDefault(input: RemoteXpcHidInput): Promise<RemoteXpcHidRes
     retryable: true,
     details: { deviceIdentifier: input.deviceIdentifier, endpointCount: endpoints.length },
   });
+}
+
+export function prewarmRemoteXpcHid(input: Pick<RemoteXpcHidInput, 'controllerHome' | 'deviceIdentifier' | 'udid'>): Record<string, unknown> {
+  if (testExecutor) return { backend: 'remote-xpc-hid', state: 'test', runnerOwned: false };
+  if (workers.has(input.deviceIdentifier)) return { backend: 'remote-xpc-hid', state: 'ready', runnerOwned: false };
+  if (warmups.has(input.deviceIdentifier)) return { backend: 'remote-xpc-hid', state: 'warming', runnerOwned: false };
+  if (!resolvePython(input.controllerHome, process.env)) {
+    return { backend: 'remote-xpc-hid', state: 'unavailable', runnerOwned: false, reason: 'toolchain_missing' };
+  }
+  const warmup = establishWorker(input)
+    .catch(() => undefined)
+    .then(() => undefined)
+    .finally(() => warmups.delete(input.deviceIdentifier));
+  warmups.set(input.deviceIdentifier, warmup);
+  return { backend: 'remote-xpc-hid', state: 'warming_started', runnerOwned: false };
+}
+
+async function executeDefault(input: RemoteXpcHidInput): Promise<RemoteXpcHidResult> {
+  let existing = workers.get(input.deviceIdentifier);
+  if (!existing) {
+    const warmup = warmups.get(input.deviceIdentifier);
+    if (warmup) await warmup;
+    existing = workers.get(input.deviceIdentifier);
+  }
+  if (existing) {
+    try {
+      const result = await workerRequest(existing, input);
+      return { backend: 'remote-xpc-hid', reusedWorker: true, endpoint: existing.endpoint, result };
+    } catch {
+      stopWorker(existing);
+    }
+  }
+
+  await establishWorker(input);
+  const worker = workers.get(input.deviceIdentifier);
+  if (!worker) {
+    throw new AssistantPluginError('IOS_HID_INPUT_FAILED', 'RemoteXPC HID worker did not become available after trusted-tunnel establishment.', { retryable: true });
+  }
+  try {
+    const result = await workerRequest(worker, input);
+    return { backend: 'remote-xpc-hid', reusedWorker: false, endpoint: worker.endpoint, result };
+  } catch (error) {
+    stopWorker(worker);
+    throw new AssistantPluginError('IOS_HID_INPUT_FAILED', error instanceof Error ? error.message : 'RemoteXPC HID input failed.', {
+      retryable: true,
+      details: { deviceIdentifier: input.deviceIdentifier },
+    });
+  }
 }
 
 export async function executeRemoteXpcHidInput(input: RemoteXpcHidInput): Promise<RemoteXpcHidResult> {

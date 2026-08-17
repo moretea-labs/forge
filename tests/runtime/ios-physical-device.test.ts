@@ -207,10 +207,11 @@ describe('CoreDevice-first physical iPhone provider', () => {
     });
 
     const opened = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
-      device: 'greyson', bundle_id: 'com.xingin.discover', relaunch: true,
+      device: 'greyson', bundle_id: 'com.xingin.discover', relaunch: true, prewarm_input: true,
     }));
     const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
     expect(opened.controlPlane).toMatchObject({ input: 'remote-xpc-hid', runnerOwned: false });
+    expect(opened.inputPrewarm).toMatchObject({ backend: 'remote-xpc-hid', state: 'test', runnerOwned: false });
 
     const tapped = await executeIosPhysicalDeviceAction(input(value, 'physical_device_tap', {
       interaction_id: interactionId, x: 1082, y: 2456,
@@ -233,6 +234,10 @@ describe('CoreDevice-first physical iPhone provider', () => {
     });
     expect(hidCalls[1]).toMatchObject({ action: 'swipe', x: 600, y: 2100, x2: 600, y2: 600, durationMs: 280 });
     expect(hidCalls[2]).toMatchObject({ action: 'type', text: '<redacted>' });
+    const launches = commands.filter((argv) => argv.join(' ').includes('device process launch'));
+    expect(launches).toHaveLength(4);
+    expect(launches[0]).toContain('--terminate-existing');
+    for (const launch of launches.slice(1)) expect(launch).not.toContain('--terminate-existing');
     expect(commands.some((argv) => argv.includes('xcodebuild'))).toBe(false);
     expect(commands.some((argv) => argv.includes('prepare'))).toBe(false);
     expect(commands.some((argv) => argv.some((arg) => arg.includes('agent-device')))).toBe(false);
