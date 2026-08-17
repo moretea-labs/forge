@@ -233,6 +233,7 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(commands.filter((command) => command[1] === 'open')).toHaveLength(1);
   });
 
+
   it('prepares a signed physical Runner and completes a bounded JD product search', async () => {
     const value = fixture();
     readyIosTooling();
@@ -312,13 +313,29 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect((result.interaction as Record<string, unknown>).status).toBe('closed');
     expect(readInteractionSession(value.repoRoot, 'ios-device', String((result.interaction as Record<string, unknown>).interactionId))?.status).toBe('closed');
 
+    // A second logical interaction on the same physical iPhone must reuse the
+    // same provider runtime directory instead of creating another daemon/Runner
+    // lifecycle. This is the core regression guard for repeated real-device use.
+    const reopened = await executeIosPluginAction(pluginInput(value, 'agent_device_open', {
+      ...runnerConfig, app: 'com.example.SecondApp',
+    }, 'request-agent-device-open-second'));
+    const reopenedId = String((reopened.interaction as Record<string, unknown>).interactionId);
+    await executeIosPluginAction(pluginInput(value, 'agent_device_close', {
+      interaction_id: reopenedId,
+    }, 'request-agent-device-close-second'));
+
     const prepare = commands.find(({ argv }) => argv[1] === 'prepare')!;
     expect(prepare.argv).toEqual(expect.arrayContaining(['ios-runner', '--device', 'greyson']));
     expect(prepare.env?.AGENT_DEVICE_IOS_TEAM_ID).toBe('TEAM123456');
     expect(prepare.env?.AGENT_DEVICE_IOS_BUNDLE_ID).toBe('com.example.agentdevice.runner');
     expect(prepare.env?.DEVELOPER_DIR).toBe(developerDir);
+    expect(prepare.env?.AGENT_DEVICE_STATE_DIR).toContain('device-runtime/PROVIDER-ID-1/state');
     const open = commands.find(({ argv }) => argv[1] === 'open' && argv.includes('com.360buy.jdmobile'))!;
     expect(open.argv).not.toContain('--relaunch');
+    const physicalRuntimeCommands = commands.filter(({ argv }) => ['prepare', 'open', 'batch', 'screenshot', 'close'].includes(argv[1]!));
+    const physicalStateDirs = new Set(physicalRuntimeCommands.map(({ env }) => env?.AGENT_DEVICE_STATE_DIR).filter(Boolean));
+    expect(physicalStateDirs.size).toBe(1);
+    expect([...physicalStateDirs][0]).toBe(prepare.env?.AGENT_DEVICE_STATE_DIR);
     const batches = commands.filter(({ argv }) => argv[1] === 'batch');
     expect(snapshotCount).toBe(0);
     expect(batches).toHaveLength(1);

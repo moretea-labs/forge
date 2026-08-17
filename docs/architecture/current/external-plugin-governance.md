@@ -70,7 +70,7 @@ Current source uses Forge authorities for active configuration:
 - Browser: `.forge/plugins/browser.json`, `.forge/browser/`;
 - GitHub: `.forge/plugins/github.json` plus Repository Registry GitHub identity;
 - Gmail/Calendar/Tasks: `.forge/plugins/...`, `FORGE_*_ACCESS_TOKEN`;
-- iOS: `.forge/plugins/ios.json`, `FORGE_IOS_DEVICE_RUNNER_URL` plus local Xcode/CoreDevice/agent-device facts;
+- iOS: `.forge/plugins/ios.json` plus local Xcode/CoreDevice facts; agent-device is an explicit XCTest semantic fallback with its own signing/runtime facts.
 - Desktop Operator: trusted external registration under Controller Home plus the stable signed macOS app identity;
 - Local System: Controller Home `system/local-system`.
 

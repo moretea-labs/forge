@@ -24,7 +24,6 @@ if (!/^[A-Za-z0-9][A-Za-z0-9.-]+$/.test(bundleId) || !bundleId.includes('.') || 
   throw new Error('FORGE_IOS_DEVICE_SMOKE_BUNDLE_ID must be an exact bundle identifier, not a URL or deep link.');
 }
 
-delete process.env.FORGE_IOS_DEVICE_RUNNER_URL;
 
 const common = {
   controllerHome,
@@ -51,6 +50,7 @@ try {
     entry.identifier === deviceSelector || entry.udid === deviceSelector || entry.name === deviceSelector);
   if (matches.length !== 1) throw new Error(`Expected exactly one physical iPhone for selector ${deviceSelector}; found ${matches.length}.`);
   const device = matches[0]!;
+  const info = await invoke('physical_device_info', { device: device.identifier });
   const apps = await invoke('physical_device_apps', { device: device.identifier, bundle_id: bundleId });
   const installed = Array.isArray(apps.apps) ? apps.apps as Array<Record<string, unknown>> : [];
   if (installed.length !== 1) throw new Error(`The exact bundle identifier ${bundleId} is not installed on the selected iPhone.`);
@@ -97,7 +97,9 @@ try {
       version: app.version,
     },
     launchStatus: interaction?.status,
-    uiAutomation: opened.uiAutomation,
+    controlPlane: opened.controlPlane,
+    coreDeviceCapabilities: info.capabilities,
+    screenViewingURLAvailable: typeof info.screenViewingURL === 'string',
     screenshot: {
       created: true,
       width: width ? Number(width) : undefined,

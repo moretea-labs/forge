@@ -26,8 +26,6 @@ const PROVIDER = 'ios-device' as const;
 const SESSION_EXPIRY_MS = 2 * 60 * 60_000;
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_EVENTS = 200;
-const LOCAL_RUNNER_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
-const SENSITIVE_SEMANTICS = /secure\s*text|securetextfield|password|passcode|verification|one[ -]?time|otp|2fa|验证码|校验码|短信码|生物识别|biometric|face\s?id|touch\s?id|支付|付款|购买|下单|提交订单|结算|checkout|payment|purchase|confirm\s+order|bank|card|cvv|身份证/i;
 
 interface CommandResult {
   ok: boolean;
@@ -43,18 +41,10 @@ interface CommandOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-export interface RunnerHttpResult {
-  ok: boolean;
-  status: number;
-  body?: unknown;
-  text: string;
-}
-
 export interface IosPhysicalDeviceRuntimeHooks {
   platform(): NodeJS.Platform;
   now(): Date;
   runCommand(command: string, args: string[], options?: CommandOptions): CommandResult;
-  requestJson(method: string, url: string, body?: unknown, timeoutMs?: number): Promise<RunnerHttpResult>;
 }
 
 const defaultHooks: IosPhysicalDeviceRuntimeHooks = {
@@ -75,24 +65,6 @@ const defaultHooks: IosPhysicalDeviceRuntimeHooks = {
       stderr: String(result.stderr ?? result.error?.message ?? ''),
       command: [command, ...args],
     };
-  },
-  requestJson: async (method, url, body, timeoutMs = 30_000) => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetch(url, {
-        method,
-        headers: body === undefined ? undefined : { 'content-type': 'application/json' },
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: controller.signal,
-      });
-      const text = await response.text();
-      let parsed: unknown;
-      try { parsed = text ? JSON.parse(text) : undefined; } catch { parsed = undefined; }
-      return { ok: response.ok, status: response.status, body: parsed, text };
-    } finally {
-      clearTimeout(timer);
-    }
   },
 };
 
@@ -124,6 +96,19 @@ interface PhysicalDevice {
   connected: boolean;
 }
 
+interface PhysicalDeviceCapabilitySummary {
+  applicationControl: boolean;
+  screenshot: boolean;
+  displayInfo: boolean;
+  lockState: boolean;
+  viewDeviceScreen: boolean;
+  hidDigitizer: boolean;
+  hidKeyboard: boolean;
+  hidScroll: boolean;
+  hidButton: boolean;
+  universalHid: boolean;
+}
+
 interface InstalledApp {
   name: string;
   bundleIdentifier: string;
@@ -143,13 +128,6 @@ interface PhysicalSessionState {
   interactionId: string;
   device: PhysicalDevice;
   bundleId: string;
-  runner: {
-    configured: boolean;
-    endpoint?: string;
-    ready: boolean;
-    sessionId?: string;
-    error?: string;
-  };
   events: PhysicalEvent[];
 }
 
@@ -289,6 +267,28 @@ function stringField(value: Record<string, unknown>, key: string): string | unde
   return typeof value[key] === 'string' && String(value[key]).trim() ? String(value[key]).trim() : undefined;
 }
 
+function capabilityNames(value: unknown): string[] {
+  return (Array.isArray(value) ? value : [])
+    .map((entry) => stringField(objectValue(entry), 'name'))
+    .filter((entry): entry is string => Boolean(entry));
+}
+
+function capabilitySummary(names: string[]): PhysicalDeviceCapabilitySummary {
+  const features = new Set(names);
+  return {
+    applicationControl: features.has('Application Control') || features.has('Launch Application'),
+    screenshot: features.has('Capture Screenshot'),
+    displayInfo: features.has('Get Display Information'),
+    lockState: features.has('Get Lock State'),
+    viewDeviceScreen: features.has('View Device Screen'),
+    hidDigitizer: features.has('HID Digitizer'),
+    hidKeyboard: features.has('HID Keyboard'),
+    hidScroll: features.has('HID Scroll'),
+    hidButton: features.has('HID Button'),
+    universalHid: features.has('Universal HID Service Pool') || features.has('UniversalHIDService'),
+  };
+}
+
 function physicalDevices(input: AssistantPluginActionExecutionInput): PhysicalDevice[] {
   const response = runCoreJson(input, ['list', 'devices'], 'IOS_DEVICE_LIST_FAILED');
   const result = objectValue(response.result);
@@ -299,8 +299,7 @@ function physicalDevices(input: AssistantPluginActionExecutionInput): PhysicalDe
       const hardware = objectValue(entry.hardwareProperties);
       const device = objectValue(entry.deviceProperties);
       const connection = objectValue(entry.connectionProperties);
-      const capabilities = Array.isArray(entry.capabilities) ? entry.capabilities : [];
-      const capabilityNames = capabilities.map((item) => stringField(objectValue(item), 'name')).filter(Boolean);
+      const capabilities = capabilityNames(entry.capabilities);
       const pairingState = stringField(connection, 'pairingState');
       const tunnelState = stringField(connection, 'tunnelState');
       const bootState = stringField(device, 'bootState');
@@ -318,13 +317,13 @@ function physicalDevices(input: AssistantPluginActionExecutionInput): PhysicalDe
         bootState,
         developerMode: stringField(device, 'developerModeStatus'),
         ddiServicesAvailable: device.ddiServicesAvailable === true,
-        screenshotAvailable: capabilityNames.includes('Capture Screenshot'),
+        screenshotAvailable: capabilities.includes('Capture Screenshot'),
         connected: pairingState === 'paired'
           && bootState !== 'shutdown'
           && (tunnelState === 'connected'
             || device.ddiServicesAvailable === true
-            || capabilityNames.includes('Application Control')
-            || capabilityNames.includes('Launch Application')
+            || capabilities.includes('Application Control')
+            || capabilities.includes('Launch Application')
             || connection.transportType === 'usb'
             || connection.transportType === 'wired'),
         reality: stringField(hardware, 'reality'),
@@ -358,6 +357,52 @@ function selectDevice(input: AssistantPluginActionExecutionInput, selectorValue:
     throw new AssistantPluginError('IOS_DEVICE_NOT_PAIRED', 'The selected iPhone is not paired with this Mac.', { retryable: false, details: { device: selected } });
   }
   return selected;
+}
+
+function physicalDeviceLockState(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): Record<string, unknown> {
+  const response = runCoreJson(input, [
+    'device', 'info', 'lockState', '--device', device.identifier,
+  ], 'IOS_DEVICE_LOCK_STATE_FAILED', 30_000);
+  return objectValue(response.result);
+}
+
+function requirePhysicalDeviceUnlocked(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): void {
+  const lockState = physicalDeviceLockState(input, device);
+  if (lockState.passcodeRequired !== true) return;
+  throw new AssistantPluginError(
+    'IOS_DEVICE_LOCKED',
+    `The selected iPhone ${device.name} is locked. Unlock it before launching an app through CoreDevice.`,
+    {
+      retryable: true,
+      details: {
+        device: { identifier: device.identifier, name: device.name },
+        lockState: bounded(lockState),
+      },
+    },
+  );
+}
+
+function physicalDeviceInfo(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): Record<string, unknown> {
+  const detailsResponse = runCoreJson(input, [
+    'device', 'info', 'details', '--device', device.identifier,
+  ], 'IOS_DEVICE_DETAILS_FAILED', 60_000);
+  const details = objectValue(detailsResponse.result);
+  const deviceProperties = objectValue(details.deviceProperties);
+  const names = capabilityNames(details.capabilities);
+
+  const lockState = physicalDeviceLockState(input, device);
+  const displayResponse = runCoreJson(input, [
+    'device', 'info', 'displays', '--device', device.identifier,
+  ], 'IOS_DEVICE_DISPLAY_INFO_FAILED', 30_000);
+
+  return {
+    device,
+    capabilities: capabilitySummary(names),
+    capabilityCount: names.length,
+    screenViewingURL: stringField(deviceProperties, 'screenViewingURL'),
+    lockState: bounded(lockState),
+    displays: bounded(displayResponse.result),
+  };
 }
 
 function installedApps(
@@ -394,112 +439,6 @@ function installedApps(
     .filter((entry) => entry.bundleIdentifier === bundleId);
 }
 
-function configuredRunner(): { configured: boolean; endpoint?: string; error?: string } {
-  const raw = process.env.FORGE_IOS_DEVICE_RUNNER_URL?.trim();
-  if (!raw) return { configured: false, error: 'Set FORGE_IOS_DEVICE_RUNNER_URL to a trusted localhost WDA-compatible endpoint.' };
-  try {
-    const parsed = new URL(raw);
-    if (parsed.protocol !== 'http:' || !LOCAL_RUNNER_HOSTS.has(parsed.hostname) || parsed.username || parsed.password) {
-      return { configured: false, error: 'The iOS UI runner URL must be an unauthenticated localhost HTTP endpoint.' };
-    }
-    parsed.pathname = parsed.pathname.replace(/\/$/, '');
-    parsed.search = '';
-    parsed.hash = '';
-    return { configured: true, endpoint: parsed.toString().replace(/\/$/, '') };
-  } catch {
-    return { configured: false, error: 'FORGE_IOS_DEVICE_RUNNER_URL is not a valid URL.' };
-  }
-}
-
-function runnerUrl(endpoint: string, path: string): string {
-  return `${endpoint}${path.startsWith('/') ? path : `/${path}`}`;
-}
-
-function responseValue(body: unknown): unknown {
-  const record = objectValue(body);
-  return 'value' in record ? record.value : body;
-}
-
-async function runnerRequest(
-  method: string,
-  endpoint: string,
-  path: string,
-  body: unknown,
-  code: string,
-  sensitive = false,
-): Promise<unknown> {
-  let response: RunnerHttpResult;
-  try {
-    response = await hooks.requestJson(method, runnerUrl(endpoint, path), body, 30_000);
-  } catch (error) {
-    const normalized = toAssistantPluginError(error, {
-      code,
-      message: 'The local iOS UI runner could not be reached.',
-      retryable: true,
-    });
-    throw new AssistantPluginError(normalized.code, normalized.message, {
-      retryable: normalized.retryable,
-      details: sensitive ? { endpoint, response: '<redacted>' } : { endpoint },
-    });
-  }
-  if (!response.ok) {
-    throw new AssistantPluginError(code, sensitive ? 'The local iOS UI runner rejected a sensitive-input action.' : `The local iOS UI runner returned HTTP ${response.status}.`, {
-      retryable: response.status >= 500,
-      details: sensitive ? { status: response.status, response: '<redacted>' } : { status: response.status, response: bounded(response.body ?? response.text) },
-    });
-  }
-  return responseValue(response.body);
-}
-
-async function probeRunner(): Promise<{ configured: boolean; endpoint?: string; ready: boolean; error?: string; status?: unknown }> {
-  const configured = configuredRunner();
-  if (!configured.configured || !configured.endpoint) return { ...configured, ready: false };
-  try {
-    const status = await runnerRequest('GET', configured.endpoint, '/status', undefined, 'IOS_DEVICE_UI_RUNNER_UNAVAILABLE');
-    const record = objectValue(status);
-    return {
-      configured: true,
-      endpoint: configured.endpoint,
-      ready: record.ready !== false,
-      status: bounded(status),
-    };
-  } catch (error) {
-    return {
-      configured: true,
-      endpoint: configured.endpoint,
-      ready: false,
-      error: toAssistantPluginError(error, {
-        code: 'IOS_DEVICE_UI_RUNNER_UNAVAILABLE',
-        message: 'The local iOS UI runner is unavailable.',
-        retryable: true,
-      }).message,
-    };
-  }
-}
-
-async function createRunnerSession(endpoint: string, bundleId: string): Promise<string> {
-  const value = await runnerRequest('POST', endpoint, '/session', {
-    capabilities: { alwaysMatch: { bundleId } },
-    desiredCapabilities: { bundleId },
-  }, 'IOS_DEVICE_UI_SESSION_FAILED');
-  const record = objectValue(value);
-  const sessionId = stringField(record, 'sessionId') ?? stringField(objectValue(objectValue(value).capabilities), 'sessionId');
-  if (!sessionId) {
-    throw new AssistantPluginError('IOS_DEVICE_UI_SESSION_FAILED', 'The UI runner did not return a WebDriver session id.', { retryable: false });
-  }
-  return sessionId;
-}
-
-async function closeRunner(state: PhysicalSessionState): Promise<boolean> {
-  if (!state.runner.endpoint || !state.runner.sessionId) return true;
-  try {
-    await runnerRequest('DELETE', state.runner.endpoint, `/session/${encodeURIComponent(state.runner.sessionId)}`, undefined, 'IOS_DEVICE_UI_CLOSE_FAILED');
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal = false): { record: InteractionSessionRecord; state: PhysicalSessionState } {
   const interactionId = requireString(input.args.interaction_id, 'interaction_id');
   const record = readInteractionSession(input.repoRoot, PROVIDER, interactionId);
@@ -511,10 +450,7 @@ function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal
     throw new AssistantPluginError(
       'PLUGIN_ACTION_ARGUMENT_INVALID',
       `Physical iOS interaction ${interactionId} belongs to ${engine ?? 'an unknown engine'}, not the CoreDevice engine.`,
-      {
-        retryable: false,
-        details: { interactionId, expectedEngine: 'coredevice', actualEngine: engine },
-      },
+      { retryable: false, details: { interactionId, expectedEngine: 'coredevice', actualEngine: engine } },
     );
   }
   const state = readState(input, interactionId);
@@ -523,8 +459,7 @@ function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal
   }
   if (!isInteractionSessionActive(record.status) && !allowTerminal) {
     throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Physical iOS interaction is ${record.status}.`, {
-      retryable: false,
-      details: { interactionId, status: record.status },
+      retryable: false, details: { interactionId, status: record.status },
     });
   }
   if (isInteractionSessionActive(record.status) && hooks.now().getTime() >= Date.parse(record.expiresAt)) {
@@ -537,75 +472,12 @@ function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal
   return { record, state };
 }
 
-function requireRunner(state: PhysicalSessionState): { endpoint: string; sessionId: string } {
-  if (!state.runner.ready || !state.runner.endpoint || !state.runner.sessionId) {
-    throw new AssistantPluginError('IOS_DEVICE_UI_RUNNER_UNAVAILABLE', state.runner.error ?? 'No signed WDA-compatible UI runner is attached to this physical-device session.', {
-      retryable: true,
-      details: {
-        configured: state.runner.configured,
-        prerequisites: [
-          'Enable Developer Mode and trust/pair the iPhone with Xcode.',
-          'Build and run a correctly signed WebDriverAgent-compatible runner for this device.',
-          'Forward its HTTP endpoint to localhost and set FORGE_IOS_DEVICE_RUNNER_URL.',
-        ],
-      },
-    });
-  }
-  return { endpoint: state.runner.endpoint, sessionId: state.runner.sessionId };
-}
-
-function rejectSensitiveSemantic(value: string, action: string): void {
-  if (SENSITIVE_SEMANTICS.test(value)) {
-    throw new AssistantPluginError('IOS_DEVICE_HUMAN_ACTION_REQUIRED', `${action} targets a credential, verification, biometric, purchase, checkout, or payment flow and must be completed manually.`, {
-      retryable: false,
-      details: { humanHandoffRequired: true },
-    });
-  }
-}
-
-function locator(target: string): { using: string; value: string } {
-  if (target.startsWith('xpath:')) return { using: 'xpath', value: target.slice(6) };
-  if (target.startsWith('id:')) return { using: 'accessibility id', value: target.slice(3) };
-  return { using: 'accessibility id', value: target };
-}
-
-async function elementId(endpoint: string, sessionId: string, target: string): Promise<string> {
-  const value = await runnerRequest('POST', endpoint, `/session/${encodeURIComponent(sessionId)}/element`, locator(target), 'IOS_DEVICE_ELEMENT_NOT_FOUND');
-  const record = objectValue(value);
-  const id = stringField(record, 'element-6066-11e4-a52e-4f735466cecf') ?? stringField(record, 'ELEMENT');
-  if (!id) throw new AssistantPluginError('IOS_DEVICE_ELEMENT_NOT_FOUND', 'The UI runner did not return an element id.', { retryable: false });
-  return id;
-}
-
-async function inspectElementSemantics(
-  endpoint: string,
-  sessionId: string,
-  elementIdValue: string,
-  target: string,
-  action: string,
-): Promise<void> {
-  const attributes = ['type', 'name', 'label', 'placeholderValue'];
-  const values: string[] = [target];
-  for (const attribute of attributes) {
-    const value = await runnerRequest(
-      'GET',
-      endpoint,
-      `/session/${encodeURIComponent(sessionId)}/element/${encodeURIComponent(elementIdValue)}/attribute/${encodeURIComponent(attribute)}`,
-      undefined,
-      'IOS_DEVICE_ELEMENT_INSPECTION_FAILED',
-    );
-    if (typeof value === 'string') values.push(value);
-  }
-  rejectSensitiveSemantic(values.join(' '), action);
-}
-
 export function iosPhysicalDeviceStatus() {
   if (hooks.platform() !== 'darwin') {
     return {
       available: false,
       platform: hooks.platform(),
       coreDeviceReady: false,
-      uiRunner: { ...configuredRunner(), ready: false },
       reason: 'Physical iOS device support requires macOS and Xcode.',
     };
   }
@@ -615,7 +487,6 @@ export function iosPhysicalDeviceStatus() {
     platform: hooks.platform(),
     coreDeviceReady: result.ok,
     devicectlVersion: result.ok ? result.stdout.trim() : undefined,
-    uiRunner: { ...configuredRunner(), ready: false, readinessCheckedOnAction: true },
     reason: result.ok ? undefined : (result.stderr || result.stdout || 'xcrun devicectl is unavailable.'),
   };
 }
@@ -628,7 +499,7 @@ export function iosPhysicalDeviceCapabilities(): AssistantPluginCapability[] {
   return [{
     capabilityId: 'ios-physical-device',
     title: 'Physical iOS Computer Use',
-    description: 'Bounded CoreDevice discovery, installed-app launch and screenshot, with optional signed localhost WDA-compatible UI automation.',
+    description: 'CoreDevice-only physical iPhone lifecycle and observation: discovery, device state, app launch and screenshots. Semantic XCTest automation lives only in the separate agent-device fallback.',
     scopes: ['ios.discover', 'ios.device'],
     actions: iosPhysicalDeviceActions().map((action) => action.actionId),
   }];
@@ -644,7 +515,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
   return [
     {
       actionId: 'physical_device_status', title: 'Physical iOS device status',
-      description: 'Report CoreDevice readiness and probe an explicitly configured localhost UI runner.',
+      description: 'Report CoreDevice readiness. This provider has no XCTest/WDA Runner lifecycle.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true,
       scopes: ['ios.discover'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
@@ -655,6 +526,13 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
       scopes: ['ios.discover'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
+      actionId: 'physical_device_info', title: 'Inspect physical iPhone capabilities',
+      description: 'Read CoreDevice details, lock state, display metadata, View Device Screen URL, and HID capability availability without starting a Runner.',
+      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 90_000, cancellable: true, idempotent: true,
+      scopes: ['ios.device'], resourceClaims: [],
+      argumentsSchema: { type: 'object', properties: { device: { type: 'string' } }, required: ['device'], additionalProperties: false },
+    },
+    {
       actionId: 'physical_device_apps', title: 'Find installed physical-device app',
       description: 'Verify one exact bundle identifier is installed on an exact paired iPhone without reading its data container.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
@@ -663,38 +541,10 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_open', title: 'Open physical iOS app session',
-      description: 'Launch one installed third-party app on an exact paired iPhone and create a bounded interaction session. URLs and deep links are rejected.',
+      description: 'Launch one installed third-party app through CoreDevice and create a bounded interaction session. This action never starts, installs, probes, or attaches an XCTest/WDA Runner.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 2 * 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: { type: 'object', properties: { device: { type: 'string' }, bundle_id: { type: 'string' }, relaunch: { type: 'boolean' } }, required: ['device', 'bundle_id'], additionalProperties: false },
-    },
-    {
-      actionId: 'physical_device_snapshot', title: 'Snapshot physical iOS UI',
-      description: 'Read bounded UI source through the signed localhost runner. Fails closed when the runner is unavailable.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
-      scopes: ['ios.device'], resourceClaims: stateClaim,
-      argumentsSchema: { type: 'object', properties: { ...interactionProperty }, required: ['interaction_id'], additionalProperties: false },
-    },
-    {
-      actionId: 'physical_device_press', title: 'Press physical iOS target',
-      description: 'Press a non-sensitive accessibility target or coordinate through the signed runner. Purchase, payment, biometric and credential semantics are blocked.',
-      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['ios.device'], resourceClaims: mutationClaims,
-      argumentsSchema: { type: 'object', properties: { ...interactionProperty, target: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, purpose: { type: 'string' } }, required: ['interaction_id'], additionalProperties: false },
-    },
-    {
-      actionId: 'physical_device_fill', title: 'Fill physical iOS target',
-      description: 'Replace non-sensitive text through the signed runner. Text is redacted and passwords, codes, biometrics, checkout and payment targets are blocked.',
-      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['ios.device'], resourceClaims: mutationClaims,
-      argumentsSchema: { type: 'object', properties: { ...interactionProperty, target: { type: 'string' }, text: { type: 'string' } }, required: ['interaction_id', 'target', 'text'], additionalProperties: false },
-    },
-    {
-      actionId: 'physical_device_scroll', title: 'Scroll physical iOS session',
-      description: 'Scroll an active physical-device UI session through the signed runner.',
-      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['ios.device'], resourceClaims: mutationClaims,
-      argumentsSchema: { type: 'object', properties: { ...interactionProperty, direction: { type: 'string', enum: ['up', 'down', 'left', 'right', 'top', 'bottom'] }, amount: { type: 'number' } }, required: ['interaction_id', 'direction'], additionalProperties: false },
     },
     {
       actionId: 'physical_device_screenshot', title: 'Capture physical iOS screenshot',
@@ -712,7 +562,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_close', title: 'Close physical iOS session',
-      description: 'Close the optional UI-runner session and release Controller ownership without shutting down or modifying the iPhone.',
+      description: 'Release Controller ownership without shutting down or modifying the iPhone. No XCTest/WDA Runner is owned by this provider.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: { type: 'object', properties: { ...interactionProperty }, required: ['interaction_id'], additionalProperties: false },
@@ -722,7 +572,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
 
 export async function executeIosPhysicalDeviceAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
   if (input.actionId === 'physical_device_status') {
-    return { provider: 'coredevice', ...iosPhysicalDeviceStatus(), uiRunner: await probeRunner() };
+    return { provider: 'coredevice', ...iosPhysicalDeviceStatus() };
   }
   const status = iosPhysicalDeviceStatus();
   if (!status.coreDeviceReady) {
@@ -730,6 +580,10 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
   }
   if (input.actionId === 'physical_device_list') {
     return { provider: 'coredevice', devices: physicalDevices(input) };
+  }
+  if (input.actionId === 'physical_device_info') {
+    const selected = selectDevice(input, input.args.device);
+    return { provider: 'coredevice', ...physicalDeviceInfo(input, selected) };
   }
   if (input.actionId === 'physical_device_apps') {
     const selected = selectDevice(input, input.args.device);
@@ -743,6 +597,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
     if (apps.length !== 1) {
       throw new AssistantPluginError('IOS_DEVICE_APP_NOT_INSTALLED', `The app ${bundleId} is not installed on the selected iPhone.`, { retryable: false });
     }
+    requirePhysicalDeviceUnlocked(input, selected);
     const selectedAliases = [selected.identifier, selected.udid];
     const conflict = listInteractionSessions(input.repoRoot, PROVIDER).find((entry) =>
       isInteractionSessionActive(entry.status) && interactionMayOwnTarget(entry, selectedAliases));
@@ -777,18 +632,11 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       expiresAt: new Date(hooks.now().getTime() + SESSION_EXPIRY_MS).toISOString(),
     };
     writeInteractionSession(input.repoRoot, record);
-    const runnerProbe = await probeRunner();
     const state: PhysicalSessionState = {
       schemaVersion: 1,
       interactionId,
       device: selected,
       bundleId,
-      runner: {
-        configured: runnerProbe.configured,
-        endpoint: runnerProbe.endpoint,
-        ready: false,
-        error: runnerProbe.error,
-      },
       events: [{ at: createdAt, type: 'session_created', details: { bundleId, deviceIdentifier: selected.identifier } }],
     };
     writeState(input, state);
@@ -798,24 +646,10 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       args.push(bundleId);
       const launch = runCoreJson(input, args, 'IOS_DEVICE_LAUNCH_FAILED', 60_000);
       appendEvent(input, interactionId, 'app_launched', { bundleId, relaunch: input.args.relaunch === true });
-      if (runnerProbe.ready && runnerProbe.endpoint) {
-        try {
-          state.runner.sessionId = await createRunnerSession(runnerProbe.endpoint, bundleId);
-          state.runner.ready = true;
-          state.runner.error = undefined;
-          writeState(input, state);
-          appendEvent(input, interactionId, 'ui_runner_attached', { endpoint: runnerProbe.endpoint });
-        } catch (error) {
-          state.runner.ready = false;
-          state.runner.error = toAssistantPluginError(error, {
-            code: 'IOS_DEVICE_UI_SESSION_FAILED',
-            message: 'The app launched, but the UI runner session could not be created.',
-            retryable: true,
-          }).message;
-          writeState(input, state);
-          appendEvent(input, interactionId, 'ui_runner_unavailable', { error: state.runner.error });
-        }
-      }
+      // CoreDevice is the default physical-device substrate. Never probe, start,
+      // build, install, or attach an XCTest/WDA runner during ordinary app open.
+      // Semantic automation is an explicit opt-in action so repeated computer-use
+      // workflows cannot accidentally create fresh Runner lifecycles.
       const active = patchInteractionSession(input.repoRoot, PROVIDER, interactionId, { status: 'waiting_for_user' }) ?? record;
       return {
         provider: 'coredevice',
@@ -823,7 +657,12 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         device: selected,
         app: apps[0],
         launch: bounded(launch),
-        uiAutomation: bounded(readState(input, interactionId)?.runner),
+        controlPlane: {
+          lifecycle: 'coredevice',
+          observation: 'coredevice',
+          semanticFallback: 'agent-device',
+          runnerOwned: false,
+        },
       };
     } catch (error) {
       const normalized = toAssistantPluginError(error, {
@@ -842,71 +681,6 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
 
   const { record, state } = requireRecord(input, input.actionId === 'physical_device_close');
   switch (input.actionId) {
-    case 'physical_device_snapshot': {
-      const runner = requireRunner(state);
-      const value = await runnerRequest('GET', runner.endpoint, `/session/${encodeURIComponent(runner.sessionId)}/source`, undefined, 'IOS_DEVICE_SNAPSHOT_FAILED');
-      appendEvent(input, record.interactionId, 'snapshot');
-      return { provider: 'coredevice', interaction: record, source: bounded(value) };
-    }
-    case 'physical_device_press': {
-      const runner = requireRunner(state);
-      const target = optionalString(input.args.target);
-      const hasPoint = typeof input.args.x === 'number' && typeof input.args.y === 'number';
-      if (!target && !hasPoint) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'target or x/y is required.', { retryable: false });
-      if (target) {
-        rejectSensitiveSemantic(target, 'Press');
-        const id = await elementId(runner.endpoint, runner.sessionId, target);
-        await inspectElementSemantics(runner.endpoint, runner.sessionId, id, target, 'Press');
-        await runnerRequest('POST', runner.endpoint, `/session/${encodeURIComponent(runner.sessionId)}/element/${encodeURIComponent(id)}/click`, {}, 'IOS_DEVICE_PRESS_FAILED');
-        appendEvent(input, record.interactionId, 'press', { target });
-      } else {
-        const purpose = requireString(input.args.purpose, 'purpose');
-        rejectSensitiveSemantic(purpose, 'Coordinate press');
-        await runnerRequest('POST', runner.endpoint, `/session/${encodeURIComponent(runner.sessionId)}/wda/tap`, {
-          x: Number(input.args.x), y: Number(input.args.y),
-        }, 'IOS_DEVICE_PRESS_FAILED');
-        appendEvent(input, record.interactionId, 'press_coordinate', { x: input.args.x, y: input.args.y, purpose });
-      }
-      return { provider: 'coredevice', interaction: record, success: true };
-    }
-    case 'physical_device_fill': {
-      const runner = requireRunner(state);
-      const target = requireString(input.args.target, 'target');
-      rejectSensitiveSemantic(target, 'Fill');
-      const text = typeof input.args.text === 'string' ? input.args.text : undefined;
-      if (text === undefined) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'text is required.', { retryable: false });
-      const id = await elementId(runner.endpoint, runner.sessionId, target);
-      await inspectElementSemantics(runner.endpoint, runner.sessionId, id, target, 'Fill');
-      await runnerRequest('POST', runner.endpoint, `/session/${encodeURIComponent(runner.sessionId)}/element/${encodeURIComponent(id)}/clear`, {}, 'IOS_DEVICE_FILL_FAILED', true);
-      await runnerRequest('POST', runner.endpoint, `/session/${encodeURIComponent(runner.sessionId)}/element/${encodeURIComponent(id)}/value`, {
-        text, value: Array.from(text),
-      }, 'IOS_DEVICE_FILL_FAILED', true);
-      appendEvent(input, record.interactionId, 'fill', { target, text: '<redacted>' });
-      return { provider: 'coredevice', interaction: record, success: true, text: '<redacted>' };
-    }
-    case 'physical_device_scroll': {
-      const runner = requireRunner(state);
-      const direction = requireString(input.args.direction, 'direction');
-      if (!['up', 'down', 'left', 'right', 'top', 'bottom'].includes(direction)) {
-        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Unsupported scroll direction.', { retryable: false });
-      }
-      const sizeValue = await runnerRequest('GET', runner.endpoint, `/session/${encodeURIComponent(runner.sessionId)}/window/size`, undefined, 'IOS_DEVICE_SCROLL_FAILED');
-      const size = objectValue(sizeValue);
-      const width = Number(size.width ?? 0);
-      const height = Number(size.height ?? 0);
-      if (!(width > 0 && height > 0)) throw new AssistantPluginError('IOS_DEVICE_SCROLL_FAILED', 'The UI runner returned an invalid window size.', { retryable: false });
-      const amount = Math.max(20, Math.min(80, typeof input.args.amount === 'number' ? Math.trunc(input.args.amount) : 60)) / 100;
-      let fromX = width / 2; let toX = width / 2; let fromY = height / 2; let toY = height / 2;
-      if (direction === 'down' || direction === 'bottom') { fromY = height * 0.8; toY = height * (0.8 - amount); }
-      if (direction === 'up' || direction === 'top') { fromY = height * 0.2; toY = height * (0.2 + amount); }
-      if (direction === 'right') { fromX = width * 0.8; toX = width * (0.8 - amount); }
-      if (direction === 'left') { fromX = width * 0.2; toX = width * (0.2 + amount); }
-      await runnerRequest('POST', runner.endpoint, `/session/${encodeURIComponent(runner.sessionId)}/wda/dragfromtoforduration`, {
-        fromX, fromY, toX, toY, duration: 0.25,
-      }, 'IOS_DEVICE_SCROLL_FAILED');
-      appendEvent(input, record.interactionId, 'scroll', { direction, amount });
-      return { provider: 'coredevice', interaction: record, success: true };
-    }
     case 'physical_device_screenshot': {
       const label = sanitize(optionalString(input.args.label) ?? 'screenshot');
       const path = join(artifactDir(input, record.interactionId), `${label}-${hooks.now().getTime()}.png`);
@@ -928,24 +702,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
     }
     case 'physical_device_close': {
       const wasActive = isInteractionSessionActive(record.status);
-      const runnerNeedsCleanup = Boolean(state.runner.endpoint && state.runner.sessionId);
-      if (!wasActive && !runnerNeedsCleanup) return { provider: 'coredevice', interaction: record, alreadyClosed: true };
-      if (wasActive) patchInteractionSession(input.repoRoot, PROVIDER, record.interactionId, { status: 'closing' });
-      const closed = await closeRunner(state);
-      if (!closed) {
-        patchInteractionSession(input.repoRoot, PROVIDER, record.interactionId, {
-          status: 'closing',
-          error: { code: 'IOS_DEVICE_UI_CLOSE_FAILED', message: 'The UI runner session could not be closed; ownership remains fenced.' },
-        });
-        throw new AssistantPluginError('IOS_DEVICE_UI_CLOSE_FAILED', 'The UI runner session could not be closed; retry physical_device_close.', { retryable: true });
-      }
-      state.runner.ready = false;
-      state.runner.sessionId = undefined;
-      writeState(input, state);
+      if (!wasActive) return { provider: 'coredevice', interaction: record, alreadyClosed: true, deviceUnmodified: true };
+      patchInteractionSession(input.repoRoot, PROVIDER, record.interactionId, { status: 'closing' });
       appendEvent(input, record.interactionId, 'session_closed');
-      if (!wasActive) {
-        return { provider: 'coredevice', interaction: record, alreadyClosed: true, runnerCleaned: runnerNeedsCleanup, deviceUnmodified: true };
-      }
       const finalRecord = patchInteractionSession(input.repoRoot, PROVIDER, record.interactionId, { status: 'closed', error: undefined }) ?? record;
       return { provider: 'coredevice', interaction: finalRecord, deviceUnmodified: true };
     }

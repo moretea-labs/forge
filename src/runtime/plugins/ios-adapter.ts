@@ -144,7 +144,7 @@ function permissions(ready: boolean): AssistantPluginPermissionScope[] {
     { scope: 'ios.discover', mode: 'read', description: 'Discover Xcode projects, schemes, and simulator inventory.', granted: ready, required: true },
     { scope: 'ios.build', mode: 'write', description: 'Build iOS app targets into bounded DerivedData.', granted: ready, required: true },
     { scope: 'ios.simulator', mode: 'write', description: 'Boot simulators, install, launch, screenshot, and collect logs.', granted: ready, required: true },
-    { scope: 'ios.device', mode: 'write', description: 'Inspect and interact with an exact paired physical iPhone through bounded CoreDevice and optional signed UI-runner actions.', granted: ready, required: false },
+    { scope: 'ios.device', mode: 'write', description: 'Inspect and operate an exact paired physical iPhone through CoreDevice; optional XCTest semantics are isolated in the agent-device fallback.', granted: ready, required: false },
   ];
 }
 
@@ -367,7 +367,7 @@ export function buildIosPluginManifest(previousRevision = 0, previousUpdatedAt?:
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
-      sourceOfTruth: ['local:xcodebuild', 'local:simctl', 'local:devicectl', 'local:agent-device-capability-contract', 'process-env:DEVELOPER_DIR', 'process-env:AGENT_DEVICE_IOS_TEAM_ID', 'process-env:AGENT_DEVICE_IOS_BUNDLE_ID', 'process-env:FORGE_IOS_DEVICE_RUNNER_URL', `repo-local:${CONFIG_ROOT}/ios.json`],
+      sourceOfTruth: ['local:xcodebuild', 'local:simctl', 'local:devicectl', 'local:agent-device-capability-contract', 'process-env:DEVELOPER_DIR', 'process-env:AGENT_DEVICE_IOS_TEAM_ID', 'process-env:AGENT_DEVICE_IOS_BUNDLE_ID', `repo-local:${CONFIG_ROOT}/ios.json`],
     },
     enabled,
     lifecycle: {

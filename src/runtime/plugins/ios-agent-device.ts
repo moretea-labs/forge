@@ -337,6 +337,37 @@ function stateDir(input: AssistantPluginActionExecutionInput, interactionId: str
   return path;
 }
 
+function physicalDeviceRuntimeRoot(input: AssistantPluginActionExecutionInput, targetId: string): string {
+  const path = join(
+    controllerRoot(input),
+    'interactions',
+    'ios-agent-device',
+    'device-runtime',
+    sanitize(targetId),
+  );
+  mkdirSync(path, { recursive: true });
+  return path;
+}
+
+function physicalDeviceRuntimeStateDir(input: AssistantPluginActionExecutionInput, targetId: string): string {
+  const path = join(physicalDeviceRuntimeRoot(input, targetId), 'state');
+  mkdirSync(path, { recursive: true });
+  return path;
+}
+
+function runtimeStateDir(input: AssistantPluginActionExecutionInput, record: InteractionSessionRecord): string {
+  // A real iPhone must not get a fresh daemon/Runner cache for every logical
+  // interaction. One stable per-device runtime owns provider metadata and any
+  // explicitly prepared semantic Runner. Simulator sessions remain isolated.
+  return record.provider === DEVICE_PROVIDER
+    ? physicalDeviceRuntimeStateDir(input, record.targetId)
+    : stateDir(input, record.interactionId);
+}
+
+function targetRuntimeStateDir(input: AssistantPluginActionExecutionInput, target: AgentDeviceEntry): string | undefined {
+  return target.kind === 'device' ? physicalDeviceRuntimeStateDir(input, target.id) : undefined;
+}
+
 function signingConfigPath(input: AssistantPluginActionExecutionInput, interactionId: string): string {
   return join(interactionRoot(input, interactionId), 'signing.json');
 }
@@ -376,13 +407,13 @@ function sessionEnv(input: AssistantPluginActionExecutionInput, record: Interact
   return withTrustedNodePath({
     ...process.env,
     ...signingEnv(config),
-    AGENT_DEVICE_STATE_DIR: stateDir(input, record.interactionId),
+    AGENT_DEVICE_STATE_DIR: runtimeStateDir(input, record),
     AGENT_DEVICE_SESSION: record.sessionId,
     AGENT_DEVICE_PLATFORM: 'ios',
     AGENT_DEVICE_SESSION_LOCK: 'reject',
-    // Keep the per-interaction daemon and a healthy XCTest runner warm between
-    // commands. The previous five-second/zero-retention policy forced repeated
-    // cold starts during ordinary multi-step device workflows.
+    // Keep the daemon and an explicitly prepared Runner warm. Physical devices
+    // share one stable runtime state directory across logical interactions;
+    // Simulator interactions remain isolated.
     AGENT_DEVICE_DAEMON_IDLE_TIMEOUT_MS:
       process.env.FORGE_AGENT_DEVICE_DAEMON_IDLE_TIMEOUT_MS?.trim() || DEFAULT_AGENT_DEVICE_IDLE_MS,
     AGENT_DEVICE_IOS_RUNNER_IDLE_STOP_MS:
@@ -390,8 +421,12 @@ function sessionEnv(input: AssistantPluginActionExecutionInput, record: Interact
   });
 }
 
-function probeEnv(input: AssistantPluginActionExecutionInput, config?: AgentDeviceSigningConfig): NodeJS.ProcessEnv {
-  const path = join(controllerRoot(input), 'interactions', 'ios-agent-device', 'probe-state');
+function probeEnv(
+  input: AssistantPluginActionExecutionInput,
+  config?: AgentDeviceSigningConfig,
+  requestedStateDir?: string,
+): NodeJS.ProcessEnv {
+  const path = requestedStateDir ?? join(controllerRoot(input), 'interactions', 'ios-agent-device', 'probe-state');
   mkdirSync(path, { recursive: true });
   return withTrustedNodePath({
     ...process.env,
@@ -517,6 +552,7 @@ function runJson(
   options: {
     record?: InteractionSessionRecord;
     signing?: AgentDeviceSigningConfig;
+    stateDir?: string;
     timeoutMs?: number;
     failureCode: string;
   },
@@ -524,7 +560,7 @@ function runJson(
   const result = hooks.runCommand(executable(input.repoRoot), args, {
     cwd: input.repoRoot,
     timeoutMs: effectiveCommandTimeout(input, options.timeoutMs),
-    env: options.record ? sessionEnv(input, options.record) : probeEnv(input, options.signing),
+    env: options.record ? sessionEnv(input, options.record) : probeEnv(input, options.signing, options.stateDir),
     signal: input.signal,
   });
   return parseJsonResult(result, options.failureCode);
@@ -536,6 +572,7 @@ async function runJsonAsync(
   options: {
     record?: InteractionSessionRecord;
     signing?: AgentDeviceSigningConfig;
+    stateDir?: string;
     timeoutMs?: number;
     failureCode: string;
   },
@@ -543,7 +580,7 @@ async function runJsonAsync(
   const result = await hooks.runCommandAsync(executable(input.repoRoot), args, {
     cwd: input.repoRoot,
     timeoutMs: effectiveCommandTimeout(input, options.timeoutMs),
-    env: options.record ? sessionEnv(input, options.record) : probeEnv(input, options.signing),
+    env: options.record ? sessionEnv(input, options.record) : probeEnv(input, options.signing, options.stateDir),
     signal: input.signal,
   });
   return parseJsonResult(result, options.failureCode);
@@ -1042,7 +1079,7 @@ async function executeSessionSnapshotBackend(
     } else if (typed.identity.available || mode === 'typed') {
       try {
         return await typed.snapshot({
-          stateDir: stateDir(input, record.interactionId),
+          stateDir: runtimeStateDir(input, record),
           session: record.sessionId,
           device: record.targetId,
           platform: 'ios',
@@ -1950,7 +1987,7 @@ export function iosAgentDeviceCapabilities(): AssistantPluginCapability[] {
     {
       capabilityId: 'ios-agent-device-physical',
       title: 'agent-device physical iPhone',
-      description: 'Optional signed, capability-negotiated agent-device XCTest sessions for one exact connected physical iPhone.',
+      description: 'Opt-in XCTest accessibility fallback for one exact physical iPhone. CoreDevice is the default physical-device path; prepare this only when semantic AX inspection is required.',
       scopes: ['ios.discover', 'ios.device'],
       actions,
     },
@@ -1979,8 +2016,8 @@ export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: { type: 'object', properties: { app: { type: 'string' }, device: { type: 'string' }, team_id: { type: 'string' }, runner_bundle_id: { type: 'string' }, developer_dir: { type: 'string' } }, additionalProperties: false },
     },
     {
-      actionId: 'agent_device_prepare', title: 'Prepare signed iOS Runner',
-      description: 'Build, sign, install and health-check the agent-device XCTest Runner for one exact iOS target.',
+      actionId: 'agent_device_prepare', title: 'Prepare semantic XCTest fallback',
+      description: 'Explicitly build, sign, install and health-check the agent-device XCTest Runner. Physical-device preparation uses one stable per-device runtime so repeated logical interactions reuse it.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 10 * 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.discover', 'ios.simulator', 'ios.device'], resourceClaims: write,
       argumentsSchema: {
@@ -2125,6 +2162,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       physicalDeviceSupported: selected.kind === 'device',
       result: bounded(await runJsonAsync(input, args, {
         signing: signingFromArgs(input.args),
+        stateDir: targetRuntimeStateDir(input, selected),
         failureCode: 'AGENT_DEVICE_DOCTOR_FAILED',
         timeoutMs: 4 * 60_000,
       })),
@@ -2144,6 +2182,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
         'prepare', 'ios-runner', '--platform', 'ios', '--device', selected.name, '--timeout', '600000', '--json',
       ], {
         signing,
+        stateDir: targetRuntimeStateDir(input, selected),
         failureCode: 'AGENT_DEVICE_PREPARE_FAILED',
         timeoutMs: 10 * 60_000,
       })),
