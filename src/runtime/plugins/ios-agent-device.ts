@@ -2052,7 +2052,7 @@ export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'agent_device_press', title: 'Press agent-device target',
-      description: 'Press one ref, selector, or explicit coordinate pair and return a settled bounded diff.',
+      description: 'Press one ref, selector, or explicit coordinate pair. Semantic targets return a settled bounded diff; explicit coordinates bypass accessibility settle for heavy-screen recovery.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.simulator', 'ios.device'], resourceClaims: write,
       argumentsSchema: { type: 'object', properties: { ...interactionProperty, target: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' } }, required: ['interaction_id'], additionalProperties: false },
@@ -2252,11 +2252,15 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       if (record.provider === DEVICE_PROVIDER && target && SENSITIVE_SEMANTICS.test(target)) {
         throw new AssistantPluginError('IOS_DEVICE_SENSITIVE_ACTION_BLOCKED', 'Press targets involving credentials, verification, biometrics, checkout, purchase or payment require human interaction.', { retryable: false });
       }
-      const args = appendSettleFlag(
-        capabilityProfile(input.repoRoot),
-        ['press', ...(target ? [target] : [String(input.args.x), String(input.args.y)])],
-        'press',
-      );
+      const baseArgs = ['press', ...(target ? [target] : [String(input.args.x), String(input.args.y)])];
+      // Explicit coordinate presses are the bounded fallback for screens whose
+      // accessibility tree is too heavy or animated to snapshot reliably.
+      // Settling forces an AX snapshot after the mutation, defeating that
+      // fallback and can recycle/wedge the XCTest runner. Keep semantic target
+      // presses settled, but let explicit points complete without AX capture.
+      const args = target
+        ? appendSettleFlag(capabilityProfile(input.repoRoot), baseArgs, 'press')
+        : baseArgs;
       return { provider: 'agent-device', interaction: record, result: bounded(await runSessionCommand(input, record, args, 'AGENT_DEVICE_PRESS_FAILED')) };
     }
     case 'agent_device_fill': {

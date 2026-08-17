@@ -928,6 +928,7 @@ describe('optional agent-device iOS Simulator provider', () => {
 
     await executeIosPluginAction(pluginInput(value, 'agent_device_snapshot', { interaction_id: interactionId, interactive: true }));
     await executeIosPluginAction(pluginInput(value, 'agent_device_press', { interaction_id: interactionId, target: 'label="Continue"' }));
+    await executeIosPluginAction(pluginInput(value, 'agent_device_press', { interaction_id: interactionId, x: 360, y: 830 }));
     const filled = await executeIosPluginAction(pluginInput(value, 'agent_device_fill', { interaction_id: interactionId, target: 'id="email"', text: 'qa@example.com', delay_ms: 20 }));
     expect(JSON.stringify(filled)).not.toContain('qa@example.com');
     await executeIosPluginAction(pluginInput(value, 'agent_device_scroll', { interaction_id: interactionId, direction: 'down', amount: 2 }));
@@ -955,6 +956,11 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(sessionCommands.every(({ env }) => env?.AGENT_DEVICE_DAEMON_IDLE_TIMEOUT_MS === '300000')).toBe(true);
     expect(sessionCommands.every(({ env }) => env?.AGENT_DEVICE_IOS_RUNNER_IDLE_STOP_MS === '300000')).toBe(true);
     expect(sessionCommands.every(({ env }) => env?.AGENT_DEVICE_IOS_RUNNER_RETENTION_MS === undefined)).toBe(true);
+    const pressCommands = commands.filter(({ argv }) => argv[1] === 'press').map(({ argv }) => argv);
+    expect(pressCommands).toHaveLength(2);
+    expect(pressCommands[0]).toContain('--settle');
+    expect(pressCommands[1]).toEqual(expect.arrayContaining(['press', '360', '830']));
+    expect(pressCommands[1]).not.toContain('--settle');
     for (const command of commands) expect(command.argv).not.toContain('mcp');
   });
 
