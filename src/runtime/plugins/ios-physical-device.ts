@@ -30,7 +30,7 @@ const SESSION_EXPIRY_MS = 2 * 60 * 60_000;
 const CORE_DEVICE_READY_CACHE_MS = 5 * 60_000;
 const INPUT_UNLOCK_CACHE_MS = 60_000;
 const INPUT_DISPLAY_CACHE_MS = 5 * 60_000;
-const INPUT_FOREGROUND_ACTIVATION_TIMEOUT_MS = 2_000;
+const INPUT_FOREGROUND_OBSERVATION_TTL_MS = 15_000;
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_EVENTS = 200;
 const MAX_BATCH_STEPS = 20;
@@ -168,6 +168,19 @@ interface CachedDisplayGeometry extends DisplayGeometry {
   observedAt: string;
 }
 
+interface PhysicalScreenshotObservation {
+  observationId: string;
+  observedAt: string;
+  label: string;
+}
+
+interface PhysicalForegroundObservation {
+  observationId: string;
+  screenshotObservedAt: string;
+  confirmedAt: string;
+  bundleId: string;
+}
+
 interface PhysicalSessionState {
   schemaVersion: 1;
   interactionId: string;
@@ -175,6 +188,8 @@ interface PhysicalSessionState {
   bundleId: string;
   display?: CachedDisplayGeometry;
   unlockVerifiedAt?: string;
+  lastScreenshot?: PhysicalScreenshotObservation;
+  foregroundObservation?: PhysicalForegroundObservation;
   events: PhysicalEvent[];
 }
 
@@ -711,56 +726,74 @@ async function cachedIosPhysicalDeviceActionStatus(input: AssistantPluginActionE
   return { status: await iosPhysicalDeviceActionStatus(input), cached: false };
 }
 
-function requireConfirmedPhysicalTargetActivation(
-  activation: Record<string, unknown>,
+function recentScreenshotObservation(
   state: PhysicalSessionState,
-): void {
-  const launchOptions = objectValue(objectValue(activation.result).launchOptions);
-  if (launchOptions.activatedWhenStarted !== true) {
+  observationId: string,
+): { observation: PhysicalScreenshotObservation; ageMs: number } {
+  const observation = state.lastScreenshot;
+  const ageMs = cacheAgeMs(observation?.observedAt);
+  if (!observation || observation.observationId !== observationId || ageMs === undefined || ageMs > INPUT_FOREGROUND_OBSERVATION_TTL_MS) {
     throw new AssistantPluginError(
-      'IOS_DEVICE_FOREGROUND_ACTIVATION_UNCONFIRMED',
-      `CoreDevice did not confirm foreground activation for ${state.bundleId}; no HID input was sent.`,
+      'IOS_DEVICE_SCREEN_OBSERVATION_REQUIRED',
+      'A fresh matching CoreDevice screenshot observation is required before screen-relative physical input.',
+      {
+        retryable: true,
+        details: {
+          deviceIdentifier: state.device.identifier,
+          expectedObservationId: observation?.observationId,
+          providedObservationId: observationId,
+          observationAgeMs: ageMs,
+          observationTtlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS,
+          hidMutationDispatched: false,
+        },
+      },
+    );
+  }
+  return { observation, ageMs };
+}
+
+function requireObservedPhysicalTargetForeground(state: PhysicalSessionState): PhysicalForegroundObservation {
+  const confirmation = state.foregroundObservation;
+  const screenshot = state.lastScreenshot;
+  const screenshotAgeMs = cacheAgeMs(screenshot?.observedAt);
+  const confirmationAgeMs = cacheAgeMs(confirmation?.confirmedAt);
+  const valid = Boolean(
+    confirmation
+      && screenshot
+      && confirmation.bundleId === state.bundleId
+      && confirmation.observationId === screenshot.observationId
+      && confirmation.screenshotObservedAt === screenshot.observedAt
+      && screenshotAgeMs !== undefined
+      && screenshotAgeMs <= INPUT_FOREGROUND_OBSERVATION_TTL_MS
+      && confirmationAgeMs !== undefined
+      && confirmationAgeMs <= INPUT_FOREGROUND_OBSERVATION_TTL_MS
+  );
+  if (!valid || !confirmation) {
+    throw new AssistantPluginError(
+      'IOS_DEVICE_FOREGROUND_OBSERVATION_REQUIRED',
+      `A recent screenshot explicitly confirmed by the Controller as ${state.bundleId} foreground is required before HID input.`,
       {
         retryable: true,
         details: {
           bundleId: state.bundleId,
           deviceIdentifier: state.device.identifier,
+          screenshotObservationId: screenshot?.observationId,
+          screenshotAgeMs,
+          confirmationObservationId: confirmation?.observationId,
+          confirmationAgeMs,
+          observationTtlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS,
           hidMutationDispatched: false,
-          launchOptions: bounded(launchOptions),
         },
       },
     );
   }
+  return confirmation;
 }
 
-async function reactivatePhysicalTargetApp(
-  input: AssistantPluginActionExecutionInput,
-  state: PhysicalSessionState,
-): Promise<Record<string, unknown>> {
-  let activation: Record<string, unknown>;
-  try {
-    activation = await runCoreJson(input, [
-      'device', 'process', 'launch', '--device', state.device.identifier,
-      '--activate', state.bundleId,
-    ], 'IOS_DEVICE_FOREGROUND_ACTIVATION_FAILED', INPUT_FOREGROUND_ACTIVATION_TIMEOUT_MS);
-  } catch (error) {
-    const normalized = toAssistantPluginError(error, {
-      code: 'IOS_DEVICE_FOREGROUND_ACTIVATION_FAILED',
-      message: `CoreDevice could not activate ${state.bundleId} before physical input.`,
-      retryable: true,
-    });
-    throw new AssistantPluginError('IOS_DEVICE_FOREGROUND_ACTIVATION_FAILED', normalized.message, {
-      retryable: true,
-      details: {
-        bundleId: state.bundleId,
-        deviceIdentifier: state.device.identifier,
-        hidMutationDispatched: false,
-        causeCode: normalized.code,
-      },
-    });
-  }
-  requireConfirmedPhysicalTargetActivation(activation, state);
-  return activation;
+function consumePhysicalScreenObservation(input: AssistantPluginActionExecutionInput, state: PhysicalSessionState): void {
+  state.lastScreenshot = undefined;
+  state.foregroundObservation = undefined;
+  writeState(input, state);
 }
 
 type PhysicalInputBatchKind = 'tap' | 'swipe' | 'type' | 'wait';
@@ -932,21 +965,43 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_open', title: 'Open physical iOS app session',
-      description: 'Launch one installed third-party app through CoreDevice and create a bounded interaction session. Set prewarm_input=true when runnerless input or physical_device_batch will follow immediately. This action never starts, installs, probes, or attaches an XCTest/WDA Runner.',
+      description: 'Request activation of one installed third-party app through CoreDevice and create a bounded interaction session. CoreDevice launch metadata is diagnostic only: capture a screenshot and explicitly confirm the observed foreground before any HID input. Set prewarm_input=true when runnerless input will follow.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 2 * 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: { type: 'object', properties: { device: { type: 'string' }, bundle_id: { type: 'string' }, relaunch: { type: 'boolean' }, prewarm_input: { type: 'boolean' } }, required: ['device', 'bundle_id'], additionalProperties: false },
     },
     {
       actionId: 'physical_device_screenshot', title: 'Capture physical iOS screenshot',
-      description: 'Capture the exact paired iPhone display through CoreDevice into Controller-owned bounded artifact storage.',
+      description: 'Capture the exact paired iPhone display through CoreDevice into Controller-owned bounded artifact storage and return a short-lived observation ID. A screenshot alone never authorizes input.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: { type: 'object', properties: { ...interactionProperty, label: { type: 'string' } }, required: ['interaction_id'], additionalProperties: false },
     },
     {
+      actionId: 'physical_device_confirm_foreground', title: 'Confirm observed physical iPhone foreground',
+      description: 'Bind the latest fresh CoreDevice screenshot observation to the session target bundle after the Controller has visually verified that exact app is foreground. This only writes the short-lived observation fence and sends no device input.',
+      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true,
+      scopes: ['ios.device'], resourceClaims: stateClaim,
+      argumentsSchema: {
+        type: 'object',
+        properties: { ...interactionProperty, observation_id: { type: 'string' }, bundle_id: { type: 'string' } },
+        required: ['interaction_id', 'observation_id', 'bundle_id'], additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'physical_device_observed_tap', title: 'Tap a freshly observed physical iPhone screen',
+      description: 'One-shot screen-relative tap bound to the latest fresh screenshot observation. It does not reactivate any app and consumes the observation before dispatch, so it can safely navigate system UI such as Spotlight into the target app when CoreDevice activation did not actually foreground it.',
+      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false,
+      scopes: ['ios.device'], resourceClaims: mutationClaims,
+      argumentsSchema: {
+        type: 'object',
+        properties: { ...interactionProperty, observation_id: { type: 'string' }, x: { type: 'number', minimum: 0 }, y: { type: 'number', minimum: 0 } },
+        required: ['interaction_id', 'observation_id', 'x', 'y'], additionalProperties: false,
+      },
+    },
+    {
       actionId: 'physical_device_batch', title: 'Run fast physical iPhone input batch',
-      description: 'Preferred fast path for a known stable in-app form: perform up to 20 tap, swipe, text, or bounded-wait steps with one foreground activation, one unlock/display readiness pass, and one plugin round-trip. Stops on the first failed step and reports partial progress; never retry the whole batch after partial mutation.',
+      description: 'Preferred fast path for a visually confirmed target app: perform up to 20 tap, swipe, text, or bounded-wait steps under one fresh screenshot foreground fence, one unlock/display readiness pass, and one plugin round-trip. The observation is consumed before dispatch. Stops on the first failed step and never replays a partially-mutated batch.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: {
@@ -975,7 +1030,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_tap', title: 'Tap physical iPhone coordinate',
-      description: 'Send one runnerless touch through the existing macOS trusted CoreDevice/RemoteXPC tunnel. Coordinates are pixels in the current CoreDevice screenshot/display space. For multiple known form steps, prefer physical_device_batch to avoid repeated foreground checks and MCP round-trips.',
+      description: 'Send one runnerless touch through RemoteXPC only while a fresh screenshot observation has been explicitly confirmed as the target app foreground. The observation is consumed before dispatch. For system-screen navigation use physical_device_observed_tap; for known form steps prefer physical_device_batch.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: {
@@ -986,7 +1041,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_swipe', title: 'Swipe physical iPhone',
-      description: 'Send one runnerless touchscreen swipe through RemoteXPC HID using current CoreDevice display pixels.',
+      description: 'Send one runnerless touchscreen swipe through RemoteXPC HID only while a fresh screenshot observation has been explicitly confirmed as the target app foreground; the observation is consumed before dispatch.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: {
@@ -1002,7 +1057,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_type_text', title: 'Type physical iPhone text',
-      description: 'Type bounded text through reusable runnerless RemoteXPC input. Auto mode uses direct HID keys for short ASCII and a clipboard-preserving CoreDevice pasteboard + Command-V path for Unicode or longer text, avoiding XCTest for ordinary profile/form edits.',
+      description: 'Type bounded text through reusable runnerless RemoteXPC input only while a fresh screenshot observation has been explicitly confirmed as the target app foreground. Auto mode uses direct HID keys for short ASCII and clipboard-preserving CoreDevice pasteboard + Command-V for Unicode; the observation is consumed before dispatch.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: {
@@ -1129,8 +1184,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       args.push(bundleId);
       const launchStartedAt = performance.now();
       const launch = await runCoreJson(input, args, 'IOS_DEVICE_LAUNCH_FAILED', 60_000);
-      requireConfirmedPhysicalTargetActivation(launch, state);
-      recordTiming(timingStages, 'foregroundReactivate', launchStartedAt, false);
+      recordTiming(timingStages, 'activationRequest', launchStartedAt, false);
       const launchEventStartedAt = performance.now();
       appendEvent(input, interactionId, 'app_launched', { bundleId, relaunch: input.args.relaunch === true });
       recordTiming(timingStages, 'eventPersistence', launchEventStartedAt, false);
@@ -1150,6 +1204,11 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         device: selected,
         app: apps[0],
         launch: bounded(launch),
+        foregroundVerification: {
+          authority: 'screenshot_observation',
+          required: true,
+          coreDeviceActivatedWhenStartedHint: objectValue(objectValue(launch.result).launchOptions).activatedWhenStarted === true,
+        },
         inputPrewarm,
         controlPlane: {
           lifecycle: 'coredevice',
@@ -1187,18 +1246,74 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       if (!existsSync(path)) {
         throw new AssistantPluginError('IOS_DEVICE_SCREENSHOT_MISSING', 'CoreDevice succeeded without creating the requested screenshot.', { retryable: false });
       }
+      const observedAt = timestamp();
+      const observationId = randomUUID();
       const screenshotDisplay = pngDisplayGeometry(path, state.display?.pointScale);
-      if (screenshotDisplay) {
-        state.display = { ...screenshotDisplay, observedAt: timestamp() };
-        writeState(input, state);
-      }
+      if (screenshotDisplay) state.display = { ...screenshotDisplay, observedAt };
+      state.lastScreenshot = { observationId, observedAt, label };
+      state.foregroundObservation = undefined;
+      writeState(input, state);
       const eventStartedAt = performance.now();
-      appendEvent(input, record.interactionId, 'screenshot', { label });
+      appendEvent(input, record.interactionId, 'screenshot', { label, observationId });
       recordTiming(timingStages, 'eventPersistence', eventStartedAt, false);
       return finishTimedResult(actionStartedAt, timingStages, {
         provider: 'coredevice', interaction: record, result: bounded(result),
+        observation: { observationId, observedAt, label, ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS },
         artifactCandidates: [{ kind: 'ios_physical_device_screenshot', mediaType: 'image/png', path }],
       });
+    }
+    case 'physical_device_confirm_foreground': {
+      const observationId = requireString(input.args.observation_id, 'observation_id');
+      const bundleId = requireString(input.args.bundle_id, 'bundle_id');
+      if (bundleId !== state.bundleId) {
+        throw new AssistantPluginError('IOS_DEVICE_FOREGROUND_OBSERVATION_MISMATCH', `Foreground confirmation bundle ${bundleId} does not match session target ${state.bundleId}.`, {
+          retryable: false,
+          details: { expectedBundleId: state.bundleId, providedBundleId: bundleId, hidMutationDispatched: false },
+        });
+      }
+      const { observation, ageMs } = recentScreenshotObservation(state, observationId);
+      const confirmedAt = timestamp();
+      state.foregroundObservation = {
+        observationId: observation.observationId,
+        screenshotObservedAt: observation.observedAt,
+        confirmedAt,
+        bundleId,
+      };
+      writeState(input, state);
+      appendEvent(input, record.interactionId, 'foreground_confirmed', { observationId, bundleId, screenshotAgeMs: ageMs });
+      return {
+        provider: 'coredevice',
+        interaction: record,
+        foregroundObservation: { observationId, bundleId, screenshotObservedAt: observation.observedAt, confirmedAt, ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS },
+        deviceUnmodified: true,
+      };
+    }
+    case 'physical_device_observed_tap': {
+      const lockStartedAt = performance.now();
+      const unlock = await requireSessionUnlocked(input, state);
+      recordTiming(timingStages, 'lockState', lockStartedAt, unlock.cached);
+      if (!state.device.udid) throw new AssistantPluginError('IOS_HID_UDID_MISSING', 'The selected iPhone does not expose a hardware UDID for RemoteXPC HID.', { retryable: false });
+      const observationId = requireString(input.args.observation_id, 'observation_id');
+      const observationStartedAt = performance.now();
+      const { observation, ageMs } = recentScreenshotObservation(state, observationId);
+      recordTiming(timingStages, 'screenObservation', observationStartedAt, true);
+      const displayStartedAt = performance.now();
+      const geometry = await sessionDisplayGeometry(input, state);
+      recordTiming(timingStages, 'displayInfo', displayStartedAt, geometry.cached);
+      const display = geometry.display;
+      const x = requireFiniteNumber(input.args.x, 'x');
+      const y = requireFiniteNumber(input.args.y, 'y');
+      consumePhysicalScreenObservation(input, state);
+      const hidStartedAt = performance.now();
+      const result = await executeRemoteXpcHidInput({
+        controllerHome: input.controllerHome, deviceIdentifier: state.device.identifier, udid: state.device.udid,
+        width: display.width, height: display.height, action: 'tap', x, y,
+      });
+      timingStages.hidWorkerReady = { ms: result.timings.workerStartupMs + result.timings.workerReadyMs, cached: result.reusedWorker };
+      timingStages.hidWriteAck = { ms: result.timings.hidMs ?? result.timings.requestMs, cached: false };
+      timingStages.hidRequestTotal = { ms: elapsedMs(hidStartedAt), cached: result.reusedWorker };
+      appendEvent(input, record.interactionId, 'observed_tap', { requestId: input.requestId, observationId: observation.observationId, observationAgeMs: ageMs, x, y, reusedWorker: result.reusedWorker });
+      return finishTimedResult(actionStartedAt, timingStages, { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, result: bounded(result), observationConsumed: true });
     }
     case 'physical_device_batch': {
       const lockStartedAt = performance.now();
@@ -1215,8 +1330,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       }
       validatePhysicalInputBatchCoordinates(steps, display);
       const foregroundStartedAt = performance.now();
-      await reactivatePhysicalTargetApp(input, state);
-      recordTiming(timingStages, 'foregroundReactivate', foregroundStartedAt, false);
+      const foregroundObservation = requireObservedPhysicalTargetForeground(state);
+      recordTiming(timingStages, 'foregroundObservation', foregroundStartedAt, true);
+      consumePhysicalScreenObservation(input, state);
       const batchStartedAt = performance.now();
       const completed: Array<Record<string, unknown>> = [];
       let completedMutations = 0;
@@ -1319,8 +1435,10 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         interaction: record,
         ...(display ? { display } : {}),
         completed,
+        foregroundObservation: { ...foregroundObservation, consumed: true },
         executionPlan: {
-          foregroundActivations: 1,
+          foregroundActivations: 0,
+          foregroundObservationChecks: 1,
           unlockChecks: unlock.cached ? 0 : 1,
           displayLookups: display ? 1 : 0,
           pluginRoundTrips: 1,
@@ -1340,8 +1458,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       const x = requireFiniteNumber(input.args.x, 'x');
       const y = requireFiniteNumber(input.args.y, 'y');
       const foregroundStartedAt = performance.now();
-      await reactivatePhysicalTargetApp(input, state);
-      recordTiming(timingStages, 'foregroundReactivate', foregroundStartedAt, false);
+      const foregroundObservation = requireObservedPhysicalTargetForeground(state);
+      recordTiming(timingStages, 'foregroundObservation', foregroundStartedAt, true);
+      consumePhysicalScreenObservation(input, state);
       const hidStartedAt = performance.now();
       const result = await executeRemoteXpcHidInput({
         controllerHome: input.controllerHome,
@@ -1357,7 +1476,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       const eventStartedAt = performance.now();
       appendEvent(input, record.interactionId, 'tap', { requestId: input.requestId, x, y, width: display.width, height: display.height, reusedWorker: result.reusedWorker });
       recordTiming(timingStages, 'eventPersistence', eventStartedAt, false);
-      return finishTimedResult(actionStartedAt, timingStages, { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, result: bounded(result) });
+      return finishTimedResult(actionStartedAt, timingStages, { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, result: bounded(result), foregroundObservation: { ...foregroundObservation, consumed: true } });
     }
     case 'physical_device_swipe': {
       const lockStartedAt = performance.now();
@@ -1374,8 +1493,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       const y2 = requireFiniteNumber(input.args.to_y, 'to_y');
       const durationMs = typeof input.args.duration_ms === 'number' ? Math.trunc(input.args.duration_ms) : 250;
       const foregroundStartedAt = performance.now();
-      await reactivatePhysicalTargetApp(input, state);
-      recordTiming(timingStages, 'foregroundReactivate', foregroundStartedAt, false);
+      const foregroundObservation = requireObservedPhysicalTargetForeground(state);
+      recordTiming(timingStages, 'foregroundObservation', foregroundStartedAt, true);
+      consumePhysicalScreenObservation(input, state);
       const hidStartedAt = performance.now();
       const result = await executeRemoteXpcHidInput({
         controllerHome: input.controllerHome,
@@ -1391,7 +1511,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       const eventStartedAt = performance.now();
       appendEvent(input, record.interactionId, 'swipe', { requestId: input.requestId, from: [x, y], to: [x2, y2], durationMs, reusedWorker: result.reusedWorker });
       recordTiming(timingStages, 'eventPersistence', eventStartedAt, false);
-      return finishTimedResult(actionStartedAt, timingStages, { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, result: bounded(result) });
+      return finishTimedResult(actionStartedAt, timingStages, { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, result: bounded(result), foregroundObservation: { ...foregroundObservation, consumed: true } });
     }
     case 'physical_device_type_text': {
       const lockStartedAt = performance.now();
@@ -1404,8 +1524,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Unsupported input_mode: ${textMode}.`, { retryable: false });
       }
       const foregroundStartedAt = performance.now();
-      await reactivatePhysicalTargetApp(input, state);
-      recordTiming(timingStages, 'foregroundReactivate', foregroundStartedAt, false);
+      const foregroundObservation = requireObservedPhysicalTargetForeground(state);
+      recordTiming(timingStages, 'foregroundObservation', foregroundStartedAt, true);
+      consumePhysicalScreenObservation(input, state);
       const hidStartedAt = performance.now();
       const result = await executeRemoteXpcHidInput({
         controllerHome: input.controllerHome,
@@ -1419,7 +1540,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       const eventStartedAt = performance.now();
       appendEvent(input, record.interactionId, 'type_text', { requestId: input.requestId, length: text.length, reusedWorker: result.reusedWorker });
       recordTiming(timingStages, 'eventPersistence', eventStartedAt, false);
-      return finishTimedResult(actionStartedAt, timingStages, { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, result: bounded(result), text: '<redacted>' });
+      return finishTimedResult(actionStartedAt, timingStages, { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, result: bounded(result), text: '<redacted>', foregroundObservation: { ...foregroundObservation, consumed: true } });
     }
     case 'physical_device_events': {
       const limit = Math.max(1, Math.min(MAX_EVENTS, typeof input.args.limit === 'number' ? Math.trunc(input.args.limit) : 50));
