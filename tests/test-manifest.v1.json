@@ -23,8 +23,8 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 116,
-    "maxTestLines": 45234,
+    "maxTestFiles": 117,
+    "maxTestLines": 45601,
     "maxPureFiles": 35,
     "maxTempIsolatedFiles": 46,
     "maxProcessTreeFiles": 16,
@@ -330,6 +330,10 @@
     "tests/runtime/browser-plugin.test.ts": {
       "module": "browser",
       "resource": "fixed-port"
+    },
+    "tests/runtime/xiaohongshu-publish.test.ts": {
+      "module": "browser",
+      "resource": "pure"
     },
     "tests/runtime/capability-recovery.test.ts": {
       "module": "workflow",
