@@ -23,7 +23,7 @@ import type {
   AssistantPluginActionExecutionInput,
   AssistantPluginCapability,
 } from './types';
-import { executeRemoteXpcHidInput, prewarmRemoteXpcHid, remoteXpcHidStatus } from './ios/remote-xpc-hid';
+import { executeRemoteXpcHidInput, prewarmRemoteXpcHid, remoteXpcHidStatus, stopRemoteXpcHidForDevice } from './ios/remote-xpc-hid';
 
 const PROVIDER = 'ios-device' as const;
 const SESSION_EXPIRY_MS = 2 * 60 * 60_000;
@@ -602,6 +602,25 @@ async function installedApps(
     .filter((entry) => entry.bundleIdentifier === bundleId);
 }
 
+function expirePhysicalDeviceSessions(input: AssistantPluginActionExecutionInput): number {
+  const nowMs = hooks.now().getTime();
+  let expired = 0;
+  for (const record of listInteractionSessions(input.repoRoot, PROVIDER)) {
+    if (!isInteractionSessionActive(record.status)) continue;
+    const expiresAtMs = Date.parse(record.expiresAt);
+    if (!Number.isFinite(expiresAtMs) || nowMs < expiresAtMs) continue;
+    const state = readState(input, record.interactionId);
+    patchInteractionSession(input.repoRoot, PROVIDER, record.interactionId, {
+      status: 'failed',
+      error: { code: 'IOS_DEVICE_SESSION_EXPIRED', message: 'The physical iOS interaction expired.' },
+    });
+    appendEvent(input, record.interactionId, 'session_expired');
+    if (state?.device.identifier) stopRemoteXpcHidForDevice(state.device.identifier);
+    expired += 1;
+  }
+  return expired;
+}
+
 function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal = false): { record: InteractionSessionRecord; state: PhysicalSessionState } {
   const interactionId = requireString(input.args.interaction_id, 'interaction_id');
   const record = readInteractionSession(input.repoRoot, PROVIDER, interactionId);
@@ -630,6 +649,8 @@ function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal
       status: 'failed',
       error: { code: 'IOS_DEVICE_SESSION_EXPIRED', message: 'The physical iOS interaction expired.' },
     });
+    appendEvent(input, interactionId, 'session_expired');
+    stopRemoteXpcHidForDevice(state.device.identifier);
     throw new AssistantPluginError('IOS_DEVICE_SESSION_EXPIRED', 'The physical iOS interaction expired; open a new session.', { retryable: false });
   }
   return { record, state };
@@ -1051,9 +1072,12 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
     recordTiming(timingStages, 'lockState', lockStartedAt, false);
     const selectedAliases = [selected.identifier, selected.udid];
     const sessionLookupStartedAt = performance.now();
+    const expiredSessionCount = expirePhysicalDeviceSessions(input);
+    pruneInteractionSessions(input.repoRoot, PROVIDER, 100);
     const conflict = listInteractionSessions(input.repoRoot, PROVIDER).find((entry) =>
       isInteractionSessionActive(entry.status) && interactionMayOwnTarget(entry, selectedAliases));
     recordTiming(timingStages, 'sessionLookup', sessionLookupStartedAt, false);
+    if (expiredSessionCount > 0) timingStages.sessionReconcile = { ms: timingStages.sessionLookup.ms, cached: false };
     if (conflict) {
       throw new AssistantPluginError('PLUGIN_RESOURCE_BUSY', 'The selected iPhone already has an active forge interaction.', {
         retryable: true,
@@ -1065,7 +1089,6 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         },
       });
     }
-    pruneInteractionSessions(input.repoRoot, PROVIDER, 100);
     const interactionId = `ios_device_${randomUUID()}`;
     const createdAt = timestamp();
     const record: InteractionSessionRecord = {
@@ -1403,12 +1426,13 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       return { provider: 'coredevice', interaction: record, events: bounded(state.events.slice(-limit)) };
     }
     case 'physical_device_close': {
+      const inputWorkerRelease = stopRemoteXpcHidForDevice(state.device.identifier);
       const wasActive = isInteractionSessionActive(record.status);
-      if (!wasActive) return { provider: 'coredevice', interaction: record, alreadyClosed: true, deviceUnmodified: true };
+      if (!wasActive) return { provider: 'coredevice', interaction: record, alreadyClosed: true, deviceUnmodified: true, inputWorkerRelease };
       patchInteractionSession(input.repoRoot, PROVIDER, record.interactionId, { status: 'closing' });
-      appendEvent(input, record.interactionId, 'session_closed');
+      appendEvent(input, record.interactionId, 'session_closed', { inputWorkerRelease });
       const finalRecord = patchInteractionSession(input.repoRoot, PROVIDER, record.interactionId, { status: 'closed', error: undefined }) ?? record;
-      return { provider: 'coredevice', interaction: finalRecord, deviceUnmodified: true };
+      return { provider: 'coredevice', interaction: finalRecord, deviceUnmodified: true, inputWorkerRelease };
     }
     default:
       throw new AssistantPluginError('PLUGIN_ACTION_NOT_SUPPORTED', `ios/${input.actionId} is not supported.`, { retryable: false });

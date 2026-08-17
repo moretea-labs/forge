@@ -86,6 +86,7 @@ type TestExecutor = (input: RemoteXpcHidInput) => Promise<RemoteXpcHidResult>;
 let testExecutor: TestExecutor | undefined;
 const workers = new Map<string, WorkerRecord>();
 const warmups = new Map<string, Promise<void>>();
+const workerGenerations = new Map<string, number>();
 
 export function setRemoteXpcHidExecutorForTest(executor: TestExecutor | undefined): void {
   testExecutor = executor;
@@ -96,6 +97,7 @@ export function resetRemoteXpcHidForTest(): void {
   for (const worker of workers.values()) stopWorker(worker);
   workers.clear();
   warmups.clear();
+  workerGenerations.clear();
 }
 
 export function remoteXpcHidStatus(controllerHome: string, env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
@@ -484,6 +486,25 @@ function scheduleIdleStop(worker: WorkerRecord): void {
   worker.idleTimer.unref?.();
 }
 
+function workerGeneration(deviceIdentifier: string): number {
+  return workerGenerations.get(deviceIdentifier) ?? 0;
+}
+
+export function stopRemoteXpcHidForDevice(deviceIdentifier: string): Record<string, unknown> {
+  const worker = workers.get(deviceIdentifier);
+  const cancelledWarmup = warmups.has(deviceIdentifier);
+  workerGenerations.set(deviceIdentifier, workerGeneration(deviceIdentifier) + 1);
+  warmups.delete(deviceIdentifier);
+  if (worker) stopWorker(worker);
+  return {
+    backend: 'remote-xpc-hid',
+    state: 'stopped',
+    workerStopped: Boolean(worker),
+    warmupCancelled: cancelledWarmup,
+    runnerOwned: false,
+  };
+}
+
 function startWorker(input: Pick<RemoteXpcHidInput, 'controllerHome' | 'deviceIdentifier'>, endpoint: RsdEndpoint): WorkerRecord {
   const python = resolvePython(input.controllerHome, process.env);
   if (!python) {
@@ -666,14 +687,23 @@ function validateInput(input: RemoteXpcHidInput): void {
   }
 }
 
-async function establishWorker(input: Pick<RemoteXpcHidInput, 'controllerHome' | 'deviceIdentifier' | 'udid'>): Promise<void> {
+async function establishWorker(
+  input: Pick<RemoteXpcHidInput, 'controllerHome' | 'deviceIdentifier' | 'udid'>,
+  generation = workerGeneration(input.deviceIdentifier),
+): Promise<void> {
   if (workers.has(input.deviceIdentifier)) return;
   const endpoints = await discoverEndpoints(input.udid);
+  if (workerGeneration(input.deviceIdentifier) !== generation) return;
   let lastError: unknown;
   for (const endpoint of endpoints) {
+    if (workerGeneration(input.deviceIdentifier) !== generation) return;
     const worker = startWorker(input, endpoint);
     try {
       await worker.ready;
+      if (workerGeneration(input.deviceIdentifier) !== generation) {
+        stopWorker(worker);
+        return;
+      }
       return;
     } catch (error) {
       lastError = error;
@@ -694,10 +724,14 @@ export function prewarmRemoteXpcHid(input: Pick<RemoteXpcHidInput, 'controllerHo
   if (!resolvePython(input.controllerHome, process.env)) {
     return { backend: 'remote-xpc-hid', state: 'unavailable', runnerOwned: false, reason: 'toolchain_missing' };
   }
-  const warmup = establishWorker(input)
+  const generation = workerGeneration(input.deviceIdentifier);
+  let warmup!: Promise<void>;
+  warmup = establishWorker(input, generation)
     .catch(() => undefined)
     .then(() => undefined)
-    .finally(() => warmups.delete(input.deviceIdentifier));
+    .finally(() => {
+      if (warmups.get(input.deviceIdentifier) === warmup) warmups.delete(input.deviceIdentifier);
+    });
   warmups.set(input.deviceIdentifier, warmup);
   return { backend: 'remote-xpc-hid', state: 'warming_started', runnerOwned: false };
 }

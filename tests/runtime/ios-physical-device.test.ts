@@ -186,7 +186,46 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(commands.some((argv) => argv.includes('xcodebuild'))).toBe(false);
     expect(commands.some((argv) => argv.includes('prepare'))).toBe(false);
 
-    await executeIosPhysicalDeviceAction(input(value, 'physical_device_close', { interaction_id: interactionId }));
+    const closed = await executeIosPhysicalDeviceAction(input(value, 'physical_device_close', { interaction_id: interactionId }));
+    expect(closed.inputWorkerRelease).toMatchObject({ backend: 'remote-xpc-hid', state: 'stopped', runnerOwned: false });
+  });
+
+  it('reconciles an expired physical session before resource-conflict detection', async () => {
+    const value = fixture();
+    let now = new Date('2026-08-17T08:00:00.000Z');
+    let launchCount = 0;
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      now: () => now,
+      runCommand: (command, args) => {
+        if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
+        const joined = args.join(' ');
+        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: '小红书', bundleIdentifier: 'com.xingin.discover' }] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: false, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device process launch')) {
+          launchCount += 1;
+          return { ok: true, status: 0, stdout: json({ processIdentifier: 100 + launchCount, launchOptions: { activatedWhenStarted: true } }), stderr: '', command: [command, ...args] };
+        }
+        throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
+      },
+    });
+
+    const first = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
+      device: 'greyson', bundle_id: 'com.xingin.discover',
+    }));
+    const firstInteractionId = String((first.interaction as Record<string, unknown>).interactionId);
+    now = new Date('2026-08-17T10:00:01.000Z');
+
+    const second = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
+      device: 'greyson', bundle_id: 'com.xingin.discover',
+    }));
+    expect((second.interaction as Record<string, unknown>).status).toBe('waiting_for_user');
+    expect(launchCount).toBe(2);
+
+    const oldClose = await executeIosPhysicalDeviceAction(input(value, 'physical_device_close', { interaction_id: firstInteractionId }));
+    expect(oldClose.alreadyClosed).toBe(true);
+    expect((oldClose.interaction as Record<string, unknown>).status).toBe('failed');
   });
 
   it('fails initial open when CoreDevice does not confirm foreground activation and releases the failed interaction fence', async () => {
