@@ -1730,11 +1730,14 @@ async function finalizeFacadeWorkHandle(
   const head = status.head ?? handle.expectedHead ?? handle.baseCommit;
   const committedDelta = Boolean(head && handle.baseCommit && head !== handle.baseCommit);
   const commit = typeof args.commit === 'boolean' ? args.commit : !status.clean;
-  const merge = typeof args.merge === 'boolean' ? args.merge : true;
   const requestedOutcome = args.completion_outcome === 'completed_no_change' || args.completion_outcome === 'completed_changed'
     ? args.completion_outcome
     : undefined;
   const completionOutcome = requestedOutcome ?? (!commit && !committedDelta && status.clean ? 'completed_no_change' : 'completed_changed');
+  // A proven no-change completion has nothing to merge. Defaulting merge=true
+  // forced the generic Git delivery path to do unnecessary work and conflicted
+  // with work_finalize's explicit no-change contract.
+  const merge = typeof args.merge === 'boolean' ? args.merge : completionOutcome !== 'completed_no_change';
   const explicitNoChangeEvidence = typeof args.no_change_evidence === 'string' ? args.no_change_evidence.trim() : '';
   const noChangeEvidence = completionOutcome === 'completed_no_change'
     ? explicitNoChangeEvidence || `Validated Work ${workId} has no repository delta from base ${handle.baseCommit ?? 'unknown'} at clean HEAD ${head ?? 'unknown'}.`

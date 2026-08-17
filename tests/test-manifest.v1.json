@@ -24,7 +24,7 @@
   ],
   "policy": {
     "maxTestFiles": 120,
-    "maxTestLines": 46625,
+    "maxTestLines": 46720,
     "maxPureFiles": 35,
     "maxTempIsolatedFiles": 47,
     "maxProcessTreeFiles": 16,
