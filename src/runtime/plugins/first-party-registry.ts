@@ -8,6 +8,7 @@ import { iosPluginAdapter } from './ios-adapter';
 import { localSystemPluginAdapter } from './local-system-adapter';
 import { pluginManagementAdapter } from './plugin-management-adapter';
 import { resendPluginAdapter } from './resend-adapter';
+import { xiaohongshuPluginAdapter } from './xiaohongshu-publish';
 import type { AssistantPluginAdapter } from './types';
 
 const FIRST_PARTY_PLUGIN_ADAPTERS: readonly AssistantPluginAdapter[] = [
@@ -19,6 +20,7 @@ const FIRST_PARTY_PLUGIN_ADAPTERS: readonly AssistantPluginAdapter[] = [
   googleCalendarPluginAdapter,
   googleTasksPluginAdapter,
   resendPluginAdapter,
+  xiaohongshuPluginAdapter,
   localSystemPluginAdapter,
   pluginManagementAdapter,
 ];

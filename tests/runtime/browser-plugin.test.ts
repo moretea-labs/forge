@@ -80,6 +80,7 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
   const routeDecisions: string[] = [];
   const launches: Array<{ userDataDir: string; options: Record<string, unknown> }> = [];
   const evaluatedExpressions: unknown[] = [];
+  const fileSelections: Array<{ selector: string; files: string[] }> = [];
 
   const page = {
     async goto(url: string) {
@@ -114,6 +115,9 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
       currentTitle = options.title ?? 'Waiting Example';
       return {};
     },
+    async setInputFiles(selector: string, files: string | string[]) {
+      fileSelections.push({ selector, files: Array.isArray(files) ? [...files] : [files] });
+    },
   };
 
   return {
@@ -140,7 +144,7 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
       },
     },
     routeDecisions,
-    launches, evaluatedExpressions,
+    launches, evaluatedExpressions, fileSelections,
   } as never;
 }
 
@@ -240,6 +244,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
     activeTabId: userTab.id,
     targetMetadataReads: 0,
     localFileInput: undefined as { name: string; size: number } | undefined,
+    localFileInputs: [] as Array<{ name: string; size: number }>,
   };
   let nextTabId = 9001;
   const appName = product === 'chrome' ? 'Google Chrome' : 'Vivaldi';
@@ -295,6 +300,10 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
             if (token) entry.ownerToken = token;
             return JSON.stringify({ ok: true, value: { __forgeUndefined: true } });
           }
+          if (source.includes('Target input does not allow multiple files.')) {
+            events.localFileInputs = [];
+            return JSON.stringify({ ok: true, value: true });
+          }
           if (source.includes('const expectedName =') && source.includes('const expectedSize =')) {
             const encodedName = source.match(/const expectedName = ("(?:[^"\\]|\\.)*");/)?.[1];
             const encodedSize = source.match(/const expectedSize = (\d+);/)?.[1];
@@ -302,7 +311,11 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
               name: encodedName ? JSON.parse(encodedName) as string : '',
               size: Number(encodedSize ?? 0),
             };
+            events.localFileInputs.push(events.localFileInput);
             return JSON.stringify({ ok: true, value: events.localFileInput });
+          }
+          if (source.includes("element.dispatchEvent(new Event('input'") && source.includes('Array.from(element.files || []).map')) {
+            return JSON.stringify({ ok: true, value: events.localFileInputs });
           }
           return JSON.stringify({ ok: true, value: true });
         }
@@ -370,6 +383,9 @@ describe('browser plugin', () => {
       'screenshot',
       'extract_links',
       'click',
+      'click_text',
+      'dispatch_event',
+      'attach_local_file',
       'fill',
       'type',
       'press',
@@ -398,6 +414,9 @@ describe('browser plugin', () => {
 
     expect(actions.click?.risk).toBe('remote_write');
     expect(actions.click?.confirmation).toBe('authorization');
+    expect(actions.click_text?.risk).toBe('remote_write');
+    expect(actions.dispatch_event?.risk).toBe('remote_write');
+    expect(actions.attach_local_file?.argumentsSchema).toMatchObject({ properties: { file_path: { type: 'string' }, file_paths: { type: 'array', maxItems: 32 } } });
     expect(actions.type?.risk).toBe('remote_write');
     expect(actions.type?.confirmation).toBe('authorization');
     expect(actions.fill?.risk).toBe('remote_write');
@@ -409,6 +428,50 @@ describe('browser plugin', () => {
     for (const unsupported of ['submit', 'delete', 'publish', 'payment', 'send']) {
       expect(Object.keys(actions).some((actionId) => actionId.includes(unsupported))).toBe(false);
     }
+  });
+
+  test('attach_local_file supports multiple files and dispatch_event is bounded', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+    });
+    const runtime = mockPlaywright();
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime });
+
+    const opened = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session', requestId: 'browser-multi-open',
+      args: { url: 'https://example.com/upload' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    writeFileSync(join(repoRoot, 'one.png'), 'one');
+    writeFileSync(join(repoRoot, 'two.jpg'), 'two');
+
+    const attached = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'attach_local_file', requestId: 'browser-multi-attach',
+      args: { session_id: sessionId, selector: 'input[type=file]', file_paths: ['one.png', 'two.jpg'], post_action_wait_ms: 1 },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect((runtime as any).fileSelections).toEqual([{
+      selector: 'input[type=file]',
+      files: [join(repoRoot, 'one.png'), join(repoRoot, 'two.jpg')],
+    }]);
+    expect((attached.action as Record<string, unknown>).fileCount).toBe(2);
+
+    const dispatched = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'dispatch_event', requestId: 'browser-dispatch-publish',
+      args: { session_id: sessionId, selector: 'xhs-publish-btn', event: 'publish', post_action_wait_ms: 1 },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect((dispatched.action as Record<string, unknown>).event).toBe('publish');
+
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'dispatch_event', requestId: 'browser-dispatch-invalid',
+      args: { session_id: sessionId, selector: 'xhs-publish-btn', event: 'publish();alert(1)' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('event must be a simple DOM event name');
   });
 
   test('interaction actions inherit host authorization before job submission', async () => {
@@ -1741,6 +1804,36 @@ describe('browser plugin', () => {
     })).rejects.toThrow('No frontmost native browser tab');
     expect(native.events.created).toEqual([]);
     expect(native.events.navigated).toEqual([]);
+  });
+
+  test('native attach supports one atomic multiple-file selection on a multiple input', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
+      nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'], cdpAttachFallback: 'fail_closed',
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const opened = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session', requestId: 'browser-native-multiple-open',
+      args: { url: 'https://example.com/multiple' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    writeFileSync(join(repoRoot, 'one.png'), 'one-native');
+    writeFileSync(join(repoRoot, 'two.jpg'), 'two-native');
+
+    const result = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'attach_local_file', requestId: 'browser-native-multiple-attach',
+      args: { session_id: sessionId, selector: 'input[type=file]', file_paths: ['one.png', 'two.jpg'], post_action_wait_ms: 1 },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(native.events.localFileInputs).toEqual([
+      { name: 'one.png', size: Buffer.byteLength('one-native') },
+      { name: 'two.jpg', size: Buffer.byteLength('two-native') },
+    ]);
+    expect((result.action as Record<string, unknown>).fileCount).toBe(2);
   });
 
   test('explicitly adopted native tab remains user-owned and supports local file input', async () => {

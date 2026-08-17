@@ -164,6 +164,7 @@ type PageLike = {
   on?(event: string, handler: (...args: unknown[]) => void): void;
   bringToFront?(): Promise<void>;
   keyboard?: { press(key: string): Promise<void> };
+  setInputFiles?: (selector: string, files: string | string[]) => Promise<void>;
 };
 
 type PlaywrightRuntime = {
@@ -1646,8 +1647,8 @@ function capabilities(): AssistantPluginCapability[] {
       description: 'Perform explicit form and pointer interactions on HTTP(S) pages through the persistent Playwright profile.',
       scopes: ['browser.interact', 'browser.profile'],
       actions: [
-        'click', 'double_click', 'hover', 'focus', 'type', 'fill', 'select_option',
-        'check', 'uncheck', 'press', 'keyboard_shortcut', 'wait_for_selector', 'attach_local_file', 'await_file_transfer',
+        'click', 'click_text', 'double_click', 'hover', 'focus', 'type', 'fill', 'select_option',
+        'check', 'uncheck', 'press', 'keyboard_shortcut', 'dispatch_event', 'wait_for_selector', 'attach_local_file', 'await_file_transfer',
       ],
     },
   ];
@@ -1945,6 +1946,14 @@ function actions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: interactSchema({ selector: { type: 'string' } }, ['selector']),
     },
     {
+      actionId: 'click_text',
+      title: 'Click exact visible text',
+      description: 'Click the smallest visible standard DOM element whose normalized text exactly matches the requested text. Closed shadow roots are intentionally not traversed.',
+      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
+      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
+      argumentsSchema: interactSchema({ text: { type: 'string', minLength: 1, maxLength: 200 } }, ['text']),
+    },
+    {
       actionId: 'double_click',
       title: 'Double-click element',
       description: 'Double-click a selector after authorization.',
@@ -2025,6 +2034,14 @@ function actions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: interactSchema({ key: { type: 'string' } }, ['key']),
     },
     {
+      actionId: 'dispatch_event',
+      title: 'Dispatch DOM event',
+      description: 'Dispatch one named bubbling/composed DOM CustomEvent on an explicit selector after authorization. No arbitrary JavaScript payload is accepted.',
+      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
+      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
+      argumentsSchema: interactSchema({ selector: { type: 'string' }, event: { type: 'string', minLength: 1, maxLength: 64 } }, ['selector', 'event']),
+    },
+    {
       actionId: 'wait_for_selector',
       title: 'Wait for selector',
       description: 'Wait for a selector state on an allowed page after authorization.',
@@ -2037,11 +2054,15 @@ function actions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'attach_local_file',
-      title: 'Attach local file',
-      description: 'Set an input[type=file] path for an allowed local file after authorization. Never auto-opens executables.',
+      title: 'Attach local file(s)',
+      description: 'Set one or more allowed local files on input[type=file] after authorization. file_path remains backward-compatible; file_paths supports multiple selection. Never auto-opens executables.',
       readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({ selector: { type: 'string' }, file_path: { type: 'string' } }, ['selector', 'file_path']),
+      argumentsSchema: interactSchema({
+        selector: { type: 'string' },
+        file_path: { type: 'string' },
+        file_paths: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'string' } },
+      }, ['selector']),
     },
     {
       actionId: 'await_file_transfer',
@@ -2672,6 +2693,39 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             : { failedRequests: diagnostics.failedRequests.slice(0, 50) }),
         }), { persistSession: true });
       }
+      case 'click_text': {
+        const target = resolveActionTarget(input.repoRoot, input.args);
+        const text = requiredString(input.args.text, 'text');
+        if (text.length > 200) {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'text must be 200 characters or fewer.', { retryable: false });
+        }
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+          const clicked = await page.evaluate((payload) => {
+            const args = payload as { text: string };
+            const normalize = (value: string) => value.replace(/\s+/g, ' ').trim();
+            const candidates = Array.from(document.querySelectorAll<HTMLElement>('button,[role=button],a,div,span'))
+              .filter((element) => normalize(element.innerText || element.textContent || '') === args.text)
+              .filter((element) => {
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+              })
+              .sort((left, right) => {
+                const childDelta = left.children.length - right.children.length;
+                if (childDelta !== 0) return childDelta;
+                const leftRect = left.getBoundingClientRect();
+                const rightRect = right.getBoundingClientRect();
+                return (leftRect.width * leftRect.height) - (rightRect.width * rightRect.height);
+              });
+            const element = candidates[0];
+            if (!element) throw new Error(`visible exact text not found: ${args.text}`);
+            element.click();
+            return { tag: element.tagName.toLowerCase(), className: element.className || '', text: normalize(element.innerText || element.textContent || '') };
+          }, { text });
+          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'click_text', `Clicked exact visible text ${text}.`, { text, clicked });
+        });
+      }
       case 'click':
       case 'double_click':
       case 'hover':
@@ -2770,6 +2824,30 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'keyboard_shortcut', `Pressed shortcut ${key}.`, { key });
         });
       }
+      case 'dispatch_event': {
+        const target = resolveActionTarget(input.repoRoot, input.args);
+        const selector = requiredString(input.args.selector, 'selector');
+        const event = requiredString(input.args.event, 'event');
+        if (!/^[A-Za-z][A-Za-z0-9:_-]{0,63}$/.test(event)) {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'event must be a simple DOM event name (letters, digits, colon, underscore, or hyphen; max 64 chars).', { retryable: false });
+        }
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+          const dispatched = await page.evaluate((payload) => {
+            const args = payload as { selector: string; event: string };
+            const element = document.querySelector(args.selector);
+            if (!element) throw new Error(`element not found: ${args.selector}`);
+            const domEvent = new CustomEvent(args.event, { bubbles: true, composed: true, cancelable: true });
+            const accepted = element.dispatchEvent(domEvent);
+            return { accepted, defaultPrevented: domEvent.defaultPrevented };
+          }, { selector, event });
+          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'dispatch_event', `Dispatched ${event} on ${selector}.`, {
+            selector,
+            event,
+            dispatched,
+          });
+        });
+      }
       case 'wait_for_selector': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         const selector = requiredString(input.args.selector, 'selector');
@@ -2788,29 +2866,42 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       case 'attach_local_file': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         const selector = requiredString(input.args.selector, 'selector');
-        const filePath = requiredString(input.args.file_path, 'file_path');
-        const resolved = resolve(input.repoRoot, filePath);
-        if (!existsSync(resolved)) {
-          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'file_path does not exist.', { retryable: false });
+        const single = stringValue(input.args.file_path);
+        const many = stringList(input.args.file_paths);
+        if (single && many) {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Use either file_path or file_paths, not both.', { retryable: false });
         }
-        if (/\.(exe|dmg|pkg|sh|bat|cmd|app)$/i.test(resolved)) {
-          throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Executable file attachments are not allowed.', { retryable: false });
+        const requested = many ?? (single ? [single] : []);
+        if (requested.length === 0 || requested.length > 32) {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'attach_local_file requires file_path or 1-32 file_paths.', { retryable: false });
+        }
+        const resolved = requested.map((filePath) => resolve(input.repoRoot, filePath));
+        for (const path of resolved) {
+          if (!existsSync(path)) {
+            throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Local attachment does not exist: ${basename(path)}`, { retryable: false });
+          }
+          if (/\.(exe|dmg|pkg|sh|bat|cmd|app)$/i.test(path)) {
+            throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Executable file attachments are not allowed.', { retryable: false });
+          }
         }
         return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           await page.evaluate((payload) => {
-            const args = payload as { selector: string; path: string };
+            const args = payload as { selector: string; count: number };
             const el = document.querySelector(args.selector) as HTMLInputElement | null;
-            if (!el) throw new Error(`input not found: ${args.selector}`);
-          }, { selector, path: resolved });
-          // Prefer Playwright setInputFiles when available via evaluate fallback marker
-          const anyPage = page as PageLike & { setInputFiles?: (selector: string, files: string | string[]) => Promise<void> };
-          if (typeof anyPage.setInputFiles === 'function') {
-            await anyPage.setInputFiles(selector, resolved);
+            if (!(el instanceof HTMLInputElement) || el.type !== 'file') throw new Error(`file input not found: ${args.selector}`);
+            if (args.count > 1 && !el.multiple) throw new Error(`file input does not allow multiple files: ${args.selector}`);
+          }, { selector, count: resolved.length });
+          if (typeof page.setInputFiles !== 'function') {
+            throw new AssistantPluginError('PLUGIN_BROWSER_FILE_ATTACH_UNSUPPORTED', 'The selected browser provider does not support local file attachment.', { retryable: false });
           }
+          await page.setInputFiles(selector, resolved.length === 1 ? resolved[0] : resolved);
           await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
-          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'attach_local_file', `Attached local file to ${selector}.`, {
+          const fileNames = resolved.map((path) => basename(path));
+          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'attach_local_file', `Attached ${resolved.length} local file(s) to ${selector}.`, {
             selector,
-            fileName: basename(resolved),
+            fileCount: resolved.length,
+            fileNames,
+            ...(resolved.length === 1 ? { fileName: fileNames[0] } : {}),
           });
         });
       }

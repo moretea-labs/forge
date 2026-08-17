@@ -627,56 +627,142 @@ export class MacOsAppleEventsPage {
 
   async setInputFiles(selector: string, files: string | string[]): Promise<void> {
     const filePaths = Array.isArray(files) ? files : [files];
-    if (filePaths.length !== 1) {
-      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Native browser file input currently accepts exactly one local file.', { retryable: false });
+    if (filePaths.length === 0 || filePaths.length > 32) {
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Native browser file input accepts 1-32 local files.', { retryable: false });
     }
-    const filePath = filePaths[0];
-    if (!filePath || !existsSync(filePath)) {
-      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Local file does not exist.', { retryable: false });
-    }
-    const bytes = readFileSync(filePath);
-    const fileName = basename(filePath);
-    const extension = extname(fileName).toLowerCase();
-    const mimeType = extension === '.pdf' ? 'application/pdf'
-      : extension === '.zip' ? 'application/zip'
-      : extension === '.png' ? 'image/png'
-      : extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg'
-      : 'application/octet-stream';
-    const bufferKey = `__forgeLocalFile_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-    const encoded = bytes.toString('base64');
-    const chunkChars = 192 * 1024;
-    try {
-      await this.evaluate(`(() => { globalThis[${JSON.stringify(bufferKey)}] = ''; return true; })()`);
-      for (let offset = 0; offset < encoded.length; offset += chunkChars) {
-        const chunk = encoded.slice(offset, offset + chunkChars);
-        await this.evaluate(`(() => { globalThis[${JSON.stringify(bufferKey)}] += ${JSON.stringify(chunk)}; return true; })()`);
+    for (const filePath of filePaths) {
+      if (!filePath || !existsSync(filePath)) {
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Local file does not exist.', { retryable: false });
       }
-      const attached = await this.evaluate<{ name?: string; size?: number }>(`(() => {
+    }
+
+    if (filePaths.length === 1) {
+      const filePath = filePaths[0];
+      const bytes = readFileSync(filePath);
+      const fileName = basename(filePath);
+      const extension = extname(fileName).toLowerCase();
+      const mimeType = extension === '.pdf' ? 'application/pdf'
+        : extension === '.zip' ? 'application/zip'
+        : extension === '.png' ? 'image/png'
+        : extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg'
+        : 'application/octet-stream';
+      const bufferKey = `__forgeLocalFile_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      const encoded = bytes.toString('base64');
+      const chunkChars = 192 * 1024;
+      try {
+        await this.evaluate(`(() => { globalThis[${JSON.stringify(bufferKey)}] = ''; return true; })()`);
+        for (let offset = 0; offset < encoded.length; offset += chunkChars) {
+          const chunk = encoded.slice(offset, offset + chunkChars);
+          await this.evaluate(`(() => { globalThis[${JSON.stringify(bufferKey)}] += ${JSON.stringify(chunk)}; return true; })()`);
+        }
+        const attached = await this.evaluate<{ name?: string; size?: number }>(`(() => {
+          const element = document.querySelector(${JSON.stringify(selector)});
+          if (!(element instanceof HTMLInputElement) || element.type !== 'file') throw new Error('Selector must resolve to an input[type=file].');
+          const expectedName = ${JSON.stringify(fileName)};
+          const expectedSize = ${bytes.length};
+          const encoded = String(globalThis[${JSON.stringify(bufferKey)}] || '');
+          const binary = atob(encoded);
+          const data = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i += 1) data[i] = binary.charCodeAt(i);
+          const file = new File([data], expectedName, { type: ${JSON.stringify(mimeType)} });
+          const transfer = new DataTransfer();
+          transfer.items.add(file);
+          element.files = transfer.files;
+          element.dispatchEvent(new Event('input', { bubbles: true }));
+          element.dispatchEvent(new Event('change', { bubbles: true }));
+          const selected = element.files && element.files[0];
+          return selected ? { name: selected.name, size: selected.size, expectedName, expectedSize } : null;
+        })()`);
+        if (attached?.name !== fileName || attached?.size !== bytes.length) {
+          throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_FILE_ATTACH_FAILED', 'Native browser did not retain the requested local file on the target input.', {
+            retryable: true,
+            details: { expectedName: fileName, expectedSize: bytes.length, actualName: attached?.name, actualSize: attached?.size },
+          });
+        }
+      } finally {
+        await this.evaluate(`(() => { try { delete globalThis[${JSON.stringify(bufferKey)}]; } catch {} return true; })()`).catch(() => undefined);
+      }
+      return;
+    }
+
+    const attachments = filePaths.map((filePath) => {
+      const bytes = readFileSync(filePath);
+      const fileName = basename(filePath);
+      const extension = extname(fileName).toLowerCase();
+      const mimeType = extension === '.pdf' ? 'application/pdf'
+        : extension === '.zip' ? 'application/zip'
+        : extension === '.png' ? 'image/png'
+        : extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg'
+        : 'application/octet-stream';
+      return {
+        bytes,
+        fileName,
+        mimeType,
+        bufferKey: `__forgeLocalFile_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+      };
+    });
+
+    if (attachments.length > 1) {
+      await this.evaluate(`(() => {
         const element = document.querySelector(${JSON.stringify(selector)});
         if (!(element instanceof HTMLInputElement) || element.type !== 'file') throw new Error('Selector must resolve to an input[type=file].');
-        const expectedName = ${JSON.stringify(fileName)};
-        const expectedSize = ${bytes.length};
-        const encoded = String(globalThis[${JSON.stringify(bufferKey)}] || '');
-        const binary = atob(encoded);
-        const data = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i += 1) data[i] = binary.charCodeAt(i);
-        const file = new File([data], expectedName, { type: ${JSON.stringify(mimeType)} });
+        if (!element.multiple) throw new Error('Target input does not allow multiple files.');
         const transfer = new DataTransfer();
-        transfer.items.add(file);
         element.files = transfer.files;
+        return true;
+      })()`);
+    }
+
+    const chunkChars = 192 * 1024;
+    try {
+      for (let index = 0; index < attachments.length; index += 1) {
+        const attachment = attachments[index];
+        const encoded = attachment.bytes.toString('base64');
+        await this.evaluate(`(() => { globalThis[${JSON.stringify(attachment.bufferKey)}] = ''; return true; })()`);
+        for (let offset = 0; offset < encoded.length; offset += chunkChars) {
+          const chunk = encoded.slice(offset, offset + chunkChars);
+          await this.evaluate(`(() => { globalThis[${JSON.stringify(attachment.bufferKey)}] += ${JSON.stringify(chunk)}; return true; })()`);
+        }
+        const append = attachments.length > 1 && index > 0;
+        await this.evaluate(`(() => {
+          const element = document.querySelector(${JSON.stringify(selector)});
+          if (!(element instanceof HTMLInputElement) || element.type !== 'file') throw new Error('Selector must resolve to an input[type=file].');
+          const expectedName = ${JSON.stringify(attachment.fileName)};
+          const expectedSize = ${attachment.bytes.length};
+          const encoded = String(globalThis[${JSON.stringify(attachment.bufferKey)}] || '');
+          const binary = atob(encoded);
+          const data = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i += 1) data[i] = binary.charCodeAt(i);
+          const file = new File([data], expectedName, { type: ${JSON.stringify(attachment.mimeType)} });
+          const transfer = new DataTransfer();
+          if (${append ? 'true' : 'false'}) {
+            for (const existing of Array.from(element.files || [])) transfer.items.add(existing);
+          }
+          transfer.items.add(file);
+          element.files = transfer.files;
+          return Array.from(element.files || []).map((selected) => ({ name: selected.name, size: selected.size }));
+        })()`);
+      }
+
+      const selected = await this.evaluate<Array<{ name?: string; size?: number }>>(`(() => {
+        const element = document.querySelector(${JSON.stringify(selector)});
+        if (!(element instanceof HTMLInputElement) || element.type !== 'file') throw new Error('Selector must resolve to an input[type=file].');
         element.dispatchEvent(new Event('input', { bubbles: true }));
         element.dispatchEvent(new Event('change', { bubbles: true }));
-        const selected = element.files && element.files[0];
-        return selected ? { name: selected.name, size: selected.size, expectedName, expectedSize } : null;
+        return Array.from(element.files || []).map((file) => ({ name: file.name, size: file.size }));
       })()`);
-      if (attached?.name !== fileName || attached?.size !== bytes.length) {
-        throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_FILE_ATTACH_FAILED', 'Native browser did not retain the requested local file on the target input.', {
+      const expected = attachments.map((attachment) => ({ name: attachment.fileName, size: attachment.bytes.length }));
+      const matches = selected.length === expected.length && expected.every((item, index) => selected[index]?.name === item.name && selected[index]?.size === item.size);
+      if (!matches) {
+        throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_FILE_ATTACH_FAILED', 'Native browser did not retain the requested local files on the target input.', {
           retryable: true,
-          details: { expectedName: fileName, expectedSize: bytes.length, actualName: attached?.name, actualSize: attached?.size },
+          details: { expected, actual: selected },
         });
       }
     } finally {
-      await this.evaluate(`(() => { try { delete globalThis[${JSON.stringify(bufferKey)}]; } catch {} return true; })()`).catch(() => undefined);
+      for (const attachment of attachments) {
+        await this.evaluate(`(() => { try { delete globalThis[${JSON.stringify(attachment.bufferKey)}]; } catch {} return true; })()`).catch(() => undefined);
+      }
     }
   }
 

@@ -14,9 +14,9 @@ Current implementation:
 - Forge already implements a durable Controller Runtime, not a generic
   personal-app plugin host.
 - First-class persisted plugins in source are the optional GitHub plugin under
-  `src/cli/github/plugin.ts` plus Gmail, Google Calendar, and Google Tasks
-  adapters under `src/runtime/plugins/`, all surfaced through Controller CLI,
-  Local Bridge APIs, and MCP compatibility tools.
+  `src/cli/github/plugin.ts` plus Gmail, Google Calendar, Google Tasks, and the
+  Browser-backed Xiaohongshu publishing recipe under `src/runtime/plugins/`, all
+  surfaced through Controller CLI, Local Bridge APIs, and MCP compatibility tools.
 - ChatGPT browser automation exists under `src/cli/chatgpt-browser/` and the
   runtime control plane. It is an execution channel, not a plugin
   registry entry.
@@ -68,6 +68,7 @@ operations on top of that runtime, not as a second orchestrator.
 | Gmail mailbox read/write | `src/runtime/plugins/gmail-adapter.ts` | `.Forge/plugins/gmail.json`, derived manifest/index, env-only credentials | Gmail read/send/trash | Implemented |
 | Google Tasks/reminder read/write | `src/runtime/plugins/google-tasks-adapter.ts` | `.Forge/plugins/google-tasks.json`, derived manifest/index, env-only credentials | Google Tasks list/task mutation | Implemented |
 | Generic plugin manifest/registry for personal apps | `src/runtime/plugins/`, `src/runtime/gateway/mcp/runtime-tools.ts`, `src/cli/local-bridge/server.ts` | Controller Home `plugins/` manifest/index projections derived from existing authority | Typed plugin action dispatch into durable Jobs | Implemented |
+| Xiaohongshu publishing recipe | `src/runtime/plugins/xiaohongshu-publish.ts`, Browser plugin | Versioned recipe + Browser session reference; authentication remains browser-profile owned | Authorized image/long-text note publication with creator receipt + profile verification | Implemented |
 
 ## 4. Packaging baseline
 
@@ -165,6 +166,13 @@ The current source-aligned assistant baseline is:
   Calendar account adapter.
 - Live Google credentials remain environment-only; this repo persists plugin
   config and derived health, not tokens.
+- Xiaohongshu publication reuses the existing Browser profile/session. The recipe
+  persists neither raw cookies nor localStorage tokens, passwords, verification
+  codes, or copied browser credentials. Login expiry is an explicit
+  `AUTH_REQUIRED` checkpoint; generated-image publication hands generated local
+  image paths into the same `image_note` route; successful publication requires
+  both the Creator `published=true` receipt and exact-title presence on the
+  account profile.
 
 
 ## 8. Bundled first-party and managed-provider boundary
