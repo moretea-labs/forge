@@ -23,7 +23,6 @@ export interface RemoteXpcHidInput {
   udid: string;
   width: number;
   height: number;
-  bundleId?: string;
   action: 'tap' | 'swipe' | 'type';
   x?: number;
   y?: number;
@@ -42,7 +41,6 @@ export interface RemoteXpcHidResult {
     workerStartupMs: number;
     workerReadyMs: number;
     requestMs: number;
-    foregroundMs?: number;
     hidMs?: number;
   };
 }
@@ -130,7 +128,6 @@ import sys
 import time
 
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
-from pymobiledevice3.remote.core_device.app_service import AppServiceService
 from pymobiledevice3.remote.core_device.hid_service import (
     ASCII_TO_HID,
     DIGITIZER_SURFACE_MAIN_TOUCHSCREEN,
@@ -237,22 +234,6 @@ async def main():
                     request_id = str(request.get('id', ''))
                     action = request.get('action')
                     request_started = time.perf_counter()
-                    foreground_ms = 0.0
-                    bundle_id = request.get('bundleId')
-                    if bundle_id:
-                        foreground_started = time.perf_counter()
-                        apps = AppServiceService(rsd)
-                        phase = 'foreground_connect'
-                        await apps.connect()
-                        try:
-                            phase = 'foreground_activate'
-                            await apps.launch_application(str(bundle_id), kill_existing=False)
-                        finally:
-                            try:
-                                await apps.close()
-                            except Exception:
-                                pass
-                        foreground_ms = (time.perf_counter() - foreground_started) * 1000.0
                     hid_started = time.perf_counter()
                     if action == 'tap':
                         phase = 'hid_prepare_tap'
@@ -304,7 +285,6 @@ async def main():
                         raise ValueError('unsupported action')
                     hid_ms = (time.perf_counter() - hid_started) * 1000.0
                     result['timings'] = {
-                        'foregroundMs': round(foreground_ms, 2),
                         'hidMs': round(hid_ms, 2),
                         'requestMs': round((time.perf_counter() - request_started) * 1000.0, 2),
                     }
@@ -565,7 +545,6 @@ async function workerRequest(worker: WorkerRecord, input: RemoteXpcHidInput): Pr
   if (input.y2 !== undefined) payload.y2 = input.y2;
   if (input.durationMs !== undefined) payload.durationMs = input.durationMs;
   if (input.text !== undefined) payload.text = input.text;
-  if (input.bundleId !== undefined) payload.bundleId = input.bundleId;
   worker.lastUsedAt = Date.now();
   scheduleIdleStop(worker);
   const requestStartedAt = performance.now();
@@ -723,7 +702,6 @@ async function executeDefault(input: RemoteXpcHidInput): Promise<RemoteXpcHidRes
         workerStartupMs: readiness.reusedWorker ? 0 : readiness.waitMs,
         workerReadyMs: request.workerReadyMs,
         requestMs: request.requestMs,
-        foregroundMs: numberTiming(request.result, 'foregroundMs'),
         hidMs: numberTiming(request.result, 'hidMs'),
       },
     };

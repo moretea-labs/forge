@@ -222,7 +222,6 @@ describe('CoreDevice-first physical iPhone provider', () => {
           workerStartupMs: callCount === 1 ? 420 : 0,
           workerReadyMs: callCount === 1 ? 80 : 0,
           requestMs: request.action === 'swipe' ? 310 : 120,
-          foregroundMs: 45,
           hidMs: request.action === 'swipe' ? 280 : 60,
         },
       };
@@ -239,7 +238,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
         if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
         if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: '小红书', bundleIdentifier: 'com.xingin.discover' }] }), stderr: '', command: [command, ...args] };
         if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: false, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
-        if (joined.includes('device process launch')) return { ok: true, status: 0, stdout: json({ processIdentifier: 123 }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device process launch')) return { ok: true, status: 0, stdout: json({ processIdentifier: 123, launchOptions: { activatedWhenStarted: true } }), stderr: '', command: [command, ...args] };
         if (joined.includes('device info displays')) {
           return { ok: true, status: 0, stdout: json({ displays: [{ bounds: [[0, 0], [1206, 2622]], nativeSize: [1206, 2622], pointScale: 3, primary: true }] }), stderr: '', command: [command, ...args] };
         }
@@ -271,13 +270,18 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(hidCalls[0]).toMatchObject({
       controllerHome: value.controllerHome,
       deviceIdentifier: 'CORE-DEVICE-1', udid: '00008150-TEST',
-      width: 1206, height: 2622, bundleId: 'com.xingin.discover', action: 'tap', x: 1082, y: 2456,
+      width: 1206, height: 2622, action: 'tap', x: 1082, y: 2456,
     });
     expect(hidCalls[1]).toMatchObject({ action: 'swipe', x: 600, y: 2100, x2: 600, y2: 600, durationMs: 280 });
     expect(hidCalls[2]).toMatchObject({ action: 'type', text: '<redacted>' });
     const launches = commands.filter((argv) => argv.join(' ').includes('device process launch'));
-    expect(launches).toHaveLength(1);
+    expect(launches).toHaveLength(4);
     expect(launches[0]).toContain('--terminate-existing');
+    expect(launches[0]).toContain('--activate');
+    for (const launch of launches.slice(1)) {
+      expect(launch).toContain('--activate');
+      expect(launch).not.toContain('--terminate-existing');
+    }
     const versions = commands.filter((argv) => argv[0] === 'xcrun' && argv[1] === 'devicectl' && argv[2] === '--version');
     const locks = commands.filter((argv) => argv.join(' ').includes('device info lockState'));
     const displays = commands.filter((argv) => argv.join(' ').includes('device info displays'));
@@ -292,6 +296,60 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const serialized = JSON.stringify(events);
     expect(serialized).not.toContain('Forge123');
     expect(serialized).toContain('type_text');
+  });
+
+  it('fails closed before HID when CoreDevice does not confirm foreground activation', async () => {
+    const value = fixture();
+    const commands: string[][] = [];
+    let hidDispatched = false;
+    let launchCount = 0;
+    setRemoteXpcHidExecutorForTest(async (request) => {
+      hidDispatched = true;
+      return {
+        backend: 'remote-xpc-hid', reusedWorker: true,
+        endpoint: { host: 'fd00::1', port: 53194 }, result: { action: request.action },
+        timings: { workerStartupMs: 0, workerReadyMs: 0, requestMs: 0, hidMs: 0 },
+      };
+    });
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      now: () => new Date('2026-08-17T08:00:00.000Z'),
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === 'devicectl' && args[1] === '--version') {
+          return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
+        }
+        const joined = args.join(' ');
+        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: '小红书', bundleIdentifier: 'com.xingin.discover' }] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: false, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info displays')) {
+          return { ok: true, status: 0, stdout: json({ displays: [{ bounds: [[0, 0], [1206, 2622]], nativeSize: [1206, 2622], pointScale: 3, primary: true }] }), stderr: '', command: [command, ...args] };
+        }
+        if (joined.includes('device process launch')) {
+          launchCount += 1;
+          return {
+            ok: true, status: 0,
+            stdout: json({ processIdentifier: 123, launchOptions: { activatedWhenStarted: launchCount === 1 } }),
+            stderr: '', command: [command, ...args],
+          };
+        }
+        throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
+      },
+    });
+
+    const opened = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
+      device: 'greyson', bundle_id: 'com.xingin.discover', prewarm_input: true,
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_tap', {
+      interaction_id: interactionId, x: 1082, y: 2456,
+    }))).rejects.toMatchObject({ code: 'IOS_DEVICE_FOREGROUND_ACTIVATION_UNCONFIRMED', retryable: true });
+    expect(hidDispatched).toBe(false);
+    const launches = commands.filter((argv) => argv.join(' ').includes('device process launch'));
+    expect(launches).toHaveLength(2);
+    expect(launches[1]).toContain('--activate');
+    expect(launches[1]).not.toContain('--terminate-existing');
   });
 
   it('surfaces CoreDevice display, lock, View Device Screen, and HID capabilities without a Runner', async () => {

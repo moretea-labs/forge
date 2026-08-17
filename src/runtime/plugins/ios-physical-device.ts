@@ -30,6 +30,7 @@ const SESSION_EXPIRY_MS = 2 * 60 * 60_000;
 const CORE_DEVICE_READY_CACHE_MS = 5 * 60_000;
 const INPUT_UNLOCK_CACHE_MS = 60_000;
 const INPUT_DISPLAY_CACHE_MS = 5 * 60_000;
+const INPUT_FOREGROUND_ACTIVATION_TIMEOUT_MS = 2_000;
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_EVENTS = 200;
 
@@ -687,6 +688,51 @@ async function cachedIosPhysicalDeviceActionStatus(input: AssistantPluginActionE
   return { status: await iosPhysicalDeviceActionStatus(input), cached: false };
 }
 
+async function reactivatePhysicalTargetApp(
+  input: AssistantPluginActionExecutionInput,
+  state: PhysicalSessionState,
+): Promise<Record<string, unknown>> {
+  let activation: Record<string, unknown>;
+  try {
+    activation = await runCoreJson(input, [
+      'device', 'process', 'launch', '--device', state.device.identifier,
+      '--activate', state.bundleId,
+    ], 'IOS_DEVICE_FOREGROUND_ACTIVATION_FAILED', INPUT_FOREGROUND_ACTIVATION_TIMEOUT_MS);
+  } catch (error) {
+    const normalized = toAssistantPluginError(error, {
+      code: 'IOS_DEVICE_FOREGROUND_ACTIVATION_FAILED',
+      message: `CoreDevice could not activate ${state.bundleId} before physical input.`,
+      retryable: true,
+    });
+    throw new AssistantPluginError('IOS_DEVICE_FOREGROUND_ACTIVATION_FAILED', normalized.message, {
+      retryable: true,
+      details: {
+        bundleId: state.bundleId,
+        deviceIdentifier: state.device.identifier,
+        hidMutationDispatched: false,
+        causeCode: normalized.code,
+      },
+    });
+  }
+  const launchOptions = objectValue(objectValue(activation.result).launchOptions);
+  if (launchOptions.activatedWhenStarted !== true) {
+    throw new AssistantPluginError(
+      'IOS_DEVICE_FOREGROUND_ACTIVATION_UNCONFIRMED',
+      `CoreDevice did not confirm foreground activation for ${state.bundleId}; no HID input was sent.`,
+      {
+        retryable: true,
+        details: {
+          bundleId: state.bundleId,
+          deviceIdentifier: state.device.identifier,
+          hidMutationDispatched: false,
+          launchOptions: bounded(launchOptions),
+        },
+      },
+    );
+  }
+  return activation;
+}
+
 export function isIosPhysicalDeviceAction(actionId: string): boolean {
   return actionId.startsWith('physical_device_');
 }
@@ -898,7 +944,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
     writeState(input, state);
     recordTiming(timingStages, 'eventPersistence', statePersistStartedAt, false);
     try {
-      const args = ['device', 'process', 'launch', '--device', selected.identifier];
+      const args = ['device', 'process', 'launch', '--device', selected.identifier, '--activate'];
       if (input.args.relaunch === true) args.push('--terminate-existing');
       args.push(bundleId);
       const launchStartedAt = performance.now();
@@ -984,6 +1030,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       const display = geometry.display;
       const x = requireFiniteNumber(input.args.x, 'x');
       const y = requireFiniteNumber(input.args.y, 'y');
+      const foregroundStartedAt = performance.now();
+      await reactivatePhysicalTargetApp(input, state);
+      recordTiming(timingStages, 'foregroundReactivate', foregroundStartedAt, false);
       const hidStartedAt = performance.now();
       const result = await executeRemoteXpcHidInput({
         controllerHome: input.controllerHome,
@@ -991,11 +1040,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         udid: state.device.udid,
         width: display.width,
         height: display.height,
-        bundleId: state.bundleId,
         action: 'tap', x, y,
       });
       timingStages.hidWorkerReady = { ms: result.timings.workerStartupMs + result.timings.workerReadyMs, cached: result.reusedWorker };
-      timingStages.foregroundReactivate = { ms: result.timings.foregroundMs ?? 0, cached: false };
       timingStages.hidWriteAck = { ms: result.timings.hidMs ?? result.timings.requestMs, cached: false };
       timingStages.hidRequestTotal = { ms: elapsedMs(hidStartedAt), cached: result.reusedWorker };
       const eventStartedAt = performance.now();
@@ -1017,6 +1064,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       const x2 = requireFiniteNumber(input.args.to_x, 'to_x');
       const y2 = requireFiniteNumber(input.args.to_y, 'to_y');
       const durationMs = typeof input.args.duration_ms === 'number' ? Math.trunc(input.args.duration_ms) : 250;
+      const foregroundStartedAt = performance.now();
+      await reactivatePhysicalTargetApp(input, state);
+      recordTiming(timingStages, 'foregroundReactivate', foregroundStartedAt, false);
       const hidStartedAt = performance.now();
       const result = await executeRemoteXpcHidInput({
         controllerHome: input.controllerHome,
@@ -1024,11 +1074,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         udid: state.device.udid,
         width: display.width,
         height: display.height,
-        bundleId: state.bundleId,
         action: 'swipe', x, y, x2, y2, durationMs,
       });
       timingStages.hidWorkerReady = { ms: result.timings.workerStartupMs + result.timings.workerReadyMs, cached: result.reusedWorker };
-      timingStages.foregroundReactivate = { ms: result.timings.foregroundMs ?? 0, cached: false };
       timingStages.hidWriteAck = { ms: result.timings.hidMs ?? result.timings.requestMs, cached: false };
       timingStages.hidRequestTotal = { ms: elapsedMs(hidStartedAt), cached: result.reusedWorker };
       const eventStartedAt = performance.now();
@@ -1046,6 +1094,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       const geometry = await sessionDisplayGeometry(input, state);
       recordTiming(timingStages, 'displayInfo', displayStartedAt, geometry.cached);
       const display = geometry.display;
+      const foregroundStartedAt = performance.now();
+      await reactivatePhysicalTargetApp(input, state);
+      recordTiming(timingStages, 'foregroundReactivate', foregroundStartedAt, false);
       const hidStartedAt = performance.now();
       const result = await executeRemoteXpcHidInput({
         controllerHome: input.controllerHome,
@@ -1053,11 +1104,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         udid: state.device.udid,
         width: display.width,
         height: display.height,
-        bundleId: state.bundleId,
         action: 'type', text,
       });
       timingStages.hidWorkerReady = { ms: result.timings.workerStartupMs + result.timings.workerReadyMs, cached: result.reusedWorker };
-      timingStages.foregroundReactivate = { ms: result.timings.foregroundMs ?? 0, cached: false };
       timingStages.hidWriteAck = { ms: result.timings.hidMs ?? result.timings.requestMs, cached: false };
       timingStages.hidRequestTotal = { ms: elapsedMs(hidStartedAt), cached: result.reusedWorker };
       const eventStartedAt = performance.now();
