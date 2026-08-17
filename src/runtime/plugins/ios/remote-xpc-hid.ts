@@ -3,11 +3,13 @@ import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { createInterface } from 'readline';
+import { performance } from 'perf_hooks';
 import { AssistantPluginError } from '../errors';
 
 const TOOLCHAIN_VERSION = '10.2.1';
 const WORKER_IDLE_MS = 15 * 60_000;
 const WORKER_STARTUP_MS = 12_000;
+const MUTATION_READY_BUDGET_MS = 2_500;
 const REQUEST_TIMEOUT_MS = 12_000;
 const MAX_TEXT_LENGTH = 2048;
 const MAX_STDERR = 8 * 1024;
@@ -18,6 +20,7 @@ export interface RemoteXpcHidInput {
   udid: string;
   width: number;
   height: number;
+  bundleId?: string;
   action: 'tap' | 'swipe' | 'type';
   x?: number;
   y?: number;
@@ -32,6 +35,13 @@ export interface RemoteXpcHidResult {
   reusedWorker: boolean;
   endpoint: { host: string; port: number };
   result: Record<string, unknown>;
+  timings: {
+    workerStartupMs: number;
+    workerReadyMs: number;
+    requestMs: number;
+    foregroundMs?: number;
+    hidMs?: number;
+  };
 }
 
 interface RsdEndpoint {
@@ -51,6 +61,7 @@ interface WorkerRecord {
   process: ChildProcessWithoutNullStreams;
   pending: Map<string, PendingRequest>;
   ready: Promise<Record<string, unknown>>;
+  readyState: 'starting' | 'ready' | 'failed';
   lastUsedAt: number;
   stderrTail: string;
   idleTimer?: NodeJS.Timeout;
@@ -100,8 +111,10 @@ import argparse
 import asyncio
 import json
 import sys
+import time
 
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
+from pymobiledevice3.remote.core_device.app_service import AppServiceService
 from pymobiledevice3.remote.core_device.hid_service import (
     ASCII_TO_HID,
     DIGITIZER_SURFACE_MAIN_TOUCHSCREEN,
@@ -136,6 +149,8 @@ async def main():
     parser.add_argument('--port', required=True, type=int)
     args = parser.parse_args()
     async with RemoteServiceDiscoveryService((args.host, args.port)) as rsd:
+        apps = AppServiceService(rsd)
+        await apps.connect()
         async with touch_session(rsd) as hid:
             connected = await hid.list_connected_services()
             service_rows = connected.get('connectedServices', []) if isinstance(connected, dict) else []
@@ -156,12 +171,20 @@ async def main():
                     request = json.loads(line)
                     request_id = str(request.get('id', ''))
                     action = request.get('action')
+                    request_started = time.perf_counter()
+                    foreground_ms = 0.0
+                    bundle_id = request.get('bundleId')
+                    if bundle_id:
+                        foreground_started = time.perf_counter()
+                        await apps.launch_application(str(bundle_id), kill_existing=False)
+                        foreground_ms = (time.perf_counter() - foreground_started) * 1000.0
+                    hid_started = time.perf_counter()
                     if action == 'tap':
                         nx, ny = normalized_point(int(request['x']), int(request['y']), int(request['width']), int(request['height']))
                         await hid.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, nx, ny, DIGITIZER_SURFACE_MAIN_TOUCHSCREEN)
                         await asyncio.sleep(0.055)
                         await hid.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, nx, ny, DIGITIZER_SURFACE_MAIN_TOUCHSCREEN)
-                        response(request_id, True, {'action': 'tap', 'hid': [nx, ny]})
+                        result = {'action': 'tap', 'hid': [nx, ny]}
                     elif action == 'swipe':
                         x, y = int(request['x']), int(request['y'])
                         x2, y2 = int(request['x2']), int(request['y2'])
@@ -178,7 +201,7 @@ async def main():
                             await asyncio.sleep(duration / steps)
                         nx2, ny2 = normalized_point(x2, y2, width, height)
                         await hid.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, nx2, ny2, DIGITIZER_SURFACE_MAIN_TOUCHSCREEN)
-                        response(request_id, True, {'action': 'swipe', 'durationMs': duration_ms})
+                        result = {'action': 'swipe', 'durationMs': duration_ms}
                     elif action == 'type':
                         text = str(request.get('text', ''))
                         if keyboard_service is None:
@@ -200,9 +223,16 @@ async def main():
                             await hid.send_keyboard(keyboard_service, [])
                             await asyncio.sleep(0.018)
                         await hid.send_keyboard(keyboard_service, [])
-                        response(request_id, True, {'action': 'type', 'length': len(text)})
+                        result = {'action': 'type', 'length': len(text)}
                     else:
                         raise ValueError('unsupported action')
+                    hid_ms = (time.perf_counter() - hid_started) * 1000.0
+                    result['timings'] = {
+                        'foregroundMs': round(foreground_ms, 2),
+                        'hidMs': round(hid_ms, 2),
+                        'requestMs': round((time.perf_counter() - request_started) * 1000.0, 2),
+                    }
+                    response(request_id, True, result)
                 except Exception as error:
                     response(str(request.get('id', '')) if isinstance(request, dict) else '', False, error=f'{type(error).__name__}: {error}')
 
@@ -341,7 +371,7 @@ function startWorker(input: Pick<RemoteXpcHidInput, 'controllerHome' | 'deviceId
     readyReject = reject;
   });
   const worker: WorkerRecord = {
-    key, endpoint, process: child, pending, ready, lastUsedAt: Date.now(), stderrTail: '',
+    key, endpoint, process: child, pending, ready, readyState: 'starting', lastUsedAt: Date.now(), stderrTail: '',
   };
   workers.set(key, worker);
 
@@ -356,6 +386,7 @@ function startWorker(input: Pick<RemoteXpcHidInput, 'controllerHome' | 'deviceId
     try { payload = JSON.parse(line) as Record<string, unknown>; } catch { return; }
     if (payload.ready === true) {
       clearTimeout(startupTimer);
+      worker.readyState = 'ready';
       readyResolve(payload);
       scheduleIdleStop(worker);
       return;
@@ -376,6 +407,7 @@ function startWorker(input: Pick<RemoteXpcHidInput, 'controllerHome' | 'deviceId
   });
   child.on('exit', (code, signal) => {
     clearTimeout(startupTimer);
+    worker.readyState = 'failed';
     const message = `RemoteXPC HID worker exited (${code ?? signal ?? 'unknown'}). ${worker.stderrTail}`.trim();
     readyReject(new Error(message));
     for (const request of pending.values()) {
@@ -387,13 +419,20 @@ function startWorker(input: Pick<RemoteXpcHidInput, 'controllerHome' | 'deviceId
   });
   child.on('error', (error) => {
     clearTimeout(startupTimer);
+    worker.readyState = 'failed';
     readyReject(error);
   });
   return worker;
 }
 
-async function workerRequest(worker: WorkerRecord, input: RemoteXpcHidInput): Promise<Record<string, unknown>> {
+async function workerRequest(worker: WorkerRecord, input: RemoteXpcHidInput): Promise<{
+  result: Record<string, unknown>;
+  workerReadyMs: number;
+  requestMs: number;
+}> {
+  const readyStartedAt = performance.now();
   await worker.ready;
+  const workerReadyMs = Math.round((performance.now() - readyStartedAt) * 100) / 100;
   const id = randomUUID();
   const payload: Record<string, unknown> = {
     id,
@@ -407,9 +446,11 @@ async function workerRequest(worker: WorkerRecord, input: RemoteXpcHidInput): Pr
   if (input.y2 !== undefined) payload.y2 = input.y2;
   if (input.durationMs !== undefined) payload.durationMs = input.durationMs;
   if (input.text !== undefined) payload.text = input.text;
+  if (input.bundleId !== undefined) payload.bundleId = input.bundleId;
   worker.lastUsedAt = Date.now();
   scheduleIdleStop(worker);
-  return await new Promise<Record<string, unknown>>((resolve, reject) => {
+  const requestStartedAt = performance.now();
+  const result = await new Promise<Record<string, unknown>>((resolve, reject) => {
     const timer = setTimeout(() => {
       worker.pending.delete(id);
       reject(new Error(`RemoteXPC HID request timed out after ${REQUEST_TIMEOUT_MS}ms.`));
@@ -424,6 +465,11 @@ async function workerRequest(worker: WorkerRecord, input: RemoteXpcHidInput): Pr
       reject(error);
     });
   });
+  return {
+    result,
+    workerReadyMs,
+    requestMs: Math.round((performance.now() - requestStartedAt) * 100) / 100,
+  };
 }
 
 function validateInput(input: RemoteXpcHidInput): void {
@@ -478,8 +524,9 @@ async function establishWorker(input: Pick<RemoteXpcHidInput, 'controllerHome' |
 
 export function prewarmRemoteXpcHid(input: Pick<RemoteXpcHidInput, 'controllerHome' | 'deviceIdentifier' | 'udid'>): Record<string, unknown> {
   if (testExecutor) return { backend: 'remote-xpc-hid', state: 'test', runnerOwned: false };
-  if (workers.has(input.deviceIdentifier)) return { backend: 'remote-xpc-hid', state: 'ready', runnerOwned: false };
-  if (warmups.has(input.deviceIdentifier)) return { backend: 'remote-xpc-hid', state: 'warming', runnerOwned: false };
+  const worker = workers.get(input.deviceIdentifier);
+  if (worker?.readyState === 'ready') return { backend: 'remote-xpc-hid', state: 'ready', runnerOwned: false, reusedWorker: true };
+  if (worker || warmups.has(input.deviceIdentifier)) return { backend: 'remote-xpc-hid', state: 'warming', runnerOwned: false };
   if (!resolvePython(input.controllerHome, process.env)) {
     return { backend: 'remote-xpc-hid', state: 'unavailable', runnerOwned: false, reason: 'toolchain_missing' };
   }
@@ -491,30 +538,76 @@ export function prewarmRemoteXpcHid(input: Pick<RemoteXpcHidInput, 'controllerHo
   return { backend: 'remote-xpc-hid', state: 'warming_started', runnerOwned: false };
 }
 
-async function executeDefault(input: RemoteXpcHidInput): Promise<RemoteXpcHidResult> {
-  let existing = workers.get(input.deviceIdentifier);
-  if (!existing) {
-    const warmup = warmups.get(input.deviceIdentifier);
-    if (warmup) await warmup;
-    existing = workers.get(input.deviceIdentifier);
+function numberTiming(result: Record<string, unknown>, key: string): number | undefined {
+  const timings = result.timings;
+  if (!timings || typeof timings !== 'object' || Array.isArray(timings)) return undefined;
+  const value = (timings as Record<string, unknown>)[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+async function waitForMutationWorker(
+  input: Pick<RemoteXpcHidInput, 'controllerHome' | 'deviceIdentifier' | 'udid'>,
+): Promise<{ worker: WorkerRecord; waitMs: number; reusedWorker: boolean }> {
+  const startedAt = performance.now();
+  const initiallyReady = workers.get(input.deviceIdentifier)?.readyState === 'ready';
+  if (!workers.has(input.deviceIdentifier) && !warmups.has(input.deviceIdentifier)) {
+    prewarmRemoteXpcHid(input);
   }
-  if (existing) {
+  const current = workers.get(input.deviceIdentifier);
+  const warmup = warmups.get(input.deviceIdentifier);
+  const readiness = current
+    ? current.ready.then(() => undefined).catch(() => undefined)
+    : warmup;
+  if (readiness) {
+    let timer: NodeJS.Timeout | undefined;
     try {
-      const result = await workerRequest(existing, input);
-      return { backend: 'remote-xpc-hid', reusedWorker: true, endpoint: existing.endpoint, result };
-    } catch {
-      stopWorker(existing);
+      await Promise.race([
+        readiness,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, MUTATION_READY_BUDGET_MS);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
-
-  await establishWorker(input);
+  const waitMs = Math.round((performance.now() - startedAt) * 100) / 100;
   const worker = workers.get(input.deviceIdentifier);
-  if (!worker) {
-    throw new AssistantPluginError('IOS_HID_INPUT_FAILED', 'RemoteXPC HID worker did not become available after trusted-tunnel establishment.', { retryable: true });
+  if (!worker || worker.readyState !== 'ready') {
+    throw new AssistantPluginError(
+      'IOS_HID_INPUT_NOT_READY',
+      `RemoteXPC HID is still warming after the ${MUTATION_READY_BUDGET_MS}ms mutation readiness budget. No input was sent; retry the same action after prewarm completes.`,
+      {
+        retryable: true,
+        details: {
+          deviceIdentifier: input.deviceIdentifier,
+          mutationDispatched: false,
+          workerReadyWaitMs: waitMs,
+          readinessBudgetMs: MUTATION_READY_BUDGET_MS,
+          prewarmContinues: warmups.has(input.deviceIdentifier) || worker?.readyState === 'starting',
+        },
+      },
+    );
   }
+  return { worker, waitMs, reusedWorker: initiallyReady };
+}
+
+async function executeDefault(input: RemoteXpcHidInput): Promise<RemoteXpcHidResult> {
+  const readiness = await waitForMutationWorker(input);
+  const worker = readiness.worker;
   try {
-    const result = await workerRequest(worker, input);
-    return { backend: 'remote-xpc-hid', reusedWorker: false, endpoint: worker.endpoint, result };
+    const request = await workerRequest(worker, input);
+    return {
+      backend: 'remote-xpc-hid', reusedWorker: readiness.reusedWorker, endpoint: worker.endpoint, result: request.result,
+      timings: {
+        workerStartupMs: readiness.reusedWorker ? 0 : readiness.waitMs,
+        workerReadyMs: request.workerReadyMs,
+        requestMs: request.requestMs,
+        foregroundMs: numberTiming(request.result, 'foregroundMs'),
+        hidMs: numberTiming(request.result, 'hidMs'),
+      },
+    };
   } catch (error) {
     stopWorker(worker);
     throw new AssistantPluginError('IOS_HID_INPUT_FAILED', error instanceof Error ? error.message : 'RemoteXPC HID input failed.', {

@@ -44,6 +44,7 @@ describe('RemoteXPC HID backend', () => {
       return {
         backend: 'remote-xpc-hid', reusedWorker: false,
         endpoint: { host: 'fd00::1', port: 53194 }, result: { action: input.action },
+        timings: { workerStartupMs: 0, workerReadyMs: 0, requestMs: 0, foregroundMs: 0, hidMs: 0 },
       };
     });
     await expect(executeRemoteXpcHidInput({

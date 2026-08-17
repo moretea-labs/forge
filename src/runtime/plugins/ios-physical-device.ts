@@ -1,7 +1,8 @@
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
+import { performance } from 'perf_hooks';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import { runBoundedProcess } from '../execution/thin-harness/async-process';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
@@ -26,6 +27,9 @@ import { executeRemoteXpcHidInput, prewarmRemoteXpcHid, remoteXpcHidStatus } fro
 
 const PROVIDER = 'ios-device' as const;
 const SESSION_EXPIRY_MS = 2 * 60 * 60_000;
+const CORE_DEVICE_READY_CACHE_MS = 5 * 60_000;
+const INPUT_UNLOCK_CACHE_MS = 60_000;
+const INPUT_DISPLAY_CACHE_MS = 5 * 60_000;
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_EVENTS = 200;
 
@@ -103,6 +107,7 @@ export function setIosPhysicalDeviceRuntimeHooksForTest(overrides: Partial<IosPh
 
 export function resetIosPhysicalDeviceRuntimeHooksForTest(): void {
   hooks = { ...defaultHooks };
+  coreDeviceReadyCache = undefined;
 }
 
 interface PhysicalDevice {
@@ -150,16 +155,67 @@ interface PhysicalEvent {
   details?: unknown;
 }
 
+interface DisplayGeometry {
+  width: number;
+  height: number;
+  pointScale?: number;
+}
+
+interface CachedDisplayGeometry extends DisplayGeometry {
+  observedAt: string;
+}
+
 interface PhysicalSessionState {
   schemaVersion: 1;
   interactionId: string;
   device: PhysicalDevice;
   bundleId: string;
+  display?: CachedDisplayGeometry;
+  unlockVerifiedAt?: string;
   events: PhysicalEvent[];
 }
 
+interface CoreDeviceStatus {
+  available: boolean;
+  platform: NodeJS.Platform;
+  coreDeviceReady: boolean;
+  devicectlVersion?: string;
+  reason?: string;
+}
+
+type TimingStages = Record<string, { ms: number; cached?: boolean }>;
+let coreDeviceReadyCache: { checkedAtMs: number; status: CoreDeviceStatus } | undefined;
+
 function timestamp(): string {
   return hooks.now().toISOString();
+}
+
+function elapsedMs(startedAt: number): number {
+  return Math.round((performance.now() - startedAt) * 100) / 100;
+}
+
+function recordTiming(stages: TimingStages, name: string, startedAt: number, cached?: boolean): void {
+  stages[name] = { ms: elapsedMs(startedAt), ...(cached === undefined ? {} : { cached }) };
+}
+
+function finishTimedResult(
+  actionStartedAt: number,
+  stages: TimingStages,
+  result: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...result,
+    timing: {
+      totalMs: elapsedMs(actionStartedAt),
+      stages,
+    },
+  };
+}
+
+function cacheAgeMs(observedAt: string | undefined): number | undefined {
+  if (!observedAt) return undefined;
+  const parsed = Date.parse(observedAt);
+  return Number.isFinite(parsed) ? Math.max(0, hooks.now().getTime() - parsed) : undefined;
 }
 
 function sanitize(value: string): string {
@@ -415,7 +471,7 @@ async function requirePhysicalDeviceUnlocked(input: AssistantPluginActionExecuti
   );
 }
 
-async function physicalDisplayGeometry(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): Promise<{ width: number; height: number; pointScale?: number }> {
+async function physicalDisplayGeometry(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): Promise<DisplayGeometry> {
   const displayResponse = await runCoreJson(input, [
     'device', 'info', 'displays', '--device', device.identifier,
   ], 'IOS_DEVICE_DISPLAY_INFO_FAILED', 30_000);
@@ -441,6 +497,47 @@ async function physicalDisplayGeometry(input: AssistantPluginActionExecutionInpu
     height: Math.trunc(height),
     pointScale: typeof primary.pointScale === 'number' && Number.isFinite(primary.pointScale) ? primary.pointScale : undefined,
   };
+}
+
+function pngDisplayGeometry(path: string, pointScale?: number): DisplayGeometry | undefined {
+  try {
+    const header = readFileSync(path).subarray(0, 24);
+    const signature = header.subarray(0, 8).toString('hex');
+    if (header.length < 24 || signature !== '89504e470d0a1a0a') return undefined;
+    const width = header.readUInt32BE(16);
+    const height = header.readUInt32BE(20);
+    if (width <= 1 || height <= 1) return undefined;
+    return { width, height, pointScale };
+  } catch {
+    return undefined;
+  }
+}
+
+async function sessionDisplayGeometry(
+  input: AssistantPluginActionExecutionInput,
+  state: PhysicalSessionState,
+): Promise<{ display: DisplayGeometry; cached: boolean }> {
+  const age = cacheAgeMs(state.display?.observedAt);
+  if (state.display && age !== undefined && age <= INPUT_DISPLAY_CACHE_MS) {
+    const { observedAt: _observedAt, ...display } = state.display;
+    return { display, cached: true };
+  }
+  const display = await physicalDisplayGeometry(input, state.device);
+  state.display = { ...display, observedAt: timestamp() };
+  writeState(input, state);
+  return { display, cached: false };
+}
+
+async function requireSessionUnlocked(
+  input: AssistantPluginActionExecutionInput,
+  state: PhysicalSessionState,
+): Promise<{ cached: boolean }> {
+  const age = cacheAgeMs(state.unlockVerifiedAt);
+  if (age !== undefined && age <= INPUT_UNLOCK_CACHE_MS) return { cached: true };
+  await requirePhysicalDeviceUnlocked(input, state.device);
+  state.unlockVerifiedAt = timestamp();
+  writeState(input, state);
+  return { cached: false };
 }
 
 async function physicalDeviceInfo(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): Promise<Record<string, unknown>> {
@@ -534,7 +631,7 @@ function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal
   return { record, state };
 }
 
-function physicalDeviceStatusFromResult(result: CommandResult, platform: NodeJS.Platform) {
+function physicalDeviceStatusFromResult(result: CommandResult, platform: NodeJS.Platform): CoreDeviceStatus {
   return {
     available: result.ok,
     platform,
@@ -544,29 +641,44 @@ function physicalDeviceStatusFromResult(result: CommandResult, platform: NodeJS.
   };
 }
 
-export function iosPhysicalDeviceStatus() {
-  if (hooks.platform() !== 'darwin') {
+export function iosPhysicalDeviceStatus(): CoreDeviceStatus {
+  const platform = hooks.platform();
+  if (platform !== 'darwin') {
+    coreDeviceReadyCache = undefined;
     return {
       available: false,
-      platform: hooks.platform(),
+      platform,
       coreDeviceReady: false,
       reason: 'Physical iOS device support requires macOS and Xcode.',
     };
   }
-  return physicalDeviceStatusFromResult(
+  const status = physicalDeviceStatusFromResult(
     hooks.runCommand('xcrun', ['devicectl', '--version'], { timeoutMs: 5_000 }),
-    hooks.platform(),
+    platform,
   );
+  coreDeviceReadyCache = status.coreDeviceReady ? { checkedAtMs: hooks.now().getTime(), status } : undefined;
+  return status;
 }
 
-async function iosPhysicalDeviceActionStatus(input: AssistantPluginActionExecutionInput) {
-  if (hooks.platform() !== 'darwin') return iosPhysicalDeviceStatus();
+async function iosPhysicalDeviceActionStatus(input: AssistantPluginActionExecutionInput): Promise<CoreDeviceStatus> {
+  const platform = hooks.platform();
+  if (platform !== 'darwin') return iosPhysicalDeviceStatus();
   const result = await hooks.runCommandAsync('xcrun', ['devicectl', '--version'], {
     cwd: input.repoRoot,
     timeoutMs: Math.min(5_000, input.timeoutMs ?? 5_000),
     signal: input.signal,
   });
-  return physicalDeviceStatusFromResult(result, hooks.platform());
+  const status = physicalDeviceStatusFromResult(result, platform);
+  coreDeviceReadyCache = status.coreDeviceReady ? { checkedAtMs: hooks.now().getTime(), status } : undefined;
+  return status;
+}
+
+async function cachedIosPhysicalDeviceActionStatus(input: AssistantPluginActionExecutionInput): Promise<{ status: CoreDeviceStatus; cached: boolean }> {
+  const cached = coreDeviceReadyCache;
+  if (cached && hooks.now().getTime() - cached.checkedAtMs <= CORE_DEVICE_READY_CACHE_MS) {
+    return { status: cached.status, cached: true };
+  }
+  return { status: await iosPhysicalDeviceActionStatus(input), cached: false };
 }
 
 export function isIosPhysicalDeviceAction(actionId: string): boolean {
@@ -687,12 +799,20 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
 }
 
 export async function executeIosPhysicalDeviceAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
+  const actionStartedAt = performance.now();
+  const timingStages: TimingStages = {};
   if (input.actionId === 'physical_device_status') {
-    return { provider: 'coredevice', ...await iosPhysicalDeviceActionStatus(input) };
+    const startedAt = performance.now();
+    const status = await iosPhysicalDeviceActionStatus(input);
+    recordTiming(timingStages, 'coreDeviceStatus', startedAt, false);
+    return finishTimedResult(actionStartedAt, timingStages, { provider: 'coredevice', ...status });
   }
-  const status = await iosPhysicalDeviceActionStatus(input);
+  const statusStartedAt = performance.now();
+  const readiness = await cachedIosPhysicalDeviceActionStatus(input);
+  recordTiming(timingStages, 'coreDeviceStatus', statusStartedAt, readiness.cached);
+  const status = readiness.status;
   if (!status.coreDeviceReady) {
-    throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', status.reason ?? 'Xcode CoreDevice is unavailable.', { retryable: false, details: status });
+    throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', status.reason ?? 'Xcode CoreDevice is unavailable.', { retryable: false, details: { ...status } });
   }
   if (input.actionId === 'physical_device_list') {
     return { provider: 'coredevice', devices: await physicalDevices(input) };
@@ -707,16 +827,24 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
     return { provider: 'coredevice', device: selected, apps: await installedApps(input, selected, bundleId) };
   }
   if (input.actionId === 'physical_device_open') {
+    const selectStartedAt = performance.now();
     const selected = await selectDevice(input, input.args.device);
+    recordTiming(timingStages, 'deviceSelection', selectStartedAt, false);
     const bundleId = requireBundleId(input.args.bundle_id);
+    const appsStartedAt = performance.now();
     const apps = await installedApps(input, selected, bundleId);
+    recordTiming(timingStages, 'installedAppLookup', appsStartedAt, false);
     if (apps.length !== 1) {
       throw new AssistantPluginError('IOS_DEVICE_APP_NOT_INSTALLED', `The app ${bundleId} is not installed on the selected iPhone.`, { retryable: false });
     }
+    const lockStartedAt = performance.now();
     await requirePhysicalDeviceUnlocked(input, selected);
+    recordTiming(timingStages, 'lockState', lockStartedAt, false);
     const selectedAliases = [selected.identifier, selected.udid];
+    const sessionLookupStartedAt = performance.now();
     const conflict = listInteractionSessions(input.repoRoot, PROVIDER).find((entry) =>
       isInteractionSessionActive(entry.status) && interactionMayOwnTarget(entry, selectedAliases));
+    recordTiming(timingStages, 'sessionLookup', sessionLookupStartedAt, false);
     if (conflict) {
       throw new AssistantPluginError('PLUGIN_RESOURCE_BUSY', 'The selected iPhone already has an active forge interaction.', {
         retryable: true,
@@ -748,29 +876,42 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       expiresAt: new Date(hooks.now().getTime() + SESSION_EXPIRY_MS).toISOString(),
     };
     writeInteractionSession(input.repoRoot, record);
+    const displayStartedAt = performance.now();
+    const display = input.args.prewarm_input === true ? await physicalDisplayGeometry(input, selected) : undefined;
+    recordTiming(timingStages, 'displayInfo', displayStartedAt, display === undefined);
     const state: PhysicalSessionState = {
       schemaVersion: 1,
       interactionId,
       device: selected,
       bundleId,
+      ...(display ? { display: { ...display, observedAt: createdAt } } : {}),
+      unlockVerifiedAt: createdAt,
       events: [{ at: createdAt, type: 'session_created', details: { bundleId, deviceIdentifier: selected.identifier } }],
     };
+    const statePersistStartedAt = performance.now();
     writeState(input, state);
+    recordTiming(timingStages, 'eventPersistence', statePersistStartedAt, false);
     try {
       const args = ['device', 'process', 'launch', '--device', selected.identifier];
       if (input.args.relaunch === true) args.push('--terminate-existing');
       args.push(bundleId);
+      const launchStartedAt = performance.now();
       const launch = await runCoreJson(input, args, 'IOS_DEVICE_LAUNCH_FAILED', 60_000);
+      recordTiming(timingStages, 'foregroundReactivate', launchStartedAt, false);
+      const launchEventStartedAt = performance.now();
       appendEvent(input, interactionId, 'app_launched', { bundleId, relaunch: input.args.relaunch === true });
+      recordTiming(timingStages, 'eventPersistence', launchEventStartedAt, false);
+      const prewarmStartedAt = performance.now();
       const inputPrewarm = input.args.prewarm_input === true && selected.udid
         ? prewarmRemoteXpcHid({ controllerHome: input.controllerHome, deviceIdentifier: selected.identifier, udid: selected.udid })
         : { backend: 'remote-xpc-hid', state: 'not_requested', runnerOwned: false };
+      recordTiming(timingStages, 'hidPrewarmDispatch', prewarmStartedAt, input.args.prewarm_input !== true);
       // CoreDevice is the default physical-device substrate. Never probe, start,
       // build, install, or attach an XCTest/WDA runner during ordinary app open.
       // Semantic automation is an explicit opt-in action so repeated computer-use
       // workflows cannot accidentally create fresh Runner lifecycles.
       const active = patchInteractionSession(input.repoRoot, PROVIDER, interactionId, { status: 'waiting_for_user' }) ?? record;
-      return {
+      return finishTimedResult(actionStartedAt, timingStages, {
         provider: 'coredevice',
         interaction: active,
         device: selected,
@@ -784,7 +925,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
           semanticFallback: 'agent-device',
           runnerOwned: false,
         },
-      };
+      });
     } catch (error) {
       const normalized = toAssistantPluginError(error, {
         code: 'IOS_DEVICE_OPEN_FAILED',
@@ -800,14 +941,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
     }
   }
 
+  const sessionLookupStartedAt = performance.now();
   const { record, state } = requireRecord(input, input.actionId === 'physical_device_close');
-  const reactivateTargetApp = async (): Promise<unknown> => {
-    const reactivation = await runCoreJson(input, [
-      'device', 'process', 'launch', '--device', state.device.identifier, state.bundleId,
-    ], 'IOS_DEVICE_REACTIVATE_FAILED', 30_000);
-    appendEvent(input, record.interactionId, 'app_reactivated', { bundleId: state.bundleId, terminateExisting: false });
-    return bounded(reactivation);
-  };
+  recordTiming(timingStages, 'sessionLookup', sessionLookupStartedAt, false);
   switch (input.actionId) {
     case 'physical_device_screenshot': {
       const label = sanitize(optionalString(input.args.label) ?? 'screenshot');
@@ -818,67 +954,110 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       if (!existsSync(path)) {
         throw new AssistantPluginError('IOS_DEVICE_SCREENSHOT_MISSING', 'CoreDevice succeeded without creating the requested screenshot.', { retryable: false });
       }
+      const screenshotDisplay = pngDisplayGeometry(path, state.display?.pointScale);
+      if (screenshotDisplay) {
+        state.display = { ...screenshotDisplay, observedAt: timestamp() };
+        writeState(input, state);
+      }
+      const eventStartedAt = performance.now();
       appendEvent(input, record.interactionId, 'screenshot', { label });
-      return {
+      recordTiming(timingStages, 'eventPersistence', eventStartedAt, false);
+      return finishTimedResult(actionStartedAt, timingStages, {
         provider: 'coredevice', interaction: record, result: bounded(result),
         artifactCandidates: [{ kind: 'ios_physical_device_screenshot', mediaType: 'image/png', path }],
-      };
+      });
     }
     case 'physical_device_tap': {
-      await requirePhysicalDeviceUnlocked(input, state.device);
+      const lockStartedAt = performance.now();
+      const unlock = await requireSessionUnlocked(input, state);
+      recordTiming(timingStages, 'lockState', lockStartedAt, unlock.cached);
       if (!state.device.udid) throw new AssistantPluginError('IOS_HID_UDID_MISSING', 'The selected iPhone does not expose a hardware UDID for RemoteXPC HID.', { retryable: false });
-      const display = await physicalDisplayGeometry(input, state.device);
+      const displayStartedAt = performance.now();
+      const geometry = await sessionDisplayGeometry(input, state);
+      recordTiming(timingStages, 'displayInfo', displayStartedAt, geometry.cached);
+      const display = geometry.display;
       const x = requireFiniteNumber(input.args.x, 'x');
       const y = requireFiniteNumber(input.args.y, 'y');
-      const foregroundFence = await reactivateTargetApp();
+      const hidStartedAt = performance.now();
       const result = await executeRemoteXpcHidInput({
         controllerHome: input.controllerHome,
         deviceIdentifier: state.device.identifier,
         udid: state.device.udid,
         width: display.width,
         height: display.height,
+        bundleId: state.bundleId,
         action: 'tap', x, y,
       });
-      appendEvent(input, record.interactionId, 'tap', { x, y, width: display.width, height: display.height, reusedWorker: result.reusedWorker });
-      return { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, foregroundFence, result: bounded(result) };
+      timingStages.hidWorkerReady = { ms: result.timings.workerStartupMs + result.timings.workerReadyMs, cached: result.reusedWorker };
+      timingStages.foregroundReactivate = { ms: result.timings.foregroundMs ?? 0, cached: false };
+      timingStages.hidWriteAck = { ms: result.timings.hidMs ?? result.timings.requestMs, cached: false };
+      timingStages.hidRequestTotal = { ms: elapsedMs(hidStartedAt), cached: result.reusedWorker };
+      const eventStartedAt = performance.now();
+      appendEvent(input, record.interactionId, 'tap', { requestId: input.requestId, x, y, width: display.width, height: display.height, reusedWorker: result.reusedWorker });
+      recordTiming(timingStages, 'eventPersistence', eventStartedAt, false);
+      return finishTimedResult(actionStartedAt, timingStages, { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, result: bounded(result) });
     }
     case 'physical_device_swipe': {
-      await requirePhysicalDeviceUnlocked(input, state.device);
+      const lockStartedAt = performance.now();
+      const unlock = await requireSessionUnlocked(input, state);
+      recordTiming(timingStages, 'lockState', lockStartedAt, unlock.cached);
       if (!state.device.udid) throw new AssistantPluginError('IOS_HID_UDID_MISSING', 'The selected iPhone does not expose a hardware UDID for RemoteXPC HID.', { retryable: false });
-      const display = await physicalDisplayGeometry(input, state.device);
+      const displayStartedAt = performance.now();
+      const geometry = await sessionDisplayGeometry(input, state);
+      recordTiming(timingStages, 'displayInfo', displayStartedAt, geometry.cached);
+      const display = geometry.display;
       const x = requireFiniteNumber(input.args.x, 'x');
       const y = requireFiniteNumber(input.args.y, 'y');
       const x2 = requireFiniteNumber(input.args.to_x, 'to_x');
       const y2 = requireFiniteNumber(input.args.to_y, 'to_y');
       const durationMs = typeof input.args.duration_ms === 'number' ? Math.trunc(input.args.duration_ms) : 250;
-      const foregroundFence = await reactivateTargetApp();
+      const hidStartedAt = performance.now();
       const result = await executeRemoteXpcHidInput({
         controllerHome: input.controllerHome,
         deviceIdentifier: state.device.identifier,
         udid: state.device.udid,
         width: display.width,
         height: display.height,
+        bundleId: state.bundleId,
         action: 'swipe', x, y, x2, y2, durationMs,
       });
-      appendEvent(input, record.interactionId, 'swipe', { from: [x, y], to: [x2, y2], durationMs, reusedWorker: result.reusedWorker });
-      return { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, foregroundFence, result: bounded(result) };
+      timingStages.hidWorkerReady = { ms: result.timings.workerStartupMs + result.timings.workerReadyMs, cached: result.reusedWorker };
+      timingStages.foregroundReactivate = { ms: result.timings.foregroundMs ?? 0, cached: false };
+      timingStages.hidWriteAck = { ms: result.timings.hidMs ?? result.timings.requestMs, cached: false };
+      timingStages.hidRequestTotal = { ms: elapsedMs(hidStartedAt), cached: result.reusedWorker };
+      const eventStartedAt = performance.now();
+      appendEvent(input, record.interactionId, 'swipe', { requestId: input.requestId, from: [x, y], to: [x2, y2], durationMs, reusedWorker: result.reusedWorker });
+      recordTiming(timingStages, 'eventPersistence', eventStartedAt, false);
+      return finishTimedResult(actionStartedAt, timingStages, { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, result: bounded(result) });
     }
     case 'physical_device_type_text': {
-      await requirePhysicalDeviceUnlocked(input, state.device);
+      const lockStartedAt = performance.now();
+      const unlock = await requireSessionUnlocked(input, state);
+      recordTiming(timingStages, 'lockState', lockStartedAt, unlock.cached);
       if (!state.device.udid) throw new AssistantPluginError('IOS_HID_UDID_MISSING', 'The selected iPhone does not expose a hardware UDID for RemoteXPC HID.', { retryable: false });
       const text = requireString(input.args.text, 'text');
-      const display = await physicalDisplayGeometry(input, state.device);
-      const foregroundFence = await reactivateTargetApp();
+      const displayStartedAt = performance.now();
+      const geometry = await sessionDisplayGeometry(input, state);
+      recordTiming(timingStages, 'displayInfo', displayStartedAt, geometry.cached);
+      const display = geometry.display;
+      const hidStartedAt = performance.now();
       const result = await executeRemoteXpcHidInput({
         controllerHome: input.controllerHome,
         deviceIdentifier: state.device.identifier,
         udid: state.device.udid,
         width: display.width,
         height: display.height,
+        bundleId: state.bundleId,
         action: 'type', text,
       });
-      appendEvent(input, record.interactionId, 'type_text', { length: text.length, reusedWorker: result.reusedWorker });
-      return { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, foregroundFence, result: bounded(result), text: '<redacted>' };
+      timingStages.hidWorkerReady = { ms: result.timings.workerStartupMs + result.timings.workerReadyMs, cached: result.reusedWorker };
+      timingStages.foregroundReactivate = { ms: result.timings.foregroundMs ?? 0, cached: false };
+      timingStages.hidWriteAck = { ms: result.timings.hidMs ?? result.timings.requestMs, cached: false };
+      timingStages.hidRequestTotal = { ms: elapsedMs(hidStartedAt), cached: result.reusedWorker };
+      const eventStartedAt = performance.now();
+      appendEvent(input, record.interactionId, 'type_text', { requestId: input.requestId, length: text.length, reusedWorker: result.reusedWorker });
+      recordTiming(timingStages, 'eventPersistence', eventStartedAt, false);
+      return finishTimedResult(actionStartedAt, timingStages, { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, result: bounded(result), text: '<redacted>' });
     }
     case 'physical_device_events': {
       const limit = Math.max(1, Math.min(MAX_EVENTS, typeof input.args.limit === 'number' ? Math.trunc(input.args.limit) : 50));
