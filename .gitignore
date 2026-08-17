@@ -126,6 +126,7 @@ _ops/
 .forge/browser/
 .forge/interactions/
 .forge/repair-backups/
+.forge/tools/
 
 # forge hardening: runtime scratch, temp, review artifacts, watchdog state
 .ai/harness/tmp/

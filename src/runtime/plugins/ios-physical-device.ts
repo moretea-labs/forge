@@ -21,6 +21,7 @@ import type {
   AssistantPluginActionExecutionInput,
   AssistantPluginCapability,
 } from './types';
+import { executeRemoteXpcHidInput, remoteXpcHidStatus } from './ios/remote-xpc-hid';
 
 const PROVIDER = 'ios-device' as const;
 const SESSION_EXPIRY_MS = 2 * 60 * 60_000;
@@ -213,6 +214,11 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+function requireFiniteNumber(value: unknown, name: string): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `${name} must be a finite number.`, { retryable: false });
+}
+
 function requireBundleId(value: unknown): string {
   const bundleId = requireString(value, 'bundle_id');
   if (!/^[A-Za-z0-9][A-Za-z0-9.-]+$/.test(bundleId) || !bundleId.includes('.') || /^[a-z][a-z0-9+.-]*:\/\//i.test(bundleId)) {
@@ -382,6 +388,34 @@ function requirePhysicalDeviceUnlocked(input: AssistantPluginActionExecutionInpu
   );
 }
 
+function physicalDisplayGeometry(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): { width: number; height: number; pointScale?: number } {
+  const displayResponse = runCoreJson(input, [
+    'device', 'info', 'displays', '--device', device.identifier,
+  ], 'IOS_DEVICE_DISPLAY_INFO_FAILED', 30_000);
+  const result = objectValue(displayResponse.result);
+  const displays = Array.isArray(result.displays) ? result.displays : [];
+  const rows = displays.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry));
+  const primary = rows.find((entry) => entry.primary === true) ?? rows[0];
+  if (!primary) {
+    throw new AssistantPluginError('IOS_HID_DISPLAY_INVALID', 'CoreDevice did not report a usable iPhone display for input coordinate mapping.', { retryable: true });
+  }
+  const bounds = Array.isArray(primary.bounds) ? primary.bounds : undefined;
+  const size = bounds && Array.isArray(bounds[1]) ? bounds[1] : Array.isArray(primary.nativeSize) ? primary.nativeSize : undefined;
+  const width = Number(size?.[0]);
+  const height = Number(size?.[1]);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 1 || height <= 1) {
+    throw new AssistantPluginError('IOS_HID_DISPLAY_INVALID', 'CoreDevice returned invalid display dimensions for input coordinate mapping.', {
+      retryable: true,
+      details: { display: bounded(primary) },
+    });
+  }
+  return {
+    width: Math.trunc(width),
+    height: Math.trunc(height),
+    pointScale: typeof primary.pointScale === 'number' && Number.isFinite(primary.pointScale) ? primary.pointScale : undefined,
+  };
+}
+
 function physicalDeviceInfo(input: AssistantPluginActionExecutionInput, device: PhysicalDevice): Record<string, unknown> {
   const detailsResponse = runCoreJson(input, [
     'device', 'info', 'details', '--device', device.identifier,
@@ -402,6 +436,7 @@ function physicalDeviceInfo(input: AssistantPluginActionExecutionInput, device: 
     screenViewingURL: stringField(deviceProperties, 'screenViewingURL'),
     lockState: bounded(lockState),
     displays: bounded(displayResponse.result),
+    inputBackend: remoteXpcHidStatus(input.controllerHome),
   };
 }
 
@@ -499,7 +534,7 @@ export function iosPhysicalDeviceCapabilities(): AssistantPluginCapability[] {
   return [{
     capabilityId: 'ios-physical-device',
     title: 'Physical iOS Computer Use',
-    description: 'CoreDevice-only physical iPhone lifecycle and observation: discovery, device state, app launch and screenshots. Semantic XCTest automation lives only in the separate agent-device fallback.',
+    description: 'CoreDevice lifecycle/observation plus runnerless RemoteXPC HID input for physical iPhones. XCTest remains only an explicit semantic fallback.',
     scopes: ['ios.discover', 'ios.device'],
     actions: iosPhysicalDeviceActions().map((action) => action.actionId),
   }];
@@ -552,6 +587,44 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: { type: 'object', properties: { ...interactionProperty, label: { type: 'string' } }, required: ['interaction_id'], additionalProperties: false },
+    },
+    {
+      actionId: 'physical_device_tap', title: 'Tap physical iPhone coordinate',
+      description: 'Send one runnerless touch through the existing macOS trusted CoreDevice/RemoteXPC tunnel. Coordinates are pixels in the current CoreDevice screenshot/display space.',
+      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false,
+      scopes: ['ios.device'], resourceClaims: mutationClaims,
+      argumentsSchema: {
+        type: 'object',
+        properties: { ...interactionProperty, x: { type: 'number', minimum: 0 }, y: { type: 'number', minimum: 0 } },
+        required: ['interaction_id', 'x', 'y'], additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'physical_device_swipe', title: 'Swipe physical iPhone',
+      description: 'Send one runnerless touchscreen swipe through RemoteXPC HID using current CoreDevice display pixels.',
+      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false,
+      scopes: ['ios.device'], resourceClaims: mutationClaims,
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          ...interactionProperty,
+          x: { type: 'number', minimum: 0 }, y: { type: 'number', minimum: 0 },
+          to_x: { type: 'number', minimum: 0 }, to_y: { type: 'number', minimum: 0 },
+          duration_ms: { type: 'number', minimum: 80, maximum: 3000 },
+        },
+        required: ['interaction_id', 'x', 'y', 'to_x', 'to_y'], additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'physical_device_type_text', title: 'Type physical iPhone text',
+      description: 'Type bounded ASCII text through a reusable runnerless RemoteXPC HID keyboard. Unicode is rejected until a separate pasteboard/input-method backend is proven on the active iOS version.',
+      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false,
+      scopes: ['ios.device'], resourceClaims: mutationClaims,
+      argumentsSchema: {
+        type: 'object',
+        properties: { ...interactionProperty, text: { type: 'string', maxLength: 2048 } },
+        required: ['interaction_id', 'text'], additionalProperties: false,
+      },
     },
     {
       actionId: 'physical_device_events', title: 'Read physical iOS events',
@@ -660,6 +733,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         controlPlane: {
           lifecycle: 'coredevice',
           observation: 'coredevice',
+          input: 'remote-xpc-hid',
           semanticFallback: 'agent-device',
           runnerOwned: false,
         },
@@ -695,6 +769,59 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         provider: 'coredevice', interaction: record, result: bounded(result),
         artifactCandidates: [{ kind: 'ios_physical_device_screenshot', mediaType: 'image/png', path }],
       };
+    }
+    case 'physical_device_tap': {
+      requirePhysicalDeviceUnlocked(input, state.device);
+      if (!state.device.udid) throw new AssistantPluginError('IOS_HID_UDID_MISSING', 'The selected iPhone does not expose a hardware UDID for RemoteXPC HID.', { retryable: false });
+      const display = physicalDisplayGeometry(input, state.device);
+      const x = requireFiniteNumber(input.args.x, 'x');
+      const y = requireFiniteNumber(input.args.y, 'y');
+      const result = await executeRemoteXpcHidInput({
+        controllerHome: input.controllerHome,
+        deviceIdentifier: state.device.identifier,
+        udid: state.device.udid,
+        width: display.width,
+        height: display.height,
+        action: 'tap', x, y,
+      });
+      appendEvent(input, record.interactionId, 'tap', { x, y, width: display.width, height: display.height, reusedWorker: result.reusedWorker });
+      return { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, result: bounded(result) };
+    }
+    case 'physical_device_swipe': {
+      requirePhysicalDeviceUnlocked(input, state.device);
+      if (!state.device.udid) throw new AssistantPluginError('IOS_HID_UDID_MISSING', 'The selected iPhone does not expose a hardware UDID for RemoteXPC HID.', { retryable: false });
+      const display = physicalDisplayGeometry(input, state.device);
+      const x = requireFiniteNumber(input.args.x, 'x');
+      const y = requireFiniteNumber(input.args.y, 'y');
+      const x2 = requireFiniteNumber(input.args.to_x, 'to_x');
+      const y2 = requireFiniteNumber(input.args.to_y, 'to_y');
+      const durationMs = typeof input.args.duration_ms === 'number' ? Math.trunc(input.args.duration_ms) : 250;
+      const result = await executeRemoteXpcHidInput({
+        controllerHome: input.controllerHome,
+        deviceIdentifier: state.device.identifier,
+        udid: state.device.udid,
+        width: display.width,
+        height: display.height,
+        action: 'swipe', x, y, x2, y2, durationMs,
+      });
+      appendEvent(input, record.interactionId, 'swipe', { from: [x, y], to: [x2, y2], durationMs, reusedWorker: result.reusedWorker });
+      return { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, display, result: bounded(result) };
+    }
+    case 'physical_device_type_text': {
+      requirePhysicalDeviceUnlocked(input, state.device);
+      if (!state.device.udid) throw new AssistantPluginError('IOS_HID_UDID_MISSING', 'The selected iPhone does not expose a hardware UDID for RemoteXPC HID.', { retryable: false });
+      const text = requireString(input.args.text, 'text');
+      const display = physicalDisplayGeometry(input, state.device);
+      const result = await executeRemoteXpcHidInput({
+        controllerHome: input.controllerHome,
+        deviceIdentifier: state.device.identifier,
+        udid: state.device.udid,
+        width: display.width,
+        height: display.height,
+        action: 'type', text,
+      });
+      appendEvent(input, record.interactionId, 'type_text', { length: text.length, reusedWorker: result.reusedWorker });
+      return { provider: 'coredevice', inputBackend: 'remote-xpc-hid', interaction: record, result: bounded(result), text: '<redacted>' };
     }
     case 'physical_device_events': {
       const limit = Math.max(1, Math.min(MAX_EVENTS, typeof input.args.limit === 'number' ? Math.trunc(input.args.limit) : 50));

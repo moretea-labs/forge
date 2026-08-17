@@ -7,6 +7,10 @@ import {
   resetIosPhysicalDeviceRuntimeHooksForTest,
   setIosPhysicalDeviceRuntimeHooksForTest,
 } from '../../src/runtime/plugins/ios-physical-device';
+import {
+  resetRemoteXpcHidForTest,
+  setRemoteXpcHidExecutorForTest,
+} from '../../src/runtime/plugins/ios/remote-xpc-hid';
 
 const roots: string[] = [];
 
@@ -79,6 +83,7 @@ function deviceEntry() {
 
 afterEach(() => {
   resetIosPhysicalDeviceRuntimeHooksForTest();
+  resetRemoteXpcHidForTest();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -164,6 +169,78 @@ describe('CoreDevice-first physical iPhone provider', () => {
       expect(error).toMatchObject({ code: 'IOS_DEVICE_LOCKED', retryable: true });
     }
     expect(commands.some((argv) => argv.join(' ').includes('device process launch'))).toBe(false);
+  });
+
+  it('routes tap, swipe, and text through runnerless RemoteXPC HID with current display pixels', async () => {
+    const value = fixture();
+    const commands: string[][] = [];
+    const hidCalls: Array<Record<string, unknown>> = [];
+    let callCount = 0;
+    setRemoteXpcHidExecutorForTest(async (request) => {
+      hidCalls.push({ ...request, text: request.text === undefined ? undefined : '<redacted>' });
+      callCount += 1;
+      return {
+        backend: 'remote-xpc-hid',
+        reusedWorker: callCount > 1,
+        endpoint: { host: 'fd00::1', port: 53194 },
+        result: { action: request.action },
+      };
+    });
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      now: () => new Date('2026-08-17T08:00:00.000Z'),
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === 'devicectl' && args[1] === '--version') {
+          return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
+        }
+        const joined = args.join(' ');
+        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: '小红书', bundleIdentifier: 'com.xingin.discover' }] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: false, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device process launch')) return { ok: true, status: 0, stdout: json({ processIdentifier: 123 }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info displays')) {
+          return { ok: true, status: 0, stdout: json({ displays: [{ bounds: [[0, 0], [1206, 2622]], nativeSize: [1206, 2622], pointScale: 3, primary: true }] }), stderr: '', command: [command, ...args] };
+        }
+        throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
+      },
+    });
+
+    const opened = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
+      device: 'greyson', bundle_id: 'com.xingin.discover', relaunch: true,
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    expect(opened.controlPlane).toMatchObject({ input: 'remote-xpc-hid', runnerOwned: false });
+
+    const tapped = await executeIosPhysicalDeviceAction(input(value, 'physical_device_tap', {
+      interaction_id: interactionId, x: 1082, y: 2456,
+    }));
+    expect(tapped.inputBackend).toBe('remote-xpc-hid');
+    expect(tapped.display).toEqual({ width: 1206, height: 2622, pointScale: 3 });
+
+    await executeIosPhysicalDeviceAction(input(value, 'physical_device_swipe', {
+      interaction_id: interactionId, x: 600, y: 2100, to_x: 600, to_y: 600, duration_ms: 280,
+    }));
+    const typed = await executeIosPhysicalDeviceAction(input(value, 'physical_device_type_text', {
+      interaction_id: interactionId, text: 'Forge123',
+    }));
+    expect(typed.text).toBe('<redacted>');
+    expect(hidCalls).toHaveLength(3);
+    expect(hidCalls[0]).toMatchObject({
+      controllerHome: value.controllerHome,
+      deviceIdentifier: 'CORE-DEVICE-1', udid: '00008150-TEST',
+      width: 1206, height: 2622, action: 'tap', x: 1082, y: 2456,
+    });
+    expect(hidCalls[1]).toMatchObject({ action: 'swipe', x: 600, y: 2100, x2: 600, y2: 600, durationMs: 280 });
+    expect(hidCalls[2]).toMatchObject({ action: 'type', text: '<redacted>' });
+    expect(commands.some((argv) => argv.includes('xcodebuild'))).toBe(false);
+    expect(commands.some((argv) => argv.includes('prepare'))).toBe(false);
+    expect(commands.some((argv) => argv.some((arg) => arg.includes('agent-device')))).toBe(false);
+
+    const events = await executeIosPhysicalDeviceAction(input(value, 'physical_device_events', { interaction_id: interactionId }));
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain('Forge123');
+    expect(serialized).toContain('type_text');
   });
 
   it('surfaces CoreDevice display, lock, View Device Screen, and HID capabilities without a Runner', async () => {
