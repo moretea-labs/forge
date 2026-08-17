@@ -95,6 +95,12 @@ export interface GoalWorkloopVerifyInput {
   checkId: string;
   /** Exact Git revision observed by the authoritative Work-bound verification Process. */
   sourceRevision?: string;
+  /** Exact dirty-workspace content identity observed by the authoritative check. */
+  workspaceFingerprint?: string;
+  /** Stable semantic check-input identity used for exact evidence reuse. */
+  verificationInputFingerprint?: string;
+  /** Bounded command/invocation audit identity; not part of reusable semantic inputs. */
+  commandFingerprint?: string;
   /** Persistence-safe Process receipt. Accepted only when its Work/repo/check identity matches this verification. */
   receipt?: VerificationRecord['receipt'];
   /** When true, simulate infrastructure failure rather than acceptance fail. */
@@ -1113,6 +1119,9 @@ export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
     summary: verificationSummary,
     recordedAt: at,
     sourceRevision,
+    workspaceFingerprint: receipt && sourceRevision ? input.workspaceFingerprint : undefined,
+    verificationInputFingerprint: receipt && sourceRevision ? input.verificationInputFingerprint : undefined,
+    commandFingerprint: receipt && sourceRevision ? input.commandFingerprint : undefined,
     startedAt: receipt?.startedAt,
     completedAt: receipt?.finishedAt,
     receipt,

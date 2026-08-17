@@ -1403,9 +1403,30 @@ describe("MCP controller profile", () => {
       expect(contract.checkRefs[0]?.workspaceFingerprint).toBeTruthy();
       expect(contract.checkRefs[0]?.verificationInputFingerprint).toBeTruthy();
       expect(contract.checkRefs[0]?.commandFingerprint).toBeTruthy();
-      expect(contract.checkRefs[0]?.receipt?.processId).toBeTruthy();
+      const originalProcessId = contract.checkRefs[0]?.receipt?.processId;
+      expect(originalProcessId).toBeTruthy();
+
+      const reused = await executionJson(advanced, "work_validate", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        work_id: workId,
+        check_ids: ["validation-pass"],
+        request_id: "validation-pass-reuse-exact-evidence",
+      });
+      expect(reused.error).toBeUndefined();
+      expect(reused.validation).toMatchObject({ passed: true, completed: true, targeted: true });
+      expect(reused.validation.checks[0]).toMatchObject({
+        checkId: "validation-pass",
+        ok: true,
+        status: "passed",
+        reusedEvidence: true,
+      });
+      expect(reused.validation.checks[0]?.receipt?.processId).toBe(originalProcessId);
+      const afterReuse = getWorkContract({ controllerHome, repoId: repository.repoId }, initial.workContractId!)!;
+      expect(afterReuse.checkRefs).toHaveLength(1);
     });
   });
+
 
   test("automatically cleans validation-failed managed Work while preserving failure and releasing ownership", async () => {
     await withController(async (repoRoot, _ctx) => {
