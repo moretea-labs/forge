@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -125,6 +125,50 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(manifest.actions.map((action) => action.actionId)).toContain('agent_device_prepare');
     expect(manifest.actions.map((action) => action.actionId)).toContain('agent_device_jd_search');
     expect(manifest.health.warnings).not.toContain('agent-device is not installed.');
+  });
+
+  it('prefers the repo-pinned agent-device executable when Runtime PATH does not expose it', async () => {
+    const value = fixture();
+    readyIosTooling();
+    const binDir = join(value.repoRoot, 'node_modules', 'agent-device', 'bin');
+    mkdirSync(binDir, { recursive: true });
+    const pinnedExecutable = join(binDir, 'agent-device.mjs');
+    writeFileSync(pinnedExecutable, '#!/usr/bin/env node\n');
+    const commands: string[][] = [];
+    setIosAgentDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === '--version') return { ok: true, status: 0, stdout: '0.20.2\n', stderr: '', command: [command, ...args] };
+        return { ok: false, status: 1, stdout: '', stderr: 'help unavailable', command: [command, ...args] };
+      },
+    });
+
+    const status = await executeIosPluginAction(pluginInput(value, 'agent_device_status', {}));
+    const canonicalExecutable = realpathSync(pinnedExecutable);
+    expect(status.executable).toBe(canonicalExecutable);
+    expect(status.resolvedExecutable).toBe(canonicalExecutable);
+    expect(commands[0]?.[0]).toBe(canonicalExecutable);
+  });
+
+  it('resolves the repo-pinned import-only ESM typed client from a standalone Runtime', () => {
+    const value = fixture();
+    const packageRoot = join(value.repoRoot, 'node_modules', 'agent-device');
+    const entry = join(packageRoot, 'dist', 'src', 'index.js');
+    mkdirSync(join(packageRoot, 'dist', 'src'), { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({
+      name: 'agent-device',
+      version: '0.20.2',
+      type: 'module',
+      exports: { '.': { import: './dist/src/index.js' } },
+    }));
+    writeFileSync(entry, 'export const createAgentDeviceClient = () => ({ capture: { snapshot: async () => ({}) } });\n');
+
+    expect(typedAgentDeviceIdentity({ repoRoot: value.repoRoot })).toMatchObject({
+      available: true,
+      version: '0.20.2',
+      resolvedModule: realpathSync(entry),
+    });
   });
 
   it('rejects an unreviewed provider version when no parseable command contract is available', async () => {

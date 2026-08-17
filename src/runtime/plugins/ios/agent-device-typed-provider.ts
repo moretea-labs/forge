@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, realpathSync } from 'fs';
 import { dirname, join } from 'path';
 import { createRequire } from 'module';
+import { pathToFileURL } from 'url';
 import { AssistantPluginError } from '../errors';
 import type {
   AgentDeviceProviderIdentity,
@@ -26,8 +27,8 @@ interface TypedAgentDeviceModule {
 }
 
 interface TypedProviderHooks {
-  loadModule: () => Promise<TypedAgentDeviceModule>;
-  resolveModule: () => string | undefined;
+  loadModule: (resolvedModule?: string) => Promise<TypedAgentDeviceModule>;
+  resolveModule: (repoRoot?: string) => string | undefined;
   runtimeNodeVersion: () => string;
 }
 
@@ -76,7 +77,43 @@ function agentDevicePackageVersion(start: string): string | undefined {
   return undefined;
 }
 
-function defaultResolveModule(): string | undefined {
+function repoLocalModuleEntry(repoRoot?: string): string | undefined {
+  if (!repoRoot) return undefined;
+  const packageRoot = join(repoRoot, 'node_modules', AGENT_DEVICE_MODULE_NAME);
+  const packageJsonPath = join(packageRoot, 'package.json');
+  if (!existsSync(packageJsonPath)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as {
+      name?: unknown;
+      main?: unknown;
+      exports?: unknown;
+    };
+    if (parsed.name !== AGENT_DEVICE_MODULE_NAME) return undefined;
+    const exportsRoot = parsed.exports && typeof parsed.exports === 'object' && !Array.isArray(parsed.exports)
+      ? (parsed.exports as Record<string, unknown>)['.']
+      : undefined;
+    const importEntry = exportsRoot && typeof exportsRoot === 'object' && !Array.isArray(exportsRoot)
+      ? (exportsRoot as Record<string, unknown>).import
+      : undefined;
+    const relativeEntry = typeof importEntry === 'string'
+      ? importEntry
+      : typeof exportsRoot === 'string'
+        ? exportsRoot
+        : typeof parsed.main === 'string'
+          ? parsed.main
+          : undefined;
+    if (!relativeEntry) return undefined;
+    const candidate = join(packageRoot, relativeEntry);
+    if (!existsSync(candidate)) return undefined;
+    try { return realpathSync(candidate); } catch { return candidate; }
+  } catch {
+    return undefined;
+  }
+}
+
+function defaultResolveModule(repoRoot?: string): string | undefined {
+  const local = repoLocalModuleEntry(repoRoot);
+  if (local) return local;
   try {
     return realpathSync(require.resolve(AGENT_DEVICE_MODULE_NAME));
   } catch {
@@ -84,8 +121,14 @@ function defaultResolveModule(): string | undefined {
   }
 }
 
+async function defaultLoadModule(resolvedModule?: string): Promise<TypedAgentDeviceModule> {
+  return resolvedModule
+    ? import(pathToFileURL(resolvedModule).href) as Promise<TypedAgentDeviceModule>
+    : import(AGENT_DEVICE_MODULE_NAME) as unknown as Promise<TypedAgentDeviceModule>;
+}
+
 let hooks: TypedProviderHooks = {
-  loadModule: async () => import(AGENT_DEVICE_MODULE_NAME) as unknown as TypedAgentDeviceModule,
+  loadModule: defaultLoadModule,
   resolveModule: defaultResolveModule,
   runtimeNodeVersion: () => process.versions.node,
 };
@@ -98,13 +141,13 @@ export function setAgentDeviceTypedProviderHooksForTest(
 
 export function resetAgentDeviceTypedProviderHooksForTest(): void {
   hooks = {
-    loadModule: async () => import(AGENT_DEVICE_MODULE_NAME) as unknown as TypedAgentDeviceModule,
+    loadModule: defaultLoadModule,
     resolveModule: defaultResolveModule,
     runtimeNodeVersion: () => process.versions.node,
   };
 }
 
-export function typedAgentDeviceIdentity(): AgentDeviceProviderIdentity {
+export function typedAgentDeviceIdentity(options: { repoRoot?: string } = {}): AgentDeviceProviderIdentity {
   const runtimeVersion = hooks.runtimeNodeVersion();
   if (!versionAtLeast(runtimeVersion, MIN_TYPED_CLIENT_NODE_VERSION)) {
     return {
@@ -115,7 +158,7 @@ export function typedAgentDeviceIdentity(): AgentDeviceProviderIdentity {
       reason: `The optional agent-device typed client requires Node >=${MIN_TYPED_CLIENT_NODE_VERSION}; current runtime is ${runtimeVersion || 'unknown'}.`,
     };
   }
-  const resolvedModule = hooks.resolveModule();
+  const resolvedModule = hooks.resolveModule(options.repoRoot);
   if (!resolvedModule) {
     return {
       kind: 'typed',
@@ -227,7 +270,7 @@ export class TypedAgentDeviceReadProvider implements AgentDeviceReadProvider {
     }
     let module: TypedAgentDeviceModule;
     try {
-      module = await hooks.loadModule();
+      module = await hooks.loadModule(this.identity.resolvedModule);
     } catch (error) {
       throw new AssistantPluginError(
         'AGENT_DEVICE_TYPED_PROVIDER_UNAVAILABLE',

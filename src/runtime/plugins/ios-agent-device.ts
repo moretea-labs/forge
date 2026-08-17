@@ -169,12 +169,31 @@ export function resetIosAgentDeviceRuntimeHooksForTest(): void {
   interactionCommandTails.clear();
 }
 
-function executable(): string {
-  return process.env.FORGE_AGENT_DEVICE_EXECUTABLE?.trim() || 'agent-device';
+function configuredExecutable(): string | undefined {
+  return process.env.FORGE_AGENT_DEVICE_EXECUTABLE?.trim() || undefined;
 }
 
-function resolvedExecutable(): string {
-  const configured = executable();
+function repoLocalExecutable(repoRoot?: string): string | undefined {
+  if (!repoRoot) return undefined;
+  const candidates = [
+    join(repoRoot, 'node_modules', '.bin', 'agent-device'),
+    join(repoRoot, 'node_modules', 'agent-device', 'bin', 'agent-device.mjs'),
+  ];
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    try { return realpathSync(candidate); } catch { return candidate; }
+  }
+  return undefined;
+}
+
+function executable(repoRoot?: string): string {
+  const configured = configuredExecutable();
+  if (configured) return configured;
+  return repoLocalExecutable(repoRoot) ?? 'agent-device';
+}
+
+function resolvedExecutable(repoRoot?: string): string {
+  const configured = executable(repoRoot);
   if (isAbsolute(configured)) {
     try { return realpathSync(configured); } catch { return configured; }
   }
@@ -194,28 +213,29 @@ function sanitize(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'ios-agent-device';
 }
 
-function statusProbeCacheKey(): string {
+function statusProbeCacheKey(repoRoot?: string): string {
   return [
     hooks.platform(),
-    executable(),
-    resolvedExecutable(),
+    repoRoot ?? '',
+    executable(repoRoot),
+    resolvedExecutable(repoRoot),
     configuredAgentDeviceBackendMode(),
     process.versions.node,
     process.env.PATH ?? '',
   ].join('|');
 }
 
-function probeStatus() {
+function probeStatus(repoRoot?: string) {
   const backendMode = configuredAgentDeviceBackendMode();
-  const typedClient = typedAgentDeviceIdentity();
+  const typedClient = typedAgentDeviceIdentity({ repoRoot });
   if (hooks.platform() !== 'darwin') {
     return {
       available: false,
       expectedVersion: IOS_AGENT_DEVICE_VERSION,
       supportedVersionPolicy: '>=0.19.3 <0.21.0 with reviewed command contract',
       detectedVersion: undefined,
-      executable: executable(),
-      resolvedExecutable: resolvedExecutable(),
+      executable: executable(repoRoot),
+      resolvedExecutable: resolvedExecutable(repoRoot),
       platform: hooks.platform(),
       capabilityProfile: detectAgentDeviceCapabilities('', {}),
       backendMode,
@@ -223,14 +243,14 @@ function probeStatus() {
       reason: 'agent-device iOS support requires macOS.',
     };
   }
-  const result = hooks.runCommand(executable(), ['--version'], { timeoutMs: 3_000 });
+  const result = hooks.runCommand(executable(repoRoot), ['--version'], { cwd: repoRoot, timeoutMs: 3_000 });
   const detectedVersion = result.ok ? result.stdout.trim() : undefined;
   const help: AgentDeviceHelpContract = {};
   if (result.ok && detectedVersion) {
-    const rootHelp = hooks.runCommand(executable(), ['help'], { timeoutMs: 3_000 });
+    const rootHelp = hooks.runCommand(executable(repoRoot), ['help'], { cwd: repoRoot, timeoutMs: 3_000 });
     if (rootHelp.ok) help.root = rootHelp.stdout || rootHelp.stderr;
     for (const topic of ['snapshot', 'press', 'fill', 'batch', 'keyboard'] as const) {
-      const topicResult = hooks.runCommand(executable(), ['help', topic], { timeoutMs: 3_000 });
+      const topicResult = hooks.runCommand(executable(repoRoot), ['help', topic], { cwd: repoRoot, timeoutMs: 3_000 });
       if (topicResult.ok) help[topic] = topicResult.stdout || topicResult.stderr;
     }
   }
@@ -251,8 +271,8 @@ function probeStatus() {
     expectedVersion: IOS_AGENT_DEVICE_VERSION,
     supportedVersionPolicy: '>=0.19.3 <0.21.0 with reviewed command contract',
     detectedVersion,
-    executable: executable(),
-    resolvedExecutable: resolvedExecutable(),
+    executable: executable(repoRoot),
+    resolvedExecutable: resolvedExecutable(repoRoot),
     platform: hooks.platform(),
     capabilityProfile,
     backendMode,
@@ -267,20 +287,20 @@ function probeStatus() {
   };
 }
 
-export function iosAgentDeviceStatus(options: { forceRefresh?: boolean } = {}) {
+export function iosAgentDeviceStatus(options: { forceRefresh?: boolean; repoRoot?: string } = {}) {
   const nowMs = hooks.now().getTime();
-  const cacheKey = statusProbeCacheKey();
+  const cacheKey = statusProbeCacheKey(options.repoRoot);
   if (!options.forceRefresh
     && statusCache
     && statusCache.cacheKey === cacheKey
     && statusCache.expiresAt > nowMs) return statusCache.value;
-  const value = probeStatus();
+  const value = probeStatus(options.repoRoot);
   statusCache = { cacheKey, expiresAt: nowMs + STATUS_TTL_MS, value };
   return value;
 }
 
-function requireDependency(): ReturnType<typeof probeStatus> {
-  const status = iosAgentDeviceStatus();
+function requireDependency(repoRoot?: string): ReturnType<typeof probeStatus> {
+  const status = iosAgentDeviceStatus({ repoRoot });
   if (!status.available) {
     throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', status.reason ?? 'A compatible agent-device provider is unavailable.', {
       retryable: false,
@@ -290,8 +310,8 @@ function requireDependency(): ReturnType<typeof probeStatus> {
   return status;
 }
 
-function capabilityProfile(): AgentDeviceCapabilityProfile {
-  return requireDependency().capabilityProfile;
+function capabilityProfile(repoRoot?: string): AgentDeviceCapabilityProfile {
+  return requireDependency(repoRoot).capabilityProfile;
 }
 
 function controllerRoot(input: AssistantPluginActionExecutionInput): string {
@@ -492,7 +512,7 @@ function runJson(
     failureCode: string;
   },
 ): Record<string, unknown> {
-  const result = hooks.runCommand(executable(), args, {
+  const result = hooks.runCommand(executable(input.repoRoot), args, {
     cwd: input.repoRoot,
     timeoutMs: effectiveCommandTimeout(input, options.timeoutMs),
     env: options.record ? sessionEnv(input, options.record) : probeEnv(input, options.signing),
@@ -511,7 +531,7 @@ async function runJsonAsync(
     failureCode: string;
   },
 ): Promise<Record<string, unknown>> {
-  const result = await hooks.runCommandAsync(executable(), args, {
+  const result = await hooks.runCommandAsync(executable(input.repoRoot), args, {
     cwd: input.repoRoot,
     timeoutMs: effectiveCommandTimeout(input, options.timeoutMs),
     env: options.record ? sessionEnv(input, options.record) : probeEnv(input, options.signing),
@@ -696,7 +716,7 @@ function providerSessionAlreadyAbsent(result: CommandResult): boolean {
 }
 
 function bestEffortClose(input: AssistantPluginActionExecutionInput, record: InteractionSessionRecord): boolean {
-  const result = hooks.runCommand(executable(), ['close', '--session', record.sessionId, '--platform', 'ios', '--json'], {
+  const result = hooks.runCommand(executable(input.repoRoot), ['close', '--session', record.sessionId, '--platform', 'ios', '--json'], {
     cwd: input.repoRoot,
     timeoutMs: 30_000,
     env: sessionEnv(input, record),
@@ -716,7 +736,7 @@ async function closeProviderSession(
   record: InteractionSessionRecord,
   args: string[],
 ): Promise<{ result: Record<string, unknown>; providerAlreadyAbsent: boolean }> {
-  const commandResult = await hooks.runCommandAsync(executable(), [
+  const commandResult = await hooks.runCommandAsync(executable(input.repoRoot), [
     ...args,
     '--session', record.sessionId,
     '--platform', 'ios',
@@ -985,8 +1005,8 @@ async function executeSessionSnapshotBackend(
   let fallbackTypedVersion: string | undefined;
   let fallbackCliVersion: string | undefined;
   if (mode !== 'cli') {
-    const dependency = requireDependency();
-    const typed = new TypedAgentDeviceReadProvider();
+    const dependency = requireDependency(input.repoRoot);
+    const typed = new TypedAgentDeviceReadProvider(typedAgentDeviceIdentity({ repoRoot: input.repoRoot }));
     const versionsMatch = agentDeviceProviderVersionsMatch(
       typed.identity.version,
       dependency.detectedVersion,
@@ -1052,7 +1072,7 @@ async function executeSessionSnapshotBackend(
     }
   }
 
-  const args = compileSnapshotCommand(capabilityProfile(), request);
+  const args = compileSnapshotCommand(capabilityProfile(input.repoRoot), request);
   const result = await runJsonAsync(
     input,
     [...args, '--session', record.sessionId, '--platform', 'ios', '--json'],
@@ -1378,7 +1398,7 @@ async function runSessionBatch(
   let result: unknown = await runSessionCommand(
     input,
     record,
-    compileBatchCommand(capabilityProfile(), prepared.nativeSteps, MAX_BATCH_STEPS, { includeCost: true }),
+    compileBatchCommand(capabilityProfile(input.repoRoot), prepared.nativeSteps, MAX_BATCH_STEPS, { includeCost: true }),
     'AGENT_DEVICE_BATCH_FAILED',
     timeoutMs,
   );
@@ -1395,7 +1415,7 @@ async function runSessionBatchAttempt(
   let result: unknown = await runSessionCommandAttempt(
     input,
     record,
-    compileBatchCommand(capabilityProfile(), prepared.nativeSteps, MAX_BATCH_STEPS, { includeCost: true }),
+    compileBatchCommand(capabilityProfile(input.repoRoot), prepared.nativeSteps, MAX_BATCH_STEPS, { includeCost: true }),
     'AGENT_DEVICE_BATCH_FAILED',
     timeoutMs,
   );
@@ -1817,7 +1837,7 @@ async function executeJdSearch(input: AssistantPluginActionExecutionInput): Prom
       // The current batch schema supports only status/dismiss, so Return stays
       // a separate provider command, but only when the negotiated contract
       // explicitly advertises it.
-      if (!capabilityProfile().keyboard.returnSupported) {
+      if (!capabilityProfile(input.repoRoot).keyboard.returnSupported) {
         return failWorkflowSession(input, record, new AssistantPluginError(
           'PLUGIN_ACTION_NOT_SUPPORTED',
           'The detected agent-device contract does not support keyboard Return.',
@@ -2070,7 +2090,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
   if (input.deadlineAtMs === undefined && typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)) {
     input = { ...input, deadlineAtMs: Date.now() + Math.max(1, Math.trunc(input.timeoutMs)) };
   }
-  if (input.actionId === 'agent_device_status') return { provider: 'agent-device', ...iosAgentDeviceStatus() };
+  if (input.actionId === 'agent_device_status') return { provider: 'agent-device', ...iosAgentDeviceStatus({ repoRoot: input.repoRoot }) };
   if (input.actionId === 'agent_device_close') {
     const interactionId = requireString(input.args.interaction_id, 'interaction_id');
     const existing = readAgentDeviceInteraction(input.repoRoot, interactionId);
@@ -2078,7 +2098,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       return { provider: 'agent-device', interaction: existing, alreadyClosed: true };
     }
   }
-  const dependency = requireDependency();
+  const dependency = requireDependency(input.repoRoot);
 
   if (input.actionId === 'agent_device_jd_search') return executeJdSearch(input);
 
@@ -2224,7 +2244,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
         throw new AssistantPluginError('IOS_DEVICE_SENSITIVE_ACTION_BLOCKED', 'Press targets involving credentials, verification, biometrics, checkout, purchase or payment require human interaction.', { retryable: false });
       }
       const args = appendSettleFlag(
-        capabilityProfile(),
+        capabilityProfile(input.repoRoot),
         ['press', ...(target ? [target] : [String(input.args.x), String(input.args.y)])],
         'press',
       );
@@ -2237,7 +2257,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       if (record.provider === DEVICE_PROVIDER && (SENSITIVE_SEMANTICS.test(target) || SENSITIVE_SEMANTICS.test(text))) {
         throw new AssistantPluginError('IOS_DEVICE_SENSITIVE_ACTION_BLOCKED', 'Sensitive text and credential, verification, checkout, purchase or payment targets require human interaction.', { retryable: false });
       }
-      const profile = capabilityProfile();
+      const profile = capabilityProfile(input.repoRoot);
       const args = appendSettleFlag(profile, ['fill', target, text]);
       if (typeof input.args.delay_ms === 'number') {
         if (!profile.fill.delayFlag) {

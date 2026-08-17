@@ -120,7 +120,7 @@ function health(repoRoot: string): AssistantPluginHealth {
         xcodebuildVersion: 'xcodebuildVersion' in xcode ? xcode.xcodebuildVersion : undefined,
         simctlAvailable: 'simctlAvailable' in xcode ? xcode.simctlAvailable : undefined,
       } : xcode,
-      agentDevice: iosAgentDeviceStatus(),
+      agentDevice: iosAgentDeviceStatus({ repoRoot }),
       physicalDevice: iosPhysicalDeviceStatus(),
       artifactRoots: {
         repoLocal: '.forge/ios/',
