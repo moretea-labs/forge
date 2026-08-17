@@ -230,8 +230,9 @@ function mockAttachPlaywright(
 function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', options: { javaScriptEnabled?: boolean; targetTitleMetadataFails?: boolean; transitionalNewTabReads?: number; transitionalUrl?: string } = {}) {
   const javaScriptEnabled = options.javaScriptEnabled !== false;
   const separator = '\x1e';
-  const userTab = { id: '501', url: 'https://example.com/user-work', title: 'User Work' };
+  const userTab: { id: string; url: string; title: string; ownerToken?: string } = { id: '501', url: 'https://example.com/user-work', title: 'User Work' };
   const ownedTabs = new Map<string, { url: string; title: string; ownerToken?: string }>();
+  const tabEntry = (tabId: string) => ownedTabs.get(tabId) ?? (tabId === userTab.id ? userTab : undefined);
   const events = {
     created: [] as string[],
     closed: [] as string[],
@@ -283,8 +284,8 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
         if (script.includes('execute targetTab javascript javascriptSource')) {
           if (!javaScriptEnabled) throw new Error('Executing JavaScript through AppleScript is turned off. Allow JavaScript from Apple Events.');
           const tabId = tabIdFromScript(script);
-          const entry = tabId ? ownedTabs.get(tabId) : undefined;
-          if (!tabId || !entry) throw new Error('missing owned tab');
+          const entry = tabId ? tabEntry(tabId) : undefined;
+          if (!tabId || !entry) throw new Error('missing browser tab');
           const source = args[0] ?? '';
           if (source.includes('document.readyState')) return JSON.stringify({ ok: true, value: 'complete' });
           if (source.includes('document.title')) return JSON.stringify({ ok: true, value: entry.title });
@@ -307,15 +308,15 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
         }
         if (script.includes('set targetTabIndex to 1')) {
           const tabId = tabIdFromScript(script);
-          if (!tabId || !ownedTabs.has(tabId)) throw new Error('missing owned tab');
+          if (!tabId || !tabEntry(tabId)) throw new Error('missing browser tab');
           events.activeTabId = tabId;
           return '';
         }
         if (script.includes('set targetIsActive')) {
           if (options.targetTitleMetadataFails && script.includes('title of targetTab as text')) throw new Error('Can’t make name of background Chrome tab into type text. (-1700)');
           const tabId = tabIdFromScript(script);
-          const entry = tabId ? ownedTabs.get(tabId) : undefined;
-          if (!tabId || !entry) throw new Error('missing owned tab');
+          const entry = tabId ? tabEntry(tabId) : undefined;
+          if (!tabId || !entry) throw new Error('missing browser tab');
           events.targetMetadataReads += 1;
           if (events.targetMetadataReads <= (options.transitionalNewTabReads ?? 0)) {
             const transitionalUrl = options.transitionalUrl ?? (product === 'chrome' ? 'chrome://newtab/' : 'vivaldi://newtab/');
@@ -1652,6 +1653,56 @@ describe('browser plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     })).rejects.toThrow('Only http and https URLs are supported');
   });
+  test('adopts the frontmost native tab by exact URL without requiring native ids', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const adopted = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
+      requestId: 'browser-native-adopt-active',
+      args: { url: 'https://example.com/user-work', native_active_tab: true },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const adoptedSession = adopted.session as Record<string, any>;
+    expect(adoptedSession.browser.tab.ownership).toBe('user_owned');
+    expect(adoptedSession.browser.tab.windowId).toBe('77');
+    expect(adoptedSession.browser.tab.tabId).toBe('501');
+    expect(native.events.created).toEqual([]);
+    expect(native.events.navigated).toEqual([]);
+
+    const fixtureName = 'fixture-active-native-upload.pdf';
+    writeFileSync(join(repoRoot, fixtureName), 'fixture-active-native-upload');
+    await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'attach_local_file',
+      requestId: 'browser-native-adopt-active-attach-file',
+      args: { session_id: adoptedSession.sessionId, selector: 'input[type=file]', file_path: fixtureName, post_action_wait_ms: 1 },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(native.events.localFileInput).toEqual({ name: fixtureName, size: Buffer.byteLength('fixture-active-native-upload') });
+    expect(native.events.created).toEqual([]);
+    expect(native.events.navigated).toEqual([]);
+
+    await expect(executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
+      requestId: 'browser-native-adopt-active-mismatch',
+      args: { url: 'https://example.com/not-the-active-tab', native_active_tab: true },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('does not match the requested session URL');
+    expect(native.events.created).toEqual([]);
+    expect(native.events.navigated).toEqual([]);
+  });
+
   test('explicitly adopted native tab remains user-owned and supports local file input', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {

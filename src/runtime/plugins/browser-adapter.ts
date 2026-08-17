@@ -1728,7 +1728,7 @@ function actions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'create_session',
       title: 'Create browser session',
-      description: 'Open an HTTP(S) URL and persist a reusable session id.',
+      description: 'Open an HTTP(S) URL or explicitly adopt the matching frontmost native tab, then persist a reusable session id.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }, ...readRemote],
       argumentsSchema: sessionTargetSchema({
@@ -1737,6 +1737,7 @@ function actions(): AssistantPluginActionDescriptor[] {
         native_browser_product: { type: 'string', enum: ['chrome', 'vivaldi'] },
         native_window_id: { type: 'string' },
         native_tab_id: { type: 'string' },
+        native_active_tab: { type: 'boolean' },
       }, ['url']),
     },
     {
@@ -2415,26 +2416,63 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           ? { sessionId: existingSessionId, url, existingSession: findSession(input.repoRoot, existingSessionId) }
           : { sessionId: sessionIdFor(url), url };
         const nativeProduct = stringValue(input.args.native_browser_product);
+        const normalizedNativeProduct: MacOsBrowserProduct | undefined = nativeProduct === 'chrome' || nativeProduct === 'vivaldi' ? nativeProduct : undefined;
         const nativeWindowId = stringValue(input.args.native_window_id);
         const nativeTabId = stringValue(input.args.native_tab_id);
-        const hasNativeAdoption = Boolean(nativeProduct || nativeWindowId || nativeTabId);
+        const nativeActiveTab = input.args.native_active_tab === true;
+        const hasNativeAdoption = Boolean(nativeProduct || nativeWindowId || nativeTabId || nativeActiveTab);
         if (hasNativeAdoption) {
-          if (input.actionId !== 'create_session' || !nativeProduct || !nativeWindowId || !nativeTabId || (nativeProduct !== 'chrome' && nativeProduct !== 'vivaldi')) {
+          if (input.actionId !== 'create_session' || (nativeProduct && !normalizedNativeProduct)) {
             throw new AssistantPluginError(
               'PLUGIN_ACTION_ARGUMENT_INVALID',
-              'Explicit native tab adoption requires create_session with native_browser_product, native_window_id, and native_tab_id.',
+              'Explicit native tab adoption is only supported by create_session for Chrome or Vivaldi.',
               { retryable: false },
             );
           }
           const timeout = positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
-          const adopted = await reattachMacOsBrowserOwnedPage(nativeProduct, { windowId: nativeWindowId, tabId: nativeTabId }, timeout);
+          let adoptedProduct: MacOsBrowserProduct;
+          let adoptedRef: MacOsBrowserTabRef;
+          if (nativeActiveTab) {
+            if (nativeWindowId || nativeTabId) {
+              throw new AssistantPluginError(
+                'PLUGIN_ACTION_ARGUMENT_INVALID',
+                'native_active_tab cannot be combined with native_window_id or native_tab_id.',
+                { retryable: false },
+              );
+            }
+            const configuredCandidates = (current.nativeBrowserCandidates ?? ['vivaldi', 'chrome'])
+              .filter((candidate): candidate is MacOsBrowserProduct => candidate === 'chrome' || candidate === 'vivaldi');
+            const candidates: MacOsBrowserProduct[] = normalizedNativeProduct ? [normalizedNativeProduct] : configuredCandidates;
+            const discovered = await discoverMacOsBrowserAttachment(candidates, Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));
+            const activeMetadata = discovered.attachment?.metadata;
+            if (!activeMetadata?.frontmost || !activeMetadata.windowId || !activeMetadata.tabId) {
+              throw new AssistantPluginError(
+                'PLUGIN_BROWSER_ACTIVE_TAB_UNAVAILABLE',
+                'No frontmost native browser tab with a stable native identity is available for adoption.',
+                { retryable: true, details: { browserProduct: nativeProduct, attempts: discovered.attempts } },
+              );
+            }
+            adoptedProduct = activeMetadata.product;
+            adoptedRef = { windowId: activeMetadata.windowId, tabId: activeMetadata.tabId };
+          } else {
+            if (!normalizedNativeProduct || !nativeWindowId || !nativeTabId) {
+              throw new AssistantPluginError(
+                'PLUGIN_ACTION_ARGUMENT_INVALID',
+                'Explicit native tab adoption requires native_active_tab=true or native_browser_product with native_window_id and native_tab_id.',
+                { retryable: false },
+              );
+            }
+            adoptedProduct = normalizedNativeProduct;
+            adoptedRef = { windowId: nativeWindowId, tabId: nativeTabId };
+          }
+          const adopted = await reattachMacOsBrowserOwnedPage(adoptedProduct, adoptedRef, timeout);
           const metadata = adopted.attachment.metadata;
           const pageUrl = normalizedUrl(metadata.url);
           if (comparableUrl(pageUrl) !== comparableUrl(url)) {
             throw new AssistantPluginError(
               'PLUGIN_BROWSER_ADOPTED_TAB_URL_MISMATCH',
               'Explicitly adopted native tab URL does not match the requested session URL.',
-              { retryable: false, details: { requestedUrl: url, actualUrl: pageUrl, browserProduct: nativeProduct, windowId: nativeWindowId, tabId: nativeTabId } },
+              { retryable: false, details: { requestedUrl: url, actualUrl: pageUrl, browserProduct: adoptedProduct, windowId: adoptedRef.windowId, tabId: adoptedRef.tabId } },
             );
           }
           const title = metadata.title || '';
@@ -2443,11 +2481,11 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             mode: 'attach_preferred',
             provider: 'macos-apple-events',
             attached: true,
-            browserProduct: nativeProduct,
-            profile: { selectedProfilePath: `macos:${nativeProduct}:user-tab` },
+            browserProduct: adoptedProduct,
+            profile: { selectedProfilePath: `macos:${adoptedProduct}:user-tab` },
             tabInventory: [{ index: 0, key: tabKey(pageUrl, title), url: pageUrl, title }],
-            sessionResume: { sessionId: target.sessionId, status: 'matched', reason: 'Explicitly adopted an existing user-owned native browser tab.' },
-          }, pageUrl, title, 'saved_url', { ownership: 'user_owned', windowId: nativeWindowId, tabId: nativeTabId });
+            sessionResume: { sessionId: target.sessionId, status: 'matched', reason: nativeActiveTab ? 'Explicitly adopted the matching frontmost user-owned native browser tab.' : 'Explicitly adopted an existing user-owned native browser tab.' },
+          }, pageUrl, title, 'saved_url', { ownership: 'user_owned', windowId: adoptedRef.windowId, tabId: adoptedRef.tabId });
           const session = sessionFromPage(target, pageUrl, title, connection);
           saveSession(input.repoRoot, session);
           return {
