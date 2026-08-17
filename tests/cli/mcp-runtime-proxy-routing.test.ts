@@ -1,9 +1,43 @@
 import { describe, expect, test } from 'bun:test';
 import { forgeToolSurfaceFingerprint } from '../../src/cli/controller/runtime-config';
 import {
+  CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS,
+  CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS,
+  deriveCanonicalForwardingTiming,
+} from '../../src/cli/mcp/server';
+import {
   mcpSessionToolSurfaceFingerprintIsCurrent,
   resolveMcpSessionCurrentFingerprint,
 } from '../../src/cli/mcp/transports/http';
+
+describe('MCP canonical Runtime proxy routing', () => {
+  test('keeps loopback connect fail-fast without capping valid tool work at five seconds', () => {
+    expect(CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS).toBe(5_000);
+    expect(CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS).toBeGreaterThan(CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS);
+    expect(CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS).toBe(120_000);
+  });
+
+  test('derives pre-canonical dispatch and return transport phases from canonical response timing', () => {
+    const response = {
+      content: [{ type: 'text' as const, text: '{}' }],
+      structuredContent: {
+        responseMeta: {
+          serverStartedAt: '2026-08-17T03:31:46.332Z',
+          serverDurationMs: 66.22,
+        },
+      },
+    };
+    expect(deriveCanonicalForwardingTiming({
+      gatewayCallStartedAtMs: Date.parse('2026-08-17T03:31:41.699Z'),
+      gatewayCallDurationMs: 4701.36,
+      response,
+    })).toEqual({
+      gatewayProxyCanonicalDispatchLagMs: 4633,
+      gatewayProxyCanonicalDurationMs: 66.22,
+      gatewayProxyReturnMs: 2.14,
+    });
+  });
+});
 
 describe('MCP canonical Runtime schema fencing', () => {
   test('changes only when the exposed schema changes, not when a release identity changes', () => {

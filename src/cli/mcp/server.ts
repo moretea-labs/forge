@@ -24,7 +24,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { observeRuntimeStatus } from '../../runtime/root/status';
 import { getRuntimeWriteClaim } from '../../runtime/root/write-fence';
-import { recordMcpIncident, recordMcpTiming } from '../../runtime/diagnostics/mcp-timing';
+import { recordMcpIncident, recordMcpTiming, type McpTimingTrace } from '../../runtime/diagnostics/mcp-timing';
 import { FORGE_VERSION, forgeToolSurfaceFingerprint } from '../controller/runtime-config';
 
 export type { McpServerOptions } from './multi-repository';
@@ -84,6 +84,7 @@ function tracedResult(
   value: CallToolResult | undefined,
   traceId: string,
   requestId: string,
+  serverTiming?: { startedAt: string; durationMs: number },
 ): CallToolResult | undefined {
   if (!value || !value.structuredContent || typeof value.structuredContent !== 'object' || Array.isArray(value.structuredContent)) return value;
   const originalStructuredContent = value.structuredContent as Record<string, unknown>;
@@ -95,6 +96,7 @@ function tracedResult(
         : {}),
       traceId,
       requestId,
+      ...(serverTiming ? { serverStartedAt: serverTiming.startedAt, serverDurationMs: serverTiming.durationMs } : {}),
     },
   };
   return {
@@ -111,7 +113,7 @@ async function traceControllerMcpRequest(
   name: string,
   args: Record<string, unknown>,
   rpcId: string | number | undefined,
-  handler: (requestId: string) => Promise<CallToolResult>,
+  handler: (requestId: string, traceId: string, phaseTimings: Partial<McpTimingTrace>) => Promise<CallToolResult>,
 ): Promise<CallToolResult> {
   const startedAtWall = new Date().toISOString();
   const startedAt = performance.now();
@@ -120,8 +122,9 @@ async function traceControllerMcpRequest(
   let outcome: 'ok' | 'error' | 'exception' = 'ok';
   let errorCode: string | undefined;
   let executionIdentity: ReturnType<typeof timingIdentity> = {};
+  const phaseTimings: Partial<McpTimingTrace> = {};
   try {
-    const value = await handler(requestId);
+    const value = await handler(requestId, traceId, phaseTimings);
     executionIdentity = timingIdentity(value);
     if (value?.isError) {
       outcome = 'error';
@@ -148,7 +151,8 @@ async function traceControllerMcpRequest(
         });
       }
     }
-    return tracedResult(value, traceId, requestId) as CallToolResult;
+    const serverDurationMs = Math.round((performance.now() - startedAt) * 100) / 100;
+    return tracedResult(value, traceId, requestId, { startedAt: startedAtWall, durationMs: serverDurationMs }) as CallToolResult;
   } catch (error) {
     outcome = 'exception';
     errorCode = 'MCP_REQUEST_EXCEPTION';
@@ -173,6 +177,7 @@ async function traceControllerMcpRequest(
       outcome,
       ...(errorCode ? { errorCode } : {}),
       ...executionIdentity,
+      ...phaseTimings,
       totalToolDurationMs: Math.round((performance.now() - startedAt) * 100) / 100,
     });
   }
@@ -207,14 +212,21 @@ function canonicalRuntimeToken(ctx: MultiRepositoryMcpToolContext): string {
   return token;
 }
 
-const CANONICAL_RUNTIME_MCP_TIMEOUT_MS = 5_000;
+export const CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS = 5_000;
+/**
+ * The loopback connection should fail fast, but a valid Canonical Runtime tool
+ * call may legitimately outlive five seconds (for example Work finalization).
+ * Do not let the thin Public Gateway report a false timeout while authoritative
+ * work continues successfully behind it.
+ */
+export const CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS = 120_000;
 
 async function withCanonicalRuntimeClient<T>(
   ctx: MultiRepositoryMcpToolContext,
   action: (client: Client) => Promise<T>,
 ): Promise<T> {
   const abort = new AbortController();
-  const timeout = setTimeout(() => abort.abort(new Error('CANONICAL_RUNTIME_TIMEOUT')), CANONICAL_RUNTIME_MCP_TIMEOUT_MS);
+  const timeout = setTimeout(() => abort.abort(new Error('CANONICAL_RUNTIME_TIMEOUT')), CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS);
   const headers: Record<string, string> = {
     Authorization: `Bearer ${canonicalRuntimeToken(ctx)}`,
   };
@@ -279,8 +291,51 @@ function sameCanonicalRuntimeProxyIdentity(
     && left.sessionId === right.sessionId;
 }
 
+type GatewayProxyTiming = Pick<McpTimingTrace,
+  | 'gatewayProxyResolveMs'
+  | 'gatewayProxyConnectMs'
+  | 'gatewayProxyCallMs'
+  | 'gatewayProxyCanonicalDispatchLagMs'
+  | 'gatewayProxyCanonicalDurationMs'
+  | 'gatewayProxyReturnMs'
+  | 'gatewayProxyConnectionState'
+>;
+
+type MutableGatewayProxyTiming = Partial<GatewayProxyTiming>;
+
+function roundedMs(value: number): number {
+  return Math.round(Math.max(0, value) * 100) / 100;
+}
+
+export function deriveCanonicalForwardingTiming(input: {
+  gatewayCallStartedAtMs: number;
+  gatewayCallDurationMs: number;
+  response: CallToolResult;
+}): Pick<GatewayProxyTiming, 'gatewayProxyCanonicalDispatchLagMs' | 'gatewayProxyCanonicalDurationMs' | 'gatewayProxyReturnMs'> {
+  const structured = input.response.structuredContent;
+  const responseMeta = structured && typeof structured === 'object' && !Array.isArray(structured)
+    && (structured as Record<string, unknown>).responseMeta
+    && typeof (structured as Record<string, unknown>).responseMeta === 'object'
+    ? (structured as Record<string, unknown>).responseMeta as Record<string, unknown>
+    : undefined;
+  const canonicalStartedAt = typeof responseMeta?.serverStartedAt === 'string'
+    ? Date.parse(responseMeta.serverStartedAt)
+    : Number.NaN;
+  const canonicalDurationMs = typeof responseMeta?.serverDurationMs === 'number'
+    ? responseMeta.serverDurationMs
+    : Number.NaN;
+  if (!Number.isFinite(canonicalStartedAt) || !Number.isFinite(canonicalDurationMs)) return {};
+  const dispatchLagMs = roundedMs(canonicalStartedAt - input.gatewayCallStartedAtMs);
+  const boundedCanonicalDurationMs = roundedMs(canonicalDurationMs);
+  return {
+    gatewayProxyCanonicalDispatchLagMs: dispatchLagMs,
+    gatewayProxyCanonicalDurationMs: boundedCanonicalDurationMs,
+    gatewayProxyReturnMs: roundedMs(input.gatewayCallDurationMs - dispatchLagMs - boundedCanonicalDurationMs),
+  };
+}
+
 function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext): {
-  callTool: (name: string, args: Record<string, unknown>) => Promise<CallToolResult>;
+  callTool: (name: string, args: Record<string, unknown>, timing?: MutableGatewayProxyTiming) => Promise<CallToolResult>;
   close: () => Promise<void>;
 } {
   let current: { identity: CanonicalRuntimeProxyIdentity; client: Client } | undefined;
@@ -295,7 +350,7 @@ function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext): {
 
   const connect = async (identity: CanonicalRuntimeProxyIdentity): Promise<{ identity: CanonicalRuntimeProxyIdentity; client: Client }> => {
     const abort = new AbortController();
-    const timeout = setTimeout(() => abort.abort(new Error('CANONICAL_RUNTIME_TIMEOUT')), CANONICAL_RUNTIME_MCP_TIMEOUT_MS);
+    const timeout = setTimeout(() => abort.abort(new Error('CANONICAL_RUNTIME_TIMEOUT')), CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${identity.token}`,
     };
@@ -316,19 +371,34 @@ function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext): {
     }
   };
 
-  const clientForCurrentRuntime = async (): Promise<Client> => {
+  const clientForCurrentRuntime = async (timing: MutableGatewayProxyTiming): Promise<Client> => {
+    const resolveStarted = performance.now();
     const identity = canonicalRuntimeProxyIdentity(ctx);
-    if (current && sameCanonicalRuntimeProxyIdentity(current.identity, identity)) return current.client;
-
-    if (connecting) {
-      const pending = await connecting;
-      if (sameCanonicalRuntimeProxyIdentity(pending.identity, identity)) return pending.client;
+    timing.gatewayProxyResolveMs = roundedMs(performance.now() - resolveStarted);
+    if (current && sameCanonicalRuntimeProxyIdentity(current.identity, identity)) {
+      timing.gatewayProxyConnectionState = 'reused';
+      timing.gatewayProxyConnectMs = 0;
+      return current.client;
     }
 
+    if (connecting) {
+      const connectStarted = performance.now();
+      const pending = await connecting;
+      timing.gatewayProxyConnectMs = roundedMs(performance.now() - connectStarted);
+      if (sameCanonicalRuntimeProxyIdentity(pending.identity, identity)) {
+        timing.gatewayProxyConnectionState = 'coalesced_connect';
+        return pending.client;
+      }
+    }
+
+    const reconnect = Boolean(current);
     await closeCurrent();
+    const connectStarted = performance.now();
     connecting = connect(identity);
     try {
       current = await connecting;
+      timing.gatewayProxyConnectMs = roundedMs(performance.now() - connectStarted);
+      timing.gatewayProxyConnectionState = reconnect ? 'identity_reconnect' : 'cold_connect';
       return current.client;
     } finally {
       connecting = undefined;
@@ -336,8 +406,10 @@ function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext): {
   };
 
   return {
-    async callTool(name, args) {
-      const client = await clientForCurrentRuntime();
+    async callTool(name, args, timing = {}) {
+      const client = await clientForCurrentRuntime(timing);
+      const gatewayCallStartedAtMs = Date.now();
+      const callStarted = performance.now();
       try {
         // The outer Connector session is already bound to the Canonical Runtime
         // schema and fenced by the Runtime-published fingerprint before dispatch.
@@ -346,10 +418,18 @@ function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext): {
         const response = await client.callTool(
           { name, arguments: args },
           undefined,
-          { timeout: CANONICAL_RUNTIME_MCP_TIMEOUT_MS },
+          { timeout: CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS },
         );
-        return response as unknown as CallToolResult;
+        const result = response as unknown as CallToolResult;
+        timing.gatewayProxyCallMs = roundedMs(performance.now() - callStarted);
+        Object.assign(timing, deriveCanonicalForwardingTiming({
+          gatewayCallStartedAtMs,
+          gatewayCallDurationMs: timing.gatewayProxyCallMs,
+          response: result,
+        }));
+        return result;
       } catch (error) {
+        timing.gatewayProxyCallMs = roundedMs(performance.now() - callStarted);
         // A Runtime restart, token rotation, or broken HTTP session must never
         // poison later calls. The next request reconnects against fresh identity.
         await closeCurrent(client);
@@ -421,7 +501,7 @@ export function createForgeMcpServerFromContext(
     const ctx: ServerToolContext = { ...baseContext, signal: extra.signal };
     if (isMultiRepositoryContext(ctx)) {
       const rpcId = (request as unknown as { id?: unknown }).id;
-      return traceControllerMcpRequest(ctx, name, args, typeof rpcId === 'string' || typeof rpcId === 'number' ? rpcId : undefined, async (requestId) => {
+      return traceControllerMcpRequest(ctx, name, args, typeof rpcId === 'string' || typeof rpcId === 'number' ? rpcId : undefined, async (requestId, _traceId, phaseTimings) => {
         // The public Gateway only exposes its stable facade schema. It may
         // proxy execution, but it never discovers one Runtime schema and
         // validates calls against another source checkout.
@@ -449,8 +529,8 @@ export function createForgeMcpServerFromContext(
           const forwardedArgs = typeof args.request_id === 'string' && args.request_id.trim()
             ? args
             : { ...args, request_id: requestId };
-          if (runtimeProxy && runtimeSchema) return runtimeProxy.callTool(name, forwardedArgs);
-          if (runtimeProxy && observeRuntimeStatus(ctx.controllerHome).ready) return runtimeProxy.callTool(name, forwardedArgs);
+          if (runtimeProxy && runtimeSchema) return runtimeProxy.callTool(name, forwardedArgs, phaseTimings);
+          if (runtimeProxy && observeRuntimeStatus(ctx.controllerHome).ready) return runtimeProxy.callTool(name, forwardedArgs, phaseTimings);
         }
         const accessResult = callAccessTool(ctx, name, args);
         if (accessResult) return accessResult;

@@ -21,6 +21,19 @@ export interface McpTimingTrace {
   commandExecutionMs?: number;
   resultSerializationMs?: number;
   resultPersistenceMs?: number;
+  /** Public Gateway only: resolve current Canonical Runtime identity/token/endpoint. */
+  gatewayProxyResolveMs?: number;
+  /** Public Gateway only: establish or await a Canonical Runtime MCP client connection. */
+  gatewayProxyConnectMs?: number;
+  /** Public Gateway only: MCP call duration after a client is acquired, including Canonical Runtime work. */
+  gatewayProxyCallMs?: number;
+  /** Public Gateway only: time from forwarding the tool call until the Canonical Runtime handler starts. */
+  gatewayProxyCanonicalDispatchLagMs?: number;
+  /** Canonical Runtime server duration projected back through the proxy response. */
+  gatewayProxyCanonicalDurationMs?: number;
+  /** Public Gateway only: response/transport tail after canonical handler completion. */
+  gatewayProxyReturnMs?: number;
+  gatewayProxyConnectionState?: 'reused' | 'cold_connect' | 'coalesced_connect' | 'identity_reconnect';
   totalToolDurationMs: number;
   sessionId?: string;
   repoId?: string;
