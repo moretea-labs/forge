@@ -4,7 +4,13 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, re
 import { homedir } from 'os';
 import { basename, dirname, isAbsolute, join, resolve } from 'path';
 import { observeRuntimeStatus } from '../root/status';
-import { ensureForgeRuntimeLaunchAgentContract, forgeRuntimeServicePaths, readForgeRuntimeServiceConfig } from '../root/service';
+import {
+  activeRuntimeEntrypoint,
+  activeRuntimeLaunchSpec,
+  ensureForgeRuntimeLaunchAgentContract,
+  forgeRuntimeServicePaths,
+  readForgeRuntimeServiceConfig,
+} from '../root/service';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
 import { assertRuntimeReleaseFiles, stageRuntimeReleaseFromCandidateSource, type StagedRuntimeRelease } from '../root/release-materialize';
 import {
@@ -1362,6 +1368,44 @@ async function waitForLaunchdServiceUnloaded(input: {
   return !printed.ok;
 }
 
+interface PrimaryRuntimePortObservation {
+  port: number;
+  pids: number[];
+  uncertain?: string;
+}
+
+interface PrimaryRuntimePortCleanupResult {
+  released: boolean;
+  cleaned: boolean;
+  detail: string;
+  pid?: number;
+  signal?: 'SIGTERM' | 'SIGKILL';
+}
+
+async function observePrimaryRuntimePort(config: RecoveryConfig, runCommand: CommandRunner): Promise<PrimaryRuntimePortObservation> {
+  const paths = forgeRuntimeServicePaths(config.controllerHome);
+  let port: number;
+  try {
+    port = readForgeRuntimeServiceConfig(paths.configPath).port;
+  } catch {
+    return { port: -1, pids: [], uncertain: 'primary Runtime service port could not be read' };
+  }
+  const result = await runCommand('lsof', ['-nP', '-Fp', `-iTCP:${port}`, '-sTCP:LISTEN'], 3_000);
+  if (result.status === 1 && result.stderr.trim().length === 0) return { port, pids: [] };
+  if (!result.ok) {
+    return { port, pids: [], uncertain: `primary Runtime listener observation failed: ${result.stderr || result.stdout || result.status}` };
+  }
+  const pids = [...new Set(result.stdout.split(/\r?\n/)
+    .map((line) => /^p(\d+)$/.exec(line.trim())?.[1])
+    .filter((value): value is string => Boolean(value))
+    .map(Number)
+    .filter((value) => Number.isInteger(value) && value > 0))];
+  if (result.stdout.trim().length > 0 && pids.length === 0) {
+    return { port, pids: [], uncertain: 'primary Runtime listener identity was not machine-readable' };
+  }
+  return { port, pids };
+}
+
 async function waitForPrimaryRuntimePortReleased(input: {
   config: RecoveryConfig;
   timeoutMs: number;
@@ -1369,25 +1413,102 @@ async function waitForPrimaryRuntimePortReleased(input: {
   wait: (ms: number) => Promise<void>;
   runCommand: CommandRunner;
 }): Promise<boolean> {
-  const paths = forgeRuntimeServicePaths(input.config.controllerHome);
-  let port: number;
-  try {
-    port = readForgeRuntimeServiceConfig(paths.configPath).port;
-  } catch {
-    return false;
-  }
-  const isListening = async (): Promise<boolean> => {
-    const result = await input.runCommand('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], 3_000);
-    if (result.ok) return result.stdout.trim().length > 0;
-    if (result.status === 1 && result.stderr.trim().length === 0) return false;
-    return true;
-  };
   const deadline = input.now() + input.timeoutMs;
   while (input.now() < deadline) {
-    if (!(await isListening())) return true;
+    const observation = await observePrimaryRuntimePort(input.config, input.runCommand);
+    if (!observation.uncertain && observation.pids.length === 0) return true;
     await input.wait(250);
   }
-  return !(await isListening());
+  const observation = await observePrimaryRuntimePort(input.config, input.runCommand);
+  return !observation.uncertain && observation.pids.length === 0;
+}
+
+function commandLineHasArgument(commandLine: string, flag: string, value: string): boolean {
+  const candidates = [
+    `${flag} ${value}`,
+    `${flag} "${value}"`,
+    `${flag} '${value}'`,
+  ];
+  return candidates.some((candidate) => {
+    const index = commandLine.indexOf(candidate);
+    if (index < 0) return false;
+    const before = index === 0 ? '' : commandLine[index - 1];
+    const afterIndex = index + candidate.length;
+    const after = afterIndex >= commandLine.length ? '' : commandLine[afterIndex];
+    return (!before || /\s/.test(before)) && (!after || /\s/.test(after));
+  });
+}
+
+async function verifyPrimaryRuntimeListenerIdentity(input: {
+  config: RecoveryConfig;
+  pid: number;
+  uid: number;
+  port: number;
+  runCommand: CommandRunner;
+}): Promise<{ ok: boolean; detail: string }> {
+  const paths = forgeRuntimeServicePaths(input.config.controllerHome);
+  const physicalEntrypoint = activeRuntimeEntrypoint(input.config.controllerHome);
+  const launchSpec = activeRuntimeLaunchSpec(input.config.controllerHome);
+  if (!physicalEntrypoint || !launchSpec) return { ok: false, detail: 'active Runtime release identity is unavailable' };
+  const manifestIndex = launchSpec.args.indexOf('--release-manifest');
+  const manifestPath = manifestIndex >= 0 ? launchSpec.args[manifestIndex + 1] : undefined;
+  if (!manifestPath) return { ok: false, detail: 'active Runtime release manifest identity is unavailable' };
+
+  const result = await input.runCommand('ps', ['-ww', '-p', String(input.pid), '-o', 'uid=', '-o', 'command='], 3_000);
+  if (!result.ok) return { ok: false, detail: `listener process identity could not be read: ${result.stderr || result.stdout || result.status}` };
+  const line = result.stdout.trim().split(/\r?\n/).find(Boolean) ?? '';
+  const match = /^\s*(\d+)\s+(.+)$/.exec(line);
+  if (!match) return { ok: false, detail: 'listener process identity was not machine-readable' };
+  const observedUid = Number(match[1]);
+  const commandLine = match[2]!.trim();
+  if (observedUid !== input.uid) return { ok: false, detail: `listener uid ${observedUid} does not match Recovery uid ${input.uid}` };
+  const executableMatches = [resolve(paths.activeEntrypointPath), resolve(physicalEntrypoint)]
+    .some((candidate) => commandLine === candidate || commandLine.startsWith(`${candidate} `));
+  if (!executableMatches) return { ok: false, detail: 'listener executable is not the active Forge Runtime entrypoint' };
+  if (!commandLineHasArgument(commandLine, '--controller-home', resolve(input.config.controllerHome))) {
+    return { ok: false, detail: 'listener controller-home identity does not match' };
+  }
+  if (!commandLineHasArgument(commandLine, '--port', String(input.port))) {
+    return { ok: false, detail: 'listener port identity does not match' };
+  }
+  if (!commandLineHasArgument(commandLine, '--release-manifest', resolve(manifestPath))) {
+    return { ok: false, detail: 'listener release-manifest identity does not match' };
+  }
+  return { ok: true, detail: 'listener matches the current Forge Runtime release and controller identity' };
+}
+
+async function cleanupVerifiedStalePrimaryRuntimeListener(input: {
+  config: RecoveryConfig;
+  uid: number;
+  now: () => number;
+  wait: (ms: number) => Promise<void>;
+  runCommand: CommandRunner;
+}): Promise<PrimaryRuntimePortCleanupResult> {
+  const initial = await observePrimaryRuntimePort(input.config, input.runCommand);
+  if (initial.uncertain) return { released: false, cleaned: false, detail: initial.uncertain };
+  if (initial.pids.length === 0) return { released: true, cleaned: false, detail: 'primary Runtime port is already released' };
+  if (initial.pids.length !== 1) return { released: false, cleaned: false, detail: `primary Runtime port has ${initial.pids.length} listeners; cleanup requires exactly one` };
+  const pid = initial.pids[0]!;
+  const identity = await verifyPrimaryRuntimeListenerIdentity({ config: input.config, pid, uid: input.uid, port: initial.port, runCommand: input.runCommand });
+  if (!identity.ok) return { released: false, cleaned: false, detail: identity.detail, pid };
+
+  const term = await input.runCommand('kill', ['-TERM', String(pid)], 3_000);
+  const releasedAfterTerm = await waitForPrimaryRuntimePortReleased({ ...input, timeoutMs: 5_000 });
+  if (releasedAfterTerm) return { released: true, cleaned: true, detail: 'verified stale Forge Runtime listener released after SIGTERM', pid, signal: 'SIGTERM' };
+  if (!term.ok) return { released: false, cleaned: false, detail: `verified listener SIGTERM failed: ${term.stderr || term.stdout || term.status}`, pid };
+
+  const beforeKill = await observePrimaryRuntimePort(input.config, input.runCommand);
+  if (beforeKill.uncertain || beforeKill.pids.length !== 1 || beforeKill.pids[0] !== pid) {
+    return { released: false, cleaned: false, detail: 'listener identity changed after SIGTERM; refusing SIGKILL', pid };
+  }
+  const identityBeforeKill = await verifyPrimaryRuntimeListenerIdentity({ config: input.config, pid, uid: input.uid, port: beforeKill.port, runCommand: input.runCommand });
+  if (!identityBeforeKill.ok) return { released: false, cleaned: false, detail: `listener identity changed after SIGTERM: ${identityBeforeKill.detail}`, pid };
+  const killed = await input.runCommand('kill', ['-KILL', String(pid)], 3_000);
+  if (!killed.ok) return { released: false, cleaned: false, detail: `verified listener SIGKILL failed: ${killed.stderr || killed.stdout || killed.status}`, pid };
+  const releasedAfterKill = await waitForPrimaryRuntimePortReleased({ ...input, timeoutMs: 5_000 });
+  return releasedAfterKill
+    ? { released: true, cleaned: true, detail: 'verified stale Forge Runtime listener released after SIGKILL', pid, signal: 'SIGKILL' }
+    : { released: false, cleaned: false, detail: 'verified stale Forge Runtime listener remained on the port after SIGKILL', pid };
 }
 
 async function verifyPrimaryRuntimeAfterStart(input: {
@@ -1489,10 +1610,23 @@ export async function recoverPrimaryRuntime(
       return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies PrimaryRuntimeRecoveryResult;
     }
 
-    const portReleased = await waitForPrimaryRuntimePortReleased({ config, timeoutMs: 20_000, now, wait, runCommand });
+    let portReleased = await waitForPrimaryRuntimePortReleased({ config, timeoutMs: 20_000, now, wait, runCommand });
+    let staleListenerCleanup: PrimaryRuntimePortCleanupResult | undefined;
     if (!portReleased) {
-      const detail = 'primary Runtime TCP port remained occupied after bounded launchd bootout';
-      audit(config, 'primary_runtime_recovery_stop_unverified', { serviceTarget: service.target, detail });
+      staleListenerCleanup = await cleanupVerifiedStalePrimaryRuntimeListener({ config, uid: service.uid, now, wait, runCommand });
+      portReleased = staleListenerCleanup.released;
+      if (staleListenerCleanup.cleaned) {
+        audit(config, 'primary_runtime_recovery_stale_listener_cleaned', {
+          serviceTarget: service.target,
+          pid: staleListenerCleanup.pid,
+          signal: staleListenerCleanup.signal,
+          detail: staleListenerCleanup.detail,
+        });
+      }
+    }
+    if (!portReleased) {
+      const detail = `primary Runtime TCP port remained occupied after bounded launchd bootout: ${staleListenerCleanup?.detail ?? 'listener did not release'}`;
+      audit(config, 'primary_runtime_recovery_stop_unverified', { serviceTarget: service.target, detail, pid: staleListenerCleanup?.pid });
       return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies PrimaryRuntimeRecoveryResult;
     }
 
@@ -1720,10 +1854,24 @@ export async function activateRuntimeRelease(
       audit(config, 'runtime_release_activation_stop_unverified', { serviceTarget: service.target, operationId, detail });
       return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
     }
-    const portReleased = await waitForPrimaryRuntimePortReleased({ config, timeoutMs: 20_000, now, wait, runCommand });
+    let portReleased = await waitForPrimaryRuntimePortReleased({ config, timeoutMs: 20_000, now, wait, runCommand });
+    let staleListenerCleanup: PrimaryRuntimePortCleanupResult | undefined;
     if (!portReleased) {
-      const detail = 'primary Runtime TCP port remained occupied after bounded launchd bootout';
-      audit(config, 'runtime_release_activation_stop_unverified', { serviceTarget: service.target, operationId, detail });
+      staleListenerCleanup = await cleanupVerifiedStalePrimaryRuntimeListener({ config, uid: service.uid, now, wait, runCommand });
+      portReleased = staleListenerCleanup.released;
+      if (staleListenerCleanup.cleaned) {
+        audit(config, 'runtime_release_activation_stale_listener_cleaned', {
+          serviceTarget: service.target,
+          operationId,
+          pid: staleListenerCleanup.pid,
+          signal: staleListenerCleanup.signal,
+          detail: staleListenerCleanup.detail,
+        });
+      }
+    }
+    if (!portReleased) {
+      const detail = `primary Runtime TCP port remained occupied after bounded launchd bootout: ${staleListenerCleanup?.detail ?? 'listener did not release'}`;
+      audit(config, 'runtime_release_activation_stop_unverified', { serviceTarget: service.target, operationId, detail, pid: staleListenerCleanup?.pid });
       return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
     }
     let committed: RuntimeReleaseAuthority;

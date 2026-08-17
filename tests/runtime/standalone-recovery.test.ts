@@ -811,11 +811,17 @@ describe('standalone recovery on canonical Runtime', () => {
 
       let launchdLoaded = true;
       let kickstarts = 0;
+      const killSignals: string[][] = [];
       const result = await activateRuntimeRelease(config, candidate.path, {
         platform: 'darwin',
         currentUid: async () => 501,
         runCommand: async (commandName, args) => {
-          if (commandName === 'lsof') return { ok: true, status: 0, stdout: 'forge-runtime 123 greyson TCP *:8765 (LISTEN)', stderr: '' };
+          if (commandName === 'lsof') return { ok: true, status: 0, stdout: 'p123\n', stderr: '' };
+          if (commandName === 'ps') return { ok: true, status: 0, stdout: '501 /usr/bin/python3 -m http.server 8765\n', stderr: '' };
+          if (commandName === 'kill') {
+            killSignals.push(args);
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          }
           if (args[0] === 'bootout') launchdLoaded = false;
           if (args[0] === 'print') return launchdLoaded
             ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
@@ -831,8 +837,143 @@ describe('standalone recovery on canonical Runtime', () => {
 
       expect(result).toMatchObject({ ok: false, attempted: true });
       expect(result.detail).toContain('TCP port remained occupied');
+      expect(result.detail).toContain('not the active Forge Runtime entrypoint');
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
       expect(kickstarts).toBe(0);
+      expect(killSignals).toEqual([]);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('cleans a uniquely verified stale Forge Runtime listener before publishing a candidate', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const first = manifest(home, 'release-a', 'artifact-a');
+      const candidate = verifiedManifest(home, 'release-stale-listener-cleanup');
+      ensureActiveRuntimeRelease(home, first);
+      runtimeServiceConfig(home);
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+      const activeEntrypoint = join(dirname(first), 'forge-runtime');
+      let launchdLoaded = true;
+      let occupied = true;
+      let kickstarts = 0;
+      const killSignals: string[][] = [];
+
+      const result = await activateRuntimeRelease(createRecoveryConfig(home, {
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      }), candidate.path, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (commandName, args) => {
+          if (commandName === 'lsof') return occupied
+            ? { ok: true, status: 0, stdout: 'p123\n', stderr: '' }
+            : { ok: false, status: 1, stdout: '', stderr: '' };
+          if (commandName === 'ps') return {
+            ok: true,
+            status: 0,
+            stdout: `501 ${activeEntrypoint} --controller-home ${resolve(home)} --release-manifest ${resolve(first)} --port 8765\n`,
+            stderr: '',
+          };
+          if (commandName === 'kill') {
+            killSignals.push(args);
+            if (args[0] === '-TERM' && args[1] === '123') occupied = false;
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          }
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          if (args[0] === 'bootstrap') launchdLoaded = true;
+          if (args[0] === 'kickstart') kickstarts += 1;
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => {
+          const authority = readRuntimeReleaseAuthority(home)!;
+          return {
+            ...healthyVerify(),
+            releases: {
+              active: {
+                path: authority.active.manifestPath,
+                revision: authority.active.releaseId,
+                artifactIdentity: authority.active.artifactIdentity,
+                manifestSha256: 'test-sha',
+                workerProtocolVersion: 1,
+              },
+              coherent: true,
+            },
+          };
+        },
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+
+      expect(result).toMatchObject({ ok: true, attempted: true });
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-stale-listener-cleanup');
+      expect(killSignals).toEqual([['-TERM', '123']]);
+      expect(kickstarts).toBeGreaterThan(0);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('refuses SIGKILL when the listener identity changes after SIGTERM', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const first = manifest(home, 'release-a', 'artifact-a');
+      const candidate = verifiedManifest(home, 'release-listener-pid-reuse');
+      ensureActiveRuntimeRelease(home, first);
+      runtimeServiceConfig(home);
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+      const activeEntrypoint = join(dirname(first), 'forge-runtime');
+      let launchdLoaded = true;
+      let psReads = 0;
+      const killSignals: string[][] = [];
+
+      const result = await activateRuntimeRelease(createRecoveryConfig(home, {
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      }), candidate.path, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (commandName, args) => {
+          if (commandName === 'lsof') return { ok: true, status: 0, stdout: 'p123\n', stderr: '' };
+          if (commandName === 'ps') {
+            psReads += 1;
+            return psReads === 1
+              ? { ok: true, status: 0, stdout: `501 ${activeEntrypoint} --controller-home ${resolve(home)} --release-manifest ${resolve(first)} --port 8765\n`, stderr: '' }
+              : { ok: true, status: 0, stdout: '501 /usr/bin/python3 -m http.server 8765\n', stderr: '' };
+          }
+          if (commandName === 'kill') {
+            killSignals.push(args);
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          }
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => healthyVerify(),
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+
+      expect(result).toMatchObject({ ok: false, attempted: true });
+      expect(result.detail).toContain('listener identity changed after SIGTERM');
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+      expect(killSignals).toEqual([['-TERM', '123']]);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
