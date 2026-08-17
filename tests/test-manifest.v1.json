@@ -23,8 +23,8 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 119,
-    "maxTestLines": 46204,
+    "maxTestFiles": 120,
+    "maxTestLines": 46265,
     "maxPureFiles": 35,
     "maxTempIsolatedFiles": 47,
     "maxProcessTreeFiles": 16,
@@ -342,6 +342,10 @@
     "tests/runtime/check-runner-provenance.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
+    },
+    "tests/runtime/check-scheduling.test.ts": {
+      "module": "process-runtime",
+      "resource": "pure"
     },
     "tests/runtime/diagnostic-process-invocation.test.ts": {
       "module": "process-runtime",

@@ -355,9 +355,12 @@ Architecture documentation is part of the release contract, not an optional afte
 Verification must remain proportional:
 
 - focused checks during iteration;
+- affected/domain checks after a coherent implementation batch;
 - Task checks before acceptance;
-- broader Issue/system checks at integration boundaries;
+- broader Issue/system checks at candidate/integration boundaries;
 - full release gate once the candidate is frozen.
+
+Parallel verification is resource-aware, not caller-assumed. The Controller derives each registered Check's Process Runtime claims and groups requested checks into deterministic execution waves. Checks within one wave may overlap only when their claims do not conflict; waves run in order. A shared build-cache writer, heavy-check lease, workspace writer, shared temp resource, or overlapping external effect therefore serializes otherwise independent checks automatically. The same claim model remains the execution authority; scheduling metadata is advisory and MUST NOT bypass Leases.
 
 Running the full release suite after every small patch wastes resources and increases queue contention. Running only focused checks before release is insufficient.
 

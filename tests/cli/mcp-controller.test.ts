@@ -123,6 +123,9 @@ test("returns execution readiness and registered checks in one rh_context search
     });
     expect(value.data.executionReadiness.checks.normalized.invalidCheckIds).toContain("package:check:not-registered");
     expect(value.data.executionReadiness.dependencies.node.bootstrapCommand).toEqual(["bun", "install", "--frozen-lockfile"]);
+    expect(value.data.executionReadiness.checkScheduling.waveCount).toBe(1);
+    expect(value.data.executionReadiness.checkScheduling.waveSummaries).toEqual(["wave 1: package:check:type"]);
+    expect(value.data.executionReadiness.checkScheduling.invalidCheckIds).toContain("package:check:not-registered");
     expect(value.data.registeredChecks.some((check: any) => check.id === "package:check:type")).toBe(true);
   });
 });

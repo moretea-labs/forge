@@ -72,6 +72,7 @@ import { buildControllerContextPack, CONTROLLER_CONTEXT_IMPACT_DOMAINS, type Con
 import { legacyIssueAuthorityRetired } from '../../../cli/controller/legacy-issue-cutover';
 import { buildControllerOperationalPlan } from '../../../cli/controller/operational-plan';
 import { listControllerChecks, readLatestControllerCheckEvidence } from '../../../cli/controller/check-runner';
+import { buildCheckExecutionSchedule } from '../../execution/process-runtime/check-scheduling';
 import { repositoryChangeVerify } from '../../../cli/controller/composite-operations';
 import { listActiveAgentJobSnapshots } from '../../../cli/agent-jobs/job-manager';
 import { readAgentExecutableReadinessSnapshot } from '../../../cli/agent-jobs/executable-resolver';
@@ -376,7 +377,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     capability_id: { type: 'string' },
     approval_confirmed: { type: 'boolean' },
     dry_run: { type: 'boolean', description: 'Defaults to true for repair.' },
-    check_ids: { type: 'array', items: { type: 'string' } },
+    check_ids: { type: 'array', items: { type: 'string' }, description: 'Requested checks. Before launching multiple checks concurrently, call rh_context with requested_check_ids to read resource-compatible checkScheduling waves; do not overlap checks from different waves.' },
     check_id: { type: 'string' },
     acceptance_criteria: { type: 'array', items: { type: 'string' } },
     allowed_paths: { type: 'array', items: { type: 'string' } },
@@ -2982,6 +2983,7 @@ export function repositoryExecutionReadiness(
   repoRoot: string,
   availableChecks: ReturnType<typeof listControllerChecks>,
   requestedCheckIds: string[] = [],
+  schedulingScope: { repoId?: string; checkoutId?: string } = {},
 ): Record<string, unknown> {
   const git = gitSnapshot(repoRoot);
   const registeredCheckIds = availableChecks.map((check) => check.id);
@@ -3010,6 +3012,12 @@ export function repositoryExecutionReadiness(
   const localPythonReady = !hasPythonManifest
     || existsSync(join(repoRoot, '.venv', 'bin', 'python'))
     || existsSync(join(repoRoot, '.venv', 'Scripts', 'python.exe'));
+  const checkScheduling = buildCheckExecutionSchedule({
+    checks: availableChecks,
+    requestedCheckIds,
+    repoId: schedulingScope.repoId?.trim() || 'selected-repository',
+    checkoutId: schedulingScope.checkoutId?.trim() || 'active',
+  });
   const blockers = [
     ...(!nodeModulesReady ? [{ code: 'NODE_DEPENDENCIES_MISSING', message: 'package.json is present but node_modules is not materialized in this checkout.' }] : []),
     ...normalizedChecks.invalidCheckIds.map((checkId) => ({ code: 'CHECK_NOT_REGISTERED', message: `Requested check is not registered: ${checkId}`, checkId })),
@@ -3022,6 +3030,17 @@ export function repositoryExecutionReadiness(
       registeredCheckIds: registeredCheckIds.slice(0, 80),
       requestedCheckIds: requestedCheckIds.slice(0, 40),
       normalized: normalizedChecks,
+    },
+    checkScheduling: {
+      waveCount: checkScheduling.waves.length,
+      maxParallel: checkScheduling.maxParallel,
+      waveSummaries: checkScheduling.waves.map((wave) => `wave ${wave.wave}: ${wave.checkIds.join(', ')}`),
+      conflictSummaries: checkScheduling.conflicts.map((conflict) => {
+        const resources = [...new Set(conflict.resources.flatMap(({ left, right }) => [left.resourceKey, right.resourceKey]))];
+        return `${conflict.leftCheckId} <> ${conflict.rightCheckId}: ${resources.join(', ')}`;
+      }),
+      invalidCheckIds: checkScheduling.invalidCheckIds,
+      guidance: checkScheduling.guidance,
     },
     dependencies: {
       node: {
@@ -3336,7 +3355,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               : 'auto';
           const checks = listControllerChecks(repository.canonicalRoot);
           const requestedCheckIds = list(args.requested_check_ids);
-          const executionReadiness = repositoryExecutionReadiness(repository.canonicalRoot, checks, requestedCheckIds);
+          const executionReadiness = repositoryExecutionReadiness(repository.canonicalRoot, checks, requestedCheckIds, {
+            repoId: repository.repoId,
+            checkoutId: repository.activeCheckoutId,
+          });
           const pack = buildControllerContextPack(repository.canonicalRoot, ctx.policy, {
             description: query,
             searchTerms: [query],
