@@ -325,7 +325,10 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
           return metadata(tabId, entry.url, entry.title, events.activeTabId === tabId, false);
         }
         if (script.includes('set targetTab to active tab of targetWindow')) {
-          return metadata(userTab.id, userTab.url, userTab.title, true);
+          if (!script.includes('id of targetWindow') || !script.includes('id of targetTab')) {
+            return `${options.frontmost === false ? 'false' : 'true'}${separator}${userTab.url}${separator}${userTab.title}${separator}0${separator}25${separator}1280${separator}925`;
+          }
+          return metadata(userTab.id, userTab.url, userTab.title, true, false);
         }
         return '';
       },
@@ -735,6 +738,7 @@ describe('browser plugin', () => {
     setMacOsBrowserRuntimeHooksForTest(runtime.hooks);
     const discovered = await discoverMacOsBrowserAttachment(['chrome']);
     expect(discovered.attachment).toBeDefined();
+    expect(discovered.attachment?.metadata).toMatchObject({ windowId: '77', tabId: '501', active: true, loading: false });
     const attachment = discovered.attachment!;
     const page = await import('../../src/runtime/plugins/browser-macos-bridge').then(({ createMacOsBrowserOwnedPage }) =>
       createMacOsBrowserOwnedPage(attachment, 'https://example.com/native-handoff'));
