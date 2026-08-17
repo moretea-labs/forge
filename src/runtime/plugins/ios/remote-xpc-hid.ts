@@ -168,12 +168,20 @@ async def main():
             service_rows = connected.get('connectedServices', []) if isinstance(connected, dict) else []
             service_ids = [row.get('_ServiceID') for row in service_rows if isinstance(row, dict)]
             rsd_services = sorted((getattr(rsd, 'peer_info', {}) or {}).get('Services', {}).keys())
+            keyboard_started = time.perf_counter()
+            keyboard_service = await hid.create_keyboard_service(
+                KEYBOARD_SURFACE_DEFAULT_SERVICE_ID,
+                product='Forge RemoteXPC Keyboard',
+                manufacturer='Forge',
+            )
+            keyboard_ready_ms = (time.perf_counter() - keyboard_started) * 1000.0
             print(json.dumps({
                 'ready': True,
                 'serviceIds': service_ids,
+                'keyboardReady': True,
+                'keyboardReadyMs': round(keyboard_ready_ms, 2),
                 'pasteboardAvailable': 'com.apple.coredevice.pasteboardservice' in rsd_services,
             }), flush=True)
-            keyboard_service = None
             while True:
                 line = await asyncio.to_thread(sys.stdin.readline)
                 if not line:
@@ -233,13 +241,6 @@ async def main():
                         result = {'action': 'swipe', 'durationMs': duration_ms}
                     elif action == 'type':
                         text = str(request.get('text', ''))
-                        if keyboard_service is None:
-                            phase = 'hid_keyboard_service'
-                            keyboard_service = await hid.create_keyboard_service(
-                                KEYBOARD_SURFACE_DEFAULT_SERVICE_ID,
-                                product='Forge RemoteXPC Keyboard',
-                                manufacturer='Forge',
-                            )
                         for char in text:
                             mapping = ASCII_TO_HID.get(char)
                             if mapping is None:
