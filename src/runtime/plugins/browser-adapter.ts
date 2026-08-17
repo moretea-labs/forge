@@ -2445,11 +2445,14 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             const candidates: MacOsBrowserProduct[] = normalizedNativeProduct ? [normalizedNativeProduct] : configuredCandidates;
             const discovered = await discoverMacOsBrowserAttachment(candidates, Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));
             const activeMetadata = discovered.attachment?.metadata;
-            if (!activeMetadata?.frontmost || !activeMetadata.windowId || !activeMetadata.tabId) {
+            const requiresSystemFrontmost = !normalizedNativeProduct;
+            if (!activeMetadata || (requiresSystemFrontmost && !activeMetadata.frontmost) || !activeMetadata.windowId || !activeMetadata.tabId) {
               throw new AssistantPluginError(
                 'PLUGIN_BROWSER_ACTIVE_TAB_UNAVAILABLE',
-                'No frontmost native browser tab with a stable native identity is available for adoption.',
-                { retryable: true, details: { browserProduct: nativeProduct, attempts: discovered.attempts } },
+                requiresSystemFrontmost
+                  ? 'No frontmost native browser tab with a stable native identity is available for adoption.'
+                  : 'The explicitly selected native browser does not expose an active tab with a stable native identity.',
+                { retryable: true, details: { browserProduct: nativeProduct, requiresSystemFrontmost, attempts: discovered.attempts } },
               );
             }
             adoptedProduct = activeMetadata.product;

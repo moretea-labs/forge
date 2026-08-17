@@ -227,7 +227,7 @@ function mockAttachPlaywright(
   } as never;
 }
 
-function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', options: { javaScriptEnabled?: boolean; targetTitleMetadataFails?: boolean; transitionalNewTabReads?: number; transitionalUrl?: string } = {}) {
+function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', options: { javaScriptEnabled?: boolean; targetTitleMetadataFails?: boolean; transitionalNewTabReads?: number; transitionalUrl?: string; frontmost?: boolean } = {}) {
   const javaScriptEnabled = options.javaScriptEnabled !== false;
   const separator = '\x1e';
   const userTab: { id: string; url: string; title: string; ownerToken?: string } = { id: '501', url: 'https://example.com/user-work', title: 'User Work' };
@@ -249,7 +249,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
     return matches.at(-1)?.[1];
   };
   const metadata = (tabId: string, url: string, title: string, active: boolean, loading?: boolean) =>
-    `true${separator}${url}${separator}${title}${separator}0${separator}25${separator}1280${separator}925${separator}77${separator}${tabId}${separator}${active ? 'true' : 'false'}${loading === undefined ? '' : `${separator}${loading ? 'true' : 'false'}`}`;
+    `${options.frontmost === false ? 'false' : 'true'}${separator}${url}${separator}${title}${separator}0${separator}25${separator}1280${separator}925${separator}77${separator}${tabId}${separator}${active ? 'true' : 'false'}${loading === undefined ? '' : `${separator}${loading ? 'true' : 'false'}`}`;
 
   return {
     events,
@@ -1699,6 +1699,42 @@ describe('browser plugin', () => {
       args: { url: 'https://example.com/not-the-active-tab', native_active_tab: true },
       origin: { surface: 'local-ui', actor: 'test' },
     })).rejects.toThrow('does not match the requested session URL');
+    expect(native.events.created).toEqual([]);
+    expect(native.events.navigated).toEqual([]);
+  });
+
+  test('explicit browser product may adopt its active tab while another automation app owns system foreground', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome', { frontmost: false });
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const adopted = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
+      requestId: 'browser-native-adopt-explicit-background',
+      args: { url: 'https://example.com/user-work', native_active_tab: true, native_browser_product: 'chrome' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const adoptedSession = adopted.session as Record<string, any>;
+    expect(adoptedSession.browser.tab).toMatchObject({ ownership: 'user_owned', windowId: '77', tabId: '501' });
+    expect(native.events.created).toEqual([]);
+    expect(native.events.navigated).toEqual([]);
+
+    await expect(executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
+      requestId: 'browser-native-adopt-background-without-product',
+      args: { url: 'https://example.com/user-work', native_active_tab: true },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('No frontmost native browser tab');
     expect(native.events.created).toEqual([]);
     expect(native.events.navigated).toEqual([]);
   });
