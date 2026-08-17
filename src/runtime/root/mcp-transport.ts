@@ -64,11 +64,36 @@ function authMiddleware(token: string) {
   };
 }
 
+const SESSION_CLOSE_TIMEOUT_MS = 1_000;
+
 function closeServer(server: NodeHttpServer): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());
     server.closeIdleConnections?.();
+    // Runtime shutdown is terminal for all MCP connections. Force active HTTP
+    // streams closed after withdrawing the listener so release activation cannot
+    // be held hostage by a long-lived client connection.
+    server.closeAllConnections?.();
   });
+}
+
+export async function closeRuntimeMcpTransportResources(input: {
+  closeListener: () => Promise<void>;
+  closeSessions: Array<() => Promise<void>>;
+  sessionCloseTimeoutMs?: number;
+}): Promise<void> {
+  // Withdraw the TCP listener first. Session transports may be backed by
+  // long-lived streams whose close path is not guaranteed to settle promptly.
+  const listenerClose = input.closeListener();
+  const sessionDrain = Promise.allSettled(input.closeSessions.map(async (close) => await close()));
+  const timeoutMs = Math.max(0, input.sessionCloseTimeoutMs ?? SESSION_CLOSE_TIMEOUT_MS);
+  const boundedSessionDrain = timeoutMs === 0
+    ? Promise.resolve()
+    : Promise.race([
+        sessionDrain.then(() => undefined),
+        new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+      ]);
+  await Promise.all([listenerClose, boundedSessionDrain]);
 }
 
 export async function startRuntimeMcpTransport(
@@ -196,11 +221,14 @@ export async function startRuntimeMcpTransport(
     host: options.host,
     port: address.port,
     close: async () => {
-      await Promise.all([...sessions.values()].map(async ({ transport }) => {
+      const closeSessions = [...sessions.values()].map(({ transport }) => async () => {
         await transport.close().catch(() => undefined);
-      }));
+      });
       sessions.clear();
-      await closeServer(httpServer);
+      await closeRuntimeMcpTransportResources({
+        closeListener: async () => await closeServer(httpServer),
+        closeSessions,
+      });
     },
   };
 }

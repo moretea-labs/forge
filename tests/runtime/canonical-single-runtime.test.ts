@@ -31,11 +31,28 @@ import {
 } from '../../src/runtime/root/runtime';
 import type { CanonicalRuntimeConfig } from '../../src/runtime/root/types';
 import { startConfiguredRuntimeLocalBridge } from '../../src/runtime/root/local-bridge';
+import { closeRuntimeMcpTransportResources } from '../../src/runtime/root/mcp-transport';
 import {
   loadMcpServiceRuntimeState,
   writeMcpServiceLocalConfig,
   writeMcpServiceRuntimeState,
 } from '../../src/cli/mcp/auth';
+
+test('Runtime MCP shutdown withdraws the listener before bounded session drain', async () => {
+  const order: string[] = [];
+  const neverSettles = new Promise<void>(() => undefined);
+  const startedAt = performance.now();
+  await closeRuntimeMcpTransportResources({
+    closeListener: async () => { order.push('listener'); },
+    closeSessions: [async () => {
+      order.push('session');
+      await neverSettles;
+    }],
+    sessionCloseTimeoutMs: 15,
+  });
+  expect(order).toEqual(['listener', 'session']);
+  expect(performance.now() - startedAt).toBeLessThan(250);
+});
 
 interface Fixture {
   root: string;
