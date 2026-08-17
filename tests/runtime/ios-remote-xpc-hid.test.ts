@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import {
   executeRemoteXpcHidInput,
   parseMacOSTrustedRsdEndpoints,
-  remoteXpcHidKeyboardStatePathForTest,
+  remoteXpcHidWorkerSourceForTest,
   remoteXpcHidStatus,
   resetRemoteXpcHidForTest,
   setRemoteXpcHidExecutorForTest,
@@ -25,17 +25,15 @@ describe('RemoteXPC HID backend', () => {
     ]);
   });
 
-  it('binds one virtual-keyboard marker to the exact device and trusted RSD endpoint', () => {
-    const first = remoteXpcHidKeyboardStatePathForTest('/controller', 'CORE-DEVICE-1', 'fd00:1::1', 53190);
-    const same = remoteXpcHidKeyboardStatePathForTest('/controller', 'CORE-DEVICE-1', 'fd00:1::1', 53190);
-    const nextTunnel = remoteXpcHidKeyboardStatePathForTest('/controller', 'CORE-DEVICE-1', 'fd00:2::1', 53194);
-    const otherDevice = remoteXpcHidKeyboardStatePathForTest('/controller', 'CORE-DEVICE-2', 'fd00:1::1', 53190);
-    expect(first).toBe(same);
-    expect(nextTunnel).not.toBe(first);
-    expect(otherDevice).not.toBe(first);
-    expect(first).toContain('/runtime/device-input/keyboard-service-');
-    expect(first).not.toContain('CORE-DEVICE-1');
-    expect(first).not.toContain('fd00:1::1');
+  it('reuses a connected CoreDevice keyboard and never creates a custom virtual keyboard', () => {
+    const source = remoteXpcHidWorkerSourceForTest();
+    expect(source).toContain("DeviceTypeHint') or '').lower()");
+    expect(source).toContain("'keyboard' in product");
+    expect(source).toContain("keyboardSource': 'connected_coredevice'");
+    expect(source).toContain('No connected CoreDevice keyboard HID service is available');
+    expect(source).not.toContain('create_keyboard_service');
+    expect(source).not.toContain('--keyboard-state');
+    expect(source).not.toContain('--keyboard-service-id');
   });
 
   it('reports a controller-owned toolchain and never claims Runner ownership', () => {
