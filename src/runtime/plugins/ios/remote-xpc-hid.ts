@@ -55,6 +55,18 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
+class WorkerRequestError extends Error {
+  readonly phase?: string;
+  readonly mutationDispatched?: boolean;
+
+  constructor(message: string, details: { phase?: string; mutationDispatched?: boolean } = {}) {
+    super(message);
+    this.name = 'WorkerRequestError';
+    this.phase = details.phase;
+    this.mutationDispatched = details.mutationDispatched;
+  }
+}
+
 interface WorkerRecord {
   key: string;
   endpoint: RsdEndpoint;
@@ -134,12 +146,14 @@ def normalized_point(x, y, width, height):
     return nx, ny
 
 
-def response(request_id, ok, result=None, error=None):
+def response(request_id, ok, result=None, error=None, details=None):
     payload = {'id': request_id, 'ok': ok}
     if result is not None:
         payload['result'] = result
     if error is not None:
         payload['error'] = error
+    if details is not None:
+        payload['details'] = details
     print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
@@ -149,8 +163,6 @@ async def main():
     parser.add_argument('--port', required=True, type=int)
     args = parser.parse_args()
     async with RemoteServiceDiscoveryService((args.host, args.port)) as rsd:
-        apps = AppServiceService(rsd)
-        await apps.connect()
         async with touch_session(rsd) as hid:
             connected = await hid.list_connected_services()
             service_rows = connected.get('connectedServices', []) if isinstance(connected, dict) else []
@@ -167,6 +179,8 @@ async def main():
                 if not line:
                     return
                 request = None
+                phase = 'request_decode'
+                mutation_dispatched = False
                 try:
                     request = json.loads(line)
                     request_id = str(request.get('id', ''))
@@ -176,11 +190,24 @@ async def main():
                     bundle_id = request.get('bundleId')
                     if bundle_id:
                         foreground_started = time.perf_counter()
-                        await apps.launch_application(str(bundle_id), kill_existing=False)
+                        apps = AppServiceService(rsd)
+                        phase = 'foreground_connect'
+                        await apps.connect()
+                        try:
+                            phase = 'foreground_activate'
+                            await apps.launch_application(str(bundle_id), kill_existing=False)
+                        finally:
+                            try:
+                                await apps.close()
+                            except Exception:
+                                pass
                         foreground_ms = (time.perf_counter() - foreground_started) * 1000.0
                     hid_started = time.perf_counter()
                     if action == 'tap':
+                        phase = 'hid_prepare_tap'
                         nx, ny = normalized_point(int(request['x']), int(request['y']), int(request['width']), int(request['height']))
+                        phase = 'hid_tap_contact'
+                        mutation_dispatched = True
                         await hid.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, nx, ny, DIGITIZER_SURFACE_MAIN_TOUCHSCREEN)
                         await asyncio.sleep(0.055)
                         await hid.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, nx, ny, DIGITIZER_SURFACE_MAIN_TOUCHSCREEN)
@@ -192,6 +219,8 @@ async def main():
                         duration_ms = max(80, min(int(request.get('durationMs', 250)), 3000))
                         duration = duration_ms / 1000.0
                         steps = max(4, min(60, round(duration * 60)))
+                        phase = 'hid_swipe_contact'
+                        mutation_dispatched = True
                         for index in range(steps + 1):
                             ratio = index / steps
                             px = round(x + (x2 - x) * ratio)
@@ -205,6 +234,7 @@ async def main():
                     elif action == 'type':
                         text = str(request.get('text', ''))
                         if keyboard_service is None:
+                            phase = 'hid_keyboard_service'
                             keyboard_service = await hid.create_keyboard_service(
                                 KEYBOARD_SURFACE_DEFAULT_SERVICE_ID,
                                 product='Forge RemoteXPC Keyboard',
@@ -218,6 +248,8 @@ async def main():
                             pressed = [usage]
                             if shifted:
                                 pressed.append(KEY_LEFT_SHIFT)
+                            phase = 'hid_keyboard_write'
+                            mutation_dispatched = True
                             await hid.send_keyboard(keyboard_service, pressed)
                             await asyncio.sleep(0.018)
                             await hid.send_keyboard(keyboard_service, [])
@@ -232,9 +264,15 @@ async def main():
                         'hidMs': round(hid_ms, 2),
                         'requestMs': round((time.perf_counter() - request_started) * 1000.0, 2),
                     }
+                    result['mutationDispatched'] = mutation_dispatched
                     response(request_id, True, result)
                 except Exception as error:
-                    response(str(request.get('id', '')) if isinstance(request, dict) else '', False, error=f'{type(error).__name__}: {error}')
+                    response(
+                        str(request.get('id', '')) if isinstance(request, dict) else '',
+                        False,
+                        error=f'{type(error).__name__}: {error}',
+                        details={'phase': phase, 'mutationDispatched': mutation_dispatched},
+                    )
 
 
 if __name__ == '__main__':
@@ -399,7 +437,16 @@ function startWorker(input: Pick<RemoteXpcHidInput, 'controllerHome' | 'deviceId
     if (payload.ok === true && payload.result && typeof payload.result === 'object' && !Array.isArray(payload.result)) {
       request.resolve(payload.result as Record<string, unknown>);
     } else {
-      request.reject(new Error(typeof payload.error === 'string' ? payload.error : 'RemoteXPC HID request failed.'));
+      const details = payload.details && typeof payload.details === 'object' && !Array.isArray(payload.details)
+        ? payload.details as Record<string, unknown>
+        : {};
+      request.reject(new WorkerRequestError(
+        typeof payload.error === 'string' ? payload.error : 'RemoteXPC HID request failed.',
+        {
+          phase: typeof details.phase === 'string' ? details.phase : undefined,
+          mutationDispatched: typeof details.mutationDispatched === 'boolean' ? details.mutationDispatched : undefined,
+        },
+      ));
     }
   });
   child.stderr.on('data', (chunk) => {
@@ -610,10 +657,21 @@ async function executeDefault(input: RemoteXpcHidInput): Promise<RemoteXpcHidRes
     };
   } catch (error) {
     stopWorker(worker);
-    throw new AssistantPluginError('IOS_HID_INPUT_FAILED', error instanceof Error ? error.message : 'RemoteXPC HID input failed.', {
-      retryable: true,
-      details: { deviceIdentifier: input.deviceIdentifier },
-    });
+    const workerError = error instanceof WorkerRequestError ? error : undefined;
+    const mutationDispatched = workerError?.mutationDispatched;
+    const message = error instanceof Error ? error.message : 'RemoteXPC HID input failed.';
+    throw new AssistantPluginError(
+      mutationDispatched === false ? 'IOS_HID_INPUT_NOT_SENT' : 'IOS_HID_INPUT_FAILED',
+      mutationDispatched === false ? `RemoteXPC input failed before any HID mutation was sent: ${message}` : message,
+      {
+        retryable: true,
+        details: {
+          deviceIdentifier: input.deviceIdentifier,
+          ...(workerError?.phase ? { phase: workerError.phase } : {}),
+          ...(mutationDispatched === undefined ? {} : { mutationDispatched }),
+        },
+      },
+    );
   }
 }
 
