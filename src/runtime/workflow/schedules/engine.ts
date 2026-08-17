@@ -27,6 +27,7 @@ import {
 } from './store';
 import { applyScheduleFailure } from './settlement';
 import { classifyScheduledBrowserObservation, executeScheduledBrowserProbe } from './browser-probe';
+import { executeScheduledGithubIssueWatch } from './github-issue-watch';
 import type {
   RepositorySchedule,
   ScheduleDecisionType,
@@ -39,6 +40,7 @@ const LIVE_MAINTENANCE_OPERATION = 'runtime_maintenance_apply';
 const EXTERNAL_CONTROLLER_WAKE_OPERATION = 'external_controller_wake';
 const CHATGPT_BROWSER_PROMPT_OPERATION = 'chatgpt_browser_prompt';
 const BROWSER_PROBE_OPERATION = 'browser_probe';
+const GITHUB_ISSUE_WATCH_OPERATION = 'github_issue_watch';
 
 function isDeterministicSchedule(schedule: RepositorySchedule): boolean {
   // Kernel may execute only allowlisted, deterministic dispatch operations.
@@ -46,7 +48,8 @@ function isDeterministicSchedule(schedule: RepositorySchedule): boolean {
   return schedule.action.operation === LIVE_MAINTENANCE_OPERATION
     || schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION
     || schedule.action.operation === CHATGPT_BROWSER_PROMPT_OPERATION
-    || schedule.action.operation === BROWSER_PROBE_OPERATION;
+    || schedule.action.operation === BROWSER_PROBE_OPERATION
+    || schedule.action.operation === GITHUB_ISSUE_WATCH_OPERATION;
 }
 
 function normalizedWindow(minutes: number, at = Date.now()): string {
@@ -456,6 +459,7 @@ async function executeExternalControllerWake(
   timestamp: string,
   args: Record<string, unknown>,
   extraEvidence: Record<string, unknown> = {},
+  options: { transientWakeFailure?: boolean } = {},
 ): Promise<ScheduleOccurrence> {
   const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
   const controllerType = typeof args.controller_type === 'string' ? args.controller_type.trim() : 'chatgpt';
@@ -573,6 +577,21 @@ async function executeExternalControllerWake(
     });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
+    if (options.transientWakeFailure) {
+      const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
+      saveSchedule(controllerHome, {
+        ...latest,
+        lastTriggeredAt: timestamp,
+        lastOccurrenceId: occurrence.occurrenceId,
+        nextEligibleAt: undefined,
+        pausedReason: undefined,
+      });
+      return saveOccurrence(controllerHome, {
+        ...wakeDecision,
+        status: 'failed',
+        reason: `Controller wake deferred; watcher remains active for retry: ${reason}`,
+      });
+    }
     const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
       outcome: 'failed',
       decision: 'execute',
@@ -805,6 +824,75 @@ export async function evaluateSchedule(
 
   if (schedule.action.operation === CHATGPT_BROWSER_PROMPT_OPERATION) {
     return executeChatgptBrowserPrompt(controllerHome, schedule, occurrence, timestamp, args);
+  }
+
+  if (schedule.action.operation === GITHUB_ISSUE_WATCH_OPERATION) {
+    try {
+      const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
+      const observation = await executeScheduledGithubIssueWatch({ repoRoot: repository.canonicalRoot, args, observedAt: timestamp });
+      const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
+      const evidence = occurrenceDecisionEvidence({
+        githubRepository: typeof args.github_repository === 'string' ? args.github_repository : undefined,
+        observationStatus: observation.status,
+        observedIssueCount: observation.issues.length,
+        changedIssueNumbers: observation.changedOpenIssues.map((issue) => issue.number),
+      });
+      const persistObservation = () => saveSchedule(controllerHome, {
+        ...getSchedule(controllerHome, schedule.repoId, schedule.scheduleId),
+        action: {
+          ...latest.action,
+          arguments: { ...(latest.action.arguments ?? {}), issue_watch_state: observation.nextState, issue_watch_since: undefined },
+        },
+        lastTriggeredAt: timestamp,
+        lastOccurrenceId: occurrenceId,
+        lastObservationAt: timestamp,
+        lastObservationStatus: observation.status,
+        lastObservationChangedAt: observation.shouldWake ? timestamp : latest.lastObservationChangedAt,
+        consecutiveFailures: 0,
+        consecutiveNoops: observation.shouldWake ? 0 : (latest.consecutiveNoops ?? 0) + 1,
+        nextEligibleAt: undefined,
+        pausedReason: undefined,
+      });
+      if (!observation.shouldWake) {
+        const observedSchedule = persistObservation();
+        const reason = observation.status === 'baseline'
+          ? 'GitHub issue watcher baseline recorded; no Controller wake was emitted.'
+          : 'GitHub issue watcher found no new, reopened, or updated open issue.';
+        return decideOccurrence(controllerHome, observedSchedule, occurrence, 'nothing_to_do', 'skipped', reason, evidence);
+      }
+      const issueSummary = observation.changedOpenIssues.slice(0, 10)
+        .map((issue) => `#${issue.number} ${issue.title}`)
+        .join('; ');
+      const wakeArgs = {
+        ...args,
+        continuation_prompt: typeof args.continuation_prompt === 'string'
+          ? `${args.continuation_prompt}\n\nGitHub issue watcher detected: ${issueSummary}`
+          : `GitHub issue watcher detected actionable issue changes: ${issueSummary}. Read current Work/Plan/evidence and process these issues through the bounded repair workflow.`,
+      };
+      const wake = await executeExternalControllerWake(controllerHome, schedule, occurrence, timestamp, wakeArgs, evidence, { transientWakeFailure: true });
+      if (wake.status !== 'failed') persistObservation();
+      return wake;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
+        outcome: 'failed',
+        decision: 'execute',
+        reason,
+        handoff: {
+          title: `GitHub issue watcher occurrence ${occurrence.occurrenceId} failed`,
+          summary: 'The local GitHub issue poll failed before Forge could compare issue state.',
+          reason,
+          creationReason: 'repeated_infrastructure_failure',
+          blockingDecision: 'Repair GitHub CLI authentication/connectivity before unattended issue monitoring resumes.',
+          recommendedDecision: 'Restore gh read access, then retrigger the watcher.',
+          recommendedPrompt: `Inspect GitHub issue watcher occurrence ${occurrence.occurrenceId} and restore the local read-only gh issue polling path.`,
+          statusSummary: 'GitHub issue watcher poll failed.',
+          blockedBy: ['github_issue_watch_failed'],
+          attemptedActions: [`schedule:${schedule.scheduleId}`, 'gh:api:issues'],
+        },
+      });
+      return failed.occurrence ?? occurrence;
+    }
   }
 
   if (schedule.action.operation === BROWSER_PROBE_OPERATION) {

@@ -73,7 +73,7 @@ export interface RepositorySchedule {
   consecutiveNoops?: number;
   nextEligibleAt?: string;
   pausedReason?: string;
-  /** Last deterministic external observation for browser_watch/browser_keepalive. */
+  /** Last deterministic external observation for browser or issue watchers. */
   lastObservationAt?: string;
   lastObservationFingerprint?: string;
   lastObservationChangedAt?: string;
