@@ -24,6 +24,8 @@ export interface RemoteXpcHidInput {
   width?: number;
   height?: number;
   action: 'tap' | 'swipe' | 'type';
+  textMode?: 'auto' | 'keys' | 'pasteboard';
+  replaceExisting?: boolean;
   x?: number;
   y?: number;
   x2?: number;
@@ -128,9 +130,11 @@ import sys
 import time
 
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
+from pymobiledevice3.remote.core_device.pasteboard_service import PasteboardService
 from pymobiledevice3.remote.core_device.hid_service import (
     ASCII_TO_HID,
     DIGITIZER_SURFACE_MAIN_TOUCHSCREEN,
+    KEY_LEFT_GUI,
     KEY_LEFT_SHIFT,
     TOUCHSCREEN_STATE_CONTACT,
     TOUCHSCREEN_STATE_RELEASE,
@@ -265,22 +269,77 @@ async def main():
                         result = {'action': 'swipe', 'durationMs': duration_ms}
                     elif action == 'type':
                         text = str(request.get('text', ''))
-                        for char in text:
-                            mapping = ASCII_TO_HID.get(char)
+                        text_mode = str(request.get('textMode', 'auto'))
+                        if text_mode not in ('auto', 'keys', 'pasteboard'):
+                            raise ValueError('unsupported textMode')
+                        key_supported = all(ASCII_TO_HID.get(char) is not None for char in text)
+                        replace_existing = bool(request.get('replaceExisting', False))
+                        pasteboard_available = 'com.apple.coredevice.pasteboardservice' in rsd_services
+                        use_pasteboard = text_mode == 'pasteboard' or (text_mode == 'auto' and (not key_supported or len(text) >= 32))
+                        if use_pasteboard and not pasteboard_available:
+                            if text_mode == 'auto' and key_supported:
+                                use_pasteboard = False
+                            else:
+                                raise RuntimeError('CoreDevice pasteboard service is unavailable for Unicode/pasteboard text input')
+                        if replace_existing:
+                            mapping = ASCII_TO_HID.get('a')
                             if mapping is None:
-                                raise ValueError('unsupported HID character; Unicode text requires a pasteboard/input-method backend')
-                            usage, shifted = mapping
-                            pressed = [usage]
-                            if shifted:
-                                pressed.append(KEY_LEFT_SHIFT)
-                            phase = 'hid_keyboard_write'
+                                raise RuntimeError('HID A key mapping unavailable')
+                            usage, _ = mapping
+                            phase = 'hid_keyboard_select_all'
                             mutation_dispatched = True
-                            await hid.send_keyboard(keyboard_service, pressed)
-                            await asyncio.sleep(0.018)
+                            await hid.send_keyboard(keyboard_service, [usage, KEY_LEFT_GUI])
+                            await asyncio.sleep(0.040)
                             await hid.send_keyboard(keyboard_service, [])
-                            await asyncio.sleep(0.018)
-                        await hid.send_keyboard(keyboard_service, [])
-                        result = {'action': 'type', 'length': len(text)}
+                            await asyncio.sleep(0.040)
+                        if text_mode == 'keys' and not key_supported:
+                            raise ValueError('unsupported HID character in keys mode')
+                        if use_pasteboard:
+                            phase = 'pasteboard_snapshot'
+                            pasteboard_restored = True
+                            async with PasteboardService(rsd) as pasteboard:
+                                previous = await pasteboard.get()
+                                previous_snapshot = previous.get('pasteboard') if isinstance(previous.get('pasteboard'), dict) else previous
+                                previous_items = previous_snapshot.get('items') if isinstance(previous_snapshot, dict) else None
+                                previous_source = previous_snapshot.get('sourceMetadata') if isinstance(previous_snapshot, dict) else None
+                                try:
+                                    phase = 'pasteboard_set_text'
+                                    await pasteboard.set_text(text)
+                                    mapping = ASCII_TO_HID.get('v')
+                                    if mapping is None:
+                                        raise RuntimeError('HID V key mapping unavailable')
+                                    usage, _ = mapping
+                                    phase = 'hid_keyboard_paste'
+                                    mutation_dispatched = True
+                                    await hid.send_keyboard(keyboard_service, [usage, KEY_LEFT_GUI])
+                                    await asyncio.sleep(0.040)
+                                    await hid.send_keyboard(keyboard_service, [])
+                                    await asyncio.sleep(0.080)
+                                finally:
+                                    phase = 'pasteboard_restore'
+                                    if isinstance(previous_items, list):
+                                        try:
+                                            await pasteboard.set(previous_items, source_metadata=previous_source if isinstance(previous_source, dict) else None)
+                                        except Exception:
+                                            pasteboard_restored = False
+                            result = {'action': 'type', 'length': len(text), 'inputMode': 'pasteboard', 'pasteboardRestored': pasteboard_restored}
+                        else:
+                            for char in text:
+                                mapping = ASCII_TO_HID.get(char)
+                                if mapping is None:
+                                    raise ValueError('unsupported HID character in keys mode')
+                                usage, shifted = mapping
+                                pressed = [usage]
+                                if shifted:
+                                    pressed.append(KEY_LEFT_SHIFT)
+                                phase = 'hid_keyboard_write'
+                                mutation_dispatched = True
+                                await hid.send_keyboard(keyboard_service, pressed)
+                                await asyncio.sleep(0.018)
+                                await hid.send_keyboard(keyboard_service, [])
+                                await asyncio.sleep(0.018)
+                            await hid.send_keyboard(keyboard_service, [])
+                            result = {'action': 'type', 'length': len(text), 'inputMode': 'keys'}
                     else:
                         raise ValueError('unsupported action')
                     hid_ms = (time.perf_counter() - hid_started) * 1000.0
@@ -544,6 +603,8 @@ async function workerRequest(worker: WorkerRecord, input: RemoteXpcHidInput): Pr
   if (input.x2 !== undefined) payload.x2 = input.x2;
   if (input.y2 !== undefined) payload.y2 = input.y2;
   if (input.durationMs !== undefined) payload.durationMs = input.durationMs;
+  if (input.textMode !== undefined) payload.textMode = input.textMode;
+  if (input.replaceExisting !== undefined) payload.replaceExisting = input.replaceExisting;
   if (input.text !== undefined) payload.text = input.text;
   worker.lastUsedAt = Date.now();
   scheduleIdleStop(worker);
@@ -595,8 +656,12 @@ function validateInput(input: RemoteXpcHidInput): void {
   if (input.action === 'type') {
     const text = input.text ?? '';
     if (text.length > MAX_TEXT_LENGTH) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `RemoteXPC HID text is limited to ${MAX_TEXT_LENGTH} characters.`, { retryable: false });
-    if ([...text].some((character) => character.charCodeAt(0) > 0x7f)) {
-      throw new AssistantPluginError('IOS_HID_UNICODE_TEXT_UNSUPPORTED', 'The current HID keyboard backend accepts ASCII only; Unicode text needs a separate pasteboard/input-method backend.', { retryable: false });
+    const textMode = input.textMode ?? 'auto';
+    if (!['auto', 'keys', 'pasteboard'].includes(textMode)) {
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Unsupported RemoteXPC HID text mode: ${textMode}.`, { retryable: false });
+    }
+    if (textMode === 'keys' && [...text].some((character) => character.charCodeAt(0) > 0x7f)) {
+      throw new AssistantPluginError('IOS_HID_UNICODE_TEXT_UNSUPPORTED', 'RemoteXPC HID keys mode accepts ASCII only; use auto or pasteboard mode for Unicode text.', { retryable: false });
     }
   }
 }

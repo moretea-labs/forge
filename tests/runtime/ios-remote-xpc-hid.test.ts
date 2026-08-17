@@ -70,6 +70,42 @@ describe('RemoteXPC HID backend', () => {
     expect(observed).not.toHaveProperty('height');
   });
 
+  it('accepts Unicode in auto pasteboard-capable text mode without display geometry', async () => {
+    let observed: Record<string, unknown> | undefined;
+    setRemoteXpcHidExecutorForTest(async (input) => {
+      observed = { ...input, text: '<redacted>' };
+      return {
+        backend: 'remote-xpc-hid', reusedWorker: true,
+        endpoint: { host: 'fd00::1', port: 53194 }, result: { action: input.action, inputMode: 'pasteboard' },
+        timings: { workerStartupMs: 0, workerReadyMs: 0, requestMs: 55, hidMs: 50 },
+      };
+    });
+    await executeRemoteXpcHidInput({
+      controllerHome: '/controller', deviceIdentifier: 'device', udid: 'UDID',
+      action: 'type', text: '小红书资料', textMode: 'auto', replaceExisting: true,
+    });
+    expect(observed).toMatchObject({ action: 'type', text: '<redacted>', textMode: 'auto', replaceExisting: true });
+    expect(observed).not.toHaveProperty('width');
+    expect(observed).not.toHaveProperty('height');
+  });
+
+  it('rejects Unicode only when explicit direct-key mode is requested', async () => {
+    let dispatched = false;
+    setRemoteXpcHidExecutorForTest(async (input) => {
+      dispatched = true;
+      return {
+        backend: 'remote-xpc-hid', reusedWorker: true,
+        endpoint: { host: 'fd00::1', port: 53194 }, result: { action: input.action },
+        timings: { workerStartupMs: 0, workerReadyMs: 0, requestMs: 0, hidMs: 0 },
+      };
+    });
+    await expect(executeRemoteXpcHidInput({
+      controllerHome: '/controller', deviceIdentifier: 'device', udid: 'UDID',
+      action: 'type', text: '中文', textMode: 'keys',
+    })).rejects.toMatchObject({ code: 'IOS_HID_UNICODE_TEXT_UNSUPPORTED', retryable: false });
+    expect(dispatched).toBe(false);
+  });
+
   it('rejects off-screen coordinates before dispatching to the input worker', async () => {
     let dispatched = false;
     setRemoteXpcHidExecutorForTest(async (input) => {

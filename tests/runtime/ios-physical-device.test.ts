@@ -11,6 +11,7 @@ import {
   resetRemoteXpcHidForTest,
   setRemoteXpcHidExecutorForTest,
 } from '../../src/runtime/plugins/ios/remote-xpc-hid';
+import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 
 const roots: string[] = [];
 
@@ -341,6 +342,216 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const serialized = JSON.stringify(events);
     expect(serialized).not.toContain('Forge123');
     expect(serialized).toContain('type_text');
+  });
+
+  it('batches known form edits with one foreground activation and runnerless Unicode replacement', async () => {
+    const value = fixture();
+    const commands: string[][] = [];
+    const hidCalls: Array<Record<string, unknown>> = [];
+    setRemoteXpcHidExecutorForTest(async (request) => {
+      hidCalls.push({ ...request, text: request.text === undefined ? undefined : '<redacted>' });
+      return {
+        backend: 'remote-xpc-hid', reusedWorker: hidCalls.length > 1,
+        endpoint: { host: 'fd00::1', port: 53194 },
+        result: { action: request.action, ...(request.action === 'type' ? { inputMode: 'pasteboard' } : {}) },
+        timings: { workerStartupMs: hidCalls.length === 1 ? 120 : 0, workerReadyMs: 0, requestMs: 50, hidMs: 40 },
+      };
+    });
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      now: () => new Date('2026-08-17T08:00:00.000Z'),
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
+        const joined = args.join(' ');
+        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: '小红书', bundleIdentifier: 'com.xingin.discover' }] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: false, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device process launch')) return { ok: true, status: 0, stdout: json({ processIdentifier: 123, launchOptions: { activatedWhenStarted: true } }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info displays')) return { ok: true, status: 0, stdout: json({ displays: [{ bounds: [[0, 0], [1206, 2622]], nativeSize: [1206, 2622], pointScale: 3, primary: true }] }), stderr: '', command: [command, ...args] };
+        throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
+      },
+    });
+
+    const opened = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
+      device: 'greyson', bundle_id: 'com.xingin.discover',
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    const batched = await executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
+      interaction_id: interactionId,
+      steps: [
+        { kind: 'tap', x: 600, y: 900 },
+        { kind: 'wait', duration_ms: 0 },
+        { kind: 'type', text: '小红书资料', input_mode: 'auto', replace_existing: true },
+        { kind: 'swipe', x: 600, y: 1800, to_x: 600, to_y: 900, duration_ms: 200 },
+      ],
+    }));
+
+    expect(hidCalls).toHaveLength(3);
+    expect(hidCalls[0]).toMatchObject({ action: 'tap', width: 1206, height: 2622, x: 600, y: 900 });
+    expect(hidCalls[1]).toMatchObject({ action: 'type', text: '<redacted>', textMode: 'auto', replaceExisting: true });
+    expect(hidCalls[1]).not.toHaveProperty('width');
+    expect(hidCalls[1]).not.toHaveProperty('height');
+    expect(hidCalls[2]).toMatchObject({ action: 'swipe', width: 1206, height: 2622, x: 600, y: 1800, x2: 600, y2: 900 });
+    expect(batched.executionPlan).toEqual({
+      foregroundActivations: 1,
+      unlockChecks: 0,
+      displayLookups: 1,
+      pluginRoundTrips: 1,
+      runnerOwned: false,
+    });
+    expect((batched.completed as Array<Record<string, unknown>>)[2]).toMatchObject({ kind: 'type', inputMode: 'pasteboard' });
+
+    const launches = commands.filter((argv) => argv.join(' ').includes('device process launch'));
+    const locks = commands.filter((argv) => argv.join(' ').includes('device info lockState'));
+    const displays = commands.filter((argv) => argv.join(' ').includes('device info displays'));
+    expect(launches).toHaveLength(2);
+    expect(locks).toHaveLength(1);
+    expect(displays).toHaveLength(1);
+    expect(commands.some((argv) => argv.includes('xcodebuild'))).toBe(false);
+    expect(commands.some((argv) => argv.some((arg) => arg.includes('agent-device')))).toBe(false);
+
+    const events = await executeIosPhysicalDeviceAction(input(value, 'physical_device_events', { interaction_id: interactionId }));
+    expect(JSON.stringify(events)).not.toContain('小红书资料');
+    expect(JSON.stringify(events)).toContain('batch_input');
+  });
+
+  it('preflights every touch coordinate before dispatching any batch mutation', async () => {
+    const value = fixture();
+    const commands: string[][] = [];
+    let hidCalls = 0;
+    setRemoteXpcHidExecutorForTest(async (request) => {
+      hidCalls += 1;
+      return {
+        backend: 'remote-xpc-hid', reusedWorker: true,
+        endpoint: { host: 'fd00::1', port: 53194 }, result: { action: request.action },
+        timings: { workerStartupMs: 0, workerReadyMs: 0, requestMs: 1, hidMs: 1 },
+      };
+    });
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      now: () => new Date('2026-08-17T08:00:00.000Z'),
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
+        const joined = args.join(' ');
+        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: '小红书', bundleIdentifier: 'com.xingin.discover' }] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: false, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device process launch')) return { ok: true, status: 0, stdout: json({ processIdentifier: 123, launchOptions: { activatedWhenStarted: true } }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info displays')) return { ok: true, status: 0, stdout: json({ displays: [{ bounds: [[0, 0], [1206, 2622]], primary: true }] }), stderr: '', command: [command, ...args] };
+        throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
+      },
+    });
+    const opened = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
+      device: 'greyson', bundle_id: 'com.xingin.discover',
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
+      interaction_id: interactionId,
+      steps: [
+        { kind: 'tap', x: 600, y: 900 },
+        { kind: 'tap', x: 5000, y: 900 },
+      ],
+    }))).rejects.toMatchObject({ code: 'IOS_HID_COORDINATE_OUT_OF_BOUNDS', retryable: false });
+    expect(hidCalls).toBe(0);
+    const launches = commands.filter((argv) => argv.join(' ').includes('device process launch'));
+    expect(launches).toHaveLength(1);
+  });
+
+  it('allows a whole-batch retry only when the input backend proves no mutation was sent', async () => {
+    const value = fixture();
+    let hidCalls = 0;
+    setRemoteXpcHidExecutorForTest(async () => {
+      hidCalls += 1;
+      throw new AssistantPluginError('IOS_HID_INPUT_NOT_READY', 'worker still warming', {
+        retryable: true,
+        details: { mutationDispatched: false },
+      });
+    });
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      now: () => new Date('2026-08-17T08:00:00.000Z'),
+      runCommand: (command, args) => {
+        if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
+        const joined = args.join(' ');
+        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: '小红书', bundleIdentifier: 'com.xingin.discover' }] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: false, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device process launch')) return { ok: true, status: 0, stdout: json({ processIdentifier: 123, launchOptions: { activatedWhenStarted: true } }), stderr: '', command: [command, ...args] };
+        throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
+      },
+    });
+    const opened = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
+      device: 'greyson', bundle_id: 'com.xingin.discover',
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    try {
+      await executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
+        interaction_id: interactionId,
+        steps: [{ kind: 'type', text: '资料', replace_existing: true }],
+      }));
+      throw new Error('expected physical_device_batch to reject');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'IOS_HID_BATCH_FAILED', retryable: true,
+        details: { completedMutations: 0, retryWholeBatch: true, causeCode: 'IOS_HID_INPUT_NOT_READY' },
+      });
+    }
+    expect(hidCalls).toBe(1);
+  });
+
+  it('stops a partially-mutated physical batch without retrying earlier steps', async () => {
+    const value = fixture();
+    const commands: string[][] = [];
+    let hidCalls = 0;
+    setRemoteXpcHidExecutorForTest(async (request) => {
+      hidCalls += 1;
+      if (hidCalls === 2) throw new Error('synthetic type failure');
+      return {
+        backend: 'remote-xpc-hid', reusedWorker: true,
+        endpoint: { host: 'fd00::1', port: 53194 }, result: { action: request.action },
+        timings: { workerStartupMs: 0, workerReadyMs: 0, requestMs: 10, hidMs: 8 },
+      };
+    });
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      now: () => new Date('2026-08-17T08:00:00.000Z'),
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
+        const joined = args.join(' ');
+        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: '小红书', bundleIdentifier: 'com.xingin.discover' }] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: false, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device process launch')) return { ok: true, status: 0, stdout: json({ processIdentifier: 123, launchOptions: { activatedWhenStarted: true } }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info displays')) return { ok: true, status: 0, stdout: json({ displays: [{ bounds: [[0, 0], [1206, 2622]], primary: true }] }), stderr: '', command: [command, ...args] };
+        throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
+      },
+    });
+    const opened = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
+      device: 'greyson', bundle_id: 'com.xingin.discover',
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    try {
+      await executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
+        interaction_id: interactionId,
+        steps: [
+          { kind: 'tap', x: 600, y: 900 },
+          { kind: 'type', text: '不会重放', replace_existing: true },
+          { kind: 'tap', x: 900, y: 2200 },
+        ],
+      }));
+      throw new Error('expected physical_device_batch to reject');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'IOS_HID_BATCH_FAILED', retryable: false,
+        details: { failedStepIndex: 1, completedSteps: 1, completedMutations: 1, retryWholeBatch: false },
+      });
+    }
+    expect(hidCalls).toBe(2);
+    const launches = commands.filter((argv) => argv.join(' ').includes('device process launch'));
+    expect(launches).toHaveLength(2);
   });
 
   it('fails closed before HID when CoreDevice does not confirm foreground activation', async () => {

@@ -2083,7 +2083,7 @@ export function iosAgentDeviceCapabilities(): AssistantPluginCapability[] {
     {
       capabilityId: 'ios-agent-device-physical',
       title: 'agent-device physical iPhone',
-      description: 'Opt-in XCTest accessibility fallback for one exact physical iPhone. CoreDevice is the default physical-device path; prepare this only when semantic AX inspection is required.',
+      description: 'Opt-in XCTest accessibility fallback for one exact physical iPhone. CoreDevice/RemoteXPC is the default physical-device path. Do not use agent-device for ordinary profile/form editing, Unicode text entry, screenshots, or known-coordinate interaction; use the physical-device provider and its batch fast path instead. Prepare XCTest only when semantic AX inspection is genuinely required.',
       scopes: ['ios.discover', 'ios.device'],
       actions,
     },
@@ -2113,7 +2113,7 @@ export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'agent_device_prepare', title: 'Prepare semantic XCTest fallback',
-      description: 'Explicitly build, sign, install and health-check the agent-device XCTest Runner. Physical-device preparation uses one stable per-device runtime so repeated logical interactions reuse it.',
+      description: 'Explicitly build, sign, install and health-check the agent-device XCTest Runner. This is a heavy semantic fallback, not the normal physical-iPhone form-edit path. Physical-device preparation uses one stable per-device runtime so repeated semantic interactions can reuse it.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 10 * 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.discover', 'ios.simulator', 'ios.device'], resourceClaims: write,
       argumentsSchema: {
@@ -2123,7 +2123,7 @@ export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'agent_device_open', title: 'Open agent-device iOS session',
-      description: 'Open an app on one exact connected physical iPhone or already-booted iOS Simulator.',
+      description: 'Open an agent-device semantic session on one exact physical iPhone or booted Simulator. On physical iPhone this may start/reconnect an XCTest Runner; prefer physical_device_open plus physical_device_batch for ordinary app navigation and profile/form edits.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 4 * 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.simulator', 'ios.device'], resourceClaims: write,
       argumentsSchema: {
@@ -2133,7 +2133,7 @@ export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'agent_device_batch', title: 'Run fast typed iOS action batch',
-      description: `Run up to ${MAX_BATCH_STEPS} allowlisted session steps in one agent-device process and one daemon request. Mutating steps always settle before the next step.`,
+      description: `Run up to ${MAX_BATCH_STEPS} semantic AX steps in one agent-device process and one daemon request. Mutating steps settle before the next step. On a physical iPhone, use this only when accessibility semantics are required; known-coordinate/form workflows should use physical_device_batch to avoid XCTest lifecycle cost.`,
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 2 * 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.simulator', 'ios.device'], resourceClaims: write,
       argumentsSchema: {

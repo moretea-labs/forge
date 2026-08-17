@@ -33,6 +33,8 @@ const INPUT_DISPLAY_CACHE_MS = 5 * 60_000;
 const INPUT_FOREGROUND_ACTIVATION_TIMEOUT_MS = 2_000;
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_EVENTS = 200;
+const MAX_BATCH_STEPS = 20;
+const MAX_BATCH_WAIT_MS = 5_000;
 
 interface CommandResult {
   ok: boolean;
@@ -740,6 +742,125 @@ async function reactivatePhysicalTargetApp(
   return activation;
 }
 
+type PhysicalInputBatchKind = 'tap' | 'swipe' | 'type' | 'wait';
+
+interface PhysicalInputBatchStep {
+  kind: PhysicalInputBatchKind;
+  x?: number;
+  y?: number;
+  toX?: number;
+  toY?: number;
+  durationMs?: number;
+  text?: string;
+  textMode?: 'auto' | 'keys' | 'pasteboard';
+  replaceExisting?: boolean;
+}
+
+function physicalInputBatchSteps(value: unknown): PhysicalInputBatchStep[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_BATCH_STEPS) {
+    throw new AssistantPluginError(
+      'PLUGIN_ACTION_ARGUMENT_INVALID',
+      `steps must contain between 1 and ${MAX_BATCH_STEPS} physical input steps.`,
+      { retryable: false },
+    );
+  }
+  return value.map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `steps[${index}] must be an object.`, { retryable: false });
+    }
+    const row = entry as Record<string, unknown>;
+    const kind = requireString(row.kind, `steps[${index}].kind`) as PhysicalInputBatchKind;
+    if (!['tap', 'swipe', 'type', 'wait'].includes(kind)) {
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Unsupported steps[${index}].kind: ${kind}.`, { retryable: false });
+    }
+    if (kind === 'tap') {
+      return {
+        kind,
+        x: requireFiniteNumber(row.x, `steps[${index}].x`),
+        y: requireFiniteNumber(row.y, `steps[${index}].y`),
+      };
+    }
+    if (kind === 'swipe') {
+      const durationMs = typeof row.duration_ms === 'number' && Number.isFinite(row.duration_ms)
+        ? Math.max(80, Math.min(3_000, Math.trunc(row.duration_ms)))
+        : 250;
+      return {
+        kind,
+        x: requireFiniteNumber(row.x, `steps[${index}].x`),
+        y: requireFiniteNumber(row.y, `steps[${index}].y`),
+        toX: requireFiniteNumber(row.to_x, `steps[${index}].to_x`),
+        toY: requireFiniteNumber(row.to_y, `steps[${index}].to_y`),
+        durationMs,
+      };
+    }
+    if (kind === 'type') {
+      const textMode = optionalString(row.input_mode) ?? 'auto';
+      if (!['auto', 'keys', 'pasteboard'].includes(textMode)) {
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Unsupported steps[${index}].input_mode: ${textMode}.`, { retryable: false });
+      }
+      const text = requireString(row.text, `steps[${index}].text`);
+      if (text.length > 2048) {
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `steps[${index}].text exceeds the 2048 character input limit.`, { retryable: false });
+      }
+      if (textMode === 'keys' && [...text].some((character) => character.charCodeAt(0) > 0x7f)) {
+        throw new AssistantPluginError('IOS_HID_UNICODE_TEXT_UNSUPPORTED', `steps[${index}] requests keys mode for Unicode text; use auto or pasteboard mode.`, { retryable: false });
+      }
+      return {
+        kind,
+        text,
+        textMode: textMode as 'auto' | 'keys' | 'pasteboard',
+        replaceExisting: row.replace_existing === true,
+      };
+    }
+    const durationMs = typeof row.duration_ms === 'number' && Number.isFinite(row.duration_ms)
+      ? Math.max(0, Math.min(MAX_BATCH_WAIT_MS, Math.trunc(row.duration_ms)))
+      : 120;
+    return { kind, durationMs };
+  });
+}
+
+function validatePhysicalInputBatchCoordinates(steps: PhysicalInputBatchStep[], display: DisplayGeometry | undefined): void {
+  const touchSteps = steps.filter((step) => step.kind === 'tap' || step.kind === 'swipe');
+  if (touchSteps.length === 0) return;
+  if (!display) {
+    throw new AssistantPluginError('IOS_HID_DISPLAY_INVALID', 'Physical input batch contains touch steps without usable display geometry.', { retryable: true });
+  }
+  const points: Array<{ stepIndex: number; label: string; x: number | undefined; y: number | undefined }> = [];
+  steps.forEach((step, stepIndex) => {
+    if (step.kind === 'tap' || step.kind === 'swipe') points.push({ stepIndex, label: 'from', x: step.x, y: step.y });
+    if (step.kind === 'swipe') points.push({ stepIndex, label: 'to', x: step.toX, y: step.toY });
+  });
+  for (const point of points) {
+    if (point.x === undefined || point.y === undefined || point.x < 0 || point.y < 0 || point.x > display.width - 1 || point.y > display.height - 1) {
+      throw new AssistantPluginError(
+        'IOS_HID_COORDINATE_OUT_OF_BOUNDS',
+        `steps[${point.stepIndex}] ${point.label} coordinate is outside the current CoreDevice display.`,
+        { retryable: false, details: { stepIndex: point.stepIndex, label: point.label, x: point.x, y: point.y, width: display.width, height: display.height, mutationDispatched: false } },
+      );
+    }
+  }
+}
+
+async function waitPhysicalInputBatch(durationMs: number, signal?: AbortSignal): Promise<void> {
+  if (durationMs <= 0) return;
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      if (error) reject(error);
+      else resolve();
+    };
+    const abort = () => finish(new AssistantPluginError('PLUGIN_ACTION_CANCELLED', 'Physical iOS input batch was cancelled during a wait step.', { retryable: true }));
+    timer = setTimeout(() => finish(), durationMs);
+    if (signal?.aborted) abort();
+    else signal?.addEventListener('abort', abort, { once: true });
+  });
+}
+
 export function isIosPhysicalDeviceAction(actionId: string): boolean {
   return actionId.startsWith('physical_device_');
 }
@@ -790,7 +911,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_open', title: 'Open physical iOS app session',
-      description: 'Launch one installed third-party app through CoreDevice and create a bounded interaction session. Optionally start a nonblocking runnerless HID warmup. This action never starts, installs, probes, or attaches an XCTest/WDA Runner.',
+      description: 'Launch one installed third-party app through CoreDevice and create a bounded interaction session. Set prewarm_input=true when runnerless input or physical_device_batch will follow immediately. This action never starts, installs, probes, or attaches an XCTest/WDA Runner.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 2 * 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: { type: 'object', properties: { device: { type: 'string' }, bundle_id: { type: 'string' }, relaunch: { type: 'boolean' }, prewarm_input: { type: 'boolean' } }, required: ['device', 'bundle_id'], additionalProperties: false },
@@ -803,8 +924,37 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: { type: 'object', properties: { ...interactionProperty, label: { type: 'string' } }, required: ['interaction_id'], additionalProperties: false },
     },
     {
+      actionId: 'physical_device_batch', title: 'Run fast physical iPhone input batch',
+      description: 'Preferred fast path for a known stable in-app form: perform up to 20 tap, swipe, text, or bounded-wait steps with one foreground activation, one unlock/display readiness pass, and one plugin round-trip. Stops on the first failed step and reports partial progress; never retry the whole batch after partial mutation.',
+      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
+      scopes: ['ios.device'], resourceClaims: mutationClaims,
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          ...interactionProperty,
+          steps: {
+            type: 'array', minItems: 1, maxItems: MAX_BATCH_STEPS,
+            items: {
+              type: 'object',
+              properties: {
+                kind: { type: 'string', enum: ['tap', 'swipe', 'type', 'wait'] },
+                x: { type: 'number', minimum: 0 }, y: { type: 'number', minimum: 0 },
+                to_x: { type: 'number', minimum: 0 }, to_y: { type: 'number', minimum: 0 },
+                duration_ms: { type: 'number', minimum: 0, maximum: MAX_BATCH_WAIT_MS },
+                text: { type: 'string', maxLength: 2048 },
+                input_mode: { type: 'string', enum: ['auto', 'keys', 'pasteboard'] },
+                replace_existing: { type: 'boolean' },
+              },
+              required: ['kind'], additionalProperties: false,
+            },
+          },
+        },
+        required: ['interaction_id', 'steps'], additionalProperties: false,
+      },
+    },
+    {
       actionId: 'physical_device_tap', title: 'Tap physical iPhone coordinate',
-      description: 'Send one runnerless touch through the existing macOS trusted CoreDevice/RemoteXPC tunnel. Coordinates are pixels in the current CoreDevice screenshot/display space.',
+      description: 'Send one runnerless touch through the existing macOS trusted CoreDevice/RemoteXPC tunnel. Coordinates are pixels in the current CoreDevice screenshot/display space. For multiple known form steps, prefer physical_device_batch to avoid repeated foreground checks and MCP round-trips.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: {
@@ -831,12 +981,12 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_type_text', title: 'Type physical iPhone text',
-      description: 'Type bounded ASCII text through a reusable runnerless RemoteXPC HID keyboard. Unicode is rejected until a separate pasteboard/input-method backend is proven on the active iOS version.',
+      description: 'Type bounded text through reusable runnerless RemoteXPC input. Auto mode uses direct HID keys for short ASCII and a clipboard-preserving CoreDevice pasteboard + Command-V path for Unicode or longer text, avoiding XCTest for ordinary profile/form edits.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: {
         type: 'object',
-        properties: { ...interactionProperty, text: { type: 'string', maxLength: 2048 } },
+        properties: { ...interactionProperty, text: { type: 'string', maxLength: 2048 }, input_mode: { type: 'string', enum: ['auto', 'keys', 'pasteboard'] }, replace_existing: { type: 'boolean' } },
         required: ['interaction_id', 'text'], additionalProperties: false,
       },
     },
@@ -1027,6 +1177,134 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         artifactCandidates: [{ kind: 'ios_physical_device_screenshot', mediaType: 'image/png', path }],
       });
     }
+    case 'physical_device_batch': {
+      const lockStartedAt = performance.now();
+      const unlock = await requireSessionUnlocked(input, state);
+      recordTiming(timingStages, 'lockState', lockStartedAt, unlock.cached);
+      if (!state.device.udid) throw new AssistantPluginError('IOS_HID_UDID_MISSING', 'The selected iPhone does not expose a hardware UDID for RemoteXPC HID.', { retryable: false });
+      const steps = physicalInputBatchSteps(input.args.steps);
+      let display: DisplayGeometry | undefined;
+      if (steps.some((step) => step.kind === 'tap' || step.kind === 'swipe')) {
+        const displayStartedAt = performance.now();
+        const geometry = await sessionDisplayGeometry(input, state);
+        recordTiming(timingStages, 'displayInfo', displayStartedAt, geometry.cached);
+        display = geometry.display;
+      }
+      validatePhysicalInputBatchCoordinates(steps, display);
+      const foregroundStartedAt = performance.now();
+      await reactivatePhysicalTargetApp(input, state);
+      recordTiming(timingStages, 'foregroundReactivate', foregroundStartedAt, false);
+      const batchStartedAt = performance.now();
+      const completed: Array<Record<string, unknown>> = [];
+      let completedMutations = 0;
+      for (let index = 0; index < steps.length; index += 1) {
+        const step = steps[index]!;
+        try {
+          if (step.kind === 'wait') {
+            await waitPhysicalInputBatch(step.durationMs ?? 0, input.signal);
+            completed.push({ index, kind: step.kind, durationMs: step.durationMs ?? 0 });
+            continue;
+          }
+          let result: Awaited<ReturnType<typeof executeRemoteXpcHidInput>>;
+          if (step.kind === 'tap') {
+            result = await executeRemoteXpcHidInput({
+              controllerHome: input.controllerHome,
+              deviceIdentifier: state.device.identifier,
+              udid: state.device.udid,
+              width: display?.width,
+              height: display?.height,
+              action: 'tap', x: step.x, y: step.y,
+            });
+          } else if (step.kind === 'swipe') {
+            result = await executeRemoteXpcHidInput({
+              controllerHome: input.controllerHome,
+              deviceIdentifier: state.device.identifier,
+              udid: state.device.udid,
+              width: display?.width,
+              height: display?.height,
+              action: 'swipe', x: step.x, y: step.y, x2: step.toX, y2: step.toY, durationMs: step.durationMs,
+            });
+          } else {
+            result = await executeRemoteXpcHidInput({
+              controllerHome: input.controllerHome,
+              deviceIdentifier: state.device.identifier,
+              udid: state.device.udid,
+              action: 'type', text: step.text, textMode: step.textMode, replaceExisting: step.replaceExisting,
+            });
+          }
+          completedMutations += 1;
+          completed.push({
+            index,
+            kind: step.kind,
+            reusedWorker: result.reusedWorker,
+            requestMs: result.timings.requestMs,
+            hidMs: result.timings.hidMs,
+            ...(step.kind === 'type' ? { inputMode: objectValue(result.result).inputMode } : {}),
+          });
+        } catch (error) {
+          const normalized = toAssistantPluginError(error, {
+            code: 'IOS_HID_BATCH_FAILED',
+            message: `Physical iOS input batch failed at step ${index}.`,
+            retryable: false,
+          });
+          const eventStartedAt = performance.now();
+          const causeDetails = normalized.details && typeof normalized.details === 'object' && !Array.isArray(normalized.details)
+            ? normalized.details as Record<string, unknown>
+            : {};
+          const retryWholeBatch = completedMutations === 0 && causeDetails.mutationDispatched === false;
+          appendEvent(input, record.interactionId, 'batch_failed', {
+            requestId: input.requestId,
+            failedStepIndex: index,
+            failedStepKind: step.kind,
+            completedSteps: completed.length,
+            completedMutations,
+            retryWholeBatch,
+            causeCode: normalized.code,
+          });
+          recordTiming(timingStages, 'eventPersistence', eventStartedAt, false);
+          throw new AssistantPluginError(
+            'IOS_HID_BATCH_FAILED',
+            retryWholeBatch
+              ? `Physical iOS input batch stopped at step ${index} before any HID mutation was sent; retrying the whole batch is safe.`
+              : `Physical iOS input batch stopped at step ${index}; do not retry the whole batch because an earlier or in-flight step may already have mutated the app.`,
+            {
+              retryable: retryWholeBatch,
+              details: {
+                failedStepIndex: index,
+                failedStepKind: step.kind,
+                completedSteps: completed.length,
+                completedMutations,
+                retryWholeBatch,
+                causeCode: normalized.code,
+              },
+            },
+          );
+        }
+      }
+      recordTiming(timingStages, 'hidBatchTotal', batchStartedAt, false);
+      const eventStartedAt = performance.now();
+      appendEvent(input, record.interactionId, 'batch_input', {
+        requestId: input.requestId,
+        stepCount: steps.length,
+        mutationCount: completedMutations,
+        kinds: steps.map((step) => step.kind),
+      });
+      recordTiming(timingStages, 'eventPersistence', eventStartedAt, false);
+      return finishTimedResult(actionStartedAt, timingStages, {
+        provider: 'coredevice',
+        inputBackend: 'remote-xpc-hid',
+        interaction: record,
+        ...(display ? { display } : {}),
+        completed,
+        executionPlan: {
+          foregroundActivations: 1,
+          unlockChecks: unlock.cached ? 0 : 1,
+          displayLookups: display ? 1 : 0,
+          pluginRoundTrips: 1,
+          runnerOwned: false,
+        },
+      });
+    }
     case 'physical_device_tap': {
       const lockStartedAt = performance.now();
       const unlock = await requireSessionUnlocked(input, state);
@@ -1098,6 +1376,10 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       recordTiming(timingStages, 'lockState', lockStartedAt, unlock.cached);
       if (!state.device.udid) throw new AssistantPluginError('IOS_HID_UDID_MISSING', 'The selected iPhone does not expose a hardware UDID for RemoteXPC HID.', { retryable: false });
       const text = requireString(input.args.text, 'text');
+      const textMode = optionalString(input.args.input_mode) ?? 'auto';
+      if (!['auto', 'keys', 'pasteboard'].includes(textMode)) {
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Unsupported input_mode: ${textMode}.`, { retryable: false });
+      }
       const foregroundStartedAt = performance.now();
       await reactivatePhysicalTargetApp(input, state);
       recordTiming(timingStages, 'foregroundReactivate', foregroundStartedAt, false);
@@ -1106,7 +1388,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         controllerHome: input.controllerHome,
         deviceIdentifier: state.device.identifier,
         udid: state.device.udid,
-        action: 'type', text,
+        action: 'type', text, textMode: textMode as 'auto' | 'keys' | 'pasteboard', replaceExisting: input.args.replace_existing === true,
       });
       timingStages.hidWorkerReady = { ms: result.timings.workerStartupMs + result.timings.workerReadyMs, cached: result.reusedWorker };
       timingStages.hidWriteAck = { ms: result.timings.hidMs ?? result.timings.requestMs, cached: false };
