@@ -19,6 +19,7 @@ import { getProcessHandle, getProcessRecord, isManagedProcessActive, listProcess
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
 import { executionIdentityForRepository } from '../../control-plane/execution/execution-identity';
+import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from '../../control-plane/execution/verification-evidence';
 import { acceptReviewedDirectEditWorkReconciliation, reconcileFinalizedDirectEditWorksAfterCommit } from '../../control-plane/execution/direct-edit-work-completion';
 import { readJobEvents } from '../../evidence/event-ledger';
 import { readExecutionArtifact } from '../../evidence/artifact-store';
@@ -2733,7 +2734,10 @@ async function runFacadeVerify(
     const verificationRepository = workContract?.checkoutId
       ? selectRepositoryCheckout(repository, workContract.checkoutId, { allowArchived: true })
       : repository;
-    const observedGitHead = repositoryGitStatus(verificationRepository).head;
+    const verificationStatus = repositoryGitStatus(verificationRepository);
+    const observedGitHead = verificationStatus.head;
+    const workspaceFingerprint = workspaceValidationFingerprint(verificationRepository.canonicalRoot, verificationStatus);
+    const requestedChecks = workContract?.checks.length ? workContract.checks : [normalizedCheckId];
     const executed = await runPersistedCheckViaProcessRuntime({
       controllerHome: ctx.controllerHome,
       repoId: verificationRepository.repoId,
@@ -2881,10 +2885,19 @@ async function runFacadeVerify(
     };
 
     if (workId) {
+      const sourceRevision = observedGitHead ?? undefined;
       const facade = verifyGoalWorkloop(workloopCtx, {
         workId,
         checkId: normalizedCheckId,
-        sourceRevision: observedGitHead ?? undefined,
+        sourceRevision,
+        workspaceFingerprint,
+        verificationInputFingerprint: sourceRevision ? verificationInputFingerprint({
+          sourceRevision,
+          workspaceFingerprint,
+          checkId: normalizedCheckId,
+          requestedChecks,
+        }) : undefined,
+        commandFingerprint: commandFingerprint(normalizedCheckId, receipt.commandId),
         receipt,
         infrastructureFailed,
         checkFailed,

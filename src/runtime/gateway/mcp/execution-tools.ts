@@ -28,7 +28,7 @@ import { buildWorkContinuationSnapshot } from '../../control-plane/facade/work-c
 import { claimControllerSession, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../control-plane/facade/controller-session-store';
 import { currentControllerInstanceId, requireExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext, type SessionIdentity } from '../../control-plane/execution/session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from '../../control-plane/execution/validation';
-import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from '../../control-plane/execution/verification-evidence';
+import { commandFingerprint, effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from '../../control-plane/execution/verification-evidence';
 import { assertExecutionIdentity, executionIdentityForWork, executionIdentityFromCoordinates, resolveLegacyWorkContractIdentity } from '../../control-plane/execution/execution-identity';
 import { withWorkPrepareRequest } from '../../control-plane/execution/work-prepare-request-store';
 import { markWorkHandleFailed, newWorkId, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState, type WorkTerminalOutcome } from '../../control-plane/execution/work-handle-store';
@@ -1186,6 +1186,24 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       checks.push({ checkId, ok: false, status: 'missing', summary: `Check not found: ${checkId}` });
       break;
     }
+    const reusablePass = contract
+      ? [...effectiveVerificationEvidence(contract.checkRefs, {
+          sourceRevision: validationHead,
+          workspaceFingerprint,
+          checkId,
+          requestedChecks,
+        })].reverse().find((entry) => entry.current && entry.record.outcome === 'valid_pass' && Boolean(entry.record.receipt))
+      : undefined;
+    if (reusablePass) {
+      checks.push({
+        checkId,
+        ok: true,
+        status: 'passed',
+        reusedEvidence: true,
+        receipt: reusablePass.record.receipt,
+      });
+      continue;
+    }
     const existingBinding = validationRun.processes[checkId];
     let process = existingBinding
       ? getCheckProcessHandle(ctx.controllerHome, handle.repositoryId, existingBinding.processId)
@@ -1263,7 +1281,6 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
         workspaceFingerprint,
         checkId,
         requestedChecks,
-        commandId: receipt.commandId,
       }),
       commandFingerprint: commandFingerprint(checkId, receipt.commandId),
       resultArtifactId: receipt.receiptId,

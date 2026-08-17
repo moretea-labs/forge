@@ -14,7 +14,6 @@ export interface VerificationEvidenceIdentity {
   workspaceFingerprint?: string;
   checkId: string;
   requestedChecks: string[];
-  commandId?: string;
 }
 
 export interface EffectiveVerificationEvidence {
@@ -146,14 +145,13 @@ export function workValidationInputFingerprint(
   })).digest('hex');
 }
 
-/** Stable identity for inputs that make a check result reusable. */
+/** Stable identity for semantic inputs that make a check result reusable. Invocation ids are audited separately. */
 export function verificationInputFingerprint(input: VerificationEvidenceIdentity): string {
   return createHash('sha256').update(JSON.stringify({
     sourceRevision: input.sourceRevision,
     workspaceFingerprint: input.workspaceFingerprint ?? null,
     checkId: input.checkId,
     requestedChecks: [...input.requestedChecks].sort(),
-    commandId: input.commandId ?? null,
   })).digest('hex');
 }
 

@@ -270,5 +270,11 @@ describe('workspace-bound validation identity', () => {
       checkId: 'check:a',
       requestedChecks,
     })[0]).toMatchObject({ current: false, staleReason: 'workspace content changed' });
+    expect(effectiveVerificationEvidence([record], {
+      sourceRevision: 'abc123',
+      workspaceFingerprint: 'workspace-one',
+      checkId: 'check:a',
+      requestedChecks: ['check:a'],
+    })[0]).toMatchObject({ current: false, staleReason: 'verification inputs changed' });
   });
 });
