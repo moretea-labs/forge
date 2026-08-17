@@ -24,7 +24,8 @@ import {
   type RunCheckFacadeResult,
 } from './check-facade';
 import { claimsForCheck, toProcessClaims } from './resource-claims';
-import { spawnManagedProcess } from './runtime';
+import { getProcessHandle, spawnManagedProcess } from './runtime';
+import { getProcessRecord, getProcessRequestBinding } from './store';
 import { allocatePersistedCheckResultReceiptPath } from './check-result';
 import { durationAwareInteractiveWaitMs } from './interactive-admission';
 const PERSISTED_CHECK_SOURCE_ENTRY = 'src/runtime/execution/process-runtime/check-runner-sidecar.ts';
@@ -128,6 +129,38 @@ export async function runPersistedCheckViaProcessRuntime(
     workerSpawnCount: 0,
     projectionUpdateCount: 0,
   };
+  const requestId = input.requestId?.trim();
+  const requestSemanticFingerprint = input.requestSemanticFingerprint?.trim();
+  if (requestId && requestSemanticFingerprint) {
+    const binding = getProcessRequestBinding(input.controllerHome, input.repoId, input.checkoutId, requestId);
+    if (binding) {
+      const record = getProcessRecord(input.controllerHome, input.repoId, binding.processId);
+      const exactIdentity = Boolean(
+        record
+        && record.repoId === input.repoId
+        && (record.checkoutId?.trim() || undefined) === (input.checkoutId?.trim() || undefined)
+        && (record.workId?.trim() || undefined) === (input.workId?.trim() || undefined)
+        && record.origin?.surface === 'check'
+        && record.origin.requestId === requestId
+        && record.origin.checkId === input.checkId
+        && record.origin.requestSemanticFingerprint === requestSemanticFingerprint,
+      );
+      if (!exactIdentity) throw new Error(`PROCESS_REQUEST_ID_CONFLICT: ${requestId}`);
+      const existing = getProcessHandle(input.controllerHome, input.repoId, binding.processId);
+      if (!existing) {
+        throw new Error(`PROCESS_REQUEST_INCOMPLETE: request ${requestId} is bound to missing process ${binding.processId}; refusing re-execution`);
+      }
+      const check = listControllerChecks(input.repoRoot).find((entry) => entry.id === input.checkId);
+      return {
+        mode: existing.completed ? 'direct' : 'managed',
+        checkId: input.checkId,
+        check,
+        process: { ...existing, deduplicated: true, requestId },
+        ok: existing.completed ? existing.ok : undefined,
+        durableSideEffects: emptyEffects,
+      };
+    }
+  }
   const verificationSnapshot = input.verificationSnapshot
     ? materializeWorkVerificationSnapshot({
         controllerHome: input.controllerHome,
@@ -262,6 +295,7 @@ export async function runPersistedCheckViaProcessRuntime(
       toolName: 'run_check',
       checkId: input.checkId,
       requestId: input.requestId,
+      requestSemanticFingerprint: input.requestSemanticFingerprint,
       correlationId: input.workId,
       executionSessionId: input.verificationBinding?.executionSessionId,
       editSessionId: input.verificationBinding?.editSessionId,

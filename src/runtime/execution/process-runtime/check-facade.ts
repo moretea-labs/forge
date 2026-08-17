@@ -37,6 +37,8 @@ export interface RunCheckFacadeInput {
    */
   leaseWaitMs?: number;
   requestId?: string;
+  /** Stable caller-owned semantic identity for safely reattaching the same request before rebuilding ephemeral execution inputs. */
+  requestSemanticFingerprint?: string;
   workId?: string;
   commandId?: string;
   /** Force durable workflow (release / multi-phase). */

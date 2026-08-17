@@ -239,6 +239,8 @@ export interface ManagedProcessRecord {
     toolName?: string;
     requestId?: string;
     checkId?: string;
+    /** Stable semantic identity supplied by a facade for exact request reattachment. */
+    requestSemanticFingerprint?: string;
     correlationId?: string;
     /** Controller MCP session that initiated this check, when applicable. */
     executionSessionId?: string;

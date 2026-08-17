@@ -2738,6 +2738,12 @@ async function runFacadeVerify(
     const observedGitHead = verificationStatus.head;
     const workspaceFingerprint = workspaceValidationFingerprint(verificationRepository.canonicalRoot, verificationStatus);
     const requestedChecks = workContract?.checks.length ? workContract.checks : [normalizedCheckId];
+    const verificationRequestFingerprint = observedGitHead ? verificationInputFingerprint({
+      sourceRevision: observedGitHead,
+      workspaceFingerprint,
+      checkId: normalizedCheckId,
+      requestedChecks,
+    }) : undefined;
     const executed = await runPersistedCheckViaProcessRuntime({
       controllerHome: ctx.controllerHome,
       repoId: verificationRepository.repoId,
@@ -2750,6 +2756,7 @@ async function runFacadeVerify(
       // be able to keep working and later reattach to the exact same Process.
       interactiveWaitMs: 0,
       requestId,
+      requestSemanticFingerprint: verificationRequestFingerprint,
       workId: workId || undefined,
       commandId: requestId,
       verificationSnapshot: workContract ? {
@@ -2891,12 +2898,7 @@ async function runFacadeVerify(
         checkId: normalizedCheckId,
         sourceRevision,
         workspaceFingerprint,
-        verificationInputFingerprint: sourceRevision ? verificationInputFingerprint({
-          sourceRevision,
-          workspaceFingerprint,
-          checkId: normalizedCheckId,
-          requestedChecks,
-        }) : undefined,
+        verificationInputFingerprint: sourceRevision ? verificationRequestFingerprint : undefined,
         commandFingerprint: commandFingerprint(normalizedCheckId, receipt.commandId),
         receipt,
         infrastructureFailed,

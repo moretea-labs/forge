@@ -299,6 +299,7 @@ function sanitizeProcessRecord(record: ManagedProcessRecord): { record: ManagedP
       toolName: safeText(record.origin.toolName),
       requestId: safeText(record.origin.requestId),
       checkId: safeText(record.origin.checkId),
+      requestSemanticFingerprint: safeText(record.origin.requestSemanticFingerprint),
       correlationId: safeText(record.origin.correlationId),
     } : undefined,
   };

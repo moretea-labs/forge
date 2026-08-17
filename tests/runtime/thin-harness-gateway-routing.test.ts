@@ -631,6 +631,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       interactiveWaitMs: 0,
       workId: 'work-verification-isolation',
       requestId: 'work-verification-isolation-pass',
+      requestSemanticFingerprint: 'work-verification-semantic-a',
       verificationSnapshot: {
         workId: 'work-verification-isolation',
         allowedPaths: ['.forge/**', 'tests/owned-untracked.test.ts'],
@@ -645,6 +646,44 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const receipt = readPersistedCheckResultReceipt(record.origin?.checkResultReceiptPath);
     expect(receipt).toEqual(expect.objectContaining({ checkId: 'isolated', ok: true, status: 0 }));
     expect(receipt?.cacheKey).toBe(record.checkExecution?.cacheKey);
+
+    const reattached = await runPersistedCheckViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      repoRoot: fx.repoRoot,
+      executionIdentity: executionIdentityForRepository(fx.repository, { workId: 'work-verification-isolation' }),
+      checkId: 'isolated',
+      interactiveWaitMs: 0,
+      workId: 'work-verification-isolation',
+      requestId: 'work-verification-isolation-pass',
+      requestSemanticFingerprint: 'work-verification-semantic-a',
+      verificationSnapshot: {
+        workId: 'work-verification-isolation',
+        allowedPaths: ['.forge/**', 'tests/owned-untracked.test.ts'],
+        forbiddenPaths: ['tests/protected-concurrent.test.ts'],
+      },
+    });
+    expect(reattached.process?.processId).toBe(run.process?.processId);
+    expect(reattached.process?.deduplicated).toBe(true);
+    await expect(runPersistedCheckViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      repoRoot: fx.repoRoot,
+      executionIdentity: executionIdentityForRepository(fx.repository, { workId: 'work-verification-isolation' }),
+      checkId: 'isolated',
+      interactiveWaitMs: 0,
+      workId: 'work-verification-isolation',
+      requestId: 'work-verification-isolation-pass',
+      requestSemanticFingerprint: 'work-verification-semantic-changed',
+      verificationSnapshot: {
+        workId: 'work-verification-isolation',
+        allowedPaths: ['.forge/**', 'tests/owned-untracked.test.ts'],
+        forbiddenPaths: ['tests/protected-concurrent.test.ts'],
+      },
+    })).rejects.toThrow('PROCESS_REQUEST_ID_CONFLICT');
+
     const snapshotRoot = join(fx.controllerHome, 'repositories', fx.repository.repoId, 'verification-snapshots');
     const residualSnapshots = existsSync(snapshotRoot)
       ? require('fs').readdirSync(snapshotRoot).filter((name: string) => name.startsWith('snapshot-'))
