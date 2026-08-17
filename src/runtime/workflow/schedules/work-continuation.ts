@@ -22,7 +22,7 @@ export type ContinuationControllerType = 'chatgpt' | 'codex' | 'claude' | 'grok'
 export type WorkScheduleMode = 'continuation' | 'browser_watch' | 'browser_keepalive';
 
 export interface WorkContinuationScheduleInput {
-  workId: string;
+  workId?: string;
   scheduleMode?: WorkScheduleMode;
   controllerType?: ContinuationControllerType;
   executable?: string;
@@ -106,8 +106,9 @@ function normalizedTrigger(input: WorkContinuationScheduleInput): ScheduleTrigge
 }
 
 function wakeArguments(input: WorkContinuationScheduleInput, controllerType: ContinuationControllerType): Record<string, unknown> {
+  const workId = input.workId?.trim();
   return {
-    work_id: input.workId.trim(),
+    ...(workId ? { work_id: workId } : {}),
     controller_type: controllerType,
     ...(input.executable?.trim() ? { executable: input.executable.trim() } : {}),
     ...(input.launchArgs ? { launch_args: input.launchArgs.map(String) } : {}),
@@ -146,10 +147,12 @@ export function createWorkContinuationSchedule(
   controllerHome: string,
   repoId: string,
   input: WorkContinuationScheduleInput,
-): { schedule: RepositorySchedule; work: WorkContract } {
-  const work = activeWork(controllerHome, repoId, input.workId);
+): { schedule: RepositorySchedule; work?: WorkContract } {
   const controllerType = input.controllerType ?? 'chatgpt';
   const scheduleMode = input.scheduleMode ?? 'continuation';
+  const requestedWorkId = input.workId?.trim();
+  if (!requestedWorkId && scheduleMode !== 'browser_keepalive') throw new Error('WORK_ID_REQUIRED');
+  const work = requestedWorkId ? activeWork(controllerHome, repoId, requestedWorkId) : undefined;
   const trigger = normalizedTrigger(input);
   const operation = scheduleMode === 'continuation' ? 'external_controller_wake' : 'browser_probe';
   const actionArguments = scheduleMode === 'continuation'
@@ -157,9 +160,10 @@ export function createWorkContinuationSchedule(
     : probeArguments(input, controllerType, scheduleMode === 'browser_keepalive');
   assertAutomatedOperationAllowed(operation, actionArguments);
   const name = input.scheduleName?.trim()
-    || (scheduleMode === 'browser_watch' ? `Watch external state for Work ${work.workId}`
-      : scheduleMode === 'browser_keepalive' ? `Keep browser session alive for Work ${work.workId}`
-        : `Continue Work ${work.workId}`);
+    || (scheduleMode === 'browser_watch' ? `Watch external state for Work ${work!.workId}`
+      : scheduleMode === 'browser_keepalive'
+        ? (work ? `Keep browser session alive for Work ${work.workId}` : 'Keep browser session alive')
+        : `Continue Work ${work!.workId}`);
   const policy = {
     maxActiveOccurrences: 1,
     maxFailures: input.maxFailures !== undefined ? Math.max(1, Math.trunc(input.maxFailures)) : 3,
@@ -169,7 +173,7 @@ export function createWorkContinuationSchedule(
     backoffBaseMinutes: input.backoffBaseMinutes !== undefined ? Math.max(1, Math.trunc(input.backoffBaseMinutes)) : 5,
     backoffMaxMinutes: input.backoffMaxMinutes !== undefined ? Math.max(1, Math.trunc(input.backoffMaxMinutes)) : 24 * 60,
   };
-  const stopConditions = input.stopConditions ?? ['work_terminal', 'human_review_required', 'external_blocker'];
+  const stopConditions = input.stopConditions ?? (work ? ['work_terminal', 'human_review_required', 'external_blocker'] : []);
 
   // A durable Work has one authoritative continuation lane. Changing cadence,
   // prompt, controller, or policy updates that lane instead of minting another
@@ -178,7 +182,7 @@ export function createWorkContinuationSchedule(
   if (scheduleMode === 'continuation') {
     const existing = listSchedules(controllerHome, repoId)
       .filter((candidate) => candidate.action.operation === 'external_controller_wake')
-      .filter((candidate) => candidate.action.arguments?.work_id === work.workId);
+      .filter((candidate) => candidate.action.arguments?.work_id === work!.workId);
     const authoritative = [...existing].reverse().find((candidate) => candidate.enabled) ?? existing.at(-1);
     if (authoritative) {
       const schedule = saveSchedule(controllerHome, {
@@ -196,7 +200,7 @@ export function createWorkContinuationSchedule(
         saveSchedule(controllerHome, {
           ...duplicate,
           enabled: false,
-          pausedReason: `Superseded by authoritative continuation ${schedule.scheduleId} for Work ${work.workId}.`,
+          pausedReason: `Superseded by authoritative continuation ${schedule.scheduleId} for Work ${work!.workId}.`,
         });
       }
       return { schedule, work };
@@ -205,7 +209,7 @@ export function createWorkContinuationSchedule(
 
   const semantic = JSON.stringify({
     repoId,
-    workId: work.workId,
+    workId: work?.workId,
     controllerType,
     scheduleMode,
     trigger,
@@ -215,7 +219,9 @@ export function createWorkContinuationSchedule(
     stopConditions,
   });
   const requestId = input.requestId?.trim()
-    || `work-continuation:${repoId}:${work.workId}:${createHash('sha256').update(semantic).digest('hex').slice(0, 16)}`;
+    || (work
+      ? `work-continuation:${repoId}:${work.workId}:${createHash('sha256').update(semantic).digest('hex').slice(0, 16)}`
+      : `browser-keepalive:${repoId}:${createHash('sha256').update(semantic).digest('hex').slice(0, 16)}`);
   const schedule = createSchedule(controllerHome, {
     requestId,
     repoId,

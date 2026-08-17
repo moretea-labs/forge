@@ -809,18 +809,21 @@ export async function evaluateSchedule(
 
   if (schedule.action.operation === BROWSER_PROBE_OPERATION) {
     const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-    if (!workId) {
+    const keepaliveOnly = args.keepalive_only === true;
+    if (!workId && !keepaliveOnly) {
       return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', 'SCHEDULE_BROWSER_PROBE_WORK_ID_REQUIRED');
     }
-    const workStore = { controllerHome, repoId: schedule.repoId };
-    const work = getWorkContract(workStore, workId);
-    if (!work) {
-      saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: `Work ${workId} no longer exists.`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
-      return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', `SCHEDULE_BROWSER_PROBE_WORK_NOT_FOUND:${workId}`);
-    }
-    if (isTerminalWorkContractStatus(work.status)) {
-      saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: `Work ${workId} is terminal (${work.status}).`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
-      return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} is terminal (${work.status}); browser watcher stopped before probing.`);
+    if (workId) {
+      const workStore = { controllerHome, repoId: schedule.repoId };
+      const work = getWorkContract(workStore, workId);
+      if (!work) {
+        saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: `Work ${workId} no longer exists.`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
+        return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', `SCHEDULE_BROWSER_PROBE_WORK_NOT_FOUND:${workId}`);
+      }
+      if (isTerminalWorkContractStatus(work.status)) {
+        saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: `Work ${workId} is terminal (${work.status}).`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
+        return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} is terminal (${work.status}); browser watcher stopped before probing.`);
+      }
     }
 
     try {
@@ -847,14 +850,21 @@ export async function evaluateSchedule(
           pausedReason: undefined,
         });
         if (args.wake_on_auth_required !== false) {
-          const wakeArgs = {
-            ...args,
-            continuation_prompt: typeof args.auth_required_prompt === 'string'
-              ? args.auth_required_prompt
-              : typeof args.continuation_prompt === 'string'
-                ? args.continuation_prompt
-                : `Scheduled browser watcher ${schedule.scheduleId} detected that authentication is required (${probe.authReason ?? 'login marker'}). Inspect the bound external dependency and request user login only if it cannot be restored safely.`,
-          };
+          const authPrompt = typeof args.auth_required_prompt === 'string'
+            ? args.auth_required_prompt
+            : typeof args.continuation_prompt === 'string'
+              ? args.continuation_prompt
+              : `Scheduled browser watcher ${schedule.scheduleId} detected that authentication is required (${probe.authReason ?? 'login marker'}). Inspect the external dependency and request user login only if it cannot be restored safely.`;
+          if (!workId) {
+            return executeChatgptBrowserPrompt(controllerHome, observedSchedule, occurrence, timestamp, {
+              prompt: authPrompt,
+              ...(typeof args.browser_session_id === 'string' ? { browser_session_id: args.browser_session_id } : {}),
+              ...(typeof args.model === 'string' ? { model: args.model } : {}),
+              ...(typeof args.reasoning === 'string' ? { reasoning: args.reasoning } : {}),
+              ...(typeof args.tab_policy === 'string' ? { tab_policy: args.tab_policy } : {}),
+            });
+          }
+          const wakeArgs = { ...args, continuation_prompt: authPrompt };
           return executeExternalControllerWake(controllerHome, observedSchedule, occurrence, timestamp, wakeArgs, { ...observationEvidence, authReason: probe.authReason });
         }
         return decideOccurrence(controllerHome, observedSchedule, occurrence, 'operation_blocked', 'skipped', `Browser watcher requires authentication: ${probe.authReason ?? 'login marker matched'}`, observationEvidence);

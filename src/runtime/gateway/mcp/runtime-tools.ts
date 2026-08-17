@@ -291,7 +291,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
   }),
   definition('rh_work', 'Preferred ChatGPT facade: bounded planning, direct control, controller ownership, and external SuperController launch.', {
     repo_id: repoId,
-    operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'controller_claim', 'controller_release', 'controller_get_owner', 'launcher_start', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_accept_step', 'plan_supersede', 'schedule_create', 'schedule_list', 'schedule_get', 'schedule_pause', 'schedule_resume', 'schedule_trigger'], description: 'Defaults to start. Complex starts require plan_id and plan_step_id. plan_accept_step records explicit Controller semantic acceptance after machine delivery leaves a step validating. schedule_* manages generic recurring ChatGPT workflow schedules plus Work-bound continuation/browser subtypes.' },
+    operation: { type: 'string', enum: ['start', 'continue', 'verify', 'repair', 'finalize', 'stop', 'delegate', 'controller_claim', 'controller_release', 'controller_get_owner', 'launcher_start', 'plan_create', 'plan_get', 'plan_list', 'plan_approve', 'plan_accept_step', 'plan_supersede', 'schedule_create', 'schedule_list', 'schedule_get', 'schedule_pause', 'schedule_resume', 'schedule_trigger'], description: 'Defaults to start. Complex starts require plan_id and plan_step_id. plan_accept_step records explicit Controller semantic acceptance after machine delivery leaves a step validating. schedule_* manages generic recurring ChatGPT workflows, Work-bound continuation/browser watches, and standalone browser session keepalive.' },
     objective: { type: 'string' },
     work_id: { type: 'string' },
     related_work_id: { type: 'string', description: 'Optional explicit existing Work ownership target for continue/extend semantics. Unrelated active Work is never inferred as a semantic target.' },
@@ -314,7 +314,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     schedule_id: { type: 'string', description: 'Schedule identity for schedule_get/pause/resume/trigger.' },
     schedule_name: { type: 'string', description: 'Human-readable schedule name; generic workflow schedules use the objective/prompt when omitted.' },
     schedule_request_id: { type: 'string', description: 'Stable idempotency key for schedule_create.' },
-    schedule_mode: { type: 'string', enum: ['workflow', 'continuation', 'browser_watch', 'browser_keepalive'], description: 'Defaults to workflow when work_id is omitted and continuation when work_id is present. workflow dispatches one bounded ChatGPT prompt per finite Occurrence without requiring Work; continuation/browser modes remain Work-bound.' },
+    schedule_mode: { type: 'string', enum: ['workflow', 'continuation', 'browser_watch', 'browser_keepalive'], description: 'Defaults to workflow when work_id is omitted and continuation when work_id is present. workflow and browser_keepalive may run without a durable Work; continuation and browser_watch remain Work-bound.' },
     probe_url: { type: 'string', description: 'Allowed URL to navigate or refresh for browser_watch/browser_keepalive.' },
     probe_browser_session_id: { type: 'string', description: 'Existing Forge browser session used as the external observation target.' },
     probe_selector: { type: 'string', description: 'Optional selector limiting text extraction for browser_watch.' },
@@ -325,7 +325,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     login_url_terms: { type: 'array', items: { type: 'string' }, description: 'Configured URL markers that classify the browser observation as authentication-required.' },
     login_text_terms: { type: 'array', items: { type: 'string' }, description: 'Configured page-text markers that classify the browser observation as authentication-required.' },
     wake_on_first_observation: { type: 'boolean', description: 'Defaults false so the first browser_watch occurrence records a silent baseline.' },
-    wake_on_auth_required: { type: 'boolean', description: 'Defaults true for Work-bound browser schedules.' },
+    wake_on_auth_required: { type: 'boolean', description: 'Defaults true for browser schedules. Standalone browser_keepalive dispatches the configured ChatGPT auth-required prompt without creating a synthetic Work.' },
     auth_required_prompt: { type: 'string', description: 'Optional ChatGPT continuation instruction when the probe detects a login marker.' },
     trigger_type: { type: 'string', enum: ['interval', 'cron', 'calendar', 'condition', 'repository-event', 'dependency-checkpoint', 'manual'] },
     every_minutes: { type: 'number', description: 'Interval trigger cadence in minutes.' },
@@ -3677,7 +3677,15 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 backoffMaxMinutes: typeof args.backoff_max_minutes === 'number' ? args.backoff_max_minutes : undefined,
                 stopConditions: Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : undefined,
               });
-              return result(buildFacadeResult({ summary: `Work schedule ${created.schedule.scheduleId} is configured for Work ${workId}.`, data: { schedule: created.schedule, work: buildWorkContinuationSnapshot(created.work) } }) as unknown as Record<string, unknown>);
+              return result(buildFacadeResult({
+                summary: created.work
+                  ? `Work schedule ${created.schedule.scheduleId} is configured for Work ${created.work.workId}.`
+                  : `Browser keepalive schedule ${created.schedule.scheduleId} is configured without a durable Work.`,
+                data: {
+                  schedule: created.schedule,
+                  ...(created.work ? { work: buildWorkContinuationSnapshot(created.work) } : {}),
+                },
+              }) as unknown as Record<string, unknown>);
             }
             if (operation === 'schedule_list') {
               const schedules = listSchedules(ctx.controllerHome, repository.repoId)

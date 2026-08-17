@@ -587,6 +587,38 @@ describe('rh_work managed lifecycle closure', () => {
     expect(resumedPayload.data?.schedule?.nextEligibleAt).toBeUndefined();
   });
 
+  test('rh_work creates a standalone browser keepalive without a durable Work', async () => {
+    const fx = fixture('schedule-browser-keepalive-standalone');
+    expect(listWorkContracts({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId })).toHaveLength(0);
+
+    const created = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_create',
+      schedule_mode: 'browser_keepalive',
+      controller_type: 'chatgpt',
+      trigger_type: 'manual',
+      probe_browser_session_id: 'browser-xiaohongshu-session',
+      login_url_terms: ['/login', 'passport.xiaohongshu.com'],
+      login_text_terms: ['手机号登录', '扫码登录'],
+      auth_required_prompt: 'Xiaohongshu login expired; request only the necessary user re-authentication.',
+      shadow_mode: false,
+      schedule_request_id: 'schedule-browser-keepalive-standalone',
+      schedule_name: 'Xiaohongshu Session Keepalive',
+    });
+
+    expect(created?.isError).not.toBe(true);
+    const schedule = (created?.structuredContent as { data?: { schedule?: { action?: { operation?: string; arguments?: Record<string, unknown> }; stopConditions?: string[] } } })?.data?.schedule;
+    expect(schedule?.action?.operation).toBe('browser_probe');
+    expect(schedule?.action?.arguments).toMatchObject({
+      probe_session_id: 'browser-xiaohongshu-session',
+      keepalive_only: true,
+      wake_on_change: false,
+    });
+    expect(schedule?.action?.arguments?.work_id).toBeUndefined();
+    expect(schedule?.stopConditions).toEqual([]);
+    expect(listWorkContracts({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId })).toHaveLength(0);
+  });
+
   test('rh_work creates a Work-bound browser watcher and stops it before browser access when Work is terminal', async () => {
     const fx = fixture('schedule-browser-watch');
     const work = await prepareManagedWork(fx, 'Wait for one external browser-visible dependency');
