@@ -13,6 +13,9 @@ const MUTATION_READY_BUDGET_MS = 2_500;
 const REQUEST_TIMEOUT_MS = 12_000;
 const MAX_TEXT_LENGTH = 2048;
 const MAX_STDERR = 8 * 1024;
+// Forge-owned virtual keyboard surface. This intentionally differs from
+// pymobiledevice3's default ID so legacy probes cannot collide with Runtime.
+const FORGE_KEYBOARD_SERVICE_ID = 0x100002201;
 
 export interface RemoteXpcHidInput {
   controllerHome: string;
@@ -122,6 +125,7 @@ function workerSource(): string {
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 
@@ -130,7 +134,6 @@ from pymobiledevice3.remote.core_device.app_service import AppServiceService
 from pymobiledevice3.remote.core_device.hid_service import (
     ASCII_TO_HID,
     DIGITIZER_SURFACE_MAIN_TOUCHSCREEN,
-    KEYBOARD_SURFACE_DEFAULT_SERVICE_ID,
     KEY_LEFT_SHIFT,
     TOUCHSCREEN_STATE_CONTACT,
     TOUCHSCREEN_STATE_RELEASE,
@@ -161,6 +164,8 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--host', required=True)
     parser.add_argument('--port', required=True, type=int)
+    parser.add_argument('--keyboard-state', required=True)
+    parser.add_argument('--keyboard-service-id', required=True, type=int)
     args = parser.parse_args()
     async with RemoteServiceDiscoveryService((args.host, args.port)) as rsd:
         async with touch_session(rsd) as hid:
@@ -169,16 +174,35 @@ async def main():
             service_ids = [row.get('_ServiceID') for row in service_rows if isinstance(row, dict)]
             rsd_services = sorted((getattr(rsd, 'peer_info', {}) or {}).get('Services', {}).keys())
             keyboard_started = time.perf_counter()
-            keyboard_service = await hid.create_keyboard_service(
-                KEYBOARD_SURFACE_DEFAULT_SERVICE_ID,
-                product='Forge RemoteXPC Keyboard',
-                manufacturer='Forge',
-            )
+            keyboard_service = args.keyboard_service_id
+            keyboard_reused = os.path.exists(args.keyboard_state)
+            if not keyboard_reused:
+                keyboard_service = await hid.create_keyboard_service(
+                    args.keyboard_service_id,
+                    product='Forge RemoteXPC Keyboard v3',
+                    manufacturer='Forge',
+                )
+                state_dir = os.path.dirname(args.keyboard_state)
+                os.makedirs(state_dir, mode=0o700, exist_ok=True)
+                state_tmp = f'{args.keyboard_state}.{os.getpid()}.tmp'
+                with open(state_tmp, 'w', encoding='utf-8') as stream:
+                    json.dump({
+                        'schemaVersion': 1,
+                        'host': args.host,
+                        'port': args.port,
+                        'serviceId': keyboard_service,
+                    }, stream, separators=(',', ':'))
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.chmod(state_tmp, 0o600)
+                os.replace(state_tmp, args.keyboard_state)
             keyboard_ready_ms = (time.perf_counter() - keyboard_started) * 1000.0
             print(json.dumps({
                 'ready': True,
                 'serviceIds': service_ids,
                 'keyboardReady': True,
+                'keyboardReused': keyboard_reused,
+                'keyboardServiceId': keyboard_service,
                 'keyboardReadyMs': round(keyboard_ready_ms, 2),
                 'pasteboardAvailable': 'com.apple.coredevice.pasteboardservice' in rsd_services,
             }), flush=True)
@@ -281,14 +305,35 @@ if __name__ == '__main__':
 `;
 }
 
+function deviceInputRoot(controllerHome: string): string {
+  const root = join(controllerHome, 'runtime', 'device-input');
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  return root;
+}
+
 function materializeWorker(controllerHome: string): string {
   const source = workerSource();
   const hash = createHash('sha256').update(source).digest('hex').slice(0, 16);
-  const root = join(controllerHome, 'runtime', 'device-input');
-  mkdirSync(root, { recursive: true, mode: 0o700 });
-  const path = join(root, `remote-xpc-hid-${hash}.py`);
+  const path = join(deviceInputRoot(controllerHome), `remote-xpc-hid-${hash}.py`);
   if (!existsSync(path)) writeFileSync(path, source, { encoding: 'utf8', mode: 0o700 });
   return path;
+}
+
+function keyboardStatePath(controllerHome: string, deviceIdentifier: string, endpoint: RsdEndpoint): string {
+  const key = createHash('sha256')
+    .update(`${deviceIdentifier}\0${endpoint.host}\0${endpoint.port}\0${FORGE_KEYBOARD_SERVICE_ID}`)
+    .digest('hex')
+    .slice(0, 24);
+  return join(controllerHome, 'runtime', 'device-input', `keyboard-service-${key}.json`);
+}
+
+export function remoteXpcHidKeyboardStatePathForTest(
+  controllerHome: string,
+  deviceIdentifier: string,
+  host: string,
+  port: number,
+): string {
+  return keyboardStatePath(controllerHome, deviceIdentifier, { host, port });
 }
 
 export function parseMacOSTrustedRsdEndpoints(output: string, udid: string): RsdEndpoint[] {
@@ -390,8 +435,15 @@ function startWorker(input: Pick<RemoteXpcHidInput, 'controllerHome' | 'deviceId
     });
   }
   const script = materializeWorker(input.controllerHome);
+  const keyboardState = keyboardStatePath(input.controllerHome, input.deviceIdentifier, endpoint);
   const workerPath = dirname(python);
-  const child = spawn(python, ['-u', script, '--host', endpoint.host, '--port', String(endpoint.port)], {
+  const child = spawn(python, [
+    '-u', script,
+    '--host', endpoint.host,
+    '--port', String(endpoint.port),
+    '--keyboard-state', keyboardState,
+    '--keyboard-service-id', String(FORGE_KEYBOARD_SERVICE_ID),
+  ], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       PATH: `${workerPath}:/usr/bin:/bin:/usr/sbin:/sbin`,
