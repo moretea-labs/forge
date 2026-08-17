@@ -2978,6 +2978,72 @@ export function runtimeSourceSnapshotStatus(
   };
 }
 
+export function repositoryExecutionReadiness(
+  repoRoot: string,
+  availableChecks: ReturnType<typeof listControllerChecks>,
+  requestedCheckIds: string[] = [],
+): Record<string, unknown> {
+  const git = gitSnapshot(repoRoot);
+  const registeredCheckIds = availableChecks.map((check) => check.id);
+  const normalizedChecks = normalizeCheckIds(requestedCheckIds, availableChecks);
+  const hasPackageJson = existsSync(join(repoRoot, 'package.json'));
+  const nodeModulesReady = !hasPackageJson || existsSync(join(repoRoot, 'node_modules'));
+  const lockCandidates = [
+    ['bun', 'bun.lock'],
+    ['bun', 'bun.lockb'],
+    ['pnpm', 'pnpm-lock.yaml'],
+    ['npm', 'package-lock.json'],
+    ['yarn', 'yarn.lock'],
+  ] as const;
+  const detectedLock = lockCandidates.find(([, path]) => existsSync(join(repoRoot, path)));
+  const packageManager = detectedLock?.[0];
+  const bootstrapCommand = hasPackageJson && !nodeModulesReady
+    ? packageManager === 'bun' ? ['bun', 'install', '--frozen-lockfile']
+      : packageManager === 'pnpm' ? ['pnpm', 'install', '--frozen-lockfile']
+        : packageManager === 'npm' ? ['npm', 'ci']
+          : packageManager === 'yarn' ? ['yarn', 'install', '--frozen-lockfile']
+            : undefined
+    : undefined;
+  const hasPythonManifest = existsSync(join(repoRoot, 'pyproject.toml'))
+    || existsSync(join(repoRoot, 'requirements.txt'))
+    || existsSync(join(repoRoot, 'requirements-dev.txt'));
+  const localPythonReady = !hasPythonManifest
+    || existsSync(join(repoRoot, '.venv', 'bin', 'python'))
+    || existsSync(join(repoRoot, '.venv', 'Scripts', 'python.exe'));
+  const blockers = [
+    ...(!nodeModulesReady ? [{ code: 'NODE_DEPENDENCIES_MISSING', message: 'package.json is present but node_modules is not materialized in this checkout.' }] : []),
+    ...normalizedChecks.invalidCheckIds.map((checkId) => ({ code: 'CHECK_NOT_REGISTERED', message: `Requested check is not registered: ${checkId}`, checkId })),
+  ];
+  return {
+    readyForFocusedExecution: blockers.length === 0,
+    git: { head: git.head, branch: git.branch, dirty: git.dirty },
+    checks: {
+      registeredCount: registeredCheckIds.length,
+      registeredCheckIds: registeredCheckIds.slice(0, 80),
+      requestedCheckIds: requestedCheckIds.slice(0, 40),
+      normalized: normalizedChecks,
+    },
+    dependencies: {
+      node: {
+        applicable: hasPackageJson,
+        ready: nodeModulesReady,
+        packageManager: packageManager ?? null,
+        lockfile: detectedLock?.[1] ?? null,
+        ...(bootstrapCommand ? { bootstrapCommand } : {}),
+      },
+      python: {
+        applicable: hasPythonManifest,
+        localVirtualEnvReady: localPythonReady,
+        advisoryOnly: true,
+      },
+    },
+    blockers,
+    guidance: bootstrapCommand
+      ? [`Materialize checkout dependencies before tests/builds: ${bootstrapCommand.join(' ')}`]
+      : [],
+  };
+}
+
 export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {
   try {
     switch (name) {
@@ -3268,6 +3334,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             : retrievalMode === 'plan' || retrievalMode === 'debug'
               ? 'required'
               : 'auto';
+          const checks = listControllerChecks(repository.canonicalRoot);
+          const requestedCheckIds = list(args.requested_check_ids);
+          const executionReadiness = repositoryExecutionReadiness(repository.canonicalRoot, checks, requestedCheckIds);
           const pack = buildControllerContextPack(repository.canonicalRoot, ctx.policy, {
             description: query,
             searchTerms: [query],
@@ -3301,6 +3370,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               omitted: pack.omitted,
               limits: pack.limits,
               contextContract: pack.contextContract,
+              executionReadiness,
+              registeredChecks: checks.slice(0, 80).map((check) => ({ id: check.id, description: check.description, source: check.source, effects: check.effects })),
               retrievalPolicy: {
                 defaultBackend: 'bounded_lexical',
                 structuralBackend: 'codegraph',
@@ -3887,6 +3958,25 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   suggestedNextActions: [{ label: 'Read active Plan', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: relatedPlan.planId }, risk: 'readonly', confidence: 'high' }],
                 });
                 return result(facade as unknown as Record<string, unknown>);
+              }
+              const requestedPlanCheckIds = rawSteps
+                .filter((step): step is Record<string, unknown> => Boolean(step) && typeof step === 'object' && !Array.isArray(step))
+                .flatMap((step) => Array.isArray(step.check_ids) ? step.check_ids.map(String) : []);
+              const normalizedPlanChecks = normalizeCheckIds(requestedPlanCheckIds, checks);
+              if (normalizedPlanChecks.invalidCheckIds.length > 0) {
+                const facade = buildFacadeResult({
+                  status: 'failed',
+                  summary: `PLAN_CHECKS_INVALID: ${normalizedPlanChecks.invalidCheckIds.join(', ')}. Plan was not persisted; use registered checks from rh_context executionReadiness.`,
+                  data: {
+                    executionStarted: false,
+                    planContractCreated: false,
+                    admissionDecision: 'invalid_checks',
+                    normalizedChecks: normalizedPlanChecks,
+                    registeredCheckIds: checks.map((check) => check.id).slice(0, 80),
+                  },
+                  suggestedNextActions: [{ label: 'Read execution readiness', tool: 'rh_context', operation: 'search', payload: { repo_id: repository.repoId, query: 'execution readiness and registered checks', structural_context: 'off' }, risk: 'readonly', confidence: 'high' }],
+                });
+                return result(facade as unknown as Record<string, unknown>, true);
               }
               const plan = createPlanContract(store, {
                 planId: String(args.plan_id ?? ''),

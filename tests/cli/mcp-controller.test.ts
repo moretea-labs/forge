@@ -21,7 +21,7 @@ import { createRequirement, updateRequirement } from "../../src/runtime/control-
 import { terminateProcessTree } from "../../src/runtime/shared/process-tree";
 import { waitForProcess } from "../../src/runtime/execution/process-runtime/runtime";
 import { callExecutionTool } from "../../src/runtime/gateway/mcp/execution-tools";
-import { boundedPluginArtifactImageContent, callRuntimeTool, controllerReadiness, controllerReadinessEvidence } from "../../src/runtime/gateway/mcp/runtime-tools";
+import { boundedPluginArtifactImageContent, callRuntimeTool, controllerReadiness, controllerReadinessEvidence, repositoryExecutionReadiness } from "../../src/runtime/gateway/mcp/runtime-tools";
 import { getMcpPolicy } from "../../src/cli/mcp/policy";
 import { createMcpToolContext as createMultiRepositoryContext, parseMcpToolset } from "../../src/cli/mcp/multi-repository";
 import { callRepositoryTool } from "../../src/cli/mcp/repository-tools";
@@ -50,6 +50,115 @@ import {
   exposedControllerToolDefinitions,
   STABLE_CONTROLLER_TOOL_NAMES,
 } from "../../src/cli/mcp/toolset";
+
+test("keeps source-stable facade schema aligned with the controller workflow contract", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "forge-schema-coherence-"));
+  const controllerHome = mkdtempSync(join(tmpdir(), "forge-schema-coherence-home-"));
+  try {
+    spawnSync("git", ["init", "-b", "main"], { cwd: repoRoot, stdio: "ignore" });
+    const repository = registerRepository({ path: repoRoot, controllerHome });
+    const ctx = createMultiRepositoryContext({ repo: repoRoot, controllerHome, profile: "controller", toolset: "advanced" });
+    const tools = exposedControllerToolDefinitions(ctx);
+    expect(tools).toHaveLength(STABLE_CONTROLLER_TOOL_NAMES.length);
+    const rhWork = tools.find((tool) => tool.name === "rh_work");
+    const rhWorkProperties = rhWork?.inputSchema.properties as Record<string, any>;
+    expect(rhWorkProperties.operation.enum).toContain("plan_accept_step");
+    const safePatch = tools.find((tool) => tool.name === "repository_safe_patch_apply");
+    const safePatchProperties = safePatch?.inputSchema.properties as Record<string, any>;
+    expect(safePatchProperties.work_id).toBeDefined();
+    expect(repository.repoId).toBeTruthy();
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(controllerHome, { recursive: true, force: true });
+  }
+});
+
+test("reports checkout dependency readiness before tests and provides a lockfile-safe bootstrap", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "forge-execution-readiness-"));
+  try {
+    spawnSync("git", ["init", "-b", "main"], { cwd: repoRoot, stdio: "ignore" });
+    writeFileSync(join(repoRoot, "package.json"), JSON.stringify({ scripts: { "check:type": "tsc --noEmit" } }));
+    writeFileSync(join(repoRoot, "bun.lock"), "");
+    const missing = repositoryExecutionReadiness(repoRoot, [], ["package:check:missing"]) as any;
+    expect(missing.readyForFocusedExecution).toBe(false);
+    expect(missing.dependencies.node).toMatchObject({ applicable: true, ready: false, packageManager: "bun" });
+    expect(missing.dependencies.node.bootstrapCommand).toEqual(["bun", "install", "--frozen-lockfile"]);
+    expect(missing.blockers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "NODE_DEPENDENCIES_MISSING" }),
+      expect.objectContaining({ code: "CHECK_NOT_REGISTERED", checkId: "package:check:missing" }),
+    ]));
+    mkdirSync(join(repoRoot, "node_modules"));
+    const ready = repositoryExecutionReadiness(repoRoot, [], []) as any;
+    expect(ready.readyForFocusedExecution).toBe(true);
+    expect(ready.dependencies.node.ready).toBe(true);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("returns execution readiness and registered checks in one rh_context search", async () => {
+  await withController(async (repoRoot) => {
+    const controllerHome = String(process.env.FORGE_CONTROLLER_HOME);
+    writeFileSync(join(repoRoot, "package.json"), JSON.stringify({ scripts: { "check:type": "echo ok" } }));
+    writeFileSync(join(repoRoot, "bun.lock"), "");
+    writeFileSync(join(repoRoot, "source.ts"), "export const marker = 1;\n");
+    spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
+    spawnSync("git", ["config", "user.name", "Forge Test"], { cwd: repoRoot, stdio: "ignore" });
+    spawnSync("git", ["config", "user.email", "forge@example.test"], { cwd: repoRoot, stdio: "ignore" });
+    spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" });
+    const repository = registerRepository({ path: repoRoot, controllerHome });
+    const ctx = createMultiRepositoryContext({ repo: repoRoot, controllerHome, profile: "controller", toolset: "advanced" });
+    const response = await callRuntimeTool(ctx, "rh_context", {
+      repo_id: repository.repoId,
+      operation: "search",
+      query: "marker execution readiness",
+      structural_context: "off",
+      requested_check_ids: ["package:check:type", "package:check:not-registered"],
+    });
+    const value = JSON.parse(response!.content[0]!.text);
+    expect(value.status).toBe("ok");
+    expect(value.data.executionReadiness).toMatchObject({
+      readyForFocusedExecution: false,
+      dependencies: { node: { applicable: true, ready: false, packageManager: "bun" } },
+    });
+    expect(value.data.executionReadiness.checks.normalized.invalidCheckIds).toContain("package:check:not-registered");
+    expect(value.data.executionReadiness.dependencies.node.bootstrapCommand).toEqual(["bun", "install", "--frozen-lockfile"]);
+    expect(value.data.registeredChecks.some((check: any) => check.id === "package:check:type")).toBe(true);
+  });
+});
+
+test("rejects unregistered Plan checks before persistence", async () => {
+  await withController(async (repoRoot) => {
+    const controllerHome = String(process.env.FORGE_CONTROLLER_HOME);
+    const repository = registerRepository({ path: repoRoot, controllerHome });
+    const ctx = createMultiRepositoryContext({ repo: repoRoot, controllerHome, profile: "controller", toolset: "advanced" });
+    const created = await callRuntimeTool(ctx, "rh_work", {
+      repo_id: repository.repoId,
+      operation: "plan_create",
+      plan_id: "PLAN-invalid-check-preflight",
+      scope_key: "invalid-check-preflight",
+      source_revision: "fixture-revision",
+      objective: "Reject invalid checks before persistence",
+      plan_steps: [{
+        id: "S1",
+        objective: "Should never persist",
+        check_ids: ["package:check:not-registered"],
+        acceptance_criteria: ["Not persisted"],
+      }],
+    });
+    const createdValue = JSON.parse(created!.content[0]!.text);
+    expect(createdValue.status).toBe("failed");
+    expect(createdValue.summary).toContain("PLAN_CHECKS_INVALID");
+    expect(createdValue.data.planContractCreated).toBe(false);
+    const readBack = await callRuntimeTool(ctx, "rh_work", {
+      repo_id: repository.repoId,
+      operation: "plan_get",
+      plan_id: "PLAN-invalid-check-preflight",
+    });
+    const readValue = JSON.parse(readBack!.content[0]!.text);
+    expect(readValue.status).toBe("not_found");
+  });
+});
 
 test("keeps Core and Advanced on the same bounded default ChatGPT surface", () => {
   expect(parseMcpToolset(undefined, "controller")).toBe("advanced");
@@ -203,7 +312,7 @@ async function withController<T>(
       version: 1,
       checks: Object.fromEntries(["focused", "manual-review", "typecheck"].map((id) => [id, {
         description: `Test check ${id}`,
-        command: [process.execPath, "-e", "process.exit(0)"],
+        command: [process.execPath, "-e", "setTimeout(() => process.exit(0), 300)"],
         timeoutMs: 10_000}]))}));
     writeFileSync(
       join(repoRoot, "src/example.ts"),
@@ -1226,7 +1335,7 @@ describe("MCP controller profile", () => {
         checks: {
           "validation-pass": {
             description: "Intentional validation success",
-            command: [process.execPath, "-e", "process.exit(0)"],
+            command: [process.execPath, "-e", "setTimeout(() => process.exit(0), 300)"],
             timeoutMs: 10_000,
           },
         },
@@ -1257,11 +1366,13 @@ describe("MCP controller profile", () => {
       expect(prepared.error).toBeUndefined();
       const workId = String(prepared.work.workId);
       const initial = readWorkHandle(controllerHome, repository.repoId, workId)!;
+      const validationRequestId = "validation-pass-same-request-id";
       let validated = await executionJson(advanced, "work_validate", {
         session_id: sessionId,
         repo_id: repository.repoId,
         work_id: workId,
         check_ids: ["validation-pass"],
+        request_id: validationRequestId,
       });
       for (let attempt = 0; attempt < 120 && validated.validation?.completed !== true; attempt += 1) {
         await Bun.sleep(25);
@@ -1270,6 +1381,7 @@ describe("MCP controller profile", () => {
           repo_id: repository.repoId,
           work_id: workId,
           check_ids: ["validation-pass"],
+          request_id: validationRequestId,
         });
       }
       expect(validated.error).toBeUndefined();
