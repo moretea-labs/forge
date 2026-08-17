@@ -1795,9 +1795,17 @@ describe("MCP controller profile", () => {
     });
   });
 
-  test("loads one plugin action schema through rh_context and keeps plugin atomics bounded", async () => {
+  test("loads one live plugin action schema through rh_context even when the stored manifest is stale", async () => {
     await withController(async (repoRoot, _ctx) => {
-      const multi = createMultiRepositoryContext({ repo: repoRoot, profile: "controller" });
+      const controllerHome = join(repoRoot, ".controller-home-capability-live");
+      const multi = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", controllerHome });
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      writeStoredPluginManifest(controllerHome, repository.repoId, "browser", {
+        revision: 91,
+        provider: "stored-browser-stale",
+        capabilities: [],
+        actions: [],
+      });
       const toolNames = exposedControllerToolDefinitions(multi).map((tool) => tool.name);
       expect(toolNames).toContain("plugin_action_execute");
       expect(toolNames).not.toContain("get_plugin");
@@ -1805,6 +1813,7 @@ describe("MCP controller profile", () => {
       expect(toolNames).toHaveLength(19);
 
       const raw = await callRuntimeTool(multi, "rh_context", {
+        repo_id: repository.repoId,
         capability_id: "plugin.browser.get_text",
       });
       expect(raw).toBeTruthy();
@@ -1822,8 +1831,10 @@ describe("MCP controller profile", () => {
         },
       });
       expect(payload.data.capabilityLookup.pluginAction.argumentsSchema).toHaveProperty("type", "object");
+      expect(payload.data.capabilityLookup.pluginAction.provider).not.toBe("stored-browser-stale");
 
       const controllerRaw = await callRuntimeTool(multi, "rh_context", {
+        repo_id: repository.repoId,
         capability_id: "plugin.local_system.system_snapshot",
       });
       expect(controllerRaw).toBeTruthy();

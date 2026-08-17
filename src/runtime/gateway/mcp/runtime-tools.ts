@@ -3352,19 +3352,21 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const activeRuntimeInstanceId = currentControllerInstanceId();
         const activeProcesses = relevantProcesses.filter((process) => isManagedProcessActive(process) && (!process.runtimeInstanceId || process.runtimeInstanceId === activeRuntimeInstanceId));
         const workController = work ? getControllerSession(store, work.workId) : undefined;
-        const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, {
-          preferStored: true,
-        });
+        const requestedCapabilityId = typeof args.capability_id === 'string' ? args.capability_id.trim() : '';
+        const exactPluginCapabilityLookup = requestedCapabilityId.startsWith('plugin.');
+        const manifestOptions = exactPluginCapabilityLookup
+          ? { forceRefresh: true }
+          : { preferStored: true };
+        const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, manifestOptions);
         const controllerRepository = controllerPluginRepository(ctx.controllerHome);
         const controllerManifests = repository.repoId === controllerRepository.repoId
           ? []
-          : listAssistantPluginManifests(ctx.controllerHome, controllerRepository, { preferStored: true });
+          : listAssistantPluginManifests(ctx.controllerHome, controllerRepository, manifestOptions);
         const manifests = [...new Map(
           [...repositoryManifests, ...controllerManifests].map((manifest) => [manifest.pluginId, manifest] as const),
         ).values()];
         const capabilities = listCapabilityDescriptors(manifests);
         const capabilityGroups = summarizeCapabilityGroups(manifests);
-        const requestedCapabilityId = typeof args.capability_id === 'string' ? args.capability_id.trim() : '';
         const selectedCapability = requestedCapabilityId
           ? capabilities.find((descriptor) => descriptor.capabilityId === requestedCapabilityId)
           : undefined;
