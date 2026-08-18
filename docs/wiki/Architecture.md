@@ -75,11 +75,11 @@ One Canonical Runtime owns the active local execution authority and one whole-re
 
 ## Authoritative documents
 
-- [System overview](https://github.com/moretea-labs/forge/blob/main/docs/architecture/current/system-overview.md)
-- [Architecture invariants](https://github.com/moretea-labs/forge/blob/main/docs/architecture/current/architecture-invariants.md)
-- [Multi-repository execution](https://github.com/moretea-labs/forge/blob/main/docs/architecture/current/multi-repository-execution.md)
-- [Verification and release gates](https://github.com/moretea-labs/forge/blob/main/docs/architecture/current/verification-and-release-gates.md)
-- [Implementation status](https://github.com/moretea-labs/forge/blob/main/docs/architecture/current/implementation-status.md)
-- [Runtime directory map](https://github.com/moretea-labs/forge/blob/main/docs/architecture/current/runtime-directory-map.md)
+- [System overview](https://github.com/moretea-labs/forge/blob/main/docs/architecture/../architecture/CURRENT.md)
+- [Architecture invariants](https://github.com/moretea-labs/forge/blob/main/docs/architecture/../architecture/CURRENT.md)
+- [Multi-repository execution](https://github.com/moretea-labs/forge/blob/main/docs/architecture/../architecture/CURRENT.md)
+- [Verification and release gates](https://github.com/moretea-labs/forge/blob/main/docs/architecture/../architecture/CURRENT.md)
+- [Implementation status](https://github.com/moretea-labs/forge/blob/main/docs/architecture/../architecture/CURRENT.md)
+- [Runtime directory map](https://github.com/moretea-labs/forge/blob/main/docs/architecture/../architecture/CURRENT.md)
 
 Historical snapshots explain previous designs but are not current Runtime contracts.

@@ -42,7 +42,7 @@ Use Issues for reproducible defects and scoped feature requests. Use Discussions
 
 ## Documentation ownership
 
-The GitHub Wiki is a presentation target. Versioned source lives under `docs/wiki/`. Deeper engineering detail remains under `docs/architecture/current/` and `docs/operations/`.
+The GitHub Wiki is a presentation target. Versioned source lives under `docs/wiki/`. Deeper engineering detail remains under `docs/architecture/CURRENT.md` and `docs/operations/`.
 
 Public documentation must distinguish current facts from historical evidence. Avoid hard-coding “next release” versions in operational runbooks; derive versions from `package.json` so routine releases do not leave stale docs behind.
 

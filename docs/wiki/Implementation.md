@@ -143,8 +143,8 @@ Primary code and docs:
 ```text
 src/runtime/root/release-store.ts
 src/runtime/health/
-docs/architecture/current/failure-recovery.md
-docs/architecture/current/verification-and-release-gates.md
+docs/architecture/../architecture/CURRENT.md
+docs/architecture/../architecture/CURRENT.md
 ```
 
 The primary Runtime cannot be the only authority deciding its own recovery. Standalone Recovery observes the Runtime independently and may perform bounded whole-release restart/rollback only under its own evidence and lock contract.

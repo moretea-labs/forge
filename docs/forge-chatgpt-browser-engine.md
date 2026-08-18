@@ -5,7 +5,7 @@ Forge exposes browser automation through the bundled `browser` capability, the s
 Authoritative references:
 
 - [Browser plugin operations](operations/controller-browser-plugin.md)
-- [Human Interaction Plane](architecture/current/human-interaction-plane.md)
-- [Plugin baseline](architecture/current/personal-assistant-plugin-baseline.md)
+- [Human Interaction Plane](architecture/CURRENT.md)
+- [Plugin baseline](architecture/CURRENT.md)
 
 The browser engine is not a second controller, Runtime, plugin marketplace, or lifecycle owner.

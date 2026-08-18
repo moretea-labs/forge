@@ -15,4 +15,4 @@ Normal execution follows **Resolve → Route → Admit → Execute**. It must no
 
 Fail-closed guards remain necessary for facts that can only be known at execution time: real merge conflicts, mixed Git index ownership, secret/destructive authorization, PID/resource leases, and invariant violations. These guards are the last line of safety, not the mechanism used to discover the normal route.
 
-See [Dispatch and Agent Strategy](architecture/current/dispatch-and-agent-strategy.md) and [Governance](architecture/current/governance.md).
+See [Dispatch and Agent Strategy](architecture/CURRENT.md) and [Governance](architecture/CURRENT.md).

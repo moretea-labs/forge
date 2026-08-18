@@ -1,6 +1,6 @@
 # Forge Documentation
 
-> Maintained documentation for the current Forge product and runtime. Executable behavior and [`architecture/current/`](architecture/current/) are authoritative; historical notes are context, not active contracts.
+> Maintained documentation for the current Forge product and runtime. Executable behavior and [`architecture/CURRENT.md`](architecture/CURRENT.md) are authoritative for implementation facts and architecture contracts; historical notes are context, not active contracts.
 
 [中文文档中心](README.zh-CN.md) · [GitHub](https://github.com/moretea-labs/forge) · [Releases](https://github.com/moretea-labs/forge/releases) · [Support](../SUPPORT.md)
 
@@ -12,7 +12,7 @@
 | Connect ChatGPT | [Connect ChatGPT](tutorials/02-connect-chatgpt.md) | [MCP setup](forge-chatgpt-mcp-setup.md) |
 | Complete a first task | [First repository task](tutorials/03-first-repository-task.md) | [Public usage guide](public-usage-guide.md) |
 | Install an official provider | [Plugin management](forge-plugin-management.md) | [Provider configuration](operations/provider-configuration.md) |
-| Understand Forge | [Core Concepts](wiki/Core-Concepts.md) | [Architecture](wiki/Architecture.md) |
+| Understand Forge | [Current architecture](architecture/CURRENT.md) | [Roadmap](ROADMAP.md) |
 | Operate or recover | [Operations](wiki/Operations.md) | [Troubleshooting](operations/troubleshooting.md) |
 | Contribute or release | [Contributing](../CONTRIBUTING.md) | [Release process](operations/releasing.md) |
 
@@ -31,11 +31,11 @@ Forge is Direct-first: investigation does not create durable Work by itself, and
 - [Platform support](operations/platform-support.md)
 
 ### Understand
+- [Current architecture](architecture/CURRENT.md)
+- [Roadmap](ROADMAP.md)
+- [Architecture evolution](architecture/EVOLUTION.md)
+- [Version architecture snapshots](architecture/versions/)
 - [Core Concepts](wiki/Core-Concepts.md)
-- [Architecture](wiki/Architecture.md)
-- [Runtime Architecture](wiki/Runtime-Architecture.md)
-- [Work Lifecycle](wiki/Work-Lifecycle.md)
-- [Implementation map](wiki/Implementation.md)
 
 ### Integrate
 - [Plugin management](forge-plugin-management.md)
@@ -53,9 +53,10 @@ Forge is Direct-first: investigation does not create durable Work by itself, and
 - [Standalone disaster recovery](operations/standalone-disaster-recovery.md)
 
 ### Maintain
+- [Roadmap](ROADMAP.md)
+- [Release changelog](../CHANGELOG.md)
 - [Release process](operations/releasing.md)
 - [Open-source release hygiene](operations/open-source-release-hygiene.md)
-- [GitHub repository baseline](operations/github-repository.md)
 - [Versioning](versioning.md)
 - [Security policy](../SECURITY.md)
 
@@ -69,4 +70,4 @@ Forge is Direct-first: investigation does not create durable Work by itself, and
 
 ## Authority and history
 
-Current architecture lives in [`architecture/current/`](architecture/current/). The [architecture index](architecture/index.md) and [consolidated history](architecture/history.md) explain superseded designs. Research notes under [`researches/`](researches/) are evidence, not current contracts.
+Current architecture lives only in [`architecture/CURRENT.md`](architecture/CURRENT.md). [`ROADMAP.md`](ROADMAP.md) records current priorities, [`architecture/EVOLUTION.md`](architecture/EVOLUTION.md) records architecture history, and [`architecture/versions/`](architecture/versions/) stores release-family snapshots. Research notes and task records are evidence, not current contracts.

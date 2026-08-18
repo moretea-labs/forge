@@ -4,4 +4,4 @@ The canonical Forge Runtime reconciles durable Work, Process, Lease, projection,
 
 The OS service manager automatically starts and restarts the single `forge-runtime` process. Standalone Recovery remains independently installable for diagnostics, service repair, tunnel repair, and offline whole-Runtime rollback when the primary Runtime cannot start.
 
-See [Failure Recovery](architecture/current/failure-recovery.md), [Reliability runbook](operations/controller-reliability-runbook.md), and [Standalone disaster recovery](operations/standalone-disaster-recovery.md).
+See [Failure Recovery](architecture/CURRENT.md), [Reliability runbook](operations/controller-reliability-runbook.md), and [Standalone disaster recovery](operations/standalone-disaster-recovery.md).

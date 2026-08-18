@@ -4,4 +4,4 @@ GitHub is an optional first-party Forge provider for repository collaboration an
 
 Remote writes require explicit authorization and idempotent provider evidence. Configure the provider through the Forge CLI or plugin action surface and verify repository mapping before mutation.
 
-See [Integrations](wiki/Integrations.md), [Plugin baseline](architecture/current/personal-assistant-plugin-baseline.md), and [Verification and Release Gates](architecture/current/verification-and-release-gates.md).
+See [Integrations](wiki/Integrations.md), [Plugin baseline](architecture/CURRENT.md), and [Verification and Release Gates](architecture/CURRENT.md).

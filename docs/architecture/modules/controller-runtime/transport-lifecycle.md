@@ -1,7 +1,7 @@
 # MCP HTTP Transport Lifecycle
 
 > Capability: `mcp-http-transport-lifecycle`
-> Runtime Authority: `docs/architecture/current/architecture-invariants.md` and `docs/architecture/current/failure-recovery.md`
+> Runtime Authority: `docs/architecture/../../CURRENT.md` and `docs/architecture/../../CURRENT.md`
 
 ## Responsibility
 

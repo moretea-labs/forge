@@ -56,8 +56,7 @@ const required = [
   'src/runtime/execution/thin-harness/index.ts',
   'src/runtime/execution/thin-harness/execution-router.ts',
   'src/runtime/control-plane/routing/route-policy.ts',
-  'docs/architecture/current/route-policy.md',
-  'docs/architecture/current/thin-harness-v1.md',
+  'docs/architecture/CURRENT.md',
   'src/runtime/resources/leases/store.ts',
   'src/runtime/evidence/event-ledger.ts',
   'src/runtime/evidence/evidence-store.ts',
@@ -85,12 +84,6 @@ const required = [
   'src/cli/commands/init-hook.ts',
   'src/cli/commands/runtime.ts',
   'src/cli/index.ts',
-  'docs/architecture/current/runtime-architecture-simplification.md',
-  'docs/architecture/current/implementation-status.md',
-  'docs/architecture/current/runtime-directory-map.md',
-  'docs/architecture/current/operations-runbook.md',
-  'docs/architecture/current/target-requirements-traceability.md',
-  'docs/architecture/current/approved-target-architecture.zh-CN.md',
 ];
 for (const path of required) text(path);
 requireText('src/runtime/control-plane/routing/route-policy.ts', "export function decideRoute");
@@ -216,17 +209,9 @@ forbid(
   'persist only non-secret Canonical Runtime/release identity in OperationReceipt ownership evidence',
 );
 
-requireText('docs/architecture/current/runtime-architecture-simplification.md', 'one local MCP application');
-requireText('docs/architecture/current/runtime-architecture-simplification.md', 'one active Runtime');
-requireText('docs/architecture/current/runtime-architecture-simplification.md', 'one whole-Runtime readiness result');
-requireText('docs/architecture/current/runtime-architecture-simplification.md', 'Legacy code may receive only deletion-enabling or safety-fencing changes.');
-forbidBetween(
-  'docs/architecture/current/runtime-architecture-simplification.md',
-  '## 2. Target Runtime',
-  '## 3. Seven phases',
-  /Stable Supervisor|Stable Ingress|blue\/green|candidate\/current\/previous/i,
-  'define the target Runtime without Supervisor, ingress, slots, or component rollback',
-);
+requireText('docs/architecture/CURRENT.md', 'Canonical Runtime is activated as one immutable whole release');
+requireText('docs/architecture/CURRENT.md', 'Runtime availability/recovery keeps Forge itself healthy');
+requireText('docs/architecture/CURRENT.md', 'Historical Issue/Task/Local Job and compatibility projections must not become second mutable authorities.');
 requireText('src/runtime/root/runtime.ts', 'export class CanonicalForgeRuntime');
 forbid('src/runtime/control-plane/runtime-status-client.ts', /ensureControllerDaemon|child_process|daemon-entry|StableSupervisor|ownerEpoch|slot\?:/, 'keep Forge Runtime status observation read-only and free of legacy lifecycle authority');
 requireText('src/runtime/root/runtime.ts', "startInProcessScheduler");
@@ -446,12 +431,6 @@ requireText('src/runtime/gateway/mcp/runtime-tools.ts', "case 'local_bridge_stat
 requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'readAgentExecutableReadinessSnapshot');
 requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'connectorExposedTools');
 requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'currentCallableTools');
-forbid(
-  'docs/architecture/current/implementation-status.md',
-  /Stable external lifecycle Supervisor \| Implemented|Stable ingress event-loop isolation \| Implemented/,
-  'legacy Supervisor or Stable Ingress must not be reported as the target implementation',
-);
-requireText('docs/architecture/current/implementation-status.md', 'Canonical Single Runtime vertical slice');
 forbid('src/runtime/gateway/mcp/runtime-tools.ts', /inspectAgentExecutableReadiness|resolveAgentExecutable|writeAgentExecutableReadinessSnapshot/, 'Gateway readiness must only read the Daemon-produced Agent executable snapshot');
 forbidBetween(
   'src/runtime/gateway/mcp/runtime-tools.ts',
@@ -491,7 +470,7 @@ requireText('src/runtime/execution/jobs/receipt-store.ts', "state: 'started' | '
 requireText('src/runtime/execution/thin-harness/execution-router.ts', "mode: 'fast'");
 requireText('src/runtime/execution/thin-harness/execution-router.ts', 'routeExecution');
 requireText('src/runtime/execution/thin-harness/types.ts', 'FastExecutionReceipt');
-requireText('docs/architecture/current/thin-harness-v1.md', 'Default to direct Fast Path execution');
+requireText('docs/architecture/CURRENT.md', '### Ephemeral Direct — default');
 requireText('src/runtime/resources/leases/types.ts', 'fencingToken: number');
 requireText('src/runtime/resources/leases/store.ts', 'assertFencingToken');
 requireText('src/runtime/resources/leases/store.ts', 'expectedLeaseMap');
@@ -568,12 +547,9 @@ for (const path of [
   forbid(path, /\b(?:spawnSync|execSync|execFileSync)\s*\(/, 'the non-blocking Gateway/Controller hot-path rule');
 }
 
-requireText('docs/architecture/current/implementation-status.md', 'Thin MCP Gateway | Implemented');
-requireText('docs/architecture/current/implementation-status.md', 'Per-Repository Actor | Implemented');
-requireText('docs/architecture/current/implementation-status.md', 'Schedule, Trigger, Decision and Occurrence | Implemented');
-requireText('docs/architecture/current/implementation-status.md', 'Release Freeze and Gate | Implemented');
-requireText('docs/architecture/current/target-requirements-traceability.md', '## 4. Architecture constitution');
-requireText('docs/architecture/current/target-requirements-traceability.md', '## 16. Standard execution flow');
+requireText('docs/architecture/CURRENT.md', '## State ownership');
+requireText('docs/architecture/CURRENT.md', '## Runtime and MCP boundary');
+requireText('docs/architecture/CURRENT.md', '## Testing and verification');
 requireText('plans/README.md', 'not the runtime execution queue');
 if (text('src/cli/mcp/tools.ts').split(/\r?\n/).length > 40) failures.push('src/cli/mcp/tools.ts must remain a thin compatibility facade');
 

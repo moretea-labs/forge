@@ -36,7 +36,7 @@ A decision that actually requires ChatGPT/user judgement, authorization, or dura
 
 ## Authority
 
-- Migrated Requirement/Plan/Work lifecycle state is owned by the Canonical Runtime control plane as defined in `docs/architecture/current/control-plane-authority-inventory.md`.
+- Migrated Requirement/Plan/Work lifecycle state is owned by the Canonical Runtime control plane as defined in `docs/architecture/../architecture/CURRENT.md`.
 - Git owns source code and accepted source artifacts; evidence records own their recorded observations.
 - `.ai/harness/session/*` is non-authoritative and rebuildable.
 - Runtime `HandoffItem`/`rh_inbox` is the durable decision/attention handoff surface.

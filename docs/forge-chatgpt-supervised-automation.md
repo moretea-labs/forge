@@ -4,8 +4,8 @@ Forge models recurring or delegated work as bounded Schedules, Occurrences, Work
 
 Authoritative references:
 
-- [Automation and Schedule Engine](architecture/current/automation-and-schedule-engine.md)
-- [Dispatch and Agent Strategy](architecture/current/dispatch-and-agent-strategy.md)
-- [Failure Recovery](architecture/current/failure-recovery.md)
+- [Automation and Schedule Engine](architecture/CURRENT.md)
+- [Dispatch and Agent Strategy](architecture/CURRENT.md)
+- [Failure Recovery](architecture/CURRENT.md)
 
 Automation does not gain permission to publish, deploy, merge, send, or perform destructive effects without the required authorization.

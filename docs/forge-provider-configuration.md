@@ -4,4 +4,4 @@ Forge keeps provider selection separate from Runtime ownership. Codex, Claude, G
 
 Provider credentials are supplied through supported environment or OS credential mechanisms and are never copied into repository state or chat output. Provider availability does not change the one-Runtime topology.
 
-See [Provider configuration](operations/provider-configuration.md), [Plugin baseline](architecture/current/personal-assistant-plugin-baseline.md), and [Security Model](wiki/Security-Model.md).
+See [Provider configuration](operations/provider-configuration.md), [Plugin baseline](architecture/CURRENT.md), and [Security Model](wiki/Security-Model.md).

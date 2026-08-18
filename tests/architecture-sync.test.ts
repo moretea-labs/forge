@@ -6,58 +6,32 @@ import { spawnSync } from "child_process";
 
 const ROOT = join(import.meta.dir, "..");
 
-const REQUIRED_CURRENT_DOCS = [
-  "README.md",
-  "governance.md",
-  "system-overview.md",
-  "architecture-invariants.md",
-  "entity-model.md",
-  "job-and-run-lifecycle.md",
-  "dispatch-and-agent-strategy.md",
-  "scheduler-and-resource-claims.md",
-  "multi-repository-execution.md",
-  "automation-and-schedule-engine.md",
-  "failure-recovery.md",
-  "verification-and-release-gates.md",
-  "implementation-status.md",
-  "migration-roadmap.md",
-  "runtime-directory-map.md",
-  "operations-runbook.md",
-];
-
-const HISTORICAL_RUNTIME_DOCS = ["architecture/history.md"];
+const REQUIRED_ARCHITECTURE_DOCS: Record<string, string> = {
+  "README.md": "architecture/CURRENT.md",
+  "ROADMAP.md": "Forge Roadmap",
+  "architecture/CURRENT.md": "Work is a continuity/orchestration mechanism\nstable **19-tool** surface",
+  "architecture/EVOLUTION.md": "Historical Design — Not Runtime Authority",
+  "architecture/versions/1.6.md": "Version Snapshot — Not Runtime Authority",
+  "../CHANGELOG.md": "Changelog",
+  "architecture/current/README.md": "Not Runtime Authority",
+  "architecture/history.md": "Not Runtime Authority",
+};
 
 function installRuntimeArchitectureBaseline(cwd: string): void {
-  const currentRoot = join(cwd, "docs/architecture/current");
-  mkdirSync(currentRoot, { recursive: true });
-  for (const file of REQUIRED_CURRENT_DOCS) {
-    let content = `# ${file}\n\n> Status: **Runtime Authority**\n`;
-    if (file === "architecture-invariants.md") {
-      content += [
-        "",
-        "## Invariant 2 — Persist Before Execute",
-        "## Invariant 4 — Task Is Intent; Run Is Attempt",
-        "## Invariant 16 — Evidence Binds to Exact Revision",
-        "## Invariant 21 — Scheduled Work Is Bounded",
-        "",
-      ].join("\n");
-    }
-    if (file === "implementation-status.md") {
-      content += "\n## Completion Statement\n";
-    }
-    if (file === "migration-roadmap.md") {
-      content += "\n## P0\n\n## P1\n\n## P2\n\n## P3\n\n## P4\n\n## P5\n";
-    }
-    writeFileSync(join(currentRoot, file), content);
+  mkdirSync(join(cwd, "docs/architecture/current"), { recursive: true });
+  mkdirSync(join(cwd, "docs/architecture/versions"), { recursive: true });
+  for (const [file, marker] of Object.entries(REQUIRED_ARCHITECTURE_DOCS)) {
+    const path = file.startsWith("../") ? join(cwd, file.slice(3)) : join(cwd, "docs", file);
+    mkdirSync(dirname(path), { recursive: true });
+    const runtimeAuthority = file === "architecture/CURRENT.md" ? "\nStatus: **Runtime Authority**\n" : "";
+    writeFileSync(path, `# ${file}\n${runtimeAuthority}\n${marker}\n`);
   }
   writeFileSync(
     join(cwd, "docs/architecture/index.md"),
     [
       "# Architecture Index",
       "",
-      "## Runtime Authority",
-      "",
-      "docs/architecture/current/ is the Controller Runtime authority.",
+      "Runtime Authority: CURRENT.md",
       "",
       "## Pending Architecture Requests",
       "",
@@ -67,21 +41,6 @@ function installRuntimeArchitectureBaseline(cwd: string): void {
       "",
     ].join("\n"),
   );
-  for (const file of HISTORICAL_RUNTIME_DOCS) {
-    const path = join(cwd, "docs", file);
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(
-      path,
-      [
-        `# ${file}`,
-        "",
-        "> **Historical Design — Not Runtime Authority**",
-        ">",
-        "> Current architecture: docs/architecture/current/README.md.",
-        "",
-      ].join("\n"),
-    );
-  }
 }
 
 function run(cmd: string, args: string[], cwd: string) {
@@ -277,35 +236,35 @@ describe("architecture sync gate", () => {
     });
   });
 
-  test("missing required current architecture document fails in every mode", () => {
+  test("missing canonical current architecture document fails in every mode", () => {
     tmpRepo((cwd) => {
       installRuntimeArchitectureBaseline(cwd);
-      rmSync(join(cwd, "docs/architecture/current/entity-model.md"));
+      rmSync(join(cwd, "docs/architecture/CURRENT.md"));
       const res = run("bash", ["scripts/check-architecture-sync.sh", "--mode", "off"], cwd);
       expect(res.status).toBe(1);
-      expect(res.stderr).toContain("missing required file docs/architecture/current/entity-model.md");
+      expect(res.stderr).toContain("missing required file docs/architecture/CURRENT.md");
     });
   });
 
   test("missing Runtime Authority declaration fails before freshness evaluation", () => {
     tmpRepo((cwd) => {
       installRuntimeArchitectureBaseline(cwd);
-      const path = join(cwd, "docs/architecture/index.md");
+      const path = join(cwd, "docs/architecture/CURRENT.md");
       writeFileSync(path, readFileSync(path, "utf-8").replaceAll("Runtime Authority", "Current Architecture"));
       const res = run("bash", ["scripts/check-architecture-sync.sh", "--mode", "off"], cwd);
       expect(res.status).toBe(1);
-      expect(res.stderr).toContain("docs/architecture/index.md must contain: Runtime Authority");
+      expect(res.stderr).toContain("docs/architecture/CURRENT.md must contain: Runtime Authority");
     });
   });
 
   test("historical runtime document without authority marker fails", () => {
     tmpRepo((cwd) => {
       installRuntimeArchitectureBaseline(cwd);
-      const path = join(cwd, "docs/architecture/history.md");
-      writeFileSync(path, readFileSync(path, "utf-8").replace("Historical Design", "Version Notes"));
+      const path = join(cwd, "docs/architecture/current/README.md");
+      writeFileSync(path, readFileSync(path, "utf-8").replace("Not Runtime Authority", "Runtime Authority"));
       const res = run("bash", ["scripts/check-architecture-sync.sh", "--mode", "off"], cwd);
       expect(res.status).toBe(1);
-      expect(res.stderr).toContain("Historical Design");
+      expect(res.stderr).toContain("Not Runtime Authority");
     });
   });
 });

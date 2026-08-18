@@ -20,35 +20,26 @@ changed_files_file=""
 format="text"
 
 required_current_docs=(
-  "docs/architecture/current/README.md"
-  "docs/architecture/current/governance.md"
-  "docs/architecture/current/system-overview.md"
-  "docs/architecture/current/architecture-invariants.md"
-  "docs/architecture/current/entity-model.md"
-  "docs/architecture/current/job-and-run-lifecycle.md"
-  "docs/architecture/current/dispatch-and-agent-strategy.md"
-  "docs/architecture/current/scheduler-and-resource-claims.md"
-  "docs/architecture/current/multi-repository-execution.md"
-  "docs/architecture/current/automation-and-schedule-engine.md"
-  "docs/architecture/current/failure-recovery.md"
-  "docs/architecture/current/verification-and-release-gates.md"
-  "docs/architecture/current/implementation-status.md"
-  "docs/architecture/current/migration-roadmap.md"
-  "docs/architecture/current/runtime-directory-map.md"
-  "docs/architecture/current/operations-runbook.md"
+  "docs/README.md"
+  "docs/ROADMAP.md"
+  "docs/architecture/CURRENT.md"
+  "docs/architecture/EVOLUTION.md"
+  "docs/architecture/versions/1.6.md"
+  "CHANGELOG.md"
 )
 
 historical_runtime_docs=(
   "docs/architecture/history.md"
+  "docs/architecture/current/README.md"
 )
 
 runtime_architecture_gate_enabled() {
-  [[ -d "docs/architecture/current" ]] && return 0
+  [[ -f "docs/architecture/CURRENT.md" ]] && return 0
   local file
   for file in "${historical_runtime_docs[@]}"; do
     [[ -f "$file" ]] && return 0
   done
-  [[ -f "docs/architecture/index.md" ]] && grep -Fq -- "Controller Runtime" "docs/architecture/index.md"
+  [[ -f "docs/architecture/index.md" ]] && grep -Fq -- "Runtime Authority" "docs/architecture/index.md"
 }
 
 architecture_baseline_fail() {
@@ -73,28 +64,25 @@ require_architecture_text() {
 check_runtime_architecture_baseline() {
   local file
   local failed=0
-  require_architecture_text "docs/architecture/index.md" "Runtime Authority" || failed=1
-  require_architecture_text "docs/architecture/index.md" "docs/architecture/current/" || failed=1
-  require_architecture_text "docs/architecture/current/README.md" "Runtime Authority" || failed=1
-  require_architecture_text "docs/architecture/current/governance.md" "Runtime Authority" || failed=1
 
   for file in "${required_current_docs[@]}"; do
     require_architecture_file "$file" || failed=1
   done
 
+  require_architecture_text "docs/README.md" "architecture/CURRENT.md" || failed=1
+  require_architecture_text "docs/architecture/index.md" "Runtime Authority" || failed=1
+  require_architecture_text "docs/architecture/index.md" "CURRENT.md" || failed=1
+  require_architecture_text "docs/architecture/CURRENT.md" "Runtime Authority" || failed=1
+  require_architecture_text "docs/architecture/CURRENT.md" "Work is a continuity/orchestration mechanism" || failed=1
+  require_architecture_text "docs/architecture/CURRENT.md" "stable **19-tool** surface" || failed=1
+  require_architecture_text "docs/architecture/EVOLUTION.md" "Historical Design" || failed=1
+  require_architecture_text "docs/architecture/EVOLUTION.md" "Not Runtime Authority" || failed=1
+  require_architecture_text "docs/architecture/versions/1.6.md" "Version Snapshot — Not Runtime Authority" || failed=1
+
   for file in "${historical_runtime_docs[@]}"; do
-    require_architecture_text "$file" "Historical Design" || failed=1
     require_architecture_text "$file" "Not Runtime Authority" || failed=1
-    require_architecture_text "$file" "docs/architecture/current/README.md" || failed=1
   done
 
-  require_architecture_text "docs/architecture/current/architecture-invariants.md" "Invariant 2 — Persist Before Execute" || failed=1
-  require_architecture_text "docs/architecture/current/architecture-invariants.md" "Invariant 4 — Task Is Intent; Run Is Attempt" || failed=1
-  require_architecture_text "docs/architecture/current/architecture-invariants.md" "Invariant 16 — Evidence Binds to Exact Revision" || failed=1
-  require_architecture_text "docs/architecture/current/architecture-invariants.md" "Invariant 21 — Scheduled Work Is Bounded" || failed=1
-  require_architecture_text "docs/architecture/current/implementation-status.md" "## Completion Statement" || failed=1
-  require_architecture_text "docs/architecture/current/migration-roadmap.md" "## P0" || failed=1
-  require_architecture_text "docs/architecture/current/migration-roadmap.md" "## P5" || failed=1
   return "$failed"
 }
 

@@ -2,7 +2,7 @@
 
 - **Status:** Accepted and aligned with the Canonical Forge Runtime
 - **Date:** 2026-08-03; revised 2026-08-09
-- **Authority:** [`../current/runtime-architecture-simplification.md`](../current/runtime-architecture-simplification.md), [`../current/failure-recovery.md`](../current/failure-recovery.md)
+- **Authority:** [`../CURRENT.md`](../CURRENT.md), [`../CURRENT.md`](../CURRENT.md)
 
 ## Decision
 

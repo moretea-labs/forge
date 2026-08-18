@@ -1,6 +1,6 @@
 # Forge 中文文档
 
-> 这里维护 Forge 当前产品与 Runtime 的公开文档。可执行代码与 [`architecture/current/`](architecture/current/) 是当前事实来源；历史设计与研究文档只提供背景，不覆盖当前契约。
+> 这里维护 Forge 当前产品与 Runtime 的公开文档。可执行代码与 [`architecture/CURRENT.md`](architecture/CURRENT.md) 分别提供当前实现事实与架构契约；历史设计与研究文档只提供背景，不覆盖当前契约。
 
 [English docs](README.md) · [GitHub](https://github.com/moretea-labs/forge) · [版本发布](https://github.com/moretea-labs/forge/releases) · [支持](../SUPPORT.md)
 
@@ -55,4 +55,4 @@ Forge 默认 Direct-first：仅调查不会创建 durable Work；只有真正需
 
 Controller 是全局多仓库服务，但执行始终由稳定 `repoId` 和必要时的 `checkoutId` 明确限定。Controller Home 保存服务配置、认证、Provider、持久状态与发布元数据；公网 MCP 与仅本机可见的 Controller UI 相互分离。
 
-当前架构以 [`architecture/current/`](architecture/current/) 为准；[`architecture/history.md`](architecture/history.md) 与 [`researches/`](researches/) 用于追溯历史和证据，不是当前运行契约。
+当前架构只以 [`architecture/CURRENT.md`](architecture/CURRENT.md) 为准；[`ROADMAP.md`](ROADMAP.md) 记录当前优先级，[`architecture/EVOLUTION.md`](architecture/EVOLUTION.md) 与 [`researches/`](researches/) 用于追溯历史和证据，不是当前运行契约。
