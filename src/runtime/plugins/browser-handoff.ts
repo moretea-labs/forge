@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { spawn } from 'child_process';
-import { closeSync, existsSync, openSync, readFileSync } from 'fs';
+import { closeSync, existsSync, openSync, readFileSync, readdirSync, rmSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { writeJsonAtomic } from '../shared/json-files';
@@ -25,6 +25,7 @@ const MAX_HANDOFF_TIMEOUT_MS = 60 * 60_000;
 const STARTUP_GRACE_MS = 15_000;
 const STARTUP_POLL_MS = 50;
 const MAX_STARTUP_LOG_CHARS = 4_000;
+const MAX_TERMINAL_BROWSER_HANDOFFS = 20;
 
 export interface BrowserHandoffLaunchSpec {
   schemaVersion: 1;
@@ -193,12 +194,28 @@ function reconcileRecord(_repoRoot: string, record: InteractionSessionRecord): I
   };
 }
 
+function pruneBrowserHandoffLogs(repoRoot: string): number {
+  const retained = new Set(listInteractionSessions(repoRoot, PROVIDER).map((record) => record.interactionId));
+  const launchRoot = dirname(interactionLaunchSpecPath(repoRoot, PROVIDER, '__probe__'));
+  if (!existsSync(launchRoot)) return 0;
+  let removed = 0;
+  for (const name of readdirSync(launchRoot)) {
+    if (!name.endsWith('.log')) continue;
+    const interactionId = name.slice(0, -'.log'.length);
+    if (retained.has(interactionId)) continue;
+    rmSync(join(launchRoot, name), { force: true });
+    removed += 1;
+  }
+  return removed;
+}
+
 function persistDeadBrowserHandoffs(repoRoot: string): void {
   for (const stored of listInteractionSessions(repoRoot, PROVIDER)) {
     const reconciled = reconcileRecord(repoRoot, stored);
     if (stored.status !== reconciled.status && reconciled.status === 'failed') writeInteractionSession(repoRoot, reconciled);
   }
-  pruneInteractionSessions(repoRoot, PROVIDER);
+  pruneInteractionSessions(repoRoot, PROVIDER, MAX_TERMINAL_BROWSER_HANDOFFS);
+  pruneBrowserHandoffLogs(repoRoot);
 }
 
 export function listBrowserHandoffs(repoRoot: string): InteractionSessionRecord[] {

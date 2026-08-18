@@ -1221,7 +1221,11 @@ async function markManagedPageOwner(page: PageLike, ownerToken: string): Promise
   }, ownerToken).catch(() => undefined);
 }
 
-async function selectManagedSessionPage(state: ManagedBrowserContextState, target: BrowserActionTarget) {
+async function selectManagedSessionPage(
+  state: ManagedBrowserContextState,
+  target: BrowserActionTarget,
+  options: { allowReplacement?: boolean } = {},
+) {
   const pages = state.context.pages();
   const inventory = await inventoryTabs(state.context);
   const ownerToken = ownerTokenForSession(target.sessionId);
@@ -1264,6 +1268,17 @@ async function selectManagedSessionPage(state: ManagedBrowserContextState, targe
         ownerToken,
       };
     }
+  }
+
+  if (target.existingSession?.browser?.tab && options.allowReplacement === false) {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_SESSION_STATE_LOST',
+      'Saved managed browser page no longer exists; refusing to create a replacement page for this existing-session action.',
+      {
+        retryable: false,
+        details: { sessionId: target.sessionId, provider: 'playwright-persistent-context' },
+      },
+    );
   }
 
   const blankIndex = inventory.findIndex((entry) => isBlankPage(entry.url) && !entry.ownerToken);
@@ -1363,11 +1378,21 @@ async function openManagedContext(
   let selected: Awaited<ReturnType<typeof selectManagedSessionPage>> | Awaited<ReturnType<typeof selectPage>>;
   let managedState: ManagedBrowserContextState | undefined;
   if (activeMode === 'managed_persistent') {
+    const requireExistingResource = args.__forge_require_existing_resource === true;
+    if (requireExistingResource && target.existingSession?.browser?.provider === 'playwright-persistent-context'
+      && !managedBrowserContexts.has(persistentKey)) {
+      throw new AssistantPluginError(
+        'PLUGIN_BROWSER_SESSION_STATE_LOST',
+        'The managed browser context for this saved session is no longer live; refusing to launch a replacement browser/page for this existing-session action.',
+        { retryable: false, details: { sessionId: target.sessionId, provider: 'playwright-persistent-context' } },
+      );
+    }
     managedState = await managedContextState(runtime, repoRoot, config, profile);
     context = managedState.context;
     try {
-      selected = await selectManagedSessionPage(managedState, target);
-    } catch {
+      selected = await selectManagedSessionPage(managedState, target, { allowReplacement: !requireExistingResource });
+    } catch (error) {
+      if (requireExistingResource) throw error;
       await evictManagedContext(persistentKey);
       assertBrowserProfileAvailable(repoRoot, profile.selectedProfilePath);
       managedState = await managedContextState(runtime, repoRoot, config, profile);
@@ -1638,13 +1663,41 @@ async function openBrowser(
 ): Promise<BrowserOpenHandle> {
   const requestedMode = config.browserMode ?? 'managed_persistent';
   if (requestedMode === 'attach_preferred') {
+    const requireExistingResource = args.__forge_require_existing_resource === true;
+    const existingProvider = target.existingSession?.browser?.provider;
     const attached = cdpEndpoints(config).length > 0 && runtimeHooks.moduleAvailable('playwright', repoRoot)
       ? await openAttachedContext(runtimeHooks.loadPlaywright(repoRoot), repoRoot, config, target, args)
       : { attempts: [] as CdpAttachAttempt[] };
     if (attached.handle) return attached.handle;
+    if (requireExistingResource && existingProvider === 'playwright-cdp') {
+      throw new AssistantPluginError(
+        'PLUGIN_BROWSER_SESSION_STATE_LOST',
+        'Saved CDP browser page is no longer attachable; refusing to fall back to another browser or create a replacement page.',
+        { retryable: false, details: { sessionId: target.sessionId, provider: existingProvider } },
+      );
+    }
+    if (requireExistingResource && existingProvider === 'playwright-persistent-context') {
+      if (!runtimeHooks.moduleAvailable('playwright', repoRoot)) {
+        throw new AssistantPluginError('PLUGIN_BROWSER_DEPENDENCY_UNAVAILABLE', 'Managed browser mode requires Playwright.', { retryable: false });
+      }
+      return openManagedContext(runtimeHooks.loadPlaywright(repoRoot), repoRoot, config, target, args, 'managed_persistent', requestedMode, {
+        policy: config.cdpAttachFallback ?? 'managed_persistent',
+        from: 'attach_preferred',
+        to: 'managed_persistent',
+        reason: 'Reusing the existing managed fallback session without probing or creating a different browser resource.',
+        attempts: attached.attempts,
+      });
+    }
 
     const native = await openNativeAttachedContext(repoRoot, config, target, args);
     if (native.handle) return native.handle;
+    if (requireExistingResource) {
+      throw new AssistantPluginError(
+        'PLUGIN_BROWSER_SESSION_STATE_LOST',
+        'Saved browser resource is no longer attachable; refusing to create a replacement tab/page for this existing-session action.',
+        { retryable: false, details: { sessionId: target.sessionId, provider: existingProvider } },
+      );
+    }
 
     const fallbackPolicy = config.cdpAttachFallback ?? 'managed_persistent';
     const cdpReason = attached.attempts.map((attempt) => `${attempt.endpoint}: ${attempt.error ?? 'unavailable'}`).join('; ')
@@ -1688,14 +1741,17 @@ async function withPage<T>(
   target: BrowserActionTarget,
   args: Record<string, unknown>,
   run: (page: PageLike, diagnostics: PageDiagnostics, connection: BrowserConnectionSummary) => Promise<T>,
-  options: { persistSession?: boolean } = {},
+  options: { persistSession?: boolean; requireExistingResource?: boolean; pruneStaleSessionMetadata?: boolean } = {},
 ): Promise<T> {
   const retries = Math.min(Math.max(positiveNumber(args.retries, 1), 1), 3);
   let lastError: unknown;
   for (let attempt = 1; attempt <= retries; attempt += 1) {
     let handle: BrowserOpenHandle | undefined;
     try {
-      handle = await openBrowser(repoRoot, config, target, args);
+      const browserArgs = options.requireExistingResource
+        ? { ...args, __forge_require_existing_resource: true }
+        : args;
+      handle = await openBrowser(repoRoot, config, target, browserArgs);
       const result = await run(handle.page, handle.diagnostics, handle.connection);
       if (options.persistSession) {
         const identity = await readPageIdentity(handle.page, handle.connection);
@@ -1704,6 +1760,12 @@ async function withPage<T>(
       return result;
     } catch (error) {
       lastError = error;
+      if (options.pruneStaleSessionMetadata
+        && target.existingSession
+        && error instanceof AssistantPluginError
+        && error.code === 'PLUGIN_BROWSER_SESSION_STATE_LOST') {
+        rmSync(sessionPath(repoRoot, target.sessionId), { force: true });
+      }
       const message = error instanceof Error ? error.message : String(error);
       const transient = /timeout|net::|ERR_|Navigation failed|Target closed|Protocol error/i.test(message);
       if (!transient || attempt >= retries) throw error;
@@ -2962,7 +3024,9 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
               sessionResume: session.browser?.sessionResume,
             },
           };
-        });
+        }, input.actionId === 'reload'
+          ? { requireExistingResource: true, pruneStaleSessionMetadata: true }
+          : {});
       }
       case 'get_text': {
         const target = resolveActionTarget(input.repoRoot, input.args);
