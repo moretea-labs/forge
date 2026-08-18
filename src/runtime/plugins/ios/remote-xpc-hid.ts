@@ -140,7 +140,6 @@ function workerSource(): string {
   return String.raw`#!/usr/bin/env python3
 import argparse
 import asyncio
-import contextlib
 import json
 import sys
 import time
@@ -200,24 +199,6 @@ async def send_keyboard_chord(hid, service_id, usage_codes, hold_s=0.040, settle
     await asyncio.sleep(settle_s)
 
 
-@contextlib.asynccontextmanager
-async def isolated_modifier_keyboard(host, port):
-    async with RemoteServiceDiscoveryService((host, port)) as modifier_rsd:
-        async with UniversalHIDServiceService(modifier_rsd) as modifier_hid:
-            started = time.perf_counter()
-            service_id = await modifier_hid.create_keyboard_service(product='Forge modifier keyboard')
-            create_ms = (time.perf_counter() - started) * 1000.0
-            await modifier_hid.send_keyboard(service_id, [])
-            await asyncio.sleep(0.060)
-            try:
-                yield modifier_hid, service_id, create_ms
-            finally:
-                try:
-                    await modifier_hid.send_keyboard(service_id, [])
-                except Exception:
-                    pass
-
-
 def normalized_point(x, y, width, height):
     if width <= 1 or height <= 1:
         raise ValueError('display dimensions must be > 1')
@@ -269,7 +250,7 @@ async def main():
                 'keyboardReused': direct_keyboard_service is not None,
                 'keyboardSource': 'connected_coredevice' if direct_keyboard_service is not None else 'none',
                 'keyboardProduct': direct_keyboard_product,
-                'modifierKeyboardSource': 'virtual_coredevice_lazy',
+                'modifierKeyboardSource': 'connected_coredevice' if direct_keyboard_service is not None else 'none',
                 'pasteboardAvailable': 'com.apple.coredevice.pasteboardservice' in rsd_services,
                 'pasteboardTransport': 'independent_rsd',
             }), flush=True)
@@ -331,7 +312,8 @@ async def main():
                         if text_mode == 'keys' and not key_supported:
                             raise ValueError('unsupported HID character in keys mode')
 
-                        needs_modifier_keyboard = use_pasteboard or replace_existing
+                        if direct_keyboard_service is None:
+                            raise RuntimeError('Connected CoreDevice keyboard service is unavailable')
 
                         async def dispatch_text(keyboard_hid, keyboard_service, keyboard_source, keyboard_create_ms):
                             nonlocal phase, mutation_dispatched
@@ -426,13 +408,7 @@ async def main():
                                 'keyboardCreateMs': round(keyboard_create_ms, 2),
                             }
 
-                        if not needs_modifier_keyboard and direct_keyboard_service is not None:
-                            result = await dispatch_text(hid, direct_keyboard_service, 'connected_coredevice', 0.0)
-                        else:
-                            phase = 'hid_modifier_session_connect'
-                            async with isolated_modifier_keyboard(args.host, args.port) as (modifier_hid, modifier_service, modifier_create_ms):
-                                modifier_source = 'isolated_virtual_modifier' if needs_modifier_keyboard else 'isolated_virtual_fallback'
-                                result = await dispatch_text(modifier_hid, modifier_service, modifier_source, modifier_create_ms)
+                        result = await dispatch_text(hid, direct_keyboard_service, 'connected_coredevice', 0.0)
                     else:
                         raise ValueError('unsupported action')
                     hid_ms = (time.perf_counter() - hid_started) * 1000.0
