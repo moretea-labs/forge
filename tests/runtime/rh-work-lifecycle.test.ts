@@ -481,7 +481,15 @@ describe('rh_work managed lifecycle closure', () => {
       no_ff: true,
     });
     expect(retried?.isError).not.toBe(true);
-    expect(retried?.structuredContent).toMatchObject({ status: 'ok', data: { lifecycleClosed: true } });
+    expect(retried?.structuredContent).toMatchObject({
+      status: 'ok',
+      data: {
+        lifecycleClosed: true,
+        completionReceipt: {
+          changedPaths: ['work-change.txt'],
+        },
+      },
+    });
     expect(readFileSync(join(fx.repoRoot, 'work-change.txt'), 'utf8')).toBe('from work\n');
     expect(readFileSync(join(fx.repoRoot, 'concurrent-main.txt'), 'utf8')).toBe('from main\n');
     expect(existsSync(worktreePath)).toBe(false);

@@ -230,6 +230,17 @@ function workReturnCheckoutId(
   return target.activeCheckoutId ?? repository.activeCheckoutId ?? fallbackCheckoutId;
 }
 
+function completionReceiptChangedPaths(repoRoot: string, baseRevision: string, deliveryRevision: string): string[] {
+  const result = spawnSync('git', ['-C', repoRoot, 'diff', '--name-only', `${baseRevision}..${deliveryRevision}`], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  if (result.status !== 0 || result.error || typeof result.stdout !== 'string') {
+    throw new Error(`WORK_COMPLETION_RECEIPT_CHANGED_PATHS_UNAVAILABLE: ${baseRevision}..${deliveryRevision}`);
+  }
+  return Array.from(new Set(result.stdout.split('\n').map((entry) => entry.trim()).filter(Boolean)))
+    .sort((left, right) => left.localeCompare(right));
+}
+
 function completionReceiptForFinalizedWork(
   ctx: MultiRepositoryMcpToolContext,
   handle: WorkHandleState,
@@ -244,10 +255,11 @@ function completionReceiptForFinalizedWork(
   const targetRevision = gitHead(target.canonicalRoot);
   if (!targetRevision) throw new Error('WORK_COMPLETION_RECEIPT_TARGET_REQUIRED: target HEAD is unavailable');
   const noChange = args.completion_outcome === 'completed_no_change';
-  // For no-change Work, delivery authority is the Work's own unchanged revision,
-  // not the target branch's newest revision. The target may have advanced because
-  // of unrelated concurrent Work; those paths must never be attributed here.
-  const deliveryRevision = noChange ? (handle.expectedHead ?? handle.baseCommit) : targetRevision;
+  // Delivery authority is always the Work's own revision, never the target
+  // branch's newest HEAD. The target may have advanced because of unrelated
+  // concurrent Work; targetRevision records integration identity, while
+  // deliveryRevision owns path attribution and reachability proof.
+  const deliveryRevision = handle.expectedHead ?? handle.baseCommit;
   if (!deliveryRevision) throw new Error('WORK_COMPLETION_RECEIPT_SOURCE_REQUIRED: Work delivery revision is unavailable');
   const reachable = deliveryRevision === targetRevision || spawnSync('git', ['-C', target.canonicalRoot, 'merge-base', '--is-ancestor', deliveryRevision, targetBranch], {
     encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
@@ -256,10 +268,8 @@ function completionReceiptForFinalizedWork(
   const changedPaths = noChange
     ? []
     : handle.baseCommit
-      ? Array.from(new Set(String(spawnSync('git', ['-C', target.canonicalRoot, 'diff', '--name-only', `${handle.baseCommit}..${targetRevision}`], {
-          encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
-        }).stdout ?? '').split('\n').map((entry) => entry.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right))
-      : [];
+      ? completionReceiptChangedPaths(target.canonicalRoot, handle.baseCommit, deliveryRevision)
+      : (() => { throw new Error('WORK_COMPLETION_RECEIPT_BASE_REQUIRED: Work base revision is unavailable'); })();
   const recordedAt = new Date().toISOString();
   const warnings = [
     ...(handle.finalization.branchCleanup === 'skipped' ? [{ code: 'cleanup_retained_by_request' as const, message: 'Branch cleanup was skipped by the finalization request.', resourceKind: 'branch' as const, resourceId: handle.branch, recordedAt }] : []),
@@ -1987,7 +1997,14 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
   }
 
   if (wants.merge && current.finalization.merge === 'pending') {
-    validateWorkHandle(ctx.controllerHome, current, identity, 'full', 'finalize');
+    const mergeValidated = validateWorkHandle(ctx.controllerHome, current, identity, 'full', 'finalize');
+    if (mergeValidated.currentHead && mergeValidated.currentHead !== current.expectedHead) {
+      current = transact('merge-adopt-work-delivery-head', (fresh) => writeWorkHandle(ctx.controllerHome, {
+        ...fresh,
+        expectedHead: mergeValidated.currentHead,
+        failureReason: undefined,
+      }));
+    }
     const contract = contractFor(ctx, current);
     if (contract?.constraints.allowMerge === false) throw new Error('WORK_MERGE_NOT_ALLOWED: WorkContract disallows merge');
     const target = selectWorkFinalizationTarget(getRepository(current.repositoryId, ctx.controllerHome), current);
