@@ -149,7 +149,9 @@ export function assessWorkMode(input: WorkModeAssessmentInput): WorkModeAssessme
     },
     capabilities: { requiresWorker: input.agentRequested },
     recovery: {
-      required: input.requiresRecovery || explicitMode === 'debug' || explicitMode === 'release' || explicitMode === 'scale',
+      // Debugging expands evidence through rh_context; it does not itself need
+      // durable continuation or command recovery.
+      required: input.requiresRecovery || explicitMode === 'release' || explicitMode === 'scale',
       isolationRequired: explicitMode === 'direct' ? false : input.requiresWorkerIsolation || parallelMode,
     },
   });
@@ -162,7 +164,7 @@ export function assessWorkMode(input: WorkModeAssessmentInput): WorkModeAssessme
     confidence: input.requiresInvestigation || (input.knownPaths?.length ?? 0) === 0 ? 'medium' : 'high',
     reasons: routeDecision.reasons.map((reason) => reason.message),
     nextTools: explicitMode === 'plan' || explicitMode === 'debug'
-      ? ['controller_context_pack(structural_context=required)', ...modeBehavior.workflow]
+      ? ['rh_context(search.structural_context=required)', ...modeBehavior.workflow]
       : explicitMode === 'review'
         ? ['repository_git_status', 'repository_diff', ...modeBehavior.workflow]
         : explicitMode === 'release'

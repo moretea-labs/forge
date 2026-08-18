@@ -1,22 +1,21 @@
 /**
- * Repository-scoped Managed Process lifecycle MCP tools.
+ * Repository-scoped Lightweight/Durable Process lifecycle MCP tools.
  *
  * process_get / process_wait / process_logs / process_cancel
  *
- * These tools attach to an existing Process Runtime handle — they never
- * re-execute the original command.
+ * These tools attach to an existing in-memory lightweight or persisted durable
+ * handle. They never re-execute the original command.
  */
 
 import type { McpToolDefinition, CallToolResult } from '../../../cli/mcp/tools';
 import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
 import { getRepository } from '../../../cli/repositories/registry';
 import {
-  cancelProcess,
-  getProcessHandle,
-  readProcessLogs,
-  waitForProcess,
+  cancelRepositoryCommandProcess,
+  getRepositoryCommandProcess,
+  readRepositoryCommandProcessLogs,
+  waitRepositoryCommandProcess,
 } from '../../execution/process-runtime';
-import { getProcessRecord } from '../../execution/process-runtime/store';
 import { redactSensitiveText, redactSensitiveValue } from '../../evidence/sensitive-output';
 
 function definition(
@@ -46,13 +45,13 @@ const repoIdProp = {
 };
 const processIdProp = {
   type: 'string',
-  description: 'Managed process id returned by Process Runtime (e.g. from run_check / repository_command).',
+  description: 'Lightweight or durable process id returned by run_check / repository_command_execute.',
 };
 
 export const processToolDefinitions: McpToolDefinition[] = [
   definition(
     'process_get',
-    'Get the current status of a managed process without re-executing the command. Readonly.',
+    'Get the current status of a lightweight or durable process without re-executing the command. Readonly.',
     {
       repo_id: repoIdProp,
       process_id: processIdProp,
@@ -62,7 +61,7 @@ export const processToolDefinitions: McpToolDefinition[] = [
   ),
   definition(
     'process_wait',
-    'Wait for a managed process to complete or until timeout_ms. Does not re-execute the command. Readonly attach/poll.',
+    'Wait for a lightweight or durable process to complete or until timeout_ms. Does not re-execute the command. Readonly attach/poll.',
     {
       repo_id: repoIdProp,
       process_id: processIdProp,
@@ -73,7 +72,7 @@ export const processToolDefinitions: McpToolDefinition[] = [
   ),
   definition(
     'process_logs',
-    'Read a bounded tail of managed process stdout/stderr. Never loads unbounded logs. Readonly.',
+    'Read a bounded tail of lightweight or durable process stdout/stderr. Never loads unbounded logs. Readonly.',
     {
       repo_id: repoIdProp,
       process_id: processIdProp,
@@ -84,7 +83,7 @@ export const processToolDefinitions: McpToolDefinition[] = [
   ),
   definition(
     'process_cancel',
-    'Cancel a managed process. Requires verified PID identity (start time + executable fingerprint). Untrusted PIDs are refused. Classified as workspace-write / process-control.',
+    'Cancel a lightweight or durable process through its owning runtime handle. Classified as workspace-write / process-control.',
     {
       repo_id: repoIdProp,
       process_id: processIdProp,
@@ -132,17 +131,14 @@ function requireRepoAndProcess(
   }
 
   // Process must belong to the requested repo.
-  const record = getProcessRecord(ctx.controllerHome, repoId, processId);
-  if (!record) {
+  const handle = getRepositoryCommandProcess(ctx.controllerHome, repoId, processId);
+  if (!handle) {
     throw new Error(`PROCESS_NOT_FOUND: process ${processId} is not registered under repo ${repoId}`);
-  }
-  if (record.repoId !== repoId) {
-    throw new Error(`PROCESS_REPO_MISMATCH: process ${processId} belongs to ${record.repoId}, not ${repoId}`);
   }
   return { repoId, processId };
 }
 
-function handleToPayload(handle: NonNullable<ReturnType<typeof getProcessHandle>>): Record<string, unknown> {
+function handleToPayload(handle: NonNullable<ReturnType<typeof getRepositoryCommandProcess>>): Record<string, unknown> {
   return {
     processId: handle.processId,
     workId: handle.workId,
@@ -177,7 +173,7 @@ export async function callProcessTool(
     const { repoId, processId } = requireRepoAndProcess(ctx, args);
     switch (name) {
       case 'process_get': {
-        const handle = getProcessHandle(ctx.controllerHome, repoId, processId);
+        const handle = getRepositoryCommandProcess(ctx.controllerHome, repoId, processId);
         if (!handle) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
         return result({
           repoId,
@@ -193,7 +189,7 @@ export async function callProcessTool(
           ? Math.max(1, Math.trunc(testBudget))
           : DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS;
         const startedAt = Date.now();
-        const handle = await waitForProcess(ctx.controllerHome, repoId, processId, {
+        const handle = await waitRepositoryCommandProcess(ctx.controllerHome, repoId, processId, {
           timeoutMs: Math.min(requestedWaitMs, attachBudgetMs),
         });
         return result({
@@ -209,7 +205,7 @@ export async function callProcessTool(
         const maxBytes = typeof args.max_bytes === 'number' && Number.isFinite(args.max_bytes)
           ? Math.max(256, Math.trunc(args.max_bytes))
           : 32 * 1024;
-        const logs = readProcessLogs(ctx.controllerHome, repoId, processId, maxBytes);
+        const logs = readRepositoryCommandProcessLogs(ctx.controllerHome, repoId, processId, maxBytes);
         if (!logs) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
         return result({
           repoId,
@@ -223,7 +219,7 @@ export async function callProcessTool(
         });
       }
       case 'process_cancel': {
-        const handle = await cancelProcess(ctx.controllerHome, repoId, processId);
+        const handle = await cancelRepositoryCommandProcess(ctx.controllerHome, repoId, processId);
         return result({
           repoId,
           process: handleToPayload(handle),

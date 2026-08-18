@@ -63,6 +63,9 @@ test("keeps source-stable facade schema aligned with the controller workflow con
     const rhWork = tools.find((tool) => tool.name === "rh_work");
     const rhWorkProperties = rhWork?.inputSchema.properties as Record<string, any>;
     expect(rhWorkProperties.operation.enum).toContain("plan_accept_step");
+    expect(rhWorkProperties.initial_likely_paths).toBeDefined();
+    expect(rhWorkProperties.additional_likely_paths).toBeDefined();
+    expect(rhWorkProperties.inspected_paths).toBeDefined();
     const safePatch = tools.find((tool) => tool.name === "repository_safe_patch_apply");
     const safePatchProperties = safePatch?.inputSchema.properties as Record<string, any>;
     expect(safePatchProperties.work_id).toBeDefined();
@@ -632,13 +635,13 @@ describe("MCP controller profile", () => {
         "work_submit",
         "quick_agent_session",
         "controller_context",
-        "controller_context_pack",
         "repository_command_preview",
         "verify_edit_session",
         "finish_edit_session",
       ]) {
         expect(capabilities.value.expectedTools).not.toContain(hiddenFromDefault);
       }
+      expect(buildMcpToolDefinitions(overridden).map((tool) => tool.name)).not.toContain("controller_context_pack");
       expect(capabilities.value.expectedTools).toEqual(
         controllerExpectedToolNames(overridden),
       );
@@ -969,8 +972,8 @@ describe("MCP controller profile", () => {
         expected_changed_lines: 1_000,
       });
       expect(largeContext.value.recommendedExecution).toMatchObject({
-        recommendedMode: "bounded_work",
-        taskMode: "bounded",
+        recommendedMode: "direct_edit",
+        taskMode: "direct",
       });
 
       const planContext = await jsonTool(ctx, "controller_context", {
@@ -990,21 +993,19 @@ describe("MCP controller profile", () => {
         requestedMode: "required",
       });
 
-      const pack = await jsonTool(ctx, "controller_context_pack", {
-        issue_id: created.value.id,
-        task_id: "T1",
+      const multi = createMultiRepositoryContext({ repo: _repoRoot, profile: "controller", toolset: "advanced" });
+      const rawPack = await callRuntimeTool(multi, "rh_context", {
+        operation: "search",
+        query: "value",
         known_paths: ["src/example.ts"],
-        search_terms: ["value"],
+        structural_context: "off",
         max_files: 2,
-        max_snippets: 4});
-      expect(pack.value.source).toBe("controller-context-pack");
-      expect(pack.value.contextContract).toMatchObject({
-        retrievalMode: "implementation",
-        semanticSufficiencyAuthority: "chatgpt",
-        rawCodeRequiredForImplementation: false,
+        max_snippets: 4,
       });
-      expect(pack.value.files[0].path).toBe("src/example.ts");
-      expect(pack.value.files[0].snippets[0].content).toContain("value = 1");
+      const pack = JSON.parse(rawPack!.content[0].text);
+      expect(pack.data.files[0].path).toBe("src/example.ts");
+      expect(pack.data.files[0].snippets[0].content).toContain("value = 1");
+      expect(pack.data.coverage.exactKnownPaths.requested).toContain("src/example.ts");
     });
   });
 
@@ -2423,6 +2424,8 @@ describe("MCP controller profile", () => {
       const blocker = await jsonTool(ctx, "run_check", {
         check_id: "blocker",
         request_id: "verification-blocker",
+        issue_id: created.value.id,
+        task_id: "T1",
       });
       expect(typeof blocker.value.processId === "string" || blocker.value.completed === true).toBe(true);
 

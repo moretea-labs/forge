@@ -106,7 +106,7 @@ describe('handoff and facade contracts', () => {
     ).toMatchObject({ mode: 'handoff_only', createHandoff: true, createWorkContract: false });
   });
 
-  test('selects goal workloop for long-running or complex work', () => {
+  test('keeps long-running checks direct unless continuity is explicitly required', () => {
     expect(
       selectExecutionMode({
         scopeClear: true,
@@ -118,7 +118,7 @@ describe('handoff and facade contracts', () => {
         requiresExternalEffect: false,
         requiresApproval: false,
       }),
-    ).toMatchObject({ mode: 'goal_workloop', createWorkContract: true });
+    ).toMatchObject({ mode: 'direct_control', createWorkContract: false });
   });
 
   test('selects handoff only for high-risk work needing approval', () => {

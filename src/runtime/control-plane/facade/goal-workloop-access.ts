@@ -139,6 +139,7 @@ export function runGoalWorkloop(
     objective: String(args.objective ?? ''),
     acceptanceCriteria: Array.isArray(args.acceptance_criteria) ? args.acceptance_criteria.map(String) : undefined,
     allowedPaths: Array.isArray(args.allowed_paths) ? args.allowed_paths.map(String) : undefined,
+    initialLikelyPaths: Array.isArray(args.initial_likely_paths) ? args.initial_likely_paths.map(String) : undefined,
     forbiddenPaths: Array.isArray(args.forbidden_paths) ? args.forbidden_paths.map(String) : undefined,
     checks: Array.isArray(args.check_ids) ? args.check_ids.map(String) : undefined,
     constraints,

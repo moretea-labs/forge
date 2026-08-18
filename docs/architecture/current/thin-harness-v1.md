@@ -54,7 +54,7 @@ interface ExecutionDecision {
 The sole Route Policy exposes three task-shape tiers. These are routing labels over existing execution primitives, not separate engines:
 
 1. **Direct** — `direct_edit` + `direct_control` + `fast`. Use for small, scope-clear, low-risk work. Readonly work creates no Work; small mutations may retain lightweight Work lineage without Issue, Plan, or isolated worktree by default.
-2. **Bounded Work** — `bounded_work` + `goal_workloop` + `durable`. Use for one-owner work that needs investigation, recovery, isolation, protected-path handling, or broader bounded scope. It uses the existing WorkContract / `rh_work` lifecycle and does **not** require an Issue or Plan.
+2. **Bounded Work** — `bounded_work` + `goal_workloop` + `durable`. Use for one-owner work that genuinely needs continuity, recovery, isolation, protected-path handling, or durable orchestration. Investigation and broad predicted scope expand `rh_context`; they do not create Work by themselves. It uses the existing WorkContract / `rh_work` lifecycle and does **not** require an Issue or Plan.
 3. **Coordinated durable Work** — `bounded_work` + `goal_workloop` + `durable`. Use when multiple independent deliverables need resumable coordination; decompose them with PlanContract/Work instead of a separate project-level lifecycle.
 
 `quick_agent` and `issue_task` remain executor/delegation-oriented modes when an Agent is explicitly requested. Provider choice never promotes a small task into a heavier lifecycle by itself. An explicit approved Plan may bind dependent Work steps, but Plan is optional for ordinary Bounded Work.

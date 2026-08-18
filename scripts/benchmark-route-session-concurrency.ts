@@ -200,10 +200,11 @@ async function main(): Promise<void> {
         const timing = phases();
         const started = performance.now();
         const projectionStarted = performance.now();
-        const value = await callRuntimeTool(first.context, 'controller_context_pack', {
+        const value = await callRuntimeTool(first.context, 'rh_context', {
           repo_id: first.repository.repoId,
-          variant: 'summary',
-          force_refresh: true,
+          operation: 'search',
+          query: 'benchmark repository context cold read',
+          structural_context: 'off',
         });
         timing.projectionMs = elapsed(projectionStarted);
         timing.gitObservationMs = timing.projectionMs;
@@ -218,9 +219,11 @@ async function main(): Promise<void> {
         const timing = phases();
         const started = performance.now();
         const projectionStarted = performance.now();
-        const value = await callRuntimeTool(first.context, 'controller_context_pack', {
+        const value = await callRuntimeTool(first.context, 'rh_context', {
           repo_id: first.repository.repoId,
-          variant: 'summary',
+          operation: 'search',
+          query: 'benchmark repository context cold read',
+          structural_context: 'off',
         });
         timing.projectionMs = elapsed(projectionStarted);
         const serializationStarted = performance.now();

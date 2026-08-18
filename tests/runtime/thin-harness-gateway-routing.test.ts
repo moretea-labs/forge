@@ -20,7 +20,7 @@ import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { callProcessTool } from '../../src/runtime/gateway/mcp/process-tools';
 import { classifyRepositoryCommand } from '../../src/cli/repositories/command-classifier';
-import { classifyRepositoryCommandRoute } from '../../src/runtime/execution/process-runtime/command-facade';
+import { classifyRepositoryCommandRoute, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { assessWorkMode } from '../../src/cli/controller/work-mode';
 import { routeExecution, isFastEligibleTool } from '../../src/runtime/execution/thin-harness';
 import { getProcessRecord, listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
@@ -142,12 +142,13 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     for (const [name, args, expected] of cases) expect(classifyGatewayExecutionPath(name, args).path).toBe(expected);
   });
 
-  test('registered async command returns one idempotent Process handle without retired jobs', async () => {
+  test('registered async command returns one idempotent lightweight handle without durable state', async () => {
     const fx = fixture(); roots.push(fx.root);
     const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
     const localBefore = listLocalBridgeJobSnapshots(fx.repoRoot).length;
     const processesBefore = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
-    const args = { repo_id: fx.repository.repoId, command: ['bun', '-e', 'await Bun.sleep(250); console.log("async-ok")'], apply_mode: 'async', timeout_ms: 5_000, request_id: 'registered-async-process' } as const;
+    writeFileSync(join(fx.repoRoot, 'async-fixture.mjs'), 'setTimeout(() => { console.log("async-ok"); process.exit(0); }, 250);\n');
+    const args = { repo_id: fx.repository.repoId, command: [process.execPath, 'async-fixture.mjs'], apply_mode: 'async', timeout_ms: 5_000, request_id: 'registered-async-process' } as const;
     const first = await callRepositoryTool(fx.controllerHome, 'repository_command_execute', args);
     const firstPayload = first?.structuredContent as Record<string, unknown>;
     expect(first?.isError).not.toBe(true); expect(firstPayload.path).toBe('process_managed'); expect(firstPayload.status).toBe('running');
@@ -156,8 +157,9 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect([sideEffects?.executionJobCount ?? 0, sideEffects?.localJobCount ?? 0, sideEffects?.workerSpawnCount ?? 0]).toEqual([0, 0, 0]);
     const retry = await callRepositoryTool(fx.controllerHome, 'repository_command_execute', args);
     expect(retry?.isError).not.toBe(true); expect(String((retry?.structuredContent as Record<string, unknown>).processId ?? '')).toBe(processId);
-    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore + 1);
-    const terminal = await waitForProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 10_000 });
+    expect(processId).toStartWith('lightweight:');
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore);
+    const terminal = await waitRepositoryCommandProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 10_000 });
     expect(terminal).toMatchObject({ completed: true, ok: true }); expect(terminal.stdout).toContain('async-ok');
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore); expect(listLocalBridgeJobSnapshots(fx.repoRoot).length).toBe(localBefore);
   });
@@ -1182,8 +1184,14 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       confirmation: 'strong_confirmation',
     });
     expect(classifyRepositoryCommandRoute(['git', 'status', '--short']).route).toBe('process_direct');
-    expect(classifyRepositoryCommandRoute(['git', 'branch', 'feature-x']).route).toBe('process_managed');
-    expect(classifyRepositoryCommandRoute(['git', 'reset', '--hard', 'HEAD']).route).toBe('process_managed');
+    expect(classifyRepositoryCommandRoute(['git', 'branch', 'feature-x'])).toEqual({
+      route: 'process_direct',
+      reason: 'ephemeral_local_workspace_mutation',
+    });
+    expect(classifyRepositoryCommandRoute(['git', 'reset', '--hard', 'HEAD'])).toEqual({
+      route: 'durable',
+      reason: 'explicit_external_destructive',
+    });
   });
 
   test('small multi-file work stays direct while independent deliverables use durable bounded Work', () => {
@@ -1217,14 +1225,14 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(delegated.executionPath).toBe('durable');
   });
 
-  test('keeps bounded Work agent-free and reserves Agent modes for explicit opt-in', () => {
+  test('keeps size-only work direct and reserves Agent modes for explicit opt-in', () => {
     const medium = assessWorkMode({
       description: 'Implement a broad but bounded refactor directly',
       expectedFiles: 10,
       expectedChangedLines: 1_500,
     });
-    expect(medium.recommendedMode).toBe('bounded_work');
-    expect(medium.executionPath).toBe('durable');
+    expect(medium.recommendedMode).toBe('direct_edit');
+    expect(medium.executionPath).toBe('fast');
     expect(medium.issueRequired).toBe(false);
 
     const explicitQuickAgent = assessWorkMode({
@@ -1240,8 +1248,8 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       expectedFiles: 20,
       expectedChangedLines: 3_000,
     });
-    expect(broad.recommendedMode).toBe('bounded_work');
-    expect(broad.executionPath).toBe('durable');
+    expect(broad.recommendedMode).toBe('direct_edit');
+    expect(broad.executionPath).toBe('fast');
     expect(broad.issueRequired).toBe(false);
     expect(broad.nextTools).not.toContain('dispatch_task');
 
@@ -1269,7 +1277,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       },
     });
     expect(directResponse?.isError).not.toBe(true);
-    expect((directResponse?.structuredContent as { assessment: { recommendedMode: string } }).assessment.recommendedMode).toBe('bounded_work');
+    expect((directResponse?.structuredContent as { assessment: { recommendedMode: string } }).assessment.recommendedMode).toBe('direct_edit');
 
     const agentResponse = await callRepositoryTool(fx.controllerHome, 'repository_workbench', {
       repo_id: fx.repository.repoId,

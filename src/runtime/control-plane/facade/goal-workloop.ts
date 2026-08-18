@@ -10,6 +10,7 @@ import {
   createWorkContract,
   getWorkContract,
   listWorkContracts,
+  recordWorkScopeEvidence,
   summarizeWorkContract,
   transitionWorkContractPhase,
   updateWorkContract,
@@ -68,6 +69,8 @@ export interface GoalWorkloopStartInput {
   objective: string;
   acceptanceCriteria?: string[];
   allowedPaths?: string[];
+  /** Non-authoritative first-pass discovery candidates. */
+  initialLikelyPaths?: string[];
   forbiddenPaths?: string[];
   checks?: string[];
   constraints?: WorkContract['constraints'];
@@ -88,6 +91,8 @@ export interface GoalWorkloopStartInput {
 export interface GoalWorkloopContinueInput {
   workId: string;
   note?: string;
+  additionalLikelyPaths?: string[];
+  inspectedPaths?: string[];
 }
 
 export interface GoalWorkloopVerifyInput {
@@ -629,7 +634,7 @@ export function startGoalWorkloop(
     }
     if (requestedRelation === 'extend' && deterministicTarget.planId) {
       return resolutionRequired(
-        `PLAN_EXTENSION_REQUIRES_REPLAN: Work ${deterministicTarget.workId} is governed by Plan ${deterministicTarget.planId}; extend the authoritative Plan/Requirement before continuing rather than silently widening Work scope.`,
+        `PLAN_EXTENSION_REQUIRES_REPLAN: Work ${deterministicTarget.workId} is governed by Plan ${deterministicTarget.planId}; record additional discovery in scopeEvidence, but update the authoritative Plan before widening policy or acceptance scope.`,
         deterministicTarget,
       );
     }
@@ -639,6 +644,15 @@ export function startGoalWorkloop(
           allowedPaths: [...new Set([...deterministicTarget.allowedPaths, ...(input.allowedPaths ?? [])])].slice(0, 50),
           forbiddenPaths: [...new Set([...deterministicTarget.forbiddenPaths, ...(input.forbiddenPaths ?? [])])].slice(0, 50),
           checks: [...new Set([...deterministicTarget.checks, ...normalized.validCheckIds])].slice(0, 30),
+          scopeEvidence: {
+            initialLikelyPaths: [...new Set([
+              ...(deterministicTarget.scopeEvidence?.initialLikelyPaths ?? deterministicTarget.allowedPaths),
+              ...(input.initialLikelyPaths ?? input.allowedPaths ?? []),
+            ])].slice(0, 100),
+            inspectedPaths: deterministicTarget.scopeEvidence?.inspectedPaths ?? [],
+            actualChangedPaths: deterministicTarget.scopeEvidence?.actualChangedPaths ?? [],
+            recordedAt: at,
+          },
           scopeSummary: `Extended serially: ${input.objective}`.slice(0, 500),
           continuationPrompt: `Continue work ${ctx.repoId}: ${deterministicTarget.objective.slice(0, 160)}. Additional requested scope: ${input.objective.slice(0, 500)}`,
         })
@@ -758,6 +772,12 @@ export function startGoalWorkloop(
     planStepId: input.planStepId,
     planSourceRevision: input.planId ? ctx.sourceRevision : undefined,
     scopeSummary: input.modeInput.scopeClear ? 'scope declared at start' : 'scope incomplete',
+    scopeEvidence: {
+      initialLikelyPaths: [...new Set(input.initialLikelyPaths ?? effectiveAllowedPaths)].slice(0, 100),
+      inspectedPaths: [],
+      actualChangedPaths: [],
+      recordedAt: at,
+    },
     allowedPaths: effectiveAllowedPaths,
     forbiddenPaths: effectiveForbiddenPaths,
     checks: normalized.validCheckIds,
@@ -834,7 +854,7 @@ export function startGoalWorkloop(
 }
 
 export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopContinueInput): FacadeResult {
-  const work = getWorkContract(ctx.workStore, input.workId);
+  let work = getWorkContract(ctx.workStore, input.workId);
   if (!work) {
     return buildFacadeResult({
       status: 'not_found',
@@ -858,6 +878,13 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
           risk: 'readonly',
         },
       ],
+    });
+  }
+
+  if ((input.additionalLikelyPaths?.length ?? 0) > 0 || (input.inspectedPaths?.length ?? 0) > 0) {
+    work = recordWorkScopeEvidence(ctx.workStore, work.workId, {
+      initialLikelyPaths: input.additionalLikelyPaths,
+      inspectedPaths: input.inspectedPaths,
     });
   }
 
@@ -1438,6 +1465,7 @@ export function runGoalWorkloop(
         objective: String(args.objective ?? ''),
         acceptanceCriteria: Array.isArray(args.acceptance_criteria) ? args.acceptance_criteria.map(String) : undefined,
         allowedPaths: Array.isArray(args.allowed_paths) ? args.allowed_paths.map(String) : undefined,
+        initialLikelyPaths: Array.isArray(args.initial_likely_paths) ? args.initial_likely_paths.map(String) : undefined,
         forbiddenPaths: Array.isArray(args.forbidden_paths) ? args.forbidden_paths.map(String) : undefined,
         checks: Array.isArray(args.check_ids) ? args.check_ids.map(String) : undefined,
         modeInput: {
@@ -1474,6 +1502,8 @@ export function runGoalWorkloop(
       return continueGoalWorkloop(ctx, {
         workId: String(args.work_id ?? ''),
         note: typeof args.note === 'string' ? args.note : undefined,
+        additionalLikelyPaths: Array.isArray(args.additional_likely_paths) ? args.additional_likely_paths.map(String) : undefined,
+        inspectedPaths: Array.isArray(args.inspected_paths) ? args.inspected_paths.map(String) : undefined,
       });
     case 'verify':
       return verifyGoalWorkloop(ctx, {

@@ -15,8 +15,10 @@ import {
   REPOSITORY_COMMAND_MAX_TIMEOUT_MS,
   REPOSITORY_COMMAND_MIN_TIMEOUT_MS} from '../../src/cli/repositories/command-executor';
 import { registerRepository } from '../../src/cli/repositories/registry';
+import { persistControllerAccessMode } from '../../src/cli/mcp/access-mode';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
-import { classifyRepositoryCommandRoute, executeRepositoryCommandViaProcessRuntime } from '../../src/runtime/execution/process-runtime/command-facade';
+import { classifyRepositoryCommandRoute, executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
+import { listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { getExecutionJob, updateExecutionJob } from '../../src/runtime/execution/jobs/store';
 import { waitForExecutionJob } from '../../src/runtime/execution/jobs/wait';
 import { executeExecutionJob } from '../../src/runtime/execution/workers/executor';
@@ -140,7 +142,12 @@ describe('repository command execution lifecycle', () => {
         executionIdentity: executionIdentityForRepository(repository),
       });
       expect(shellForm.process).toBeDefined();
-      expect(shellForm.process?.stderr).toContain('runtime-authority@runtime-fence');
+      expect(shellForm.process?.completed).toBe(true);
+      expect(shellForm.process?.ok).toBe(true);
+      expect(shellForm.process?.processId).toStartWith('lightweight:');
+      expect(shellForm.process?.stderr).not.toContain('runtime-authority@runtime-fence');
+      expect(shellForm.executionMetrics).toMatchObject({ lane: 'lightweight_managed', durableWrites: 0, leaseOperations: 0 });
+      expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
     } finally {
       owner.release();
     }
@@ -157,31 +164,77 @@ describe('repository command execution lifecycle', () => {
     });
     expect(classifyRepositoryCommandRoute(['bash', '-lc', 'curl -fsS http://127.0.0.1:8765/ready > marker.txt'])).toEqual({
       route: 'process_managed',
-      reason: 'local_workspace_mutation',
+      reason: 'shell_wrapper_requires_managed_boundary',
     });
     expect(classifyRepositoryCommandRoute(['bash', '-lc', 'curl -fsS -X POST http://127.0.0.1:8765/ready'])).toEqual({
       route: 'process_managed',
-      reason: 'local_workspace_mutation',
+      reason: 'shell_wrapper_requires_managed_boundary',
     });
     expect(classifyRepositoryCommandRoute(['bash', '-lc', 'curl -fsS -d payload http://127.0.0.1:8765/ready'])).toEqual({
       route: 'process_managed',
-      reason: 'local_workspace_mutation',
+      reason: 'shell_wrapper_requires_managed_boundary',
     });
     expect(classifyRepositoryCommandRoute(['bash', '-lc', 'curl -fsS https://example.com/'])).toEqual({
       route: 'process_managed',
-      reason: 'local_workspace_mutation',
+      reason: 'shell_wrapper_requires_managed_boundary',
     });
     expect(classifyRepositoryCommandRoute(['bun', '-e', 'await fetch("http://127.0.0.1:8765/ready")'])).toEqual({
       route: 'process_managed',
-      reason: 'local_workspace_mutation',
+      reason: 'inline_interpreter_requires_managed_boundary',
     });
   });
 
-  test('mutating commands remain on the managed Process Runtime route', () => {
+  test('ordinary local mutations remain on the ephemeral lane', () => {
     expect(classifyRepositoryCommandRoute(['touch', 'marker.txt'])).toEqual({
-      route: 'process_managed',
-      reason: 'local_workspace_mutation',
+      route: 'process_direct',
+      reason: 'ephemeral_local_workspace_mutation',
     });
+  });
+
+  test('long ordinary local command upgrades only to an in-memory lightweight handle', async () => {
+    const controllerHome = tempRoot('forge-cmd-light-home-');
+    const repoRoot = tempRoot('forge-cmd-light-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    writeFileSync(join(repoRoot, 'slow-command.mjs'), 'setTimeout(() => { console.log("lightweight-ok"); process.exit(0); }, 300);\n');
+    const processCount = listProcessRecords(controllerHome, repository.repoId).length;
+    const result = await executeRepositoryCommandViaProcessRuntime({
+      controllerHome,
+      repository,
+      command: [process.execPath, 'slow-command.mjs'],
+      timeoutMs: 10_000,
+      returnHandleImmediately: true,
+      requestId: 'lightweight-command',
+      executionIdentity: executionIdentityForRepository(repository),
+    });
+    expect(result.route).toBe('process_managed');
+    expect(result.process?.processId).toStartWith('lightweight:');
+    expect(result.executionMetrics).toMatchObject({ lane: 'lightweight_managed', durableWrites: 0, leaseOperations: 0 });
+    expect(listProcessRecords(controllerHome, repository.repoId)).toHaveLength(processCount);
+    expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
+    const terminal = await waitRepositoryCommandProcess(controllerHome, repository.repoId, result.process!.processId, { timeoutMs: 10_000 });
+    expect(terminal).toMatchObject({ completed: true, ok: true });
+    expect(terminal.stdout).toContain('lightweight-ok');
+  });
+
+  test('remote and destructive commands stop at a never-auto-replay boundary', async () => {
+    const controllerHome = tempRoot('forge-cmd-external-home-');
+    const repoRoot = tempRoot('forge-cmd-external-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    const result = await executeRepositoryCommandViaProcessRuntime({
+      controllerHome,
+      repository,
+      command: ['git', 'push', 'origin', 'main'],
+      executionIdentity: executionIdentityForRepository(repository),
+    });
+    expect(result).toMatchObject({
+      route: 'durable',
+      externalEffect: { outcome: 'not_started', replayPolicy: 'never_auto_retry' },
+      executionMetrics: { lane: 'durable_external', durableWrites: 0, leaseOperations: 0 },
+    });
+    expect(result.externalEffect?.reconciliation).toContain('outcome_unknown');
+    expect(listProcessRecords(controllerHome, repository.repoId)).toHaveLength(0);
+    expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
   });
 
 });

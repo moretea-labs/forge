@@ -8,7 +8,7 @@ import { applyEditOperations, beginEditSession, finalizeEditSession } from '../.
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { routeWorkStart } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { approvePlanContract, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
-import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, recordWorkScopeEvidence } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { selectExecutionMode } from '../../src/runtime/control-plane/facade/types';
 import { routeExecutor } from '../../src/runtime/control-plane/goal-loop/executor-router';
 import { decideRoute, type RoutePolicyInput } from '../../src/runtime/control-plane/routing/route-policy';
@@ -147,6 +147,32 @@ describe('single Route Policy authority', () => {
     }));
     expect(decision).toMatchObject({ executionMode: 'direct_control', workMode: 'direct_edit', executionPath: 'fast', requiresWork: false, requiresIsolation: false });
   });
+  test('never promotes a single deliverable from predicted file or line count alone', () => {
+    const decision = decideRoute(sharedInput({
+      intent: {
+        objective: 'Refactor one large but continuously owned subsystem',
+        scopeClear: true,
+        mutation: true,
+        expectedFiles: 80,
+        expectedChangedLines: 12_000,
+        requiresInvestigation: true,
+      },
+      workspace: { knownPaths: [], checkoutId: 'checkout-a', fingerprint: 'workspace-a' },
+    }));
+    expect(decision).toMatchObject({ executionMode: 'direct_control', workMode: 'direct_edit', executionPath: 'fast', requiresWork: false });
+  });
+  test('never promotes ordinary long checks from duration alone', () => {
+    const decision = decideRoute(sharedInput({
+      intent: {
+        objective: 'Run the focused integration check after one local edit',
+        scopeClear: true,
+        mutation: true,
+        requiresLongRunningChecks: true,
+      },
+    }));
+    expect(decision).toMatchObject({ executionMode: 'direct_control', workMode: 'direct_edit', executionPath: 'fast', requiresWork: false, requiresRecovery: false });
+    expect(decision.reasons).toContainEqual(expect.objectContaining({ code: 'long_checks' }));
+  });
   test('parallelism alone never implies isolation', () => {
     const readonly = decideRoute(sharedInput({
       intent: { objective: 'Search several independent areas in the same checkout', scopeClear: true, mutation: false, requiresParallelism: true },
@@ -164,7 +190,7 @@ describe('single Route Policy authority', () => {
     const expected = {
       direct: { workMode: 'direct_edit', executionPath: 'fast', mutationPhase: 'execute', structuralContext: 'off' },
       plan: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'plan_only', structuralContext: 'required' },
-      debug: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'diagnose_first', structuralContext: 'required' },
+      debug: { workMode: 'direct_edit', executionPath: 'fast', mutationPhase: 'diagnose_first', structuralContext: 'required' },
       review: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'read_only', structuralContext: 'off' },
       release: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'release_gate', structuralContext: 'off' },
       scale: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'benchmark', structuralContext: 'off' },
@@ -350,6 +376,31 @@ describe('single Route Policy authority', () => {
     expect(resumed.status).toBe('ok');
     expect(resumed.summary).toContain('PLAN_STEP_REUSES_ACTIVE_WORK');
     expect(resumed.data).toMatchObject({ workContractCreated: false, admissionDecision: 'reuse_existing', work: { workId } });
+  });
+  test('keeps predicted, inspected, and actual scope evidence separate from policy fences', () => {
+    const root = temp('route-scope-evidence-');
+    const store = { root: join(root, 'work') };
+    createWorkContract(store, {
+      workId: 'WORK-scope', repoId: 'repo-a', mode: 'goal_workloop', objective: 'Discover and edit the correct runtime paths',
+      acceptanceCriteria: [], constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: ['src/runtime/**'], forbiddenPaths: ['src/runtime/secrets/**'], checks: [], requestedBy: 'chatgpt',
+      scopeEvidence: {
+        initialLikelyPaths: ['src/runtime/first.ts'], inspectedPaths: [], actualChangedPaths: [], recordedAt: '2026-08-18T00:00:00.000Z',
+      },
+    });
+    recordWorkScopeEvidence(store, 'WORK-scope', {
+      inspectedPaths: ['src/runtime/first.ts', 'src/runtime/related.ts'],
+      actualChangedPaths: ['src/runtime/related.ts'],
+    });
+    expect(getWorkContract(store, 'WORK-scope')).toMatchObject({
+      allowedPaths: ['src/runtime/**'],
+      forbiddenPaths: ['src/runtime/secrets/**'],
+      scopeEvidence: {
+        initialLikelyPaths: ['src/runtime/first.ts'],
+        inspectedPaths: ['src/runtime/first.ts', 'src/runtime/related.ts'],
+        actualChangedPaths: ['src/runtime/related.ts'],
+      },
+    });
   });
   test('does not let missing Plan bypass policy, destructive, or remote-write approval', () => {
     expect(decideRoute(sharedInput({

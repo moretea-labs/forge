@@ -476,6 +476,18 @@ export interface WorkContract {
   planStepId?: string;
   planSourceRevision?: string;
   scopeSummary?: string;
+  /**
+   * Discovery evidence, never an authorization boundary. Initial guesses,
+   * inspected paths, and observed changes remain distinct so early retrieval
+   * cannot masquerade as complete implementation scope.
+   */
+  scopeEvidence?: {
+    initialLikelyPaths: string[];
+    inspectedPaths: string[];
+    actualChangedPaths: string[];
+    recordedAt: string;
+  };
+  /** Explicit policy fence. This is not semantic completeness evidence. */
   allowedPaths: string[];
   forbiddenPaths: string[];
   checks: string[];

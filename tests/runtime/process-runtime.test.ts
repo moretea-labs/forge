@@ -26,9 +26,10 @@ import {
   runCheckViaProcessRuntime,
   spawnManagedProcess,
   tryCompleteProcessRecord,
+  waitForCheckProcess,
   waitForProcess,
 } from '../../src/runtime/execution/process-runtime';
-import { createProcessRecord, updateProcessRecord } from '../../src/runtime/execution/process-runtime/store';
+import { createProcessRecord, listProcessRecords, updateProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import {
   claimRunnerStarted,
   runProcessRunnerFromDescriptor,
@@ -962,8 +963,9 @@ describe('run_check Process Runtime facade', () => {
     expect(result.durableSideEffects.workerSpawnCount).toBe(0);
   });
 
-  test('long check returns managed handle for same process', async () => {
+  test('ordinary long check returns an in-memory lightweight handle without Process or Lease state', async () => {
     const fx = fixture();
+    const before = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
     const result = await runCheckViaProcessRuntime({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
@@ -974,13 +976,17 @@ describe('run_check Process Runtime facade', () => {
       executionIdentity: executionIdentityForRepository(fx.repository),
     });
     expect(result.mode).toBe('managed');
-    expect(result.process?.completed).toBe(false);
-    const processId = result.process!.processId;
-    const waited = await waitForProcess(fx.controllerHome, fx.repository.repoId, processId, {
-      timeoutMs: 10_000,
-    });
-    expect(waited.processId).toBe(processId);
-    expect(waited.completed).toBe(true);
+    expect(result.process).toMatchObject({ completed: false, route: 'managed' });
+    expect(result.process?.processId).toStartWith('lightweight:');
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId)).toHaveLength(before);
+    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toHaveLength(0);
+    const terminal = await waitForCheckProcess(
+      fx.controllerHome,
+      fx.repository.repoId,
+      result.process!.processId,
+      5_000,
+    );
+    expect(terminal).toMatchObject({ completed: true, ok: true, route: 'direct' });
   });
 
   test('gateway classifies ordinary run_check as fast process path', () => {
@@ -1068,7 +1074,7 @@ describe('command classifier safe shell combinations', () => {
     expect(classifyRepositoryCommand(['bash', '-lc', "python3 - <<'PY'\nprint('read only')\nPY"]).risk).toBe('workspace_write');
   });
 
-  test('routes only CodeGraph status as a readonly observation', () => { const status = ['node_modules/.bin/codegraph', 'status', '.']; expect(classifyRepositoryCommand(status).risk).toBe('readonly'); expect(classifyRepositoryCommand('node_modules/.bin/codegraph status .').risk).toBe('readonly'); expect(classifyRepositoryCommandRoute(status)).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' }); for (const subcommand of ['init', 'sync']) { const mutation = ['node_modules/.bin/codegraph', subcommand, '.']; expect(classifyRepositoryCommand(mutation).risk).toBe('workspace_write'); expect(classifyRepositoryCommandRoute(mutation)).toEqual({ route: 'process_managed', reason: 'local_workspace_mutation' }); } });
+  test('routes only CodeGraph status as a readonly observation', () => { const status = ['node_modules/.bin/codegraph', 'status', '.']; expect(classifyRepositoryCommand(status).risk).toBe('readonly'); expect(classifyRepositoryCommand('node_modules/.bin/codegraph status .').risk).toBe('readonly'); expect(classifyRepositoryCommandRoute(status)).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' }); for (const subcommand of ['init', 'sync']) { const mutation = ['node_modules/.bin/codegraph', subcommand, '.']; expect(classifyRepositoryCommand(mutation).risk).toBe('workspace_write'); expect(classifyRepositoryCommandRoute(mutation)).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' }); } });
 
   test('recognizes common wrapped and host observation commands as readonly', () => {
     expect(classifyRepositoryCommand(['git', 'check-ignore', '-q', '.codegraph']).risk).toBe('readonly');

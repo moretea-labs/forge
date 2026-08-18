@@ -1,9 +1,11 @@
 /**
- * repository_command_execute → Unified Process Runtime.
+ * repository_command_execute → three explicit execution lanes.
  *
- * Short readonly / focused commands: Direct (wait briefly, return result).
- * Longer local build/test: Managed (same spawn, return handle).
- * release / remote / non-idempotent: Durable (caller keeps ExecutionJob path).
+ * - Ephemeral Direct: bounded ordinary reads and commands that finish inside
+ *   the interactive budget.
+ * - Lightweight Managed: the same local command remains alive in memory and
+ *   returns a bounded handle, without SQLite, Lease, or recovery membership.
+ * - Durable: explicit Work/external/release boundaries only.
  */
 
 import type { RepositoryRecord } from '../../../cli/repositories/types';
@@ -31,6 +33,14 @@ import { DEFAULT_INTERACTIVE_WAIT_MS } from './types';
 import { durationAwareInteractiveWaitMs } from './interactive-admission';
 import { isFocusedCheckCommand } from '../thin-harness/execution-router';
 import { assertExecutionIdentity, type ResolvedExecutionIdentity } from '../../control-plane/execution/execution-identity';
+import {
+  cancelLightweightProcess,
+  getLightweightProcessHandle,
+  isLightweightProcessId,
+  readLightweightProcessLogs,
+  startLightweightRepositoryCommand,
+  waitForLightweightProcess,
+} from './lightweight-managed';
 
 export type RepositoryCommandRoute =
   | 'process_direct'
@@ -80,6 +90,19 @@ export interface RepositoryCommandProcessResult {
     projectionUpdateCount: number;
   };
   suggestedOperation?: string;
+  externalEffect?: {
+    outcome: 'not_started' | 'outcome_unknown';
+    replayPolicy: 'never_auto_retry';
+    reconciliation: string;
+  };
+  executionMetrics?: {
+    lane: 'ephemeral_direct' | 'lightweight_managed' | 'durable_process' | 'durable_external';
+    preSpawnHarnessMs?: number;
+    childDurationMs?: number;
+    interactiveReturnMs?: number;
+    durableWrites: number;
+    leaseOperations: number;
+  };
 }
 
 const emptyEffects = {
@@ -113,6 +136,7 @@ export function classifyRepositoryCommandRoute(
   command: string | readonly string[],
   options: {
     forceDurable?: boolean;
+    forceManaged?: boolean;
     defaultBranch?: string;
     timeoutMs?: number;
   } = {},
@@ -121,33 +145,43 @@ export function classifyRepositoryCommandRoute(
     return { route: 'durable', reason: 'force_durable_or_async' };
   }
   const classification = classifyRepositoryCommand(command, options.defaultBranch);
-  // ExecutionJobs are retired. Authorized local destructive/remote-risk commands
-  // still execute through Process Runtime; SuperController owns retry/replay policy.
+  const text = Array.isArray(command) ? command.join(' ') : String(command);
+  // External, destructive, release, and non-idempotent remote effects are an
+  // explicit durable boundary. They never enter an ordinary Process route that
+  // a caller could mistake for safely replayable local execution.
   if (classification.risk === 'remote_write' || classification.risk === 'destructive') {
     return {
-      route: 'process_managed',
-      reason: `risk_${classification.risk}_via_process_runtime`,
+      route: 'durable',
+      reason: `explicit_external_${classification.risk}`,
     };
   }
   // release / rollback style commands
-  const text = Array.isArray(command) ? command.join(' ') : String(command);
   if (/\b(?:gh\s+release\s+(?:create|delete|edit|upload)|git\s+push|npm\s+publish)\b/i.test(text)) {
     return { route: 'durable', reason: 'release_or_remote_mutation' };
   }
+  const argv = Array.isArray(command) ? command : [];
+  const executable = argv[0]?.split(/[\\/]/).pop()?.toLowerCase();
+  const shellWrapped = Boolean(executable
+    && ['bash', 'sh', 'zsh', 'fish', 'dash', 'cmd', 'powershell', 'pwsh'].includes(executable)
+    && argv.slice(1).some((arg) => ['-c', '-lc', '/c', '-Command'].includes(arg)));
+  if (shellWrapped && classification.risk !== 'readonly') {
+    return { route: 'process_managed', reason: 'shell_wrapper_requires_managed_boundary' };
+  }
+  if (executable && ['node', 'nodejs', 'bun', 'deno', 'ruby', 'perl', 'python', 'python3'].includes(executable)
+    && argv.slice(1).some((arg) => ['-c', '-e', '--eval'].includes(arg))) {
+    return { route: 'process_managed', reason: 'inline_interpreter_requires_managed_boundary' };
+  }
+  if (options.forceManaged) {
+    return { route: 'process_managed', reason: 'explicit_lightweight_handle' };
+  }
   if (classification.risk === 'readonly') {
-    // Short readonly → direct. Only an *explicit* long timeout upgrades to managed.
-    if (typeof options.timeoutMs === 'number' && options.timeoutMs > 30_000) {
-      return { route: 'process_managed', reason: 'readonly_long_timeout' };
-    }
     return { route: 'process_direct', reason: 'readonly_fast_path' };
   }
   // workspace_write / build-test
   if (isFocusedCheckCommand(command) || /\b(?:test|typecheck|lint|build|check)\b/i.test(text)) {
-    return { route: 'process_managed', reason: 'local_build_or_test' };
+    return { route: 'process_direct', reason: 'ephemeral_local_build_or_test' };
   }
-  // Unknown mutating local command remains one local Managed Process. Timeout is
-  // a process lifecycle budget and must never select a different architecture.
-  return { route: 'process_managed', reason: 'local_workspace_mutation' };
+  return { route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' };
 }
 
 /**
@@ -165,6 +199,9 @@ export async function executeRepositoryCommandViaProcessRuntime(
   assertRepositoryCommandNoPluginExecutionBypass(input.command);
   const decision = classifyRepositoryCommandRoute(input.command, {
     forceDurable: input.forceDurable,
+    // A Work binding is an actual durable workflow boundary. Merely asking for
+    // an async handle stays on the in-memory lightweight lane.
+    forceManaged: Boolean(input.workId),
     defaultBranch: input.repository.defaultBranch,
     timeoutMs: input.timeoutMs,
   });
@@ -175,6 +212,14 @@ export async function executeRepositoryCommandViaProcessRuntime(
       reason: decision.reason,
       durableSideEffects: emptyEffects,
       suggestedOperation: 'repository_command_execute via Durable Work / Local Job',
+      externalEffect: decision.route === 'durable'
+        ? {
+            outcome: 'not_started',
+            replayPolicy: 'never_auto_retry',
+            reconciliation: 'If a separate external controller later loses the result after dispatch, report outcome_unknown and inspect remote state before any retry.',
+          }
+        : undefined,
+      executionMetrics: { lane: 'durable_external', durableWrites: 0, leaseOperations: 0 },
     };
   }
 
@@ -201,12 +246,12 @@ export async function executeRepositoryCommandViaProcessRuntime(
     };
   }
 
-  // A short readonly command owns no durable Process/Lease state. Validate the
-  // same immutable repository identity first, then execute with the bounded
-  // non-persistent reader. This keeps reads available while a stale/passive
-  // Runtime remains correctly fenced from Controller writes.
+  // Ordinary local commands own no durable Process/Lease state. Validate the
+  // immutable repository identity first, then execute through the authorized
+  // non-persistent repository executor. Runtime/release durability is not a
+  // command-execution tax.
   const canonicalCommand = normalizeRepositoryCommand(input.command);
-  if (decision.route === 'process_direct' && canonicalCommand.kind === 'argv') {
+  if (decision.route === 'process_direct') {
     assertExecutionIdentity({
       controllerHome: input.controllerHome,
       identity: executionIdentity,
@@ -214,14 +259,50 @@ export async function executeRepositoryCommandViaProcessRuntime(
       requestedRepoId: input.repository.repoId,
       requestedCheckoutId: input.repository.activeCheckoutId,
     });
-    const direct = await executeRepositoryReadOnlyCommandDirect(input.repository, {
+    const directInput = {
       command: input.command,
       cwd: input.cwd,
-      timeoutMs: Math.min(input.timeoutMs ?? 30_000, 30_000),
+      timeoutMs: input.timeoutMs,
       maxOutputBytes: input.maxOutputBytes,
       signal: input.signal,
       allowNonGitWorkspace: executionIdentity.authority === 'ephemeral_workspace',
-    });
+    };
+    const readonly = canonicalCommand.kind === 'argv'
+      && classifyRepositoryCommand(input.command, input.repository.defaultBranch).risk === 'readonly';
+    if (!readonly) {
+      const interactiveWaitMs = durationAwareInteractiveWaitMs(
+        input.command,
+        input.returnHandleImmediately ? 0 : input.interactiveWaitMs,
+        Math.min(DEFAULT_INTERACTIVE_WAIT_MS, 250),
+      );
+      const timeoutMs = Math.max(
+        interactiveWaitMs + 1,
+        Math.min(input.timeoutMs ?? 15 * 60_000, 24 * 60 * 60_000),
+      );
+      const lightweight = await startLightweightRepositoryCommand({
+        controllerHome: input.controllerHome,
+        repository: input.repository,
+        execution: directInput,
+        interactiveWaitMs,
+        timeoutMs,
+        maxOutputBytes: input.maxOutputBytes,
+        workId: input.workId,
+        commandId: input.commandId ?? input.requestId,
+      });
+      const handle = lightweight.handle;
+      return {
+        route: handle.completed ? 'process_direct' : 'process_managed',
+        reason: handle.completed ? decision.reason : 'interactive_budget_exceeded_lightweight_handle',
+        process: handle,
+        ok: handle.ok,
+        exitCode: handle.exitCode,
+        stdout: handle.stdout,
+        stderr: handle.stderr,
+        durableSideEffects: emptyEffects,
+        executionMetrics: lightweight.metrics,
+      };
+    }
+    const direct = await executeRepositoryReadOnlyCommandDirect(input.repository, directInput);
     return {
       route: 'process_direct',
       reason: decision.reason,
@@ -234,6 +315,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
       authorizationDecision: direct.authorizationDecision,
       approvalRequestId: direct.approvalRequestId,
       durableSideEffects: emptyEffects,
+      executionMetrics: { lane: 'ephemeral_direct', durableWrites: 0, leaseOperations: 0 },
     };
   }
 
@@ -323,12 +405,49 @@ export async function executeRepositoryCommandViaProcessRuntime(
     stdout: handle.stdout,
     stderr: handle.stderr,
     durableSideEffects: handle.durableSideEffects,
+    executionMetrics: {
+      lane: 'durable_process',
+      interactiveReturnMs: interactiveWaitMs,
+      durableWrites: 1,
+      leaseOperations: claims.length,
+    },
   };
 }
 
-export {
-  getProcessHandle as getRepositoryCommandProcess,
-  waitForProcess as waitRepositoryCommandProcess,
-  cancelProcess as cancelRepositoryCommandProcess,
-  readProcessLogs as readRepositoryCommandProcessLogs,
-};
+export function getRepositoryCommandProcess(controllerHome: string, repoId: string, processId: string): ProcessHandle | undefined {
+  return isLightweightProcessId(processId)
+    ? getLightweightProcessHandle(repoId, processId)
+    : getProcessHandle(controllerHome, repoId, processId);
+}
+
+export function waitRepositoryCommandProcess(
+  controllerHome: string,
+  repoId: string,
+  processId: string,
+  options?: Parameters<typeof waitForProcess>[3],
+): Promise<ProcessHandle> {
+  return isLightweightProcessId(processId)
+    ? waitForLightweightProcess(repoId, processId, options)
+    : waitForProcess(controllerHome, repoId, processId, options);
+}
+
+export function cancelRepositoryCommandProcess(
+  controllerHome: string,
+  repoId: string,
+  processId: string,
+): Promise<ProcessHandle> {
+  return isLightweightProcessId(processId)
+    ? cancelLightweightProcess(repoId, processId)
+    : cancelProcess(controllerHome, repoId, processId);
+}
+
+export function readRepositoryCommandProcessLogs(
+  controllerHome: string,
+  repoId: string,
+  processId: string,
+  maxBytes?: number,
+) {
+  return isLightweightProcessId(processId)
+    ? readLightweightProcessLogs(repoId, processId, maxBytes)
+    : readProcessLogs(controllerHome, repoId, processId, maxBytes);
+}

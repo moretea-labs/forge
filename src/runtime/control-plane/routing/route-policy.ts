@@ -238,8 +238,6 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     ? false
     : input.recovery.isolationRequired === true || explicitParallelMode;
   const requiresRecovery = input.recovery.required === true
-    || input.intent.requiresLongRunningChecks === true
-    || explicitMode === 'debug'
     || explicitMode === 'release'
     || explicitMode === 'scale';
   const coordinationRequired = explicitParallelMode || input.intent.requiresIndependentDeliverables === true
@@ -301,13 +299,12 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
   if (protectedPath) reasons.push({ code: 'protected_path', message: 'The predicted scope includes a protected or release-sensitive path.' });
   if (requiresRecovery) reasons.push({ code: 'recovery_required', message: 'The operation needs resumable Work and bounded recovery.' });
   if (requiresIsolation) reasons.push({ code: 'isolation_required', message: 'The operation requires an isolated checkout or serialized lane.' });
-  if (input.intent.requiresLongRunningChecks) reasons.push({ code: 'long_checks', message: 'Long-running checks require durable continuation.' });
+  if (input.intent.requiresLongRunningChecks) reasons.push({ code: 'long_checks', message: 'Long-running checks may use a lightweight handle; duration alone does not require durable Work.' });
   if (input.intent.requiresInvestigation) reasons.push({ code: 'investigation', message: 'Investigation is required before or during implementation.' });
   if (input.intent.needsDependencies) reasons.push({ code: 'dependencies', message: 'Dependency ordering requires durable Work.' });
   if (coordinationRequired) reasons.push({ code: 'independent_deliverables', message: 'Multiple independent deliverables require durable PlanContract/Work coordination.' });
 
   const explicitBoundedMode = explicitMode === 'plan'
-    || explicitMode === 'debug'
     || explicitMode === 'review'
     || explicitMode === 'release';
   const complex = explicitMode === 'direct'
@@ -323,8 +320,7 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     || protectedPath
     || destructive
     || remoteWrite
-    || secretAccess
-    || (mutation && (expectedFiles > 4 || expectedChangedLines > 200));
+    || secretAccess;
   const executionMode: RouteExecutionMode = complex ? 'goal_workloop' : 'direct_control';
   // Work topology is independent from executor/provider choice. Independent or
   // parallel deliverables stay in the durable Goal Workloop and are decomposed by

@@ -270,7 +270,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     cwd: { type: 'string', description: 'Optional root-relative working directory.' },
     workspace_root: { type: 'string', description: 'Absolute existing local directory used as an ephemeral execution root. Mutually exclusive with repo_id/checkout_id; does not register or initialize the directory.' },
   }, ['command'], true),
-  definition('repository_command_execute', 'Execute one real repository-scoped local command through Full Access, Goal delegation, or a resumable approval request. Use rh_context for routine code discovery/reading; shell rg/grep/sed/cat exploration is fallback-only. Legacy preview-token callers remain compatible.', {
+  definition('repository_command_execute', 'Execute one repository-scoped command through the thinnest eligible lane: ephemeral for ordinary local work, an in-memory lightweight handle when it outlives the interaction budget, or explicit Durable handling for Work/external/release effects. Lightweight handles have no SQLite, Lease, recovery, or replay membership. Use rh_context for routine code discovery/reading; shell exploration is fallback-only.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
     work_id: { type: 'string', description: 'Optional durable Work identity. Workflow controllers should pass the exact claimed Work id so attribution survives transient MCP transport sessions.' },
@@ -546,7 +546,7 @@ function fragmentedRepositoryExplorationGuidance(command: unknown): RepositoryEx
     code: 'FRAGMENTED_REPOSITORY_EXPLORATION',
     recommendedTool: 'rh_context',
     recommendedOperation: 'search',
-    message: `Detected ${readStepCount} chained repository read steps (${[...readPrograms].join(', ')}). Prefer one bounded rh_context search/context request; keep shell search as fallback when the Context Plane is insufficient.`,
+    message: `Detected ${readStepCount} chained repository read steps (${[...readPrograms].join(', ')}). Prefer a broad rh_context request first, then repeat rh_context with selected paths or relationships when more evidence can improve correctness; keep shell search as fallback when the Context Plane cannot supply the needed evidence.`,
   };
 }
 
@@ -1302,6 +1302,12 @@ export async function callRepositoryTool(
           routing: compactRoutingSummary({ path: 'durable', mode: 'durable', reasons: [routingDecision.reasons.join(','), 'local_bridge_execution_retired'] }),
           message: 'This command requires explicit external Controller handling; Local Bridge Jobs are retired for repository commands.',
           suggestedOperation: 'Create or claim WorkContract, then use rh_work.launcher_start or a Process Runtime-compatible command.',
+          externalEffect: {
+            outcome: 'not_started',
+            ambiguousFailureOutcome: 'outcome_unknown',
+            replayPolicy: 'never_auto_retry',
+            reconciliation: 'After an ambiguous dispatch failure, inspect the remote ref/registry/release state before deciding whether to retry.',
+          },
         });
       }
       case 'repository_batch_execute': {

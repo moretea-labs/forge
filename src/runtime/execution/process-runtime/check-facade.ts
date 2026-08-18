@@ -1,8 +1,9 @@
 /**
  * Lightweight run_check facade.
  *
- * Short checks complete via Process Runtime and return results directly.
- * Long checks return a Managed Process handle for the same OS process.
+ * Ordinary checks execute through an in-memory lightweight handle and return
+ * within the interactive budget without creating Process/Lease state. Checks
+ * with real Work/Edit/verification consumers keep persisted Process receipts.
  * Multi-phase and release checks require explicit external Controller handling.
  */
 
@@ -15,6 +16,12 @@ import {
 } from '../../../cli/controller/check-runner';
 import { claimsForCheck, scopeResourceClaims, toProcessClaims } from './resource-claims';
 import { spawnManagedProcess, waitForProcess, getProcessHandle } from './runtime';
+import {
+  getLightweightProcessHandle,
+  isLightweightProcessId,
+  startLightweightControllerCheck,
+  waitForLightweightProcess,
+} from './lightweight-managed';
 import type { ProcessHandle } from './types';
 import { DEFAULT_INTERACTIVE_WAIT_MS } from './types';
 import { durationAwareInteractiveWaitMs } from './interactive-admission';
@@ -145,8 +152,9 @@ export async function runCheckViaProcessRuntime(
     };
   }
 
-  // Most checks are builds/tests; return their existing Process handle at once.
-  // Only predictable shell primitives keep a short synchronous admission.
+  // The wait budget is an interaction preference, not a persistence reason.
+  // Ordinary checks stay in memory; only a real durable evidence consumer may
+  // allocate Process/Lease state.
   const interactiveWaitMs = durationAwareInteractiveWaitMs(
     check.command,
     input.interactiveWaitMs,
@@ -157,6 +165,14 @@ export async function runCheckViaProcessRuntime(
     typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)
       ? Math.max(1_000, Math.trunc(input.timeoutMs))
       : check.timeoutMs,
+  );
+  const durableVerificationBinding = Boolean(
+    input.workId
+    || input.verificationSnapshot
+    || input.verificationBinding?.executionSessionId
+    || input.verificationBinding?.editSessionId
+    || input.verificationBinding?.issueId
+    || input.verificationBinding?.taskId,
   );
   if (!input.executionIdentity) {
     throw new Error('EXECUTION_IDENTITY_REQUIRED: run_check requires an immutable executionIdentity');
@@ -171,6 +187,26 @@ export async function runCheckViaProcessRuntime(
     throw new Error(
       `CHECKOUT_ROUTE_MISMATCH: check checkout ${input.checkoutId} differs from identity ${executionIdentity.checkoutId}`,
     );
+  }
+  if (!durableVerificationBinding) {
+    const lightweight = await startLightweightControllerCheck({
+      repoId: input.repoId,
+      repoRoot: input.repoRoot,
+      checkId: input.checkId,
+      interactiveWaitMs,
+      timeoutMs,
+      workId: input.workId,
+      commandId: input.commandId ?? input.requestId,
+    });
+    const handle = lightweight.handle;
+    return {
+      mode: handle.completed ? 'direct' : 'managed',
+      checkId: input.checkId,
+      check,
+      process: handle,
+      ok: handle.completed ? handle.ok : undefined,
+      durableSideEffects: emptyEffects,
+    };
   }
   const claims = scopeResourceClaims(
     claimsForCheck(
@@ -254,6 +290,9 @@ export async function waitForCheckProcess(
   processId: string,
   timeoutMs?: number,
 ): Promise<ProcessHandle> {
+  if (isLightweightProcessId(processId)) {
+    return waitForLightweightProcess(repoId, processId, { timeoutMs });
+  }
   return waitForProcess(controllerHome, repoId, processId, { timeoutMs });
 }
 
@@ -262,6 +301,9 @@ export function getCheckProcessHandle(
   repoId: string,
   processId: string,
 ): ProcessHandle | undefined {
+  if (isLightweightProcessId(processId)) {
+    return getLightweightProcessHandle(repoId, processId);
+  }
   return getProcessHandle(controllerHome, repoId, processId);
 }
 

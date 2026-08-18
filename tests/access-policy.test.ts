@@ -220,6 +220,7 @@ describe('access-aware work routing', () => {
       expected_files: 5,
       expected_changed_lines: 250,
       scope_clear: true,
+      requires_recovery: true,
       constraints: { workspace_mode: 'current' },
       requested_by: 'user',
     });

@@ -84,6 +84,7 @@
     "check:design": "npx -y @google/design.md@0.4.0 lint DESIGN.md",
     "benchmark:skills": "bun scripts/run-skill-evals.ts",
     "benchmark:route-session-concurrency": "bun scripts/benchmark-route-session-concurrency.ts",
+    "benchmark:quality-harness": "bun scripts/benchmark-quality-harness.ts",
     "test": "bun scripts/test-governance.ts affected",
     "test:browser-live": "bun tests/live/browser-native-silent.e2e.ts",
     "test:core": "bun scripts/test-governance.ts core",

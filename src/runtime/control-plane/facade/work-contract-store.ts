@@ -585,6 +585,12 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       planStepId: input.planStepId,
       planSourceRevision: input.planSourceRevision,
       scopeSummary: input.scopeSummary?.slice(0, 1_000),
+      scopeEvidence: input.scopeEvidence ? {
+        initialLikelyPaths: [...new Set(input.scopeEvidence.initialLikelyPaths)].slice(0, 100),
+        inspectedPaths: [...new Set(input.scopeEvidence.inspectedPaths)].slice(0, 500),
+        actualChangedPaths: [...new Set(input.scopeEvidence.actualChangedPaths)].slice(0, 500),
+        recordedAt: input.scopeEvidence.recordedAt,
+      } : undefined,
       allowedPaths: (input.allowedPaths ?? []).slice(0, 50),
       forbiddenPaths: (input.forbiddenPaths ?? []).slice(0, 50),
       checks: (input.checks ?? []).slice(0, 30),
@@ -1044,6 +1050,27 @@ export function updateWorkContract(
   return updateWorkContractInternal(options, workId, patch, false);
 }
 
+/** Merge non-authoritative discovery/change evidence without changing policy fences. */
+export function recordWorkScopeEvidence(
+  options: WorkContractStoreOptions,
+  workId: string,
+  input: { initialLikelyPaths?: string[]; inspectedPaths?: string[]; actualChangedPaths?: string[] },
+): WorkContract {
+  const current = getWorkContract(options, workId);
+  if (!current) throw new Error(`work contract not found: ${workId}`);
+  const previous = current.scopeEvidence ?? {
+    initialLikelyPaths: [], inspectedPaths: [], actualChangedPaths: [], recordedAt: current.createdAt,
+  };
+  return updateWorkContract(options, workId, {
+    scopeEvidence: {
+      initialLikelyPaths: [...new Set([...previous.initialLikelyPaths, ...(input.initialLikelyPaths ?? [])])].slice(0, 100),
+      inspectedPaths: [...new Set([...previous.inspectedPaths, ...(input.inspectedPaths ?? [])])].slice(0, 500),
+      actualChangedPaths: [...new Set([...previous.actualChangedPaths, ...(input.actualChangedPaths ?? [])])].slice(0, 500),
+      recordedAt: nowIso(options),
+    },
+  });
+}
+
 export function transitionWorkContractPhase(
   options: WorkContractStoreOptions,
   workId: string,
@@ -1126,6 +1153,9 @@ export function recordWorkCompletionReceipt(
     return current;
   }
   const recordedAt = receipt.recordedAt;
+  const receiptChangedPaths = isRepositoryCompletionReceipt(receipt) || isDirectEditWorkCompletionReceipt(receipt)
+    ? receipt.changedPaths
+    : [];
   const phaseEvidence = Object.fromEntries((['implementation', 'verification', 'delivery', 'cleanup'] as WorkPhase[]).map((phase) => [phase, {
     state: 'satisfied',
     source: 'recorded',
@@ -1143,5 +1173,11 @@ export function recordWorkCompletionReceipt(
     completionOutcome,
     ...(completionWorkKind ? { workKind: completionWorkKind } : {}),
     completionReceipt: receipt,
+    scopeEvidence: {
+      initialLikelyPaths: current.scopeEvidence?.initialLikelyPaths ?? current.allowedPaths,
+      inspectedPaths: current.scopeEvidence?.inspectedPaths ?? [],
+      actualChangedPaths: [...new Set(receiptChangedPaths)].slice(0, 500),
+      recordedAt,
+    },
   }, true, true);
 }
