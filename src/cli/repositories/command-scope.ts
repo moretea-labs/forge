@@ -50,7 +50,15 @@ export function resolveRepositoryCommandCwd(
   return { root, cwd, relativeCwd };
 }
 
-export function assertRepositoryCommandAllowed(command: string): string {
+interface RepositoryCommandInputPolicyOptions {
+  /** Internal lane hint: preserve repository policy while allowing an already-classified local script shape. */
+  allowOpaqueLocalScript?: boolean;
+}
+
+export function assertRepositoryCommandAllowed(
+  command: string,
+  options: RepositoryCommandInputPolicyOptions = {},
+): string {
   const normalized = command.trim();
   if (!normalized) throw new Error('COMMAND_INVALID: command is required');
   if (normalized.length > MAX_COMMAND_LENGTH) {
@@ -61,8 +69,6 @@ export function assertRepositoryCommandAllowed(command: string): string {
   const denied: Array<[RegExp, string]> = [
     [/\$\(|`/, 'nested command substitution is not allowed'],
     [/(?:^|[;&|]\s*)(?:eval|source)\b|(?:^|[;&|]\s*)\.\s+[^/]/i, 'dynamic shell evaluation is not allowed'],
-    [/\b(?:bash|sh|zsh|fish|dash|cmd|powershell|pwsh)\b\s+(?:-[^\s]*c\b|\/c\b)/i, 'nested shell execution is not allowed'],
-    [/\b(?:python\d*|node|ruby|perl)\b\s+(?:-[ce]\b|--eval\b)/i, 'inline interpreter execution is not allowed'],
     [/(?:^|[\s'"=])(?:\.\.(?:\/|\\)|~(?:\/|\\)|[A-Za-z]:[\\/])/, 'ambiguous parent/home/drive paths are not allowed; use repo-relative paths or an authorized absolute external path'],
     [/(?:^|[;&|]\s*)cd(?:\s|$)/i, 'use the cwd argument instead of cd'],
     [/\b(?:env|printenv)\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b|\bsecurity\s+find-(?:generic|internet)-password\b/i, 'credential or environment inspection is not allowed'],
@@ -71,6 +77,12 @@ export function assertRepositoryCommandAllowed(command: string): string {
     [/\bgit\s+(?:--git-dir|--work-tree|-C)\b|\b(?:GIT_DIR|GIT_WORK_TREE)\s*=/i, 'Git repository scope overrides are not allowed'],
     [/\bgit\s+config\b[^\n]*(?:--global|--system)\b/i, 'global or system Git configuration changes are not allowed'],
   ];
+  if (!options.allowOpaqueLocalScript) {
+    denied.push(
+      [/\b(?:bash|sh|zsh|fish|dash|cmd|powershell|pwsh)\b\s+(?:-[^\s]*c\b|\/c\b)/i, 'nested shell execution is not allowed'],
+      [/\b(?:python\d*|node|ruby|perl)\b\s+(?:-[ce]\b|--eval\b)/i, 'inline interpreter execution is not allowed'],
+    );
+  }
   for (const [pattern, reason] of denied) {
     if (pattern.test(normalized)) throw new Error(`COMMAND_POLICY_DENIED: ${reason}`);
   }
@@ -158,21 +170,33 @@ export function assertRepositoryCommandStableHostIdentity(input: unknown): Canon
   return command;
 }
 
-export function assertRepositoryCommandInputAllowed(input: unknown): CanonicalRepositoryCommand {
+export function assertRepositoryCommandInputAllowed(
+  input: unknown,
+  options: RepositoryCommandInputPolicyOptions = {},
+): CanonicalRepositoryCommand {
   const command = assertRepositoryCommandStableHostIdentity(input);
   if (command.kind === 'shell') {
-    assertRepositoryCommandAllowed(command.shellCommand!);
+    assertRepositoryCommandAllowed(command.shellCommand!, options);
     return command;
   }
   const executableName = command.executable!.split(/[\\/]/).at(-1)?.toLowerCase() ?? '';
   const args = command.args ?? [];
-  const shellFlag = args.some((arg) => ['-c', '/c', '-Command'].includes(arg));
+  const shellFlag = args.some((arg) => ['-c', '-lc', '/c', '-Command'].includes(arg));
   if (['bash', 'sh', 'zsh', 'fish', 'dash', 'cmd', 'powershell', 'pwsh'].includes(executableName) && shellFlag) {
-    throw new Error('COMMAND_POLICY_DENIED: nested shell execution is not allowed');
+    if (!options.allowOpaqueLocalScript) {
+      throw new Error('COMMAND_POLICY_DENIED: nested shell execution is not allowed');
+    }
+    const shellPayloadIndex = args.findIndex((arg) => ['-c', '-lc', '/c', '-Command'].includes(arg));
+    const shellPayload = shellPayloadIndex >= 0 ? args[shellPayloadIndex + 1] : undefined;
+    if (typeof shellPayload === 'string') {
+      assertRepositoryCommandAllowed(shellPayload, options);
+    }
   }
   if (['node', 'nodejs', 'bun', 'deno', 'ruby', 'perl', 'python', 'python3'].includes(executableName)
     && args.some((arg) => ['-c', '-e', '--eval'].includes(arg))) {
-    throw new Error('COMMAND_POLICY_DENIED: inline interpreter execution is not allowed');
+    if (!options.allowOpaqueLocalScript) {
+      throw new Error('COMMAND_POLICY_DENIED: inline interpreter execution is not allowed');
+    }
   }
   if (args.some((arg) => /(?:^|[\\/])\.\.(?:[\\/]|$)|^(?:~|[A-Za-z]:[\\/])/.test(arg))) {
     throw new Error('COMMAND_POLICY_DENIED: ambiguous parent/home/drive paths are not allowed; use repo-relative paths or an authorized absolute external path');

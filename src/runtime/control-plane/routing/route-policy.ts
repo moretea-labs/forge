@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 
-export const ROUTE_POLICY_VERSION = 'route-policy-v3' as const;
+export const ROUTE_POLICY_VERSION = 'route-policy-v4' as const;
 
 export type RouteExecutionMode = 'direct_control' | 'goal_workloop' | 'handoff_only';
 export type RouteWorkMode = 'direct_edit' | 'bounded_work' | 'quick_agent' | 'issue_task';
@@ -287,13 +287,10 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
   }
 
   if (input.workspace.dirty && mutation) {
-    reasons.push({ code: 'dirty_workspace_requires_explicit_adoption', message: 'Mutation against a dirty workspace requires an exact reviewed adoption or a clean isolated checkout.' });
-    return {
-      executionMode: 'handoff_only', executorKind: 'handoff_only', selectedProviderId: null,
-      workMode: 'direct_edit', executionPath: 'durable', requiresWork: true, requiresApproval: false,
-      requiresIsolation: true, requiresRecovery: true, createHandoff: true, waitForUser: false,
-      approvalState: 'approval_not_required', alternatives: [], ...decisionBase(input, reasons),
-    };
+    reasons.push({
+      code: 'dirty_workspace_preserve_existing_changes',
+      message: 'The checkout is already dirty; preserve unrelated changes and treat inspected/actual scope as evidence instead of creating Work solely for adoption.',
+    });
   }
   if (explicitMode) reasons.push({ code: `explicit_${explicitMode}`, message: `Explicit -${explicitMode} mode overrides automatic work topology while policy gates remain authoritative.` });
   if (protectedPath) reasons.push({ code: 'protected_path', message: 'The predicted scope includes a protected or release-sensitive path.' });
@@ -305,7 +302,6 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
   if (coordinationRequired) reasons.push({ code: 'independent_deliverables', message: 'Multiple independent deliverables require durable PlanContract/Work coordination.' });
 
   const explicitBoundedMode = explicitMode === 'plan'
-    || explicitMode === 'review'
     || explicitMode === 'release';
   const complex = explicitMode === 'direct'
     ? false
@@ -317,7 +313,6 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
     || input.capabilities.requiresWorker === true
     || input.capabilities.requiresExternalEffect === true
     || input.intent.needsDependencies === true
-    || protectedPath
     || destructive
     || remoteWrite
     || secretAccess;

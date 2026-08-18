@@ -9,7 +9,7 @@
  */
 
 import type { RepositoryRecord } from '../../../cli/repositories/types';
-import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
+import { classifyRepositoryCommand, fixedShellWrapperCommand } from '../../../cli/repositories/command-classifier';
 import {
   executeRepositoryCommandAsync,
   executeRepositoryReadOnlyCommandDirect,
@@ -164,15 +164,23 @@ export function classifyRepositoryCommandRoute(
   const shellWrapped = Boolean(executable
     && ['bash', 'sh', 'zsh', 'fish', 'dash', 'cmd', 'powershell', 'pwsh'].includes(executable)
     && argv.slice(1).some((arg) => ['-c', '-lc', '/c', '-Command'].includes(arg)));
+  const wrappedShellCommand = shellWrapped ? fixedShellWrapperCommand(argv) : undefined;
+  const wrapsInlineInterpreter = Boolean(wrappedShellCommand
+    && /^\s*(?:exec\s+)?(?:node|nodejs|bun|deno|ruby|perl|python\d*)\b[^\n]*(?:\s-c\b|\s-e\b|\s--eval\b)/i.test(wrappedShellCommand));
+  const wrapsObviousExternalIo = Boolean(wrappedShellCommand
+    && /\b(?:curl|wget|ssh|scp|sftp|ftp|telnet|nc|ncat)\b|https?:\/\//i.test(wrappedShellCommand));
+  if (options.forceManaged) {
+    return { route: 'process_managed', reason: 'work_bound_durable_process' };
+  }
   if (shellWrapped && classification.risk !== 'readonly') {
-    return { route: 'process_managed', reason: 'shell_wrapper_requires_managed_boundary' };
+    if (wrapsObviousExternalIo && !wrapsInlineInterpreter) {
+      return { route: 'process_managed', reason: 'shell_wrapper_requires_managed_boundary' };
+    }
+    return { route: 'process_direct', reason: 'lightweight_local_shell_wrapper' };
   }
   if (executable && ['node', 'nodejs', 'bun', 'deno', 'ruby', 'perl', 'python', 'python3'].includes(executable)
     && argv.slice(1).some((arg) => ['-c', '-e', '--eval'].includes(arg))) {
-    return { route: 'process_managed', reason: 'inline_interpreter_requires_managed_boundary' };
-  }
-  if (options.forceManaged) {
-    return { route: 'process_managed', reason: 'explicit_lightweight_handle' };
+    return { route: 'process_direct', reason: 'lightweight_local_inline_interpreter' };
   }
   if (classification.risk === 'readonly') {
     return { route: 'process_direct', reason: 'readonly_fast_path' };
@@ -266,6 +274,8 @@ export async function executeRepositoryCommandViaProcessRuntime(
       maxOutputBytes: input.maxOutputBytes,
       signal: input.signal,
       allowNonGitWorkspace: executionIdentity.authority === 'ephemeral_workspace',
+      allowOpaqueLocalScript: decision.reason === 'lightweight_local_shell_wrapper'
+        || decision.reason === 'lightweight_local_inline_interpreter',
     };
     const readonly = canonicalCommand.kind === 'argv'
       && classifyRepositoryCommand(input.command, input.repository.defaultBranch).risk === 'readonly';

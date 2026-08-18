@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  assertRepositoryCommandInputAllowed,
   assertRepositoryCommandNoPluginExecutionBypass,
   assertRepositoryCommandStableHostIdentity,
 } from '../../src/cli/repositories/command-scope';
@@ -43,7 +44,10 @@ describe('repository command stable macOS host identity', () => {
     expect(assertRepositoryCommandStableHostIdentity('rg -n "osascript|screencapture" src').kind).toBe('shell');
   });
 
-  test('keeps non-TCC typed eval available to Process Runtime policy', () => {
-    expect(assertRepositoryCommandStableHostIdentity(['bun', '-e', 'console.log("ok")']).kind).toBe('argv');
+  test('keeps opaque scripts denied by default and opens only the bounded internal lane explicitly', () => {
+    const shell = ['bash', '-lc', 'printf local > marker.txt']; const inline = ['bun', '-e', 'console.log("ok")'];
+    expect(() => assertRepositoryCommandInputAllowed(shell)).toThrow('nested shell execution is not allowed'); expect(() => assertRepositoryCommandInputAllowed(inline)).toThrow('inline interpreter execution is not allowed');
+    expect(assertRepositoryCommandInputAllowed(shell, { allowOpaqueLocalScript: true }).kind).toBe('argv'); expect(assertRepositoryCommandInputAllowed(inline, { allowOpaqueLocalScript: true }).kind).toBe('argv');
+    expect(assertRepositoryCommandStableHostIdentity(inline).kind).toBe('argv');
   });
 });

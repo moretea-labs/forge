@@ -191,7 +191,7 @@ describe('single Route Policy authority', () => {
       direct: { workMode: 'direct_edit', executionPath: 'fast', mutationPhase: 'execute', structuralContext: 'off' },
       plan: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'plan_only', structuralContext: 'required' },
       debug: { workMode: 'direct_edit', executionPath: 'fast', mutationPhase: 'diagnose_first', structuralContext: 'required' },
-      review: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'read_only', structuralContext: 'off' },
+      review: { workMode: 'direct_edit', executionPath: 'fast', mutationPhase: 'read_only', structuralContext: 'off' },
       release: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'release_gate', structuralContext: 'off' },
       scale: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'benchmark', structuralContext: 'off' },
     } as const;
@@ -215,7 +215,7 @@ describe('single Route Policy authority', () => {
       expect(assessment.routeDecision.reasons.some((reason) => reason.code === `explicit_${mode}`)).toBe(true);
     }
   });
-  test('explicit mode overrides heuristics but never authorization or dirty-workspace gates', () => {
+  test('explicit mode overrides heuristics while authorization remains authoritative and dirty evidence stays direct', () => {
     const direct = assessWorkMode({
       description: 'Explicitly keep this supervised operation direct',
       knownPaths: Array.from({ length: 20 }, (_, index) => `src/file-${index}.ts`),
@@ -236,7 +236,8 @@ describe('single Route Policy authority', () => {
       intent: { objective: 'Dirty direct mutation', scopeClear: true, mutation: true, explicitMode: 'direct' },
       workspace: { knownPaths: ['src/example.ts'], dirty: true },
     }));
-    expect(dirty).toMatchObject({ executionMode: 'handoff_only', requiresIsolation: true });
+    expect(dirty).toMatchObject({ executionMode: 'direct_control', workMode: 'direct_edit', executionPath: 'fast', requiresWork: false, requiresIsolation: false });
+    expect(dirty.reasons.map((reason) => reason.code)).toContain('dirty_workspace_preserve_existing_changes');
   });
   test('routes independent deliverables through durable bounded Work without a separate lifecycle', () => {
     const decision = decideRoute(sharedInput({
@@ -427,10 +428,18 @@ describe('single Route Policy authority', () => {
     expect(decision.selectedProviderId).toBe('claude');
     expect(decision.alternatives).toEqual(['claude']);
   });
-  test('blocks implicit dirty-workspace adoption', () => {
+  test('keeps dirty-workspace mutation direct while preserving scope evidence', () => {
     const decision = decideRoute(sharedInput({ workspace: { dirty: true, checkoutId: 'checkout-a', fingerprint: 'dirty-a' } }));
-    expect(decision).toMatchObject({ executionMode: 'handoff_only', requiresIsolation: true, createHandoff: true });
-    expect(decision.reasons.map((reason) => reason.code)).toContain('dirty_workspace_requires_explicit_adoption');
+    expect(decision).toMatchObject({ executionMode: 'direct_control', workMode: 'direct_edit', executionPath: 'fast', requiresWork: false, requiresIsolation: false, createHandoff: false });
+    expect(decision.reasons.map((reason) => reason.code)).toContain('dirty_workspace_preserve_existing_changes');
+  });
+  test('keeps protected-path work direct and leaves assurance to the edit/diff gate', () => {
+    const decision = decideRoute(sharedInput({
+      intent: { objective: 'Update a workflow file', scopeClear: true, mutation: true },
+      workspace: { knownPaths: ['.github/workflows/ci.yml'], dirty: false },
+    }));
+    expect(decision).toMatchObject({ executionMode: 'direct_control', workMode: 'direct_edit', executionPath: 'fast', requiresWork: false });
+    expect(decision.reasons.map((reason) => reason.code)).toContain('protected_path');
   });
   test('produces a stable fingerprint independent of object insertion order', () => {
     const first = decideRoute(sharedInput());

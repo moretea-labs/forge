@@ -69,6 +69,8 @@ export interface ExecuteRepositoryCommandInput {
   reuseSnapshot?: RepositoryCommandSnapshot;
   /** Internal: explicit ephemeral workspace authority may operate without a Git repository. */
   allowNonGitWorkspace?: boolean;
+  /** Internal: command-facade already classified this as a bounded local script; retain policy/snapshot/audit without durable Process state. */
+  allowOpaqueLocalScript?: boolean;
 }
 
 
@@ -250,7 +252,9 @@ function prepareRepositoryCommandExecution(
   externalPathUsages: RepositoryCommandExternalPathUsage[];
 } {
   const { root, cwd, relativeCwd } = resolveRepositoryCommandCwd(repository, input.cwd);
-  const command = assertRepositoryCommandInputAllowed(input.command);
+  const command = assertRepositoryCommandInputAllowed(input.command, {
+    allowOpaqueLocalScript: input.allowOpaqueLocalScript,
+  });
   const externalGrants = loadExternalFilesystemGrants(root).grants;
   const externalPathUsages = assertCommandPathOperandsStayInRepository(command, cwd, root, externalGrants);
   const classification = classifyRepositoryCommand(command, repository.defaultBranch);
@@ -285,7 +289,9 @@ async function prepareRepositoryCommandExecutionAsync(
   externalPathUsages: RepositoryCommandExternalPathUsage[];
 }> {
   const { root, cwd, relativeCwd } = resolveRepositoryCommandCwd(repository, input.cwd);
-  const command = assertRepositoryCommandInputAllowed(input.command);
+  const command = assertRepositoryCommandInputAllowed(input.command, {
+    allowOpaqueLocalScript: input.allowOpaqueLocalScript,
+  });
   const externalGrants = loadExternalFilesystemGrants(root).grants;
   const externalPathUsages = assertCommandPathOperandsStayInRepository(command, cwd, root, externalGrants);
   const classification = classifyRepositoryCommand(command, repository.defaultBranch);

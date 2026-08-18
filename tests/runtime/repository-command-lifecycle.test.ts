@@ -153,42 +153,27 @@ describe('repository command execution lifecycle', () => {
     }
   });
 
-  test('routes fixed shell-wrapped loopback GET diagnostics directly without weakening unsafe command boundaries', () => {
-    expect(classifyRepositoryCommandRoute(['bash', '-lc', 'curl -fsS http://127.0.0.1:8765/ready'])).toEqual({
-      route: 'process_direct',
-      reason: 'readonly_fast_path',
-    });
-    expect(classifyRepositoryCommandRoute(['bash', '-lc', 'curl -fsS http://127.0.0.1:8765/ready >/dev/null'])).toEqual({
-      route: 'process_direct',
-      reason: 'readonly_fast_path',
-    });
-    expect(classifyRepositoryCommandRoute(['bash', '-lc', 'curl -fsS http://127.0.0.1:8765/ready > marker.txt'])).toEqual({
-      route: 'process_managed',
-      reason: 'shell_wrapper_requires_managed_boundary',
-    });
-    expect(classifyRepositoryCommandRoute(['bash', '-lc', 'curl -fsS -X POST http://127.0.0.1:8765/ready'])).toEqual({
-      route: 'process_managed',
-      reason: 'shell_wrapper_requires_managed_boundary',
-    });
-    expect(classifyRepositoryCommandRoute(['bash', '-lc', 'curl -fsS -d payload http://127.0.0.1:8765/ready'])).toEqual({
-      route: 'process_managed',
-      reason: 'shell_wrapper_requires_managed_boundary',
-    });
-    expect(classifyRepositoryCommandRoute(['bash', '-lc', 'curl -fsS https://example.com/'])).toEqual({
-      route: 'process_managed',
-      reason: 'shell_wrapper_requires_managed_boundary',
-    });
-    expect(classifyRepositoryCommandRoute(['bun', '-e', 'await fetch("http://127.0.0.1:8765/ready")'])).toEqual({
-      route: 'process_managed',
-      reason: 'inline_interpreter_requires_managed_boundary',
-    });
+  test('routes fixed shell diagnostics and ordinary local scripts without weakening external boundaries', () => {
+    const route = (command: string[]) => classifyRepositoryCommandRoute(command);
+    expect(route(['bash', '-lc', 'curl -fsS http://127.0.0.1:8765/ready'])).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
+    expect(route(['bash', '-lc', 'curl -fsS http://127.0.0.1:8765/ready >/dev/null'])).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
+    for (const payload of ['curl -fsS http://127.0.0.1:8765/ready > marker.txt', 'curl -fsS -X POST http://127.0.0.1:8765/ready', 'curl -fsS -d payload http://127.0.0.1:8765/ready', 'curl -fsS https://example.com/']) expect(route(['bash', '-lc', payload])).toEqual({ route: 'process_managed', reason: 'shell_wrapper_requires_managed_boundary' });
+    for (const payload of ['printf local > marker.txt', 'bun -e "console.log(1)"']) expect(route(['bash', '-lc', payload])).toEqual({ route: 'process_direct', reason: 'lightweight_local_shell_wrapper' });
+    expect(route(['bun', '-e', 'await fetch("http://127.0.0.1:8765/ready")'])).toEqual({ route: 'process_direct', reason: 'lightweight_local_inline_interpreter' });
+    expect(route(['touch', 'marker.txt'])).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
   });
 
-  test('ordinary local mutations remain on the ephemeral lane', () => {
-    expect(classifyRepositoryCommandRoute(['touch', 'marker.txt'])).toEqual({
-      route: 'process_direct',
-      reason: 'ephemeral_local_workspace_mutation',
-    });
+  test('local shell wrappers and inline interpreters stay lightweight without persistent Process or Lease state', async () => {
+    const controllerHome = tempRoot('forge-cmd-opaque-home-'); const repoRoot = tempRoot('forge-cmd-opaque-repo-'); const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access', repoRoot); const processCount = listProcessRecords(controllerHome, repository.repoId).length;
+    for (const [command, marker, expected] of [
+      [['bash', '-lc', "printf 'shell-lightweight\\n' > shell-marker.txt"], 'shell-marker.txt', 'shell-lightweight\n'],
+      [['bun', '-e', "await Bun.write('inline-marker.txt', 'inline-lightweight\\n')"], 'inline-marker.txt', 'inline-lightweight\n'],
+    ] as const) {
+      const result = await executeRepositoryCommandViaProcessRuntime({ controllerHome, repository, command, timeoutMs: 10_000, executionIdentity: executionIdentityForRepository(repository) });
+      expect(result.ok).toBe(true); expect(result.executionMetrics).toMatchObject({ lane: 'lightweight_managed', durableWrites: 0, leaseOperations: 0 }); expect(readFileSync(join(repoRoot, marker), 'utf-8')).toBe(expected);
+    }
+    expect(listProcessRecords(controllerHome, repository.repoId)).toHaveLength(processCount); expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
   });
 
   test('long ordinary local command upgrades only to an in-memory lightweight handle', async () => {
