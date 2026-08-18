@@ -25,15 +25,13 @@ describe('RemoteXPC HID backend', () => {
     ]);
   });
 
-  it('reuses a connected CoreDevice keyboard and never creates a custom virtual keyboard', () => {
+  it('uses a dedicated CoreDevice virtual keyboard for text so modifier chords use the sniffed bitmap protocol', () => {
     const source = remoteXpcHidWorkerSourceForTest();
-    expect(source).toContain("DeviceTypeHint') or '').lower()");
-    expect(source).toContain("'keyboard' in product");
-    expect(source).toContain("keyboardSource': 'connected_coredevice'");
-    expect(source).toContain('No connected CoreDevice keyboard HID service is available');
-    expect(source).not.toContain('create_keyboard_service');
-    expect(source).not.toContain('--keyboard-state');
-    expect(source).not.toContain('--keyboard-service-id');
+    expect(source).toContain("keyboardSource': 'virtual_coredevice_lazy'");
+    expect(source).toContain("keyboard_service = await hid.create_keyboard_service(product='Forge virtual keyboard')");
+    expect(source).toContain("'keyboardSource': 'virtual_coredevice'");
+    expect(source).not.toContain("keyboardSource': 'connected_coredevice'");
+    expect(source).not.toContain('No connected CoreDevice keyboard HID service is available');
   });
 
   it('reports a controller-owned toolchain and never claims Runner ownership', () => {
@@ -87,7 +85,7 @@ describe('RemoteXPC HID backend', () => {
     expect(observed).not.toHaveProperty('height');
   });
 
-  it('maps backspace through the verified built-in keyboard report path', () => {
+  it('maps backspace through the virtual keyboard report path', () => {
     const source = remoteXpcHidWorkerSourceForTest();
     expect(source).toContain('KEY_BACKSPACE');
     expect(source).toContain("if char == '\\b':");
@@ -95,11 +93,22 @@ describe('RemoteXPC HID backend', () => {
     expect(source).toContain('mapping = keyboard_mapping(char)');
   });
 
-  it('fails replace_existing closed inside the real iOS 27 worker before any HID mutation', () => {
+  it('uses verified virtual-keyboard Command-A and Command-V chords for whole-field Unicode replacement', () => {
     const source = remoteXpcHidWorkerSourceForTest();
-    expect(source).toContain("phase = 'replace_existing_preflight'");
-    expect(source).toContain('replace_existing requires a verified modifier-capable keyboard path; no HID mutation was sent');
-    expect(source).not.toContain("ASCII_TO_HID.get('a')");
+    expect(source).toContain("phase = 'hid_keyboard_select_all'");
+    expect(source).toContain('await send_keyboard_chord(hid, keyboard_service, [select_usage, KEY_LEFT_GUI])');
+    expect(source).toContain("phase = 'hid_keyboard_paste'");
+    expect(source).toContain('await send_keyboard_chord(hid, keyboard_service, [paste_usage, KEY_LEFT_GUI], settle_s=0.120)');
+    expect(source).not.toContain("phase = 'replace_existing_preflight'");
+  });
+
+  it('isolates pasteboard traffic on a second RSD connection and stages text before selecting existing content', () => {
+    const source = remoteXpcHidWorkerSourceForTest();
+    expect(source).toContain('async with RemoteServiceDiscoveryService((args.host, args.port)) as pasteboard_rsd:');
+    expect(source).toContain('async with PasteboardService(pasteboard_rsd) as pasteboard:');
+    expect(source).not.toContain('async with PasteboardService(rsd) as pasteboard:');
+    expect(source.indexOf('await pasteboard.set_text(text)')).toBeLessThan(source.indexOf("phase = 'hid_keyboard_select_all'"));
+    expect(source).toContain("'pasteboardTransport': 'independent_rsd'");
   });
 
   it('rejects Unicode only when explicit direct-key mode is requested', async () => {
