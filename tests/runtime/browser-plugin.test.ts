@@ -582,6 +582,39 @@ describe('browser plugin', () => {
     });
   });
 
+  test('passes repoRoot to Playwright dependency resolution for managed browser actions and health', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+    });
+    const runtime = mockPlaywright();
+    const moduleRoots: Array<string | undefined> = [];
+    const loadRoots: Array<string | undefined> = [];
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: (_name, root) => {
+        moduleRoots.push(root);
+        return root === repoRoot;
+      },
+      loadPlaywright: (root) => {
+        loadRoots.push(root);
+        return runtime;
+      },
+    });
+
+    const manifest = buildBrowserPluginManifest(0, undefined, repoRoot);
+    expect(manifest.health.ready).toBe(true);
+    await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-managed-repo-dependency-root', args: { url: 'https://example.com/repo-root' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(moduleRoots.every((root) => root === repoRoot)).toBe(true);
+    expect(loadRoots).toEqual([repoRoot]);
+  });
+
   test('returns a clear dependency error when playwright is missing', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {

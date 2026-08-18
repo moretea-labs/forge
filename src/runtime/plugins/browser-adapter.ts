@@ -177,29 +177,39 @@ type PlaywrightRuntime = {
 
 interface BrowserPluginRuntimeHooks {
   now(): string;
-  moduleAvailable(name: string): boolean;
-  loadPlaywright(): PlaywrightRuntime;
+  moduleAvailable(name: string, repoRoot?: string): boolean;
+  loadPlaywright(repoRoot?: string): PlaywrightRuntime;
   fetchJson(url: string, timeoutMs: number): Promise<unknown>;
 }
 
 const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
   now: () => new Date().toISOString(),
-  moduleAvailable: (name: string) => {
-    try {
-      createRequire(import.meta.url).resolve(name);
-      return true;
-    } catch {
-      return false;
+  moduleAvailable: (name: string, repoRoot?: string) => {
+    const anchors = [repoRoot ? join(repoRoot, 'package.json') : undefined, import.meta.url]
+      .filter((value): value is string => Boolean(value));
+    for (const anchor of anchors) {
+      try {
+        createRequire(anchor).resolve(name);
+        return true;
+      } catch {
+        // Try the next trusted dependency anchor.
+      }
     }
+    return false;
   },
-  loadPlaywright: () => {
-    try {
-      return createRequire(import.meta.url)('playwright') as PlaywrightRuntime;
-    } catch {
-      throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', 'Browser plugin requires playwright. Run bun install before using browser actions.', {
-        retryable: false,
-      });
+  loadPlaywright: (repoRoot?: string) => {
+    const anchors = [repoRoot ? join(repoRoot, 'package.json') : undefined, import.meta.url]
+      .filter((value): value is string => Boolean(value));
+    for (const anchor of anchors) {
+      try {
+        return createRequire(anchor)('playwright') as PlaywrightRuntime;
+      } catch {
+        // Try the next trusted dependency anchor.
+      }
     }
+    throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', 'Browser plugin requires playwright. Run bun install before using browser actions.', {
+      retryable: false,
+    });
   },
   fetchJson: async (url: string, timeoutMs: number) => {
     const controller = new AbortController();
@@ -1397,8 +1407,8 @@ async function openBrowser(
 ): Promise<BrowserOpenHandle> {
   const requestedMode = config.browserMode ?? 'managed_persistent';
   if (requestedMode === 'attach_preferred') {
-    const attached = cdpEndpoints(config).length > 0 && runtimeHooks.moduleAvailable('playwright')
-      ? await openAttachedContext(runtimeHooks.loadPlaywright(), repoRoot, config, target, args)
+    const attached = cdpEndpoints(config).length > 0 && runtimeHooks.moduleAvailable('playwright', repoRoot)
+      ? await openAttachedContext(runtimeHooks.loadPlaywright(repoRoot), repoRoot, config, target, args)
       : { attempts: [] as CdpAttachAttempt[] };
     if (attached.handle) return attached.handle;
 
@@ -1422,10 +1432,10 @@ async function openBrowser(
         },
       });
     }
-    if (!runtimeHooks.moduleAvailable('playwright')) {
+    if (!runtimeHooks.moduleAvailable('playwright', repoRoot)) {
       throw new AssistantPluginError('PLUGIN_BROWSER_DEPENDENCY_UNAVAILABLE', `Managed browser fallback requires Playwright, but native/CDP attach was unavailable. ${reason}`, { retryable: false });
     }
-    return openManagedContext(runtimeHooks.loadPlaywright(), repoRoot, config, target, args, 'managed_persistent', requestedMode, {
+    return openManagedContext(runtimeHooks.loadPlaywright(repoRoot), repoRoot, config, target, args, 'managed_persistent', requestedMode, {
       policy: fallbackPolicy,
       from: 'attach_preferred',
       to: 'managed_persistent',
@@ -1435,10 +1445,10 @@ async function openBrowser(
     });
   }
 
-  if (!runtimeHooks.moduleAvailable('playwright')) {
+  if (!runtimeHooks.moduleAvailable('playwright', repoRoot)) {
     throw new AssistantPluginError('PLUGIN_BROWSER_DEPENDENCY_UNAVAILABLE', 'Managed browser mode requires Playwright.', { retryable: false });
   }
-  return openManagedContext(runtimeHooks.loadPlaywright(), repoRoot, config, target, args, requestedMode, requestedMode);
+  return openManagedContext(runtimeHooks.loadPlaywright(repoRoot), repoRoot, config, target, args, requestedMode, requestedMode);
 }
 
 async function withPage<T>(
@@ -2178,7 +2188,7 @@ function browserUserFacingStatus(config: BrowserPluginConfig, ready: boolean, se
 }
 
 function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPluginHealth {
-  const dependencyReady = runtimeHooks.moduleAvailable('playwright');
+  const dependencyReady = runtimeHooks.moduleAvailable('playwright', repoRoot);
   const configErrors = validateConfig(config);
   const warnings = configWarnings(config);
   const sessionCount = repoRoot ? listSavedSessions(repoRoot).length : 0;
