@@ -14,7 +14,10 @@ import {
   type RepositoryCommandExecution,
 } from '../../../cli/repositories/command-executor';
 import { normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
-import { assertRepositoryCommandStableHostIdentity } from '../../../cli/repositories/command-scope';
+import {
+  assertRepositoryCommandNoPluginExecutionBypass,
+  assertRepositoryCommandStableHostIdentity,
+} from '../../../cli/repositories/command-scope';
 import { claimsForRepositoryCommand, scopeResourceClaims, toProcessClaims } from './resource-claims';
 import {
   spawnManagedProcess,
@@ -159,6 +162,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
   // surface, but fail closed before routing any macOS TCC-sensitive host tool:
   // a release-specific forge-runtime executable must never own those grants.
   assertRepositoryCommandStableHostIdentity(input.command);
+  assertRepositoryCommandNoPluginExecutionBypass(input.command);
   const decision = classifyRepositoryCommandRoute(input.command, {
     forceDurable: input.forceDurable,
     defaultBranch: input.repository.defaultBranch,

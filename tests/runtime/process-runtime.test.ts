@@ -39,7 +39,10 @@ import {
   isSafeFixedShellCombination,
   shellCommandHasUnsafeConstructs,
 } from '../../src/cli/repositories/command-classifier';
-import { classifyRepositoryCommandRoute } from '../../src/runtime/execution/process-runtime/command-facade';
+import {
+  classifyRepositoryCommandRoute,
+  executeRepositoryCommandViaProcessRuntime,
+} from '../../src/runtime/execution/process-runtime/command-facade';
 import { classifyGatewayExecutionPath } from '../../src/runtime/gateway/mcp/router';
 import { persistedCheckSemanticScopeKey, runPersistedCheckViaProcessRuntime } from '../../src/runtime/gateway/mcp/persisted-check-process';
 import { claimsForMcpOperation } from '../../src/runtime/gateway/mcp/resource-policy';
@@ -158,6 +161,38 @@ function fixture() {
 }
 
 describe('Unified Process Runtime', () => {
+  test('repository command facade blocks inline plugin execution bypass before spawning or leasing', async () => {
+    const fx = fixture();
+    const runtime = bindCanonicalRuntime(fx.controllerHome);
+    try {
+      const beforeProcesses = listActiveProcessIds(fx.controllerHome, fx.repository.repoId);
+      const beforeLeases = listActiveLeases(fx.controllerHome, fx.repository.repoId);
+      const source = `import { executeBrowserPluginAction } from './src/runtime/plugins/browser-adapter'; await executeBrowserPluginAction({});`;
+      await expect(executeRepositoryCommandViaProcessRuntime({
+        controllerHome: fx.controllerHome,
+        repository: fx.repository,
+        command: ['bash', '-lc', `bun -e ${JSON.stringify(source)}`],
+        executionIdentity: executionIdentityForRepository(fx.repository),
+      })).rejects.toThrow('PLUGIN_ACTION_EXECUTION_REQUIRES_TYPED_PLUGIN_TOOL');
+      expect(listActiveProcessIds(fx.controllerHome, fx.repository.repoId)).toEqual(beforeProcesses);
+      expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toEqual(beforeLeases);
+
+      const ordinary = await executeRepositoryCommandViaProcessRuntime({
+        controllerHome: fx.controllerHome,
+        repository: fx.repository,
+        command: ['node', '-e', 'process.stdout.write("ordinary-eval-ok")'],
+        executionIdentity: executionIdentityForRepository(fx.repository),
+        timeoutMs: 10_000,
+        interactiveWaitMs: 5_000,
+      });
+      expect(ordinary.ok).toBe(true);
+      expect(ordinary.stdout).toContain('ordinary-eval-ok');
+    } finally {
+      runtime.owner.release();
+      clearRuntimeWriteClaimForTests();
+    }
+  });
+
   test('default process identity probe reads command and start time together', () => {
     if (process.platform !== 'win32') expect(defaultProcessIdentityProbe.inspect?.(process.pid)).toMatchObject({ command: expect.any(String), startTime: expect.any(String) });
   });
