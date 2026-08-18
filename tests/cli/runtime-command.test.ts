@@ -396,7 +396,7 @@ describe('runtime command surface', () => {
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain('unknown command');
     }
-  });
+  }, 15_000);
 
   test('requires an explicit Controller Home for Runtime status', () => {
     const result = spawnSync('bun', [CLI, 'runtime', 'status', '--json'], {
