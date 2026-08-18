@@ -1,17 +1,22 @@
 # Current Status Snapshot
 
-<!-- updated_at: 2026-08-10 -->
+<!-- updated_at: 2026-08-18 -->
 <!-- stale_after: 24h -->
 
-> **Status**: The canonical immutable Runtime runs the `68df28b8` code baseline and is ready with the embedded Local Bridge owned by the same process and no readiness warnings. Local System's complete authorize/use/concurrent-write/digest-pinned-script/delete/revoke lifecycle passed live acceptance without changing the Repository Registry. Explicit task modes and required Plan/Debug CodeGraph context passed authenticated live MCP acceptance from the self-contained immutable release. The 1,318 unknown-owned legacy Edit Sessions remain fail-closed. Live Resend delivery remains externally blocked until an API key, verified sending domain, and sender identity are configured.
-> **Updated At**: 2026-08-10
-> **Source**: Source review, focused Runtime/MCP tests, authenticated `repo-harness6` session evidence, repeated 60-second Controller RPC timeouts, and connector/source schema comparison.
+> **Status**: The quality-first executable harness refactor is complete on local branch `codex/quality-first-executable-harness`: progressive `rh_context`, symbol-aware source materialization, session reuse, thin Ephemeral/Lightweight execution, continuity-based Work routing, scope evidence separation, authority reduction, and responsibility-based module splits all pass focused, governed, architecture, task, and performance gates. No Runtime activation, push, release, or publication was performed; the prior deployed immutable Runtime state remains unchanged.
+> **Updated At**: 2026-08-18
+> **Source**: Current-HEAD architecture/authority audits, changed-source review, 220 focused tests, 24-file governed affected gate, task receipt, and 5-iteration quality-harness benchmark.
 > **Target**: Keep one canonical Forge Runtime release aligned with `main`, one Recovery service family, and the renamed `/Users/greyson/DevProjects/forge` paths.
 > **Stale After**: 24h
 
 This snapshot is a read model, not an execution gate.
 
 ## Current Focus
+- ✅ `rh_context.search` is the sole public progressive source-context contract. Exact known paths reserve file/snippet capacity, complete functions/types are materialized when bounded, coverage and freshness are explicit, and repeated calls reuse Git/lexical/range/structural evidence.
+- ✅ Ordinary local writes/builds/tests use Ephemeral execution and can return an in-memory `lightweight:` handle after the interaction budget. The benchmark recorded zero durable Process writes and zero Lease operations; Work/Edit-bound verification still retains durable receipts.
+- ✅ Work routing is based on real continuity/orchestration needs, not predicted file or line counts. Initial likely, inspected, and actual changed paths are separate evidence from `allowedPaths` policy fences.
+- ✅ Public `controller_context_pack` compatibility was retired. Runtime MCP definitions, command process/snapshot mechanics, context planning/materialization, and lightweight handles were extracted into cohesive modules.
+- ✅ Final benchmark: context cold p50 `57.84 ms`, hot p50 `0.46 ms` (ratio `0.008`); command pre-spawn harness p95 `12 ms`; no durable writes or leases. Largest changed files: runtime tools `6621 -> 5900`, legacy MCP `5520 -> 5481`, command executor `1066 -> 575`, context pack `908 -> 725`.
 - ✅ Default ChatGPT MCP surface converged from 123 tools to 20 (`rh_*` facades, repository selection, `repository_command_execute`, search/read, safe patch, `run_check`, process lifecycle, result retrieval, approval). Atomic Git / issue-task / edit-session / plugin / maintenance handlers remain available through the compatibility surface where still supported; retired project-level orchestration handlers have been removed.
 - ✅ Route Policy no longer treats `requiresInvestigation` as durable: readonly investigation and small mutation + investigation route `direct_control`/`fast`; investigation + recovery or large mutation still routes bounded durable. `requiresParallelism` no longer implies isolation or worktree; `requiresIndependentDeliverables`/count routes durable `bounded_work` through Goal Workloop + PlanContract/Work coordination without a separate lifecycle.
 - ✅ `verify_edit_session` submits checks concurrently and Process Runtime arbitrates via existing Resource Claims/Leases; lease conflict gained a bounded opt-in wait (5s default for edit verification) instead of Gateway serialization. Evidence: independent checks overlap in wall-clock; conflicting workspace-write checks serialize without overlap; heavy/release exclusivity retained.

@@ -157,3 +157,4 @@ See [Architecture Governance Contract](governance.md).
 - [Personal assistant/plugin baseline](personal-assistant-plugin-baseline.md)
 - [Target requirements traceability](target-requirements-traceability.md)
 - [Human interaction plane](human-interaction-plane.md)
+- [Quality-first executable harness](quality-first-executable-harness.md)

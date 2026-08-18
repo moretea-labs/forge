@@ -178,12 +178,12 @@ git_diff_base_ref() {
   fi
 
   branch="$(git branch --show-current 2>/dev/null || true)"
-  if [[ "$branch" != "main" ]] && git rev-parse --verify "origin/main^{commit}" >/dev/null 2>&1; then
-    printf 'origin/main'
-    return 0
-  fi
   if [[ "$branch" != "main" ]] && git rev-parse --verify "main^{commit}" >/dev/null 2>&1; then
     printf 'main'
+    return 0
+  fi
+  if [[ "$branch" != "main" ]] && git rev-parse --verify "origin/main^{commit}" >/dev/null 2>&1; then
+    printf 'origin/main'
     return 0
   fi
 
@@ -307,10 +307,16 @@ if [[ -f ".ai/hooks/lib/workflow-state.sh" ]]; then
   review_file="$(workflow_active_review || true)"
   checks_file="$(workflow_checks_file)"
 else
-  contract_file="$(find tasks/contracts -maxdepth 1 -name '*.contract.md' -type f 2>/dev/null | sort | head -n 1)"
+  contract_file="$(active_plan_declared_path "Task Contract" || active_plan_declared_path "Sprint Contract" || true)"
+  if [[ -z "$contract_file" || ! -f "$contract_file" ]]; then
+    contract_file="$(find tasks/contracts -maxdepth 1 -name '*.contract.md' -type f 2>/dev/null | sort | head -n 1)"
+  fi
   if [[ -n "$contract_file" ]]; then
-    contract_slug="$(basename "$contract_file" | sed -E 's/\.contract\.md$//')"
-    review_file="tasks/reviews/${contract_slug}.review.md"
+    review_file="$(active_plan_declared_path "Task Review" || active_plan_declared_path "Sprint Review" || true)"
+    if [[ -z "$review_file" || ! -f "$review_file" ]]; then
+      contract_slug="$(basename "$contract_file" | sed -E 's/\.contract\.md$//')"
+      review_file="tasks/reviews/${contract_slug}.review.md"
+    fi
   else
     review_file=""
   fi
