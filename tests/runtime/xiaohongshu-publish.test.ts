@@ -36,7 +36,7 @@ describe('xiaohongshu publish recipe', () => {
     const image = buildXiaohongshuPublishRecipe({ ...baseArgs, mode: 'image_note', image_paths: ['cover.png', 'detail.png'] });
     expect(image.normalizedMode).toBe('image_note');
     const imageSteps = image.steps as Array<Record<string, any>>;
-    expect(imageSteps[1]).toMatchObject({ id: 'preflight.probe_image_page', actionId: 'query_all', args: { selector: 'input[type=file]', limit: 1 } });
+    expect(imageSteps[1]).toMatchObject({ id: 'preflight.wait_image_page', actionId: 'wait_for_selector', args: { selector: 'input[type=file]', state: 'attached' } });
     expect(imageSteps.find((step) => step.id === 'image.wait_file_input')?.args.state).toBe('attached');
     expect(imageSteps.find((step) => step.id === 'image.attach_files')?.args.file_paths).toEqual(['cover.png', 'detail.png']);
     expect(imageSteps.find((step) => step.id === 'publish.semantic_submit')).toMatchObject({
@@ -89,7 +89,7 @@ describe('xiaohongshu publish recipe', () => {
           currentUrl = String(input.args.url);
           return { url: currentUrl };
         }
-        if (input.actionId === 'query_all') return { url: currentUrl, count: 1, matches: [{ tag: 'input' }] };
+        if (input.actionId === 'wait_for_selector') return { url: currentUrl, selector: input.args.selector, state: input.args.state };
         if (input.actionId === 'dispatch_event') {
           currentUrl = 'https://creator.xiaohongshu.com/publish/publish?source=official&published=true';
           return { url: currentUrl };

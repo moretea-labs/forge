@@ -10,7 +10,7 @@ import { AssistantPluginError } from './errors';
 import { executeBrowserPluginAction } from './browser-adapter';
 
 const PLUGIN_ID = 'xiaohongshu';
-const RECIPE_VERSION = 4;
+const RECIPE_VERSION = 5;
 const CREATOR_BASE_URL = 'https://creator.xiaohongshu.com/publish/publish?source=official';
 const CREATOR_ARTICLE_URL = `${CREATOR_BASE_URL}&target=article`;
 const IMAGE_TAB_TEXT = '上传图文';
@@ -176,10 +176,10 @@ export function buildXiaohongshuPublishRecipe(args: Record<string, unknown>): Re
     },
     parsed.normalizedMode === 'image_note'
       ? {
-          id: 'preflight.probe_image_page',
-          actionId: 'query_all',
-          args: { session_id: parsed.sessionId, selector: IMAGE_FILE_SELECTOR, limit: 1 },
-          expectation: 'A file input structurally proves the image-note Creator surface is ready without extracting the whole page text.',
+          id: 'preflight.wait_image_page',
+          actionId: 'wait_for_selector',
+          args: { session_id: parsed.sessionId, selector: IMAGE_FILE_SELECTOR, state: 'attached', timeout_ms: 30_000 },
+          expectation: 'A file input attaching within the bounded timeout structurally proves the image-note Creator surface is ready without extracting whole-page text.',
         }
       : {
           id: 'preflight.read_auth_state',
@@ -335,7 +335,7 @@ export async function executeXiaohongshuPluginAction(input: AssistantPluginActio
     const preflight = await runStep(steps[1], 1);
     const preflightUrl = resultUrl(preflight) || navigateUrl;
     const preflightState = parsed.normalizedMode === 'image_note'
-      ? (typeof preflight.count === 'number' && preflight.count > 0 ? 'READY' : 'PAGE_SCHEMA_CHANGED')
+      ? 'READY'
       : classifyXiaohongshuPublishState({ phase: 'preflight', url: preflightUrl, text: resultText(preflight) });
     if (preflightState === 'AUTH_REQUIRED') {
       return {
