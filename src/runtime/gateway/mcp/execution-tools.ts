@@ -1088,15 +1088,16 @@ async function executeWork(ctx: MultiRepositoryMcpToolContext, args: Record<stri
       maxOutputBytes: typeof args.max_output_bytes === 'number' ? args.max_output_bytes : undefined,
     });
     const process = execution.process;
-    const completed = process?.completed === true || execution.route === 'process_direct';
     const ok = process ? process.ok === true : execution.ok === true;
     const status = process
       ? (process.completed
         ? (process.cancelled ? 'cancelled' : process.timedOut ? 'timed_out' : ok ? 'executed' : 'failed')
         : 'running')
-      : execution.route === 'durable'
-        ? 'deferred_durable'
-        : 'rejected';
+      : execution.route === 'process_direct'
+        ? (ok ? 'executed' : 'failed')
+        : execution.route === 'durable'
+          ? 'deferred_durable'
+          : 'rejected';
     return {
       processId: process?.processId,
       commandId,
@@ -1130,8 +1131,9 @@ async function executeWork(ctx: MultiRepositoryMcpToolContext, args: Record<stri
       for (const [index, entry] of inputs.entries()) {
         const execution = await run(entry, index);
         ordered.push(execution);
-        // Do not launch another mutating command while this Work-owned Process
-        // still owns workspace leases. The caller resumes through process_wait.
+        // Do not launch another mutating command while a Work-owned Lightweight
+        // process is still changing the workspace. This is sequencing, not a
+        // durable Lease boundary; the caller resumes through process_wait.
         if (execution.process && !execution.process.completed) break;
       }
       return ordered;

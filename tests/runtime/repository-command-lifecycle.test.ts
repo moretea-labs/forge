@@ -163,6 +163,31 @@ describe('repository command execution lifecycle', () => {
     expect(route(['touch', 'marker.txt'])).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
   });
 
+  test('Work identity does not upgrade an ordinary readonly command into Process Runtime', async () => {
+    const controllerHome = tempRoot('forge-cmd-work-read-home-');
+    const repoRoot = tempRoot('forge-cmd-work-read-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    const processCount = listProcessRecords(controllerHome, repository.repoId).length;
+    const result = await executeRepositoryCommandViaProcessRuntime({
+      controllerHome,
+      repository,
+      command: ['git', 'status', '--short'],
+      timeoutMs: 10_000,
+      workId: 'work-readonly-continuity',
+      executionIdentity: executionIdentityForRepository(repository, { workId: 'work-readonly-continuity' }),
+    });
+    expect(result).toMatchObject({
+      route: 'process_direct',
+      reason: 'readonly_fast_path',
+      ok: true,
+      executionMetrics: { lane: 'ephemeral_direct', durableWrites: 0, leaseOperations: 0 },
+    });
+    expect(result.process).toBeUndefined();
+    expect(listProcessRecords(controllerHome, repository.repoId)).toHaveLength(processCount);
+    expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
+  });
+
   test('local shell wrappers and inline interpreters stay lightweight without persistent Process or Lease state', async () => {
     const controllerHome = tempRoot('forge-cmd-opaque-home-'); const repoRoot = tempRoot('forge-cmd-opaque-repo-'); const repository = seedRepo(controllerHome, repoRoot);
     persistControllerAccessMode(controllerHome, 'full_access', repoRoot); const processCount = listProcessRecords(controllerHome, repository.repoId).length;

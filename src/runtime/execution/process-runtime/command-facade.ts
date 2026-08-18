@@ -136,7 +136,6 @@ export function classifyRepositoryCommandRoute(
   command: string | readonly string[],
   options: {
     forceDurable?: boolean;
-    forceManaged?: boolean;
     defaultBranch?: string;
     timeoutMs?: number;
   } = {},
@@ -169,9 +168,6 @@ export function classifyRepositoryCommandRoute(
     && /^\s*(?:exec\s+)?(?:node|nodejs|bun|deno|ruby|perl|python\d*)\b[^\n]*(?:\s-c\b|\s-e\b|\s--eval\b)/i.test(wrappedShellCommand));
   const wrapsObviousExternalIo = Boolean(wrappedShellCommand
     && /\b(?:curl|wget|ssh|scp|sftp|ftp|telnet|nc|ncat)\b|https?:\/\//i.test(wrappedShellCommand));
-  if (options.forceManaged) {
-    return { route: 'process_managed', reason: 'work_bound_durable_process' };
-  }
   if (shellWrapped && classification.risk !== 'readonly') {
     if (wrapsObviousExternalIo && !wrapsInlineInterpreter) {
       return { route: 'process_managed', reason: 'shell_wrapper_requires_managed_boundary' };
@@ -207,9 +203,8 @@ export async function executeRepositoryCommandViaProcessRuntime(
   assertRepositoryCommandNoPluginExecutionBypass(input.command);
   const decision = classifyRepositoryCommandRoute(input.command, {
     forceDurable: input.forceDurable,
-    // A Work binding is an actual durable workflow boundary. Merely asking for
-    // an async handle stays on the in-memory lightweight lane.
-    forceManaged: Boolean(input.workId),
+    // Work identity is continuity/audit metadata only. It must not change the
+    // execution lane of an otherwise ordinary local repository command.
     defaultBranch: input.repository.defaultBranch,
     timeoutMs: input.timeoutMs,
   });
