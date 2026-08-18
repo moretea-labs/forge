@@ -155,6 +155,15 @@ function reconcileRecord(_repoRoot: string, record: InteractionSessionRecord): I
   const expired = Number.isFinite(nowMs) && Number.isFinite(Date.parse(record.expiresAt)) && nowMs >= Date.parse(record.expiresAt);
   const startupGrace = record.status === 'starting' && Number.isFinite(createdMs) && nowMs - createdMs < STARTUP_GRACE_MS;
   const live = hooks.pidAlive(record.host?.pid);
+  const runtimeManaged = record.targetAliases?.includes('runtime-managed') === true;
+  if (runtimeManaged && expired) {
+    return {
+      ...record,
+      status: 'failed',
+      updatedAt: now,
+      error: { code: 'HANDOFF_EXPIRED', message: 'The runtime-managed browser handoff expired before it was resumed.' },
+    };
+  }
   if (record.status === 'closing') {
     if (live) return record;
     return {
@@ -285,6 +294,70 @@ async function waitForBrowserHandoffStartup(
     error: { code: 'HANDOFF_HOST_START_TIMEOUT', message },
   });
   throw new AssistantPluginError('PLUGIN_ACTION_FAILED', message, { retryable: true, details: { interactionId } });
+}
+
+export function isRuntimeManagedBrowserHandoff(record: InteractionSessionRecord): boolean {
+  return record.targetAliases?.includes('runtime-managed') === true;
+}
+
+export function startRuntimeManagedBrowserHandoff(
+  input: BrowserHandoffStartInput,
+  result: { url?: string; title?: string },
+): InteractionSessionRecord {
+  persistDeadBrowserHandoffs(input.repoRoot);
+  assertBrowserProfileAvailable(input.repoRoot, input.selectedProfilePath);
+  const timestamp = hooks.now();
+  const interactionId = `browser_handoff_${randomUUID()}`;
+  const expiresAt = new Date(Date.parse(timestamp) + boundedTimeout(input.timeoutMs)).toISOString();
+  const record: InteractionSessionRecord = {
+    schemaVersion: 1,
+    interactionId,
+    provider: PROVIDER,
+    sessionId: input.sessionId,
+    targetId: input.selectedProfilePath,
+    targetAliases: ['runtime-managed'],
+    status: 'waiting_for_user',
+    reason: input.reason,
+    instructions: input.instructions,
+    owner: {
+      repoId: input.repoId,
+      requestId: input.requestId,
+      jobId: input.jobId,
+    },
+    host: {
+      pid: process.pid,
+      startedAt: timestamp,
+      heartbeatAt: timestamp,
+      foregroundPresented: true,
+    },
+    result,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    expiresAt,
+  };
+  return writeInteractionSession(input.repoRoot, record);
+}
+
+export function resolveRuntimeManagedBrowserHandoff(
+  repoRoot: string,
+  interactionId: string,
+  resolution: 'resume' | 'cancel',
+  result?: { url?: string; title?: string },
+): InteractionSessionRecord {
+  const current = getBrowserHandoff(repoRoot, interactionId);
+  if (!isRuntimeManagedBrowserHandoff(current)) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'The browser handoff is not runtime-managed.', { retryable: false });
+  }
+  if (!isInteractionSessionActive(current.status)) return current;
+  return patchInteractionSession(repoRoot, PROVIDER, interactionId, {
+    status: resolution === 'resume' ? 'completed' : 'closed',
+    result: result ?? current.result,
+    host: {
+      ...current.host,
+      heartbeatAt: hooks.now(),
+      foregroundPresented: false,
+    },
+  }) ?? current;
 }
 
 export async function startBrowserHandoff(input: BrowserHandoffStartInput): Promise<InteractionSessionRecord> {

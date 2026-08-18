@@ -249,6 +249,7 @@ function mockManagedPersistentPlaywright() {
     newPages: 0,
     pageCloses: [] as string[],
     gotos: [] as Array<{ id: string; url: string }>,
+    broughtToFront: [] as string[],
   };
   const states: PageState[] = [{ id: 'page-1', url: 'about:blank', title: 'New Tab', closed: false }];
   const pageByState = new Map<PageState, any>();
@@ -287,6 +288,9 @@ function mockManagedPersistentPlaywright() {
       async fill() {},
       async press() {},
       async waitForSelector() { return {}; },
+      async bringToFront() {
+        events.broughtToFront.push(state.id);
+      },
       async close() {
         if (state.closed) return;
         state.closed = true;
@@ -1701,7 +1705,7 @@ describe('browser plugin', () => {
 
   test('does not install a domain route guard for HTTP(S) subresources', async () => {
     const { repoRoot } = repoFixture();
-    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright' });
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'isolated' });
     const runtime = mockPlaywright({ routeUrl: 'https://tracker.example.net/pixel' }) as unknown as { routeDecisions: string[] };
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
 
@@ -1716,7 +1720,7 @@ describe('browser plugin', () => {
 
   test('allows interaction results to navigate to another HTTP(S) domain', async () => {
     const { repoRoot } = repoFixture();
-    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright' });
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'isolated' });
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
       loadPlaywright: () => mockPlaywright({ finalUrl: 'https://other.example.net/' }),
@@ -1819,9 +1823,54 @@ describe('browser plugin', () => {
     expect(closed.closed).toBe(true);
   });
 
+  test('managed persistent handoff reuses the live owner page without a second browser launch', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'managed_persistent', profileMode: 'repo_local' });
+    const runtime = mockManagedPersistentPlaywright() as unknown as {
+      events: { launches: number; broughtToFront: string[] };
+      states: Array<{ id: string; url: string; ownerToken?: string; closed: boolean }>;
+    };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+    const opened = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
+      requestId: 'managed-handoff-create', args: { url: 'https://example.com/login' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    expect(runtime.events.launches).toBe(1);
+
+    const requested = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'request_human_handoff',
+      requestId: 'managed-handoff-request', args: { session_id: sessionId, reason: 'login' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const interactionId = String((requested.handoff as Record<string, unknown>).interactionId);
+    expect(requested.provider).toBe('playwright-runtime-managed-handoff');
+    expect(runtime.events.launches).toBe(1);
+    expect(runtime.events.broughtToFront).toEqual(['page-1']);
+    expect((requested.handoff as Record<string, unknown>).status).toBe('waiting_for_user');
+    await expect(executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'managed-handoff-fenced', args: { session_id: sessionId }, origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('PLUGIN_RESOURCE_BUSY');
+
+    runtime.states[0]!.url = 'https://example.com/login/complete';
+    const resolved = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'resolve_handoff',
+      requestId: 'managed-handoff-resume', args: { interaction_id: interactionId, resolution: 'resume' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(resolved.provider).toBe('playwright-runtime-managed-handoff');
+    expect((resolved.handoff as Record<string, unknown>).status).toBe('completed');
+    expect(runtime.events.launches).toBe(1);
+    const after = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'managed-handoff-after-resume', args: { session_id: sessionId }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(after.browserConnection).toMatchObject({ sessionResume: { status: 'matched' }, tab: { ownership: 'plugin_owned' } });
+    expect(after.url).toBe('https://example.com/login/complete');
+  });
+
   test('keeps a durable handoff, fences its profile, and records explicit resolution', async () => {
     const { repoRoot } = repoFixture();
-    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright' });
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'isolated' });
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => mockPlaywright() });
     const opened = await executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
@@ -1864,7 +1913,7 @@ describe('browser plugin', () => {
 
   test('reconciles dead and expired hosts without releasing a live profile early', async () => {
     const { repoRoot } = repoFixture();
-    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright' });
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'isolated' });
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => mockPlaywright() });
     const opened = await executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
@@ -1913,7 +1962,7 @@ describe('browser plugin', () => {
 
   test('fails the request instead of returning a stale starting handoff when the host exits before ready', async () => {
     const { repoRoot } = repoFixture();
-    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright' });
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'isolated' });
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => mockPlaywright() });
     const opened = await executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',

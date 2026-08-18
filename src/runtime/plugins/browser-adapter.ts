@@ -30,9 +30,12 @@ import {
   assertBrowserSessionAvailable,
   cancelBrowserHandoff,
   getBrowserHandoff,
+  isRuntimeManagedBrowserHandoff,
   listBrowserHandoffs,
+  resolveRuntimeManagedBrowserHandoff,
   resumeBrowserHandoff,
   startBrowserHandoff,
+  startRuntimeManagedBrowserHandoff,
 } from './browser-handoff';
 
 const BROWSER_PLUGIN_ID = 'browser';
@@ -1289,6 +1292,33 @@ async function selectManagedSessionPage(state: ManagedBrowserContextState, targe
         },
     ownerToken,
   };
+}
+
+async function runtimeManagedPageForSession(
+  repoRoot: string,
+  config: BrowserPluginConfig,
+  session: BrowserSessionState,
+): Promise<{ page: PageLike; profile: BrowserProfileSelection } | undefined> {
+  if (session.browser?.provider !== 'playwright-persistent-context' || session.browser.activeMode !== 'managed_persistent') return undefined;
+  const profile = selectedProfile(config, repoRoot, 'managed_persistent', session.sessionId);
+  const pending = managedBrowserContexts.get(managedContextKey(profile));
+  if (!pending) return undefined;
+  let state: ManagedBrowserContextState;
+  try {
+    state = await pending;
+  } catch {
+    return undefined;
+  }
+  let page = state.pagesBySession.get(session.sessionId);
+  if (page && state.context.pages().includes(page)) return { page, profile };
+  state.pagesBySession.delete(session.sessionId);
+  const expectedOwnerToken = session.browser.tab?.ownerToken ?? ownerTokenForSession(session.sessionId);
+  const inventory = await inventoryTabs(state.context).catch(() => [] as BrowserTabInventoryEntry[]);
+  const index = inventory.findIndex((entry) => entry.ownerToken === expectedOwnerToken);
+  page = index >= 0 ? state.context.pages()[index] : undefined;
+  if (!page) return undefined;
+  state.pagesBySession.set(session.sessionId, page);
+  return { page, profile };
 }
 
 async function closeManagedSessionPage(repoRoot: string, config: BrowserPluginConfig, session: BrowserSessionState): Promise<boolean> {
@@ -2662,6 +2692,41 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       }
       case 'request_human_handoff': {
         const target = resolveActionTarget(input.repoRoot, input.args);
+        const managedSession = target.existingSession;
+        const managedTarget = managedSession ? await runtimeManagedPageForSession(input.repoRoot, current, managedSession) : undefined;
+        if (managedSession && managedTarget) {
+          const result = { url: managedTarget.page.url(), title: await managedTarget.page.title().catch(() => managedSession.title) };
+          const handoff = startRuntimeManagedBrowserHandoff({
+            repoRoot: input.repoRoot,
+            repoId: input.repoId,
+            requestId: input.requestId,
+            jobId: input.jobId,
+            sessionId: target.sessionId,
+            sessionPath: sessionPath(input.repoRoot, target.sessionId),
+            url: target.url,
+            profileDir: managedTarget.profile.profileDir,
+            selectedProfilePath: managedTarget.profile.selectedProfilePath,
+            profileDirectory: managedTarget.profile.profileDirectory,
+            browserChannel: current.browserChannel,
+            executablePath: current.executablePath ? resolveConfiguredPath(input.repoRoot, current.executablePath) : undefined,
+            defaultTimeoutMs: current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS,
+            reason: stringValue(input.args.reason) ?? 'manual_review',
+            instructions: stringValue(input.args.instructions),
+            timeoutMs: typeof input.args.handoff_timeout_ms === 'number' ? input.args.handoff_timeout_ms : undefined,
+          }, result);
+          try {
+            if (managedTarget.page.bringToFront) await managedTarget.page.bringToFront();
+          } catch (error) {
+            resolveRuntimeManagedBrowserHandoff(input.repoRoot, handoff.interactionId, 'cancel', result);
+            throw error;
+          }
+          return {
+            provider: 'playwright-runtime-managed-handoff',
+            handoff,
+            session: managedSession,
+            nextAction: 'Complete the manual step, call resolve_handoff with resolution=resume, then poll get_handoff_status.',
+          };
+        }
         const nativeSession = target.existingSession;
         const nativeTab = nativeSession?.browser?.tab;
         const nativeBrowser = nativeSession?.browser?.provider === 'macos-apple-events'
@@ -2710,7 +2775,11 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const interactionId = requiredString(input.args.interaction_id, 'interaction_id');
         const handoff = getBrowserHandoff(input.repoRoot, interactionId);
         return {
-          provider: handoff.targetId.startsWith('macos-apple-events:') ? 'macos-apple-events-handoff-host' : 'playwright-handoff-host',
+          provider: isRuntimeManagedBrowserHandoff(handoff)
+            ? 'playwright-runtime-managed-handoff'
+            : handoff.targetId.startsWith('macos-apple-events:')
+              ? 'macos-apple-events-handoff-host'
+              : 'playwright-handoff-host',
           handoff,
         };
       }
@@ -2719,6 +2788,28 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const resolution = requiredString(input.args.resolution, 'resolution');
         if (resolution !== 'resume' && resolution !== 'cancel') {
           throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'resolution must be resume or cancel', { retryable: false });
+        }
+        const currentHandoff = getBrowserHandoff(input.repoRoot, interactionId);
+        if (isRuntimeManagedBrowserHandoff(currentHandoff)) {
+          const session = findSession(input.repoRoot, currentHandoff.sessionId);
+          const managedTarget = session ? await runtimeManagedPageForSession(input.repoRoot, current, session) : undefined;
+          const result = managedTarget
+            ? { url: managedTarget.page.url(), title: await managedTarget.page.title().catch(() => session?.title) }
+            : currentHandoff.result;
+          if (resolution === 'resume' && session && result?.url) {
+            saveSession(input.repoRoot, {
+              ...session,
+              url: result.url,
+              title: result.title,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+          const handoff = resolveRuntimeManagedBrowserHandoff(input.repoRoot, interactionId, resolution, result);
+          return {
+            provider: 'playwright-runtime-managed-handoff',
+            resolutionRequested: resolution,
+            handoff,
+          };
         }
         const handoff = resolution === 'resume'
           ? resumeBrowserHandoff(input.repoRoot, interactionId, input.requestId)
