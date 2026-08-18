@@ -11,6 +11,8 @@ import {
   rebindChatgptWorkConversation,
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
 import {
+  chatgptAutomationPageFailure,
+  chatgptAutomationReasoningLevelFromLabel,
   isChatgptConversationUrl,
   resolveChatgptWorkBrowserSessionId,
   runWorkChatgptContinuation,
@@ -112,6 +114,24 @@ describe('ChatGPT Work conversation binding', () => {
     expect(first).toStartWith('forge-chatgpt-automation-');
   });
 
+
+  test('recognizes contextual ChatGPT reasoning labels without matching unrelated UI', () => {
+    expect(chatgptAutomationReasoningLevelFromLabel('High')).toBe('high');
+    expect(chatgptAutomationReasoningLevelFromLabel('Thinking: High')).toBe('high');
+    expect(chatgptAutomationReasoningLevelFromLabel('Reasoning · High')).toBe('high');
+    expect(chatgptAutomationReasoningLevelFromLabel('推理强度：高')).toBe('high');
+    expect(chatgptAutomationReasoningLevelFromLabel('Thinking: Extra High')).toBe('xhigh');
+    expect(chatgptAutomationReasoningLevelFromLabel('Medium reasoning')).toBe('medium');
+    expect(chatgptAutomationReasoningLevelFromLabel('High contrast')).toBeUndefined();
+  });
+
+  test('classifies missing ChatGPT composer as login-required when authentication UI is visible', () => {
+    expect(chatgptAutomationPageFailure('Log in  Sign up  Continue with Google', false)).toBe('CHATGPT_AUTOMATION_LOGIN_REQUIRED');
+    expect(chatgptAutomationPageFailure('登录  注册  使用 Apple 继续', false)).toBe('CHATGPT_AUTOMATION_LOGIN_REQUIRED');
+    expect(chatgptAutomationPageFailure('Something went wrong', false)).toBe('CHATGPT_AUTOMATION_COMPOSER_UNAVAILABLE');
+    expect(chatgptAutomationPageFailure('ChatGPT', true)).toBeUndefined();
+  });
+
   test('lets only the exact target ChatGPT conversation claim a bridge task', () => {
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/c/target-id', 'https://chatgpt.com/c/target-id?model=current')).toBe(true);
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/c/target-id', 'https://chatgpt.com/c/other-id')).toBe(false);
@@ -146,7 +166,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain('CHATGPT_CAPABILITY_MENUITEM_SELECTOR');
     expect(source).toContain('aria-keyshortcuts~=\"ArrowRight\"');
     expect(source).not.toContain(':has-text(');
-    expect(source).toContain('waitForChatgptIntelligenceControl'); expect(source).toContain('reasoningLabelMatches'); expect(source).toContain("['high', '高']"); expect(source).toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('runWorkChatgptContinuation'); expect(engine).toContain("if (controllerType === 'chatgpt')"); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("input.conversationUrl?.trim() || 'https://chatgpt.com/'"); expect(engine).toContain("conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined"); expect(engine).toContain('conversation_url: durableConversationUrl');
+    expect(source).toContain('waitForChatgptIntelligenceControl'); expect(source).toContain('reasoningLabelMatches'); expect(source).toContain('chatgptAutomationReasoningLevelFromLabel'); expect(source).toContain('CHATGPT_AUTOMATION_LOGIN_REQUIRED'); expect(source).toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('runWorkChatgptContinuation'); expect(engine).toContain("if (controllerType === 'chatgpt')"); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("input.conversationUrl?.trim() || 'https://chatgpt.com/'"); expect(engine).toContain("conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined"); expect(engine).toContain('conversation_url: durableConversationUrl');
     expect(source).toContain('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'); expect(source).toContain('workflowToolAttributionInstruction'); expect(source).toContain('repository_command_execute and repository_safe_patch_apply');
   });
 

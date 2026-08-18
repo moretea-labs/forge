@@ -17,7 +17,7 @@ export const DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY = 'auto';
 export const DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge';
 const CHATGPT_PROMPT_SELECTOR = 'div#prompt-textarea[contenteditable="true"]';
 const CHATGPT_SEND_SELECTOR = '[data-testid="send-button"]';
-const CHATGPT_INTELLIGENCE_CONTROL_SELECTOR = 'main button';
+const CHATGPT_INTELLIGENCE_CONTROL_SELECTOR = 'button, [role="button"]';
 const CHATGPT_CAPABILITY_SLIDER_SELECTOR = '[role="slider"]';
 const CHATGPT_CAPABILITY_MENUITEM_SELECTOR = '[role="menuitem"][aria-keyshortcuts~="ArrowLeft"][aria-keyshortcuts~="ArrowRight"]';
 
@@ -195,6 +195,27 @@ function normalizeExecutionControlLabel(label: string | undefined): string {
   return (label ?? '').trim().toLowerCase().replace(/[\s_-]+/g, '');
 }
 
+export function chatgptAutomationReasoningLevelFromLabel(label: string | undefined): ChatgptAutomationReasoning | undefined {
+  const normalized = normalizeExecutionControlLabel(label);
+  if (!normalized) return undefined;
+
+  const exact = new Map<string, ChatgptAutomationReasoning>([
+    ['medium', 'medium'], ['中', 'medium'], ['中等', 'medium'],
+    ['high', 'high'], ['高', 'high'],
+    ['xhigh', 'xhigh'], ['extrahigh', 'xhigh'], ['超高', 'xhigh'], ['极高', 'xhigh'],
+  ]);
+  const exactLevel = exact.get(normalized);
+  if (exactLevel) return exactLevel;
+
+  const hasReasoningContext = ['reasoning', 'thinking', '推理', '思考']
+    .some((token) => normalized.includes(token));
+  if (!hasReasoningContext) return undefined;
+  if (['xhigh', 'extrahigh', '超高', '极高'].some((token) => normalized.includes(token))) return 'xhigh';
+  if (['medium', '中等'].some((token) => normalized.includes(token))) return 'medium';
+  if (['high', '高'].some((token) => normalized.includes(token))) return 'high';
+  return undefined;
+}
+
 function modelLabelMatches(label: string | undefined, model: string): boolean {
   if (model !== DEFAULT_CHATGPT_AUTOMATION_MODEL || !label) return false;
   const normalized = normalizeExecutionControlLabel(label);
@@ -202,10 +223,7 @@ function modelLabelMatches(label: string | undefined, model: string): boolean {
 }
 
 function reasoningLabelMatches(label: string | undefined, reasoning: ChatgptAutomationReasoning): boolean {
-  const normalized = normalizeExecutionControlLabel(label);
-  if (reasoning === 'medium') return ['medium', '中', '中等'].includes(normalized);
-  if (reasoning === 'high') return ['high', '高'].includes(normalized);
-  return ['xhigh', 'extrahigh', '超高', '极高'].includes(normalized);
+  return chatgptAutomationReasoningLevelFromLabel(label) === reasoning;
 }
 
 function isReasoningControlLabel(label: string | undefined): boolean {
@@ -255,6 +273,46 @@ async function waitForChatgptIntelligenceControl(
   return undefined;
 }
 
+export function chatgptAutomationPageFailure(
+  bodyText: string | undefined,
+  composerAvailable: boolean,
+): 'CHATGPT_AUTOMATION_LOGIN_REQUIRED' | 'CHATGPT_AUTOMATION_COMPOSER_UNAVAILABLE' | undefined {
+  if (composerAvailable) return undefined;
+  const normalized = (bodyText ?? '').toLowerCase();
+  const loginMarkers = [
+    'log in', 'sign up', 'continue with google', 'continue with apple',
+    '登录', '登陆', '注册', '使用 google 继续', '使用 apple 继续',
+  ];
+  return loginMarkers.some((marker) => normalized.includes(marker))
+    ? 'CHATGPT_AUTOMATION_LOGIN_REQUIRED'
+    : 'CHATGPT_AUTOMATION_COMPOSER_UNAVAILABLE';
+}
+
+async function assertChatgptAutomationComposerReady(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  timeoutMs?: number,
+): Promise<void> {
+  const composerResult = await controllerBrowserAction(controllerHome, workId, 'query_all', {
+    session_id: browserSessionId,
+    selector: CHATGPT_PROMPT_SELECTOR,
+    limit: 1,
+    timeout_ms: Math.min(timeoutMs ?? 5_000, 5_000),
+  }, timeoutMs).catch(() => undefined);
+  const composerAvailable = queryMatches(composerResult).length > 0;
+  if (composerAvailable) return;
+
+  const bodyResult = await controllerBrowserAction(controllerHome, workId, 'get_text', {
+    session_id: browserSessionId,
+    selector: 'body',
+    max_chars: 4_000,
+    timeout_ms: Math.min(timeoutMs ?? 5_000, 5_000),
+  }, timeoutMs).catch(() => undefined);
+  const failure = chatgptAutomationPageFailure(stringField(bodyResult?.text), composerAvailable);
+  throw new Error(failure ?? 'CHATGPT_AUTOMATION_COMPOSER_UNAVAILABLE');
+}
+
 async function ensureChatgptExecutionPreference(
   controllerHome: string,
   workId: string,
@@ -265,7 +323,10 @@ async function ensureChatgptExecutionPreference(
 ): Promise<boolean> {
   if (model !== DEFAULT_CHATGPT_AUTOMATION_MODEL) throw new Error(`CHATGPT_AUTOMATION_MODEL_UNSUPPORTED:${model}`);
   let control = await waitForChatgptIntelligenceControl(controllerHome, workId, browserSessionId, timeoutMs);
-  if (!control) throw new Error('CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE');
+  if (!control) {
+    await assertChatgptAutomationComposerReady(controllerHome, workId, browserSessionId, timeoutMs);
+    throw new Error('CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE');
+  }
   // Current ChatGPT UI exposes the reasoning level (for example `高`) on the
   // composer control instead of the model label. The model remains fail-closed
   // through normalizeModel above; only the user-adjustable reasoning control is
