@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from 'fs';
+import { statSync } from 'fs';
 import { dirname, relative, resolve } from 'path';
 import * as ts from 'typescript';
 
@@ -26,6 +26,13 @@ export interface TypeScriptNavigationResult {
   locations: TypeScriptNavigationLocation[];
 }
 
+export interface TypeScriptNavigationAccess {
+  /** Stable identity for one read-policy scope. Restricted and unrestricted projects must never share a Language Service. */
+  cacheScope: string;
+  /** Return true only for repository-relative paths that this navigation call may read. */
+  allowRepositoryPath(relativePath: string): boolean;
+}
+
 interface CachedProject {
   repoRoot: string;
   configPath: string;
@@ -47,35 +54,64 @@ function scriptVersion(path: string): string {
   }
 }
 
-function loadProject(repoRoot: string, tsconfigPath = 'tsconfig.json'): CachedProject {
+function repositoryRelativePath(repoRoot: string, fileName: string): string | undefined {
+  const normalized = normalizePath(relative(repoRoot, resolve(fileName)));
+  if (!normalized || normalized === '.' || normalized === '..' || normalized.startsWith('../')) return undefined;
+  return normalized;
+}
+
+function loadProject(repoRoot: string, tsconfigPath = 'tsconfig.json', access?: TypeScriptNavigationAccess): CachedProject {
   const root = resolve(repoRoot);
   const configPath = resolve(root, tsconfigPath);
-  const cacheKey = `${root}\0${configPath}`;
+  const configRelative = repositoryRelativePath(root, configPath);
+  if (!configRelative) throw new Error('TypeScript navigation tsconfig must be inside the repository.');
+  if (access && !access.allowRepositoryPath(configRelative)) {
+    throw new Error(`TypeScript navigation tsconfig is denied by read policy: ${configRelative}.`);
+  }
+  const cacheKey = `${root}\0${configPath}\0${scriptVersion(configPath)}\0${access?.cacheScope ?? 'unrestricted'}`;
   const cached = projects.get(cacheKey);
   if (cached) return cached;
 
-  const config = ts.readConfigFile(configPath, ts.sys.readFile);
+  const canReadAbsolute = (fileName: string): boolean => {
+    if (!access) return true;
+    const repoRelative = repositoryRelativePath(root, fileName);
+    return repoRelative === undefined || access.allowRepositoryPath(repoRelative);
+  };
+  const readAllowedFile = (fileName: string): string | undefined => canReadAbsolute(fileName) ? ts.sys.readFile(fileName) : undefined;
+  const fileExistsAllowed = (fileName: string): boolean => canReadAbsolute(fileName) && ts.sys.fileExists(fileName);
+  const readDirectoryAllowed: typeof ts.sys.readDirectory = (path, extensions, exclude, include, depth) =>
+    ts.sys.readDirectory(path, extensions, exclude, include, depth).filter(canReadAbsolute);
+
+  const config = ts.readConfigFile(configPath, readAllowedFile);
   if (config.error) {
     throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, '\n'));
   }
-  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, dirname(configPath), undefined, configPath);
+  const parseHost: ts.ParseConfigHost = {
+    useCaseSensitiveFileNames: ts.sys.useCaseSensitiveFileNames,
+    readDirectory: readDirectoryAllowed,
+    fileExists: fileExistsAllowed,
+    readFile: readAllowedFile,
+  };
+  const parsed = ts.parseJsonConfigFileContent(config.config, parseHost, dirname(configPath), undefined, configPath);
   if (parsed.errors.length > 0) {
     throw new Error(parsed.errors.map((entry) => ts.flattenDiagnosticMessageText(entry.messageText, '\n')).join('\n'));
   }
+  const scriptFileNames = parsed.fileNames.filter(canReadAbsolute);
 
   const host: ts.LanguageServiceHost = {
     getCompilationSettings: () => parsed.options,
-    getScriptFileNames: () => parsed.fileNames,
+    getScriptFileNames: () => scriptFileNames,
     getScriptVersion: scriptVersion,
     getScriptSnapshot: (fileName) => {
-      if (!existsSync(fileName)) return undefined;
-      return ts.ScriptSnapshot.fromString(readFileSync(fileName, 'utf8'));
+      if (!fileExistsAllowed(fileName)) return undefined;
+      const content = readAllowedFile(fileName);
+      return content === undefined ? undefined : ts.ScriptSnapshot.fromString(content);
     },
     getCurrentDirectory: () => root,
     getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
-    fileExists: ts.sys.fileExists,
-    readFile: ts.sys.readFile,
-    readDirectory: ts.sys.readDirectory,
+    fileExists: fileExistsAllowed,
+    readFile: readAllowedFile,
+    readDirectory: readDirectoryAllowed,
     directoryExists: ts.sys.directoryExists,
     getDirectories: ts.sys.getDirectories,
     realpath: ts.sys.realpath,
@@ -135,8 +171,12 @@ function dedupe(locations: TypeScriptNavigationLocation[]): TypeScriptNavigation
   });
 }
 
-export function navigateTypeScriptSymbol(repoRoot: string, request: TypeScriptNavigationRequest): TypeScriptNavigationResult {
-  const project = loadProject(repoRoot, request.tsconfigPath);
+export function navigateTypeScriptSymbol(
+  repoRoot: string,
+  request: TypeScriptNavigationRequest,
+  access?: TypeScriptNavigationAccess,
+): TypeScriptNavigationResult {
+  const project = loadProject(repoRoot, request.tsconfigPath, access);
   const fileName = resolve(project.repoRoot, request.path);
   const position = sourcePosition(project, fileName, request.line, request.column);
   let locations: TypeScriptNavigationLocation[] = [];

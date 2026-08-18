@@ -5,9 +5,11 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { CallToolResult as SdkCallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { collectRuntimePerformanceDiagnostics, inferLocalControllerProcess } from '../../diagnostics/performance';
+import { navigateTypeScriptSymbol, type TypeScriptNavigationKind } from '../../context/typescript-navigation';
 import type { McpToolDefinition, CallToolResult } from '../../../cli/mcp/tools';
 import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
 import { repositoryScopedToolArgs } from '../../../cli/mcp/multi-repository';
+import { resolveMcpPath } from '../../../cli/mcp/paths';
 import { reconcileReadinessProjectionSource } from '../../../cli/mcp/readiness-projection';
 import { listRepositories, repositorySummary, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
@@ -264,6 +266,100 @@ function rhContextReadSessionId(ctx: MultiRepositoryMcpToolContext): string | un
   }
   const transportSession = ctx.sessionId?.trim();
   return transportSession ? `transport:${transportSession}` : undefined;
+}
+
+const RH_CONTEXT_SEMANTIC_QUERY_LIMIT = 8;
+const RH_CONTEXT_SEMANTIC_LOCATION_LIMIT = 200;
+
+function rhContextSemanticNavigation(
+  repoRoot: string,
+  policy: MultiRepositoryMcpToolContext['policy'],
+  value: unknown,
+): Record<string, unknown> {
+  const raw = Array.isArray(value) ? value : [];
+  const requests = raw.slice(0, RH_CONTEXT_SEMANTIC_QUERY_LIMIT);
+  const results: Record<string, unknown>[] = [];
+  const errors: Array<{ index: number; code: string; message: string }> = [];
+  let anyLocationTruncated = false;
+  let policyDeniedLocations = 0;
+  let policyDeniedReads = 0;
+  const policyDeniedReadSamples = new Set<string>();
+  const semanticAccessScope = createHash('sha256')
+    .update(JSON.stringify({ profile: policy.profile, readGlobs: policy.readGlobs, denyGlobs: policy.denyGlobs }))
+    .digest('hex')
+    .slice(0, 20);
+
+  requests.forEach((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      errors.push({ index, code: 'SEMANTIC_NAVIGATION_REQUEST_INVALID', message: 'semantic_navigation entries must be objects.' });
+      return;
+    }
+    const item = entry as Record<string, unknown>;
+    const navigation = String(item.navigation ?? '') as TypeScriptNavigationKind;
+    const path = String(item.path ?? '').trim();
+    const line = Number(item.line);
+    const column = Number(item.column);
+    const tsconfigPath = typeof item.tsconfig_path === 'string' && item.tsconfig_path.trim() ? item.tsconfig_path.trim() : undefined;
+    if (!['definition', 'references', 'implementations'].includes(navigation) || !path || !Number.isInteger(line) || line < 1 || !Number.isInteger(column) || column < 1) {
+      errors.push({ index, code: 'SEMANTIC_NAVIGATION_REQUEST_INVALID', message: 'navigation, path, and positive 1-based line/column are required.' });
+      return;
+    }
+    const targetDecision = resolveMcpPath(repoRoot, path, policy, 'read');
+    if (!targetDecision.ok) {
+      errors.push({ index, code: 'SEMANTIC_NAVIGATION_TARGET_DENIED', message: targetDecision.reason ?? 'target path denied by MCP read policy.' });
+      return;
+    }
+    try {
+      const deniedReadsBefore = policyDeniedReads;
+      const semantic = navigateTypeScriptSymbol(repoRoot, { navigation, path, line, column, tsconfigPath }, {
+        cacheScope: `mcp:${semanticAccessScope}`,
+        allowRepositoryPath: (relativePath) => {
+          const decision = resolveMcpPath(repoRoot, relativePath, policy, 'read');
+          if (decision.ok) return true;
+          policyDeniedReads += 1;
+          if (policyDeniedReadSamples.size < 20) policyDeniedReadSamples.add(relativePath);
+          return false;
+        },
+      });
+      const allowedLocations = semantic.locations.filter((location) => {
+        const decision = resolveMcpPath(repoRoot, location.path, policy, 'read');
+        if (decision.ok) return true;
+        policyDeniedLocations += 1;
+        return false;
+      });
+      const truncated = allowedLocations.length > RH_CONTEXT_SEMANTIC_LOCATION_LIMIT;
+      anyLocationTruncated ||= truncated;
+      results.push({
+        navigation,
+        target: semantic.target,
+        locations: allowedLocations.slice(0, RH_CONTEXT_SEMANTIC_LOCATION_LIMIT),
+        totalLocations: allowedLocations.length,
+        returnedLocations: Math.min(allowedLocations.length, RH_CONTEXT_SEMANTIC_LOCATION_LIMIT),
+        truncated,
+        policyDeniedReads: policyDeniedReads - deniedReadsBefore,
+      });
+    } catch (error) {
+      errors.push({ index, code: 'SEMANTIC_NAVIGATION_FAILED', message: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  const requestTruncated = raw.length > RH_CONTEXT_SEMANTIC_QUERY_LIMIT;
+  const incomplete = requestTruncated || anyLocationTruncated || policyDeniedLocations > 0 || policyDeniedReads > 0 || errors.length > 0;
+  return {
+    requested: raw.length,
+    executed: requests.length,
+    results,
+    errors,
+    policyDeniedLocations,
+    policyDeniedReads,
+    policyDeniedReadSamples: Array.from(policyDeniedReadSamples),
+    requestTruncated,
+    staticClosure: {
+      scope: 'requested_typescript_static_relationships',
+      status: raw.length === 0 ? 'not_requested' : incomplete ? 'incomplete' : 'complete_for_requested_symbols',
+      limitations: ['dynamic_registration', 'string_or_config_edges', 'reflection', 'runtime_dispatch'],
+    },
+  };
 }
 
 export function summarizeControllerReadyPayload(fullPayload: Record<string, unknown>): Record<string, unknown> {
@@ -2917,6 +3013,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               ? { sessionId: rhContextReadSessionId(ctx)!, repoId: repository.repoId, checkoutId: repository.activeCheckoutId }
               : undefined,
           });
+          const semanticNavigation = rhContextSemanticNavigation(repository.canonicalRoot, ctx.policy, args.semantic_navigation);
           const warnings = structuralContext === 'required' && !pack.structuralContext.requiredSatisfied
             ? [pack.structuralContext.fallbackReason ?? 'Required structural context is not ready; lexical retrieval results are returned as degraded evidence.']
             : [];
@@ -2932,6 +3029,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               search: pack.search,
               structuralContext: pack.structuralContext,
               impactContext: pack.impactContext,
+              semanticNavigation,
               files: pack.files,
               coverage: pack.coverage,
               cache: pack.cache,

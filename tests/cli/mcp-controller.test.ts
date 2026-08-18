@@ -149,6 +149,63 @@ test("reuses rh_context repository reads across short-lived transport sessions f
   });
 });
 
+test("returns bounded policy-checked TypeScript semantic navigation through rh_context", async () => {
+  await withController(async (repoRoot) => {
+    const controllerHome = String(process.env.FORGE_CONTROLLER_HOME);
+    mkdirSync(join(repoRoot, "src"), { recursive: true });
+    mkdirSync(join(repoRoot, "private"), { recursive: true });
+    writeFileSync(join(repoRoot, "tsconfig.json"), JSON.stringify({ compilerOptions: { target: "ES2022", module: "ESNext" }, include: ["src/**/*.ts"] }));
+    writeFileSync(join(repoRoot, "private/tsconfig.json"), JSON.stringify({ include: ["../src/**/*.ts"] }));
+    writeFileSync(join(repoRoot, "src/semantic-target.ts"), "export function semanticTarget() { return 1; }\n");
+    writeFileSync(join(repoRoot, "src/semantic-use.ts"), "import { semanticTarget } from './semantic-target';\nexport const semanticValue = semanticTarget();\n");
+    spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
+    spawnSync("git", ["config", "user.name", "Forge Test"], { cwd: repoRoot, stdio: "ignore" });
+    spawnSync("git", ["config", "user.email", "forge@example.test"], { cwd: repoRoot, stdio: "ignore" });
+    spawnSync("git", ["commit", "-m", "semantic fixture"], { cwd: repoRoot, stdio: "ignore" });
+    const repository = registerRepository({ path: repoRoot, controllerHome });
+    const ctx = createMultiRepositoryContext({ repo: repoRoot, controllerHome, profile: "controller", toolset: "advanced" });
+    const response = await callRuntimeTool(ctx, "rh_context", {
+      repo_id: repository.repoId,
+      operation: "search",
+      query: "semanticTarget",
+      known_paths: ["src/semantic-target.ts", "src/semantic-use.ts"],
+      structural_context: "off",
+      semantic_navigation: [{ navigation: "references", path: "src/semantic-target.ts", line: 1, column: 17 }],
+    });
+    const value = JSON.parse(response!.content[0]!.text);
+    expect(value.data.semanticNavigation.staticClosure).toMatchObject({
+      scope: "requested_typescript_static_relationships",
+      status: "complete_for_requested_symbols",
+    });
+    expect(value.data.semanticNavigation.errors).toEqual([]);
+    expect(value.data.semanticNavigation.results[0].totalLocations).toBeGreaterThanOrEqual(2);
+
+    const deniedResponse = await callRuntimeTool(ctx, "rh_context", {
+      repo_id: repository.repoId,
+      operation: "search",
+      query: "semanticTarget",
+      known_paths: ["src/semantic-target.ts"],
+      structural_context: "off",
+      semantic_navigation: [{ navigation: "references", path: "../outside.ts", line: 1, column: 1 }],
+    });
+    const denied = JSON.parse(deniedResponse!.content[0]!.text);
+    expect(denied.data.semanticNavigation.staticClosure.status).toBe("incomplete");
+    expect(denied.data.semanticNavigation.errors).toHaveLength(1);
+
+    const deniedConfigResponse = await callRuntimeTool(ctx, "rh_context", {
+      repo_id: repository.repoId,
+      operation: "search",
+      query: "semanticTarget",
+      known_paths: ["src/semantic-target.ts"],
+      structural_context: "off",
+      semantic_navigation: [{ navigation: "references", path: "src/semantic-target.ts", line: 1, column: 17, tsconfig_path: "private/tsconfig.json" }],
+    });
+    const deniedConfig = JSON.parse(deniedConfigResponse!.content[0]!.text);
+    expect(deniedConfig.data.semanticNavigation.staticClosure.status).toBe("incomplete");
+    expect(deniedConfig.data.semanticNavigation.errors).toHaveLength(1);
+  });
+});
+
 test("returns execution readiness and registered checks in one rh_context search", async () => {
   await withController(async (repoRoot) => {
     const controllerHome = String(process.env.FORGE_CONTROLLER_HOME);

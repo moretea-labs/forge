@@ -47,6 +47,23 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     retrieval_mode: { type: 'string', enum: ['implementation', 'plan', 'debug', 'review'], description: 'Defaults to implementation. Implementation returns current raw impact evidence for ChatGPT to judge; plan/debug/review intentionally widen evidence.' },
     impact_domains: { type: 'array', items: { type: 'string', enum: [...CONTROLLER_CONTEXT_IMPACT_DOMAINS] }, description: 'Optional GPT-selected cross-cutting evidence dimensions. Forge expands these mechanically in the same retrieval call; it never treats them as proof of semantic completeness.' },
     structural_context: { type: 'string', enum: ['off', 'auto', 'required'], description: 'Optional override. Defaults to auto for implementation/review and required for plan/debug.' },
+    semantic_navigation: {
+      type: 'array',
+      maxItems: 8,
+      description: 'Optional bounded TypeScript Language Service navigation. Use for precise definition/reference/implementation evidence after lexical discovery; it proves only requested static TypeScript relationships, not dynamic/string/config runtime edges.',
+      items: {
+        type: 'object',
+        required: ['navigation', 'path', 'line', 'column'],
+        additionalProperties: false,
+        properties: {
+          navigation: { type: 'string', enum: ['definition', 'references', 'implementations'] },
+          path: { type: 'string' },
+          line: { type: 'number' },
+          column: { type: 'number' },
+          tsconfig_path: { type: 'string' },
+        },
+      },
+    },
     max_files: { type: 'number' },
     max_snippets: { type: 'number' },
     requested_check_ids: { type: 'array', items: { type: 'string' } },
