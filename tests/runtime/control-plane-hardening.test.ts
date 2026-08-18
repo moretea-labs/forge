@@ -13,11 +13,11 @@ import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
+import { createHandoffItem, getHandoffItem, listHandoffItems } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { getControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
-import { createSchedule } from '../../src/runtime/workflow/schedules/store';
+import { createSchedule, recordScheduleOccurrenceHandoff, saveOccurrence } from '../../src/runtime/workflow/schedules/store';
 
 const roots: string[] = [];
 
@@ -231,6 +231,59 @@ describe('scheduled external Controller wake', () => {
     const second = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'current-handoff' });
     expect(second).toMatchObject({ decision: 'stopped', status: 'skipped' });
     expect(second?.reason).toContain('HND-WORK-SCOPE');
+  });
+
+  test('deduplicates recurring infrastructure handoffs by failure class and resolves them after recovery', () => {
+    const root = temp('forge-schedule-handoff-dedup-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'handoff@example.test'], ['config', 'user.name', 'Handoff Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'handoff\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'schedule-handoff-dedup' });
+    const schedule = createSchedule(controllerHome, { requestId: 'schedule-handoff-dedup-request', repoId: repository.repoId, name: 'dedup schedule failures', enabled: true, trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 10, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: false }, action: { operation: 'runtime_maintenance_apply', target: 'runtime', arguments: {} }, stopConditions: [] });
+    const otherSchedule = createSchedule(controllerHome, { requestId: 'schedule-handoff-other-request', repoId: repository.repoId, name: 'other schedule failures', enabled: true, trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 10, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: false }, action: { operation: 'runtime_maintenance_apply', target: 'runtime', arguments: { scope: 'other' } }, stopConditions: [] });
+    const at = new Date().toISOString();
+    const occurrence = (occurrenceId: string, scheduleId = schedule.scheduleId, status: 'failed' | 'succeeded' = 'failed') => saveOccurrence(controllerHome, {
+      schemaVersion: 1, revision: 0, occurrenceId, scheduleId, repoId: repository.repoId, windowKey: occurrenceId,
+      status, decision: 'execute', createdAt: at, updatedAt: at,
+      reason: status === 'succeeded' ? 'Recovered.' : 'Failed.',
+    });
+    const handoffInput = (reason: string) => ({
+      title: 'Scheduled operation failed', summary: 'Repeated infrastructure failure.', reason,
+      creationReason: 'repeated_infrastructure_failure' as const,
+      blockingDecision: 'Repair the infrastructure blocker.', recommendedDecision: 'Repair and retrigger.',
+      recommendedPrompt: 'Repair the schedule infrastructure blocker.', statusSummary: 'Schedule blocked.',
+      blockedBy: ['infrastructure'], attemptedActions: ['schedule-test'],
+    });
+
+    const legacy = createHandoffItem({ controllerHome, repoId: repository.repoId }, {
+      id: 'schedule-OCC-legacy-failure', repoId: repository.repoId, title: 'Legacy schedule failure', severity: 'blocked',
+      creationReason: 'repeated_infrastructure_failure', reason: 'CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE: legacy',
+      summary: 'Legacy occurrence-specific handoff.', currentState: { repoId: repository.repoId, taskId: schedule.scheduleId, statusSummary: 'blocked' },
+      attemptedActions: [`schedule:${schedule.scheduleId}`, 'occurrence:legacy'], evidenceRefs: [], blockingDecision: 'Repair browser readiness.',
+      recommendedDecision: 'Repair.', recommendedPrompt: 'Repair.', suggestedNextActions: [],
+    });
+    const first = recordScheduleOccurrenceHandoff(controllerHome, schedule, occurrence('OCC-dedup-1'), handoffInput('CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE: first'));
+    const second = recordScheduleOccurrenceHandoff(controllerHome, schedule, occurrence('OCC-dedup-2'), handoffInput('CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE: second'));
+    expect(first.handoffId).toBe(legacy.id);
+    expect(second.handoffId).toBe(legacy.id);
+
+    const distinct = recordScheduleOccurrenceHandoff(controllerHome, schedule, occurrence('OCC-dedup-3'), handoffInput('PLUGIN_BROWSER_NATIVE_OPERATION_FAILED: timeout'));
+    const distinctAgain = recordScheduleOccurrenceHandoff(controllerHome, schedule, occurrence('OCC-dedup-4'), handoffInput('PLUGIN_BROWSER_NATIVE_OPERATION_FAILED: another timeout'));
+    expect(distinct.handoffId).toBeTruthy();
+    expect(distinctAgain.handoffId).toBe(distinct.handoffId);
+    expect(distinct.handoffId).not.toBe(legacy.id);
+
+    const other = recordScheduleOccurrenceHandoff(controllerHome, otherSchedule, occurrence('OCC-other-1', otherSchedule.scheduleId), handoffInput('CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE: other schedule'));
+    const beforeRecovery = listHandoffItems({ controllerHome, repoId: repository.repoId, status: 'active', limit: 100 });
+    expect(beforeRecovery.filter((item) => item.currentState?.taskId === schedule.scheduleId && item.creationReason === 'repeated_infrastructure_failure')).toHaveLength(2);
+    expect(beforeRecovery.some((item) => item.id === other.handoffId)).toBe(true);
+
+    occurrence('OCC-dedup-recovered', schedule.scheduleId, 'succeeded');
+    const afterRecovery = listHandoffItems({ controllerHome, repoId: repository.repoId, status: 'active', limit: 100 });
+    expect(afterRecovery.filter((item) => item.currentState?.taskId === schedule.scheduleId && item.creationReason === 'repeated_infrastructure_failure')).toHaveLength(0);
+    expect(afterRecovery.some((item) => item.id === other.handoffId)).toBe(true);
+    expect(getHandoffItem({ controllerHome, repoId: repository.repoId }, legacy.id)?.status).toBe('resolved');
+    expect(getHandoffItem({ controllerHome, repoId: repository.repoId }, distinct.handoffId!)?.status).toBe('resolved');
   });
 
   test('launches one bounded Work and suppresses duplicate active ownership', async () => {
