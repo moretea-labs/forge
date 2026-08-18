@@ -1,13 +1,23 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { forgeToolSurfaceFingerprint } from '../../src/cli/controller/runtime-config';
 import {
   CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS,
   CANONICAL_RUNTIME_HANDOFF_WAIT_MS,
   CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS,
+  canonicalRuntimeForwardingIdentity,
   canonicalRuntimeReleaseHandoffInProgress,
+  createForgeMcpServerFromContext,
+  createMcpToolContext,
   deriveCanonicalForwardingTiming,
   retryCanonicalRuntimeConnectDuringHandoff,
   waitForCanonicalRuntimeReleaseHandoff,
+  type CanonicalRuntimeProxy,
+  type CanonicalRuntimeToolSchema,
 } from '../../src/cli/mcp/server';
 import {
   mcpSessionToolSurfaceFingerprintIsCurrent,
@@ -16,6 +26,75 @@ import {
 import { closeRuntimeMcpTransportResources } from '../../src/runtime/root/mcp-transport';
 
 describe('MCP canonical Runtime proxy routing', () => {
+  test('reuses one shared Runtime proxy across outer MCP sessions without collapsing caller session identity', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-runtime-proxy-reuse-'));
+    const runtimeSchema: CanonicalRuntimeToolSchema = {
+      definitions: [{ name: 'rh_status', description: 'fixture', inputSchema: { type: 'object' } }],
+      toolNames: ['rh_status'],
+      fingerprint: 'fixture-runtime-schema',
+    };
+    const observedSessions: string[] = [];
+    let closeCalls = 0;
+    const sharedProxy: CanonicalRuntimeProxy = {
+      listTools: async () => ({ tools: runtimeSchema.definitions }),
+      callTool: async (ctx) => {
+        observedSessions.push(ctx.sessionId ?? 'missing');
+        return {
+          content: [{ type: 'text', text: '{"ok":true}' }],
+          structuredContent: { ok: true },
+        };
+      },
+      close: async () => { closeCalls += 1; },
+    };
+    const invoke = async (sessionId: string): Promise<void> => {
+      const context = {
+        ...createMcpToolContext({ controllerHome, profile: 'controller' }),
+        principalId: 'oauth-client:fixture',
+        sessionId,
+        controllerType: 'chatgpt' as const,
+      };
+      const server = createForgeMcpServerFromContext(context, runtimeSchema, sharedProxy);
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client({ name: `proxy-client-${sessionId}`, version: '1.0.0' }, { capabilities: {} });
+      await client.connect(clientTransport);
+      try {
+        await client.callTool({ name: 'rh_status', arguments: { request_id: `req-${sessionId}` } });
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    };
+    try {
+      await invoke('outer-session-a');
+      await invoke('outer-session-b');
+      expect(observedSessions).toEqual(['outer-session-a', 'outer-session-b']);
+      expect(closeCalls).toBe(0);
+    } finally {
+      await sharedProxy.close();
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+    expect(closeCalls).toBe(1);
+  });
+
+  test('accepts only bounded internal Runtime forwarding identity metadata', () => {
+    expect(canonicalRuntimeForwardingIdentity({
+      forgeRuntimeForwarding: {
+        principalId: ' oauth-client:fixture ',
+        sessionId: ' session-a ',
+        controllerType: 'chatgpt',
+      },
+    })).toEqual({
+      principalId: 'oauth-client:fixture',
+      sessionId: 'session-a',
+      controllerType: 'chatgpt',
+    });
+    expect(canonicalRuntimeForwardingIdentity({
+      forgeRuntimeForwarding: { principalId: 'fixture', sessionId: 'session-b', controllerType: 'root' },
+    })).toEqual({ principalId: 'fixture', sessionId: 'session-b' });
+    expect(canonicalRuntimeForwardingIdentity({ forgeRuntimeForwarding: 'invalid' })).toEqual({});
+  });
+
   test('gracefully drains an in-flight Runtime request before closing sessions and forcing residual connections', async () => {
     const events: string[] = [];
     let releaseRequest!: () => void;

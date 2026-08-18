@@ -11,9 +11,11 @@ import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/share
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   buildMultiRepositoryToolDefinitions,
+  createCanonicalRuntimeProxy,
   createMcpToolContext,
   createForgeMcpServerFromContext,
   readCanonicalRuntimeToolSchema,
+  type CanonicalRuntimeProxy,
   type CanonicalRuntimeToolSchema,
   type McpServerOptions,
 } from '../server';
@@ -687,6 +689,7 @@ async function handleMcpPost(
   route: McpSessionRoute,
   currentToolSurfaceFingerprint: () => string | undefined,
   resolveRuntimeSchema?: (context: McpToolContext) => Promise<CanonicalRuntimeToolSchema | undefined>,
+  sharedRuntimeProxy?: CanonicalRuntimeProxy,
 ): Promise<void> {
   let body: unknown;
   try {
@@ -763,7 +766,7 @@ async function handleMcpPost(
       transport.onclose = () => {
         if (transport?.sessionId) registry.detach(transport.sessionId);
       };
-      server = createForgeMcpServerFromContext(sessionContext, runtimeSchema);
+      server = createForgeMcpServerFromContext(sessionContext, runtimeSchema, sharedRuntimeProxy);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     } finally {
@@ -917,6 +920,9 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     devRunnerMaxTimeoutMs: opts.devRunnerMaxTimeoutMs,
   };
   const runtimeControllerHome = 'controllerHome' in toolContext ? toolContext.controllerHome : undefined;
+  const sharedRuntimeProxy = runtimeControllerHome && 'controllerHome' in toolContext && !toolContext.runtimeSourceRoot
+    ? createCanonicalRuntimeProxy(toolContext)
+    : undefined;
   const currentRuntimeGeneration = () => runtimeControllerHome ? readRuntimeGeneration(runtimeControllerHome) : undefined;
   const currentRuntimeToolSurfaceFingerprint = () => runtimeControllerHome
     ? readRuntimeStatusSnapshot(runtimeControllerHome)?.toolSurfaceFingerprint
@@ -941,7 +947,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   const resolveRuntimeSchema = runtimeControllerHome
     ? async (context: McpToolContext): Promise<CanonicalRuntimeToolSchema | undefined> => {
       if (!('controllerHome' in context)) return undefined;
-      return await readCanonicalRuntimeToolSchema(context);
+      return await readCanonicalRuntimeToolSchema(context, sharedRuntimeProxy);
     }
     : undefined;
   const localControllerConfig = {
@@ -1216,7 +1222,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   // Primary MCP path: OAuth (or bearer when --auth bearer). Unchanged for ChatGPT.
   app.use('/mcp', setMcpResponseHeaders);
   app.post('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema).catch((error: unknown) => {
+    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
@@ -1234,7 +1240,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   // Legacy Grok OAuth resource. New Grok connectors should use canonical /mcp.
   app.use('/mcp-grok', setMcpResponseHeaders);
   app.post('/mcp-grok', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok'), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-grok', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema).catch((error: unknown) => {
+    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-grok', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
@@ -1252,7 +1258,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   // Bearer-only MCP path for clients that can send Authorization headers. Never advertises OAuth resource_metadata.
   app.use('/mcp-bearer', setMcpResponseHeaders);
   app.post('/mcp-bearer', requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-bearer', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema).catch((error: unknown) => {
+    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-bearer', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
@@ -1284,6 +1290,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     if (toolSurfaceNotificationTimer) clearTimeout(toolSurfaceNotificationTimer);
     runtimeStatusWatcher?.close();
     void sessionRegistry.closeAll('shutdown');
+    void sharedRuntimeProxy?.close();
   });
 
   await new Promise<void>((resolve) => {

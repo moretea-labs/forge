@@ -374,78 +374,67 @@ function canonicalRuntimeReleaseHandoffActive(controllerHome: string): boolean {
 }
 
 
-async function withCanonicalRuntimeClient<T>(
-  ctx: MultiRepositoryMcpToolContext,
-  action: (client: Client) => Promise<T>,
-): Promise<T> {
-  const connect = async (): Promise<Client> => {
-    const abort = new AbortController();
-    const timeout = setTimeout(() => abort.abort(new Error('CANONICAL_RUNTIME_TIMEOUT')), CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS);
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${canonicalRuntimeToken(ctx)}`,
-    };
-    if (ctx.principalId?.trim()) headers['x-forge-forwarded-principal-id'] = ctx.principalId.trim();
-    if (ctx.sessionId?.trim()) headers['x-forge-forwarded-session-id'] = ctx.sessionId.trim();
-    const transport = new StreamableHTTPClientTransport(canonicalRuntimeEndpoint(ctx), {
-      requestInit: { headers, signal: abort.signal },
-    });
-    const client = new Client({ name: 'forge-public-gateway-proxy', version: '1.0.0' });
-    try {
-      await client.connect(transport);
-      return client;
-    } catch (error) {
-      await client.close().catch(() => undefined);
-      throw error;
-    } finally {
-      clearTimeout(timeout);
-    }
-  };
-  const client = await retryCanonicalRuntimeConnectDuringHandoff(
-    connect,
-    () => canonicalRuntimeReleaseHandoffActive(ctx.controllerHome),
-  );
-  try {
-    // action() is intentionally outside the retry helper. Tool/schema work is
-    // dispatched at most once even if the Runtime changes mid-response.
-    return await action(client);
-  } finally {
-    await client.close().catch(() => undefined);
-  }
+const CANONICAL_RUNTIME_FORWARD_META_KEY = 'forgeRuntimeForwarding';
+
+type ForwardedControllerType = NonNullable<McpToolContext['controllerType']>;
+
+interface CanonicalRuntimeForwardingIdentity {
+  principalId?: string;
+  sessionId?: string;
+  controllerType?: ForwardedControllerType;
 }
 
-/**
- * The public Gateway has no schema cache authority. It obtains each Connector
- * session's schema from the Runtime that will execute its calls.
- */
-export async function readCanonicalRuntimeToolSchema(
-  ctx: MultiRepositoryMcpToolContext,
-): Promise<CanonicalRuntimeToolSchema> {
-  const response = await withCanonicalRuntimeClient(ctx, async (client) => await client.listTools());
-  const definitions = response.tools as Tool[];
-  const toolNames = definitions
-    .map((tool) => tool.name)
-    .filter((name): name is string => typeof name === 'string' && name.length > 0)
-    .sort();
+function boundedForwardedIdentity(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  return normalized ? normalized.slice(0, 512) : undefined;
+}
+
+export function canonicalRuntimeForwardingIdentity(meta: unknown): CanonicalRuntimeForwardingIdentity {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return {};
+  const envelope = (meta as Record<string, unknown>)[CANONICAL_RUNTIME_FORWARD_META_KEY];
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) return {};
+  const record = envelope as Record<string, unknown>;
+  const controllerType = boundedForwardedIdentity(record.controllerType);
   return {
-    definitions,
-    toolNames,
-    fingerprint: forgeToolSurfaceFingerprint(definitions),
+    principalId: boundedForwardedIdentity(record.principalId),
+    sessionId: boundedForwardedIdentity(record.sessionId),
+    ...(controllerType && ['chatgpt', 'codex', 'claude', 'grok', 'human'].includes(controllerType)
+      ? { controllerType: controllerType as ForwardedControllerType }
+      : {}),
+  };
+}
+
+function canonicalRuntimeForwardingMeta(ctx: MultiRepositoryMcpToolContext): Record<string, unknown> {
+  return {
+    [CANONICAL_RUNTIME_FORWARD_META_KEY]: {
+      ...(ctx.principalId?.trim() ? { principalId: ctx.principalId.trim() } : {}),
+      ...(ctx.sessionId?.trim() ? { sessionId: ctx.sessionId.trim() } : {}),
+      ...(ctx.controllerType ? { controllerType: ctx.controllerType } : {}),
+    },
+  };
+}
+
+function canonicalRuntimeRequestContext(baseContext: ServerToolContext, meta: unknown): ServerToolContext {
+  if (!isMultiRepositoryContext(baseContext) || !baseContext.runtimeSourceRoot) return baseContext;
+  const forwarded = canonicalRuntimeForwardingIdentity(meta);
+  return {
+    ...baseContext,
+    ...(forwarded.principalId ? { principalId: forwarded.principalId } : {}),
+    ...(forwarded.sessionId ? { sessionId: forwarded.sessionId } : {}),
+    ...(forwarded.controllerType ? { controllerType: forwarded.controllerType } : {}),
   };
 }
 
 interface CanonicalRuntimeProxyIdentity {
   endpoint: URL;
   token: string;
-  principalId: string;
-  sessionId: string;
 }
 
 function canonicalRuntimeProxyIdentity(ctx: MultiRepositoryMcpToolContext): CanonicalRuntimeProxyIdentity {
   return {
     endpoint: canonicalRuntimeEndpoint(ctx),
     token: canonicalRuntimeToken(ctx),
-    principalId: ctx.principalId?.trim() ?? '',
-    sessionId: ctx.sessionId?.trim() ?? '',
   };
 }
 
@@ -453,10 +442,42 @@ function sameCanonicalRuntimeProxyIdentity(
   left: CanonicalRuntimeProxyIdentity,
   right: CanonicalRuntimeProxyIdentity,
 ): boolean {
-  return left.endpoint.href === right.endpoint.href
-    && left.token === right.token
-    && left.principalId === right.principalId
-    && left.sessionId === right.sessionId;
+  return left.endpoint.href === right.endpoint.href && left.token === right.token;
+}
+
+export interface CanonicalRuntimeProxy {
+  listTools(): Promise<{ tools: Tool[] }>;
+  callTool(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>, timing?: MutableGatewayProxyTiming): Promise<CallToolResult>;
+  close(): Promise<void>;
+}
+
+/**
+ * The public Gateway has no schema cache authority. It obtains each Connector
+ * session's schema from the Runtime that will execute its calls. When the HTTP
+ * Gateway owns a shared proxy, discovery and tool calls reuse the same loopback
+ * MCP session instead of paying an initialize/connect round trip per outer
+ * Connector session.
+ */
+export async function readCanonicalRuntimeToolSchema(
+  ctx: MultiRepositoryMcpToolContext,
+  sharedProxy?: CanonicalRuntimeProxy,
+): Promise<CanonicalRuntimeToolSchema> {
+  const proxy = sharedProxy ?? createCanonicalRuntimeProxy(ctx);
+  try {
+    const response = await proxy.listTools();
+    const definitions = response.tools as Tool[];
+    const toolNames = definitions
+      .map((tool) => tool.name)
+      .filter((name): name is string => typeof name === 'string' && name.length > 0)
+      .sort();
+    return {
+      definitions,
+      toolNames,
+      fingerprint: forgeToolSurfaceFingerprint(definitions),
+    };
+  } finally {
+    if (!sharedProxy) await proxy.close();
+  }
 }
 
 type GatewayProxyTiming = Pick<McpTimingTrace,
@@ -502,10 +523,7 @@ export function deriveCanonicalForwardingTiming(input: {
   };
 }
 
-function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext): {
-  callTool: (name: string, args: Record<string, unknown>, timing?: MutableGatewayProxyTiming) => Promise<CallToolResult>;
-  close: () => Promise<void>;
-} {
+export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext): CanonicalRuntimeProxy {
   let current: { identity: CanonicalRuntimeProxyIdentity; client: Client } | undefined;
   let connecting: Promise<{ identity: CanonicalRuntimeProxyIdentity; client: Client }> | undefined;
 
@@ -523,8 +541,6 @@ function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext): {
       const headers: Record<string, string> = {
         Authorization: `Bearer ${identity.token}`,
       };
-      if (identity.principalId) headers['x-forge-forwarded-principal-id'] = identity.principalId;
-      if (identity.sessionId) headers['x-forge-forwarded-session-id'] = identity.sessionId;
       const transport = new StreamableHTTPClientTransport(identity.endpoint, {
         requestInit: { headers, signal: abort.signal },
       });
@@ -580,7 +596,20 @@ function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext): {
   };
 
   return {
-    async callTool(name, args, timing = {}) {
+    async listTools() {
+      const handoff = await waitForCanonicalRuntimeReleaseHandoff(
+        () => canonicalRuntimeReleaseHandoffActive(ctx.controllerHome),
+      );
+      if (handoff.waited) await closeCurrent();
+      const client = await clientForCurrentRuntime({});
+      try {
+        return await client.listTools() as { tools: Tool[] };
+      } catch (error) {
+        await closeCurrent(client);
+        throw error;
+      }
+    },
+    async callTool(callerContext, name, args, timing = {}) {
       // The endpoint/token identity is intentionally stable across releases, so
       // an old persistent inner MCP client would otherwise be reused into the
       // bootout window. Wait only for a proven release handoff, then discard the
@@ -598,7 +627,11 @@ function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext): {
         // Re-listing tools here creates a second discovery round trip for every
         // tool call without strengthening that fence.
         const response = await client.callTool(
-          { name, arguments: args },
+          {
+            name,
+            arguments: args,
+            _meta: canonicalRuntimeForwardingMeta(callerContext),
+          } as Parameters<Client['callTool']>[0],
           undefined,
           { timeout: CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS },
         );
@@ -650,16 +683,18 @@ function toolSurfaceMismatchResult(): CallToolResult {
 export function createForgeMcpServerFromContext(
   baseContext: ServerToolContext,
   runtimeSchema?: CanonicalRuntimeToolSchema,
+  sharedRuntimeProxy?: CanonicalRuntimeProxy,
 ): Server {
   const server = new Server(
     { name: 'forge-mcp', version: FORGE_VERSION },
     { capabilities: { tools: { listChanged: true } }, instructions: mcpServerInstructions(baseContext.policy.profile) },
   );
+  const ownsRuntimeProxy = isMultiRepositoryContext(baseContext) && !getRuntimeWriteClaim() && !sharedRuntimeProxy;
   const runtimeProxy = isMultiRepositoryContext(baseContext) && !getRuntimeWriteClaim()
-    ? createCanonicalRuntimeProxy(baseContext)
+    ? sharedRuntimeProxy ?? createCanonicalRuntimeProxy(baseContext)
     : undefined;
   server.onclose = () => {
-    void runtimeProxy?.close();
+    if (ownsRuntimeProxy) void runtimeProxy?.close();
   };
   // The connector process can outlive the canonical Runtime release it proxies.
   // Refresh tools after every MCP session initialization so clients do not keep
@@ -680,7 +715,11 @@ export function createForgeMcpServerFromContext(
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const name = request.params.name;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
-    const ctx: ServerToolContext = { ...baseContext, signal: extra.signal };
+    const forwardedBaseContext = canonicalRuntimeRequestContext(
+      baseContext,
+      (request.params as { _meta?: unknown })._meta,
+    );
+    const ctx: ServerToolContext = { ...forwardedBaseContext, signal: extra.signal };
     if (isMultiRepositoryContext(ctx)) {
       const rpcId = (request as unknown as { id?: unknown }).id;
       return traceControllerMcpRequest(ctx, name, args, typeof rpcId === 'string' || typeof rpcId === 'number' ? rpcId : undefined, async (requestId, _traceId, phaseTimings) => {
@@ -711,8 +750,8 @@ export function createForgeMcpServerFromContext(
           const forwardedArgs = typeof args.request_id === 'string' && args.request_id.trim()
             ? args
             : { ...args, request_id: requestId };
-          if (runtimeProxy && runtimeSchema) return runtimeProxy.callTool(name, forwardedArgs, phaseTimings);
-          if (runtimeProxy && observeRuntimeStatus(ctx.controllerHome).ready) return runtimeProxy.callTool(name, forwardedArgs, phaseTimings);
+          if (runtimeProxy && runtimeSchema) return runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
+          if (runtimeProxy && observeRuntimeStatus(ctx.controllerHome).ready) return runtimeProxy.callTool(ctx, name, forwardedArgs, phaseTimings);
         }
         const accessResult = callAccessTool(ctx, name, args);
         if (accessResult) return accessResult;
