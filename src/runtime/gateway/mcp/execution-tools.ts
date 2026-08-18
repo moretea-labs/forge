@@ -1439,7 +1439,6 @@ function cleanupOnlyMergedHead(
     encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
   });
   if (currentBranch.status !== 0 || String(currentBranch.stdout ?? '').trim() !== current.branch) return undefined;
-  if (current.expectedHead && currentHead === current.expectedHead && !cancelledContract) return undefined;
   if (current.expectedHead && currentHead !== current.expectedHead && cancelledContract) return undefined;
   return { currentHead, cancelledContract, worktreeMissing: false };
 }
@@ -1858,7 +1857,9 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     && wants.cleanup
     && !wants.commit
     && !wants.merge;
-  const cleanupReconciliation = cleanupOnlyMergedHead(ctx, current, args);
+  const cleanupReconciliation = requestedOutcome === 'completed_no_change'
+    ? undefined
+    : cleanupOnlyMergedHead(ctx, current, args);
   if (cancelledCleanupRequested && !cleanupReconciliation) {
     throw new Error('WORK_CANCELLED_CLEANUP_UNSAFE: cancelled Work cleanup requires an unchanged clean managed worktree (or a previously recorded cleanup) and a branch HEAD already contained in the target branch');
   }
@@ -1877,6 +1878,16 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
         lastError: undefined,
       },
     }));
+  }
+
+  const changedCleanupOnly = wants.cleanup
+    && !wants.commit
+    && !wants.merge
+    && requestedOutcome !== 'completed_no_change'
+    && current.state !== 'merged'
+    && current.state !== 'cleaned';
+  if (changedCleanupOnly && !cleanupReconciliation) {
+    throw new Error('WORK_CLEANUP_DELIVERY_NOT_PROVEN: cleanup-only completion requires the exact Work branch HEAD to already be contained in the target branch before any managed worktree is removed');
   }
 
   const terminalCleanupOnly = Boolean(cleanupReconciliation && wants.cleanup && !wants.commit && !wants.merge);

@@ -742,6 +742,113 @@ describe('rh_work managed lifecycle closure', () => {
     expect(branchExists(fx.repoRoot, branch)).toBe(false);
   });
 
+  test('cleanup-only finalize restores an exact expected HEAD already integrated into target before cleaning', async () => {
+    const fx = fixture('finalize-exact-head-cleanup-boundary');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Clean one Work whose exact expected HEAD was already integrated',
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 5,
+      requires_recovery: true,
+      constraints: { requireWorktree: true },
+    });
+    expect(started?.isError).not.toBe(true);
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
+    const worktreePath = contract.worktreeRef!;
+    const branch = git(worktreePath, ['branch', '--show-current']);
+
+    writeFileSync(join(worktreePath, 'exact-head-cleanup.txt'), 'integrated\n');
+    git(worktreePath, ['add', 'exact-head-cleanup.txt']);
+    git(worktreePath, ['commit', '-m', 'exact head cleanup change']);
+    const workHead = git(worktreePath, ['rev-parse', 'HEAD']);
+    git(fx.repoRoot, ['merge', '--ff-only', branch]);
+
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
+    writeWorkHandle(fx.controllerHome, {
+      ...handle,
+      state: 'prepared',
+      expectedHead: workHead,
+      finalization: {
+        validation: 'pending',
+        commit: 'pending',
+        merge: 'pending',
+        worktreeCleanup: 'pending',
+        branchCleanup: 'pending',
+      },
+    });
+
+    const finalized = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'finalize',
+      work_id: workId,
+      commit: false,
+      merge: false,
+      cleanup: true,
+      completion_outcome: 'completed_changed',
+    });
+    expect(finalized?.isError, JSON.stringify(finalized?.structuredContent)).not.toBe(true);
+    expect(finalized?.structuredContent).toMatchObject({ status: 'ok', data: { lifecycleClosed: true } });
+    expect(readFileSync(join(fx.repoRoot, 'exact-head-cleanup.txt'), 'utf8')).toBe('integrated\n');
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(branchExists(fx.repoRoot, branch)).toBe(false);
+
+    const repeated = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'finalize',
+      work_id: workId,
+      commit: false,
+      merge: false,
+      cleanup: true,
+      completion_outcome: 'completed_changed',
+    });
+    expect(repeated?.isError, JSON.stringify(repeated?.structuredContent)).not.toBe(true);
+    expect(JSON.stringify(repeated?.structuredContent)).not.toContain('CHECKOUT_NOT_ACTIVE');
+  });
+
+  test('cleanup-only finalize preserves an unintegrated exact expected HEAD instead of deleting its worktree', async () => {
+    const fx = fixture('finalize-unintegrated-cleanup-blocked');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Refuse cleanup before changed delivery is integrated',
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 5,
+      requires_recovery: true,
+      constraints: { requireWorktree: true },
+    });
+    expect(started?.isError).not.toBe(true);
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
+    const worktreePath = contract.worktreeRef!;
+    const branch = git(worktreePath, ['branch', '--show-current']);
+
+    writeFileSync(join(worktreePath, 'unintegrated-cleanup.txt'), 'not delivered\n');
+    git(worktreePath, ['add', 'unintegrated-cleanup.txt']);
+    git(worktreePath, ['commit', '-m', 'unintegrated cleanup change']);
+    const workHead = git(worktreePath, ['rev-parse', 'HEAD']);
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
+    writeWorkHandle(fx.controllerHome, { ...handle, state: 'prepared', expectedHead: workHead });
+
+    const finalized = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'finalize',
+      work_id: workId,
+      commit: false,
+      merge: false,
+      cleanup: true,
+      completion_outcome: 'completed_changed',
+    });
+    expect(finalized?.isError).toBe(true);
+    expect(JSON.stringify(finalized?.structuredContent)).toContain('WORK_CLEANUP_DELIVERY_NOT_PROVEN');
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(branchExists(fx.repoRoot, branch)).toBe(true);
+    expect(git(worktreePath, ['rev-parse', 'HEAD'])).toBe(workHead);
+  });
+
   test('cleanup retry restores a failed handle to the merged delivery boundary before cleaning', async () => {
     const fx = fixture('finalize-cleanup-retry-boundary');
     const started = await callRuntimeTool(fx.ctx, 'rh_work', {
