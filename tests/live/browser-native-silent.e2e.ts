@@ -103,7 +103,7 @@ try {
   const firstTabId = nativeTabId(first);
   const second = await action('open_page', { session_id: sessionId, url: two });
   const secondTabId = nativeTabId(second);
-  assert.notEqual(secondTabId, firstTabId);
+  assert.equal(secondTabId, firstTabId);
 
   const filled = await action('fill', { session_id: sessionId, selector: '#email', text: 'silent@example.com', post_action_wait_ms: 1 });
   assert.equal(filled.evidenceMode, 'dom');

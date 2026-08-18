@@ -1020,16 +1020,16 @@ describe('browser plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     });
 
-    expect(native.events.created).toEqual(['9001', '9002']);
+    expect(native.events.created).toEqual(['9001']);
     expect(native.events.activeTabId).toBe('501');
-    expect(native.events.navigated).toEqual([]);
+    expect(native.events.navigated).toContainEqual({ tabId: '9001', url: 'https://example.com/second' });
     expect(first.browserConnection).toMatchObject({
       provider: 'macos-apple-events',
       tab: { ownership: 'plugin_owned', windowId: 'window-77', tabId: '9001' },
     });
     expect(second.browserConnection).toMatchObject({
       provider: 'macos-apple-events',
-      tab: { ownership: 'plugin_owned', windowId: 'window-77', tabId: '9002' },
+      tab: { ownership: 'plugin_owned', windowId: 'window-77', tabId: '9001' },
       sessionResume: { status: 'matched' },
     });
 
@@ -1039,7 +1039,7 @@ describe('browser plugin', () => {
       requestId: 'browser-owned-close', args: { session_id: sessionId }, origin: { surface: 'local-ui', actor: 'test' },
     });
     expect(closed).toMatchObject({ closed: true, resourceClosed: true });
-    expect(native.events.closed).toEqual(['9001', '9002']);
+    expect(native.events.closed).toEqual(['9001']);
     expect(native.events.activeTabId).toBe('501');
   });
 
@@ -1074,6 +1074,20 @@ describe('browser plugin', () => {
 
     expect(native.events.created).toEqual(['9001']);
     expect(second.browserConnection).toMatchObject({
+      provider: 'macos-apple-events',
+      tab: { ownership: 'plugin_owned', windowId: 'window-88', tabId: '9001' },
+      sessionResume: { status: 'matched' },
+    });
+    expect(native.events.activeTabId).toBe('501');
+
+    const third = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'navigate',
+      requestId: 'browser-native-window-move-third', args: { session_id: 'window-move-session', url: 'https://example.com/next' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(native.events.created).toEqual(['9001']);
+    expect(native.events.navigated).toContainEqual({ tabId: '9001', url: 'https://example.com/next' });
+    expect(third.browserConnection).toMatchObject({
       provider: 'macos-apple-events',
       tab: { ownership: 'plugin_owned', windowId: 'window-88', tabId: '9001' },
       sessionResume: { status: 'matched' },

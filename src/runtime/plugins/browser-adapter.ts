@@ -1238,7 +1238,6 @@ async function openNativeAttachedContext(
   if (!discovered.attachment) return { attempts: discovered.attempts };
 
   let createdThisCallRef: MacOsBrowserTabRef | undefined;
-  let replacedRef: MacOsBrowserTabRef | undefined;
   try {
     if (!page) {
       page = await createMacOsBrowserOwnedPage(discovered.attachment, target.url, timeout) as unknown as PageLike;
@@ -1257,17 +1256,12 @@ async function openNativeAttachedContext(
       const preserveOwnedSameOriginDrift = matchedBy === 'owned_token' && sessionTargetUnchanged && sameOrigin(page.url(), target.url);
       if (preserveOwnedSameOriginDrift) {
         sessionResume = { sessionId: target.sessionId, status: 'matched', reason: 'Plugin-owned tab navigated within the same origin; preserved the live tab and refreshed its session URL.', savedTab };
-      } else if (!currentRef) {
-        await page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout });
       } else {
-        const replacement = await createMacOsBrowserOwnedPage(discovered.attachment, target.url, timeout) as unknown as PageLike;
-        const createdRef = (replacement as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
-        if (!createdRef) throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Replacement native browser tab did not return a stable plugin-owned tab reference.', { retryable: true });
-        replacedRef = currentRef;
-        createdThisCallRef = createdRef;
-        page = replacement;
-        matchedBy = 'new_page';
-        sessionResume = { sessionId: target.sessionId, status: 'matched', reason: 'Reattached to the saved session by replacing its previous plugin-owned background tab.', savedTab };
+        await page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout });
+        if (currentRef) {
+          matchedBy = 'owned_token';
+          sessionResume = { sessionId: target.sessionId, status: 'matched', reason: 'Navigated the existing plugin-owned tab in place and preserved its stable tab identity.', savedTab };
+        }
       }
     }
     if (matchedBy !== 'owned_token' && page.waitForLoadState) {
@@ -1298,7 +1292,6 @@ async function openNativeAttachedContext(
       tabId: nativeRef.tabId,
     });
     const diagnostics: PageDiagnostics = { consoleErrors: [], failedRequests: [], navigation: { url: pageUrl } };
-    if (replacedRef) await closeMacOsBrowserOwnedTab(metadata.product, replacedRef, timeout);
     createdThisCallRef = undefined;
     return { attempts: discovered.attempts, handle: { page, diagnostics, connection, close: async () => undefined } };
   } catch (error) {

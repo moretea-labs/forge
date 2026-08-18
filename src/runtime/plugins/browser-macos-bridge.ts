@@ -554,16 +554,9 @@ export class MacOsAppleEventsPage {
 
   async goto(url: string, options: Record<string, unknown> = {}): Promise<unknown> {
     const timeout = typeof options.timeout === 'number' ? Math.trunc(options.timeout) : this.timeoutMs;
-    if (this.targetRef) {
-      throw new AssistantPluginError(
-        'PLUGIN_BROWSER_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT',
-        'Chrome/Vivaldi background tabs cannot be navigated reliably in place through Apple Events; create a replacement plugin-owned tab instead.',
-        { retryable: true, details: { browserProduct: this.browser.product, windowId: this.targetRef.windowId, tabId: this.targetRef.tabId } },
-      );
-    }
     await this.runAutomation(
-      { action: 'navigate', product: this.browser.product, url },
-      navigateScript(this.browser),
+      { action: 'navigate', product: this.browser.product, ...(this.targetRef ? { ref: this.targetRef } : {}), url },
+      navigateScript(this.browser, this.targetRef),
       [url],
       timeout,
     );
