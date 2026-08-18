@@ -25,7 +25,7 @@ import type {
   AssistantPluginAuthorizationTarget,
   AssistantPluginCapability,
 } from './types';
-import { awaitRemoteXpcHidPrewarm, executeRemoteXpcHidInput, remoteXpcHidStatus, stopRemoteXpcHidForDevice } from './ios/remote-xpc-hid';
+import { executeRemoteXpcHidInput, prewarmRemoteXpcHid, remoteXpcHidStatus, stopRemoteXpcHidForDevice } from './ios/remote-xpc-hid';
 
 const PROVIDER = 'ios-device' as const;
 const SESSION_EXPIRY_MS = 2 * 60 * 60_000;
@@ -33,7 +33,6 @@ const CORE_DEVICE_READY_CACHE_MS = 5 * 60_000;
 const INPUT_UNLOCK_CACHE_MS = 60_000;
 const INPUT_DISPLAY_CACHE_MS = 5 * 60_000;
 const INPUT_FOREGROUND_OBSERVATION_TTL_MS = 30_000;
-const INPUT_OPEN_PREWARM_BUDGET_MS = 4_000;
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_EVENTS = 200;
 const MAX_BATCH_STEPS = 20;
@@ -1262,19 +1261,19 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       args.push(bundleId);
       const prewarmStartedAt = performance.now();
       const prewarmRequested = input.args.prewarm_input === true && Boolean(selected.udid);
-      const prewarmPromise: Promise<Record<string, unknown>> = prewarmRequested && selected.udid
-        ? awaitRemoteXpcHidPrewarm(
-          { controllerHome: input.controllerHome, deviceIdentifier: selected.identifier, udid: selected.udid },
-          INPUT_OPEN_PREWARM_BUDGET_MS,
-        ).then((result) => {
-          recordTiming(timingStages, 'hidPrewarm', prewarmStartedAt, result.state === 'ready');
-          return result;
-        }, (error) => {
-          recordTiming(timingStages, 'hidPrewarm', prewarmStartedAt, false);
-          throw error;
+      const inputPrewarm: Record<string, unknown> = prewarmRequested && selected.udid
+        ? prewarmRemoteXpcHid({
+          controllerHome: input.controllerHome,
+          deviceIdentifier: selected.identifier,
+          udid: selected.udid,
         })
-        : Promise.resolve({ backend: 'remote-xpc-hid', state: 'not_requested', runnerOwned: false });
-      if (!prewarmRequested) recordTiming(timingStages, 'hidPrewarm', prewarmStartedAt, input.args.prewarm_input !== true);
+        : { backend: 'remote-xpc-hid', state: 'not_requested', runnerOwned: false };
+      recordTiming(
+        timingStages,
+        'hidPrewarm',
+        prewarmStartedAt,
+        inputPrewarm.state === 'ready' || inputPrewarm.state === 'test' || input.args.prewarm_input !== true,
+      );
       const displayStartedAt = performance.now();
       const display = input.args.prewarm_input === true
         ? await physicalDisplayGeometry(input, selected).then((result) => {
@@ -1293,7 +1292,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       const launchStartedAt = performance.now();
       const launchPromise = runCoreJson(input, args, 'IOS_DEVICE_LAUNCH_FAILED', 60_000)
         .finally(() => recordTiming(timingStages, 'activationRequest', launchStartedAt, false));
-      const [launch, inputPrewarm] = await Promise.all([launchPromise, prewarmPromise]);
+      const launch = await launchPromise;
       const launchEventStartedAt = performance.now();
       appendEvent(input, interactionId, 'app_launched', { bundleId, relaunch: input.args.relaunch === true });
       recordTiming(timingStages, 'eventPersistence', launchEventStartedAt, false);
@@ -1372,6 +1371,13 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       return finishTimedResult(actionStartedAt, timingStages, {
         provider: 'coredevice', interaction: record, result: bounded(result),
         observation: { observationId, observedAt, label, ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS },
+        fastPath: {
+          actionId: 'physical_device_batch',
+          arguments: { interaction_id: record.interactionId, observation_id: observationId },
+          requires: ['steps'],
+          ttlMs: INPUT_FOREGROUND_OBSERVATION_TTL_MS,
+          oneShot: true,
+        },
         artifactCandidates: [{ kind: 'ios_physical_device_screenshot', mediaType: 'image/png', path }],
       });
     }

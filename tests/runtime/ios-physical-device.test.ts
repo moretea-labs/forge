@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -120,6 +120,13 @@ afterEach(() => {
 });
 
 describe('CoreDevice-first physical iPhone provider', () => {
+  it('starts HID prewarm without synchronously awaiting worker readiness during open', () => {
+    const source = readFileSync(join(process.cwd(), 'src/runtime/plugins/ios-physical-device.ts'), 'utf8');
+    expect(source).toContain('prewarmRemoteXpcHid({');
+    expect(source).not.toContain('awaitRemoteXpcHidPrewarm');
+    expect(source).not.toContain('INPUT_OPEN_PREWARM_BUDGET_MS');
+  });
+
   it('overlaps independent open preflights while keeping display readiness ahead of app activation', async () => {
     const value = fixture();
     const order: string[] = [];
@@ -644,7 +651,16 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const screenshot = await executeIosPhysicalDeviceAction(input(value, 'physical_device_screenshot', {
       interaction_id: interactionId, label: 'atomic-batch-proof',
     }));
-    const observationId = String((screenshot.observation as Record<string, unknown>).observationId);
+    const observation = screenshot.observation as Record<string, unknown>;
+    const observationId = String(observation.observationId);
+    expect(observation.ttlMs).toBe(30_000);
+    expect(screenshot.fastPath).toEqual({
+      actionId: 'physical_device_batch',
+      arguments: { interaction_id: interactionId, observation_id: observationId },
+      requires: ['steps'],
+      ttlMs: 30_000,
+      oneShot: true,
+    });
 
     const batched = await executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
       interaction_id: interactionId,
