@@ -111,6 +111,25 @@ interface BrowserSessionState {
   browser?: BrowserSessionConnectionState;
 }
 
+type BrowserSessionLiveness = 'live' | 'unverified' | 'dead';
+
+type BrowserSessionInventoryItem = {
+  session: BrowserSessionState;
+  liveness: BrowserSessionLiveness;
+  evidence: 'runtime_session_binding' | 'runtime_owner_token' | 'runtime_bound_page_missing' | 'runtime_context_unavailable' | 'runtime_owner_token_not_observed' | 'provider_unverified';
+  pruned?: boolean;
+};
+
+type BrowserSessionInventory = {
+  sessions: BrowserSessionInventoryItem[];
+  scannedSessionCount: number;
+  savedSessionCount: number;
+  liveManagedSessionCount: number;
+  unverifiedSessionCount: number;
+  deadManagedSessionCount: number;
+  prunedSessionCount: number;
+};
+
 interface BrowserActionTarget {
   sessionId: string;
   url: string;
@@ -1790,6 +1809,93 @@ function listSavedSessions(repoRoot: string): BrowserSessionState[] {
   }
 }
 
+async function inspectSavedSessions(
+  repoRoot: string,
+  config: BrowserPluginConfig,
+  options: { pruneDead?: boolean } = {},
+): Promise<BrowserSessionInventory> {
+  const saved = listSavedSessions(repoRoot);
+  const sessions: BrowserSessionInventoryItem[] = [];
+  let liveManagedSessionCount = 0;
+  let unverifiedSessionCount = 0;
+  let deadManagedSessionCount = 0;
+  let prunedSessionCount = 0;
+
+  for (const session of saved) {
+    if (session.browser?.provider !== 'playwright-persistent-context' || session.browser.activeMode !== 'managed_persistent') {
+      sessions.push({ session, liveness: 'unverified', evidence: 'provider_unverified' });
+      unverifiedSessionCount += 1;
+      continue;
+    }
+
+    const profile = selectedProfile(config, repoRoot, 'managed_persistent', session.sessionId);
+    const pending = managedBrowserContexts.get(managedContextKey(profile));
+    if (!pending) {
+      sessions.push({ session, liveness: 'unverified', evidence: 'runtime_context_unavailable' });
+      unverifiedSessionCount += 1;
+      continue;
+    }
+
+    let state: ManagedBrowserContextState;
+    try {
+      state = await pending;
+    } catch {
+      sessions.push({ session, liveness: 'unverified', evidence: 'runtime_context_unavailable' });
+      unverifiedSessionCount += 1;
+      continue;
+    }
+
+    const pages = state.context.pages();
+    const boundPage = state.pagesBySession.get(session.sessionId);
+    if (boundPage) {
+      if (pages.includes(boundPage)) {
+        sessions.push({ session, liveness: 'live', evidence: 'runtime_session_binding' });
+        liveManagedSessionCount += 1;
+        continue;
+      }
+
+      const pruned = options.pruneDead === true;
+      if (pruned) {
+        state.pagesBySession.delete(session.sessionId);
+        rmSync(sessionPath(repoRoot, session.sessionId), { force: true });
+        prunedSessionCount += 1;
+      }
+      sessions.push({ session, liveness: 'dead', evidence: 'runtime_bound_page_missing', pruned });
+      deadManagedSessionCount += 1;
+      continue;
+    }
+
+    const expectedOwnerToken = session.browser.tab?.ownership === 'plugin_owned' ? session.browser.tab.ownerToken : undefined;
+    if (expectedOwnerToken) {
+      const inventory = await inventoryTabs(state.context).catch(() => [] as BrowserTabInventoryEntry[]);
+      const index = inventory.findIndex((entry) => entry.ownerToken === expectedOwnerToken);
+      const page = index >= 0 ? state.context.pages()[index] : undefined;
+      if (page) {
+        state.pagesBySession.set(session.sessionId, page);
+        sessions.push({ session, liveness: 'live', evidence: 'runtime_owner_token' });
+        liveManagedSessionCount += 1;
+        continue;
+      }
+      sessions.push({ session, liveness: 'unverified', evidence: 'runtime_owner_token_not_observed' });
+      unverifiedSessionCount += 1;
+      continue;
+    }
+
+    sessions.push({ session, liveness: 'unverified', evidence: 'provider_unverified' });
+    unverifiedSessionCount += 1;
+  }
+
+  return {
+    sessions,
+    scannedSessionCount: saved.length,
+    savedSessionCount: saved.length - prunedSessionCount,
+    liveManagedSessionCount,
+    unverifiedSessionCount,
+    deadManagedSessionCount,
+    prunedSessionCount,
+  };
+}
+
 const STABLE_SELECTOR_HELPERS = `
     const forgeUnique = (selector) => {
       try { return document.querySelectorAll(selector).length === 1; } catch { return false; }
@@ -2010,7 +2116,7 @@ function capabilities(): AssistantPluginCapability[] {
       title: 'Browser Sessions',
       description: 'Create, list, reuse, and close persistent browser sessions.',
       scopes: ['browser.read', 'browser.profile'],
-      actions: ['create_session', 'list_sessions', 'close_session', 'close_page', 'clear_session'],
+      actions: ['create_session', 'list_sessions', 'reconcile_sessions', 'close_session', 'close_page', 'clear_session'],
     },
     {
       capabilityId: 'browser-human-handoff',
@@ -2137,6 +2243,14 @@ function actions(): AssistantPluginActionDescriptor[] {
       description: 'List saved browser session metadata without secrets or cookies.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true,
       scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'read' }],
+      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+      actionId: 'reconcile_sessions',
+      title: 'Reconcile browser sessions',
+      description: 'Prune only saved managed-session metadata whose exact Runtime-bound page is positively proven gone. Never removes profiles, cookies, or unverified native sessions.',
+      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
+      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
       argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
@@ -2484,7 +2598,7 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
   const dependencyReady = runtimeHooks.moduleAvailable('playwright', repoRoot);
   const configErrors = validateConfig(config);
   const warnings = configWarnings(config);
-  const sessionCount = repoRoot ? listSavedSessions(repoRoot).length : 0;
+  const savedSessionCount = repoRoot ? listSavedSessions(repoRoot).length : 0;
   const activeHandoffCount = repoRoot
     ? listBrowserHandoffs(repoRoot).filter((entry) => ['starting', 'waiting_for_user', 'closing'].includes(entry.status)).length
     : 0;
@@ -2503,7 +2617,9 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
     nativeBrowserCandidates: config.nativeBrowserCandidates,
     nativeAttachSupported: macOsActiveBrowserAttachSupported(),
     windowMode: 'visible' as const,
-    sessionCount,
+    sessionCount: savedSessionCount,
+    sessionCountSemantics: 'saved_metadata' as const,
+    savedSessionCount,
     activeHandoffCount,
     humanHandoffSupported: true,
     artifactsAvailable: true,
@@ -2602,7 +2718,7 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
       provider: config.browserMode === 'attach_preferred'
         ? 'cdp-or-macos-active-browser-or-persistent-context'
         : 'playwright-persistent-context',
-      userFacingStatus: browserUserFacingStatus(config, true, sessionCount),
+      userFacingStatus: browserUserFacingStatus(config, true, savedSessionCount),
     },
   };
 }
@@ -2704,18 +2820,43 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         await closeManagedContextsForRepo(input.repoRoot);
         return { config, health: health(config, input.repoRoot) };
       }
-      case 'list_sessions':
+      case 'list_sessions': {
+        const inventory = await inspectSavedSessions(input.repoRoot, current);
         return {
           provider: 'playwright',
-          sessions: listSavedSessions(input.repoRoot).map((session) => ({
+          sessionCountSemantics: 'saved_metadata',
+          scannedSessionCount: inventory.scannedSessionCount,
+          savedSessionCount: inventory.savedSessionCount,
+          liveManagedSessionCount: inventory.liveManagedSessionCount,
+          unverifiedSessionCount: inventory.unverifiedSessionCount,
+          deadManagedSessionCount: inventory.deadManagedSessionCount,
+          sessions: inventory.sessions.map(({ session, liveness, evidence }) => ({
             sessionId: session.sessionId,
             url: session.url,
             title: session.title,
             createdAt: session.createdAt,
             updatedAt: session.updatedAt,
             browser: session.browser,
+            liveness,
+            livenessEvidence: evidence,
           })),
         };
+      }
+      case 'reconcile_sessions': {
+        assertBrowserSessionAvailable(input.repoRoot);
+        const inventory = await inspectSavedSessions(input.repoRoot, current, { pruneDead: true });
+        return {
+          reconciled: true,
+          sessionCountSemantics: 'saved_metadata',
+          scannedSessionCount: inventory.scannedSessionCount,
+          savedSessionCount: inventory.savedSessionCount,
+          liveManagedSessionCount: inventory.liveManagedSessionCount,
+          unverifiedSessionCount: inventory.unverifiedSessionCount,
+          deadManagedSessionCount: inventory.deadManagedSessionCount,
+          prunedSessionCount: inventory.prunedSessionCount,
+          prunedSessionIds: inventory.sessions.filter((item) => item.pruned).map((item) => item.session.sessionId),
+        };
+      }
       case 'close_session':
       case 'close_page': {
         const sessionId = requiredString(input.args.session_id, 'session_id');

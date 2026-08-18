@@ -497,6 +497,7 @@ describe('browser plugin', () => {
       'configure',
       'create_session',
       'list_sessions',
+      'reconcile_sessions',
       'close_session',
       'open_page',
       'navigate',
@@ -526,7 +527,7 @@ describe('browser plugin', () => {
       expect(actions[actionId]?.confirmation).toBe('none');
     }
 
-    for (const actionId of ['create_session', 'close_session', 'close_page', 'request_human_handoff', 'resolve_handoff']) {
+    for (const actionId of ['create_session', 'reconcile_sessions', 'close_session', 'close_page', 'request_human_handoff', 'resolve_handoff']) {
       expect(actions[actionId]?.readOnly).toBe(false);
       expect(actions[actionId]?.risk).toBe('workspace_write');
       expect(actions[actionId]?.confirmation).toBe('authorization');
@@ -827,6 +828,164 @@ describe('browser plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     });
     expect((listed.sessions as Array<{ sessionId: string }>).some((session) => session.sessionId === sessionId)).toBe(false);
+  });
+
+  test('list_sessions distinguishes saved metadata from live managed sessions without creating pages', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+    });
+    const runtime = mockManagedPersistentPlaywright() as unknown as {
+      events: { launches: number; newPages: number };
+    };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+
+    const opened = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-managed-inventory-open', args: { url: 'https://example.com/inventory' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    const launchesBeforeList = runtime.events.launches;
+    const newPagesBeforeList = runtime.events.newPages;
+
+    const listed = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'list_sessions',
+      requestId: 'browser-managed-inventory-list', args: {},
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(listed).toMatchObject({
+      sessionCountSemantics: 'saved_metadata',
+      scannedSessionCount: 1,
+      savedSessionCount: 1,
+      liveManagedSessionCount: 1,
+      unverifiedSessionCount: 0,
+      deadManagedSessionCount: 0,
+    });
+    expect((listed.sessions as Array<Record<string, unknown>>).find((session) => session.sessionId === sessionId)).toMatchObject({
+      liveness: 'live',
+      livenessEvidence: 'runtime_session_binding',
+    });
+    expect(runtime.events.launches).toBe(launchesBeforeList);
+    expect(runtime.events.newPages).toBe(newPagesBeforeList);
+
+    const manifest = buildBrowserPluginManifest(0, undefined, repoRoot);
+    expect(manifest.health.details).toMatchObject({
+      sessionCount: 1,
+      sessionCountSemantics: 'saved_metadata',
+      savedSessionCount: 1,
+    });
+  });
+
+  test('list_sessions preserves managed metadata as unverified when its Runtime context is unavailable', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+    });
+    const runtime = mockManagedPersistentPlaywright() as unknown as {
+      events: { launches: number; newPages: number };
+    };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+
+    const opened = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-managed-unverified-open', args: { url: 'https://example.com/unverified' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    const launchesBeforeList = runtime.events.launches;
+    const newPagesBeforeList = runtime.events.newPages;
+
+    resetBrowserPluginRuntimeHooksForTest();
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+    const listed = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'list_sessions',
+      requestId: 'browser-managed-unverified-list', args: {},
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(listed).toMatchObject({
+      savedSessionCount: 1,
+      liveManagedSessionCount: 0,
+      unverifiedSessionCount: 1,
+      deadManagedSessionCount: 0,
+    });
+    expect((listed.sessions as Array<Record<string, unknown>>).find((session) => session.sessionId === sessionId)).toMatchObject({
+      liveness: 'unverified',
+      livenessEvidence: 'runtime_context_unavailable',
+    });
+    expect(runtime.events.launches).toBe(launchesBeforeList);
+    expect(runtime.events.newPages).toBe(newPagesBeforeList);
+  });
+
+  test('reconcile_sessions prunes only a positively dead Runtime-bound managed page without launching a replacement', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+    });
+    const runtime = mockManagedPersistentPlaywright() as unknown as {
+      events: { launches: number; newPages: number };
+      states: Array<{ id: string; url: string; ownerToken?: string; closed: boolean }>;
+    };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+
+    const opened = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-managed-reconcile-open', args: { url: 'https://example.com/reconcile' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    const liveState = runtime.states.find((state) => Boolean(state.ownerToken));
+    expect(liveState).toBeTruthy();
+    liveState!.closed = true;
+    const launchesBeforeReconcile = runtime.events.launches;
+    const newPagesBeforeReconcile = runtime.events.newPages;
+
+    const listedBefore = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'list_sessions',
+      requestId: 'browser-managed-reconcile-list-before', args: {},
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(listedBefore).toMatchObject({ savedSessionCount: 1, deadManagedSessionCount: 1 });
+    expect((listedBefore.sessions as Array<Record<string, unknown>>).find((session) => session.sessionId === sessionId)).toMatchObject({
+      liveness: 'dead',
+      livenessEvidence: 'runtime_bound_page_missing',
+    });
+
+    const reconciled = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'reconcile_sessions',
+      requestId: 'browser-managed-reconcile-prune', args: {},
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(reconciled).toMatchObject({
+      reconciled: true,
+      scannedSessionCount: 1,
+      savedSessionCount: 0,
+      deadManagedSessionCount: 1,
+      prunedSessionCount: 1,
+      prunedSessionIds: [sessionId],
+    });
+    expect(runtime.events.launches).toBe(launchesBeforeReconcile);
+    expect(runtime.events.newPages).toBe(newPagesBeforeReconcile);
+
+    const listedAfter = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'list_sessions',
+      requestId: 'browser-managed-reconcile-list-after', args: {},
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(listedAfter).toMatchObject({ savedSessionCount: 0, scannedSessionCount: 0 });
+    expect((listedAfter.sessions as unknown[])).toHaveLength(0);
   });
 
   test('returns a clear dependency error when playwright is missing', async () => {
