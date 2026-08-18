@@ -21,6 +21,18 @@ export interface EnsureManagedWorkspaceInput {
   title: string;
   baseRef?: string;
   branchName?: string;
+  /** Explicitly materialize lockfile-backed Node dependencies in this isolated worktree. */
+  prepareDependencies?: boolean;
+}
+
+export interface ManagedWorkspaceDependencyBootstrap {
+  packageManager: 'bun' | 'pnpm' | 'npm' | 'yarn';
+  lockfile: string;
+  command: string[];
+}
+
+export interface ManagedWorkspaceDependencies {
+  materializeDependencies?: (workspaceRoot: string) => void;
 }
 
 export interface ManagedWorkspace {
@@ -73,6 +85,40 @@ function assertBranch(root: string, branch: string): string {
   return normalized;
 }
 
+export function managedWorkspaceDependencyBootstrap(repoRoot: string): ManagedWorkspaceDependencyBootstrap | undefined {
+  if (!existsSync(join(repoRoot, 'package.json')) || existsSync(join(repoRoot, 'node_modules'))) return undefined;
+  const lockCandidates = [
+    ['bun', 'bun.lock', ['bun', 'install', '--frozen-lockfile']],
+    ['bun', 'bun.lockb', ['bun', 'install', '--frozen-lockfile']],
+    ['pnpm', 'pnpm-lock.yaml', ['pnpm', 'install', '--frozen-lockfile']],
+    ['npm', 'package-lock.json', ['npm', 'ci']],
+    ['yarn', 'yarn.lock', ['yarn', 'install', '--frozen-lockfile']],
+  ] as const;
+  const detected = lockCandidates.find(([, lockfile]) => existsSync(join(repoRoot, lockfile)));
+  if (!detected) return undefined;
+  return { packageManager: detected[0], lockfile: detected[1], command: [...detected[2]] };
+}
+
+export function materializeManagedWorkspaceDependencies(repoRoot: string): void {
+  if (!existsSync(join(repoRoot, 'package.json')) || existsSync(join(repoRoot, 'node_modules'))) return;
+  const bootstrap = managedWorkspaceDependencyBootstrap(repoRoot);
+  if (!bootstrap) {
+    throw new Error('MANAGED_WORKSPACE_DEPENDENCY_LOCK_REQUIRED: package.json exists but no supported lockfile was found');
+  }
+  const result = runProcess(bootstrap.command[0]!, bootstrap.command.slice(1), {
+    cwd: repoRoot,
+    timeoutMs: 10 * 60_000,
+    maxOutputBytes: 4 * 1024 * 1024,
+  });
+  if (!result.ok) {
+    const detail = result.stderr || result.error || `exit ${result.status}`;
+    throw new Error(`MANAGED_WORKSPACE_DEPENDENCY_INSTALL_FAILED: ${bootstrap.command.join(' ')}: ${detail}`);
+  }
+  if (!existsSync(join(repoRoot, 'node_modules'))) {
+    throw new Error(`MANAGED_WORKSPACE_DEPENDENCY_INSTALL_INCOMPLETE: ${bootstrap.command.join(' ')} completed without node_modules`);
+  }
+}
+
 function existingWorkspace(path: string, branch: string): boolean {
   if (!existsSync(path)) return false;
   const root = runProcess(resolveGitExecutable(), ['-C', path, 'rev-parse', '--show-toplevel'], {
@@ -109,6 +155,7 @@ export function ensureManagedWorkspace(
   controllerHome: string,
   repository: RepositoryRecord,
   input: EnsureManagedWorkspaceInput,
+  dependencies: ManagedWorkspaceDependencies = {},
 ): ManagedWorkspace {
   const requestId = input.requestId.trim();
   if (!requestId) throw new Error('MANAGED_WORKSPACE_REQUEST_ID_REQUIRED');
@@ -158,6 +205,9 @@ export function ensureManagedWorkspace(
       }
       if (!repositoryCheckoutRootMatches(repository, path)) {
         throw new Error(`MANAGED_WORKSPACE_REPOSITORY_MISMATCH: ${path}`);
+      }
+      if (input.prepareDependencies === true) {
+        (dependencies.materializeDependencies ?? materializeManagedWorkspaceDependencies)(path);
       }
 
       const record = addRepositoryCheckout({

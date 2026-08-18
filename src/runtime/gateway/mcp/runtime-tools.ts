@@ -4135,8 +4135,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           controllerInstanceId: ctx.controllerInstanceId,
           availableChecks: checks,
           sourceRevision: gitSnapshot(repository.canonicalRoot).head ?? undefined,
-          materializeIsolatedWorkspace: ({ workId, title, baseRef }: { workId: string; title: string; baseRef?: string }) => {
-            const workspace = ensureManagedWorkspace(ctx.controllerHome, repository, { requestId: workId, title, baseRef });
+          materializeIsolatedWorkspace: ({ workId, title, baseRef, needsDependencies }: { workId: string; title: string; baseRef?: string; needsDependencies?: boolean }) => {
+            const workspace = ensureManagedWorkspace(ctx.controllerHome, repository, {
+              requestId: workId,
+              title,
+              baseRef,
+              prepareDependencies: needsDependencies === true,
+            });
             if (!workspace.managed || !workspace.checkoutId || !workspace.root) throw new Error('MANAGED_WORKSPACE_NOT_MATERIALIZED');
             return { checkoutId: workspace.checkoutId, root: workspace.root, baseRevision: workspace.baseRevision, managed: true as const };
           },

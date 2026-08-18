@@ -59,7 +59,7 @@ export interface GoalWorkloopContext {
   controllerInstanceId?: string;
   workspaceFingerprint?: string;
   now?: () => string;
-  materializeIsolatedWorkspace?: (input: { workId: string; title: string; baseRef?: string }) => { checkoutId: string; root: string; baseRevision?: string | null; managed: true };
+  materializeIsolatedWorkspace?: (input: { workId: string; title: string; baseRef?: string; needsDependencies?: boolean }) => { checkoutId: string; root: string; baseRevision?: string | null; managed: true };
 }
 
 export type WorkAdmissionRelation = 'continue' | 'extend' | 'parallel' | 'new_goal';
@@ -691,7 +691,12 @@ export function startGoalWorkloop(
       return buildFacadeResult({ status: 'blocked', summary: 'ISOLATED_WORKSPACE_MATERIALIZER_REQUIRED: isolated Work cannot enter running state without a concrete managed checkout.', data: { executionStarted: false, workContractCreated: false, worktreeRequired: true } });
     }
     try {
-      isolatedWorkspace = ctx.materializeIsolatedWorkspace({ workId: generatedWorkId, title: input.objective, baseRef: ctx.sourceRevision });
+      isolatedWorkspace = ctx.materializeIsolatedWorkspace({
+        workId: generatedWorkId,
+        title: input.objective,
+        baseRef: ctx.sourceRevision,
+        needsDependencies: input.modeInput.needsDependencies === true,
+      });
       if (!isolatedWorkspace.checkoutId || !isolatedWorkspace.root || isolatedWorkspace.checkoutId === ctx.checkoutId) {
         throw new Error('ISOLATED_WORKSPACE_NOT_DISTINCT');
       }

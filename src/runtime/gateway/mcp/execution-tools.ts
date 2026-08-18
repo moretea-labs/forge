@@ -62,7 +62,7 @@ export const executionToolDefinitions: McpToolDefinition[] = [
   definition('work_prepare', 'Prepare or reuse one controller-owned work handle and bind it to a WorkContract, checkout, branch, and permission snapshot.', {
     session_id: sessionId, repo_id: repoId, checkout_id: { type: 'string' }, work_id: workId,
     objective: { type: 'string' }, goal_id: { type: 'string' }, acceptance_criteria: { type: 'array', items: { type: 'string' } }, allowed_paths: { type: 'array', items: { type: 'string' } }, checks: { type: 'array', items: { type: 'string' } },
-    isolation: { type: 'string', enum: ['reuse', 'new_worktree', 'auto'] }, base_ref: { type: 'string' },
+    isolation: { type: 'string', enum: ['reuse', 'new_worktree', 'auto'] }, base_ref: { type: 'string' }, needs_dependencies: { type: 'boolean' },
     expected_previous_head: { type: 'string', description: 'Explicit prior WorkHandle HEAD required for audited successor adoption of an existing work_id.' },
     adopt_candidate_head: { type: 'string', description: 'Explicit current successor commit to adopt after exact identity, ownership, cleanliness, ancestry, and path-scope validation.' },
   }, [], false),
@@ -319,6 +319,7 @@ function workPrepareFingerprint(input: {
   allowedPaths: string[];
   checks: string[];
   baseRef?: string;
+  needsDependencies: boolean;
 }): string {
   return createHash('sha256').update(JSON.stringify({ schemaVersion: 1, operation: 'work_prepare', ...input })).digest('hex');
 }
@@ -793,6 +794,7 @@ function prepareWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
   const checks = boundedStringArray(args.checks, 30);
   const baseRef = typeof args.base_ref === 'string' && args.base_ref.trim() ? args.base_ref.trim() : undefined;
   const requestedCheckoutId = typeof args.checkout_id === 'string' && args.checkout_id.trim() ? args.checkout_id.trim() : undefined;
+  const needsDependencies = args.needs_dependencies === true;
   const baseCheckoutId = repository.activeCheckoutId;
   const baseStatus = repositoryGitStatus(repository);
   if (isolation === 'reuse' && !baseStatus.clean) throw new Error('WORKTREE_DIRTY: reuse was requested but the selected checkout is dirty; choose new_worktree or auto');
@@ -808,6 +810,7 @@ function prepareWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
     allowedPaths,
     checks,
     baseRef,
+    needsDependencies,
   });
 
   return withWorkPrepareRequest({
@@ -893,7 +896,12 @@ function prepareWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
     });
     try {
       const workspace = useWorktree
-        ? ensureManagedWorkspace(ctx.controllerHome, repository, { requestId: createdWorkId, title: objective, baseRef })
+        ? ensureManagedWorkspace(ctx.controllerHome, repository, {
+          requestId: createdWorkId,
+          title: objective,
+          baseRef,
+          prepareDependencies: needsDependencies,
+        })
         : { mode: 'current' as const, checkoutId: baseCheckoutId, root: repository.canonicalRoot, branch: baseStatus.branch ?? 'detached', baseRevision: baseStatus.head ?? undefined, managed: false };
       const refreshed = getRepository(repository.repoId, ctx.controllerHome);
       const checkout = selectRepositoryCheckout(refreshed, workspace.checkoutId);
