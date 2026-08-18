@@ -39,6 +39,8 @@ export interface RuntimeReleaseManifest {
   browserNodeBridgeArtifactIdentity?: string;
   browserHandoffEntrypoint?: 'browser-handoff-host.js';
   browserHandoffArtifactIdentity?: string;
+  pluginActionSidecarEntrypoint?: 'forge-plugin-action-sidecar';
+  pluginActionSidecarArtifactIdentity?: string;
   browserAutomationHelperEntrypoint?: 'browser-automation-helper';
   browserAutomationHelperArtifactIdentity?: string;
   browserAutomationHelperContractIdentity?: string;

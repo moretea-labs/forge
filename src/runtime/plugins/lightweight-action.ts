@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import { resolveTrustedNodeExecutable } from '../shared/trusted-node-executable';
@@ -63,19 +63,25 @@ export async function startLightweightPluginAction(input: {
     privateAtomicWrite(requestPath, bytes);
   }
 
-  const sidecarPath = resolve(import.meta.dir, 'plugin-action-sidecar.ts');
+  const runtimeSidecar = join(dirname(process.execPath), 'forge-plugin-action-sidecar');
+  const useBundledSidecar = existsSync(runtimeSidecar);
+  const nodeExecutable = useBundledSidecar ? undefined : resolveTrustedNodeExecutable().executable;
+  if (!useBundledSidecar && !nodeExecutable) {
+    throw new Error('NODE_EXECUTABLE_UNAVAILABLE: typed plugin sidecar requires a bundled Runtime sidecar or trusted Node executable');
+  }
+  const sourceSidecarPath = resolve(import.meta.dir, 'plugin-action-sidecar.ts');
   const loaderPath = resolve(import.meta.dir, '../shared/node-ts-loader.mjs');
-  const nodeExecutable = resolveTrustedNodeExecutable().executable;
-  if (!nodeExecutable) throw new Error('NODE_EXECUTABLE_UNAVAILABLE: typed plugin sidecar requires a trusted Node executable');
   const { handle } = await startLightweightInternalProcess({
     repoId: input.repository.repoId,
-    executable: nodeExecutable,
-    args: [
-      '--loader', loaderPath,
-      sidecarPath,
-      '--request', requestPath,
-      '--expected-sha256', requestSha256,
-    ],
+    executable: useBundledSidecar ? runtimeSidecar : nodeExecutable!,
+    args: useBundledSidecar
+      ? ['--request', requestPath, '--expected-sha256', requestSha256]
+      : [
+          '--loader', loaderPath,
+          sourceSidecarPath,
+          '--request', requestPath,
+          '--expected-sha256', requestSha256,
+        ],
     cwd: input.repository.canonicalRoot,
     interactiveWaitMs: Math.max(0, input.interactiveWaitMs ?? 750),
     timeoutMs: input.timeoutMs,

@@ -33,6 +33,7 @@ export interface StagedRuntimeRelease {
   browserHandoffArtifactIdentity?: string;
   processRunnerArtifactIdentity?: string;
   checkRunnerArtifactIdentity?: string;
+  pluginActionSidecarArtifactIdentity?: string;
   externalPluginProbeArtifactIdentity?: string;
   codeGraphNodeArtifactIdentity?: string;
   codeGraphSidecarArtifactIdentity?: string;
@@ -491,6 +492,19 @@ export function stageRuntimeRelease(input: {
     chmodSync(checkRunnerPath, 0o700);
     const checkRunnerArtifactIdentity = `sha256:${sha256(checkRunnerPath)}`;
 
+    const pluginActionSidecarEntrypoint = 'forge-plugin-action-sidecar' as const;
+    const pluginActionSidecarPath = join(staging, pluginActionSidecarEntrypoint);
+    const pluginActionSidecarCompile = compileBinary({
+      sourceRoot,
+      outputPath: pluginActionSidecarPath,
+      entryPath: join(sourceRoot, 'src/runtime/plugins/plugin-action-sidecar.ts'),
+    });
+    if (!pluginActionSidecarCompile.ok) {
+      throw new Error(`RUNTIME_RELEASE_PLUGIN_ACTION_SIDECAR_BUILD_FAILED: ${pluginActionSidecarCompile.stderr || pluginActionSidecarCompile.stdout || pluginActionSidecarCompile.error}`.slice(0, 2_000));
+    }
+    chmodSync(pluginActionSidecarPath, 0o700);
+    const pluginActionSidecarArtifactIdentity = `sha256:${sha256(pluginActionSidecarPath)}`;
+
     const externalPluginProbeEntrypoint = 'external-unix-socket-probe.cjs' as const;
     const sourceExternalPluginProbePath = join(sourceRoot, 'src', 'runtime', 'plugins', externalPluginProbeEntrypoint);
     if (!existsSync(sourceExternalPluginProbePath)) {
@@ -549,6 +563,8 @@ export function stageRuntimeRelease(input: {
       processRunnerArtifactIdentity,
       checkRunnerEntrypoint,
       checkRunnerArtifactIdentity,
+      pluginActionSidecarEntrypoint,
+      pluginActionSidecarArtifactIdentity,
       externalPluginProbeEntrypoint,
       externalPluginProbeArtifactIdentity,
       codeGraphNodeEntrypoint,
@@ -632,6 +648,9 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease, depende
   }
   if (release.checkRunnerArtifactIdentity && !existsSync(join(release.releasePath, 'forge-check-runner'))) {
     throw new Error(`RUNTIME_RELEASE_CHECK_RUNNER_MISSING: ${join(release.releasePath, 'forge-check-runner')}`);
+  }
+  if (release.pluginActionSidecarArtifactIdentity && !existsSync(join(release.releasePath, 'forge-plugin-action-sidecar'))) {
+    throw new Error(`RUNTIME_RELEASE_PLUGIN_ACTION_SIDECAR_MISSING: ${join(release.releasePath, 'forge-plugin-action-sidecar')}`);
   }
   if (release.externalPluginProbeArtifactIdentity && !existsSync(join(release.releasePath, 'external-unix-socket-probe.cjs'))) {
     throw new Error(`RUNTIME_RELEASE_EXTERNAL_PLUGIN_PROBE_MISSING: ${join(release.releasePath, 'external-unix-socket-probe.cjs')}`);
