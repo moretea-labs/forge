@@ -14,6 +14,7 @@ import { branchSlugSegment, validateBranchName } from '../../cli/repositories/br
 import { withControllerLock } from '../../cli/repositories/locks';
 import { resolveGitExecutable } from '../../effects/git-executable';
 import { runProcess } from '../../effects/process-runner';
+import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../shared/process-environment';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 
 export interface EnsureManagedWorkspaceInput {
@@ -105,8 +106,13 @@ export function materializeManagedWorkspaceDependencies(repoRoot: string): void 
   if (!bootstrap) {
     throw new Error('MANAGED_WORKSPACE_DEPENDENCY_LOCK_REQUIRED: package.json exists but no supported lockfile was found');
   }
-  const result = runProcess(bootstrap.command[0]!, bootstrap.command.slice(1), {
+  const childEnv = repositoryChildProcessEnvironment();
+  const executable = bootstrap.packageManager === 'bun'
+    ? resolveBunExecutable(process.execPath, childEnv)
+    : bootstrap.command[0]!;
+  const result = runProcess(executable, bootstrap.command.slice(1), {
     cwd: repoRoot,
+    env: childEnv,
     timeoutMs: 10 * 60_000,
     maxOutputBytes: 4 * 1024 * 1024,
   });
