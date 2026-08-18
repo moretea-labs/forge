@@ -21,6 +21,7 @@ import { createRequirement, updateRequirement } from "../../src/runtime/control-
 import { terminateProcessTree } from "../../src/runtime/shared/process-tree";
 import { waitForProcess } from "../../src/runtime/execution/process-runtime/runtime";
 import { callExecutionTool } from "../../src/runtime/gateway/mcp/execution-tools";
+import { routeDurableMcpCall } from "../../src/runtime/gateway/mcp/router";
 import { boundedPluginArtifactImageContent, callRuntimeTool, controllerReadiness, controllerReadinessEvidence, repositoryExecutionReadiness } from "../../src/runtime/gateway/mcp/runtime-tools";
 import { getMcpPolicy } from "../../src/cli/mcp/policy";
 import { createMcpToolContext as createMultiRepositoryContext, parseMcpToolset } from "../../src/cli/mcp/multi-repository";
@@ -337,6 +338,19 @@ async function jsonTool(
   return { raw: result, value: JSON.parse(result.content[0].text) };
 }
 
+test("legacy callMcpTool refuses tools owned by current repository and Process Runtime authorities", async () => {
+  await withController(async (_repoRoot, ctx) => {
+    for (const [name, args] of [
+      ["read_repository_file", { path: "src/example.ts" }],
+      ["run_check", { check_id: "focused" }],
+    ] as const) {
+      const retired = await jsonTool(ctx, name, args);
+      expect(retired.raw.isError).toBe(true);
+      expect(retired.value.error.code).toBe("LEGACY_CURRENT_TOOL_RETIRED");
+    }
+  });
+});
+
 async function executionJson(
   ctx: ReturnType<typeof createMultiRepositoryContext>,
   name: string,
@@ -345,6 +359,26 @@ async function executionJson(
   const result = await callExecutionTool(ctx, name, args);
   if (!result) throw new Error(`execution tool not found: ${name}`);
   return JSON.parse(result.content[0].text);
+}
+
+async function currentRunCheck(
+  repoRoot: string,
+  args: Record<string, unknown>,
+) {
+  const controllerHome = String(process.env.FORGE_CONTROLLER_HOME);
+  const repository = registerRepository({ path: repoRoot, controllerHome });
+  const runtimeCtx = createMultiRepositoryContext({
+    repo: repoRoot,
+    controllerHome,
+    profile: "controller",
+    toolset: "advanced",
+  });
+  const result = await routeDurableMcpCall(runtimeCtx, "run_check", {
+    repo_id: repository.repoId,
+    ...args,
+  });
+  if (!result) throw new Error("current run_check route unavailable");
+  return { raw: result, value: JSON.parse(result.content[0].text) };
 }
 
 async function verifyTaskUntilSettled(
@@ -2528,7 +2562,7 @@ describe("MCP controller profile", () => {
         task_id: "T1",
         status: "review",
       });
-      const blocker = await jsonTool(ctx, "run_check", {
+      const blocker = await currentRunCheck(repoRoot, {
         check_id: "blocker",
         request_id: "verification-blocker",
         issue_id: created.value.id,
@@ -2675,43 +2709,21 @@ describe("MCP controller profile", () => {
         listed.value.checks.map((check: { id: string }) => check.id),
       ).toContain("focused");
       const runStartedAt = Date.now();
-      const submitted = (await Promise.race([
-        jsonTool(ctx, "run_check", { check_id: "focused" }),
+      const submitted = await Promise.race([
+        currentRunCheck(repoRoot, { check_id: "focused" }),
         Bun.sleep(5_000).then(() => {
           throw new Error("run_check remained synchronously blocked for 5 seconds");
         }),
-      ])) as Awaited<ReturnType<typeof jsonTool>>;
-      // Process Runtime returns within interactiveWait (≤800ms) as managed handle;
-      // legacy Local Job path also returns immediately after enqueue. Allow headroom
-      // for CI load without accepting a multi-second synchronous block.
+      ]);
+      // Current run_check authority returns through Process Runtime within the interactive budget.
       expect(Date.now() - runStartedAt).toBeLessThan(3_000);
-      // Process Runtime path returns process handle; legacy path returns Local Job.
-      if (submitted.value.job) {
-        expect(["approved", "running"]).toContain(submitted.value.job.status);
-        let finished = (
-          await jsonTool(ctx, "get_local_job", {
-            job_id: submitted.value.job.jobId})
-        ).value.job;
-        const runDeadline = Date.now() + 10_000;
-        for (let attempt = 0; Date.now() < runDeadline && finished.status === "running"; attempt += 1) {
-          await Bun.sleep(20);
-          finished = (
-            await jsonTool(ctx, "get_local_job", {
-              job_id: submitted.value.job.jobId})
-          ).value.job;
-        }
-        expect(finished.status).not.toBe("running");
-        expect(finished.status).toBe("succeeded");
-        expect(finished.result.stdout).toContain("focused-ok");
-      } else {
-        expect(["direct", "managed", "process_direct", "process_managed"]).toContain(
-          String(submitted.value.mode ?? submitted.value.path),
-        );
-        expect(typeof submitted.value.processId === "string" || submitted.value.completed === true).toBe(true);
-        // Managed handle returns quickly; direct may already be completed if interactive wait covers the 2.5s check.
-        if (submitted.value.completed === true) {
-          expect(String(submitted.value.stdout ?? "")).toContain("focused-ok");
-        }
+      expect(submitted.value.job).toBeUndefined();
+      expect(["direct", "managed", "process_direct", "process_managed"]).toContain(
+        String(submitted.value.mode ?? submitted.value.path),
+      );
+      expect(typeof submitted.value.processId === "string" || submitted.value.completed === true).toBe(true);
+      if (submitted.value.completed === true) {
+        expect(String(submitted.value.stdout ?? "")).toContain("focused-ok");
       }
     });
   });
@@ -2735,11 +2747,10 @@ describe("MCP controller profile", () => {
       expect(spawnSync("git", ["commit", "-m", "initial"], { cwd: repoRoot }).status).toBe(0);
       const controllerHome = join(repoRoot, ".forge-controller-home");
       const repository = registerRepository({ path: repoRoot, controllerHome });
-      const started = await jsonTool(ctx, "run_check", { check_id: "focused" });
-      // Accept Process Runtime handle or legacy Local Job — both must not block short reads.
-      const hasJob = typeof started.value.job?.jobId === "string";
+      const started = await currentRunCheck(repoRoot, { check_id: "focused" });
+      expect(started.value.job).toBeUndefined();
       const hasProcess = typeof started.value.processId === "string" || started.value.completed === true;
-      expect(hasJob || hasProcess).toBe(true);
+      expect(hasProcess).toBe(true);
       const readsStartedAt = Date.now();
       const [controllerContext, repositoryGet, localStatus] = await Promise.all([
         jsonTool(ctx, "controller_context"),

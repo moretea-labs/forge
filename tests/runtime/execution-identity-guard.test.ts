@@ -4,7 +4,8 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
-import { callMultiRepositoryTool, createMcpToolContext } from '../../src/cli/mcp/multi-repository';
+import { createMcpToolContext } from '../../src/cli/mcp/multi-repository';
+import { callRepositoryTool } from '../../src/cli/mcp/repository-tools';
 import {
   addRepositoryCheckout,
   registerRepository,
@@ -299,13 +300,14 @@ describe('execution identity pre-spawn guard', () => {
       sessionId: 'session-explicit-checkout',
       principalId: 'principal-explicit-checkout',
     });
-    const read = await callMultiRepositoryTool(ctx, 'read_repository_file', {
+    const read = await callRepositoryTool(fx.controllerHome, 'read_repository_file', {
       repo_id: fx.repoA.repoId,
       checkout_id: checkout!.checkoutId,
       path: 'checkout-only.txt',
-    });
-    expect(read.isError).not.toBe(true);
-    expect(JSON.stringify(read.structuredContent)).toContain('from explicit worktree');
+    }, ctx);
+    expect(read).toBeTruthy();
+    expect(read?.isError).not.toBe(true);
+    expect(JSON.stringify(read?.structuredContent)).toContain('from explicit worktree');
   });
 
 

@@ -20,7 +20,6 @@ import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { createMcpToolContext as createMultiRepositoryContext } from '../../src/cli/mcp/multi-repository';
 import { createForgeMcpServer } from '../../src/cli/mcp/server';
 import { registerRepository } from '../../src/cli/repositories/registry';
-import { callMultiRepositoryTool } from '../../src/cli/mcp/multi-repository';
 import { callRepositoryTool } from '../../src/cli/mcp/repository-tools';
 import { buildRuntimeMaintenanceStatus } from '../../src/runtime/recovery';
 import { writeJsonAtomic } from '../../src/runtime/shared/json-files';
@@ -508,8 +507,12 @@ describe('runtime observability', () => {
         expect(maintenance.readyForExecution).toBe(false);
 
         const ctx = createMultiRepositoryContext({ repo: repoRoot, profile: 'controller', controllerHome });
-        const read = await callMultiRepositoryTool(ctx, 'read_repository_file', { path: 'README.md' });
-        expect(JSON.parse(read.content[0].text).content).toContain('fixture');
+        const read = await callRepositoryTool(controllerHome, 'read_repository_file', {
+          repo_id: repository.repoId,
+          path: 'README.md',
+        }, ctx);
+        expect(read).toBeTruthy();
+        expect(JSON.parse(read?.content[0]?.text ?? '{}').content).toContain('fixture');
 
         const command = await callRepositoryTool(controllerHome, 'repository_command_execute', {
           repo_id: repository.repoId,

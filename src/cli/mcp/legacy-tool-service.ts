@@ -113,7 +113,6 @@ import type {
 import {
   gitDiff,
   gitSnapshot,
-  readRepositoryRange,
   searchRepository,
 } from "../repository/inspector";
 import {
@@ -3484,34 +3483,12 @@ export async function callMcpTool(
         return textResult(result);
       }
       case "read_repository_file": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "read_repository_file requires the controller profile",
-          );
-        const path = String(args.path ?? "");
-        const session = ctx.sessionId && ctx.repoId
-          ? {
-            sessionId: ctx.sessionId,
-            repoId: ctx.repoId,
-            checkoutId: ctx.checkoutId ?? ctx.repoId,
-          }
-          : undefined;
-        const result = readRepositoryRange(
-          ctx.repoRoot,
-          ctx.policy,
-          path,
-          typeof args.start_line === "number" ? args.start_line : 1,
-          typeof args.end_line === "number" ? args.end_line : 200,
-          session,
+        audit(ctx, name, "blocked", args);
+        return errorResult(
+          "LEGACY_CURRENT_TOOL_RETIRED",
+          "read_repository_file is owned by the current Repository Tool authority and cannot execute through legacy callMcpTool.",
+          { tool: name },
         );
-        const redacted = redactMcpText(result.content);
-        audit(ctx, name, "ok", args, result.path);
-        return textResult({
-          ...result,
-          content: redacted.text,
-          redactions: redacted.redactions,
-        });
       }
       case "get_git_diff": {
         if (ctx.policy.profile !== "controller")
@@ -3561,84 +3538,11 @@ export async function callMcpTool(
         return textResult({ checks });
       }
       case "run_check": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "run_check requires the controller profile",
-          );
-        // Ordinary checks are ephemeral. Real Work/Edit verification consumers
-        // retain Process evidence; release checks require a Durable workflow.
-        const checkId = String(args.check_id ?? "").trim();
-        const forceDurable = args.force_durable === true
-          || args.apply_mode === "async"
-          || args.mode === "durable";
-        if (!forceDurable && checkId) {
-          try {
-            const { checkRequiresDurableWorkflow, runCheckViaProcessRuntime } = await import(
-              "../../runtime/execution/process-runtime"
-            );
-            const { resolveRepoPreferredControllerHome } = await import("../repositories/controller-home");
-            const { resolveRepositorySelection } = await import("../repositories/registry");
-            if (!checkRequiresDurableWorkflow(checkId)) {
-              const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
-              const repository = resolveRepositorySelection({
-                explicitPath: ctx.repoRoot,
-                controllerHome,
-                allowSoleRepository: true,
-              });
-              if (repository) {
-                const facade = await runCheckViaProcessRuntime({
-                  controllerHome,
-                  repoId: repository.repoId,
-                  checkoutId: repository.activeCheckoutId,
-                  repoRoot: repository.canonicalRoot,
-                  checkId,
-                  timeoutMs: typeof args.timeout_ms === "number" ? args.timeout_ms : undefined,
-                  requestId: typeof args.request_id === "string" ? args.request_id.trim() || undefined : undefined,
-                  verificationBinding: typeof args.issue_id === "string" && typeof args.task_id === "string"
-                    ? { issueId: args.issue_id.trim(), taskId: args.task_id.trim() }
-                    : undefined,
-                  executionIdentity: {
-                    schemaVersion: 1,
-                    repositoryId: repository.repoId,
-                    checkoutId: repository.activeCheckoutId,
-                    canonicalRoot: repository.canonicalRoot,
-                  },
-                });
-                if (facade.mode !== "durable" && facade.process) {
-                  audit(ctx, name, "ok", args);
-                  return textResult({
-                    mode: facade.mode,
-                    path: facade.mode === "direct" ? "process_direct" : "process_managed",
-                    checkId: facade.checkId,
-                    processId: facade.process.processId,
-                    status: facade.process.status,
-                    completed: facade.process.completed === true,
-                    ok: facade.process.ok,
-                    exitCode: facade.process.exitCode,
-                    timedOut: facade.process.timedOut,
-                    stdout: facade.process.stdout,
-                    stderr: facade.process.stderr,
-                    durableSideEffects: facade.durableSideEffects,
-                    next: facade.process.completed
-                      ? "Check finished on Process Runtime without LocalBridgeJob / ExecutionJob / Worker."
-                      : `Managed process ${facade.process.processId} still running; poll process_get / process_wait / process_logs.`,
-                  });
-                }
-              }
-            }
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            const code = message.includes(":") ? message.slice(0, message.indexOf(":")) : "PROCESS_RUNTIME_FAILED";
-            audit(ctx, name, "failed", args, undefined, message);
-            return errorResult(code, message, { checkId });
-          }
-        }
         audit(ctx, name, "blocked", args);
         return errorResult(
-          "PROCESS_RUNTIME_REQUIRED",
-          "This check cannot create a Local Bridge Job. Run a registered ordinary check through Process Runtime or use external Controller handling for durable checks.",
-          { checkId },
+          "LEGACY_CURRENT_TOOL_RETIRED",
+          "run_check is owned by the current Router + Process Runtime authority and cannot execute through legacy callMcpTool.",
+          { tool: name },
         );
       }
       case "list_issues": {
