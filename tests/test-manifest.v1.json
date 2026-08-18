@@ -23,8 +23,8 @@
     "destructive"
   ],
   "policy": {
-    "maxTestFiles": 120,
-    "maxTestLines": 46842,
+    "maxTestFiles": 121,
+    "maxTestLines": 47585,
     "maxPureFiles": 35,
     "maxTempIsolatedFiles": 47,
     "maxProcessTreeFiles": 16,
@@ -413,6 +413,10 @@
     },
     "tests/runtime/ios-remote-xpc-hid.test.ts": {
       "module": "ios",
+      "resource": "pure"
+    },
+    "tests/runtime/github-issue-watch.test.ts": {
+      "module": "workflow",
       "resource": "pure"
     },
     "tests/runtime/local-system-target-grant.test.ts": {
