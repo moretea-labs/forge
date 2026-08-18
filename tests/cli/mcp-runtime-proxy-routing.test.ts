@@ -9,8 +9,12 @@ import {
   CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS,
   CANONICAL_RUNTIME_HANDOFF_WAIT_MS,
   CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS,
+  DEFAULT_CANONICAL_RUNTIME_PROXY_LANES,
+  MAX_CANONICAL_RUNTIME_PROXY_LANES,
   canonicalRuntimeForwardingIdentity,
+  canonicalRuntimeProxyLaneLimit,
   canonicalRuntimeReleaseHandoffInProgress,
+  createCanonicalRuntimeLaneScheduler,
   createForgeMcpServerFromContext,
   createMcpToolContext,
   deriveCanonicalForwardingTiming,
@@ -26,6 +30,34 @@ import {
 import { closeRuntimeMcpTransportResources } from '../../src/runtime/root/mcp-transport';
 
 describe('MCP canonical Runtime proxy routing', () => {
+  test('bounds inner Runtime proxy lanes and leases them exclusively under concurrency', async () => {
+    expect(canonicalRuntimeProxyLaneLimit(undefined)).toBe(DEFAULT_CANONICAL_RUNTIME_PROXY_LANES);
+    expect(canonicalRuntimeProxyLaneLimit('0')).toBe(DEFAULT_CANONICAL_RUNTIME_PROXY_LANES);
+    expect(canonicalRuntimeProxyLaneLimit('999')).toBe(MAX_CANONICAL_RUNTIME_PROXY_LANES);
+    expect(canonicalRuntimeProxyLaneLimit('3')).toBe(3);
+
+    const scheduler = createCanonicalRuntimeLaneScheduler(2);
+    const first = await scheduler.acquire();
+    const second = await scheduler.acquire();
+    expect(first).not.toBe(second);
+    expect(scheduler.size()).toBe(2);
+
+    let thirdResolved = false;
+    const thirdPromise = scheduler.acquire().then((laneId) => {
+      thirdResolved = true;
+      return laneId;
+    });
+    await Bun.sleep(1);
+    expect(thirdResolved).toBe(false);
+
+    scheduler.release(first);
+    expect(await thirdPromise).toBe(first);
+    scheduler.release(second);
+    scheduler.release(first);
+    scheduler.close();
+    await expect(scheduler.acquire()).rejects.toThrow('CANONICAL_RUNTIME_PROXY_CLOSED');
+  });
+
   test('reuses one shared Runtime proxy across outer MCP sessions without collapsing caller session identity', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-runtime-proxy-reuse-'));
     const runtimeSchema: CanonicalRuntimeToolSchema = {

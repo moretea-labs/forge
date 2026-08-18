@@ -523,15 +523,97 @@ export function deriveCanonicalForwardingTiming(input: {
   };
 }
 
-export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext): CanonicalRuntimeProxy {
-  let current: { identity: CanonicalRuntimeProxyIdentity; client: Client } | undefined;
-  let connecting: Promise<{ identity: CanonicalRuntimeProxyIdentity; client: Client }> | undefined;
+export const DEFAULT_CANONICAL_RUNTIME_PROXY_LANES = 8;
+export const MAX_CANONICAL_RUNTIME_PROXY_LANES = 16;
 
-  const closeCurrent = async (expectedClient?: Client): Promise<void> => {
-    if (!current || (expectedClient && current.client !== expectedClient)) return;
-    const closing = current.client;
-    current = undefined;
+export function canonicalRuntimeProxyLaneLimit(raw = process.env.FORGE_CANONICAL_RUNTIME_PROXY_LANES): number {
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) return DEFAULT_CANONICAL_RUNTIME_PROXY_LANES;
+  return Math.min(parsed, MAX_CANONICAL_RUNTIME_PROXY_LANES);
+}
+
+export interface CanonicalRuntimeLaneScheduler {
+  acquire(): Promise<number>;
+  release(laneId: number): void;
+  close(): void;
+  size(): number;
+}
+
+/**
+ * Lease one inner Runtime MCP session exclusively to each in-flight request.
+ * This keeps hot connection reuse while preventing a long process_wait or plugin
+ * action from head-of-line blocking unrelated short calls on the same transport.
+ */
+export function createCanonicalRuntimeLaneScheduler(maxLanes = canonicalRuntimeProxyLaneLimit()): CanonicalRuntimeLaneScheduler {
+  const boundedMax = Math.max(1, Math.min(Math.trunc(maxLanes), MAX_CANONICAL_RUNTIME_PROXY_LANES));
+  const idle: number[] = [];
+  const waiters: Array<{ resolve: (laneId: number) => void; reject: (error: Error) => void }> = [];
+  let laneCount = 0;
+  let closed = false;
+
+  return {
+    async acquire(): Promise<number> {
+      if (closed) throw new Error('CANONICAL_RUNTIME_PROXY_CLOSED');
+      const available = idle.shift();
+      if (available !== undefined) return available;
+      if (laneCount < boundedMax) return laneCount++;
+      return await new Promise<number>((resolve, reject) => waiters.push({ resolve, reject }));
+    },
+    release(laneId: number): void {
+      if (closed) return;
+      const waiter = waiters.shift();
+      if (waiter) {
+        waiter.resolve(laneId);
+        return;
+      }
+      idle.push(laneId);
+    },
+    close(): void {
+      if (closed) return;
+      closed = true;
+      const error = new Error('CANONICAL_RUNTIME_PROXY_CLOSED');
+      for (const waiter of waiters.splice(0)) waiter.reject(error);
+      idle.length = 0;
+    },
+    size(): number {
+      return laneCount;
+    },
+  };
+}
+
+interface CanonicalRuntimeProxyLane {
+  current?: { identity: CanonicalRuntimeProxyIdentity; client: Client };
+  connecting?: Promise<{ identity: CanonicalRuntimeProxyIdentity; client: Client }>;
+}
+
+export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext): CanonicalRuntimeProxy {
+  const scheduler = createCanonicalRuntimeLaneScheduler();
+  const lanes = new Map<number, CanonicalRuntimeProxyLane>();
+  let closed = false;
+
+  const laneState = (laneId: number): CanonicalRuntimeProxyLane => {
+    const existing = lanes.get(laneId);
+    if (existing) return existing;
+    const created: CanonicalRuntimeProxyLane = {};
+    lanes.set(laneId, created);
+    return created;
+  };
+
+  const closeLane = async (laneId: number, expectedClient?: Client): Promise<void> => {
+    const lane = lanes.get(laneId);
+    if (!lane) return;
+    if (lane.connecting) {
+      await lane.connecting.catch(() => undefined);
+      lane.connecting = undefined;
+    }
+    if (!lane.current || (expectedClient && lane.current.client !== expectedClient)) return;
+    const closing = lane.current.client;
+    lane.current = undefined;
     await closing.close().catch(() => undefined);
+  };
+
+  const closeAllLanes = async (): Promise<void> => {
+    await Promise.all(Array.from(lanes.keys()).map(async (laneId) => await closeLane(laneId)));
   };
 
   const connect = async (identity: CanonicalRuntimeProxyIdentity): Promise<{ identity: CanonicalRuntimeProxyIdentity; client: Client }> => {
@@ -561,19 +643,20 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
     );
   };
 
-  const clientForCurrentRuntime = async (timing: MutableGatewayProxyTiming): Promise<Client> => {
+  const clientForCurrentRuntime = async (laneId: number, timing: MutableGatewayProxyTiming): Promise<Client> => {
+    const lane = laneState(laneId);
     const resolveStarted = performance.now();
     const identity = canonicalRuntimeProxyIdentity(ctx);
     timing.gatewayProxyResolveMs = roundedMs(performance.now() - resolveStarted);
-    if (current && sameCanonicalRuntimeProxyIdentity(current.identity, identity)) {
+    if (lane.current && sameCanonicalRuntimeProxyIdentity(lane.current.identity, identity)) {
       timing.gatewayProxyConnectionState = 'reused';
       timing.gatewayProxyConnectMs = 0;
-      return current.client;
+      return lane.current.client;
     }
 
-    if (connecting) {
+    if (lane.connecting) {
       const connectStarted = performance.now();
-      const pending = await connecting;
+      const pending = await lane.connecting;
       timing.gatewayProxyConnectMs = roundedMs(performance.now() - connectStarted);
       if (sameCanonicalRuntimeProxyIdentity(pending.identity, identity)) {
         timing.gatewayProxyConnectionState = 'coalesced_connect';
@@ -581,51 +664,55 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
       }
     }
 
-    const reconnect = Boolean(current);
-    await closeCurrent();
+    const reconnect = Boolean(lane.current);
+    await closeLane(laneId);
     const connectStarted = performance.now();
-    connecting = connect(identity);
+    lane.connecting = connect(identity);
     try {
-      current = await connecting;
+      lane.current = await lane.connecting;
       timing.gatewayProxyConnectMs = roundedMs(performance.now() - connectStarted);
       timing.gatewayProxyConnectionState = reconnect ? 'identity_reconnect' : 'cold_connect';
-      return current.client;
+      return lane.current.client;
     } finally {
-      connecting = undefined;
+      lane.connecting = undefined;
+    }
+  };
+
+  const prepareLane = async (timing: MutableGatewayProxyTiming): Promise<{ laneId: number; client: Client }> => {
+    if (closed) throw new Error('CANONICAL_RUNTIME_PROXY_CLOSED');
+    const handoff = await waitForCanonicalRuntimeReleaseHandoff(
+      () => canonicalRuntimeReleaseHandoffActive(ctx.controllerHome),
+    );
+    if (handoff.waited) await closeAllLanes();
+    const laneId = await scheduler.acquire();
+    try {
+      return { laneId, client: await clientForCurrentRuntime(laneId, timing) };
+    } catch (error) {
+      scheduler.release(laneId);
+      throw error;
     }
   };
 
   return {
     async listTools() {
-      const handoff = await waitForCanonicalRuntimeReleaseHandoff(
-        () => canonicalRuntimeReleaseHandoffActive(ctx.controllerHome),
-      );
-      if (handoff.waited) await closeCurrent();
-      const client = await clientForCurrentRuntime({});
+      const { laneId, client } = await prepareLane({});
       try {
         return await client.listTools() as { tools: Tool[] };
       } catch (error) {
-        await closeCurrent(client);
+        await closeLane(laneId, client);
         throw error;
+      } finally {
+        scheduler.release(laneId);
       }
     },
     async callTool(callerContext, name, args, timing = {}) {
-      // The endpoint/token identity is intentionally stable across releases, so
-      // an old persistent inner MCP client would otherwise be reused into the
-      // bootout window. Wait only for a proven release handoff, then discard the
-      // stale connection before selecting the current Runtime client.
-      const handoff = await waitForCanonicalRuntimeReleaseHandoff(
-        () => canonicalRuntimeReleaseHandoffActive(ctx.controllerHome),
-      );
-      if (handoff.waited) await closeCurrent();
-      const client = await clientForCurrentRuntime(timing);
+      const { laneId, client } = await prepareLane(timing);
       const gatewayCallStartedAtMs = Date.now();
       const callStarted = performance.now();
       try {
         // The outer Connector session is already bound to the Canonical Runtime
         // schema and fenced by the Runtime-published fingerprint before dispatch.
-        // Re-listing tools here creates a second discovery round trip for every
-        // tool call without strengthening that fence.
+        // Caller identity stays request-scoped while the inner MCP lane is reused.
         const response = await client.callTool(
           {
             name,
@@ -645,18 +732,19 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
         return result;
       } catch (error) {
         timing.gatewayProxyCallMs = roundedMs(performance.now() - callStarted);
-        // A Runtime restart, token rotation, or broken HTTP session must never
-        // poison later calls. The next request reconnects against fresh identity.
-        await closeCurrent(client);
+        // Poison only the failed lane. Other hot lanes remain available so one
+        // Runtime/session failure cannot collapse the whole Gateway proxy pool.
+        await closeLane(laneId, client);
         throw error;
+      } finally {
+        scheduler.release(laneId);
       }
     },
     async close() {
-      if (connecting) {
-        await connecting.catch(() => undefined);
-        connecting = undefined;
-      }
-      await closeCurrent();
+      if (closed) return;
+      closed = true;
+      scheduler.close();
+      await closeAllLanes();
     },
   };
 }
