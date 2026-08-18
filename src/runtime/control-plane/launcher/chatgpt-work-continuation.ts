@@ -17,7 +17,10 @@ export const DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY = 'auto';
 export const DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge';
 const CHATGPT_PROMPT_SELECTOR = 'div#prompt-textarea[contenteditable="true"]';
 const CHATGPT_SEND_SELECTOR = '[data-testid="send-button"]';
-const CHATGPT_INTELLIGENCE_CONTROL_SELECTOR = 'button, [role="button"]';
+const CHATGPT_INTELLIGENCE_CONTROL_SELECTORS = [
+  'main button, main [role="button"]',
+  'button, [role="button"]',
+] as const;
 const CHATGPT_CAPABILITY_SLIDER_SELECTOR = '[role="slider"]';
 const CHATGPT_CAPABILITY_MENUITEM_SELECTOR = '[role="menuitem"][aria-keyshortcuts~="ArrowLeft"][aria-keyshortcuts~="ArrowRight"]';
 
@@ -244,16 +247,23 @@ async function findChatgptIntelligenceControl(
   browserSessionId: string,
   timeoutMs?: number,
 ): Promise<BrowserQueryMatch | undefined> {
-  const result = await controllerBrowserAction(controllerHome, workId, 'query_all', {
-    session_id: browserSessionId,
-    selector: CHATGPT_INTELLIGENCE_CONTROL_SELECTOR,
-    limit: 50,
-    timeout_ms: timeoutMs ?? 60_000,
-  }, timeoutMs);
-  return queryMatches(result).find((match) => {
-    const label = matchText(match);
-    return modelLabelMatches(label, DEFAULT_CHATGPT_AUTOMATION_MODEL) || isReasoningControlLabel(label);
-  });
+  for (const selector of CHATGPT_INTELLIGENCE_CONTROL_SELECTORS) {
+    const result = await controllerBrowserAction(controllerHome, workId, 'query_all', {
+      session_id: browserSessionId,
+      selector,
+      // Prefer the composer/main region so sidebar history cannot crowd the
+      // reasoning control out of a bounded query. Keep a larger global fallback
+      // for ChatGPT layouts that place the control outside <main>.
+      limit: selector.startsWith('main ') ? 80 : 240,
+      timeout_ms: timeoutMs ?? 60_000,
+    }, timeoutMs);
+    const match = queryMatches(result).find((candidate) => {
+      const label = matchText(candidate);
+      return modelLabelMatches(label, DEFAULT_CHATGPT_AUTOMATION_MODEL) || isReasoningControlLabel(label);
+    });
+    if (match) return match;
+  }
+  return undefined;
 }
 
 async function waitForChatgptIntelligenceControl(
