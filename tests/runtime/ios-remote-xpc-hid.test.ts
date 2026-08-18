@@ -87,6 +87,13 @@ describe('RemoteXPC HID backend', () => {
     expect(observed).not.toHaveProperty('height');
   });
 
+  it('fails replace_existing closed inside the real iOS 27 worker before any HID mutation', () => {
+    const source = remoteXpcHidWorkerSourceForTest();
+    expect(source).toContain("phase = 'replace_existing_preflight'");
+    expect(source).toContain('replace_existing requires a verified modifier-capable keyboard path; no HID mutation was sent');
+    expect(source).not.toContain("ASCII_TO_HID.get('a')");
+  });
+
   it('rejects Unicode only when explicit direct-key mode is requested', async () => {
     let dispatched = false;
     setRemoteXpcHidExecutorForTest(async (input) => {

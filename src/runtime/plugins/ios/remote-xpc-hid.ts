@@ -254,16 +254,8 @@ async def main():
                             else:
                                 raise RuntimeError('CoreDevice pasteboard service is unavailable for Unicode/pasteboard text input')
                         if replace_existing:
-                            mapping = ASCII_TO_HID.get('a')
-                            if mapping is None:
-                                raise RuntimeError('HID A key mapping unavailable')
-                            usage, _ = mapping
-                            phase = 'hid_keyboard_select_all'
-                            mutation_dispatched = True
-                            await hid.send_keyboard(keyboard_service, [usage, KEY_LEFT_GUI])
-                            await asyncio.sleep(0.040)
-                            await hid.send_keyboard(keyboard_service, [])
-                            await asyncio.sleep(0.040)
+                            phase = 'replace_existing_preflight'
+                            raise RuntimeError('replace_existing requires a verified modifier-capable keyboard path; no HID mutation was sent')
                         if text_mode == 'keys' and not key_supported:
                             raise ValueError('unsupported HID character in keys mode')
                         if use_pasteboard:
