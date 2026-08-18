@@ -172,6 +172,12 @@ function terminalOutcome(handle: ReturnType<typeof listWorkHandles>[number]): Wo
 
 function cleanupSafety(repoRoot: string, worktreePath: string): { safe: boolean; reason?: string } {
   if (!existsSync(worktreePath)) return { safe: true };
+  const repository = runProcess('git', ['rev-parse', '--is-inside-work-tree'], {
+    cwd: worktreePath,
+    timeoutMs: 10_000,
+    maxOutputBytes: 100_000,
+  });
+  if (!repository.ok || repository.stdout.trim() !== 'true') return { safe: false, reason: 'WORKTREE_NOT_GIT_REPOSITORY' };
   const status = git(worktreePath, ['status', '--porcelain']);
   if (status) return { safe: false, reason: 'WORKTREE_DIRTY' };
   const head = git(worktreePath, ['rev-parse', 'HEAD']);

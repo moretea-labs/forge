@@ -112,6 +112,9 @@ describe('runtime command surface', () => {
     const standaloneRecovery = readFileSync(join(ROOT, 'src/runtime/standalone-recovery/core.ts'), 'utf8');
     const facadeActions = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/suggested-actions.ts'), 'utf8');
     const capabilityRegistry = readFileSync(join(ROOT, 'src/runtime/control-plane/facade/capability-registry.ts'), 'utf8');
+    const sourceBaseline = readFileSync(join(ROOT, 'scripts/activate-source-baseline.ts'), 'utf8');
+    expect(sourceBaseline).toContain("['rev-parse', '--is-inside-work-tree']");
+    expect(sourceBaseline).toContain("reason: 'WORKTREE_NOT_GIT_REPOSITORY'");
     expect(mcpCommand).toContain('bindInheritedRuntimeWriteClaimFromEnvironment');
     expect(mcpCommand).toContain("from '../../runtime/root/write-fence'");
     expect(mcpCommand).not.toContain('stable-state/runtime-writer-context');
