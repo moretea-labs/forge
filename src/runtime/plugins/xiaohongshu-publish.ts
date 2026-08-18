@@ -10,9 +10,10 @@ import { AssistantPluginError } from './errors';
 import { executeBrowserPluginAction } from './browser-adapter';
 
 const PLUGIN_ID = 'xiaohongshu';
-const RECIPE_VERSION = 5;
+const RECIPE_VERSION = 6;
 const CREATOR_BASE_URL = 'https://creator.xiaohongshu.com/publish/publish?source=official';
 const CREATOR_ARTICLE_URL = `${CREATOR_BASE_URL}&target=article`;
+const CREATOR_NOTE_MANAGER_URL = 'https://creator.xiaohongshu.com/new/note-manager';
 const IMAGE_TAB_TEXT = '上传图文';
 const ARTICLE_NEW_TEXT = '新的创作';
 const ARTICLE_LAYOUT_TEXT = '一键排版';
@@ -110,7 +111,12 @@ export function classifyXiaohongshuPublishState(input: {
 }): 'AUTH_REQUIRED' | 'READY' | 'PUBLISHED_RECEIPT' | 'PROFILE_VERIFIED' | 'VERIFY_PENDING' | 'PAGE_SCHEMA_CHANGED' {
   if (isXiaohongshuAuthRequired(input.url, input.text)) return 'AUTH_REQUIRED';
   if (input.phase === 'creator_receipt') {
-    return input.url.includes('published=true') ? 'PUBLISHED_RECEIPT' : 'VERIFY_PENDING';
+    const normalizedUrl = input.url.toLowerCase();
+    return normalizedUrl.includes('published=true')
+      || normalizedUrl.includes('/publish/success')
+      || normalizedUrl.includes('/publish/editsuccess')
+      ? 'PUBLISHED_RECEIPT'
+      : 'VERIFY_PENDING';
   }
   if (input.phase === 'profile_verify') {
     return input.expectedTitle && input.text.includes(input.expectedTitle) ? 'PROFILE_VERIFIED' : 'VERIFY_PENDING';
@@ -220,9 +226,9 @@ export function buildXiaohongshuPublishRecipe(args: Record<string, unknown>): Re
 
   steps.push(
     { id: 'publish.semantic_submit', actionId: 'dispatch_event', args: { session_id: parsed.sessionId, selector: PUBLISH_SELECTOR, event: PUBLISH_EVENT, post_action_wait_ms: 1_500 }, expectation: 'Current XHS closed-shadow publish control emits publish; recipe version must be updated if this semantic event changes.' },
-    { id: 'verify.creator_receipt', actionId: 'get_text', args: { session_id: parsed.sessionId, max_chars: 4_000 }, expectation: 'URL must include published=true before profile verification.' },
-    { id: 'verify.profile', actionId: 'navigate', args: { session_id: parsed.sessionId, url: parsed.profileUrl, wait_until: 'domcontentloaded', timeout_ms: 60_000 } },
-    { id: 'verify.profile_title', actionId: 'get_text', args: { session_id: parsed.sessionId, max_chars: 12_000 }, expectation: `Profile text must contain exact title: ${parsed.title}` },
+    { id: 'verify.creator_receipt', actionId: 'get_text', args: { session_id: parsed.sessionId, max_chars: 4_000 }, expectation: 'Creator URL must expose a recognized publish success receipt before title verification.' },
+    { id: 'verify.creator_note_manager', actionId: 'navigate', args: { session_id: parsed.sessionId, url: CREATOR_NOTE_MANAGER_URL, wait_until: 'domcontentloaded', timeout_ms: 60_000 } },
+    { id: 'verify.creator_title', actionId: 'get_text', args: { session_id: parsed.sessionId, max_chars: 12_000 }, expectation: `Creator note manager text must contain exact title even when the note is still under review: ${parsed.title}` },
   );
 
   return {
@@ -250,7 +256,7 @@ export function buildXiaohongshuPublishRecipe(args: Record<string, unknown>): Re
       publishEvent: PUBLISH_EVENT,
     },
     steps,
-    verification: ['creator_url_contains_published=true', 'profile_contains_exact_title'],
+    verification: ['creator_publish_success_receipt', 'creator_note_manager_contains_exact_title'],
   };
 }
 
@@ -364,7 +370,7 @@ export async function executeXiaohongshuPluginAction(input: AssistantPluginActio
           return { status: 'publish_unverified', recipeVersion: RECIPE_VERSION, checkpoint: step.id, creatorUrl: resultUrl(result), receipts };
         }
       }
-      if (step.id === 'verify.profile_title') profileReceipt = result;
+      if (step.id === 'verify.creator_title') profileReceipt = result;
     }
 
     const profileState = profileReceipt
@@ -375,7 +381,7 @@ export async function executeXiaohongshuPluginAction(input: AssistantPluginActio
         status: 'verification_pending',
         recipeVersion: RECIPE_VERSION,
         creatorReceipt: creatorReceipt ? { url: resultUrl(creatorReceipt) } : undefined,
-        profileUrl: parsed.profileUrl,
+        verificationUrl: CREATOR_NOTE_MANAGER_URL,
         expectedTitle: parsed.title,
         receipts,
       };
@@ -387,7 +393,7 @@ export async function executeXiaohongshuPluginAction(input: AssistantPluginActio
       normalizedMode: parsed.normalizedMode,
       title: parsed.title,
       creatorReceipt: { url: resultUrl(creatorReceipt ?? {}) },
-      profileVerification: { url: resultUrl(profileReceipt ?? {}), titleFound: true },
+      creatorVerification: { url: resultUrl(profileReceipt ?? {}), titleFound: true },
       receipts,
       publishedAt: now(),
     };
@@ -472,7 +478,7 @@ function actions(): AssistantPluginActionDescriptor[] {
       },
     },
     {
-      actionId: 'publish_note', title: 'Publish Xiaohongshu note', description: 'Execute the versioned Xiaohongshu publish recipe through the existing persisted Browser session. Stops on login expiry or page-schema drift and only reports published after creator receipt plus profile-title verification.',
+      actionId: 'publish_note', title: 'Publish Xiaohongshu note', description: 'Execute the versioned Xiaohongshu publish recipe through the existing persisted Browser session. Stops on login expiry or page-schema drift and only reports published after a Creator success receipt plus exact-title verification in Creator note manager.',
       readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 180_000, cancellable: true, idempotent: false,
       scopes: ['xiaohongshu.publish'], resourceClaims: [{ resource: 'remote', mode: 'exclusive' }, { resource: 'repo-state', mode: 'write' }], argumentsSchema: recipeSchema,
     },

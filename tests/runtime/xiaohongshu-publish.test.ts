@@ -43,7 +43,7 @@ describe('xiaohongshu publish recipe', () => {
       actionId: 'dispatch_event',
       args: { selector: 'xhs-publish-btn', event: 'publish' },
     });
-    expect(image.verification).toEqual(['creator_url_contains_published=true', 'profile_contains_exact_title']);
+    expect(image.verification).toEqual(['creator_publish_success_receipt', 'creator_note_manager_contains_exact_title']);
 
     const generatedPending = buildXiaohongshuPublishRecipe({ ...baseArgs, mode: 'generated_image_note' });
     expect(generatedPending.normalizedMode).toBe('image_note');
@@ -73,11 +73,12 @@ describe('xiaohongshu publish recipe', () => {
     expect(classifyXiaohongshuPublishState({ phase: 'preflight', url: 'https://creator.xiaohongshu.com/login', text: '扫码登录' })).toBe('AUTH_REQUIRED');
     expect(classifyXiaohongshuPublishState({ phase: 'preflight', url: 'https://creator.xiaohongshu.com/publish', text: '创作服务平台 发布笔记' })).toBe('READY');
     expect(classifyXiaohongshuPublishState({ phase: 'creator_receipt', url: 'https://creator.xiaohongshu.com/publish?published=true', text: '' })).toBe('PUBLISHED_RECEIPT');
+    expect(classifyXiaohongshuPublishState({ phase: 'creator_receipt', url: 'https://creator.xiaohongshu.com/publish/success?source=official', text: '' })).toBe('PUBLISHED_RECEIPT');
     expect(classifyXiaohongshuPublishState({ phase: 'profile_verify', url: profileUrl, text: '一个可以直接收藏的工具帖', expectedTitle: '一个可以直接收藏的工具帖' })).toBe('PROFILE_VERIFIED');
     expect(classifyXiaohongshuPublishState({ phase: 'profile_verify', url: profileUrl, text: '还没刷新出来', expectedTitle: '一个可以直接收藏的工具帖' })).toBe('VERIFY_PENDING');
   });
 
-  test('publish_note executes the fixed image recipe and only succeeds after profile verification', async () => {
+  test('publish_note executes the fixed image recipe and succeeds after Creator receipt plus note-manager title verification', async () => {
     const calls: Array<{ actionId: string; args: Record<string, any> }> = [];
     let currentUrl = '';
     let textRead = 0;
@@ -91,7 +92,7 @@ describe('xiaohongshu publish recipe', () => {
         }
         if (input.actionId === 'wait_for_selector') return { url: currentUrl, selector: input.args.selector, state: input.args.state };
         if (input.actionId === 'dispatch_event') {
-          currentUrl = 'https://creator.xiaohongshu.com/publish/publish?source=official&published=true';
+          currentUrl = 'https://creator.xiaohongshu.com/publish/success?source=official';
           return { url: currentUrl };
         }
         if (input.actionId === 'get_text') {
@@ -110,7 +111,8 @@ describe('xiaohongshu publish recipe', () => {
     });
 
     expect(result.status).toBe('published');
-    expect(result.profileVerification).toEqual({ url: profileUrl, titleFound: true });
+    expect(result.creatorVerification).toEqual({ url: 'https://creator.xiaohongshu.com/new/note-manager', titleFound: true });
+    expect(calls.find((call) => call.actionId === 'navigate' && call.args.url.includes('/new/note-manager'))).toBeTruthy();
     expect(calls.find((call) => call.actionId === 'attach_local_file')?.args.file_paths).toEqual(['cover.png', 'detail.png']);
     expect(calls.find((call) => call.actionId === 'dispatch_event')?.args).toMatchObject({ selector: 'xhs-publish-btn', event: 'publish' });
     expect(calls.at(-1)?.actionId).toBe('get_text');
