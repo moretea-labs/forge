@@ -23,6 +23,7 @@ import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { observeRuntimeStatus } from '../../runtime/root/status';
+import { readRuntimeReleaseAuthority } from '../../runtime/root/release-store';
 import { getRuntimeWriteClaim } from '../../runtime/root/write-fence';
 import { recordMcpIncident, recordMcpTiming, type McpTimingTrace } from '../../runtime/diagnostics/mcp-timing';
 import { FORGE_VERSION, forgeToolSurfaceFingerprint } from '../controller/runtime-config';
@@ -220,27 +221,194 @@ export const CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS = 5_000;
  * work continues successfully behind it.
  */
 export const CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS = 120_000;
+export const CANONICAL_RUNTIME_HANDOFF_WAIT_MS = 20_000;
+export const CANONICAL_RUNTIME_HANDOFF_RETRY_INTERVAL_MS = 150;
+const CANONICAL_RUNTIME_HANDOFF_SIGNAL_TTL_MS = 90_000;
+
+export interface CanonicalRuntimeReleaseHandoffObservation {
+  authorityReleaseId?: string;
+  authorityCommittedAt?: string;
+  runtimeReleaseId?: string;
+  runtimeRunning: boolean;
+  runtimeReady: boolean;
+  runtimeStartedAt?: string;
+  runtimeUpdatedAt?: string;
+  recoveryActivationInProgress?: boolean;
+  nowMs: number;
+}
+
+function timestampIsRecent(value: string | undefined, nowMs: number, maxAgeMs: number): boolean {
+  if (!value) return false;
+  const observedAt = Date.parse(value);
+  if (!Number.isFinite(observedAt)) return false;
+  const ageMs = nowMs - observedAt;
+  return ageMs >= -5_000 && ageMs <= maxAgeMs;
+}
+
+/**
+ * Recognize only a bounded whole-Runtime release handoff. An old dead Runtime
+ * must not keep the public Gateway waiting forever, so every transition signal
+ * is time-bounded. This is observability, never release authority.
+ */
+export function canonicalRuntimeReleaseHandoffInProgress(
+  input: CanonicalRuntimeReleaseHandoffObservation,
+): boolean {
+  if (!input.authorityReleaseId) return false;
+  const sameRelease = input.runtimeReleaseId === input.authorityReleaseId;
+  const authorityRecent = timestampIsRecent(
+    input.authorityCommittedAt,
+    input.nowMs,
+    CANONICAL_RUNTIME_HANDOFF_SIGNAL_TTL_MS,
+  );
+
+  // The release authority switches only after the old Runtime has completely
+  // stopped. Until the new Runtime publishes matching status, this mismatch is
+  // the strongest handoff signal. Missing status is equivalent to mismatch only
+  // while the authority commit is recent.
+  if (!sameRelease && authorityRecent) return true;
+
+  // The new Runtime owns the target release but has not completed scheduler +
+  // MCP end-to-end readiness yet.
+  if (sameRelease && input.runtimeRunning && !input.runtimeReady) {
+    return timestampIsRecent(
+      input.runtimeStartedAt ?? input.runtimeUpdatedAt,
+      input.nowMs,
+      CANONICAL_RUNTIME_HANDOFF_SIGNAL_TTL_MS,
+    );
+  }
+
+  // Bridge the intentional bootout -> authority-publish gap only while the
+  // standalone Recovery transaction explicitly owns the activation lock. A
+  // freshly crashed Runtime without that lock is an outage and stays fail-fast.
+  if (sameRelease && !input.runtimeRunning) {
+    return input.recoveryActivationInProgress === true;
+  }
+
+  return false;
+}
+
+export interface CanonicalRuntimeHandoffWaitResult {
+  waited: boolean;
+  settled: boolean;
+  observations: number;
+}
+
+export async function waitForCanonicalRuntimeReleaseHandoff(
+  handoffInProgress: () => boolean,
+  options: {
+    maxWaitMs?: number;
+    intervalMs?: number;
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<CanonicalRuntimeHandoffWaitResult> {
+  const maxWaitMs = Math.max(0, options.maxWaitMs ?? CANONICAL_RUNTIME_HANDOFF_WAIT_MS);
+  const intervalMs = Math.max(1, options.intervalMs ?? CANONICAL_RUNTIME_HANDOFF_RETRY_INTERVAL_MS);
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let observations = 1;
+  if (!handoffInProgress()) return { waited: false, settled: true, observations };
+  const deadline = now() + maxWaitMs;
+  let waited = false;
+  while (now() < deadline) {
+    waited = true;
+    await sleep(Math.min(intervalMs, Math.max(1, deadline - now())));
+    observations += 1;
+    if (!handoffInProgress()) return { waited, settled: true, observations };
+  }
+  observations += 1;
+  return { waited, settled: !handoffInProgress(), observations };
+}
+
+export async function retryCanonicalRuntimeConnectDuringHandoff<T>(
+  connect: () => Promise<T>,
+  handoffInProgress: () => boolean,
+  options: Parameters<typeof waitForCanonicalRuntimeReleaseHandoff>[1] = {},
+): Promise<T> {
+  const initialWait = await waitForCanonicalRuntimeReleaseHandoff(handoffInProgress, options);
+  if (initialWait.waited && !initialWait.settled) {
+    // Preserve the ordinary connect failure shape after the bounded handoff
+    // window rather than manufacturing a new proxy-only error.
+    return await connect();
+  }
+  try {
+    return await connect();
+  } catch (error) {
+    // Retrying is safe only because connect() has not dispatched a tool call.
+    // Once client.callTool() begins, callers must never use this helper.
+    if (!handoffInProgress()) throw error;
+    const waited = await waitForCanonicalRuntimeReleaseHandoff(handoffInProgress, options);
+    if (!waited.settled) throw error;
+    return await connect();
+  }
+}
+
+function recoveryRuntimeReleaseActivationInProgress(controllerHome: string): boolean {
+  try {
+    const lock = JSON.parse(readFileSync(join(controllerHome, 'recovery', 'locks', 'operation.lock'), 'utf8')) as {
+      action?: string;
+      acquiredAt?: string;
+    };
+    if (lock.action !== 'activate_runtime_release' && lock.action !== 'stage_and_activate_runtime_release') return false;
+    return timestampIsRecent(lock.acquiredAt, Date.now(), CANONICAL_RUNTIME_HANDOFF_SIGNAL_TTL_MS);
+  } catch {
+    return false;
+  }
+}
+
+function canonicalRuntimeReleaseHandoffActive(controllerHome: string): boolean {
+  const runtime = observeRuntimeStatus(controllerHome);
+  if (runtime.running && runtime.ready) return false;
+  const authority = readRuntimeReleaseAuthority(controllerHome);
+  return canonicalRuntimeReleaseHandoffInProgress({
+    authorityReleaseId: authority?.active.releaseId,
+    authorityCommittedAt: authority?.committedAt,
+    runtimeReleaseId: runtime.snapshot?.releaseId,
+    runtimeRunning: runtime.running,
+    runtimeReady: runtime.ready,
+    runtimeStartedAt: runtime.snapshot?.startedAt,
+    runtimeUpdatedAt: runtime.snapshot?.updatedAt,
+    recoveryActivationInProgress: recoveryRuntimeReleaseActivationInProgress(controllerHome),
+    nowMs: Date.now(),
+  });
+}
+
 
 async function withCanonicalRuntimeClient<T>(
   ctx: MultiRepositoryMcpToolContext,
   action: (client: Client) => Promise<T>,
 ): Promise<T> {
-  const abort = new AbortController();
-  const timeout = setTimeout(() => abort.abort(new Error('CANONICAL_RUNTIME_TIMEOUT')), CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS);
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${canonicalRuntimeToken(ctx)}`,
+  const connect = async (): Promise<Client> => {
+    const abort = new AbortController();
+    const timeout = setTimeout(() => abort.abort(new Error('CANONICAL_RUNTIME_TIMEOUT')), CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS);
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${canonicalRuntimeToken(ctx)}`,
+    };
+    if (ctx.principalId?.trim()) headers['x-forge-forwarded-principal-id'] = ctx.principalId.trim();
+    if (ctx.sessionId?.trim()) headers['x-forge-forwarded-session-id'] = ctx.sessionId.trim();
+    const transport = new StreamableHTTPClientTransport(canonicalRuntimeEndpoint(ctx), {
+      requestInit: { headers, signal: abort.signal },
+    });
+    const client = new Client({ name: 'forge-public-gateway-proxy', version: '1.0.0' });
+    try {
+      await client.connect(transport);
+      return client;
+    } catch (error) {
+      await client.close().catch(() => undefined);
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   };
-  if (ctx.principalId?.trim()) headers['x-forge-forwarded-principal-id'] = ctx.principalId.trim();
-  if (ctx.sessionId?.trim()) headers['x-forge-forwarded-session-id'] = ctx.sessionId.trim();
-  const transport = new StreamableHTTPClientTransport(canonicalRuntimeEndpoint(ctx), {
-    requestInit: { headers, signal: abort.signal },
-  });
-  const client = new Client({ name: 'forge-public-gateway-proxy', version: '1.0.0' });
+  const client = await retryCanonicalRuntimeConnectDuringHandoff(
+    connect,
+    () => canonicalRuntimeReleaseHandoffActive(ctx.controllerHome),
+  );
   try {
-    await client.connect(transport);
+    // action() is intentionally outside the retry helper. Tool/schema work is
+    // dispatched at most once even if the Runtime changes mid-response.
     return await action(client);
   } finally {
-    clearTimeout(timeout);
     await client.close().catch(() => undefined);
   }
 }
@@ -349,26 +517,32 @@ function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext): {
   };
 
   const connect = async (identity: CanonicalRuntimeProxyIdentity): Promise<{ identity: CanonicalRuntimeProxyIdentity; client: Client }> => {
-    const abort = new AbortController();
-    const timeout = setTimeout(() => abort.abort(new Error('CANONICAL_RUNTIME_TIMEOUT')), CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS);
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${identity.token}`,
+    const connectOnce = async (): Promise<{ identity: CanonicalRuntimeProxyIdentity; client: Client }> => {
+      const abort = new AbortController();
+      const timeout = setTimeout(() => abort.abort(new Error('CANONICAL_RUNTIME_TIMEOUT')), CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS);
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${identity.token}`,
+      };
+      if (identity.principalId) headers['x-forge-forwarded-principal-id'] = identity.principalId;
+      if (identity.sessionId) headers['x-forge-forwarded-session-id'] = identity.sessionId;
+      const transport = new StreamableHTTPClientTransport(identity.endpoint, {
+        requestInit: { headers, signal: abort.signal },
+      });
+      const client = new Client({ name: 'forge-public-gateway-proxy', version: '1.0.0' });
+      try {
+        await client.connect(transport);
+        return { identity, client };
+      } catch (error) {
+        await client.close().catch(() => undefined);
+        throw error;
+      } finally {
+        clearTimeout(timeout);
+      }
     };
-    if (identity.principalId) headers['x-forge-forwarded-principal-id'] = identity.principalId;
-    if (identity.sessionId) headers['x-forge-forwarded-session-id'] = identity.sessionId;
-    const transport = new StreamableHTTPClientTransport(identity.endpoint, {
-      requestInit: { headers, signal: abort.signal },
-    });
-    const client = new Client({ name: 'forge-public-gateway-proxy', version: '1.0.0' });
-    try {
-      await client.connect(transport);
-      return { identity, client };
-    } catch (error) {
-      await client.close().catch(() => undefined);
-      throw error;
-    } finally {
-      clearTimeout(timeout);
-    }
+    return await retryCanonicalRuntimeConnectDuringHandoff(
+      connectOnce,
+      () => canonicalRuntimeReleaseHandoffActive(ctx.controllerHome),
+    );
   };
 
   const clientForCurrentRuntime = async (timing: MutableGatewayProxyTiming): Promise<Client> => {
@@ -407,6 +581,14 @@ function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext): {
 
   return {
     async callTool(name, args, timing = {}) {
+      // The endpoint/token identity is intentionally stable across releases, so
+      // an old persistent inner MCP client would otherwise be reused into the
+      // bootout window. Wait only for a proven release handoff, then discard the
+      // stale connection before selecting the current Runtime client.
+      const handoff = await waitForCanonicalRuntimeReleaseHandoff(
+        () => canonicalRuntimeReleaseHandoffActive(ctx.controllerHome),
+      );
+      if (handoff.waited) await closeCurrent();
       const client = await clientForCurrentRuntime(timing);
       const gatewayCallStartedAtMs = Date.now();
       const callStarted = performance.now();

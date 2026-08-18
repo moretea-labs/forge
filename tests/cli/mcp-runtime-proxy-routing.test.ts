@@ -2,8 +2,12 @@ import { describe, expect, test } from 'bun:test';
 import { forgeToolSurfaceFingerprint } from '../../src/cli/controller/runtime-config';
 import {
   CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS,
+  CANONICAL_RUNTIME_HANDOFF_WAIT_MS,
   CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS,
+  canonicalRuntimeReleaseHandoffInProgress,
   deriveCanonicalForwardingTiming,
+  retryCanonicalRuntimeConnectDuringHandoff,
+  waitForCanonicalRuntimeReleaseHandoff,
 } from '../../src/cli/mcp/server';
 import {
   mcpSessionToolSurfaceFingerprintIsCurrent,
@@ -46,6 +50,88 @@ describe('MCP canonical Runtime proxy routing', () => {
     expect(CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS).toBe(5_000);
     expect(CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS).toBeGreaterThan(CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS);
     expect(CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS).toBe(120_000);
+  });
+
+  test('recognizes only recent Canonical Runtime release handoff states', () => {
+    const nowMs = Date.parse('2026-08-18T04:00:30.000Z');
+    expect(canonicalRuntimeReleaseHandoffInProgress({
+      authorityReleaseId: 'release-new', authorityCommittedAt: '2026-08-18T04:00:25.000Z',
+      runtimeReleaseId: 'release-old', runtimeRunning: false, runtimeReady: false,
+      runtimeUpdatedAt: '2026-08-18T04:00:24.000Z', nowMs,
+    })).toBe(true);
+    expect(canonicalRuntimeReleaseHandoffInProgress({
+      authorityReleaseId: 'release-new', authorityCommittedAt: '2026-08-18T04:00:25.000Z',
+      runtimeReleaseId: 'release-new', runtimeRunning: true, runtimeReady: false,
+      runtimeStartedAt: '2026-08-18T04:00:26.000Z', nowMs,
+    })).toBe(true);
+    expect(canonicalRuntimeReleaseHandoffInProgress({
+      authorityReleaseId: 'release-old', authorityCommittedAt: '2026-08-17T04:00:00.000Z',
+      runtimeReleaseId: 'release-old', runtimeRunning: false, runtimeReady: false,
+      runtimeUpdatedAt: '2026-08-18T04:00:24.000Z', recoveryActivationInProgress: true, nowMs,
+    })).toBe(true);
+    expect(canonicalRuntimeReleaseHandoffInProgress({
+      authorityReleaseId: 'release-old', authorityCommittedAt: '2026-08-17T04:00:00.000Z',
+      runtimeReleaseId: 'release-old', runtimeRunning: false, runtimeReady: false,
+      runtimeUpdatedAt: '2026-08-18T04:00:29.000Z', recoveryActivationInProgress: false, nowMs,
+    })).toBe(false);
+    expect(canonicalRuntimeReleaseHandoffInProgress({
+      runtimeReleaseId: 'release-old', runtimeRunning: false, runtimeReady: false,
+      runtimeUpdatedAt: '2026-08-18T04:00:29.000Z', nowMs,
+    })).toBe(false);
+  });
+
+  test('waits boundedly for a release handoff to settle', async () => {
+    let nowMs = 0;
+    let observations = 0;
+    const result = await waitForCanonicalRuntimeReleaseHandoff(
+      () => ++observations < 4,
+      {
+        maxWaitMs: 1_000,
+        intervalMs: 100,
+        now: () => nowMs,
+        sleep: async (ms) => { nowMs += ms; },
+      },
+    );
+    expect(result.waited).toBe(true);
+    expect(result.settled).toBe(true);
+    expect(nowMs).toBe(300);
+    expect(observations).toBe(4);
+    expect(CANONICAL_RUNTIME_HANDOFF_WAIT_MS).toBeGreaterThan(CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS);
+  });
+
+  test('retries only connection establishment during a proven release handoff', async () => {
+    let attempts = 0;
+    let nowMs = 0;
+    let handoff = false;
+    const value = await retryCanonicalRuntimeConnectDuringHandoff(
+      async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          handoff = true;
+          throw new Error('ECONNREFUSED');
+        }
+        return 'connected';
+      },
+      () => handoff,
+      {
+        maxWaitMs: 1_000,
+        intervalMs: 100,
+        now: () => nowMs,
+        sleep: async (ms) => { nowMs += ms; handoff = false; },
+      },
+    );
+    expect(value).toBe('connected');
+    expect(attempts).toBe(2);
+  });
+
+  test('keeps ordinary Canonical Runtime outages fail-fast when no handoff is active', async () => {
+    let attempts = 0;
+    await expect(retryCanonicalRuntimeConnectDuringHandoff(
+      async () => { attempts += 1; throw new Error('ECONNREFUSED'); },
+      () => false,
+      { maxWaitMs: 1_000 },
+    )).rejects.toThrow('ECONNREFUSED');
+    expect(attempts).toBe(1);
   });
 
   test('derives pre-canonical dispatch and return transport phases from canonical response timing', () => {
