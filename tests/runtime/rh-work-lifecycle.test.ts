@@ -7,7 +7,7 @@ import { createMcpToolContext } from '../../src/cli/mcp/server';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { addRepositoryCheckout, registerRepository, resolveRepositorySelection, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
 import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools';
-import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { callRuntimeTool, classifyTerminalCheckEvidence, RH_WORK_VERIFY_LEASE_WAIT_MS } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { getProcessRecord, waitForProcess } from '../../src/runtime/execution/process-runtime';
 import { getWorkContract, listWorkContracts, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { continueGoalWorkloop, finalizeGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
@@ -15,6 +15,7 @@ import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, cre
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { getSchedule, saveSchedule } from '../../src/runtime/workflow/schedules/store';
+import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
@@ -133,6 +134,43 @@ function branchExists(root: string, branch: string): boolean {
   return spawnSync('git', ['-C', root, 'show-ref', '--verify', '--quiet', `refs/heads/${branch}`]).status === 0;
 }
 describe('rh_work managed lifecycle closure', () => {
+  test('classifies terminal Check evidence without conflating pre-execution failure, missing receipt, and identity mismatch', () => {
+    expect(RH_WORK_VERIFY_LEASE_WAIT_MS).toBe(8_000);
+    expect(classifyTerminalCheckEvidence({
+      processError: { code: 'FAILED', message: 'PROCESS_LEASE_CONFLICT: build-cache:repo@process:holder' },
+      structuredPresent: false,
+      structuredMatches: false,
+      legacyPresent: false,
+      legacyMatches: false,
+    })).toMatchObject({
+      state: 'process_runtime_failed_before_result',
+      infrastructureReason: 'PROCESS_LEASE_CONFLICT: build-cache:repo@process:holder',
+    });
+    expect(classifyTerminalCheckEvidence({
+      structuredPresent: true,
+      structuredMatches: false,
+      legacyPresent: false,
+      legacyMatches: false,
+    })).toEqual({
+      state: 'mismatch',
+      warning: 'check result receipt did not match the terminal Process semantic identity',
+    });
+    expect(classifyTerminalCheckEvidence({
+      structuredPresent: false,
+      structuredMatches: false,
+      legacyPresent: false,
+      legacyMatches: false,
+    })).toEqual({
+      state: 'missing',
+      warning: 'check result receipt is missing for the terminal Check Process',
+    });
+    expect(classifyTerminalCheckEvidence({
+      structuredPresent: true,
+      structuredMatches: true,
+      legacyPresent: false,
+      legacyMatches: false,
+    })).toEqual({ state: 'matched' });
+  });
   test('verifies an isolated Work against its WorkContract checkout rather than active main', async () => {
     const fx = fixture('verify-work-checkout');
     writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({ scripts: { 'check:checkout': 'node -e "process.exit(0)"' } }, null, 2));
@@ -152,6 +190,66 @@ describe('rh_work managed lifecycle closure', () => {
     expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.checkoutId).toBe(contract.checkoutId);
     await waitForProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 5_000 });
   });
+  test('waits through brief build-cache contention instead of creating a terminal failed verification Process', async () => {
+    const fx = fixture('verify-build-cache-lease-wait');
+    writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({
+      scripts: { 'check:type': 'node -e "process.exit(0)"' },
+    }, null, 2));
+    git(fx.repoRoot, ['add', 'package.json']);
+    git(fx.repoRoot, ['commit', '-m', 'add type check for lease wait']);
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Verify after a brief shared build-cache contention window',
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 1,
+      requires_recovery: true,
+      check_ids: ['package:check:type'],
+      constraints: { requireWorktree: true },
+    });
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
+    const held = acquireExecutionLeases(
+      fx.controllerHome,
+      fx.repository.repoId,
+      'process:test-build-cache-holder',
+      [{
+        resourceKey: `build-cache:${fx.repository.repoId}`,
+        mode: 'write',
+        repoId: fx.repository.repoId,
+      }],
+      5_000,
+    );
+    expect(held.acquired).toBe(true);
+    const releaseTimer = setTimeout(() => {
+      releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'process:test-build-cache-holder');
+    }, 150);
+    releaseTimer.unref?.();
+
+    const verifyArgs = {
+      repo_id: fx.repository.repoId,
+      operation: 'verify' as const,
+      work_id: workId,
+      check_id: 'package:check:type',
+      request_id: 'verify-after-build-cache-contention',
+    };
+    const startedAt = Date.now();
+    let verified = await callRuntimeTool(fx.ctx, 'rh_work', verifyArgs);
+    const admissionElapsedMs = Date.now() - startedAt;
+    let verification = (verified?.structuredContent as { data?: { verification?: { processId?: string; outcome?: string; infrastructureReason?: string } } })?.data?.verification;
+    expect(admissionElapsedMs).toBeGreaterThanOrEqual(100);
+    expect(verification?.processId).toBeTruthy();
+    if (verification?.processId && verification.outcome === 'running') {
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, verification.processId, { timeoutMs: 5_000 });
+      verified = await callRuntimeTool(fx.ctx, 'rh_work', verifyArgs);
+      verification = (verified?.structuredContent as { data?: { verification?: { processId?: string; outcome?: string; infrastructureReason?: string } } })?.data?.verification;
+    }
+    expect(verification?.outcome).toBe('valid_pass');
+    expect(verification?.infrastructureReason).toBeUndefined();
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, String(verification?.processId))?.checkoutId).toBe(contract.checkoutId);
+  });
+
   test('rejects rh_work verify without check_id before recording verification evidence', async () => {
     const fx = fixture('verify-check-id-required');
     const started = await callRuntimeTool(fx.ctx, 'rh_work', {

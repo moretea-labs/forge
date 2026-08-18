@@ -1114,6 +1114,32 @@ async function callStandaloneRecoveryTool(
   }
 }
 
+export const RH_WORK_VERIFY_LEASE_WAIT_MS = 8_000;
+
+type TerminalCheckEvidenceState = 'matched' | 'process_runtime_failed_before_result' | 'missing' | 'mismatch';
+
+export function classifyTerminalCheckEvidence(input: {
+  processError?: { code: string; message: string };
+  structuredPresent: boolean;
+  structuredMatches: boolean;
+  legacyPresent: boolean;
+  legacyMatches: boolean;
+}): { state: TerminalCheckEvidenceState; warning?: string; infrastructureReason?: string } {
+  if (input.structuredMatches || input.legacyMatches) return { state: 'matched' };
+  if (!input.structuredPresent && !input.legacyPresent && input.processError?.message?.trim()) {
+    const reason = input.processError.message.trim().slice(0, 512);
+    return {
+      state: 'process_runtime_failed_before_result',
+      warning: `check process failed before structured result receipt: ${reason}`,
+      infrastructureReason: reason,
+    };
+  }
+  if (input.structuredPresent || input.legacyPresent) {
+    return { state: 'mismatch', warning: 'check result receipt did not match the terminal Process semantic identity' };
+  }
+  return { state: 'missing', warning: 'check result receipt is missing for the terminal Check Process' };
+}
+
 function result(value: Record<string, unknown>, isError = false): CallToolResult {
   // Compact text channel by default (no pretty-print bloat).
   return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value, ...(isError ? { isError: true } : {}) };
@@ -2757,7 +2783,11 @@ async function runFacadeVerify(
       timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
       // rh_work.verify is a control-plane continuation primitive: callers should
       // be able to keep working and later reattach to the exact same Process.
+      // Absorb brief shared build-cache/resource contention during admission so
+      // a lifecycle verification does not turn a few seconds of contention into
+      // a terminal failed Check that the controller must manually retry.
       interactiveWaitMs: 0,
+      leaseWaitMs: RH_WORK_VERIFY_LEASE_WAIT_MS,
       requestId,
       requestSemanticFingerprint: verificationRequestFingerprint,
       workId: workId || undefined,
@@ -2859,7 +2889,14 @@ async function runFacadeVerify(
       && record.checkExecution?.cacheKey
       && legacyEvidence.cacheKey === record.checkExecution.cacheKey,
     );
-    const resultMatchesProcess = structuredResultMatchesProcess || legacyEvidenceMatchesProcess;
+    const evidenceState = classifyTerminalCheckEvidence({
+      processError: record.error,
+      structuredPresent: Boolean(structuredCheckResult),
+      structuredMatches: structuredResultMatchesProcess,
+      legacyPresent: Boolean(legacyEvidence),
+      legacyMatches: legacyEvidenceMatchesProcess,
+    });
+    const resultMatchesProcess = evidenceState.state === 'matched';
     const failureClass = structuredResultMatchesProcess
       ? structuredCheckResult?.failureClass
       : legacyEvidenceMatchesProcess ? legacyEvidence?.failureClass : undefined;
@@ -2892,6 +2929,9 @@ async function runFacadeVerify(
       checkResultReceiptId: structuredCheckResult?.receiptId,
       verificationIsolation: record.origin?.workVerificationSnapshot ? 'work_snapshot' : 'shared_checkout',
       boundedStatus,
+      evidenceState: evidenceState.state,
+      ...(evidenceState.infrastructureReason ? { infrastructureReason: evidenceState.infrastructureReason } : {}),
+      ...(record.error?.code ? { processErrorCode: record.error.code } : {}),
     };
 
     if (workId) {
@@ -2918,7 +2958,7 @@ async function runFacadeVerify(
           },
         },
         warnings: infrastructureFailed
-          ? [...facade.warnings, resultMatchesProcess ? 'infrastructure_failure is distinct from acceptance failure' : 'check result receipt did not match the terminal Process semantic identity']
+          ? [...facade.warnings, evidenceState.warning ?? 'infrastructure_failure is distinct from acceptance failure']
           : facade.warnings,
       } as unknown as Record<string, unknown>, facade.status === 'failed');
     }
@@ -2932,7 +2972,7 @@ async function runFacadeVerify(
           : `Check ${normalizedCheckId} failed acceptance.`,
       data: { verification: commonVerification },
       warnings: infrastructureFailed
-        ? [resultMatchesProcess ? 'infrastructure_failure is distinct from acceptance failure' : 'check result receipt did not match the terminal Process semantic identity']
+        ? [evidenceState.warning ?? 'infrastructure_failure is distinct from acceptance failure']
         : [],
       rawAvailable: false,
     }) as unknown as Record<string, unknown>, checkFailed);
