@@ -338,7 +338,7 @@ async function jsonTool(
   return { raw: result, value: JSON.parse(result.content[0].text) };
 }
 
-test("legacy callMcpTool refuses tools owned by current repository and Process Runtime authorities", async () => {
+test("legacy callMcpTool does not dispatch tools owned by current repository and Process Runtime authorities", async () => {
   await withController(async (_repoRoot, ctx) => {
     for (const [name, args] of [
       ["read_repository_file", { path: "src/example.ts" }],
@@ -346,7 +346,7 @@ test("legacy callMcpTool refuses tools owned by current repository and Process R
     ] as const) {
       const retired = await jsonTool(ctx, name, args);
       expect(retired.raw.isError).toBe(true);
-      expect(retired.value.error.code).toBe("LEGACY_CURRENT_TOOL_RETIRED");
+      expect(retired.value.error.code).toBe("UNKNOWN_TOOL");
     }
   });
 });

@@ -3482,14 +3482,6 @@ export async function callMcpTool(
         audit(ctx, name, "ok", args);
         return textResult(result);
       }
-      case "read_repository_file": {
-        audit(ctx, name, "blocked", args);
-        return errorResult(
-          "LEGACY_CURRENT_TOOL_RETIRED",
-          "read_repository_file is owned by the current Repository Tool authority and cannot execute through legacy callMcpTool.",
-          { tool: name },
-        );
-      }
       case "get_git_diff": {
         if (ctx.policy.profile !== "controller")
           return errorResult(
@@ -3536,14 +3528,6 @@ export async function callMcpTool(
         const checks = listControllerChecks(ctx.repoRoot);
         audit(ctx, name, "ok", args);
         return textResult({ checks });
-      }
-      case "run_check": {
-        audit(ctx, name, "blocked", args);
-        return errorResult(
-          "LEGACY_CURRENT_TOOL_RETIRED",
-          "run_check is owned by the current Router + Process Runtime authority and cannot execute through legacy callMcpTool.",
-          { tool: name },
-        );
       }
       case "list_issues": {
         if (ctx.policy.profile !== "controller")
