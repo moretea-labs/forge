@@ -793,6 +793,29 @@ function requireObservedPhysicalTargetForeground(state: PhysicalSessionState): P
   return confirmation;
 }
 
+function resolvePhysicalBatchForegroundObservation(
+  state: PhysicalSessionState,
+  observationId: string | undefined,
+): { foregroundObservation: PhysicalForegroundObservation; source: 'atomic_screenshot' | 'explicit_confirmation'; screenshotAgeMs?: number } {
+  if (observationId) {
+    const { observation, ageMs } = recentScreenshotObservation(state, observationId);
+    return {
+      foregroundObservation: {
+        observationId: observation.observationId,
+        screenshotObservedAt: observation.observedAt,
+        confirmedAt: timestamp(),
+        bundleId: state.bundleId,
+      },
+      source: 'atomic_screenshot',
+      screenshotAgeMs: ageMs,
+    };
+  }
+  return {
+    foregroundObservation: requireObservedPhysicalTargetForeground(state),
+    source: 'explicit_confirmation',
+  };
+}
+
 function consumePhysicalScreenObservation(input: AssistantPluginActionExecutionInput, state: PhysicalSessionState): void {
   state.lastScreenshot = undefined;
   state.foregroundObservation = undefined;
@@ -1058,13 +1081,14 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_batch', title: 'Run fast physical iPhone input batch',
-      description: 'Preferred fast path for a visually confirmed target app: perform up to 20 tap, swipe, text, or bounded-wait steps under one fresh screenshot foreground fence, one unlock/display readiness pass, and one plugin round-trip. The observation is consumed before dispatch. Stops on the first failed step and never replays a partially-mutated batch.',
+      description: 'Preferred fast path for a visually confirmed target app: perform up to 20 tap, swipe, text, or bounded-wait steps under one fresh screenshot foreground fence, one unlock/display readiness pass, and one plugin round-trip. Pass observation_id to atomically bind and consume the latest visually verified screenshot without a separate confirm_foreground round-trip; omitting it preserves the explicit confirm_foreground compatibility path. Stops on the first failed step and never replays a partially-mutated batch.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: {
         type: 'object',
         properties: {
           ...interactionProperty,
+          observation_id: { type: 'string' },
           steps: {
             type: 'array', minItems: 1, maxItems: MAX_BATCH_STEPS,
             items: {
@@ -1174,14 +1198,15 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
     recordTiming(timingStages, 'deviceSelection', selectStartedAt, false);
     const bundleId = requireBundleId(input.args.bundle_id);
     const appsStartedAt = performance.now();
-    const apps = await installedApps(input, selected, bundleId);
-    recordTiming(timingStages, 'installedAppLookup', appsStartedAt, false);
+    const lockStartedAt = performance.now();
+    const appsPromise = installedApps(input, selected, bundleId)
+      .finally(() => recordTiming(timingStages, 'installedAppLookup', appsStartedAt, false));
+    const lockPromise = requirePhysicalDeviceUnlocked(input, selected)
+      .finally(() => recordTiming(timingStages, 'lockState', lockStartedAt, false));
+    const [apps] = await Promise.all([appsPromise, lockPromise]);
     if (apps.length !== 1) {
       throw new AssistantPluginError('IOS_DEVICE_APP_NOT_INSTALLED', `The app ${bundleId} is not installed on the selected iPhone.`, { retryable: false });
     }
-    const lockStartedAt = performance.now();
-    await requirePhysicalDeviceUnlocked(input, selected);
-    recordTiming(timingStages, 'lockState', lockStartedAt, false);
     const selectedAliases = [selected.identifier, selected.udid];
     const sessionLookupStartedAt = performance.now();
     const expiredSessionCount = expirePhysicalDeviceSessions(input);
@@ -1220,15 +1245,11 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       expiresAt: new Date(hooks.now().getTime() + SESSION_EXPIRY_MS).toISOString(),
     };
     writeInteractionSession(input.repoRoot, record);
-    const displayStartedAt = performance.now();
-    const display = input.args.prewarm_input === true ? await physicalDisplayGeometry(input, selected) : undefined;
-    recordTiming(timingStages, 'displayInfo', displayStartedAt, display === undefined);
     const state: PhysicalSessionState = {
       schemaVersion: 1,
       interactionId,
       device: selected,
       bundleId,
-      ...(display ? { display: { ...display, observedAt: createdAt } } : {}),
       unlockVerifiedAt: createdAt,
       events: [{ at: createdAt, type: 'session_created', details: { bundleId, deviceIdentifier: selected.identifier } }],
     };
@@ -1239,20 +1260,43 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       const args = ['device', 'process', 'launch', '--device', selected.identifier, '--activate'];
       if (input.args.relaunch === true) args.push('--terminate-existing');
       args.push(bundleId);
+      const prewarmStartedAt = performance.now();
+      const prewarmRequested = input.args.prewarm_input === true && Boolean(selected.udid);
+      const prewarmPromise: Promise<Record<string, unknown>> = prewarmRequested && selected.udid
+        ? awaitRemoteXpcHidPrewarm(
+          { controllerHome: input.controllerHome, deviceIdentifier: selected.identifier, udid: selected.udid },
+          INPUT_OPEN_PREWARM_BUDGET_MS,
+        ).then((result) => {
+          recordTiming(timingStages, 'hidPrewarm', prewarmStartedAt, result.state === 'ready');
+          return result;
+        }, (error) => {
+          recordTiming(timingStages, 'hidPrewarm', prewarmStartedAt, false);
+          throw error;
+        })
+        : Promise.resolve({ backend: 'remote-xpc-hid', state: 'not_requested', runnerOwned: false });
+      if (!prewarmRequested) recordTiming(timingStages, 'hidPrewarm', prewarmStartedAt, input.args.prewarm_input !== true);
+      const displayStartedAt = performance.now();
+      const display = input.args.prewarm_input === true
+        ? await physicalDisplayGeometry(input, selected).then((result) => {
+          recordTiming(timingStages, 'displayInfo', displayStartedAt, false);
+          return result;
+        }, (error) => {
+          recordTiming(timingStages, 'displayInfo', displayStartedAt, false);
+          throw error;
+        })
+        : undefined;
+      if (input.args.prewarm_input !== true) recordTiming(timingStages, 'displayInfo', displayStartedAt, true);
+      if (display) {
+        state.display = { ...display, observedAt: createdAt };
+        writeState(input, state);
+      }
       const launchStartedAt = performance.now();
-      const launch = await runCoreJson(input, args, 'IOS_DEVICE_LAUNCH_FAILED', 60_000);
-      recordTiming(timingStages, 'activationRequest', launchStartedAt, false);
+      const launchPromise = runCoreJson(input, args, 'IOS_DEVICE_LAUNCH_FAILED', 60_000)
+        .finally(() => recordTiming(timingStages, 'activationRequest', launchStartedAt, false));
+      const [launch, inputPrewarm] = await Promise.all([launchPromise, prewarmPromise]);
       const launchEventStartedAt = performance.now();
       appendEvent(input, interactionId, 'app_launched', { bundleId, relaunch: input.args.relaunch === true });
       recordTiming(timingStages, 'eventPersistence', launchEventStartedAt, false);
-      const prewarmStartedAt = performance.now();
-      const inputPrewarm = input.args.prewarm_input === true && selected.udid
-        ? await awaitRemoteXpcHidPrewarm(
-          { controllerHome: input.controllerHome, deviceIdentifier: selected.identifier, udid: selected.udid },
-          INPUT_OPEN_PREWARM_BUDGET_MS,
-        )
-        : { backend: 'remote-xpc-hid', state: 'not_requested', runnerOwned: false };
-      recordTiming(timingStages, 'hidPrewarm', prewarmStartedAt, input.args.prewarm_input !== true || inputPrewarm.state === 'ready');
       if (input.args.prewarm_input === true) {
         appendEvent(input, interactionId, 'input_prewarm', {
           state: inputPrewarm.state,
@@ -1287,6 +1331,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         },
       });
     } catch (error) {
+      stopRemoteXpcHidForDevice(selected.identifier);
       const normalized = toAssistantPluginError(error, {
         code: 'IOS_DEVICE_OPEN_FAILED',
         message: 'The physical iOS app could not be opened.',
@@ -1398,7 +1443,11 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       }
       validatePhysicalInputBatchCoordinates(steps, display);
       const foregroundStartedAt = performance.now();
-      const foregroundObservation = requireObservedPhysicalTargetForeground(state);
+      const observationId = input.args.observation_id === undefined
+        ? undefined
+        : requireString(input.args.observation_id, 'observation_id');
+      const foreground = resolvePhysicalBatchForegroundObservation(state, observationId);
+      const foregroundObservation = foreground.foregroundObservation;
       recordTiming(timingStages, 'foregroundObservation', foregroundStartedAt, true);
       consumePhysicalScreenObservation(input, state);
       const batchStartedAt = performance.now();
@@ -1503,10 +1552,16 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         interaction: record,
         ...(display ? { display } : {}),
         completed,
-        foregroundObservation: { ...foregroundObservation, consumed: true },
+        foregroundObservation: {
+          ...foregroundObservation,
+          consumed: true,
+          source: foreground.source,
+          ...(foreground.screenshotAgeMs === undefined ? {} : { screenshotAgeMs: foreground.screenshotAgeMs }),
+        },
         executionPlan: {
           foregroundActivations: 0,
           foregroundObservationChecks: 1,
+          foregroundObservationSource: foreground.source,
           unlockChecks: unlock.cached ? 0 : 1,
           displayLookups: display ? 1 : 0,
           pluginRoundTrips: 1,
