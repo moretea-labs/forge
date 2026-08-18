@@ -23,7 +23,7 @@ import type {
   AssistantPluginActionExecutionInput,
   AssistantPluginCapability,
 } from './types';
-import { executeRemoteXpcHidInput, prewarmRemoteXpcHid, remoteXpcHidStatus, stopRemoteXpcHidForDevice } from './ios/remote-xpc-hid';
+import { awaitRemoteXpcHidPrewarm, executeRemoteXpcHidInput, remoteXpcHidStatus, stopRemoteXpcHidForDevice } from './ios/remote-xpc-hid';
 
 const PROVIDER = 'ios-device' as const;
 const SESSION_EXPIRY_MS = 2 * 60 * 60_000;
@@ -31,6 +31,7 @@ const CORE_DEVICE_READY_CACHE_MS = 5 * 60_000;
 const INPUT_UNLOCK_CACHE_MS = 60_000;
 const INPUT_DISPLAY_CACHE_MS = 5 * 60_000;
 const INPUT_FOREGROUND_OBSERVATION_TTL_MS = 30_000;
+const INPUT_OPEN_PREWARM_BUDGET_MS = 4_000;
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_EVENTS = 200;
 const MAX_BATCH_STEPS = 20;
@@ -965,7 +966,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'physical_device_open', title: 'Open physical iOS app session',
-      description: 'Request activation of one installed third-party app through CoreDevice and create a bounded interaction session. CoreDevice launch metadata is diagnostic only: capture a screenshot and explicitly confirm the observed foreground before any HID input. Set prewarm_input=true when runnerless input will follow.',
+      description: 'Request activation of one installed third-party app through CoreDevice and create a bounded interaction session. CoreDevice launch metadata is diagnostic only: capture a screenshot and explicitly confirm the observed foreground before any HID input. Set prewarm_input=true when runnerless input will follow; Forge then waits up to 4 seconds for a non-mutating RemoteXPC readiness result so the first HID action does not need a blind retry.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 2 * 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.device'], resourceClaims: mutationClaims,
       argumentsSchema: { type: 'object', properties: { device: { type: 'string' }, bundle_id: { type: 'string' }, relaunch: { type: 'boolean' }, prewarm_input: { type: 'boolean' } }, required: ['device', 'bundle_id'], additionalProperties: false },
@@ -1190,9 +1191,20 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
       recordTiming(timingStages, 'eventPersistence', launchEventStartedAt, false);
       const prewarmStartedAt = performance.now();
       const inputPrewarm = input.args.prewarm_input === true && selected.udid
-        ? prewarmRemoteXpcHid({ controllerHome: input.controllerHome, deviceIdentifier: selected.identifier, udid: selected.udid })
+        ? await awaitRemoteXpcHidPrewarm(
+          { controllerHome: input.controllerHome, deviceIdentifier: selected.identifier, udid: selected.udid },
+          INPUT_OPEN_PREWARM_BUDGET_MS,
+        )
         : { backend: 'remote-xpc-hid', state: 'not_requested', runnerOwned: false };
-      recordTiming(timingStages, 'hidPrewarmDispatch', prewarmStartedAt, input.args.prewarm_input !== true);
+      recordTiming(timingStages, 'hidPrewarm', prewarmStartedAt, input.args.prewarm_input !== true || inputPrewarm.state === 'ready');
+      if (input.args.prewarm_input === true) {
+        appendEvent(input, interactionId, 'input_prewarm', {
+          state: inputPrewarm.state,
+          ...(typeof inputPrewarm.waitMs === 'number' ? { waitMs: inputPrewarm.waitMs } : {}),
+          ...(typeof inputPrewarm.errorCode === 'string' ? { errorCode: inputPrewarm.errorCode } : {}),
+          ...(typeof inputPrewarm.phase === 'string' ? { phase: inputPrewarm.phase } : {}),
+        });
+      }
       // CoreDevice is the default physical-device substrate. Never probe, start,
       // build, install, or attach an XCTest/WDA runner during ordinary app open.
       // Semantic automation is an explicit opt-in action so repeated computer-use

@@ -11,6 +11,7 @@ const WORKER_IDLE_MS = 15 * 60_000;
 const WORKER_STARTUP_MS = 12_000;
 const MUTATION_READY_BUDGET_MS = 2_500;
 const REQUEST_TIMEOUT_MS = 12_000;
+const RSD_ENDPOINT_CACHE_TTL_MS = 30_000;
 const MAX_TEXT_LENGTH = 2048;
 const MAX_STDERR = 8 * 1024;
 
@@ -73,6 +74,11 @@ interface WarmupFailure {
   message: string;
 }
 
+interface EndpointCacheEntry {
+  observedAt: number;
+  endpoints: RsdEndpoint[];
+}
+
 interface WorkerRecord {
   key: string;
   endpoint: RsdEndpoint;
@@ -91,6 +97,7 @@ const workers = new Map<string, WorkerRecord>();
 const warmups = new Map<string, Promise<void>>();
 const workerGenerations = new Map<string, number>();
 const warmupFailures = new Map<string, WarmupFailure>();
+const endpointCache = new Map<string, EndpointCacheEntry>();
 
 export function setRemoteXpcHidExecutorForTest(executor: TestExecutor | undefined): void {
   testExecutor = executor;
@@ -103,6 +110,7 @@ export function resetRemoteXpcHidForTest(): void {
   warmups.clear();
   workerGenerations.clear();
   warmupFailures.clear();
+  endpointCache.clear();
 }
 
 export function remoteXpcHidStatus(controllerHome: string, env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
@@ -441,6 +449,29 @@ export function parseMacOSTrustedRsdEndpoints(output: string, udid: string): Rsd
   return [...unique.values()].slice(-3).reverse();
 }
 
+function cachedEndpoints(udid: string, now = Date.now()): RsdEndpoint[] | undefined {
+  const cached = endpointCache.get(udid);
+  if (!cached) return undefined;
+  if (now - cached.observedAt > RSD_ENDPOINT_CACHE_TTL_MS) {
+    endpointCache.delete(udid);
+    return undefined;
+  }
+  return cached.endpoints.map((endpoint) => ({ ...endpoint }));
+}
+
+function rememberEndpoints(udid: string, endpoints: RsdEndpoint[], now = Date.now()): void {
+  endpointCache.set(udid, { observedAt: now, endpoints: endpoints.map((endpoint) => ({ ...endpoint })) });
+}
+
+export function remoteXpcHidEndpointCacheForTest(
+  udid: string,
+  endpoints: RsdEndpoint[],
+  ageMs = 0,
+): RsdEndpoint[] | undefined {
+  rememberEndpoints(udid, endpoints, Date.now() - Math.max(0, ageMs));
+  return cachedEndpoints(udid);
+}
+
 function trustedTunnelLogArgs(udid: string): string[] {
   if (!/^[A-Za-z0-9-]+$/.test(udid)) {
     throw new AssistantPluginError('IOS_HID_DEVICE_ID_INVALID', 'The physical iPhone UDID cannot be used for trusted-tunnel discovery.', { retryable: false });
@@ -450,6 +481,8 @@ function trustedTunnelLogArgs(udid: string): string[] {
 }
 
 async function discoverEndpoints(udid: string): Promise<RsdEndpoint[]> {
+  const cached = cachedEndpoints(udid);
+  if (cached?.length) return cached;
   const args = trustedTunnelLogArgs(udid);
   return await new Promise<RsdEndpoint[]>((resolve, reject) => {
     const child = spawn('/usr/bin/log', args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -476,6 +509,7 @@ async function discoverEndpoints(udid: string): Promise<RsdEndpoint[]> {
         }));
         return;
       }
+      rememberEndpoints(udid, endpoints);
       resolve(endpoints);
     };
     child.stdout.on('data', (chunk) => {
@@ -757,6 +791,7 @@ async function establishWorker(
       stopWorker(worker);
     }
   }
+  endpointCache.delete(input.udid);
   throw new AssistantPluginError('IOS_HID_INPUT_FAILED', lastError instanceof Error ? lastError.message : 'RemoteXPC HID input failed on all discovered trusted tunnel endpoints.', {
     retryable: true,
     details: { deviceIdentifier: input.deviceIdentifier, endpointCount: endpoints.length },
@@ -787,6 +822,52 @@ export function prewarmRemoteXpcHid(input: Pick<RemoteXpcHidInput, 'controllerHo
     });
   warmups.set(input.deviceIdentifier, warmup);
   return { backend: 'remote-xpc-hid', state: 'warming_started', runnerOwned: false };
+}
+
+export async function awaitRemoteXpcHidPrewarm(
+  input: Pick<RemoteXpcHidInput, 'controllerHome' | 'deviceIdentifier' | 'udid'>,
+  budgetMs = 4_000,
+): Promise<Record<string, unknown>> {
+  const boundedBudgetMs = Math.max(0, Math.min(Math.round(budgetMs), 10_000));
+  const initial = prewarmRemoteXpcHid(input);
+  if (testExecutor) return { ...initial, waitMs: 0 };
+  if (initial.state === 'ready' || initial.state === 'unavailable') return { ...initial, waitMs: 0 };
+  const startedAt = performance.now();
+  const current = workers.get(input.deviceIdentifier);
+  const warmup = warmups.get(input.deviceIdentifier);
+  const readiness = current
+    ? current.ready.then(() => undefined).catch(() => undefined)
+    : warmup;
+  if (readiness && boundedBudgetMs > 0) {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        readiness,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, boundedBudgetMs);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+  const waitMs = Math.round((performance.now() - startedAt) * 100) / 100;
+  const worker = workers.get(input.deviceIdentifier);
+  if (worker?.readyState === 'ready') {
+    return { backend: 'remote-xpc-hid', state: 'ready', runnerOwned: false, reusedWorker: initial.state === 'ready', waitMs };
+  }
+  const failure = warmupFailures.get(input.deviceIdentifier);
+  if (failure?.generation === workerGeneration(input.deviceIdentifier) && !warmups.has(input.deviceIdentifier)) {
+    return {
+      backend: 'remote-xpc-hid', state: 'failed', runnerOwned: false, waitMs,
+      errorCode: 'IOS_HID_INPUT_NOT_SENT', phase: 'worker_warmup', reason: failure.message,
+    };
+  }
+  return {
+    backend: 'remote-xpc-hid', state: 'warming', runnerOwned: false, waitMs,
+    readinessBudgetMs: boundedBudgetMs,
+  };
 }
 
 function numberTiming(result: Record<string, unknown>, key: string): number | undefined {

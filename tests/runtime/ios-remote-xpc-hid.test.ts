@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import {
   executeRemoteXpcHidInput,
   parseMacOSTrustedRsdEndpoints,
+  remoteXpcHidEndpointCacheForTest,
   remoteXpcHidWarmupFailureErrorForTest,
   remoteXpcHidWorkerSourceForTest,
   remoteXpcHidStatus,
@@ -48,6 +49,12 @@ describe('RemoteXPC HID backend', () => {
       { host: 'fd00:2::1', port: 52002 },
       { host: 'fd00:2::1', port: 52001 },
     ]);
+  });
+
+  it('reuses fresh RSD endpoints briefly and expires stale cached tunnel data', () => {
+    const endpoints = [{ host: 'fd00:2::1', port: 52002 }];
+    expect(remoteXpcHidEndpointCacheForTest('UDID-CACHE', endpoints, 0)).toEqual(endpoints);
+    expect(remoteXpcHidEndpointCacheForTest('UDID-CACHE', endpoints, 30_001)).toBeUndefined();
   });
 
   it('surfaces the bounded warmup failure instead of degrading it to a generic still-warming error', () => {
