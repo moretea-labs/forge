@@ -19,6 +19,7 @@ import {
   reattachMacOsBrowserOwnedPage,
   discoverMacOsBrowserAttachment,
   getMacOsBrowserAttachObservation,
+  listMacOsBrowserTabs,
   macOsActiveBrowserAttachSupported,
   macOsBrowserJavaScriptAutomationDisabled,
   type MacOsBrowserAttachAttempt,
@@ -802,7 +803,7 @@ function selectedProfile(config: BrowserPluginConfig, repoRoot: string, activeMo
   };
 }
 
-type BrowserTabMatchReason = 'owned_token' | 'saved_url_title' | 'saved_url' | 'exact_url' | 'blank' | 'new_page';
+type BrowserTabMatchReason = 'owned_token' | 'recovered_tab' | 'saved_url_title' | 'saved_url' | 'exact_url' | 'blank' | 'new_page';
 
 const BROWSER_OWNER_PREFIX = 'forge-browser-owned:';
 
@@ -926,6 +927,53 @@ function sameOrigin(left: string, right: string): boolean {
   } catch {
     return false;
   }
+}
+
+function stableBrowserEntityKey(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined;
+    const segments = url.pathname.split('/').filter(Boolean);
+    for (let index = 0; index + 1 < segments.length; index += 1) {
+      if ((segments[index] ?? '').toLowerCase() !== 'apps') continue;
+      const id = segments[index + 1]?.trim();
+      if (id) return `${url.origin}/apps/${id}`;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function selectReusableNativeTab(
+  referenceUrls: string[],
+  inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>>,
+  preferredWindowId?: string,
+): {
+  candidate?: (typeof inventory.tabs)[number];
+  match: 'exact_url' | 'stable_entity' | 'none' | 'ambiguous';
+  candidateCount: number;
+} {
+  const normalizedReferences = [...new Set(referenceUrls.filter(Boolean).map(comparableUrl))];
+  const entityKeys = new Set(normalizedReferences.map(stableBrowserEntityKey).filter((value): value is string => Boolean(value)));
+  const scored = inventory.tabs.map((candidate) => {
+    const normalizedCandidate = comparableUrl(candidate.url);
+    const entityKey = stableBrowserEntityKey(candidate.url);
+    const matchScore = normalizedReferences.includes(normalizedCandidate)
+      ? 100
+      : entityKey && entityKeys.has(entityKey)
+        ? 50
+        : 0;
+    const score = matchScore === 0
+      ? 0
+      : matchScore + (preferredWindowId && candidate.windowId === preferredWindowId ? 10 : 0) + (candidate.active ? 1 : 0);
+    return { candidate, score, matchScore };
+  });
+  const maxScore = scored.reduce((max, entry) => Math.max(max, entry.score), 0);
+  if (maxScore === 0) return { match: 'none', candidateCount: 0 };
+  const matches = scored.filter((entry) => entry.score === maxScore);
+  if (matches.length !== 1) return { match: 'ambiguous', candidateCount: matches.length };
+  return { candidate: matches[0]!.candidate, match: matches[0]!.matchScore === 100 ? 'exact_url' : 'stable_entity', candidateCount: 1 };
 }
 
 function isBlankPage(url: string): boolean {
@@ -1553,6 +1601,9 @@ async function openNativeAttachedContext(
   const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
   const savedTab = target.existingSession?.browser?.tab;
   const savedOwnership = savedTab?.ownership;
+  let effectiveOwnership = savedOwnership;
+  let recoveredTabTitle = '';
+  let recoveredTabUrl: string | undefined;
   const savedProduct = target.existingSession?.browser?.provider === 'macos-apple-events'
     && savedTab
     && (savedOwnership === 'plugin_owned' || savedOwnership === 'user_owned')
@@ -1562,7 +1613,9 @@ async function openNativeAttachedContext(
     : undefined;
   let page: PageLike | undefined;
   let discovered: Awaited<ReturnType<typeof discoverMacOsBrowserAttachment>> | undefined;
-  let sessionResume: BrowserSessionResumeDiagnostic;
+  let sessionResume: BrowserSessionResumeDiagnostic = savedTab
+    ? { sessionId: target.sessionId, status: 'stale_tab', reason: 'Saved native tab has not yet been reattached.', savedTab }
+    : { sessionId: target.sessionId, status: 'no_saved_tab', reason: 'No saved native tab exists yet.' };
   let matchedBy: BrowserTabMatchReason = 'new_page';
 
   if (savedProduct && savedTab && typeof savedTab.windowId === 'string' && typeof savedTab.tabId === 'string') {
@@ -1581,21 +1634,73 @@ async function openNativeAttachedContext(
         savedTab,
       };
     } catch (error) {
-      throw new AssistantPluginError(
-        'PLUGIN_BROWSER_SESSION_STATE_LOST',
-        'Saved macOS browser tab no longer exists; refusing to create a replacement tab because unsaved page state may be lost.',
-        {
-          retryable: false,
-          details: {
-            sessionId: target.sessionId,
-            browserProduct: savedProduct,
-            ownership: savedOwnership,
-            windowId: savedTab.windowId,
-            tabId: savedTab.tabId,
-            cause: error instanceof Error ? error.message : String(error),
+      if (savedOwnership === 'user_owned') {
+        throw new AssistantPluginError(
+          'PLUGIN_BROWSER_SESSION_STATE_LOST',
+          'Explicitly adopted user-owned macOS browser tab no longer exists; refusing to silently switch to another user tab.',
+          {
+            retryable: false,
+            details: { sessionId: target.sessionId, browserProduct: savedProduct, ownership: savedOwnership, windowId: savedTab.windowId, tabId: savedTab.tabId, cause: error instanceof Error ? error.message : String(error) },
           },
-        },
-      );
+        );
+      }
+      let inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>> | undefined;
+      let selection: ReturnType<typeof selectReusableNativeTab> | undefined;
+      try {
+        inventory = await listMacOsBrowserTabs(savedProduct, timeout);
+        selection = selectReusableNativeTab(
+          [savedTab.url, target.existingSession?.url ?? '', target.url],
+          inventory,
+          savedTab.windowId,
+        );
+        if (selection.candidate) {
+          const recovered = await reattachMacOsBrowserOwnedPage(savedProduct, { windowId: selection.candidate.windowId, tabId: selection.candidate.tabId }, timeout);
+          page = recovered.page as unknown as PageLike;
+          discovered = { attachment: recovered.attachment, attempts: recovered.attachment.attempts };
+          matchedBy = 'recovered_tab';
+          effectiveOwnership = 'user_owned';
+          recoveredTabTitle = selection.candidate.title;
+          recoveredTabUrl = selection.candidate.url;
+          sessionResume = {
+            sessionId: target.sessionId,
+            status: 'matched',
+            reason: selection.match === 'exact_url'
+              ? 'Saved plugin-owned tab disappeared; rebound safely to the unique currently open tab with the same URL and preserved it as user-owned.'
+              : 'Saved plugin-owned tab disappeared; rebound safely to the unique currently open tab for the same stable app entity and preserved its current page as user-owned.',
+            savedTab,
+          };
+        }
+      } catch (recoveryError) {
+        throw new AssistantPluginError(
+          'PLUGIN_BROWSER_SESSION_STATE_LOST',
+          'Saved macOS browser tab disappeared and current-tab recovery could not be completed safely; no replacement tab was created.',
+          {
+            retryable: false,
+            details: {
+              sessionId: target.sessionId, browserProduct: savedProduct, ownership: savedOwnership,
+              cause: error instanceof Error ? error.message : String(error),
+              recoveryCause: recoveryError instanceof Error ? recoveryError.message : String(recoveryError),
+            },
+          },
+        );
+      }
+      if (!page) {
+        throw new AssistantPluginError(
+          'PLUGIN_BROWSER_SESSION_STATE_LOST',
+          selection?.match === 'ambiguous'
+            ? 'Saved macOS browser tab disappeared and multiple reusable current tabs matched; refusing to guess or create a duplicate.'
+            : 'Saved macOS browser tab disappeared and no uniquely reusable current tab matched; refusing to create a duplicate.',
+          {
+            retryable: false,
+            details: {
+              sessionId: target.sessionId, browserProduct: savedProduct, ownership: savedOwnership,
+              windowId: savedTab.windowId, tabId: savedTab.tabId,
+              candidateCount: selection?.candidateCount ?? 0, inventoryCount: inventory?.tabs.length ?? 0, inventoryTruncated: inventory?.truncated ?? false,
+              cause: error instanceof Error ? error.message : String(error),
+            },
+          },
+        );
+      }
     }
   } else {
     sessionResume = savedTab
@@ -1617,16 +1722,22 @@ async function openNativeAttachedContext(
     }
     if (comparableUrl(page.url()) !== comparableUrl(target.url)) {
       const currentRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
-      if (savedOwnership === 'user_owned') {
-        throw new AssistantPluginError(
-          'PLUGIN_BROWSER_ADOPTED_TAB_URL_MISMATCH',
-          'Explicitly adopted user-owned tab no longer matches the saved session URL; refusing to navigate, replace, or close the user tab.',
-          { retryable: true, details: { sessionId: target.sessionId, expectedUrl: target.url, actualUrl: page.url(), windowId: savedTab?.windowId, tabId: savedTab?.tabId } },
-        );
+      if (effectiveOwnership === 'user_owned') {
+        if (matchedBy === 'recovered_tab') {
+          sessionResume = { sessionId: target.sessionId, status: 'matched', reason: 'Recovered current user tab was already within the same saved app entity; preserved its current URL instead of navigating it.', savedTab };
+        } else {
+          throw new AssistantPluginError(
+            'PLUGIN_BROWSER_ADOPTED_TAB_URL_MISMATCH',
+            'Explicitly adopted user-owned tab no longer matches the saved session URL; refusing to navigate, replace, or close the user tab.',
+            { retryable: true, details: { sessionId: target.sessionId, expectedUrl: target.url, actualUrl: page.url(), windowId: savedTab?.windowId, tabId: savedTab?.tabId } },
+          );
+        }
       }
       const sessionTargetUnchanged = Boolean(target.existingSession?.url) && comparableUrl(target.url) === comparableUrl(target.existingSession?.url ?? '');
       const preserveOwnedSameOriginDrift = matchedBy === 'owned_token' && sessionTargetUnchanged && sameOrigin(page.url(), target.url);
-      if (preserveOwnedSameOriginDrift) {
+      if (matchedBy === 'recovered_tab' && effectiveOwnership === 'user_owned') {
+        // Safe recovery adopts an already-open tab. Its current page is authoritative and must not be navigated.
+      } else if (preserveOwnedSameOriginDrift) {
         sessionResume = { sessionId: target.sessionId, status: 'matched', reason: 'Plugin-owned tab navigated within the same origin; preserved the live tab and refreshed its session URL.', savedTab };
       } else {
         await page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout });
@@ -1639,10 +1750,10 @@ async function openNativeAttachedContext(
     if (matchedBy !== 'owned_token' && page.waitForLoadState) {
       await page.waitForLoadState(waitUntil(args.wait_until), { timeout });
     }
-    const pageUrl = normalizedUrl(page.url());
+    const pageUrl = normalizedUrl(matchedBy === 'recovered_tab' && recoveredTabUrl ? recoveredTabUrl : page.url());
     const nativeRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
     if (!nativeRef) throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Native browser did not return a stable plugin-owned tab reference.', { retryable: true });
-    const title = matchedBy === 'owned_token' ? (target.existingSession?.title ?? '') : '';
+    const title = matchedBy === 'owned_token' ? (target.existingSession?.title ?? '') : matchedBy === 'recovered_tab' ? recoveredTabTitle : '';
     const inventory: BrowserTabInventoryEntry[] = [{ index: 0, key: tabKey(pageUrl, title), url: pageUrl, title }];
     const metadata = discovered.attachment.metadata;
     const connection = refreshConnectionTab({
@@ -1659,7 +1770,7 @@ async function openNativeAttachedContext(
       tabInventory: inventory,
       sessionResume,
     }, pageUrl, title, matchedBy, {
-      ownership: savedOwnership === 'user_owned' && matchedBy === 'saved_url' ? 'user_owned' : 'plugin_owned',
+      ownership: effectiveOwnership === 'user_owned' ? 'user_owned' : 'plugin_owned',
       windowId: nativeRef.windowId,
       tabId: nativeRef.tabId,
     });

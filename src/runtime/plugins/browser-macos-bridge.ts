@@ -42,6 +42,20 @@ export interface MacOsBrowserMetadata {
   loading?: boolean;
 }
 
+export interface MacOsBrowserTabInventoryEntry {
+  windowId: string;
+  tabId: string;
+  url: string;
+  title: string;
+  active: boolean;
+}
+
+export interface MacOsBrowserTabInventory {
+  product: MacOsBrowserProduct;
+  tabs: MacOsBrowserTabInventoryEntry[];
+  truncated: boolean;
+}
+
 export interface MacOsBrowserAttachAttempt {
   product: MacOsBrowserProduct;
   appName: string;
@@ -200,6 +214,101 @@ set windowBounds to bounds of targetWindow
 set separator to ASCII character 30
 return (frontmost as text) & separator & (URL of targetTab as text) & separator & (title of targetTab as text) & separator & ((item 1 of windowBounds) as text) & separator & ((item 2 of windowBounds) as text) & separator & ((item 3 of windowBounds) as text) & separator & ((item 4 of windowBounds) as text) & separator & ((id of targetWindow) as text) & separator & ((id of targetTab) as text) & separator & "true" & separator & (loading of targetTab as text)
 `);
+}
+
+function listTabsScript(browser: MacOsBrowserDefinition): string {
+  return `on replaceText(sourceText, needle, replacement)
+  set previousDelimiters to AppleScript's text item delimiters
+  set AppleScript's text item delimiters to needle
+  set sourceItems to every text item of sourceText
+  set AppleScript's text item delimiters to replacement
+  set resultText to sourceItems as text
+  set AppleScript's text item delimiters to previousDelimiters
+  return resultText
+end replaceText
+
+on cleanField(sourceText, recordSeparator, fieldSeparator)
+  set cleaned to my replaceText(sourceText as text, recordSeparator, " ")
+  return my replaceText(cleaned, fieldSeparator, " ")
+end cleanField
+
+${browserTellScript(browser, `
+set recordSeparator to ASCII character 30
+set fieldSeparator to ASCII character 31
+set maxTabs to 256
+set returnedCount to 0
+set truncatedInventory to false
+set outputText to "false"
+repeat with candidateWindow in windows
+  set activeTabId to ""
+  try
+    set activeTabId to ((id of active tab of candidateWindow) as text)
+  end try
+  repeat with candidateTab in tabs of candidateWindow
+    if returnedCount is greater than or equal to maxTabs then
+      set truncatedInventory to true
+      exit repeat
+    end if
+    set candidateWindowId to ((id of candidateWindow) as text)
+    set candidateTabId to ((id of candidateTab) as text)
+    set candidateURL to my cleanField((URL of candidateTab as text), recordSeparator, fieldSeparator)
+    set candidateTitle to my cleanField((title of candidateTab as text), recordSeparator, fieldSeparator)
+    set candidateActive to (candidateTabId is activeTabId)
+    set outputText to outputText & recordSeparator & candidateWindowId & fieldSeparator & candidateTabId & fieldSeparator & (candidateActive as text) & fieldSeparator & candidateURL & fieldSeparator & candidateTitle
+    set returnedCount to returnedCount + 1
+  end repeat
+  if truncatedInventory then exit repeat
+end repeat
+if truncatedInventory then
+  set outputText to "true" & text 6 thru -1 of outputText
+end if
+return outputText
+`)}
+`;
+}
+
+function parseTabInventory(product: MacOsBrowserProduct, raw: string): MacOsBrowserTabInventory {
+  const records = raw.split(RECORD_SEPARATOR);
+  const marker = (records.shift() ?? '').trim().toLowerCase();
+  if (marker !== 'true' && marker !== 'false') {
+    throw new AssistantPluginError(
+      'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
+      'Stable Forge macOS capability broker returned an invalid browser tab inventory marker.',
+      { retryable: true },
+    );
+  }
+  const tabs: MacOsBrowserTabInventoryEntry[] = [];
+  const fieldSeparator = String.fromCharCode(31);
+  for (const record of records) {
+    if (!record) continue;
+    const fields = record.split(fieldSeparator);
+    if (fields.length < 5) {
+      throw new AssistantPluginError(
+        'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
+        'Stable Forge macOS capability broker returned incomplete browser tab inventory metadata.',
+        { retryable: true },
+      );
+    }
+    const windowId = (fields[0] ?? '').trim();
+    const tabId = (fields[1] ?? '').trim();
+    const activeText = (fields[2] ?? '').trim().toLowerCase();
+    if (!windowId || !tabId || (activeText !== 'true' && activeText !== 'false')) {
+      throw new AssistantPluginError(
+        'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
+        'Stable Forge macOS capability broker returned invalid browser tab inventory metadata.',
+        { retryable: true },
+      );
+    }
+    tabs.push({ windowId, tabId, active: activeText === 'true', url: fields[3] ?? '', title: fields.slice(4).join(fieldSeparator) });
+    if (tabs.length > 256) {
+      throw new AssistantPluginError(
+        'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
+        'Stable Forge macOS capability broker exceeded the bounded browser tab inventory size.',
+        { retryable: true },
+      );
+    }
+  }
+  return { product, tabs, truncated: marker === 'true' };
 }
 
 function targetTabPreamble(ref: MacOsBrowserTabRef): string {
@@ -951,6 +1060,20 @@ export class MacOsAppleEventsPage {
       await this.evaluate(keyEventSource(undefined, key));
     },
   };
+}
+
+export async function listMacOsBrowserTabs(
+  product: MacOsBrowserProduct,
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
+): Promise<MacOsBrowserTabInventory> {
+  const browser = browserDefinition(product);
+  const raw = await runBrowserAutomationText(
+    { action: 'list_tabs', product },
+    listTabsScript(browser),
+    [],
+    timeoutMs,
+  );
+  return parseTabInventory(product, raw);
 }
 
 export async function readMacOsBrowserOwnedTabMetadata(

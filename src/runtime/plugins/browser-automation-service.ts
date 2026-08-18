@@ -17,6 +17,7 @@ export interface BrowserAutomationRegion {
 
 export type BrowserAutomationBrokerAction =
   | { action: 'metadata'; product: BrowserAutomationProduct; ref?: BrowserAutomationTabRef }
+  | { action: 'list_tabs'; product: BrowserAutomationProduct }
   | { action: 'create_tab'; product: BrowserAutomationProduct; url: string }
   | { action: 'close_tab'; product: BrowserAutomationProduct; ref: BrowserAutomationTabRef }
   | { action: 'navigate'; product: BrowserAutomationProduct; ref?: BrowserAutomationTabRef; url: string }
