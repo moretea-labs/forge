@@ -1,7 +1,8 @@
 # Quality-first executable harness: current-HEAD architecture map
 
-Date: 2026-08-18  
-Source HEAD: `8540e85583498ef6a21215788b549db48e28fab7`  
+Date: 2026-08-18
+
+Source HEAD: `8540e85583498ef6a21215788b549db48e28fab7`
 Scope: context retrieval, routing, repository command execution, recovery coupling, mutable authorities, and large-file decomposition
 
 This map records current source facts before the quality/performance refactor. It deliberately separates facts, decisions, and unknowns. Repository source and focused measurements are authoritative; the older `tasks/current.md` projection is useful history but is stale for this slice.

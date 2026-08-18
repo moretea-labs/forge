@@ -1,7 +1,8 @@
 # Quality-first executable harness
 
-Status: **Runtime Authority**  
-Source baseline: `8540e85583498ef6a21215788b549db48e28fab7`  
+Status: **Runtime Authority**
+
+Source baseline: `8540e85583498ef6a21215788b549db48e28fab7`
 Scope: repository context, local command execution, routing, workflow scope evidence, and compatibility boundaries
 
 ## Invariants

@@ -1,6 +1,6 @@
 # Authority and compatibility audit
 
-Date: 2026-08-18  
+Date: 2026-08-18
 Baseline: `8540e85583498ef6a21215788b549db48e28fab7`
 
 This audit distinguishes authoritative mutable state, derived evidence, and retained compatibility. It records the phase-5 caller decision rather than treating every stored record as equivalent authority.

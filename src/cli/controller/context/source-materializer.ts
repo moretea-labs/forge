@@ -27,7 +27,6 @@ export interface MaterializedSourceSnippet {
     enclosing?: string;
   };
 }
-
 export interface MaterializeSourceOptions {
   repoRoot: string;
   policy: McpPolicy;
@@ -209,4 +208,3 @@ export function materializeSource(options: MaterializeSourceOptions): Materializ
   }
   return snippets;
 }
-
