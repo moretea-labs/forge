@@ -9,9 +9,10 @@ import { addRepositoryCheckout, registerRepository, resolveRepositorySelection, 
 import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { getProcessRecord, waitForProcess } from '../../src/runtime/execution/process-runtime';
-import { getWorkContract, listWorkContracts } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { getWorkContract, listWorkContracts, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { continueGoalWorkloop, finalizeGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { getSchedule, saveSchedule } from '../../src/runtime/workflow/schedules/store';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
@@ -417,6 +418,136 @@ describe('rh_work managed lifecycle closure', () => {
     });
     expect(retried?.isError).not.toBe(true);
     expect(retried?.structuredContent).toMatchObject({ status: 'ok', data: { lifecycleClosed: true } });
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(branchExists(fx.repoRoot, branch)).toBe(false);
+  });
+
+  test('ff-only merge failure remains retryable and historical terminalized state can recover with no_ff', async () => {
+    const fx = fixture('finalize-diverged-no-ff-retry');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Integrate one verified branch after main advances concurrently',
+      scope_clear: true,
+      expected_files: 2,
+      expected_changed_lines: 20,
+      requires_recovery: true,
+      constraints: { requireWorktree: true },
+    });
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
+    const worktreePath = contract.worktreeRef!;
+    const branch = git(worktreePath, ['branch', '--show-current']);
+
+    writeFileSync(join(worktreePath, 'work-change.txt'), 'from work\n');
+    git(worktreePath, ['add', 'work-change.txt']);
+    git(worktreePath, ['commit', '-m', 'work change']);
+
+    writeFileSync(join(fx.repoRoot, 'concurrent-main.txt'), 'from main\n');
+    git(fx.repoRoot, ['add', 'concurrent-main.txt']);
+    git(fx.repoRoot, ['commit', '-m', 'concurrent main change']);
+
+    const failed = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'finalize',
+      work_id: workId,
+      commit: false,
+      merge: true,
+      cleanup: true,
+    });
+    expect(JSON.stringify(failed?.structuredContent)).toContain('Not possible to fast-forward');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toMatchObject({
+      status: 'blocked',
+      phase: 'delivery',
+    });
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(branchExists(fx.repoRoot, branch)).toBe(true);
+
+    // Reproduce the historical bug written by older runtimes: a retryable
+    // delivery-stage failure was projected as a terminal failed WorkContract.
+    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId, { status: 'failed' });
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toMatchObject({
+      status: 'failed',
+      phase: 'cleanup',
+    });
+
+    const retried = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'finalize',
+      work_id: workId,
+      commit: false,
+      merge: true,
+      cleanup: true,
+      no_ff: true,
+    });
+    expect(retried?.isError).not.toBe(true);
+    expect(retried?.structuredContent).toMatchObject({ status: 'ok', data: { lifecycleClosed: true } });
+    expect(readFileSync(join(fx.repoRoot, 'work-change.txt'), 'utf8')).toBe('from work\n');
+    expect(readFileSync(join(fx.repoRoot, 'concurrent-main.txt'), 'utf8')).toBe('from main\n');
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(branchExists(fx.repoRoot, branch)).toBe(false);
+  });
+
+  test('cleanup retry restores a failed handle to the merged delivery boundary before cleaning', async () => {
+    const fx = fixture('finalize-cleanup-retry-boundary');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Resume cleanup after delivery was already integrated',
+      scope_clear: true,
+      expected_files: 2,
+      expected_changed_lines: 20,
+      requires_recovery: true,
+      constraints: { requireWorktree: true },
+    });
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
+    const worktreePath = contract.worktreeRef!;
+    const branch = git(worktreePath, ['branch', '--show-current']);
+    writeFileSync(join(worktreePath, 'cleanup-retry.txt'), 'integrated\n');
+    git(worktreePath, ['add', 'cleanup-retry.txt']);
+    git(worktreePath, ['commit', '-m', 'cleanup retry change']);
+    const workHead = git(worktreePath, ['rev-parse', 'HEAD']);
+    git(fx.repoRoot, ['merge', '--ff-only', branch]);
+
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
+    writeWorkHandle(fx.controllerHome, {
+      ...handle,
+      state: 'failed',
+      expectedHead: workHead,
+      failureReason: 'simulated worktree cleanup failure after merge',
+      finalization: {
+        validation: 'done',
+        commit: 'done',
+        merge: 'done',
+        worktreeCleanup: 'failed',
+        branchCleanup: 'pending',
+        lastError: 'simulated worktree cleanup failure after merge',
+      },
+    });
+    transitionWorkContractPhase(
+      { controllerHome: fx.controllerHome, repoId: fx.repository.repoId },
+      workId,
+      {
+        phase: 'cleanup',
+        status: 'blocked',
+        state: 'blocked',
+        summary: 'Simulated retryable cleanup failure after integrated delivery.',
+      },
+    );
+
+    const retried = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'finalize',
+      work_id: workId,
+      commit: false,
+      merge: false,
+      cleanup: true,
+      completion_outcome: 'completed_changed',
+    });
+    expect(retried?.isError).not.toBe(true);
+    expect(retried?.structuredContent).toMatchObject({ status: 'ok', data: { lifecycleClosed: true } });
+    expect(readFileSync(join(fx.repoRoot, 'cleanup-retry.txt'), 'utf8')).toBe('integrated\n');
     expect(existsSync(worktreePath)).toBe(false);
     expect(branchExists(fx.repoRoot, branch)).toBe(false);
   });
