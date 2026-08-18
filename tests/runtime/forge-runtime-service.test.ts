@@ -13,7 +13,7 @@ import {
 } from '../../src/runtime/root/service';
 import { materializePackageRuntimeRelease } from '../../src/runtime/root/package-runtime-release';
 import { renderForgeRuntimeSystemdUserUnit } from '../../src/runtime/root/package-runtime-service';
-import { packageConnectorLaunchSpec, packageConnectorServicePaths, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit } from '../../src/runtime/root/package-connector-service';
+import { ensurePackageConnectorService, packageConnectorLaunchSpec, packageConnectorServicePaths, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit } from '../../src/runtime/root/package-connector-service';
 
 const roots: string[] = [];
 function fixture(): { root: string; home: string; repo: string; token: string } {
@@ -203,6 +203,47 @@ describe('Forge Runtime service', () => {
     const unit = renderPackageConnectorSystemdUserUnit({ launch });
     expect(unit).toContain('Restart=on-failure');
     expect(unit).toContain('8767');
+  });
+
+  test('reuses a healthy persistent public Gateway without rewriting its service or authority', async () => {
+    const fx = fixture(), packageRoot = join(fx.root, 'package');
+    for (const dir of ['src/cli', 'src/runtime/shared', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
+    writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
+    writeFileSync(join(packageRoot, 'src', 'cli', 'index.ts'), '');
+    writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), '');
+    const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'connector-reuse-test' });
+    const paths = packageConnectorServicePaths(fx.home, fx.root);
+    mkdirSync(paths.serviceRoot, { recursive: true });
+    const installedAt = '2026-08-18T00:00:00.000Z';
+    writeFileSync(paths.authorityPath, `${JSON.stringify({
+      schemaVersion: 1,
+      endpoint: 'http://127.0.0.1:8767/mcp',
+      releaseId: release.releaseId,
+      releaseRoot: release.releaseRoot,
+      packageRoot: release.packageRoot,
+      mode: 'launchd',
+      persistent: true,
+      servicePath: paths.installedPlistPath,
+      installedAt,
+    }, null, 2)}\n`);
+    const before = readFileSync(paths.authorityPath, 'utf8');
+    let probes = 0;
+    const result = await ensurePackageConnectorService({
+      release,
+      controllerHome: fx.home,
+      endpoint: 'http://127.0.0.1:8767/mcp',
+      platform: 'darwin',
+      env: { HOME: fx.root },
+      probeEndpoint: async () => { probes += 1; return true; },
+    });
+    expect(result.reused).toBe(true);
+    expect(result.releaseId).toBe(release.releaseId);
+    expect(result.releaseRoot).toBe(release.releaseRoot);
+    expect(probes).toBe(1);
+    expect(readFileSync(paths.authorityPath, 'utf8')).toBe(before);
+    expect(readPackageConnectorServiceAuthority(fx.home)?.installedAt).toBe(installedAt);
+    expect(existsSync(paths.sourcePlistPath)).toBe(false);
   });
 
   test('renders a systemd user owner with restart and release environment', () => {

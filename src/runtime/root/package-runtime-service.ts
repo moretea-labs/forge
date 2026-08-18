@@ -15,7 +15,7 @@ import {
 } from './service';
 import { materializePackageRuntimeRelease, type PackageRuntimeRelease } from './package-runtime-release';
 import { loadMcpServiceLocalConfig } from '../../cli/mcp/auth';
-import { installPackageConnectorService, type PackageConnectorServiceResult } from './package-connector-service';
+import { ensurePackageConnectorService, type PackageConnectorServiceResult } from './package-connector-service';
 
 export type PackageRuntimeServiceMode = 'launchd' | 'systemd-user' | 'portable';
 
@@ -41,6 +41,7 @@ export interface PackageRuntimeServiceOptions {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   forcePortable?: boolean;
+  refreshConnector?: boolean;
 }
 
 function atomicWrite(path: string, content: string, mode = 0o600): void {
@@ -178,8 +179,8 @@ export async function installPackageRuntimeService(options: PackageRuntimeServic
   const localConfig = loadMcpServiceLocalConfig(controllerHome);
   const connectorEndpoint = localConfig?.chatgpt?.localEndpoint;
   if (!connectorEndpoint) return base;
-  const connector = await installPackageConnectorService({
-    release, controllerHome, endpoint: connectorEndpoint, platform, env, forcePortable: options.forcePortable === true,
+  const connector = await ensurePackageConnectorService({
+    release, controllerHome, endpoint: connectorEndpoint, platform, env, forcePortable: options.forcePortable === true, refresh: options.refreshConnector === true,
   });
   return { ...base, connector };
 }

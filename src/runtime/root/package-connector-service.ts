@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { closeSync, mkdirSync, openSync, renameSync, writeFileSync } from 'fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
 import { spawn, spawnSync } from 'child_process';
@@ -13,6 +13,19 @@ export interface PackageConnectorServicePaths {
   installedPlistPath: string;
   stdoutPath: string;
   stderrPath: string;
+  authorityPath: string;
+}
+
+export interface PackageConnectorServiceAuthority {
+  schemaVersion: 1;
+  endpoint: string;
+  releaseId: string;
+  releaseRoot: string;
+  packageRoot: string;
+  mode: 'launchd' | 'systemd-user' | 'portable';
+  persistent: boolean;
+  servicePath?: string;
+  installedAt: string;
 }
 
 export interface PackageConnectorServiceResult {
@@ -21,6 +34,9 @@ export interface PackageConnectorServiceResult {
   persistent: boolean;
   servicePath?: string;
   pid?: number;
+  reused?: boolean;
+  releaseId?: string;
+  releaseRoot?: string;
 }
 
 function xml(value: string): string {
@@ -46,7 +62,54 @@ export function packageConnectorServicePaths(controllerHome: string, accountHome
     installedPlistPath: launchAgentPath(label, accountHome),
     stdoutPath: join(serviceRoot, 'logs', 'stdout.log'),
     stderrPath: join(serviceRoot, 'logs', 'stderr.log'),
+    authorityPath: join(serviceRoot, 'authority.json'),
   };
+}
+
+export function readPackageConnectorServiceAuthority(controllerHome: string): PackageConnectorServiceAuthority | undefined {
+  const path = packageConnectorServicePaths(controllerHome).authorityPath;
+  if (!existsSync(path)) return undefined;
+  const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<PackageConnectorServiceAuthority>;
+  if (
+    parsed.schemaVersion !== 1
+    || typeof parsed.endpoint !== 'string'
+    || typeof parsed.releaseId !== 'string'
+    || typeof parsed.releaseRoot !== 'string'
+    || typeof parsed.packageRoot !== 'string'
+    || !['launchd', 'systemd-user', 'portable'].includes(String(parsed.mode))
+    || typeof parsed.persistent !== 'boolean'
+    || typeof parsed.installedAt !== 'string'
+  ) throw new Error('FORGE_PACKAGE_CONNECTOR_AUTHORITY_INVALID');
+  return parsed as PackageConnectorServiceAuthority;
+}
+
+function writePackageConnectorServiceAuthority(input: { release: PackageRuntimeRelease; controllerHome: string; result: PackageConnectorServiceResult }): void {
+  const paths = packageConnectorServicePaths(input.controllerHome);
+  const authority: PackageConnectorServiceAuthority = {
+    schemaVersion: 1,
+    endpoint: input.result.endpoint,
+    releaseId: input.release.releaseId,
+    releaseRoot: resolve(input.release.releaseRoot),
+    packageRoot: resolve(input.release.packageRoot),
+    mode: input.result.mode,
+    persistent: input.result.persistent,
+    ...(input.result.servicePath ? { servicePath: input.result.servicePath } : {}),
+    installedAt: new Date().toISOString(),
+  };
+  atomicWrite(paths.authorityPath, `${JSON.stringify(authority, null, 2)}\n`);
+}
+
+async function defaultConnectorEndpointProbe(endpoint: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1_500);
+  try {
+    const response = await fetch(endpoint, { method: 'GET', redirect: 'manual', signal: controller.signal });
+    return response.status > 0;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export function packageConnectorLaunchSpec(input: { release: PackageRuntimeRelease; controllerHome: string; endpoint: string; executable?: string }): { executable: string; args: string[]; environment: Record<string, string>; port: number } {
@@ -126,11 +189,53 @@ export async function installPackageConnectorService(input: { release: PackageRu
     installLaunchAgent(paths.sourcePlistPath, paths.label);
     const result = await bootstrapLaunchAgentWithRetryV2({ label: paths.label, plistPath: paths.installedPlistPath });
     if (!result.ok) throw new Error(`FORGE_PACKAGE_CONNECTOR_LAUNCHD_INSTALL_FAILED: ${result.diagnostics.join('; ')}`);
-    return { endpoint: input.endpoint, mode: 'launchd', persistent: true, servicePath: paths.installedPlistPath };
+    const installed = { endpoint: input.endpoint, mode: 'launchd' as const, persistent: true, servicePath: paths.installedPlistPath, releaseId: input.release.releaseId, releaseRoot: input.release.releaseRoot };
+    writePackageConnectorServiceAuthority({ release: input.release, controllerHome: input.controllerHome, result: installed });
+    return installed;
   }
   if (!input.forcePortable && platform === 'linux') {
     const probe = spawnSync('systemctl', ['--user', 'show-environment'], { encoding: 'utf8', env, timeout: 30_000 });
-    if (probe.status === 0) return { endpoint: input.endpoint, mode: 'systemd-user', persistent: true, servicePath: installSystemd(paths, launch, env) };
+    if (probe.status === 0) {
+      const installed = { endpoint: input.endpoint, mode: 'systemd-user' as const, persistent: true, servicePath: installSystemd(paths, launch, env), releaseId: input.release.releaseId, releaseRoot: input.release.releaseRoot };
+      writePackageConnectorServiceAuthority({ release: input.release, controllerHome: input.controllerHome, result: installed });
+      return installed;
+    }
   }
-  return { endpoint: input.endpoint, mode: 'portable', persistent: false, pid: startPortable(paths, launch, env) };
+  const portable = { endpoint: input.endpoint, mode: 'portable' as const, persistent: false, pid: startPortable(paths, launch, env), releaseId: input.release.releaseId, releaseRoot: input.release.releaseRoot };
+  writePackageConnectorServiceAuthority({ release: input.release, controllerHome: input.controllerHome, result: portable });
+  return portable;
+}
+
+export async function ensurePackageConnectorService(input: {
+  release: PackageRuntimeRelease;
+  controllerHome: string;
+  endpoint: string;
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  forcePortable?: boolean;
+  refresh?: boolean;
+  probeEndpoint?: (endpoint: string) => Promise<boolean>;
+}): Promise<PackageConnectorServiceResult> {
+  if (!input.refresh && !input.forcePortable) {
+    let authority: PackageConnectorServiceAuthority | undefined;
+    try { authority = readPackageConnectorServiceAuthority(input.controllerHome); } catch { authority = undefined; }
+    if (
+      authority?.persistent
+      && authority.endpoint === input.endpoint
+      && existsSync(authority.releaseRoot)
+      && existsSync(authority.packageRoot)
+      && await (input.probeEndpoint ?? defaultConnectorEndpointProbe)(input.endpoint)
+    ) {
+      return {
+        endpoint: authority.endpoint,
+        mode: authority.mode,
+        persistent: true,
+        ...(authority.servicePath ? { servicePath: authority.servicePath } : {}),
+        reused: true,
+        releaseId: authority.releaseId,
+        releaseRoot: authority.releaseRoot,
+      };
+    }
+  }
+  return installPackageConnectorService(input);
 }

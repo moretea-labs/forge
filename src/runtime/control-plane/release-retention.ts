@@ -106,6 +106,27 @@ function releasePathFromAuthorityRecord(
   return canonical(releasePath);
 }
 
+function loadPackageConnectorReleaseProtection(controllerHome: string, releasesRoot: string): string | undefined {
+  const connectorRoot = join(controllerHome, 'runtime', 'connector-service');
+  if (!existsSync(connectorRoot)) return undefined;
+  const authorityPath = join(connectorRoot, 'authority.json');
+  if (!existsSync(authorityPath)) throw new Error('package connector release authority is missing');
+
+  const parsed = JSON.parse(readFileSync(authorityPath, 'utf8')) as Record<string, unknown>;
+  const releaseId = typeof parsed.releaseId === 'string' ? parsed.releaseId.trim() : '';
+  const releaseRootValue = typeof parsed.releaseRoot === 'string' ? parsed.releaseRoot.trim() : '';
+  const packageRoot = typeof parsed.packageRoot === 'string' ? parsed.packageRoot.trim() : '';
+  const endpoint = typeof parsed.endpoint === 'string' ? parsed.endpoint.trim() : '';
+  if (parsed.schemaVersion !== 1 || !releaseId || !releaseRootValue || !packageRoot || !endpoint) {
+    throw new Error('package connector release authority is invalid');
+  }
+  const releaseRoot = resolve(releaseRootValue);
+  if (basename(releaseRoot) !== releaseId || !directChild(releasesRoot, releaseRoot) || !existsSync(releaseRoot)) {
+    throw new Error('package connector release is outside runtime release authority or missing');
+  }
+  return canonical(releaseRoot);
+}
+
 function loadRuntimeProtection(controllerHome: string): RuntimeProtection | undefined {
   const releasesRoot = join(controllerHome, 'runtime', 'releases');
   if (!existsSync(releasesRoot)) return undefined;
@@ -124,6 +145,8 @@ function loadRuntimeProtection(controllerHome: string): RuntimeProtection | unde
   if (previous !== undefined) {
     releasePaths.add(releasePathFromAuthorityRecord(releasesRoot, previous, 'previous'));
   }
+  const connectorRelease = loadPackageConnectorReleaseProtection(controllerHome, releasesRoot);
+  if (connectorRelease) releasePaths.add(connectorRelease);
 
   const backupPaths = new Set<string>();
   let backupAuthoritySafe = true;
@@ -409,8 +432,9 @@ function scanLinkedReleaseFamily(
 /**
  * Reclaim immutable Controller release history while preserving the exact
  * rollback authorities. Runtime keeps active + previous + the previous DB
- * backup; Recovery/Supervisor keep current + previous. Missing or malformed
- * authority always fails closed.
+ * backup plus the immutable release backing the persistent public MCP Gateway;
+ * Recovery/Supervisor keep current + previous. Missing or malformed authority
+ * always fails closed.
  */
 export function cleanupControllerReleaseHistory(
   controllerHome: string,

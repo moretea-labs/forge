@@ -6,6 +6,7 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER, assertRuntimeReleaseFiles, stageRuntimeRelease, stageRuntimeReleaseFromCandidateSource, type MacOSRuntimeCodeSigning } from '../../src/runtime/root/release-materialize';
 import { loadRuntimeReleaseManifest } from '../../src/runtime/root/release-manifest';
+import { cleanupControllerReleaseHistory } from '../../src/runtime/control-plane/release-retention';
 
 const roots: string[] = [];
 
@@ -15,6 +16,24 @@ const STABLE_MACOS_SIGNING: MacOSRuntimeCodeSigning = {
   authority: 'Developer ID Application: Guilian Zhang (K848A29AJ5)',
   designatedRequirement: 'identifier \"com.moretea.forge.runtime\" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = K848A29AJ5',
 };
+
+function retentionRelease(home: string, releaseId: string): string {
+  const releaseRoot = join(home, 'runtime', 'releases', releaseId);
+  mkdirSync(releaseRoot, { recursive: true });
+  writeFileSync(join(releaseRoot, 'manifest.json'), '{}\n');
+  return releaseRoot;
+}
+
+function writeRetentionRuntimeAuthority(home: string, activeId: string, previousId: string): void {
+  const releasesRoot = join(home, 'runtime', 'releases');
+  writeFileSync(join(releasesRoot, 'authority.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    status: 'committed',
+    revision: 1,
+    active: { releaseId: activeId, manifestPath: join(releasesRoot, activeId, 'manifest.json') },
+    previous: { releaseId: previousId, manifestPath: join(releasesRoot, previousId, 'manifest.json') },
+  }, null, 2)}\n`);
+}
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -78,6 +97,58 @@ describe('compiled runtime UI assets', () => {
     const run = spawnSync(executable, [], { cwd: root, encoding: 'utf8' });
     expect(run.status).toBe(0);
     expect(run.stdout).toBe('compiled-ui-marker');
+  });
+});
+
+describe('persistent Gateway release retention', () => {
+  test('pins the Runtime release backing a persistent public Gateway even after it is neither active nor previous', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-gateway-retention-'));
+    roots.push(home);
+    const active = retentionRelease(home, 'active-release');
+    const previous = retentionRelease(home, 'previous-release');
+    const gateway = retentionRelease(home, 'gateway-release');
+    const stale = retentionRelease(home, 'stale-release');
+    writeRetentionRuntimeAuthority(home, 'active-release', 'previous-release');
+    const connectorRoot = join(home, 'runtime', 'connector-service');
+    mkdirSync(connectorRoot, { recursive: true });
+    writeFileSync(join(connectorRoot, 'authority.json'), `${JSON.stringify({
+      schemaVersion: 1,
+      endpoint: 'http://127.0.0.1:8767/mcp',
+      releaseId: 'gateway-release',
+      releaseRoot: gateway,
+      packageRoot: join(home, 'packages', 'forge'),
+      mode: 'launchd',
+      persistent: true,
+      installedAt: '2026-08-18T00:00:00.000Z',
+    }, null, 2)}\n`);
+
+    const report = cleanupControllerReleaseHistory(home, { nowMs: Date.now() + 1_000, graceMs: 0, stagingGraceMs: 0, maxRemovals: 20 });
+    expect(existsSync(active)).toBe(true);
+    expect(existsSync(previous)).toBe(true);
+    expect(existsSync(gateway)).toBe(true);
+    expect(existsSync(stale)).toBe(false);
+    expect(report.removedPaths).toContain('runtime/releases/stale-release');
+    expect(report.skippedByReason.release_authority).toBe(3);
+  });
+
+  test('fails runtime release cleanup closed when a configured Gateway authority is missing or malformed', () => {
+    for (const mode of ['missing', 'malformed'] as const) {
+      const home = mkdtempSync(join(tmpdir(), `forge-gateway-retention-${mode}-`));
+      roots.push(home);
+      retentionRelease(home, 'active-release');
+      retentionRelease(home, 'previous-release');
+      const stale = retentionRelease(home, 'stale-release');
+      writeRetentionRuntimeAuthority(home, 'active-release', 'previous-release');
+      const connectorRoot = join(home, 'runtime', 'connector-service');
+      mkdirSync(connectorRoot, { recursive: true });
+      if (mode === 'malformed') writeFileSync(join(connectorRoot, 'authority.json'), '{"schemaVersion":1,"releaseId":""}\n');
+
+      const report = cleanupControllerReleaseHistory(home, { nowMs: Date.now() + 1_000, graceMs: 0, maxRemovals: 20 });
+      expect(existsSync(stale)).toBe(true);
+      expect(report.removedPaths).toEqual([]);
+      expect(report.skippedByReason.authority_unavailable).toBe(1);
+      expect(report.errors.some((entry) => entry.includes('package connector release authority'))).toBe(true);
+    }
   });
 });
 

@@ -37,7 +37,8 @@ export function buildRuntimeCommand(): Command {
     .option('--port <port>', 'MCP listener port', '8765')
     .option('--auth-token-file <path>', 'Raw bearer token file (created from user-level MCP config when missing)')
     .option('--portable', 'Force a detached session process instead of launchd/systemd user persistence')
-    .action(async (opts: { controllerHome?: string; host: string; port: string; authTokenFile?: string; portable?: boolean }) => {
+    .option('--refresh-connector', 'Explicitly replace/restart the persistent public MCP Gateway instead of reusing a healthy existing Gateway')
+    .action(async (opts: { controllerHome?: string; host: string; port: string; authTokenFile?: string; portable?: boolean; refreshConnector?: boolean }) => {
       const home = resolveControllerHome(opts.controllerHome);
       const port = Number(opts.port);
       if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('RUNTIME_SERVICE_PORT_INVALID');
@@ -56,6 +57,7 @@ export function buildRuntimeCommand(): Command {
         port,
         authTokenFile: tokenPath,
         forcePortable: opts.portable === true,
+        refreshConnector: opts.refreshConnector === true,
       });
       output({
         status: result.status,
