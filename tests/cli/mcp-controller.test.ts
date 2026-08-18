@@ -1394,6 +1394,27 @@ describe("MCP controller profile", () => {
         adopt_candidate_head: outOfScopeHead,
       });
       expect(rejectedPath.error.code).toBe("WORK_HEAD_ADOPTION_PATH_OUT_OF_SCOPE");
+
+      const rebased = await prepare("head-adoption-rebased-target");
+      const rebasedPrevious = String(rebased.expectedHead);
+      writeFileSync(join(rebased.worktreePath, "allowed.txt"), "work-only\n");
+      expect(spawnSync("git", ["add", "--", "allowed.txt"], { cwd: rebased.worktreePath, stdio: "ignore" }).status).toBe(0);
+      expect(spawnSync("git", ["commit", "-m", "allowed work change"], { cwd: rebased.worktreePath, stdio: "ignore" }).status).toBe(0);
+      writeFileSync(join(repoRoot, "main-only.txt"), "unrelated main change\n");
+      expect(spawnSync("git", ["add", "--", "main-only.txt"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);
+      expect(spawnSync("git", ["commit", "-m", "advance main outside work scope"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);
+      expect(spawnSync("git", ["rebase", "main"], { cwd: rebased.worktreePath, stdio: "ignore" }).status).toBe(0);
+      const rebasedHead = String(spawnSync("git", ["rev-parse", "HEAD"], { cwd: rebased.worktreePath, encoding: "utf-8" }).stdout).trim();
+      const adoptedRebase = await executionJson(advanced, "work_prepare", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: rebased.checkoutId,
+        work_id: rebased.workId,
+        expected_previous_head: rebasedPrevious,
+        adopt_candidate_head: rebasedHead,
+      });
+      expect(adoptedRebase.error).toBeUndefined();
+      expect(adoptedRebase.adoption.changedPaths).toEqual(["allowed.txt"]);
     });
   });
 

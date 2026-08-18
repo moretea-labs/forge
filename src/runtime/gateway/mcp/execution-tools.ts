@@ -196,6 +196,16 @@ function gitChangedPaths(root: string, previousHead: string, candidateHead: stri
   return [...new Set(output.stdout.split('\0').filter(Boolean))].sort((left, right) => left.localeCompare(right));
 }
 
+function gitMergeBase(root: string, leftHead: string, rightHead: string): string {
+  const output = spawnSync('git', ['-C', root, 'merge-base', leftHead, rightHead], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  if (output.status !== 0 || output.error || typeof output.stdout !== 'string' || !output.stdout.trim()) {
+    throw new Error('WORK_HEAD_ADOPTION_SCOPE_BASE_UNAVAILABLE');
+  }
+  return output.stdout.trim();
+}
+
 function normalizedRequiredString(args: Record<string, unknown>, key: string): string | undefined {
   return typeof args[key] === 'string' && args[key].trim() ? args[key].trim() : undefined;
 }
@@ -570,7 +580,16 @@ function adoptExistingWorkHead(
   if (isTerminalWorkContractStatus(contract.status) || contract.completionReceipt) {
     throw new Error('WORK_HEAD_ADOPTION_CONTRACT_TERMINAL');
   }
-  const changedPaths = gitChangedPaths(handle.worktreePath, previousHead, candidateHead);
+  // expectedHead can predate unrelated commits that landed on the source checkout
+  // before this Work was rebased. Scope adoption to the candidate's unique delta
+  // from the current source-checkout merge-base; otherwise those target-branch
+  // commits are incorrectly attributed to the Work and fail its allow-list.
+  const sourceRepository = selectWorkFinalizationTarget(registered, handle);
+  const sourceHead = handle.sourceCheckoutId && handle.sourceCheckoutId !== handle.checkoutId
+    ? repositoryGitStatus(sourceRepository).head
+    : undefined;
+  const scopeBaseHead = sourceHead ? gitMergeBase(handle.worktreePath, sourceHead, candidateHead) : previousHead;
+  const changedPaths = gitChangedPaths(handle.worktreePath, scopeBaseHead, candidateHead);
   for (const path of changedPaths) {
     if (contract.forbiddenPaths.some((pattern) => globMatches(pattern, path))) {
       throw new Error(`WORK_HEAD_ADOPTION_FORBIDDEN_PATH: ${path}`);
@@ -622,7 +641,7 @@ function adoptExistingWorkHead(
     });
     appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, contract.workId, {
       title: 'audited WorkHandle successor HEAD adoption',
-      summary: `${previousHead} -> ${candidateHead}; ${changedPaths.length} changed path(s) remained within the WorkContract allow-list. Historical validation and completion receipts were not rewritten.`,
+      summary: `${previousHead} -> ${candidateHead}; ${changedPaths.length} candidate-unique path(s) from scope base ${scopeBaseHead} remained within the WorkContract allow-list. Historical validation and completion receipts were not rewritten.`,
       detailLevel: 'summary',
     });
   } catch (error) {
