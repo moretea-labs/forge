@@ -9,6 +9,7 @@ import {
   buildBrowserPluginManifest,
   executeBrowserPluginAction,
   resetBrowserPluginRuntimeHooksForTest,
+  resolveBrowserPluginAuthorizationContext,
   setBrowserPluginRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-adapter';
 import {
@@ -72,6 +73,15 @@ function repoFixture() {
 }
 function writeBrowserConfig(repoRoot: string, value: Record<string, unknown>) {
   writeFileSync(join(repoRoot, '.forge/plugins/browser.json'), `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
+}
+
+function writeAuthorizationBrowserSession(repoRoot: string, sessionId: string, url: string, browserProduct: 'chrome' | 'vivaldi' = 'chrome') {
+  mkdirSync(join(repoRoot, '.forge/browser/sessions'), { recursive: true });
+  writeFileSync(join(repoRoot, '.forge/browser/sessions', `${sessionId}.json`), JSON.stringify({
+    schemaVersion: 1, sessionId, url,
+    createdAt: '2026-08-18T00:00:00.000Z', updatedAt: '2026-08-18T00:00:00.000Z',
+    browser: { mode: 'attach_preferred', activeMode: 'attach_preferred', provider: 'macos-apple-events', browserProduct },
+  }));
 }
 
 function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?: string } = {}) {
@@ -444,6 +454,26 @@ describe('browser plugin', () => {
     for (const unsupported of ['submit', 'delete', 'publish', 'payment', 'send']) {
       expect(Object.keys(actions).some((actionId) => actionId.includes(unsupported))).toBe(false);
     }
+  });
+
+  test('reusable authorization targets browser identity plus HTTP origin, never an ephemeral session id', async () => {
+    const { repoRoot, controllerHome, repository } = repoFixture();
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred', profileMode: 'repo_local', browserChannel: 'chrome' });
+    writeAuthorizationBrowserSession(repoRoot, 'auth-a', 'https://example.com/account', 'chrome');
+    writeAuthorizationBrowserSession(repoRoot, 'auth-b', 'https://example.com/settings', 'chrome');
+    writeAuthorizationBrowserSession(repoRoot, 'auth-c', 'https://other.example/settings', 'chrome');
+    writeAuthorizationBrowserSession(repoRoot, 'auth-d', 'https://example.com/settings', 'vivaldi');
+    const resolveTarget = (sessionId: string) => resolveBrowserPluginAuthorizationContext({
+      controllerHome, repoId: repository.repoId, repoRoot, pluginId: 'browser', actionId: 'click', requestId: `auth-${sessionId}`,
+      args: { session_id: sessionId, selector: '#save' }, origin: { surface: 'mcp', actor: 'principal:test-user' },
+    });
+    const [a, b, c, d] = await Promise.all(['auth-a', 'auth-b', 'auth-c', 'auth-d'].map(resolveTarget));
+    expect(a?.target).toMatchObject({ kind: 'browser-origin', id: 'chrome@https://example.com' });
+    expect(b?.target).toEqual(a?.target);
+    expect(c?.target.id).not.toBe(a?.target.id);
+    expect(d?.target.id).not.toBe(a?.target.id);
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'isolated', profileMode: 'repo_local' });
+    expect(await resolveTarget('auth-a')).toBeUndefined();
   });
 
   test('attach_local_file supports multiple files and dispatch_event is bounded', async () => {

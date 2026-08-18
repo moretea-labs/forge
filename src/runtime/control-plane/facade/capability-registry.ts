@@ -257,6 +257,12 @@ export function getPluginActionCapabilitySchema(
         scopes: [...action.scopes],
         resourceClaims: structuredClone(action.resourceClaims),
         argumentsSchema: structuredClone(action.argumentsSchema),
+        authorizationReuse: action.confirmation === 'authorization'
+          ? {
+              mode: 'exact_target_persistent_when_adapter_supported',
+              hostPermissionBoundary: 'Tool invocation permission remains host-managed; reusable Forge grants never bypass strong_confirmation or destructive gates.',
+            }
+          : { mode: 'not_reusable' },
         executeWith: 'plugin_action_execute',
       };
     }

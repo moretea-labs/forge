@@ -37,6 +37,7 @@ import {
   iosPhysicalDeviceCapabilities,
   iosPhysicalDeviceStatus,
   isIosPhysicalDeviceAction,
+  resolveIosPhysicalDeviceAuthorizationContext,
 } from './ios-physical-device';
 
 const IOS_PLUGIN_ID = 'ios';
@@ -510,5 +511,9 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
 export const iosPluginAdapter = {
   pluginId: IOS_PLUGIN_ID,
   buildManifest: buildIosPluginManifest,
+  resolveAuthorizationContext: async (input: AssistantPluginActionExecutionInput) => {
+    if (!isIosPhysicalDeviceAction(input.actionId)) return undefined;
+    return resolveIosPhysicalDeviceAuthorizationContext(input);
+  },
   executeAction: executeIosPluginAction,
 };

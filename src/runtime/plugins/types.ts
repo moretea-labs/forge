@@ -6,6 +6,21 @@ export type AssistantPluginActionRisk = 'readonly' | 'workspace_write' | 'remote
 export type AssistantPluginActionConfirmation = 'none' | 'authorization' | 'strong_confirmation';
 export type AssistantPluginResource = 'repo-state' | 'workspace' | 'remote' | 'git-refs' | 'provider-state';
 
+export interface AssistantPluginAuthorizationTarget {
+  /** Stable provider resource class, for example ios-physical-device. */
+  kind: string;
+  /** Stable exact provider identity. Ephemeral request/session ids must never be used here. */
+  id: string;
+  /** Optional provider identity fence. A changed fingerprint invalidates reuse. */
+  identityFingerprint?: string;
+}
+
+export interface AssistantPluginAuthorizationContext {
+  target: AssistantPluginAuthorizationTarget;
+  /** Optional grant lifetime. The grant authority applies its own upper bound. */
+  expiresInMinutes?: number;
+}
+
 export interface AssistantPluginPermissionScope {
   scope: string;
   mode: 'read' | 'write';
@@ -134,6 +149,8 @@ export interface AssistantPluginAdapter {
   pluginId: string;
   scope?: AssistantPluginScope;
   buildManifest(previousRevision?: number, previousUpdatedAt?: string, repoRoot?: string): AssistantPluginManifest;
+  /** Resolve an exact stable resource identity for reusable authorization-class actions. */
+  resolveAuthorizationContext?(input: AssistantPluginActionExecutionInput): Promise<AssistantPluginAuthorizationContext | undefined>;
   executeAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>>;
   /** Defaults to true. External providers can defer routine health refresh until the normal manifest cache expires. */
   shouldRefreshManifestAfterAction?(actionId: string): boolean;

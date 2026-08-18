@@ -41,6 +41,14 @@ import {
 } from '../../src/runtime/plugins/store';
 import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
 import { getWorkContractByRequestId } from '../../src/runtime/control-plane/facade/work-contract-store';
+import {
+  findActivePluginCapabilityAuthorization,
+  listPluginCapabilityAuthorizations,
+  pluginCapabilityAuthorizationGrantStorePath,
+  PluginCapabilityAuthorizationGrantError,
+  recordPluginCapabilityAuthorization,
+  revokePluginCapabilityAuthorization,
+} from '../../src/runtime/plugins/capability-authorization-grants';
 
 const roots: string[] = [];
 
@@ -494,6 +502,73 @@ describe('workspace target grant authority', () => {
       }),
       'TARGET_ACCESS_DENIED',
     );
+  });
+});
+
+describe('plugin capability authorization grant authority', () => {
+  const base = {
+    ownerScope: 'mcp:principal:test-user', repoId: 'repo-test', pluginId: 'ios', capabilityId: 'ios-physical-device',
+    target: { kind: 'ios-physical-device', id: 'CORE-DEVICE-1', identityFingerprint: 'fingerprint-1' },
+    scopes: ['ios.device'] as const,
+  };
+  const find = (controllerHome: string, overrides: Partial<Parameters<typeof findActivePluginCapabilityAuthorization>[1]> = {}) =>
+    findActivePluginCapabilityAuthorization(controllerHome, {
+      ...base, risk: 'workspace_write', at: new Date('2026-08-18T01:00:00.000Z'), ...overrides,
+    });
+
+  test('requires the same principal/repo/capability/exact target/scope/risk and never grants destructive actions', () => {
+    const controllerHome = temp('forge-plugin-grant-boundary-');
+    const grant = recordPluginCapabilityAuthorization(controllerHome, {
+      ...base, scopes: ['ios.device', 'ios.observe'], riskCeiling: 'remote_write', expiresInMinutes: 60,
+      now: new Date('2026-08-18T00:30:00.000Z'),
+    });
+    expect(find(controllerHome)?.grantId).toBe(grant.grantId);
+    expect(find(controllerHome, { ownerScope: 'mcp:principal:other-user' })).toBeUndefined();
+    expect(find(controllerHome, { repoId: 'repo-other' })).toBeUndefined();
+    expect(find(controllerHome, { capabilityId: 'other-capability' })).toBeUndefined();
+    expect(find(controllerHome, { target: { ...base.target, id: 'CORE-DEVICE-2' } })).toBeUndefined();
+    expect(find(controllerHome, { target: { ...base.target, identityFingerprint: 'fingerprint-2' } })).toBeUndefined();
+    expect(find(controllerHome, { scopes: ['ios.device', 'ios.admin'] })).toBeUndefined();
+    expect(find(controllerHome, { risk: 'destructive' })).toBeUndefined();
+    expect(() => recordPluginCapabilityAuthorization(controllerHome, {
+      ...base, riskCeiling: 'destructive', now: new Date('2026-08-18T00:30:00.000Z'),
+    })).toThrow(PluginCapabilityAuthorizationGrantError);
+  });
+
+  test('expires and revokes without crossing owner identity', () => {
+    const controllerHome = temp('forge-plugin-grant-lifecycle-');
+    const expiring = recordPluginCapabilityAuthorization(controllerHome, {
+      ...base, riskCeiling: 'workspace_write', expiresInMinutes: 1, now: new Date('2026-08-18T00:00:00.000Z'),
+    });
+    expect(find(controllerHome, { at: new Date('2026-08-18T00:00:30.000Z') })?.grantId).toBe(expiring.grantId);
+    expect(find(controllerHome, { at: new Date('2026-08-18T00:02:00.000Z') })).toBeUndefined();
+    const active = recordPluginCapabilityAuthorization(controllerHome, {
+      ...base, riskCeiling: 'workspace_write', expiresInMinutes: 60, now: new Date('2026-08-18T00:30:00.000Z'),
+    });
+    revokePluginCapabilityAuthorization(controllerHome, {
+      grantId: active.grantId, ownerScope: base.ownerScope, reason: 'user revoked device control', now: new Date('2026-08-18T00:45:00.000Z'),
+    });
+    expect(find(controllerHome)).toBeUndefined();
+    expect(listPluginCapabilityAuthorizations(controllerHome).find((entry) => entry.grantId === active.grantId)?.revokedReason).toBe('user revoked device control');
+  });
+
+  test('fails closed on a corrupt grant store without overwriting evidence', () => {
+    const controllerHome = temp('forge-plugin-grant-corrupt-');
+    const path = pluginCapabilityAuthorizationGrantStorePath(controllerHome);
+    mkdirSync(join(controllerSystemRoot(controllerHome), 'plugin-capability-authorizations'), { recursive: true });
+    writeFileSync(path, '{not-json\n');
+    const assertCorrupt = (operation: () => unknown) => {
+      try { operation(); throw new Error('expected corrupt store'); }
+      catch (error) {
+        expect(error).toBeInstanceOf(PluginCapabilityAuthorizationGrantError);
+        expect((error as PluginCapabilityAuthorizationGrantError).code).toBe('PLUGIN_CAPABILITY_GRANT_STORE_CORRUPT');
+      }
+    };
+    assertCorrupt(() => find(controllerHome));
+    assertCorrupt(() => recordPluginCapabilityAuthorization(controllerHome, {
+      ...base, riskCeiling: 'workspace_write', now: new Date('2026-08-18T00:30:00.000Z'),
+    }));
+    expect(readFileSync(path, 'utf8')).toBe('{not-json\n');
   });
 });
 
