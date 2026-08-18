@@ -139,6 +139,7 @@ function workerSource(): string {
   return String.raw`#!/usr/bin/env python3
 import argparse
 import asyncio
+import contextlib
 import json
 import sys
 import time
@@ -153,6 +154,7 @@ from pymobiledevice3.remote.core_device.hid_service import (
     KEY_LEFT_SHIFT,
     TOUCHSCREEN_STATE_CONTACT,
     TOUCHSCREEN_STATE_RELEASE,
+    UniversalHIDServiceService,
     touch_session,
 )
 
@@ -187,6 +189,24 @@ async def send_keyboard_chord(hid, service_id, usage_codes, hold_s=0.040, settle
     if primary_error is not None or release_error is not None:
         raise KeyboardChordError(primary_error or release_error, release_error) from (primary_error or release_error)
     await asyncio.sleep(settle_s)
+
+
+@contextlib.asynccontextmanager
+async def isolated_modifier_keyboard(host, port):
+    async with RemoteServiceDiscoveryService((host, port)) as modifier_rsd:
+        async with UniversalHIDServiceService(modifier_rsd) as modifier_hid:
+            started = time.perf_counter()
+            service_id = await modifier_hid.create_keyboard_service(product='Forge modifier keyboard')
+            create_ms = (time.perf_counter() - started) * 1000.0
+            await modifier_hid.send_keyboard(service_id, [])
+            await asyncio.sleep(0.060)
+            try:
+                yield modifier_hid, service_id, create_ms
+            finally:
+                try:
+                    await modifier_hid.send_keyboard(service_id, [])
+                except Exception:
+                    pass
 
 
 def normalized_point(x, y, width, height):
@@ -233,8 +253,6 @@ async def main():
                     direct_keyboard_service = service_id
                     direct_keyboard_product = product or None
                     break
-            modifier_keyboard_service = None
-            modifier_keyboard_create_ms = None
             print(json.dumps({
                 'ready': True,
                 'serviceIds': service_ids,
@@ -305,69 +323,55 @@ async def main():
                             raise ValueError('unsupported HID character in keys mode')
 
                         needs_modifier_keyboard = use_pasteboard or replace_existing
-                        keyboard_service = direct_keyboard_service
-                        keyboard_source = 'connected_coredevice' if direct_keyboard_service is not None else None
-                        keyboard_create_ms = 0.0
-                        if needs_modifier_keyboard or keyboard_service is None:
-                            if modifier_keyboard_service is None:
-                                phase = 'hid_modifier_keyboard_create' if needs_modifier_keyboard else 'hid_keyboard_fallback_create'
-                                keyboard_started = time.perf_counter()
-                                modifier_keyboard_service = await hid.create_keyboard_service(product='Forge modifier keyboard')
-                                modifier_keyboard_create_ms = (time.perf_counter() - keyboard_started) * 1000.0
-                                await hid.send_keyboard(modifier_keyboard_service, [])
-                                await asyncio.sleep(0.060)
-                            keyboard_service = modifier_keyboard_service
-                            keyboard_create_ms = modifier_keyboard_create_ms or 0.0
-                            keyboard_source = 'virtual_coredevice_modifier' if needs_modifier_keyboard else 'virtual_coredevice_fallback'
-                        if keyboard_service is None:
-                            raise RuntimeError('No usable CoreDevice keyboard HID service is available')
 
-                        if use_pasteboard:
-                            phase = 'pasteboard_connect'
-                            pasteboard_restored = True
-                            async with RemoteServiceDiscoveryService((args.host, args.port)) as pasteboard_rsd:
-                                async with PasteboardService(pasteboard_rsd) as pasteboard:
-                                    phase = 'pasteboard_snapshot'
-                                    previous = await pasteboard.get()
-                                    previous_snapshot = previous.get('pasteboard') if isinstance(previous.get('pasteboard'), dict) else previous
-                                    previous_items = previous_snapshot.get('items') if isinstance(previous_snapshot, dict) else None
-                                    previous_source = previous_snapshot.get('sourceMetadata') if isinstance(previous_snapshot, dict) else None
-                                    try:
-                                        phase = 'pasteboard_set_text'
-                                        await pasteboard.set_text(text)
-                                        if replace_existing:
-                                            select_mapping = keyboard_mapping('a')
-                                            if select_mapping is None:
-                                                raise RuntimeError('HID A key mapping unavailable')
-                                            select_usage, _ = select_mapping
-                                            phase = 'hid_keyboard_select_all'
+                        async def dispatch_text(keyboard_hid, keyboard_service, keyboard_source, keyboard_create_ms):
+                            nonlocal phase, mutation_dispatched
+                            if use_pasteboard:
+                                phase = 'pasteboard_connect'
+                                pasteboard_restored = True
+                                async with RemoteServiceDiscoveryService((args.host, args.port)) as pasteboard_rsd:
+                                    async with PasteboardService(pasteboard_rsd) as pasteboard:
+                                        phase = 'pasteboard_snapshot'
+                                        previous = await pasteboard.get()
+                                        previous_snapshot = previous.get('pasteboard') if isinstance(previous.get('pasteboard'), dict) else previous
+                                        previous_items = previous_snapshot.get('items') if isinstance(previous_snapshot, dict) else None
+                                        previous_source = previous_snapshot.get('sourceMetadata') if isinstance(previous_snapshot, dict) else None
+                                        try:
+                                            phase = 'pasteboard_set_text'
+                                            await pasteboard.set_text(text)
+                                            if replace_existing:
+                                                select_mapping = keyboard_mapping('a')
+                                                if select_mapping is None:
+                                                    raise RuntimeError('HID A key mapping unavailable')
+                                                select_usage, _ = select_mapping
+                                                phase = 'hid_keyboard_select_all'
+                                                mutation_dispatched = True
+                                                await send_keyboard_chord(keyboard_hid, keyboard_service, [select_usage, KEY_LEFT_GUI])
+                                            paste_mapping = keyboard_mapping('v')
+                                            if paste_mapping is None:
+                                                raise RuntimeError('HID V key mapping unavailable')
+                                            paste_usage, _ = paste_mapping
+                                            phase = 'hid_keyboard_paste'
                                             mutation_dispatched = True
-                                            await send_keyboard_chord(hid, keyboard_service, [select_usage, KEY_LEFT_GUI])
-                                        paste_mapping = keyboard_mapping('v')
-                                        if paste_mapping is None:
-                                            raise RuntimeError('HID V key mapping unavailable')
-                                        paste_usage, _ = paste_mapping
-                                        phase = 'hid_keyboard_paste'
-                                        mutation_dispatched = True
-                                        await send_keyboard_chord(hid, keyboard_service, [paste_usage, KEY_LEFT_GUI], settle_s=0.120)
-                                    finally:
-                                        phase = 'pasteboard_restore'
-                                        if isinstance(previous_items, list):
-                                            try:
-                                                await pasteboard.set(previous_items, source_metadata=previous_source if isinstance(previous_source, dict) else None)
-                                            except Exception:
-                                                pasteboard_restored = False
-                            result = {
-                                'action': 'type',
-                                'length': len(text),
-                                'inputMode': 'pasteboard',
-                                'replaceExisting': replace_existing,
-                                'keyboardSource': keyboard_source,
-                                'keyboardCreateMs': round(keyboard_create_ms, 2),
-                                'pasteboardTransport': 'independent_rsd',
-                                'pasteboardRestored': pasteboard_restored,
-                            }
-                        else:
+                                            await send_keyboard_chord(keyboard_hid, keyboard_service, [paste_usage, KEY_LEFT_GUI], settle_s=0.120)
+                                        finally:
+                                            phase = 'pasteboard_restore'
+                                            if isinstance(previous_items, list):
+                                                try:
+                                                    await pasteboard.set(previous_items, source_metadata=previous_source if isinstance(previous_source, dict) else None)
+                                                except Exception:
+                                                    pasteboard_restored = False
+                                return {
+                                    'action': 'type',
+                                    'length': len(text),
+                                    'inputMode': 'pasteboard',
+                                    'replaceExisting': replace_existing,
+                                    'keyboardSource': keyboard_source,
+                                    'keyboardCreateMs': round(keyboard_create_ms, 2),
+                                    'pasteboardTransport': 'independent_rsd',
+                                    'pasteboardRestored': pasteboard_restored,
+                                }
+
                             if replace_existing:
                                 select_mapping = keyboard_mapping('a')
                                 if select_mapping is None:
@@ -375,11 +379,11 @@ async def main():
                                 select_usage, _ = select_mapping
                                 phase = 'hid_keyboard_select_all'
                                 mutation_dispatched = True
-                                await send_keyboard_chord(hid, keyboard_service, [select_usage, KEY_LEFT_GUI])
+                                await send_keyboard_chord(keyboard_hid, keyboard_service, [select_usage, KEY_LEFT_GUI])
                             if replace_existing and not text:
                                 phase = 'hid_keyboard_delete_selection'
                                 mutation_dispatched = True
-                                await send_keyboard_chord(hid, keyboard_service, [KEY_BACKSPACE])
+                                await send_keyboard_chord(keyboard_hid, keyboard_service, [KEY_BACKSPACE])
                             else:
                                 for char in text:
                                     mapping = keyboard_mapping(char)
@@ -391,9 +395,9 @@ async def main():
                                         pressed.append(KEY_LEFT_SHIFT)
                                     phase = 'hid_keyboard_write'
                                     mutation_dispatched = True
-                                    await send_keyboard_chord(hid, keyboard_service, pressed, hold_s=0.018, settle_s=0.018)
-                            await hid.send_keyboard(keyboard_service, [])
-                            result = {
+                                    await send_keyboard_chord(keyboard_hid, keyboard_service, pressed, hold_s=0.018, settle_s=0.018)
+                            await keyboard_hid.send_keyboard(keyboard_service, [])
+                            return {
                                 'action': 'type',
                                 'length': len(text),
                                 'inputMode': 'keys',
@@ -401,6 +405,14 @@ async def main():
                                 'keyboardSource': keyboard_source,
                                 'keyboardCreateMs': round(keyboard_create_ms, 2),
                             }
+
+                        if not needs_modifier_keyboard and direct_keyboard_service is not None:
+                            result = await dispatch_text(hid, direct_keyboard_service, 'connected_coredevice', 0.0)
+                        else:
+                            phase = 'hid_modifier_session_connect'
+                            async with isolated_modifier_keyboard(args.host, args.port) as (modifier_hid, modifier_service, modifier_create_ms):
+                                modifier_source = 'isolated_virtual_modifier' if needs_modifier_keyboard else 'isolated_virtual_fallback'
+                                result = await dispatch_text(modifier_hid, modifier_service, modifier_source, modifier_create_ms)
                     else:
                         raise ValueError('unsupported action')
                     hid_ms = (time.perf_counter() - hid_started) * 1000.0
