@@ -37,6 +37,7 @@ import {
 } from '../src/runtime/resources/leases/store';
 import type { MultiRepositoryMcpToolContext } from '../src/cli/mcp/multi-repository';
 import { waitForProcess } from '../src/runtime/execution/process-runtime/runtime';
+import { isLightweightProcessId, waitForLightweightProcess } from '../src/runtime/execution/process-runtime/lightweight-managed';
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
@@ -245,7 +246,12 @@ async function sampleCase(
   // the next sample so a correct same-checkout resource claim is not misreported
   // as a benchmark regression.
   if (phases.path === 'process_managed' && processId) {
-    await waitForProcess(fixture.controllerHome, fixture.repository.repoId, processId, { timeoutMs: 10_000 });
+    const settled = isLightweightProcessId(processId)
+      ? await waitForLightweightProcess(fixture.repository.repoId, processId, { timeoutMs: 10_000 })
+      : await waitForProcess(fixture.controllerHome, fixture.repository.repoId, processId, { timeoutMs: 10_000 });
+    if (!settled.completed) {
+      throw new Error(`BENCHMARK_PROCESS_DID_NOT_SETTLE: ${processId}`);
+    }
   }
   return {
     ...phases,
