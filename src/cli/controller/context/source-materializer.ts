@@ -46,6 +46,18 @@ interface SymbolRange {
   enclosing?: string;
 }
 
+interface IndexedDeclaration {
+  node: ts.Node;
+  kind: string;
+  fullStart: number;
+  end: number;
+}
+
+interface SourceSymbolIndex {
+  sourceFile: ts.SourceFile;
+  declarations: IndexedDeclaration[];
+}
+
 function boundedContent(content: string, maxChars: number): { content: string; truncated: boolean } {
   if (content.length <= maxChars) return { content, truncated: false };
   return { content: `${content.slice(0, maxChars)}\n... <snippet truncated>`, truncated: true };
@@ -119,21 +131,37 @@ function enclosingName(node: ts.Node): string | undefined {
   return undefined;
 }
 
-function symbolAtLine(path: string, source: string, line: number): SymbolRange | undefined {
+function buildSourceSymbolIndex(path: string, source: string): SourceSymbolIndex | undefined {
   const kind = scriptKind(path);
   if (kind === undefined) return undefined;
   const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, kind);
-  const targetLine = Math.min(Math.max(1, line), sourceFile.getLineAndCharacterOfPosition(sourceFile.end).line + 1);
-  const position = sourceFile.getPositionOfLineAndCharacter(targetLine - 1, 0);
-  const matches: Array<{ node: ts.Node; kind: string }> = [];
+  const declarations: IndexedDeclaration[] = [];
   const visit = (node: ts.Node): void => {
     const candidateKind = declarationKind(node);
-    if (candidateKind && node.getFullStart() <= position && node.end >= position) matches.push({ node, kind: candidateKind });
+    if (candidateKind) {
+      declarations.push({
+        node,
+        kind: candidateKind,
+        fullStart: node.getFullStart(),
+        end: node.end,
+      });
+    }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  const selected = matches.sort((left, right) =>
-    (left.node.end - left.node.getFullStart()) - (right.node.end - right.node.getFullStart()))[0];
+  return { sourceFile, declarations };
+}
+
+function symbolAtLine(index: SourceSymbolIndex | undefined, line: number): SymbolRange | undefined {
+  if (!index) return undefined;
+  const { sourceFile, declarations } = index;
+  const targetLine = Math.min(Math.max(1, line), sourceFile.getLineAndCharacterOfPosition(sourceFile.end).line + 1);
+  const position = sourceFile.getPositionOfLineAndCharacter(targetLine - 1, 0);
+  let selected: IndexedDeclaration | undefined;
+  for (const candidate of declarations) {
+    if (candidate.fullStart > position || candidate.end < position) continue;
+    if (!selected || (candidate.end - candidate.fullStart) < (selected.end - selected.fullStart)) selected = candidate;
+  }
   if (!selected) return undefined;
   return {
     startLine: sourceFile.getLineAndCharacterOfPosition(selected.node.getStart(sourceFile)).line + 1,
@@ -190,11 +218,12 @@ export function materializeSource(options: MaterializeSourceOptions): Materializ
   }
 
   const source = plainSource(full.content);
+  const symbolIndex = buildSourceSymbolIndex(options.path, source);
   const snippets: MaterializedSourceSnippet[] = [];
   const seen = new Set<string>();
   for (const line of mergeHitLines(options.hitLines.length > 0 ? options.hitLines : [1])) {
     if (snippets.length >= options.maxSnippets) break;
-    const symbol = symbolAtLine(options.path, source, line);
+    const symbol = symbolAtLine(symbolIndex, line);
     const range = symbol
       ? { startLine: symbol.startLine, endLine: symbol.endLine }
       : {
