@@ -298,6 +298,11 @@ function isReadOnlyLoopbackCurl(words: string[]): boolean {
       continue;
     }
     if (safeLongFlags.has(lower)) continue;
+    if (['>/dev/null', '1>/dev/null', '2>/dev/null', '>>/dev/null', '1>>/dev/null', '2>>/dev/null'].includes(arg)) continue;
+    if (['>', '1>', '2>', '>>', '1>>', '2>>'].includes(arg) && args[index + 1] === '/dev/null') {
+      index += 1;
+      continue;
+    }
     if (safeValueFlags.has(lower)) {
       const value = Number(args[index + 1]);
       if (!Number.isFinite(value) || value < 0) return false;

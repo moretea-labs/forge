@@ -151,6 +151,14 @@ describe('repository command execution lifecycle', () => {
       route: 'process_direct',
       reason: 'readonly_fast_path',
     });
+    expect(classifyRepositoryCommandRoute(['bash', '-lc', 'curl -fsS http://127.0.0.1:8765/ready >/dev/null'])).toEqual({
+      route: 'process_direct',
+      reason: 'readonly_fast_path',
+    });
+    expect(classifyRepositoryCommandRoute(['bash', '-lc', 'curl -fsS http://127.0.0.1:8765/ready > marker.txt'])).toEqual({
+      route: 'process_managed',
+      reason: 'local_workspace_mutation',
+    });
     expect(classifyRepositoryCommandRoute(['bash', '-lc', 'curl -fsS -X POST http://127.0.0.1:8765/ready'])).toEqual({
       route: 'process_managed',
       reason: 'local_workspace_mutation',
