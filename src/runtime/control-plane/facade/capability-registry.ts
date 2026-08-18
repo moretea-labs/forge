@@ -1,5 +1,5 @@
 import type { AssistantPluginManifest } from '../../plugins/types';
-import type { CapabilityDescriptor, CapabilityDomain, CapabilityGroupSummary, CapabilityOperationClass, CapabilityRisk, FacadeTool } from './types';
+import type { CapabilityDescriptor, CapabilityDomain, CapabilityExecutionSurface, CapabilityGroupSummary, CapabilityOperationClass, CapabilityRisk, FacadeTool } from './types';
 
 const CORE_CAPABILITIES: CapabilityDescriptor[] = [
   {
@@ -148,9 +148,9 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     group: 'browser',
     operationClass: 'execute',
     risk: 'unknown',
-    exposedVia: 'rh_work',
+    exposedVia: 'plugin_action_execute',
     schemaExposure: 'stable_static',
-    summary: 'Use typed HTTP(S) browser navigation, snapshot, and interaction actions when browser capability is configured.',
+    summary: 'Use typed HTTP(S) browser navigation, snapshot, and interaction actions through plugin_action_execute when browser capability is configured.',
   },
   {
     capabilityId: 'platform.ios',
@@ -158,9 +158,9 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     group: 'ios',
     operationClass: 'execute',
     risk: 'workspace_write',
-    exposedVia: 'rh_work',
+    exposedVia: 'plugin_action_execute',
     schemaExposure: 'stable_static',
-    summary: 'Use typed Xcode, simulator launch, screenshot, log, and smoke-test handlers when the local iOS toolchain is ready.',
+    summary: 'Use typed Xcode, simulator, screenshot, log, and smoke-review actions through plugin_action_execute when the local iOS toolchain is ready.',
   },
 ];
 
@@ -185,9 +185,9 @@ function domainFromPlugin(pluginId: string): CapabilityDomain {
   return 'plugin';
 }
 
-function exposedViaFromPluginAction(readOnly: boolean, risk: string): FacadeTool {
-  if (readOnly || risk === 'readonly') return 'rh_context';
-  return 'rh_work';
+function exposedViaFromPluginAction(_readOnly: boolean, _risk: string): CapabilityExecutionSurface {
+  // rh_context exposes schema/policy. plugin_action_execute is the sole action executor.
+  return 'plugin_action_execute';
 }
 
 export function pluginCapabilities(manifests: readonly AssistantPluginManifest[] = []): CapabilityDescriptor[] {
@@ -222,7 +222,8 @@ export function summarizeCapabilityGroups(manifests: readonly AssistantPluginMan
       group,
       capabilityCount: entries.length,
       domains: [...new Set(entries.map((entry) => entry.domain))].sort(),
-      facadeTools: [...new Set(entries.map((entry) => entry.exposedVia))].sort(),
+      executionSurfaces: [...new Set(entries.map((entry) => entry.exposedVia))].sort(),
+      facadeTools: [...new Set(entries.map((entry) => entry.exposedVia).filter((surface): surface is FacadeTool => surface.startsWith('rh_')))].sort(),
       operationClasses: [...new Set(entries.map((entry) => entry.operationClass))].sort(),
       risks: [...new Set(entries.map((entry) => entry.risk))].sort(),
       schemaExposures: [...new Set(entries.map((entry) => entry.schemaExposure))].sort(),

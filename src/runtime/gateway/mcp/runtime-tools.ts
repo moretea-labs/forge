@@ -117,17 +117,6 @@ import {
   prepareWorkspaceAuthLogin,
   previewExternalFilesystemGrant,
   readExternalFilesystemSnapshot,
-  iosXcodeStatus,
-  iosSimulatorsList,
-  iosProjectDiscover,
-  iosSchemesList,
-  iosSimulatorBoot,
-  iosAppBuild,
-  iosAppInstall,
-  iosAppLaunch,
-  iosSimulatorScreenshot,
-  iosSimulatorLogTail,
-  iosUiSmokeTest,
   buildReviewArtifactIndex,
   ensureReviewArtifactRoots,
   prepareBrowserReviewPacket,
@@ -1191,6 +1180,32 @@ function pluginRepository(
   return assistantPluginScope(pluginId, ctx.controllerHome) === 'controller'
     ? controllerPluginRepository(ctx.controllerHome)
     : selected(ctx, args);
+}
+
+function definedArguments(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
+}
+
+function legacyIosPluginAction(
+  ctx: MultiRepositoryMcpToolContext,
+  legacyTool: string,
+  args: Record<string, unknown>,
+  actionId: string,
+  actionArgs: Record<string, unknown>,
+): Promise<CallToolResult | undefined> {
+  const repository = selected(ctx, args);
+  const requestId = typeof args.request_id === 'string' && args.request_id.trim()
+    ? args.request_id.trim()
+    : `legacy-${legacyTool}-${Date.now()}`;
+  return callRuntimeTool(ctx, 'plugin_action_execute', {
+    repo_id: repository.repoId,
+    checkout_id: repository.activeCheckoutId,
+    plugin_id: 'ios',
+    action_id: actionId,
+    request_id: requestId,
+    arguments: definedArguments(actionArgs),
+    ...(args.confirm_authorization === true ? { confirm_authorization: true } : {}),
+  });
 }
 
 function expectedRevision(args: Record<string, unknown>, key = 'expected_revision'): number | undefined {
@@ -5430,93 +5445,64 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const repository = selected(ctx, args);
         return result(buildWorkflowWatchdogReport(ctx.controllerHome, repository, { staleMinutes: args.stale_minutes, includeProcesses: args.include_processes }) as unknown as Record<string, unknown>);
       }
-      case 'ios_xcode_status': {
-        return result({ ...iosXcodeStatus() });
-      }
-      case 'ios_simulators_list': {
-        return result({ ...iosSimulatorsList({
+      case 'ios_xcode_status':
+        return legacyIosPluginAction(ctx, name, args, 'xcode_status', {});
+      case 'ios_simulators_list':
+        return legacyIosPluginAction(ctx, name, args, 'list_simulators', {
           runtime: typeof args.runtime === 'string' ? args.runtime : undefined,
           name: typeof args.name === 'string' ? args.name : undefined,
-        }) });
-      }
-      case 'ios_project_discover': {
-        const repository = selected(ctx, args);
-        return result({ repoId: repository.repoId, ...iosProjectDiscover(repository) });
-      }
-      case 'ios_schemes_list': {
-        const repository = selected(ctx, args);
-        return result({ repoId: repository.repoId, ...iosSchemesList(repository, {
+        });
+      case 'ios_project_discover':
+        return legacyIosPluginAction(ctx, name, args, 'discover_project', {});
+      case 'ios_schemes_list':
+        return legacyIosPluginAction(ctx, name, args, 'list_schemes', {
           workspace: typeof args.workspace === 'string' ? args.workspace : undefined,
           project: typeof args.project === 'string' ? args.project : undefined,
-        }) });
-      }
-      case 'ios_simulator_boot': {
-        if (args.confirm_authorization !== true) throw new Error('IOS_AUTHORIZATION_REQUIRED: confirm_authorization must be true');
-        return result({ ...iosSimulatorBoot({
+        });
+      case 'ios_simulator_boot':
+        return legacyIosPluginAction(ctx, name, args, 'launch_simulator', {
           udid: String(args.udid ?? '').trim(),
-          openSimulator: args.open_simulator !== false,
-          timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-        }) });
-      }
-      case 'ios_app_build': {
-        const repository = selected(ctx, args);
-        return result({ repoId: repository.repoId, ...iosAppBuild(repository, {
+          open_simulator: args.open_simulator !== false,
+          timeout_ms: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+        });
+      case 'ios_app_build':
+        return legacyIosPluginAction(ctx, name, args, 'build', {
           scheme: String(args.scheme ?? '').trim(),
           udid: typeof args.udid === 'string' ? args.udid : undefined,
-          simulatorName: typeof args.simulator_name === 'string' ? args.simulator_name : undefined,
+          simulator_name: typeof args.simulator_name === 'string' ? args.simulator_name : undefined,
           workspace: typeof args.workspace === 'string' ? args.workspace : undefined,
           project: typeof args.project === 'string' ? args.project : undefined,
           configuration: typeof args.configuration === 'string' ? args.configuration : undefined,
-          timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-        }) });
-      }
-      case 'ios_app_install': {
-        if (args.confirm_authorization !== true) throw new Error('IOS_AUTHORIZATION_REQUIRED: confirm_authorization must be true');
-        const repository = selected(ctx, args);
-        return result({ repoId: repository.repoId, ...iosAppInstall(repository, {
-          udid: String(args.udid ?? '').trim(),
-          appPath: String(args.app_path ?? '').trim(),
-        }) });
-      }
-      case 'ios_app_launch': {
-        if (args.confirm_authorization !== true) throw new Error('IOS_AUTHORIZATION_REQUIRED: confirm_authorization must be true');
-        return result({ ...iosAppLaunch({
-          udid: String(args.udid ?? '').trim(),
-          bundleId: String(args.bundle_id ?? '').trim(),
-          arguments: Array.isArray(args.arguments) ? args.arguments.map(String) : undefined,
-        }) });
-      }
-      case 'ios_simulator_screenshot': {
-        const repository = selected(ctx, args);
-        return result({ repoId: repository.repoId, ...iosSimulatorScreenshot(repository, {
+          timeout_ms: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+        });
+      case 'ios_simulator_screenshot':
+        return legacyIosPluginAction(ctx, name, args, 'capture_screenshot', {
           udid: String(args.udid ?? '').trim(),
           label: typeof args.label === 'string' ? args.label : undefined,
-        }) });
-      }
-      case 'ios_simulator_log_tail': {
-        const repository = selected(ctx, args);
-        return result({ repoId: repository.repoId, ...iosSimulatorLogTail(repository, {
-          udid: String(args.udid ?? '').trim(),
-          process: typeof args.process === 'string' ? args.process : undefined,
-          last: typeof args.last === 'string' ? args.last : undefined,
-          maxBytes: typeof args.max_bytes === 'number' ? args.max_bytes : undefined,
-        }) });
-      }
-      case 'ios_ui_smoke_test': {
-        if (args.confirm_authorization !== true) throw new Error('IOS_AUTHORIZATION_REQUIRED: confirm_authorization must be true');
-        const repository = selected(ctx, args);
-        return result({ repoId: repository.repoId, ...iosUiSmokeTest(repository, {
-          udid: typeof args.udid === 'string' ? args.udid : undefined,
-          simulatorName: typeof args.simulator_name === 'string' ? args.simulator_name : undefined,
+        });
+      case 'ios_ui_smoke_test':
+        return legacyIosPluginAction(ctx, name, args, 'smoke_review', {
           scheme: typeof args.scheme === 'string' ? args.scheme : undefined,
-          bundleId: typeof args.bundle_id === 'string' ? args.bundle_id : undefined,
+          bundle_id: typeof args.bundle_id === 'string' ? args.bundle_id : undefined,
+          udid: typeof args.udid === 'string' ? args.udid : undefined,
+          simulator_name: typeof args.simulator_name === 'string' ? args.simulator_name : undefined,
           workspace: typeof args.workspace === 'string' ? args.workspace : undefined,
           project: typeof args.project === 'string' ? args.project : undefined,
           configuration: typeof args.configuration === 'string' ? args.configuration : undefined,
-          appPath: typeof args.app_path === 'string' ? args.app_path : undefined,
-          screenshotLabel: typeof args.screenshot_label === 'string' ? args.screenshot_label : undefined,
-        }) });
-      }
+          app_path: typeof args.app_path === 'string' ? args.app_path : undefined,
+          screenshot_label: typeof args.screenshot_label === 'string' ? args.screenshot_label : undefined,
+        });
+      case 'ios_app_install':
+      case 'ios_app_launch':
+      case 'ios_simulator_log_tail':
+        return result({
+          accepted: false,
+          mode: 'compatibility_migration',
+          path: 'plugin_action_execute',
+          rejectCode: 'LEGACY_IOS_ATOMIC_RETIRED',
+          message: `${name} no longer owns an independent iOS execution path. Use plugin_action_execute with plugin_id=ios and action_id=smoke_review for staged simulator validation.`,
+          migration: { tool: 'plugin_action_execute', plugin_id: 'ios', action_id: 'smoke_review' },
+        }, true);
       case 'runtime_cleanup_preview': {
         const repository = selected(ctx, args);
         const preview = previewRuntimeCleanup(repository.canonicalRoot, {

@@ -138,7 +138,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     destructive: { type: 'boolean' },
     remote_write: { type: 'boolean' },
     secret_access: { type: 'boolean' },
-    capability_id: { type: 'string' },
     approval_confirmed: { type: 'boolean' },
     dry_run: { type: 'boolean', description: 'Defaults to true for repair.' },
     check_ids: { type: 'array', items: { type: 'string' }, description: 'Requested checks. Before launching multiple checks concurrently, call rh_context with requested_check_ids to read resource-compatible checkScheduling waves; do not overlap checks from different waves.' },
@@ -502,7 +501,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     repo_id: repoId,
     plugin_id: { type: 'string' },
   }, ['plugin_id']),
-  definition('plugin_action_execute', 'Submit one typed repository or controller-scoped plugin action through the durable execution layer. For confirmation=authorization, normal host permission is authoritative and an exact-target Forge capability grant may be reused; do not set confirm_authorization merely because an ordinary authorization-class action was previously allowed. Strong-confirmation actions still require their explicit confirmation contract.', {
+  definition('plugin_action_execute', 'Execute one typed repository or controller-scoped plugin action through the plugin provider authority. rh_context exposes plugin schemas/policy; rh_work does not execute plugin capabilities. For confirmation=authorization, normal host permission is authoritative and an exact-target Forge capability grant may be reused; do not set confirm_authorization merely because an ordinary authorization-class action was previously allowed. Strong-confirmation actions still require their explicit confirmation contract.', {
     repo_id: repoId,
     plugin_id: { type: 'string' },
     action_id: { type: 'string' },

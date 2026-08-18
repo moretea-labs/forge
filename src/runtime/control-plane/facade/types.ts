@@ -8,6 +8,7 @@ export type ExecutionMode = (typeof EXECUTION_MODES)[number];
 
 export const FACADE_TOOLS = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'] as const;
 export type FacadeTool = (typeof FACADE_TOOLS)[number];
+export type CapabilityExecutionSurface = FacadeTool | 'plugin_action_execute';
 
 export const FACADE_STATUSES = ['ok', 'blocked', 'failed', 'approval_required', 'not_found'] as const;
 export type FacadeStatus = (typeof FACADE_STATUSES)[number];
@@ -642,7 +643,7 @@ export interface CapabilityDescriptor {
   group: CapabilityGroup;
   operationClass: CapabilityOperationClass;
   risk: CapabilityRisk;
-  exposedVia: FacadeTool;
+  exposedVia: CapabilityExecutionSurface;
   schemaExposure: CapabilitySchemaExposure;
   summary: string;
 }
@@ -651,6 +652,7 @@ export interface CapabilityGroupSummary {
   group: CapabilityGroup;
   capabilityCount: number;
   domains: CapabilityDomain[];
+  executionSurfaces: CapabilityExecutionSurface[];
   facadeTools: FacadeTool[];
   operationClasses: CapabilityOperationClass[];
   risks: CapabilityRisk[];

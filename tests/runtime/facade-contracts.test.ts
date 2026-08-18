@@ -257,13 +257,23 @@ describe('handoff and facade contracts', () => {
     expect(handoff.suggestedNextActions[0]?.tool).toBe('rh_context');
   });
 
+  test('routes typed plugin capabilities through the real plugin executor instead of rh_work', () => {
+    const capabilities = listCapabilityDescriptors([]);
+    expect(capabilities.find((entry) => entry.capabilityId === 'platform.ios')?.exposedVia).toBe('plugin_action_execute');
+    expect(capabilities.find((entry) => entry.capabilityId === 'plugin.browser')?.exposedVia).toBe('plugin_action_execute');
+    const iosGroup = summarizeCapabilityGroups([]).find((entry) => entry.group === 'ios');
+    expect(iosGroup?.executionSurfaces).toEqual(['plugin_action_execute']);
+    expect(iosGroup?.facadeTools).toEqual([]);
+  });
+
   test('registers parallel internal capabilities without expanding facade tools', () => {
     const capabilities = listCapabilityDescriptors([]);
     expect(capabilities.map((entry) => entry.capabilityId)).toContain('repository.direct_edit');
     expect(capabilities.map((entry) => entry.capabilityId)).toContain('controller.goal_workloop');
     expect(capabilities.map((entry) => entry.capabilityId)).toContain('controller.self_healing');
     expect(capabilities.map((entry) => entry.capabilityId)).toContain('controller.codex_delegation');
-    expect(new Set(capabilities.map((entry) => entry.exposedVia))).toEqual(new Set(['rh_context', 'rh_inbox', 'rh_status', 'rh_work']));
+    expect(new Set(capabilities.map((entry) => entry.exposedVia).filter((surface) => surface.startsWith('rh_')))).toEqual(new Set(['rh_context', 'rh_inbox', 'rh_status', 'rh_work']));
+    expect(capabilities.some((entry) => entry.exposedVia === 'plugin_action_execute')).toBe(true);
     expect(new Set(capabilities.map((entry) => entry.group))).toEqual(new Set([
       'browser',
       'controller',
@@ -277,7 +287,7 @@ describe('handoff and facade contracts', () => {
     expect(capabilities.every((entry) => entry.schemaExposure === 'stable_static')).toBe(true);
     const groups = summarizeCapabilityGroups([]);
     expect(groups.find((entry) => entry.group === 'git')).toMatchObject({ capabilityCount: 1, facadeTools: ['rh_work'] });
-    expect(groups.find((entry) => entry.group === 'ios')).toMatchObject({ capabilityCount: 1, facadeTools: ['rh_work'] });
+    expect(groups.find((entry) => entry.group === 'ios')).toMatchObject({ capabilityCount: 1, executionSurfaces: ['plugin_action_execute'], facadeTools: [] });
   });
 
   test('policy gate preserves bounded direct edit and blocks raw secret access', () => {

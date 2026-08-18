@@ -93,8 +93,17 @@ export function isGatewayIsolatedTool(name: string): boolean {
   return GATEWAY_ISOLATED_TOOLS.has(name);
 }
 
-/** Tools that already own their direct-read versus durable-write boundary. */
-const SELF_MANAGED_DURABLE_TOOLS = new Set(['plugin_action_execute']);
+/**
+ * Tools that own their execution boundary and must never fall through to
+ * retired generic ExecutionJob creation. Legacy iOS atomics are compatibility
+ * adapters over the typed iOS plugin authority.
+ */
+const SELF_MANAGED_DURABLE_TOOLS = new Set([
+  'plugin_action_execute',
+  'ios_xcode_status', 'ios_simulators_list', 'ios_project_discover', 'ios_schemes_list',
+  'ios_simulator_boot', 'ios_app_build', 'ios_app_install', 'ios_app_launch',
+  'ios_simulator_screenshot', 'ios_simulator_log_tail', 'ios_ui_smoke_test',
+]);
 
 export function isSelfManagedDurableTool(name: string): boolean {
   return SELF_MANAGED_DURABLE_TOOLS.has(name);
