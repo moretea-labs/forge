@@ -1,14 +1,14 @@
 # CodeGraph Context Provider
 
-Status: **Runtime Authority — impact-context convergence implemented**
-Source baseline: `a49465096c4e2532da37ab2f9d10dca2238217ac`  
+Status: **Runtime Authority — progressive context and freshness overlay implemented**
+Source baseline: `8540e85583498ef6a21215788b549db48e28fab7`
 Scope: Controller Context Plane only
 
 ## Problem
 
 Forge already installs and diagnoses `@colbymchenry/codegraph`, and the repository already has a local `.codegraph/codegraph.db`. However, ChatGPT/Controller planning still relies on token search plus bounded raw file reads. CodeGraph is not available as a policy-bounded Controller read capability, so `-plan` and `-debug` cannot use symbol, call-graph, dependency, or impact data directly.
 
-The missing capability is not another top-level MCP tool. It is a Context Plane provider that can add structural evidence to the existing `rh_context` / `controller_context_pack` path.
+The missing capability is not another top-level MCP tool. It is a Context Plane provider behind the canonical, repeatable `rh_context` path. The compatibility-only `controller_context_pack` public handler is retired.
 
 ## Constraints
 
@@ -49,7 +49,7 @@ This keeps structural planning read-only with respect to both the repository and
 
 ```text
 ChatGPT
-  -> rh_context / controller_context_pack
+  -> rh_context (repeatable progressive search)
   -> Context Pack builder
        -> bounded text search + raw repository reads
        -> CodeGraphReadProvider (only when requested)
@@ -95,7 +95,7 @@ Extend `ControllerContextPackOptions` with a structural context policy:
 structuralContext = off | auto | required
 ```
 
-Default is `off` to preserve current Direct performance and behavior.
+The low-level builder defaults to `off`; `rh_context.search` selects `auto` for implementation/review and `required` for explicit plan/debug. Repeated requests reuse session-scoped Git, lexical, range, and structural evidence while source identity is unchanged.
 
 Expected mode usage:
 
@@ -131,12 +131,13 @@ Candidate reasons should distinguish graph evidence, for example:
 
 Read-only planning never auto-syncs CodeGraph.
 
-If the provider reports changed files, stale extraction, or an index built by an older extraction engine:
+If the provider reports changed files, stale extraction, or an index built by an older extraction engine, Forge overlays baseline graph evidence with provider changed files plus the current dirty worktree:
 
 1. mark structural context stale/degraded;
 2. do not silently run `sync` or `index`;
-3. use direct repository reads for affected files;
-4. optionally recommend an explicit CodeGraph refresh action outside the read-only planning step.
+3. expose stale relationships only as `structuralHints`, never authoritative `primaryTargets` or `mustInspect`;
+4. use direct repository reads for affected files and reserve materialization for exact known paths;
+5. optionally recommend an explicit CodeGraph refresh action outside the read-only planning step.
 
 A later typed maintenance action may perform refresh. That action is separate from planning and may write only derived `.codegraph` state, never source files.
 
@@ -193,7 +194,7 @@ This avoids adding a new always-running process before benchmark evidence exists
 
 1. Add the read-only sidecar and host provider with availability/freshness reporting.
 2. Add unit tests proving no mutation operations are exposed by the provider protocol.
-3. Add `structural_context` to `controller_context_pack`; default remains `off`.
+3. Route `structural_context` through repeatable `rh_context.search`; the builder default remains `off`.
 4. Merge CodeGraph structural candidates with existing text-search candidates while retaining policy checks and raw snippets.
 5. Update `SKILL.md` so explicit `-plan` requests structural context and explicit `-debug` prefers it when available. Do not change automatic Direct routing.
 6. Add focused tests for unavailable provider fallback, stale-index warnings, graph candidate ranking, denied-path rechecks, and output bounds.
@@ -205,7 +206,7 @@ Phase 1 is accepted only when all of the following are true:
 
 - Node.js 20.10 remains the public Forge baseline.
 - Default Direct workflow and Route Policy are unchanged.
-- `controller_context_pack` with no structural option performs no CodeGraph process work.
+- The low-level Context Pack builder with no structural option performs no CodeGraph process work.
 - `structural_context=auto` degrades cleanly when CodeGraph is unavailable.
 - `structural_context=required` reports a clear blocker/degraded state instead of silently pretending structural evidence exists.
 - Sidecar opens the index read-only with sync disabled.

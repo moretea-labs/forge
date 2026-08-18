@@ -5,10 +5,12 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildControllerContextPack } from '../../src/cli/controller/context-pack';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
+import { clearAllSessionCachesForTest } from '../../src/cli/repository/session-cache';
 import { filterGitIgnoredCodeGraphChanges, queryCodeGraphReadProvider, resolveCodeGraphBundledRuntime, type CodeGraphReadProviderResponse } from '../../src/runtime/context/codegraph-read-provider';
 
 const roots: string[] = [];
 afterEach(() => {
+  clearAllSessionCachesForTest();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -160,6 +162,80 @@ describe('CodeGraph read provider', () => {
     expect(pack.search.scannedFiles).toBe(2); // one known-path expansion + one targeted lexical read
   });
 
+  test('reserves file and snippet budget for every exact known file', () => {
+    const root = contextRepo();
+    writeFileSync(join(root, 'src/alpha.ts'), 'export const alpha = true;\n');
+    writeFileSync(join(root, 'src/beta.ts'), 'export const beta = true;\n');
+    const exactPaths = ['src/service.ts', 'src/alpha.ts', 'src/beta.ts'];
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      knownPaths: exactPaths,
+      structuralContext: 'off',
+      maxFiles: 1,
+      maxSnippets: 1,
+    });
+    expect(pack.files.map((file) => file.path).sort()).toEqual([...exactPaths].sort());
+    expect(pack.coverage.exactKnownPaths).toEqual({
+      requested: exactPaths,
+      materialized: expect.arrayContaining(exactPaths),
+      missing: [],
+    });
+    expect(pack.limits).toMatchObject({
+      requestedMaxFiles: 1,
+      requestedMaxSnippets: 1,
+      maxFiles: 3,
+      maxSnippets: 3,
+      reservedExactKnownFiles: 3,
+    });
+  });
+
+  test('reuses lexical and source materialization across progressive session calls', () => {
+    const root = contextRepo();
+    const session = { sessionId: 'context-session-a', repoId: 'repo-a', checkoutId: 'checkout-a' };
+    const options = {
+      searchTerms: ['runService'],
+      includeGlobs: ['src/**'],
+      structuralContext: 'off' as const,
+      session,
+    };
+    const first = buildControllerContextPack(root, getMcpPolicy('controller'), options);
+    const second = buildControllerContextPack(root, getMcpPolicy('controller'), options);
+    expect(first.cache).toMatchObject({ sessionBound: true, lexicalHit: false, rangeHits: 0, reused: false });
+    expect(second.cache).toMatchObject({ sessionBound: true, lexicalHit: true, rangeHits: 1, rangeMisses: 0, reused: true });
+    expect(second.search.cacheHit).toBe(true);
+    expect(second.coverage.inspectedFiles).toContain('src/service.ts');
+  });
+
+  test('materializes a complete matched function instead of a fixed line window', () => {
+    const root = contextRepo();
+    const prefix = Array.from({ length: 250 }, (_, index) => `export const prefix${index} = ${index};`);
+    const body = Array.from({ length: 80 }, (_, index) => index === 40
+      ? '  const semanticNeedle = "inside-long-function";'
+      : `  const local${index} = ${index};`);
+    writeFileSync(join(root, 'src/large-service.ts'), [
+      ...prefix,
+      'export function completeLongFunction() {',
+      ...body,
+      '  return semanticNeedle;',
+      '}',
+      '',
+    ].join('\n'));
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      searchTerms: ['semanticNeedle'],
+      knownPaths: ['src/large-service.ts'],
+      structuralContext: 'off',
+      maxCharsPerSnippet: 50_000,
+    });
+    const snippet = pack.files[0]?.snippets[0];
+    expect(snippet).toMatchObject({
+      materialization: 'symbol',
+      symbol: { kind: 'function', name: 'completeLongFunction' },
+    });
+    expect(snippet?.content).toContain('export function completeLongFunction()');
+    expect(snippet?.content).toContain('return semanticNeedle;');
+    expect((snippet?.endLine ?? 0) - (snippet?.startLine ?? 0)).toBeGreaterThan(80);
+    expect(pack.coverage.materialization.symbols).toBe(1);
+  });
+
   test('keeps broad lexical discovery when an exact known file is paired with impact analysis', () => {
     const root = contextRepo();
     writeFileSync(join(root, 'src/reminder.ts'), 'export const scheduleReminder = true;\n');
@@ -219,9 +295,50 @@ describe('CodeGraph read provider', () => {
 
   test('builds bounded impact context from ready structural entry points and file dependents', () => { const root = contextRepo(); writeFileSync(join(root, 'src/helper.ts'), 'export const helper = true;\n'); mkdirSync(join(root, 'tests'), { recursive: true }); writeFileSync(join(root, 'tests/service.test.ts'), "import { runService } from '../src/service';\nvoid runService();\n"); const pack = buildControllerContextPack(root, getMcpPolicy('controller'), { description: 'How does runService work?', structuralContext: 'auto', maxFiles: 6 }, { queryCodeGraph: (_repoRoot, request) => request.operation === 'file_dependencies' ? structuralResponse({ operation: 'file_dependencies', result: { filePath: 'src/service.ts', dependencies: ['src/helper.ts'], dependents: ['tests/service.test.ts'] } }) : structuralResponse() }); expect(pack.structuralContext).toMatchObject({ requestedMode: 'auto', status: 'ready', requiredSatisfied: true }); expect(pack.impactContext).toMatchObject({ status: 'ready', confidence: 'high', primaryTargets: ['src/service.ts'], relevantTests: ['tests/service.test.ts'], freshness: { structuralStatus: 'ready', changedFileCount: 0 } }); expect(pack.impactContext.mustInspect).toEqual(expect.arrayContaining(['src/service.ts', 'src/helper.ts', 'tests/service.test.ts'])); expect(pack.impactContext.relationSources).toEqual(expect.arrayContaining(['codegraph', 'lexical'])); expect(pack.files.find((file) => file.path === 'src/helper.ts')?.reasons).toContain('codegraph:dependency:src/service.ts'); expect(pack.files.find((file) => file.path === 'tests/service.test.ts')?.reasons).toContain('codegraph:dependent:src/service.ts'); const service = pack.files.find((file) => file.path === 'src/service.ts'); expect(service?.reasons.some((reason) => reason.startsWith('codegraph:'))).toBe(true); expect(service?.snippets[0]?.content).toContain('return 42'); });
 
+  test('reuses structural queries in the same progressive session', () => {
+    const root = contextRepo();
+    const session = { sessionId: 'context-session-graph', repoId: 'repo-a', checkoutId: 'checkout-a' };
+    let calls = 0;
+    const queryCodeGraph = (_repoRoot: string, request: Parameters<typeof queryCodeGraphReadProvider>[1]) => {
+      calls += 1;
+      return request.operation === 'file_dependencies'
+        ? structuralResponse({ operation: 'file_dependencies', result: { filePath: 'src/service.ts', dependencies: [], dependents: [] } })
+        : structuralResponse();
+    };
+    const options = { description: 'runService', structuralContext: 'auto' as const, session };
+    const first = buildControllerContextPack(root, getMcpPolicy('controller'), options, { queryCodeGraph });
+    const firstCalls = calls;
+    const second = buildControllerContextPack(root, getMcpPolicy('controller'), options, { queryCodeGraph });
+    expect(firstCalls).toBeGreaterThan(0);
+    expect(calls).toBe(firstCalls);
+    expect(first.cache.structuralHits).toBe(0);
+    expect(second.cache.structuralHits).toBe(firstCalls);
+    expect(second.cache.reused).toBe(true);
+  });
+
+  test('filters unrelated mobile and scratch graph entry points from runtime impact authority', () => {
+    const root = contextRepo();
+    mkdirSync(join(root, 'src/runtime'), { recursive: true });
+    mkdirSync(join(root, 'scratch/ios'), { recursive: true });
+    writeFileSync(join(root, 'src/runtime/router.ts'), 'export function routeRuntime() { return true; }\n');
+    writeFileSync(join(root, 'scratch/ios/device.ts'), 'export function routeDevice() { return true; }\n');
+    const runtimeNode = { id: 'runtime', kind: 'function', name: 'routeRuntime', qualifiedName: 'routeRuntime', filePath: 'src/runtime/router.ts', language: 'typescript', startLine: 1, endLine: 1 };
+    const mobileNode = { id: 'mobile', kind: 'function', name: 'routeDevice', qualifiedName: 'routeDevice', filePath: 'scratch/ios/device.ts', language: 'typescript', startLine: 1, endLine: 1 };
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      description: 'runtime command routing',
+      structuralContext: 'auto',
+    }, {
+      queryCodeGraph: (_repoRoot, request) => request.operation === 'file_dependencies'
+        ? structuralResponse({ operation: 'file_dependencies', result: { filePath: request.filePath, dependencies: [], dependents: [] } })
+        : structuralResponse({ result: { nodes: [mobileNode, runtimeNode], entryPoints: [mobileNode, runtimeNode], relatedFiles: [mobileNode.filePath, runtimeNode.filePath], truncated: false } }),
+    });
+    expect(pack.impactContext.primaryTargets).toEqual(['src/runtime/router.ts']);
+    expect(pack.structuralContext.entryPoints.map((entry) => entry.filePath)).not.toContain('scratch/ios/device.ts');
+  });
+
   test('keeps bounded text fallback visible when required structural context is unavailable', () => { const root = contextRepo(); const unavailable = structuralResponse({ ok: false, status: 'unavailable', metadata: undefined, result: undefined, error: { code: 'CODEGRAPH_PLATFORM_BUNDLE_MISSING', message: 'not installed' } }); const pack = buildControllerContextPack(root, getMcpPolicy('controller'), { description: 'runService', searchTerms: ['runService'], structuralContext: 'required' }, { queryCodeGraph: () => unavailable }); expect(pack.structuralContext).toMatchObject({ requestedMode: 'required', status: 'unavailable', requiredSatisfied: false }); expect(pack.impactContext).toMatchObject({ status: 'degraded', confidence: 'medium' }); expect(pack.impactContext.coverageGaps).toContain('structural_provider_unavailable'); expect(pack.next[0]).toContain('Structural context was required'); expect(pack.files.some((file) => file.path === 'src/service.ts')).toBe(true); });
 
-  test('reuses a repository CodeGraph as explicit baseline while current worktree changes stay raw/lexical', () => { const root = contextRepo(); const baselineRoot = mkdtempSync(join(tmpdir(), 'forge-codegraph-baseline-')); roots.push(baselineRoot); execFileSync('git', ['clone', '-q', root, baselineRoot]); writeFileSync(join(root, 'src/service.ts'), 'export function runService() { return 43; }\n'); const queriedRoots: string[] = []; const pack = buildControllerContextPack(root, getMcpPolicy('controller'), { description: 'runService', structuralContext: 'required', structuralIndexRoot: baselineRoot }, { queryCodeGraph: (queryRoot, request) => { queriedRoots.push(queryRoot); return request.operation === 'file_dependencies' ? structuralResponse({ operation: 'file_dependencies', result: { filePath: 'src/service.ts', dependencies: [], dependents: [] } }) : structuralResponse(); } }); expect(new Set(queriedRoots)).toEqual(new Set([baselineRoot])); expect(pack.structuralContext).toMatchObject({ indexSource: 'repository_baseline', status: 'stale', requiredSatisfied: false, baselineRevisionMatches: true }); expect(pack.structuralContext.overlayChangedFiles).toContain('src/service.ts'); expect(pack.impactContext.coverageGaps).toContain('structural_repository_baseline_overlay'); expect(pack.impactContext.freshness).toMatchObject({ indexSource: 'repository_baseline', overlayChangedFileCount: 1, baselineRevisionMatches: true }); expect(pack.files.find((file) => file.path === 'src/service.ts')?.reasons).toContain('worktree:changed-file'); expect(pack.files.find((file) => file.path === 'src/service.ts')?.snippets[0]?.content).toContain('return 43'); });
+  test('reuses a repository CodeGraph as explicit baseline while current worktree changes stay raw/lexical', () => { const root = contextRepo(); const baselineRoot = mkdtempSync(join(tmpdir(), 'forge-codegraph-baseline-')); roots.push(baselineRoot); execFileSync('git', ['clone', '-q', root, baselineRoot]); writeFileSync(join(root, 'src/service.ts'), 'export function runService() { return 43; }\n'); const queriedRoots: string[] = []; const pack = buildControllerContextPack(root, getMcpPolicy('controller'), { description: 'runService', structuralContext: 'required', structuralIndexRoot: baselineRoot }, { queryCodeGraph: (queryRoot, request) => { queriedRoots.push(queryRoot); return request.operation === 'file_dependencies' ? structuralResponse({ operation: 'file_dependencies', result: { filePath: 'src/service.ts', dependencies: [], dependents: [] } }) : structuralResponse(); } }); expect(new Set(queriedRoots)).toEqual(new Set([baselineRoot])); expect(pack.structuralContext).toMatchObject({ indexSource: 'repository_baseline', status: 'stale', requiredSatisfied: false, baselineRevisionMatches: true }); expect(pack.structuralContext.overlayChangedFiles).toContain('src/service.ts'); expect(pack.impactContext).toMatchObject({ primaryTargets: [], structuralHints: ['src/service.ts'], mustInspect: [] }); expect(pack.impactContext.coverageGaps).toContain('structural_repository_baseline_overlay'); expect(pack.impactContext.freshness).toMatchObject({ indexSource: 'repository_baseline', overlayChangedFileCount: 1, baselineRevisionMatches: true }); expect(pack.files.find((file) => file.path === 'src/service.ts')?.reasons).toContain('worktree:changed-file'); expect(pack.files.find((file) => file.path === 'src/service.ts')?.snippets[0]?.content).toContain('return 43'); });
 
   test('rechecks graph-selected paths through Forge policy before returning source', () => {
     const root = contextRepo();

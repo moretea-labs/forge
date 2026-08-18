@@ -93,8 +93,33 @@ function sampleGitIdentity(repoRoot: string): Omit<CachedGitIdentity, 'sampledAt
       }
     }
     const status = statusLines.join('\n');
+    let dirtyBytes = 0;
+    const dirtyContentIdentity = statusLines.slice(0, 500).map((line) => {
+      const path = line.startsWith('? ') || line.startsWith('! ')
+        ? line.slice(2)
+        : line.startsWith('1 ')
+          ? line.split(' ').slice(8).join(' ')
+          : line.startsWith('2 ')
+            ? line.split(' ').slice(9).join(' ').split('\t')[0]
+            : line.startsWith('u ')
+              ? line.split(' ').slice(10).join(' ')
+              : '';
+      if (!path) return line;
+      try {
+        const absolute = join(repoRoot, path);
+        const stat = lstatSync(absolute);
+        if (!stat.isFile()) return `${path}:${stat.mode}:${stat.size}:${stat.mtimeMs}`;
+        if (stat.size <= 256 * 1024 && dirtyBytes + stat.size <= 4 * 1024 * 1024) {
+          dirtyBytes += stat.size;
+          return `${path}:${createHash('sha256').update(readFileSync(absolute)).digest('hex')}`;
+        }
+        return `${path}:${stat.size}:${stat.mtimeMs}`;
+      } catch {
+        return `${path}:missing`;
+      }
+    }).join('\n');
     const workingTreeFingerprint = createHash('sha256')
-      .update(`${head ?? ''}\n${branch ?? ''}\n${status}`)
+      .update(`${head ?? ''}\n${branch ?? ''}\n${status}\n${dirtyContentIdentity}`)
       .digest('hex')
       .slice(0, 24);
     return { head, branch, workingTreeFingerprint: head || status ? workingTreeFingerprint : undefined };
@@ -159,12 +184,24 @@ export interface RepositoryReadSession {
 
 function bindSessionCache(repoRoot: string, session?: RepositoryReadSession): RepositorySessionCache | null {
   if (!session?.sessionId || !session.repoId || !session.checkoutId) return null;
-  const identity = collectSessionIdentity({
-    repoRoot,
+  const sampled = cachedGitIdentity(repoRoot);
+  const identity: SessionIdentity = {
     repoId: session.repoId,
     checkoutId: session.checkoutId,
-  });
+    branch: sampled.branch,
+    head: sampled.head,
+    workingTreeFingerprint: sampled.workingTreeFingerprint
+      ?? createHash('sha256').update(`${sampled.head ?? ''}\n${sampled.branch ?? ''}`).digest('hex').slice(0, 24),
+  };
   return getOrCreateSessionCache(session.sessionId, repoRoot, identity);
+}
+
+/** Shared non-durable cache binding for progressive Context Plane providers. */
+export function getRepositoryReadSessionCache(
+  repoRoot: string,
+  session?: RepositoryReadSession,
+): RepositorySessionCache | null {
+  return bindSessionCache(repoRoot, session);
 }
 
 export function resolveSessionIdentity(
@@ -272,6 +309,8 @@ export interface SearchRepositoryManyOptions {
   maxFiles?: number;
   caseSensitive?: boolean;
   cacheKey?: string;
+  /** MCP/controller session identity used for progressive follow-up reuse. */
+  session?: RepositoryReadSession;
 }
 
 export interface SearchRepositoryManyResult {
@@ -333,6 +372,23 @@ export function searchRepositoryMany(
   const directCandidates = directFiles
     ? Array.from(new Set(directFiles)).filter((path) => !isExcluded(path, excludes))
     : undefined;
+  const includeKey = JSON.stringify({
+    files: directCandidates,
+    includes,
+    excludes,
+    maxResultsPerQuery,
+    maxFiles,
+    caseSensitive: opts.caseSensitive === true,
+    cacheKey: opts.cacheKey,
+  });
+  const sessionCache = bindSessionCache(repoRoot, opts.session);
+  const batchQueryKey = queries.join('\u0000');
+  if (sessionCache) {
+    const cached = sessionCache.getSearch(batchQueryKey, includeKey);
+    if (cached?.result && typeof cached.result === 'object') {
+      return { ...(cached.result as SearchRepositoryManyResult), cacheHit: true };
+    }
+  }
   const inventory = directCandidates && directCandidates.length > 0
     ? {
         files: directCandidates.slice(0, maxFiles),
@@ -396,7 +452,7 @@ export function searchRepositoryMany(
     : inventory.candidateCount > inventory.files.length
       ? 'max_files' as const
       : undefined;
-  return {
+  const payload: SearchRepositoryManyResult = {
     queries,
     results,
     scannedFiles,
@@ -407,6 +463,15 @@ export function searchRepositoryMany(
     truncationReason,
     cacheHit: inventory.cacheHit,
   };
+  if (sessionCache) {
+    sessionCache.putSearch({
+      query: batchQueryKey,
+      includeKey,
+      result: payload,
+      scannedFiles,
+    });
+  }
+  return payload;
 }
 
 export function searchRepository(repoRoot: string, policy: McpPolicy, opts: SearchRepositoryOptions & {

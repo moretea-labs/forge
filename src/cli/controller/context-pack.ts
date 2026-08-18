@@ -1,430 +1,58 @@
-import { existsSync, lstatSync, readdirSync, statSync } from "fs";
-import { gitSnapshot, readRepositoryRange, searchRepositoryMany } from "../repository/inspector";
-import { resolveMcpPath, globMatches } from "../mcp/paths";
+import {
+  gitSnapshot,
+  getRepositoryReadSessionCache,
+  searchRepositoryMany,
+} from "../repository/inspector";
+import { globMatches } from "../mcp/paths";
 import type { McpPolicy } from "../mcp/types";
-import { redactMcpText } from "../mcp/redaction";
+import { materializeSource } from "./context/source-materializer";
 import { projectBoard } from "./issue-store";
-import { buildControllerTaskLedgerProjection, type TaskLedgerTaskProjection } from "./task-ledger";
+import { buildControllerTaskLedgerProjection } from "./task-ledger";
 import { legacyIssueAuthorityRetired } from "./legacy-issue-cutover";
 import {
   queryCodeGraphReadProvider,
-  type CodeGraphIndexMetadata,
+  queryCodeGraphReadProviderAsync,
   type CodeGraphNodeSummary,
   type CodeGraphReadProviderResponse,
 } from "../../runtime/context/codegraph-read-provider";
+import {
+  CONTEXT_PACK_SCHEMA_VERSION,
+  CONTROLLER_CONTEXT_IMPACT_DOMAINS,
+  type ControllerContextImpactDomain,
+  type ControllerContextPackDependencies,
+  type ControllerContextPackFile,
+  type ControllerContextPackOptions,
+  type ControllerContextPackProjection,
+  type ControllerContextPackSnippet,
+} from './context/types';
+import {
+  DEFAULT_MAX_CHARS_PER_SNIPPET,
+  DEFAULT_MAX_FILES,
+  DEFAULT_MAX_SNIPPETS,
+  DEFAULT_SEARCH_EXCLUDE_GLOBS,
+  IMPACT_DOMAIN_TERMS,
+  MAX_TOTAL_SEARCHED_FILES,
+  clamp,
+  cleanList,
+  gitStatusChangedPaths,
+  pathNoisePenalty,
+  textTokens,
+} from './context/query-planning';
+import { issueTaskFocus, ledgerTask } from './context/focus';
+import { addReason, coveredByGlob, expandKnownPath, looksLikeGlob, readableFile } from './context/known-paths';
+import { structuralResult } from './context/structural';
 
-const CONTEXT_PACK_SCHEMA_VERSION = 6;
-const DEFAULT_MAX_FILES = 8;
-const DEFAULT_MAX_SNIPPETS = 20;
-const DEFAULT_SNIPPET_CONTEXT_BEFORE = 12;
-const DEFAULT_SNIPPET_CONTEXT_AFTER = 28;
-const DEFAULT_MAX_CHARS_PER_SNIPPET = 8000;
-const DEFAULT_SEARCH_EXCLUDE_GLOBS = [
-  ".git/**",
-  "_ops/**",
-  ".forge/**",
-  ".ai/harness/**",
-  "node_modules/**",
-  "dist/**",
-  "coverage/**",
-  "**/*.bak",
-] as const;
-const MAX_TOTAL_SEARCHED_FILES = 800;
-
-const STOPWORDS = new Set([
-  "about", "after", "again", "also", "and", "around", "because", "before", "between", "change", "code", "config",
-  "context", "current", "does", "file", "from", "have", "into", "issue", "make", "need", "needs", "only", "path",
-  "repo", "repository", "runtime", "should", "task", "that", "this", "through", "todo", "update", "when", "with",
-]);
-
-export type StructuralContextMode = "off" | "auto" | "required";
-export type ControllerContextRetrievalMode = "implementation" | "plan" | "debug" | "review";
-export const CONTROLLER_CONTEXT_IMPACT_DOMAINS = [
-  "persistence", "scheduler", "notification", "timeline", "events", "cache", "api", "concurrency",
-] as const;
-export type ControllerContextImpactDomain = (typeof CONTROLLER_CONTEXT_IMPACT_DOMAINS)[number];
-
-const IMPACT_DOMAIN_TERMS: Record<ControllerContextImpactDomain, readonly string[]> = {
-  persistence: ["persist", "database", "repository"],
-  scheduler: ["scheduler", "schedule", "reminder"],
-  notification: ["notification", "notify", "push"],
-  timeline: ["timeline", "history", "activity"],
-  events: ["event", "publish", "subscribe"],
-  cache: ["cache", "invalidate", "memo"],
-  api: ["api", "dto", "controller"],
-  concurrency: ["transaction", "lock", "atomic"],
-};
-
-export interface ControllerContextPackOptions {
-  description?: string;
-  issueId?: string;
-  taskId?: string;
-  knownPaths?: string[];
-  includeGlobs?: string[];
-  excludeGlobs?: string[];
-  searchTerms?: string[];
-  maxFiles?: number;
-  maxSnippets?: number;
-  maxCharsPerSnippet?: number;
-  structuralContext?: StructuralContextMode;
-  /** Optional repository-level CodeGraph root used as structural baseline when the selected checkout has no local index. */
-  structuralIndexRoot?: string;
-  retrievalMode?: ControllerContextRetrievalMode;
-  /** GPT-selected cross-cutting evidence dimensions. Forge expands mechanically and never treats them as semantic completeness proof. */
-  impactDomains?: ControllerContextImpactDomain[];
-}
-
-export interface ControllerContextPackDependencies {
-  queryCodeGraph?: typeof queryCodeGraphReadProvider;
-}
-
-export interface ControllerContextPackSnippet {
-  path: string;
-  startLine: number;
-  endLine: number;
-  totalLines: number;
-  sha256: string;
-  content: string;
-  truncated: boolean;
-  redactions: Array<{ type: string; count: number }>;
-  reason: string;
-}
-
-export interface ControllerContextPackFile {
-  path: string;
-  reasons: string[];
-  hitLines: number[];
-  snippetCount: number;
-  snippets: ControllerContextPackSnippet[];
-}
-
-export interface ControllerContextPackProjection {
-  schemaVersion: typeof CONTEXT_PACK_SCHEMA_VERSION;
-  generatedAt: string;
-  source: "controller-context-pack";
-  focus: {
-    issueId?: string;
-    issueTitle?: string;
-    taskId?: string;
-    taskTitle?: string;
-    taskStatus?: string;
-  };
-  goal: string;
-  git: {
-    branch: string | null;
-    status: string;
-    diffStat: string;
-    dirty: boolean;
-  };
-  search: {
-    terms: string[];
-    impactDomains: ControllerContextImpactDomain[];
-    impactCoverage: Array<{
-      domain: ControllerContextImpactDomain;
-      queries: string[];
-      matchedFiles: string[];
-      selectedFiles: string[];
-      omittedFileCount: number;
-      status: "selected" | "matched_not_selected" | "no_evidence";
-    }>;
-    includeGlobs: string[];
-    excludeGlobs: string[];
-    scannedFiles: number;
-    policyDeniedFiles: number;
-    skippedLargeFiles: number;
-    skippedBinaryFiles: number;
-    truncated: boolean;
-  };
-  structuralContext: {
-    provider: "codegraph";
-    requestedMode: StructuralContextMode;
-    status: "disabled" | "ready" | "stale" | "unavailable" | "degraded";
-    requiredSatisfied: boolean;
-    indexSource: "current_checkout" | "repository_baseline";
-    overlayChangedFiles: string[];
-    baselineRevisionMatches: boolean;
-    query?: string;
-    entryPoints: Array<Pick<CodeGraphNodeSummary, "id" | "kind" | "name" | "filePath" | "startLine" | "endLine">>;
-    relatedFiles: string[];
-    metadata?: Pick<CodeGraphIndexMetadata, "initialized" | "lastIndexedAt" | "buildVersion" | "extractionVersion" | "staleEngine" | "changedFiles" | "ignoredChangedFileCount">;
-    fallbackReason?: string;
-    timingsMs?: CodeGraphReadProviderResponse["timingsMs"];
-    truncated: boolean;
-  };
-  impactContext: {
-    status: "not_requested" | "ready" | "degraded";
-    confidence: "low" | "medium" | "high";
-    primaryTargets: string[];
-    mustInspect: string[];
-    likelyAffected: string[];
-    relevantTests: string[];
-    relevantChecks: string[];
-    architectureContracts: string[];
-    coverageGaps: string[];
-    relationSources: Array<"codegraph" | "lexical" | "forge_checks">;
-    freshness: {
-      structuralStatus: "disabled" | "ready" | "stale" | "unavailable" | "degraded";
-      lastIndexedAt?: number | null;
-      changedFileCount: number;
-      indexSource: "current_checkout" | "repository_baseline";
-      overlayChangedFileCount: number;
-      baselineRevisionMatches: boolean;
-    };
-  };
-  files: ControllerContextPackFile[];
-  deniedPaths: Array<{ path: string; reason: string }>;
-  omitted: Array<{ path: string; reason: string }>;
-  limits: {
-    maxFiles: number;
-    maxSnippets: number;
-    maxCharsPerSnippet: number;
-  };
-  validation: {
-    policy: "task-targeted" | "minimal";
-    checks: string[];
-  };
-  contextContract: {
-    strategy: string;
-    retrievalMode: ControllerContextRetrievalMode;
-    semanticSufficiencyAuthority: "chatgpt";
-    rawCodeRequiredForImplementation: boolean;
-    expansionSignals: string[];
-    notes: string[];
-  };
-  next: string[];
-}
-
-function cleanList(value: string[] | undefined): string[] {
-  return Array.from(new Set((value ?? []).map((entry) => entry.trim()).filter(Boolean)));
-}
-
-function clamp(value: number | undefined, fallback: number, min: number, max: number): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
-  return Math.min(Math.max(Math.trunc(value), min), max);
-}
-
-function textTokens(value: string): string[] {
-  const split = value
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .split(/[^\p{L}\p{N}_./:-]+/u)
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-  const tokens = split
-    .map((entry) => entry.replace(/^['"`]+|['"`]+$/g, ""))
-    .filter((entry) => entry.length >= 3)
-    .filter((entry) => !STOPWORDS.has(entry.toLowerCase()))
-    .filter((entry) => !/^\d+$/.test(entry));
-  return Array.from(new Set(tokens)).slice(0, 12);
-}
-
-interface ContextPackIssueFocus {
-  id?: string;
-  title?: string;
-  summary?: string;
-  tasks: ContextPackTaskFocus[];
-}
-
-interface ContextPackTaskFocus {
-  id?: string;
-  title?: string;
-  objective?: string;
-  status?: string;
-}
-
-function unknownRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function unknownString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function unknownRecordArray(value: unknown): Array<Record<string, unknown>> {
-  if (!Array.isArray(value)) return [];
-  return value.map(unknownRecord).filter((entry) => Object.keys(entry).length > 0);
-}
-
-function contextPackTaskFocus(value: unknown): ContextPackTaskFocus {
-  const record = unknownRecord(value);
-  return {
-    id: unknownString(record.id),
-    title: unknownString(record.title),
-    objective: unknownString(record.objective),
-    status: unknownString(record.status),
-  };
-}
-
-function contextPackIssueFocus(value: unknown): ContextPackIssueFocus {
-  const record = unknownRecord(value);
-  return {
-    id: unknownString(record.id),
-    title: unknownString(record.title),
-    summary: unknownString(record.summary),
-    tasks: unknownRecordArray(record.tasks).map(contextPackTaskFocus),
-  };
-}
-
-function issueTaskFocus(board: ReturnType<typeof projectBoard>, issueId?: string, taskId?: string): { issue?: ContextPackIssueFocus; task?: ContextPackTaskFocus } {
-  const issues = board.issues.map(contextPackIssueFocus);
-  const resolvedIssue = issueId
-    ? issues.find((issue) => issue.id === issueId)
-    : board.currentIssueId
-      ? issues.find((issue) => issue.id === board.currentIssueId)
-      : undefined;
-  const resolvedTask = resolvedIssue?.tasks.find((task) => task.id === taskId) ?? resolvedIssue?.tasks[0];
-  return { issue: resolvedIssue, task: resolvedTask };
-}
-
-function ledgerTask(ledger: ReturnType<typeof buildControllerTaskLedgerProjection>, issueId?: string, taskId?: string): TaskLedgerTaskProjection | undefined {
-  const tasks = ledger.issues.flatMap((issue) => issue.tasks);
-  const findTask = (candidateIssueId?: string, candidateTaskId?: string) => tasks
-    .find((task) => (!candidateIssueId || task.issueId === candidateIssueId) && (!candidateTaskId || task.taskId === candidateTaskId));
-
-  if (!issueId && !taskId) {
-    const readyTask = ledger.readyTasks[0];
-    return ledger.attention[0]
-      ?? findTask(readyTask?.issueId, readyTask?.taskId)
-      ?? tasks.find((task) => task.dispatchable || task.queueable);
-  }
-
-  return findTask(issueId, taskId);
-}
-
-function looksLikeGlob(path: string): boolean {
-  return /[*?{[]/.test(path);
-}
-
-function coveredByGlob(path: string, globs: string[]): boolean {
-  return globs.length === 0 || globs.some((glob) => globMatches(glob, path));
-}
-
-function gitStatusChangedPaths(status: string): string[] {
-  const paths: string[] = [];
-  for (const line of status.split(/\r?\n/)) {
-    if (!line.trim() || line.startsWith("##") || line.length < 4) continue;
-    let path = line.slice(3).trim();
-    if (path.includes(" -> ")) path = path.slice(path.lastIndexOf(" -> ") + 4).trim();
-    if (path.startsWith('"') && path.endsWith('"')) path = path.slice(1, -1);
-    if (path && !paths.includes(path)) paths.push(path);
-  }
-  return paths;
-}
-
-function addReason(map: Map<string, { reasons: Set<string>; lines: Set<number> }>, path: string, reason: string, line?: number): void {
-  const entry = map.get(path) ?? { reasons: new Set<string>(), lines: new Set<number>() };
-  entry.reasons.add(reason);
-  if (typeof line === "number" && Number.isFinite(line)) entry.lines.add(Math.max(1, Math.trunc(line)));
-  map.set(path, entry);
-}
-
-function readableFile(repoRoot: string, policy: McpPolicy, path: string): { ok: true; path: string } | { ok: false; path: string; reason: string } {
-  const decision = resolveMcpPath(repoRoot, path, policy, "read");
-  if (!decision.ok || !decision.relativePath || !decision.absolutePath) {
-    return { ok: false, path: decision.relativePath ?? path, reason: decision.reason ?? "path denied" };
-  }
-  if (!existsSync(decision.absolutePath)) return { ok: false, path: decision.relativePath, reason: "path does not exist" };
-  if (!statSync(decision.absolutePath).isFile()) return { ok: false, path: decision.relativePath, reason: "path is not a file" };
-  return { ok: true, path: decision.relativePath };
-}
-
-interface ExpandedKnownPath {
-  files: string[];
-  denied: Array<{ path: string; reason: string }>;
-  directory?: string;
-  truncated: boolean;
-}
-
-/**
- * Expand an explicit file or directory without following symlinks. Every file
- * is re-checked through resolveMcpPath so directory support never broadens the
- * policy boundary. Enumeration is deterministic and bounded.
- */
-function expandKnownPath(
-  repoRoot: string,
-  policy: McpPolicy,
-  path: string,
-  maxFiles: number,
-): ExpandedKnownPath {
-  const decision = resolveMcpPath(repoRoot, path, policy, "read");
-  if (!decision.ok || !decision.relativePath || !decision.absolutePath) {
-    return { files: [], denied: [{ path: decision.relativePath ?? path, reason: decision.reason ?? "path denied" }], truncated: false };
-  }
-  if (!existsSync(decision.absolutePath)) {
-    return { files: [], denied: [{ path: decision.relativePath, reason: "path does not exist" }], truncated: false };
-  }
-  const rootStat = lstatSync(decision.absolutePath);
-  if (rootStat.isSymbolicLink()) {
-    return { files: [], denied: [{ path: decision.relativePath, reason: "symbolic links are not followed" }], truncated: false };
-  }
-  if (rootStat.isFile()) return { files: [decision.relativePath], denied: [], truncated: false };
-  if (!rootStat.isDirectory()) {
-    return { files: [], denied: [{ path: decision.relativePath, reason: "path is neither a regular file nor directory" }], truncated: false };
-  }
-
-  const files: string[] = [];
-  const denied: Array<{ path: string; reason: string }> = [];
-  let truncated = false;
-  const walk = (relativeDirectory: string, depth: number): void => {
-    if (files.length >= maxFiles) { truncated = true; return; }
-    if (depth > 8) { denied.push({ path: relativeDirectory, reason: "directory recursion depth exceeded" }); return; }
-    const directoryDecision = resolveMcpPath(repoRoot, relativeDirectory, policy, "read");
-    if (!directoryDecision.ok || !directoryDecision.absolutePath || !directoryDecision.relativePath) {
-      denied.push({ path: directoryDecision.relativePath ?? relativeDirectory, reason: directoryDecision.reason ?? "path denied" });
-      return;
-    }
-    let entries;
-    try {
-      entries = readdirSync(directoryDecision.absolutePath, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name));
-    } catch (error) {
-      denied.push({ path: directoryDecision.relativePath, reason: error instanceof Error ? error.message : String(error) });
-      return;
-    }
-    for (const entry of entries) {
-      if (files.length >= maxFiles) { truncated = true; break; }
-      const child = `${directoryDecision.relativePath}/${entry.name}`.replace(/^\.\//, "");
-      if (entry.isSymbolicLink()) {
-        denied.push({ path: child, reason: "symbolic links are not followed" });
-      } else if (entry.isDirectory()) {
-        walk(child, depth + 1);
-      } else if (entry.isFile()) {
-        const readable = readableFile(repoRoot, policy, child);
-        if (readable.ok) files.push(readable.path);
-        else denied.push(readable);
-      }
-    }
-  };
-  walk(decision.relativePath, 0);
-  return { files, denied, directory: decision.relativePath, truncated };
-}
-
-function boundedSnippet(content: string, maxChars: number): { content: string; truncated: boolean } {
-  if (content.length <= maxChars) return { content, truncated: false };
-  return { content: `${content.slice(0, maxChars)}\n... <snippet truncated>`, truncated: true };
-}
-
-function mergeHitLines(lines: number[]): number[] {
-  const sorted = Array.from(new Set(lines.filter((line) => line > 0))).sort((a, b) => a - b);
-  const merged: number[] = [];
-  for (const line of sorted) {
-    const previous = merged[merged.length - 1];
-    if (previous !== undefined && line - previous <= DEFAULT_SNIPPET_CONTEXT_BEFORE + DEFAULT_SNIPPET_CONTEXT_AFTER) continue;
-    merged.push(line);
-  }
-  return merged;
-}
-
-function structuralResult(response: CodeGraphReadProviderResponse): {
-  nodes: CodeGraphNodeSummary[];
-  entryPoints: CodeGraphNodeSummary[];
-  relatedFiles: string[];
-  truncated: boolean;
-} {
-  const result = response.result ?? {};
-  const nodes = Array.isArray(result.nodes) ? result.nodes as CodeGraphNodeSummary[] : [];
-  const entryPoints = Array.isArray(result.entryPoints) ? result.entryPoints as CodeGraphNodeSummary[] : [];
-  const relatedFiles = Array.isArray(result.relatedFiles) ? result.relatedFiles.filter((value): value is string => typeof value === "string") : [];
-  return { nodes, entryPoints, relatedFiles, truncated: result.truncated === true };
-}
+export { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from './context/types';
+export type {
+  ControllerContextImpactDomain,
+  ControllerContextPackDependencies,
+  ControllerContextPackFile,
+  ControllerContextPackOptions,
+  ControllerContextPackProjection,
+  ControllerContextPackSnippet,
+  ControllerContextRetrievalMode,
+  StructuralContextMode,
+} from './context/types';
 
 export function buildControllerContextPack(
   repoRoot: string,
@@ -432,9 +60,13 @@ export function buildControllerContextPack(
   options: ControllerContextPackOptions = {},
   dependencies: ControllerContextPackDependencies = {},
 ): ControllerContextPackProjection {
+  const contextStartedAt = performance.now();
+  const timingsMs = { gitAndFocus: 0, structural: 0, lexical: 0, materialization: 0, total: 0 };
   const retrievalMode = options.retrievalMode ?? "implementation";
-  const maxFiles = clamp(options.maxFiles, DEFAULT_MAX_FILES, 1, 30);
-  const maxSnippets = clamp(options.maxSnippets, DEFAULT_MAX_SNIPPETS, 1, 80);
+  const requestedMaxFiles = clamp(options.maxFiles, DEFAULT_MAX_FILES, 1, 30);
+  const requestedMaxSnippets = clamp(options.maxSnippets, DEFAULT_MAX_SNIPPETS, 1, 80);
+  let maxFiles = requestedMaxFiles;
+  let maxSnippets = requestedMaxSnippets;
   const maxCharsPerSnippet = clamp(options.maxCharsPerSnippet, DEFAULT_MAX_CHARS_PER_SNIPPET, 500, 50_000);
   const knownPaths = cleanList(options.knownPaths);
   const knownGlobs = knownPaths.filter(looksLikeGlob);
@@ -447,13 +79,16 @@ export function buildControllerContextPack(
   // Independent investigations must not inherit an unrelated repository focus.
   // Only bind Issue/Task context when the caller explicitly requests it.
   const hasExplicitFocus = Boolean(options.issueId || options.taskId);
-  const git = gitSnapshot(repoRoot);
+  const git = gitSnapshot(repoRoot, options.session);
   const board = hasExplicitFocus && !legacyIssueAuthorityRetired(repoRoot) ? projectBoard(repoRoot) : undefined;
   const focus = board ? issueTaskFocus(board, options.issueId, options.taskId) : {};
   const ledger = board ? buildControllerTaskLedgerProjection(repoRoot, board) : undefined;
   const compactTask = ledger ? ledgerTask(ledger, focus.issue?.id, focus.task?.id) : undefined;
-  const allowedPathGlobs = cleanList(compactTask?.allowedPaths);
-  const searchIncludeGlobs = includeGlobs.length > 0 ? includeGlobs : allowedPathGlobs;
+  timingsMs.gitAndFocus = Math.round((performance.now() - contextStartedAt) * 100) / 100;
+  // Work allowed paths are an authorization boundary, not a claim that early
+  // investigation already discovered the complete semantic scope. Only an
+  // explicit retrieval include narrows discovery.
+  const searchIncludeGlobs = includeGlobs;
   const taskChecks = cleanList(compactTask?.checks);
   const goalParts = [
     options.description,
@@ -467,6 +102,7 @@ export function buildControllerContextPack(
   const impactDomains = cleanList(options.impactDomains)
     .filter((domain): domain is ControllerContextImpactDomain => CONTROLLER_CONTEXT_IMPACT_DOMAINS.includes(domain as ControllerContextImpactDomain))
     .slice(0, 6);
+  const retrievalIntent = [goal, ...terms].filter(Boolean).join(" ");
   const impactTermDomains = new Map<string, ControllerContextImpactDomain[]>();
   for (const domain of impactDomains) {
     for (const term of IMPACT_DOMAIN_TERMS[domain]) {
@@ -489,10 +125,15 @@ export function buildControllerContextPack(
   let skippedLargeFiles = 0;
   let skippedBinaryFiles = 0;
   let searchTruncated = false;
+  let lexicalCacheHit = false;
+  let structuralCacheHits = 0;
+  let structuralCacheMisses = 0;
+  let rangeCacheHits = 0;
+  let rangeCacheMisses = 0;
   const structuralMode = options.structuralContext ?? "off";
   const structuralIndexRoot = options.structuralIndexRoot?.trim() || repoRoot;
   const indexSource = structuralIndexRoot === repoRoot ? "current_checkout" : "repository_baseline";
-  const overlayChangedFiles = indexSource === "repository_baseline" ? gitStatusChangedPaths(git.status) : [];
+  let overlayChangedFiles = indexSource === "repository_baseline" ? gitStatusChangedPaths(git.status) : [];
   const baselineRevisionMatches = indexSource === "current_checkout" || gitSnapshot(structuralIndexRoot).head === git.head;
   const graphImpactFiles = new Set<string>();
   let structuralContext: ControllerContextPackProjection["structuralContext"] = {
@@ -507,7 +148,22 @@ export function buildControllerContextPack(
     relatedFiles: [],
     truncated: false,
   };
+  const repositorySessionCache = getRepositoryReadSessionCache(repoRoot, options.session);
+  const queryCodeGraph = dependencies.queryCodeGraph ?? queryCodeGraphReadProvider;
+  const queryStructural = (queryRoot: string, request: Parameters<typeof queryCodeGraphReadProvider>[1]): CodeGraphReadProviderResponse => {
+    const key = JSON.stringify({ queryRoot, request });
+    const cached = repositorySessionCache?.getStructural(key);
+    if (cached && typeof cached === "object") {
+      structuralCacheHits += 1;
+      return cached as CodeGraphReadProviderResponse;
+    }
+    structuralCacheMisses += 1;
+    const response = queryCodeGraph(queryRoot, request);
+    repositorySessionCache?.putStructural(key, response);
+    return response;
+  };
 
+  const structuralStartedAt = performance.now();
   if (structuralMode !== "off") {
     const structuralQuery = [goal || terms.join(" "), ...impactDomains].filter(Boolean).join(" ");
     if (!structuralQuery) {
@@ -518,8 +174,7 @@ export function buildControllerContextPack(
         fallbackReason: "No task description or search term was available for structural context.",
       };
     } else {
-      const queryCodeGraph = dependencies.queryCodeGraph ?? queryCodeGraphReadProvider;
-      const structural = queryCodeGraph(structuralIndexRoot, {
+      const structural = queryStructural(structuralIndexRoot, {
         operation: "context",
         query: structuralQuery,
         limit: Math.min(Math.max(maxFiles, 4), 12),
@@ -538,6 +193,10 @@ export function buildControllerContextPack(
             ignoredChangedFileCount: structural.metadata.ignoredChangedFileCount,
           }
         : undefined;
+      const providerChangedFiles = metadata
+        ? [...metadata.changedFiles.added, ...metadata.changedFiles.modified]
+        : [];
+      overlayChangedFiles = Array.from(new Set([...overlayChangedFiles, ...providerChangedFiles]));
       structuralContext = {
         provider: "codegraph",
         requestedMode: structuralMode,
@@ -547,7 +206,9 @@ export function buildControllerContextPack(
         overlayChangedFiles,
         baselineRevisionMatches,
         query: structuralQuery,
-        entryPoints: graph.entryPoints.slice(0, 12).map((node) => ({
+        entryPoints: graph.entryPoints
+          .filter((node) => pathNoisePenalty(node.filePath, retrievalIntent, retrievalMode) < 15)
+          .slice(0, 12).map((node) => ({
           id: node.id,
           kind: node.kind,
           name: node.name,
@@ -555,7 +216,9 @@ export function buildControllerContextPack(
           startLine: node.startLine,
           endLine: node.endLine,
         })),
-        relatedFiles: Array.from(new Set(graph.relatedFiles)).slice(0, 80),
+        relatedFiles: Array.from(new Set(graph.relatedFiles))
+          .filter((path) => pathNoisePenalty(path, retrievalIntent, retrievalMode) < 50)
+          .slice(0, 80),
         metadata,
         ...(structural.error ? { fallbackReason: `${structural.error.code}: ${structural.error.message}` } : {}),
         timingsMs: structural.timingsMs,
@@ -585,7 +248,7 @@ export function buildControllerContextPack(
       if (structural.status === "ready") {
         const primaryFiles = Array.from(new Set(graph.entryPoints.map((node) => node.filePath).filter(Boolean))).slice(0, 4);
         for (const filePath of primaryFiles) {
-          const adjacency = queryCodeGraph(structuralIndexRoot, { operation: "file_dependencies", filePath, limit: 40 });
+          const adjacency = queryStructural(structuralIndexRoot, { operation: "file_dependencies", filePath, limit: 40 });
           if (!adjacency.ok || adjacency.status !== "ready") continue;
           const dependencies = Array.isArray(adjacency.result?.dependencies)
             ? adjacency.result.dependencies.filter((value): value is string => typeof value === "string")
@@ -610,12 +273,13 @@ export function buildControllerContextPack(
     }
   }
 
+  timingsMs.structural = Math.round((performance.now() - structuralStartedAt) * 100) / 100;
   const exactKnownFiles: string[] = [];
   let exactKnownFileScope = explicitKnownPaths.length > 0;
   for (const path of explicitKnownPaths) {
     const expanded = expandKnownPath(repoRoot, policy, path, Math.max(maxFiles * 4, 40));
     for (const file of expanded.files) {
-      addReason(candidates, file, expanded.directory ? `explicit-known-directory:${expanded.directory}` : "explicit-known-path", 1);
+      addReason(candidates, file, expanded.directory ? `explicit-known-directory:${expanded.directory}` : "explicit-known-path");
     }
     if (!expanded.directory && expanded.files.length === 1 && expanded.denied.length === 0 && !expanded.truncated) {
       exactKnownFiles.push(expanded.files[0]!);
@@ -626,10 +290,10 @@ export function buildControllerContextPack(
     scannedFiles += expanded.files.length;
     searchTruncated = searchTruncated || expanded.truncated;
   }
-
-  for (const glob of allowedPathGlobs) {
-    if (!includeGlobs.includes(glob)) includeGlobs.push(glob);
-  }
+  // Exact caller-selected files own a reserved file slot. The inferred-file
+  // budget may be smaller, but another ranked candidate must never displace an
+  // exact known file. The overall response remains bounded by the hard cap.
+  maxFiles = Math.min(30, Math.max(requestedMaxFiles, exactKnownFiles.length));
 
   // Exact known files are already a caller-selected implementation scope. When
   // no broader impact/structural/include scope was requested, search those files
@@ -644,6 +308,7 @@ export function buildControllerContextPack(
   // Lexical retrieval is one bounded pass across candidate files for all terms.
   // The old per-term loop reread the same source files up to 14 times even
   // though inventory itself was cached.
+  const lexicalStartedAt = performance.now();
   if (searchQueries.length > 0 && candidates.size < maxFiles * 3) {
     const search = searchRepositoryMany(repoRoot, policy, {
       queries: searchQueries,
@@ -654,7 +319,9 @@ export function buildControllerContextPack(
       maxFiles: scopedExactKnownFileSearch ? exactKnownFiles.length : MAX_TOTAL_SEARCHED_FILES,
       caseSensitive: false,
       cacheKey: JSON.stringify({ head: git.head, status: git.status, diffStat: git.diffStat }),
+      session: options.session,
     });
+    lexicalCacheHit = search.cacheHit === true;
     scannedFiles += search.scannedFiles;
     policyDeniedFiles += search.policyDeniedFiles;
     skippedLargeFiles += search.skippedLargeFiles;
@@ -676,6 +343,7 @@ export function buildControllerContextPack(
     }
   }
 
+  timingsMs.lexical = Math.round((performance.now() - lexicalStartedAt) * 100) / 100;
   const primarySearchReason = terms.length > 0 ? `search:${terms[0]}` : undefined;
   const rankedCandidates = Array.from(candidates.entries())
     .map(([path, entry]) => ({ path, reasons: Array.from(entry.reasons), lines: Array.from(entry.lines) }))
@@ -686,11 +354,20 @@ export function buildControllerContextPack(
       const leftPrimary = primarySearchReason && left.reasons.includes(primarySearchReason) ? 1 : 0;
       const rightPrimary = primarySearchReason && right.reasons.includes(primarySearchReason) ? 1 : 0;
       if (leftPrimary !== rightPrimary) return rightPrimary - leftPrimary;
+      const noise = pathNoisePenalty(left.path, retrievalIntent, retrievalMode)
+        - pathNoisePenalty(right.path, retrievalIntent, retrievalMode);
+      if (noise !== 0) return noise;
       if (left.reasons.length !== right.reasons.length) return right.reasons.length - left.reasons.length;
       if (left.lines.length !== right.lines.length) return right.lines.length - left.lines.length;
       return left.path.localeCompare(right.path);
     });
   const selected = rankedCandidates.slice(0, maxFiles);
+  const isExactKnownCandidate = (entry: { reasons: string[] }): boolean => entry.reasons.includes("explicit-known-path");
+  const selectedExactKnownCount = selected.filter(isExactKnownCandidate).length;
+  // Reserve at least one materialization for every selected exact known file.
+  // This may raise a caller's inferred snippet budget, but never beyond the
+  // existing hard response cap.
+  maxSnippets = Math.min(80, Math.max(requestedMaxSnippets, selectedExactKnownCount));
   const selectedPaths = new Set(selected.map((entry) => entry.path));
   const impactCoverage = impactDomains.map((domain) => {
     const matchedFiles = [...(impactCandidatePaths.get(domain) ?? new Set<string>())].sort();
@@ -708,40 +385,40 @@ export function buildControllerContextPack(
 
   let remainingSnippets = maxSnippets;
   const files: ControllerContextPackFile[] = [];
-  for (const entry of selected) {
+  const materializationStartedAt = performance.now();
+  for (let selectedIndex = 0; selectedIndex < selected.length; selectedIndex += 1) {
+    const entry = selected[selectedIndex]!;
     if (remainingSnippets <= 0) {
       omitted.push({ path: entry.path, reason: "max_snippets" });
       continue;
     }
-    const hitLines = mergeHitLines(entry.lines.length > 0 ? entry.lines : [1]).slice(0, remainingSnippets);
-    const snippets: ControllerContextPackSnippet[] = [];
-    for (const line of hitLines) {
-      if (remainingSnippets <= 0) break;
-      try {
-        const raw = readRepositoryRange(
-          repoRoot,
-          policy,
-          entry.path,
-          Math.max(1, line - DEFAULT_SNIPPET_CONTEXT_BEFORE),
-          line + DEFAULT_SNIPPET_CONTEXT_AFTER,
-        );
-        const redacted = redactMcpText(raw.content);
-        const bounded = boundedSnippet(redacted.text, maxCharsPerSnippet);
-        snippets.push({
-          path: raw.path,
-          startLine: raw.startLine,
-          endLine: raw.endLine,
-          totalLines: raw.totalLines,
-          sha256: raw.sha256,
-          content: bounded.content,
-          truncated: bounded.truncated,
-          redactions: redacted.redactions,
-          reason: entry.reasons.join(", "),
-        });
-        remainingSnippets -= 1;
-      } catch (error) {
-        deniedPaths.push({ path: entry.path, reason: error instanceof Error ? error.message : String(error) });
+    const exactKnown = isExactKnownCandidate(entry);
+    const exactKnownAfter = selected
+      .slice(selectedIndex + 1)
+      .filter(isExactKnownCandidate)
+      .length;
+    const fileSnippetBudget = exactKnown
+      ? Math.max(1, remainingSnippets - exactKnownAfter)
+      : remainingSnippets;
+    let snippets: ControllerContextPackSnippet[] = [];
+    try {
+      snippets = materializeSource({
+        repoRoot,
+        policy,
+        path: entry.path,
+        hitLines: entry.lines.length > 0 ? entry.lines : [1],
+        reasons: entry.reasons,
+        maxSnippets: Math.min(fileSnippetBudget, remainingSnippets),
+        maxCharsPerSnippet,
+        session: options.session,
+      });
+      for (const snippet of snippets) {
+        if (snippet.cacheHit) rangeCacheHits += 1;
+        else rangeCacheMisses += 1;
       }
+      remainingSnippets -= snippets.length;
+    } catch (error) {
+      deniedPaths.push({ path: entry.path, reason: error instanceof Error ? error.message : String(error) });
     }
     if (snippets.length > 0) {
       files.push({
@@ -754,6 +431,7 @@ export function buildControllerContextPack(
     }
   }
 
+  timingsMs.materialization = Math.round((performance.now() - materializationStartedAt) * 100) / 100;
   if (files.length === 0 && terms.length === 0 && explicitKnownPaths.length === 0) {
     omitted.push({ path: "<none>", reason: "No description, search_terms, issue/task focus, or known_paths produced search terms." });
   }
@@ -777,9 +455,14 @@ export function buildControllerContextPack(
   const rawCodeRequiredForImplementation = retrievalMode !== "implementation"
     || files.length === 0
     || rawSnippetTruncated;
-  const primaryTargets = Array.from(new Set(structuralContext.entryPoints.map((entry) => entry.filePath).filter(Boolean))).slice(0, 20);
+  const graphEntryPaths = Array.from(new Set(structuralContext.entryPoints.map((entry) => entry.filePath).filter(Boolean))).slice(0, 20);
+  const structuralEvidenceCurrent = structuralContext.status === "ready";
+  const primaryTargets = structuralEvidenceCurrent ? graphEntryPaths : [];
+  const structuralHints = structuralEvidenceCurrent
+    ? []
+    : Array.from(new Set([...graphEntryPaths, ...graphImpactFiles, ...structuralContext.relatedFiles])).slice(0, 80);
   const structuralUniverse = Array.from(new Set([
-    ...primaryTargets,
+    ...graphEntryPaths,
     ...graphImpactFiles,
     ...structuralContext.relatedFiles,
     ...selected.map((entry) => entry.path),
@@ -791,7 +474,9 @@ export function buildControllerContextPack(
     || path.startsWith("docs/architecture/")
     || path.startsWith(".ai/context/"),
   ).slice(0, 40);
-  const mustInspect = Array.from(new Set([...primaryTargets, ...graphImpactFiles, ...relevantTests, ...architectureContracts])).slice(0, 80);
+  const mustInspect = structuralEvidenceCurrent
+    ? Array.from(new Set([...primaryTargets, ...graphImpactFiles, ...relevantTests, ...architectureContracts])).slice(0, 80)
+    : [];
   const mustInspectSet = new Set(mustInspect);
   const likelyAffected = structuralUniverse.filter((path) => !mustInspectSet.has(path)).slice(0, 80);
   const changedFileCount = structuralContext.metadata
@@ -816,6 +501,7 @@ export function buildControllerContextPack(
         ? "medium"
         : "low",
     primaryTargets,
+    structuralHints,
     mustInspect,
     likelyAffected,
     relevantTests,
@@ -836,6 +522,23 @@ export function buildControllerContextPack(
       baselineRevisionMatches: structuralContext.baselineRevisionMatches,
     },
   };
+  const inspectedFiles = files.map((file) => file.path);
+  const inspectedSet = new Set(inspectedFiles);
+  const likelyRelatedNotInspected = Array.from(new Set([
+    ...rankedCandidates.map((entry) => entry.path),
+    ...structuralContext.relatedFiles,
+    ...graphImpactFiles,
+  ])).filter((path) => !inspectedSet.has(path)).slice(0, 80);
+  const materializedExactKnownPaths = files
+    .filter((file) => file.reasons.includes("explicit-known-path"))
+    .map((file) => file.path);
+  const materializedExactKnownSet = new Set(materializedExactKnownPaths);
+  const unresolvedRelationships = Array.from(new Set([
+    ...coverageGaps,
+    ...expansionSignals,
+    ...(likelyRelatedNotInspected.length > 0 ? ["likely_related_files_not_inspected"] : []),
+  ])).slice(0, 80);
+  timingsMs.total = Math.round((performance.now() - contextStartedAt) * 100) / 100;
 
   return {
     schemaVersion: CONTEXT_PACK_SCHEMA_VERSION,
@@ -861,28 +564,70 @@ export function buildControllerContextPack(
       skippedLargeFiles,
       skippedBinaryFiles,
       truncated: searchTruncated,
+      cacheHit: lexicalCacheHit,
     },
     structuralContext,
     impactContext,
     files,
+    coverage: {
+      inspectedFiles,
+      likelyRelatedNotInspected,
+      unresolvedRelationships,
+      relevantTests,
+      exactKnownPaths: {
+        requested: exactKnownFiles,
+        materialized: materializedExactKnownPaths,
+        missing: exactKnownFiles.filter((path) => !materializedExactKnownSet.has(path)),
+      },
+      skippedCandidates: {
+        omittedFiles: Math.max(0, rankedCandidates.length - selected.length),
+        policyDeniedFiles: policyDeniedFiles + deniedPaths.length,
+        largeFiles: skippedLargeFiles,
+        binaryFiles: skippedBinaryFiles,
+        searchTruncated,
+        structuralTruncated: structuralContext.truncated,
+      },
+      materialization: {
+        completeFiles: files.flatMap((file) => file.snippets).filter((snippet) => snippet.materialization === "complete_file").length,
+        symbols: files.flatMap((file) => file.snippets).filter((snippet) => snippet.materialization === "symbol").length,
+        fallbackWindows: files.flatMap((file) => file.snippets).filter((snippet) => snippet.materialization === "line_window").length,
+      },
+    },
+    cache: {
+      sessionBound: Boolean(options.session),
+      lexicalHit: lexicalCacheHit,
+      structuralHits: structuralCacheHits,
+      structuralMisses: structuralCacheMisses,
+      rangeHits: rangeCacheHits,
+      rangeMisses: rangeCacheMisses,
+      reused: lexicalCacheHit || structuralCacheHits > 0 || rangeCacheHits > 0,
+    },
+    timingsMs,
     deniedPaths: deniedPaths.slice(0, 20),
     omitted: omitted.slice(0, 30),
-    limits: { maxFiles, maxSnippets, maxCharsPerSnippet },
+    limits: {
+      maxFiles,
+      maxSnippets,
+      maxCharsPerSnippet,
+      requestedMaxFiles,
+      requestedMaxSnippets,
+      reservedExactKnownFiles: selectedExactKnownCount,
+    },
     validation: {
       policy: taskChecks.length > 0 ? "task-targeted" : "minimal",
       checks: taskChecks,
     },
     contextContract: {
       strategy: retrievalMode === "implementation"
-        ? "Use the returned current raw snippets plus bounded impact evidence as the implementation decision input. ChatGPT owns semantic sufficiency; do not re-read source solely because it arrived through search."
-        : "Use this pack as investigation evidence and deliberately expand the evidence surface when the selected mode requires planning, debugging, or review.",
+        ? "Use the broad current-source pack as the first implementation evidence set. ChatGPT owns semantic sufficiency and may repeat rh_context whenever additional repository understanding or impact evidence could materially improve correctness."
+        : "Use this pack as progressive investigation evidence and repeat rh_context to expand exact ranges, symbols, relationships, tests, or neighboring modules whenever that can improve the plan, diagnosis, or review.",
       retrievalMode,
       semanticSufficiencyAuthority: "chatgpt",
       rawCodeRequiredForImplementation,
       expansionSignals,
       notes: [
         retrievalMode === "implementation"
-          ? "The pack already contains policy-approved current raw source snippets with file SHA identities. Request wider/exact ranges only when ChatGPT judges the impact surface ambiguous or an expansion signal makes the raw evidence mechanically incomplete."
+          ? "The pack contains policy-approved current raw source with file SHA identities, but returned snippets are bounded evidence rather than proof of semantic completeness. Follow-up rh_context calls are expected when the controller identifies uncertainty, impact candidates, or useful expansion."
           : "Investigation modes may intentionally expand exact ranges, structural relationships, tests, and neighboring modules before any implementation decision.",
         "Search/CodeGraph ranking is discovery evidence, not a business-semantics authority. impactContext makes the bounded evidence surface and coverage gaps explicit; ChatGPT still decides semantic sufficiency.",
         impactDomains.length > 0 ? `Impact domains were selected by ChatGPT and expanded mechanically in this same retrieval call: ${impactDomains.join(", ")}. Missing or omitted domain evidence is an ambiguity signal, not proof that the domain is irrelevant.` : "No explicit cross-cutting impact domains were requested; ChatGPT may add them when state, scheduling, notifications, events, caching, API, or concurrency could materially change the implementation.",
@@ -898,11 +643,83 @@ export function buildControllerContextPack(
         : []),
       files.length > 0
         ? retrievalMode === "implementation"
-          ? "ChatGPT should decide whether the impact coverage is sufficient; if yes, edit directly from the returned current raw snippets and SHA identities instead of issuing a mandatory second read."
+          ? "ChatGPT should decide whether impact coverage is sufficient. Edit when it is; otherwise repeat rh_context with selected paths, symbols, tests, or impact domains."
           : "Expand exact ranges or neighboring evidence when that investigation can materially change the plan, diagnosis, or review conclusion."
         : "Provide known_paths or narrower search_terms before attempting implementation.",
       "After editing, review the bounded diff/evidence for the coherent edit batch.",
       "Use targeted validation before acceptance; defer expensive full-suite validation to a stable candidate or release boundary unless the task specifically requires it earlier.",
     ],
   };
+}
+
+/**
+ * Broad first-call fan-in for the canonical rh_context path. CodeGraph runs in
+ * its sidecar while the current process performs the multi-query lexical scan;
+ * the sync builder then consumes the warm session cache and prefetched graph.
+ */
+export async function buildControllerContextPackAsync(
+  repoRoot: string,
+  policy: McpPolicy,
+  options: ControllerContextPackOptions = {},
+  dependencies: ControllerContextPackDependencies = {},
+): Promise<ControllerContextPackProjection> {
+  const structuralMode = options.structuralContext ?? 'off';
+  if (structuralMode === 'off' || dependencies.queryCodeGraph || !options.session || options.issueId || options.taskId) {
+    return buildControllerContextPack(repoRoot, policy, options, dependencies);
+  }
+  const prefetchStartedAt = performance.now();
+  const retrievalMode = options.retrievalMode ?? 'implementation';
+  const maxFiles = clamp(options.maxFiles, DEFAULT_MAX_FILES, 1, 30);
+  const knownPaths = cleanList(options.knownPaths);
+  const includeGlobs = cleanList([...(options.includeGlobs ?? []), ...knownPaths.filter(looksLikeGlob)]);
+  const excludeGlobs = cleanList([...DEFAULT_SEARCH_EXCLUDE_GLOBS, ...(options.excludeGlobs ?? [])]);
+  const terms = cleanList([...(options.searchTerms ?? []), ...textTokens(options.description ?? '')]).slice(0, 14);
+  const impactDomains = cleanList(options.impactDomains)
+    .filter((domain): domain is ControllerContextImpactDomain => CONTROLLER_CONTEXT_IMPACT_DOMAINS.includes(domain as ControllerContextImpactDomain))
+    .slice(0, 6);
+  const searchQueries = cleanList([
+    ...(terms[0] ? [terms[0]] : []),
+    ...impactDomains.flatMap((domain) => IMPACT_DOMAIN_TERMS[domain]),
+    ...terms.slice(1),
+  ]).slice(0, 32);
+  const structuralQuery = [options.description || terms.join(' '), ...impactDomains].filter(Boolean).join(' ');
+  const structuralIndexRoot = options.structuralIndexRoot?.trim() || repoRoot;
+  const structuralRequest = {
+    operation: 'context' as const,
+    query: structuralQuery,
+    limit: Math.min(Math.max(maxFiles, 4), 12),
+    maxNodes: Math.min(Math.max(maxFiles * 5, 20), 60),
+    maxDepth: 2,
+  };
+  const structuralCacheKey = JSON.stringify({ queryRoot: structuralIndexRoot, request: structuralRequest });
+  const sessionCache = getRepositoryReadSessionCache(repoRoot, options.session);
+  if (structuralQuery && sessionCache?.peekStructural(structuralCacheKey)) {
+    const pack = buildControllerContextPack(repoRoot, policy, options, dependencies);
+    pack.timingsMs.parallelFirstPass = false;
+    pack.timingsMs.parallelPrefetch = 0;
+    return pack;
+  }
+  const structuralPromise = structuralQuery
+    ? queryCodeGraphReadProviderAsync(structuralIndexRoot, structuralRequest)
+    : Promise.resolve<CodeGraphReadProviderResponse>({
+        schemaVersion: 1, provider: 'codegraph', operation: 'context', ok: false, status: 'degraded',
+        error: { code: 'CODEGRAPH_QUERY_REQUIRED', message: 'No context query was provided.' }, timingsMs: { total: 0 },
+      });
+  if (searchQueries.length > 0) {
+    const git = gitSnapshot(repoRoot, options.session);
+    searchRepositoryMany(repoRoot, policy, {
+      queries: searchQueries, includeGlobs, excludeGlobs,
+      maxResultsPerQuery: Math.max(maxFiles * 4, 12), maxFiles: MAX_TOTAL_SEARCHED_FILES,
+      caseSensitive: false, cacheKey: JSON.stringify({ head: git.head, status: git.status, diffStat: git.diffStat }), session: options.session,
+    });
+  }
+  const prefetched = await structuralPromise;
+  const pack = buildControllerContextPack(repoRoot, policy, options, {
+    queryCodeGraph: (queryRoot, request) => request.operation === 'context' && queryRoot === structuralIndexRoot
+      ? prefetched
+      : queryCodeGraphReadProvider(queryRoot, request),
+  });
+  pack.timingsMs.parallelFirstPass = true;
+  pack.timingsMs.parallelPrefetch = Math.round((performance.now() - prefetchStartedAt) * 100) / 100;
+  return pack;
 }

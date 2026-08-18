@@ -49,6 +49,7 @@ export interface SessionCacheSnapshot {
   metrics: SessionCacheMetrics;
   fileCount: number;
   searchCount: number;
+  structuralCount: number;
 }
 
 function shaText(value: string): string {
@@ -104,6 +105,7 @@ export class RepositorySessionCache {
   private readonly fileSha = new Map<string, string>();
   private readonly ranges = new Map<string, FileRangeCacheEntry>();
   private readonly searches = new Map<string, SearchCacheEntry>();
+  private readonly structural = new Map<string, { at: number; value: unknown }>();
   private readonly gitSnapshots = new Map<string, { at: number; value: unknown }>();
   private readonly checks = new Map<string, unknown>();
   private runtimeGeneration?: string;
@@ -141,6 +143,7 @@ export class RepositorySessionCache {
       metrics: this.getMetrics(),
       fileCount: this.ranges.size,
       searchCount: this.searches.size,
+      structuralCount: this.structural.size,
     };
   }
 
@@ -213,15 +216,16 @@ export class RepositorySessionCache {
         entry.path === relativePath
         && entry.fileSha === sha
         && entry.startLine <= startLine
-        && entry.endLine >= endLine
+        && (entry.endLine >= endLine || entry.endLine >= entry.totalLines)
       ) {
         this.metrics.cacheHit += 1;
         this.metrics.bytesAvoided += Math.max(0, entry.bytes);
+        const resolvedEndLine = Math.min(endLine, entry.totalLines);
         return {
           ...entry,
           startLine,
-          endLine,
-          content: sliceNumberedContent(entry.content, entry.startLine, startLine, endLine),
+          endLine: resolvedEndLine,
+          content: sliceNumberedContent(entry.content, entry.startLine, startLine, resolvedEndLine),
         };
       }
     }
@@ -249,6 +253,33 @@ export class RepositorySessionCache {
   putSearch(entry: SearchCacheEntry): void {
     const key = `${this.identity.head}|${this.identity.workingTreeFingerprint}|${entry.includeKey}|${entry.query}`;
     this.searches.set(key, entry);
+  }
+
+  getStructural(key: string, ttlMs = 30_000): unknown | null {
+    const scopedKey = `${this.identity.head}|${this.identity.workingTreeFingerprint}|${key}`;
+    const hit = this.structural.get(scopedKey);
+    if (hit && Date.now() - hit.at <= ttlMs) {
+      this.metrics.cacheHit += 1;
+      this.metrics.scanAvoided += 1;
+      return hit.value;
+    }
+    if (hit) this.structural.delete(scopedKey);
+    this.metrics.cacheMiss += 1;
+    return null;
+  }
+
+  /** Inspect structural reuse eligibility without changing request metrics. */
+  peekStructural(key: string, ttlMs = 30_000): unknown | null {
+    const scopedKey = `${this.identity.head}|${this.identity.workingTreeFingerprint}|${key}`;
+    const hit = this.structural.get(scopedKey);
+    if (hit && Date.now() - hit.at <= ttlMs) return hit.value;
+    if (hit) this.structural.delete(scopedKey);
+    return null;
+  }
+
+  putStructural(key: string, value: unknown): void {
+    const scopedKey = `${this.identity.head}|${this.identity.workingTreeFingerprint}|${key}`;
+    this.structural.set(scopedKey, { at: Date.now(), value });
   }
 
   getGitSnapshot(): unknown | null {
@@ -297,6 +328,7 @@ export class RepositorySessionCache {
     this.fileSha.clear();
     this.ranges.clear();
     this.searches.clear();
+    this.structural.clear();
     this.gitSnapshots.clear();
     this.checks.clear();
     this.metrics.invalidations += 1;
@@ -304,6 +336,7 @@ export class RepositorySessionCache {
 
   invalidateHeadRelated(): void {
     this.searches.clear();
+    this.structural.clear();
     this.gitSnapshots.clear();
     this.checks.clear();
     this.metrics.invalidations += 1;
@@ -311,6 +344,7 @@ export class RepositorySessionCache {
 
   invalidateWorkingTree(): void {
     this.searches.clear();
+    this.structural.clear();
     this.gitSnapshots.clear();
     this.checks.clear();
     this.metrics.invalidations += 1;

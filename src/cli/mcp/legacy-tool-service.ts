@@ -1635,29 +1635,6 @@ export function buildMcpToolDefinitions(
         annotations: readOnly,
       },
       {
-        name: "controller_context_pack",
-        description:
-          "Build a bounded code context pack for a task: relevant files, search-hit line ranges, and raw snippets. This is for scoped investigation, not blind implementation.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            description: { type: "string" },
-            issue_id: { type: "string" },
-            task_id: { type: "string" },
-            known_paths: { type: "array", items: { type: "string" } },
-            include_globs: { type: "array", items: { type: "string" } },
-            exclude_globs: { type: "array", items: { type: "string" } },
-            search_terms: { type: "array", items: { type: "string" } },
-            max_files: { type: "number" },
-            max_snippets: { type: "number" },
-            max_chars_per_snippet: { type: "number" },
-            structural_context: { type: "string", enum: ["off", "auto", "required"], description: "Optional CodeGraph structural context. Defaults to off so ordinary Direct work pays no graph startup cost." },
-          },
-          additionalProperties: false,
-        },
-        annotations: readOnly,
-      },
-      {
         name: "quick_agent_session",
         description:
           "Start an ephemeral local Codex or Claude session directly from an objective, without requiring an Issue or Task. Current workspace is the default; isolation is opt-in or selected for concurrency.",
@@ -1847,12 +1824,15 @@ export function buildMcpToolDefinitions(
       {
         name: "run_check",
         description:
-          "Start one named focused repository check as a Local Job and return immediately; inspect it with get_local_job.",
+          "Run one named focused repository check ephemerally by default. Work/Edit-bound verification retains a persisted Process receipt; release and multi-phase checks require an explicit Durable workflow.",
         inputSchema: {
           type: "object",
           properties: {
             check_id: { type: "string" },
             timeout_ms: { type: "number" },
+            request_id: { type: "string" },
+            issue_id: { type: "string", description: "Optional exact Issue verification consumer; requires task_id." },
+            task_id: { type: "string", description: "Optional exact Task verification consumer; requires issue_id." },
           },
           required: ["check_id"],
           additionalProperties: false,
@@ -3306,28 +3286,6 @@ export async function callMcpTool(
         audit(ctx, name, "ok", args);
         return textResult(payload);
       }
-      case "controller_context_pack": {
-        if (ctx.policy.profile !== "controller")
-          return errorResult(
-            "TOOL_DISABLED",
-            "controller_context_pack requires the controller profile",
-          );
-        const pack = buildControllerContextPack(ctx.repoRoot, ctx.policy, {
-          description: typeof args.description === "string" ? args.description : undefined,
-          issueId: typeof args.issue_id === "string" ? args.issue_id : undefined,
-          taskId: typeof args.task_id === "string" ? args.task_id : undefined,
-          knownPaths: stringList(args.known_paths),
-          includeGlobs: stringList(args.include_globs),
-          excludeGlobs: stringList(args.exclude_globs),
-          searchTerms: stringList(args.search_terms),
-          maxFiles: typeof args.max_files === "number" ? args.max_files : undefined,
-          maxSnippets: typeof args.max_snippets === "number" ? args.max_snippets : undefined,
-          maxCharsPerSnippet: typeof args.max_chars_per_snippet === "number" ? args.max_chars_per_snippet : undefined,
-          structuralContext: args.structural_context === "auto" || args.structural_context === "required" ? args.structural_context : "off",
-        });
-        audit(ctx, name, "ok", args);
-        return textResult(pack);
-      }
       case "controller_context": {
         if (ctx.policy.profile !== "controller")
           return errorResult(
@@ -3646,8 +3604,8 @@ export async function callMcpTool(
             "TOOL_DISABLED",
             "run_check requires the controller profile",
           );
-        // Prefer Unified Process Runtime for ordinary checks. Multi-phase and
-        // release checks require an explicit external Controller instead.
+        // Ordinary checks are ephemeral. Real Work/Edit verification consumers
+        // retain Process evidence; release checks require a Durable workflow.
         const checkId = String(args.check_id ?? "").trim();
         const forceDurable = args.force_durable === true
           || args.apply_mode === "async"
@@ -3675,6 +3633,9 @@ export async function callMcpTool(
                   checkId,
                   timeoutMs: typeof args.timeout_ms === "number" ? args.timeout_ms : undefined,
                   requestId: typeof args.request_id === "string" ? args.request_id.trim() || undefined : undefined,
+                  verificationBinding: typeof args.issue_id === "string" && typeof args.task_id === "string"
+                    ? { issueId: args.issue_id.trim(), taskId: args.task_id.trim() }
+                    : undefined,
                   executionIdentity: {
                     schemaVersion: 1,
                     repositoryId: repository.repoId,

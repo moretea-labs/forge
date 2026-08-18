@@ -1,4 +1,4 @@
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { accessSync, constants, existsSync } from 'fs';
 import { createRequire } from 'module';
 import { dirname, join, resolve } from 'path';
@@ -344,4 +344,98 @@ export function queryCodeGraphReadProvider(
       ...(typeof parsed.timingsMs?.query === 'number' ? { query: parsed.timingsMs.query } : {}),
     },
   };
+}
+
+/** Async sidecar path used by the first broad Context Plane fan-in. */
+export async function queryCodeGraphReadProviderAsync(
+  repoRoot: string,
+  request: CodeGraphReadRequest,
+  options: { timeoutMs?: number } = {},
+): Promise<CodeGraphReadProviderResponse> {
+  const startedAt = performance.now();
+  if (!ALLOWED_OPERATIONS.has(request.operation)) {
+    return errorResponse(request.operation, 'CODEGRAPH_OPERATION_NOT_ALLOWED', `Unsupported read operation: ${String(request.operation)}`, performance.now() - startedAt);
+  }
+  let runtime: ReturnType<typeof resolveCodeGraphBundledRuntime>;
+  try { runtime = resolveCodeGraphBundledRuntime(); }
+  catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return errorResponse(request.operation, message.split(':', 1)[0] || 'CODEGRAPH_RUNTIME_UNAVAILABLE', message, performance.now() - startedAt);
+  }
+  const input = JSON.stringify({
+    schemaVersion: SCHEMA_VERSION,
+    operation: request.operation,
+    projectRoot: resolve(repoRoot),
+    ...(typeof request.query === 'string' ? { query: request.query.slice(0, 2_000) } : {}),
+    ...(typeof request.nodeId === 'string' ? { nodeId: request.nodeId.slice(0, 1_000) } : {}),
+    ...(typeof request.filePath === 'string' ? { filePath: request.filePath.slice(0, 2_000) } : {}),
+    limit: boundedInteger(request.limit, 12, 1, 40),
+    maxNodes: boundedInteger(request.maxNodes, 40, 1, 80),
+    maxDepth: boundedInteger(request.maxDepth, 2, 1, 5),
+  });
+  if (Buffer.byteLength(input) > MAX_REQUEST_BYTES) {
+    return errorResponse(request.operation, 'CODEGRAPH_REQUEST_TOO_LARGE', 'CodeGraph request exceeded the bounded input limit.', performance.now() - startedAt);
+  }
+  const processStartedAt = performance.now();
+  return await new Promise<CodeGraphReadProviderResponse>((resolveResponse) => {
+    const child = spawn(runtime.nodeExecutable, [runtime.sidecarPath], {
+      cwd: resolve(repoRoot), env: minimalEnvironment(runtime), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: false,
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let settled = false;
+    const finish = (response: CodeGraphReadProviderResponse) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveResponse(response);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch {}
+      finish(errorResponse(request.operation, 'CODEGRAPH_TIMEOUT', 'CodeGraph sidecar timed out.', performance.now() - startedAt));
+    }, boundedInteger(options.timeoutMs, DEFAULT_TIMEOUT_MS, 1_000, 60_000));
+    timer.unref();
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes <= MAX_RESPONSE_BYTES) stdout.push(chunk);
+      else {
+        try { child.kill(); } catch {}
+        finish(errorResponse(request.operation, 'CODEGRAPH_RESPONSE_TOO_LARGE', 'CodeGraph response exceeded the bounded output limit.', performance.now() - startedAt));
+      }
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      if (stderrBytes >= MAX_STDERR_CHARS) return;
+      const bounded = chunk.subarray(0, Math.max(0, MAX_STDERR_CHARS - stderrBytes));
+      if (bounded.length > 0) {
+        stderr.push(bounded);
+        stderrBytes += bounded.length;
+      }
+    });
+    child.on('error', (error) => finish(errorResponse(request.operation, 'CODEGRAPH_START_FAILED', error.message, performance.now() - startedAt)));
+    child.on('close', (status) => {
+      if (settled) return;
+      if (status !== 0) {
+        finish(errorResponse(request.operation, 'CODEGRAPH_SIDECAR_FAILED', Buffer.concat(stderr).toString('utf8').slice(-MAX_STDERR_CHARS) || `CodeGraph sidecar exited with status ${String(status)}`, performance.now() - startedAt));
+        return;
+      }
+      let parsed: SidecarResponse;
+      try { parsed = parseSidecarResponse(Buffer.concat(stdout).toString('utf8')); }
+      catch (error) { finish(errorResponse(request.operation, 'CODEGRAPH_PROTOCOL_ERROR', error instanceof Error ? error.message : String(error), performance.now() - startedAt)); return; }
+      if (!parsed.ok) { finish(errorResponse(request.operation, parsed.error.code, parsed.error.message, performance.now() - startedAt)); return; }
+      const metadata = filterGitIgnoredCodeGraphChanges(repoRoot, parsed.metadata);
+      finish({
+        schemaVersion: 1, provider: 'codegraph', operation: request.operation, ok: metadata.initialized,
+        status: providerStatus(metadata), metadata, result: parsed.result,
+        timingsMs: {
+          total: Math.round((performance.now() - startedAt) * 100) / 100,
+          process: Math.round((performance.now() - processStartedAt) * 100) / 100,
+          ...(typeof parsed.timingsMs?.open === 'number' ? { open: parsed.timingsMs.open } : {}),
+          ...(typeof parsed.timingsMs?.query === 'number' ? { query: parsed.timingsMs.query } : {}),
+        },
+      });
+    });
+    child.stdin.end(input);
+  });
 }
