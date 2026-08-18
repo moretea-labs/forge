@@ -10,7 +10,7 @@ import { AssistantPluginError } from './errors';
 import { executeBrowserPluginAction } from './browser-adapter';
 
 const PLUGIN_ID = 'xiaohongshu';
-const RECIPE_VERSION = 2;
+const RECIPE_VERSION = 3;
 const CREATOR_BASE_URL = 'https://creator.xiaohongshu.com/publish/publish?source=official';
 const CREATOR_ARTICLE_URL = `${CREATOR_BASE_URL}&target=article`;
 const IMAGE_TAB_TEXT = '上传图文';
@@ -174,12 +174,19 @@ export function buildXiaohongshuPublishRecipe(args: Record<string, unknown>): Re
       args: { session_id: parsed.sessionId, url: creatorUrl, wait_until: 'domcontentloaded', timeout_ms: 60_000 },
       expectation: 'Creator page remains in the persisted browser profile; raw cookies/tokens are not copied into recipe state.',
     },
-    {
-      id: 'preflight.read_auth_state',
-      actionId: 'get_text',
-      args: { session_id: parsed.sessionId, max_chars: 8_000 },
-      expectation: 'Classify with phase=preflight; stop as AUTH_REQUIRED before editing if login markers appear.',
-    },
+    parsed.normalizedMode === 'image_note'
+      ? {
+          id: 'preflight.probe_image_page',
+          actionId: 'query_all',
+          args: { session_id: parsed.sessionId, selector: IMAGE_FILE_SELECTOR, limit: 1 },
+          expectation: 'A file input structurally proves the image-note Creator surface is ready without extracting the whole page text.',
+        }
+      : {
+          id: 'preflight.read_auth_state',
+          actionId: 'get_text',
+          args: { session_id: parsed.sessionId, max_chars: 8_000 },
+          expectation: 'Classify with phase=preflight; stop as AUTH_REQUIRED before editing if login markers appear.',
+        },
   ];
 
   if (parsed.normalizedMode === 'image_note') {
@@ -313,14 +320,28 @@ export async function executeXiaohongshuPluginAction(input: AssistantPluginActio
 
   try {
     const preflightNavigate = await runStep(steps[0], 0);
+    const navigateUrl = resultUrl(preflightNavigate);
+    if (isXiaohongshuAuthRequired(navigateUrl, '')) {
+      return {
+        status: 'auth_required',
+        recipeVersion: RECIPE_VERSION,
+        checkpoint: 'preflight.navigate_creator',
+        sessionId: parsed.sessionId,
+        next: 'Complete only the necessary Xiaohongshu login/verification in the existing browser profile, then rerun publish_note with the same inputs.',
+        receipts,
+      };
+    }
+
     const preflight = await runStep(steps[1], 1);
-    const preflightUrl = resultUrl(preflight) || resultUrl(preflightNavigate);
-    const preflightState = classifyXiaohongshuPublishState({ phase: 'preflight', url: preflightUrl, text: resultText(preflight) });
+    const preflightUrl = resultUrl(preflight) || navigateUrl;
+    const preflightState = parsed.normalizedMode === 'image_note'
+      ? (typeof preflight.count === 'number' && preflight.count > 0 ? 'READY' : 'PAGE_SCHEMA_CHANGED')
+      : classifyXiaohongshuPublishState({ phase: 'preflight', url: preflightUrl, text: resultText(preflight) });
     if (preflightState === 'AUTH_REQUIRED') {
       return {
         status: 'auth_required',
         recipeVersion: RECIPE_VERSION,
-        checkpoint: 'preflight.read_auth_state',
+        checkpoint: steps[1].id,
         sessionId: parsed.sessionId,
         next: 'Complete only the necessary Xiaohongshu login/verification in the existing browser profile, then rerun publish_note with the same inputs.',
         receipts,

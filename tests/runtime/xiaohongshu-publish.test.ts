@@ -36,6 +36,7 @@ describe('xiaohongshu publish recipe', () => {
     const image = buildXiaohongshuPublishRecipe({ ...baseArgs, mode: 'image_note', image_paths: ['cover.png', 'detail.png'] });
     expect(image.normalizedMode).toBe('image_note');
     const imageSteps = image.steps as Array<Record<string, any>>;
+    expect(imageSteps[1]).toMatchObject({ id: 'preflight.probe_image_page', actionId: 'query_all', args: { selector: 'input[type=file]', limit: 1 } });
     expect(imageSteps.find((step) => step.id === 'image.attach_files')?.args.file_paths).toEqual(['cover.png', 'detail.png']);
     expect(imageSteps.find((step) => step.id === 'publish.semantic_submit')).toMatchObject({
       actionId: 'dispatch_event',
@@ -87,14 +88,14 @@ describe('xiaohongshu publish recipe', () => {
           currentUrl = String(input.args.url);
           return { url: currentUrl };
         }
+        if (input.actionId === 'query_all') return { url: currentUrl, count: 1, matches: [{ tag: 'input' }] };
         if (input.actionId === 'dispatch_event') {
           currentUrl = 'https://creator.xiaohongshu.com/publish/publish?source=official&published=true';
           return { url: currentUrl };
         }
         if (input.actionId === 'get_text') {
           textRead += 1;
-          if (textRead === 1) return { url: currentUrl, text: '创作服务平台 发布笔记 上传图文' };
-          if (textRead === 2) return { url: currentUrl, text: '发布笔记' };
+          if (textRead === 1) return { url: currentUrl, text: '发布笔记' };
           return { url: currentUrl, text: `懒洋洋睡前故事\n${baseArgs.title}` };
         }
         return { url: currentUrl };
@@ -119,8 +120,7 @@ describe('xiaohongshu publish recipe', () => {
     setXiaohongshuPluginHooksForTest({
       executeBrowserAction: async (input) => {
         authCalls.push(input.actionId);
-        if (input.actionId === 'navigate') return { url: String(input.args.url) };
-        if (input.actionId === 'get_text') return { url: 'https://creator.xiaohongshu.com/login', text: '扫码登录' };
+        if (input.actionId === 'navigate') return { url: 'https://creator.xiaohongshu.com/login?redirectReason=401' };
         return {};
       },
     });
@@ -129,7 +129,8 @@ describe('xiaohongshu publish recipe', () => {
       args: { ...baseArgs, mode: 'image_note', image_paths: ['cover.png'] }, origin: { surface: 'local-ui', actor: 'test' },
     });
     expect(auth.status).toBe('auth_required');
-    expect(authCalls).toEqual(['navigate', 'get_text']);
+    expect(auth.checkpoint).toBe('preflight.navigate_creator');
+    expect(authCalls).toEqual(['navigate']);
 
     authCalls.length = 0;
     const generation = await executeXiaohongshuPluginAction({
