@@ -1,6 +1,10 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
   classifyGithubIssueWatchObservation,
+  resolveGithubIssueWatchExecutable,
   type GithubIssueWatchIssue,
   type GithubIssueWatchState,
 } from '../../src/runtime/workflow/schedules/github-issue-watch';
@@ -13,7 +17,43 @@ const issue = (number: number, state: 'open' | 'closed', updatedAt: string): Git
   url: `https://github.com/moretea-labs/forge/issues/${number}`,
 });
 
+const tempRoots: string[] = [];
+afterEach(() => {
+  while (tempRoots.length) rmSync(tempRoots.pop()!, { recursive: true, force: true });
+});
+
+function executableFixture(name = 'gh'): string {
+  const root = mkdtempSync(join(tmpdir(), 'forge-gh-watch-'));
+  tempRoots.push(root);
+  const executable = join(root, name);
+  writeFileSync(executable, '#!/bin/sh\nexit 0\n');
+  chmodSync(executable, 0o755);
+  return executable;
+}
+
 describe('github issue watch', () => {
+  test('resolves an explicit absolute gh executable and rejects invalid configured overrides', () => {
+    const executable = executableFixture();
+    expect(resolveGithubIssueWatchExecutable({ gh_executable: executable }, { PATH: '' }, [])).toBe(executable);
+    expect(() => resolveGithubIssueWatchExecutable({ gh_executable: 'gh' }, { PATH: '' }, []))
+      .toThrow('SCHEDULE_GITHUB_ISSUE_WATCH_GH_EXECUTABLE_INVALID');
+    expect(() => resolveGithubIssueWatchExecutable({ gh_executable: join(executable, 'missing') }, { PATH: '' }, []))
+      .toThrow('SCHEDULE_GITHUB_ISSUE_WATCH_GH_EXECUTABLE_INVALID');
+  });
+
+  test('uses fixed trusted candidates before PATH and reports a stable not-found error', () => {
+    const preferred = executableFixture('preferred-gh');
+    const pathGh = executableFixture('gh');
+    expect(resolveGithubIssueWatchExecutable({}, { PATH: join(pathGh, '..') }, [preferred])).toBe(preferred);
+    expect(() => resolveGithubIssueWatchExecutable({}, { PATH: '' }, []))
+      .toThrow('SCHEDULE_GITHUB_ISSUE_WATCH_GH_EXECUTABLE_NOT_FOUND');
+  });
+
+  test('honors FORGE_GH_EXECUTABLE as an absolute trusted override', () => {
+    const executable = executableFixture();
+    expect(resolveGithubIssueWatchExecutable({}, { FORGE_GH_EXECUTABLE: executable, PATH: '' }, [])).toBe(executable);
+  });
+
   test('first observation establishes a baseline when no since cursor is configured', () => {
     const observed = classifyGithubIssueWatchObservation([
       issue(10, 'open', '2026-08-17T10:00:00Z'),
