@@ -625,11 +625,34 @@ function requiredString(value: unknown, field: string): string {
   return normalized;
 }
 
+function openShadowSelectorParts(selector: string): string[] {
+  return selector.split(/\s*>>>\s*/).map((part) => part.trim()).filter(Boolean);
+}
+
+function openShadowSelectorExpression(selector: string, all = false): string {
+  const parts = openShadowSelectorParts(selector);
+  if (parts.length <= 1) {
+    return all
+      ? `Array.from(document.querySelectorAll(${JSON.stringify(selector)}))`
+      : `document.querySelector(${JSON.stringify(selector)})`;
+  }
+  return `(() => {
+    const parts = ${JSON.stringify(parts)};
+    let root = document;
+    for (let index = 0; index < parts.length - 1; index += 1) {
+      const host = root.querySelector(parts[index]);
+      if (!host || !host.shadowRoot) return ${all ? '[]' : 'null'};
+      root = host.shadowRoot;
+    }
+    return ${all ? 'Array.from(root.querySelectorAll(parts[parts.length - 1]))' : 'root.querySelector(parts[parts.length - 1])'};
+  })()`;
+}
+
 function scriptText(selector?: string): string {
   if (!selector) {
     return 'document.body ? document.body.innerText : (document.documentElement ? document.documentElement.textContent : "")';
   }
-  return `(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? (el.innerText || el.textContent || '') : ''; })()`;
+  return `(() => { const el = ${openShadowSelectorExpression(selector)}; return el ? (el.innerText || el.textContent || '') : ''; })()`;
 }
 
 function resolveActionTarget(repoRoot: string, args: Record<string, unknown>): BrowserActionTarget {
@@ -1272,8 +1295,22 @@ async function openNativeAttachedContext(
           : 'Reattached directly to the saved plugin-owned macOS browser tab.',
         savedTab,
       };
-    } catch {
-      sessionResume = { sessionId: target.sessionId, status: 'stale_tab', reason: 'Saved plugin-owned macOS tab no longer exists; one replacement tab was created.', savedTab };
+    } catch (error) {
+      throw new AssistantPluginError(
+        'PLUGIN_BROWSER_SESSION_STATE_LOST',
+        'Saved macOS browser tab no longer exists; refusing to create a replacement tab because unsaved page state may be lost.',
+        {
+          retryable: false,
+          details: {
+            sessionId: target.sessionId,
+            browserProduct: savedProduct,
+            ownership: savedOwnership,
+            windowId: savedTab.windowId,
+            tabId: savedTab.tabId,
+            cause: error instanceof Error ? error.message : String(error),
+          },
+        },
+      );
     }
   } else {
     sessionResume = savedTab
@@ -1528,7 +1565,7 @@ const STABLE_SELECTOR_HELPERS = `
 const EXTRACTION_SCRIPTS = {
   query: (selector: string, limit: number) => `(() => {
     ${STABLE_SELECTOR_HELPERS}
-    const nodes = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).slice(0, ${limit});
+    const nodes = ${openShadowSelectorExpression(selector, true)}.slice(0, ${limit});
     return nodes.map((el) => {
       const role = el.getAttribute('role');
       const text = (el.innerText || el.textContent || '').trim().slice(0, 120);
@@ -1536,11 +1573,11 @@ const EXTRACTION_SCRIPTS = {
     });
   })()`,
   attribute: (selector: string, attribute: string) => `(() => {
-    const el = document.querySelector(${JSON.stringify(selector)});
+    const el = ${openShadowSelectorExpression(selector)};
     return el ? el.getAttribute(${JSON.stringify(attribute)}) : null;
   })()`,
   html: (selector?: string) => selector
-    ? `(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? el.outerHTML : ''; })()`
+    ? `(() => { const el = ${openShadowSelectorExpression(selector)}; return el ? el.outerHTML : ''; })()`
     : 'document.documentElement ? document.documentElement.outerHTML : ""',
   links: (limit: number) => `(() => {
     ${STABLE_SELECTOR_HELPERS}
@@ -2753,7 +2790,16 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           const clicked = await page.evaluate((payload) => {
             const args = payload as { text: string };
             const normalize = (value: string) => value.replace(/\s+/g, ' ').trim();
-            const candidates = Array.from(document.querySelectorAll<HTMLElement>('button,[role=button],a,div,span'))
+            const roots: Array<Document | ShadowRoot> = [document];
+            const candidates: HTMLElement[] = [];
+            for (let index = 0; index < roots.length; index += 1) {
+              const root = roots[index];
+              candidates.push(...Array.from(root.querySelectorAll<HTMLElement>('button,[role=button],a,div,span')));
+              for (const host of Array.from(root.querySelectorAll<HTMLElement>('*'))) {
+                if (host.shadowRoot) roots.push(host.shadowRoot);
+              }
+            }
+            const matches = candidates
               .filter((element) => normalize(element.innerText || element.textContent || '') === args.text)
               .filter((element) => {
                 const style = getComputedStyle(element);
@@ -2767,7 +2813,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
                 const rightRect = right.getBoundingClientRect();
                 return (leftRect.width * leftRect.height) - (rightRect.width * rightRect.height);
               });
-            const element = candidates[0];
+            const element = matches[0];
             if (!element) throw new Error(`visible exact text not found: ${args.text}`);
             element.click();
             return { tag: element.tagName.toLowerCase(), className: element.className || '', text: normalize(element.innerText || element.textContent || '') };
@@ -2787,7 +2833,22 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const timeoutMs = positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
         try {
           return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
-            if (input.actionId === 'click') await page.click(selector, { timeout: timeoutMs });
+            if (input.actionId === 'click' && openShadowSelectorParts(selector).length > 1) {
+              const parts = openShadowSelectorParts(selector);
+              await page.evaluate((payload) => {
+                const args = payload as { parts: string[] };
+                let root: Document | ShadowRoot = document;
+                for (let index = 0; index < args.parts.length - 1; index += 1) {
+                  const host: Element | null = root.querySelector(args.parts[index]);
+                  if (!host || !host.shadowRoot) throw new Error(`Open shadow root not found for selector segment: ${args.parts[index]}`);
+                  root = host.shadowRoot;
+                }
+                const element = root.querySelector(args.parts[args.parts.length - 1]) as HTMLElement | null;
+                if (!element || typeof element.click !== 'function') throw new Error('Shadow selector did not resolve to a clickable element.');
+                element.click();
+                return true;
+              }, { parts });
+            } else if (input.actionId === 'click') await page.click(selector, { timeout: timeoutMs });
             else if (input.actionId === 'double_click') {
               if (page.dblclick) await page.dblclick(selector, { timeout: timeoutMs });
               else await page.click(selector, { timeout: timeoutMs, clickCount: 2 } as Record<string, unknown>);

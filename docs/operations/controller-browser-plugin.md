@@ -43,7 +43,8 @@ Session metadata is reusable across actions via `session_id`. Any action that re
 ### Reliability and safety notes
 
 - Domain allowlist is checked before navigation and after interactive URL changes.
-- Selector failures include repair hints (`repairHint`) when possible. Selector snapshots prefer unique `data-*`, role/ARIA, name, and non-generated id anchors; structural `nth-of-type` paths are only a last resort and are derived from the actual DOM sibling position rather than result order.
+- Selector failures include repair hints (`repairHint`) when possible. Selector snapshots prefer unique `data-*`, role/ARIA, name, and non-generated id anchors; structural `nth-of-type` paths are only a last resort and are derived from the actual DOM sibling position rather than result order. Open Shadow DOM can be traversed explicitly with bounded `host >>> descendant` selectors; closed shadow roots remain inaccessible.
+- Reusing a saved macOS native session is fail-closed: if the stable plugin-owned tab identity disappears, Forge returns `PLUGIN_BROWSER_SESSION_STATE_LOST` instead of silently creating a replacement tab that could discard unsaved form/editor state.
 - Console errors and failed requests are captured for Playwright/CDP cycles. Apple Events attachment reports empty console/network diagnostics because those streams are not exposed by the browser scripting dictionary.
 - Artifacts stay under `.forge/browser/**` (not arbitrary local paths).
 - CDP attach is bounded to configured loopback endpoints only; the plugin does not scan arbitrary ports or remote hosts. Native discovery checks only the configured Chrome/Vivaldi candidates and does not launch them.

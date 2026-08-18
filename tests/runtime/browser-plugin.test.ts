@@ -279,6 +279,9 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
 
   return {
     events,
+    dropOwnedTab(tabId: string) {
+      ownedTabs.delete(tabId);
+    },
     hooks: {
       platform: 'darwin' as const,
       appExists: () => true,
@@ -1021,6 +1024,30 @@ describe('browser plugin', () => {
     expect(native.events.activeTabId).toBe('501');
   });
 
+  test('open shadow selectors use bounded shadowRoot traversal for click actions', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+    });
+    const runtime = mockPlaywright() as unknown as { evaluatedExpressions: unknown[] };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+
+    const opened = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session', requestId: 'shadow-open',
+      args: { url: 'https://example.com/shadow' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'click', requestId: 'shadow-click',
+      args: { session_id: sessionId, selector: 'xhs-publish-btn >>> button' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(runtime.evaluatedExpressions.map((entry) => String(entry)).join('\n')).toContain('shadowRoot');
+  });
+
   test('attach_preferred creates one plugin-owned Vivaldi tab, preserves the user tab, and reuses it across actions', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {
@@ -1071,6 +1098,43 @@ describe('browser plugin', () => {
     expect(closed).toMatchObject({ closed: true, resourceClosed: true });
     expect(native.events.closed).toEqual(['9001']);
     expect(native.events.activeTabId).toBe('501');
+  });
+
+  test('native attach fails closed when a saved plugin-owned tab disappears', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const first = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'stale-owned-first', args: { url: 'https://example.com/editing' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String(first.sessionId);
+    native.dropOwnedTab('9001');
+
+    let error: unknown;
+    try {
+      await executeBrowserPluginAction({
+        controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+        requestId: 'stale-owned-second', args: { session_id: sessionId }, origin: { surface: 'local-ui', actor: 'test' },
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(AssistantPluginError);
+    expect((error as AssistantPluginError).code).toBe('PLUGIN_BROWSER_SESSION_STATE_LOST');
+    expect(native.events.created).toEqual(['9001']);
   });
 
   test('native session reattaches the same tab after its Chrome window id changes instead of opening a duplicate', async () => {
