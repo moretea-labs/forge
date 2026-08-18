@@ -1337,10 +1337,10 @@ async function selectManagedSessionPage(
     }
   }
 
-  if (target.existingSession?.browser?.tab && options.allowReplacement === false) {
+  if (target.existingSession && options.allowReplacement === false) {
     throw new AssistantPluginError(
       'PLUGIN_BROWSER_SESSION_STATE_LOST',
-      'Saved managed browser page no longer exists; refusing to create a replacement page for this existing-session action.',
+      'Saved managed browser page no longer exists; refusing to create or claim a replacement page for this existing-session action.',
       {
         retryable: false,
         details: { sessionId: target.sessionId, provider: 'playwright-persistent-context' },
@@ -1439,21 +1439,39 @@ async function openManagedContext(
 ): Promise<BrowserOpenHandle> {
   const profile = selectedProfile(config, repoRoot, activeMode, target.sessionId);
   const persistentKey = managedContextKey(profile);
-  assertBrowserProfileAvailable(repoRoot, profile.selectedProfilePath);
-  mkdirSync(profile.profileDir, { recursive: true });
-  let context: BrowserContextLike;
-  let selected: Awaited<ReturnType<typeof selectManagedSessionPage>> | Awaited<ReturnType<typeof selectPage>>;
-  let managedState: ManagedBrowserContextState | undefined;
-  if (activeMode === 'managed_persistent') {
-    const requireExistingResource = args.__forge_require_existing_resource === true;
-    if (requireExistingResource && target.existingSession?.browser?.provider === 'playwright-persistent-context'
-      && !managedBrowserContexts.has(persistentKey)) {
+  const requireExistingResource = args.__forge_require_existing_resource === true;
+  if (requireExistingResource && target.existingSession && activeMode === 'managed_persistent') {
+    const savedConnection = target.existingSession.browser;
+    if (savedConnection?.provider !== 'playwright-persistent-context'
+      || savedConnection.activeMode !== 'managed_persistent') {
+      throw new AssistantPluginError(
+        'PLUGIN_BROWSER_SESSION_STATE_LOST',
+        'Saved browser session belongs to a different browser provider/mode; refusing to migrate it into a replacement managed browser/page for this existing-session action.',
+        {
+          retryable: false,
+          details: {
+            sessionId: target.sessionId,
+            savedProvider: savedConnection?.provider,
+            savedActiveMode: savedConnection?.activeMode,
+            requestedActiveMode: activeMode,
+          },
+        },
+      );
+    }
+    if (!managedBrowserContexts.has(persistentKey)) {
       throw new AssistantPluginError(
         'PLUGIN_BROWSER_SESSION_STATE_LOST',
         'The managed browser context for this saved session is no longer live; refusing to launch a replacement browser/page for this existing-session action.',
         { retryable: false, details: { sessionId: target.sessionId, provider: 'playwright-persistent-context' } },
       );
     }
+  }
+  assertBrowserProfileAvailable(repoRoot, profile.selectedProfilePath);
+  mkdirSync(profile.profileDir, { recursive: true });
+  let context: BrowserContextLike;
+  let selected: Awaited<ReturnType<typeof selectManagedSessionPage>> | Awaited<ReturnType<typeof selectPage>>;
+  let managedState: ManagedBrowserContextState | undefined;
+  if (activeMode === 'managed_persistent') {
     managedState = await managedContextState(runtime, repoRoot, config, profile);
     context = managedState.context;
     try {
@@ -1878,7 +1896,9 @@ async function withPage<T>(
   for (let attempt = 1; attempt <= retries; attempt += 1) {
     let handle: BrowserOpenHandle | undefined;
     try {
-      const browserArgs = options.requireExistingResource
+      if (target.existingSession) assertBrowserSessionAvailable(repoRoot, target.sessionId);
+      const requireExistingResource = options.requireExistingResource ?? Boolean(target.existingSession);
+      const browserArgs = requireExistingResource
         ? { ...args, __forge_require_existing_resource: true }
         : args;
       handle = await openBrowser(repoRoot, config, target, browserArgs);
@@ -3240,7 +3260,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
               ? { text: await extractText(page, undefined, positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS)) }
               : {}),
           };
-        });
+        }, { requireExistingResource: false });
       }
       case 'reload':
       case 'go_back':
