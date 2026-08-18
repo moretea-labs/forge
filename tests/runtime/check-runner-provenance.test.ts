@@ -131,11 +131,17 @@ describe('controller check provenance and failure classification', () => {
       name: 'check-provenance-fixture',
       scripts: {
         'check:type': 'bun x tsc --noEmit',
+        'test:browser-live': 'bun tests/live/browser-native-silent.e2e.ts',
         'check:custom': 'node generate.js',
       },
     }));
     const checks = listControllerChecks(repoRoot);
     expect(checks.find((entry) => entry.id === 'package:check:type')?.effects).toEqual({ reads: ['.'], cache: 'write' });
+    expect(checks.find((entry) => entry.id === 'package:test:browser-live')?.effects).toEqual({
+      reads: ['.'],
+      temp: 'isolated',
+      hostServices: ['browser-live'],
+    });
     expect(checks.find((entry) => entry.id === 'package:check:custom')?.effects).toBeUndefined();
   });
 

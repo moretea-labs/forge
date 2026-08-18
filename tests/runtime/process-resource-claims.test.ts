@@ -115,6 +115,20 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
   });
 
+  test('browser-live declared effects avoid build-cache serialization while retaining host browser coordination', () => {
+    const effects = { reads: ['.'], temp: 'isolated' as const, hostServices: ['browser-live'] };
+    const browserA = claimsForCheck('package:test:browser-live', ['bun', 'tests/live/browser-native-silent.e2e.ts'], 'repo1', 'co-browser-a', effects);
+    const browserB = claimsForCheck('package:test:browser-live', ['bun', 'tests/live/browser-native-silent.e2e.ts'], 'repo1', 'co-browser-b', effects);
+    const typecheck = claimsForCheck('package:check:type', ['bun', 'run', 'check:type'], 'repo1', 'co-type');
+
+    expect(browserA).toContainEqual({ resourceKey: 'workspace:co-browser-a', mode: 'read' });
+    expect(browserA).toContainEqual({ resourceKey: 'temp:repo1:package-test-browser-live', mode: 'write' });
+    expect(browserA).toContainEqual({ resourceKey: 'host-service:browser-live', mode: 'write' });
+    expect(browserA.some((claim) => claim.resourceKey === 'build-cache:repo1')).toBe(false);
+    expect(browserA.some((claim) => typecheck.some((other) => claimsConflict(claim, lease(other.resourceKey, other.mode))))).toBe(false);
+    expect(browserA.some((claim) => browserB.some((other) => claimsConflict(claim, lease(other.resourceKey, other.mode))))).toBe(true);
+  });
+
   test('undeclared custom build checks fail closed without duplicate workspace read', () => {
     const claims = claimsForCheck('custom:generate', ['bun', 'run', 'generate'], 'repo1', 'co1');
     expect(claims).toEqual([{ resourceKey: 'workspace:co1', mode: 'write' }]);

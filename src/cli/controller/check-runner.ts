@@ -184,7 +184,16 @@ function normalizeCheckEffects(repoRoot: string, value: unknown): ControllerChec
 function inferredPackageCheckEffects(name: string): ControllerCheckEffects | undefined {
   const normalized = name.trim().toLowerCase();
   const staticAnalysis = /(?:^|:)(?:type|typecheck|lint|format:check|runtime-architecture|mcp-compatibility|forge-runtime)$/.test(normalized);
-  return staticAnalysis ? { reads: ['.'], cache: 'write' } : undefined;
+  if (staticAnalysis) return { reads: ['.'], cache: 'write' };
+  const browserLive = /(?:^|:)browser-live$/.test(normalized);
+  if (browserLive) {
+    return {
+      reads: ['.'],
+      temp: 'isolated',
+      hostServices: ['browser-live'],
+    };
+  }
+  return undefined;
 }
 
 function configuredChecks(repoRoot: string): ControllerCheck[] {
