@@ -1040,7 +1040,7 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(recorded?.targetId).toBe('SIM-1');
 
     const openCommand = commands.find(({ argv }) => argv[1] === 'open')!;
-    expect(openCommand.argv).toEqual(expect.arrayContaining(['--device', 'iPhone 17 Pro', '--session', sessionId, '--platform', 'ios', '--json', '--relaunch']));
+    expect(openCommand.argv).toEqual(expect.arrayContaining(['--device', 'SIM-1', '--session', sessionId, '--platform', 'ios', '--json', '--relaunch']));
     const sessionCommands = commands.filter(({ argv }) => ['open', 'snapshot', 'press', 'fill', 'scroll', 'screenshot', 'events', 'close'].includes(argv[1]!));
     const stateDirs = new Set(sessionCommands.map(({ env }) => env?.AGENT_DEVICE_STATE_DIR));
     expect(stateDirs.size).toBe(1);

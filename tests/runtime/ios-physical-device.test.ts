@@ -818,7 +818,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
       hidCalls += 1;
       throw new AssistantPluginError('IOS_HID_INPUT_NOT_READY', 'worker still warming', {
         retryable: true,
-        details: { mutationDispatched: false },
+        details: { mutationDispatched: false, phase: 'worker_warmup' },
       });
     });
     setIosPhysicalDeviceRuntimeHooksForTest({
@@ -850,7 +850,14 @@ describe('CoreDevice-first physical iPhone provider', () => {
     } catch (error) {
       expect(error).toMatchObject({
         code: 'IOS_HID_BATCH_FAILED', retryable: true,
-        details: { completedMutations: 0, retryWholeBatch: true, causeCode: 'IOS_HID_INPUT_NOT_READY' },
+        details: {
+          completedMutations: 0,
+          retryWholeBatch: true,
+          causeCode: 'IOS_HID_INPUT_NOT_READY',
+          causePhase: 'worker_warmup',
+          mutationDispatched: false,
+          causeMessage: 'worker still warming',
+        },
       });
     }
     expect(hidCalls).toBe(1);

@@ -1514,6 +1514,13 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
             ? normalized.details as Record<string, unknown>
             : {};
           const retryWholeBatch = completedMutations === 0 && causeDetails.mutationDispatched === false;
+          const causePhase = typeof causeDetails.phase === 'string' ? causeDetails.phase : undefined;
+          const causeMutationDispatched = typeof causeDetails.mutationDispatched === 'boolean'
+            ? causeDetails.mutationDispatched
+            : undefined;
+          const causeMessage = normalized.message.startsWith(`${normalized.code}: `)
+            ? normalized.message.slice(normalized.code.length + 2, normalized.code.length + 514)
+            : normalized.message.slice(0, 512);
           appendEvent(input, record.interactionId, 'batch_failed', {
             requestId: input.requestId,
             failedStepIndex: index,
@@ -1522,6 +1529,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
             completedMutations,
             retryWholeBatch,
             causeCode: normalized.code,
+            ...(causePhase ? { causePhase } : {}),
+            ...(causeMutationDispatched === undefined ? {} : { mutationDispatched: causeMutationDispatched }),
+            causeMessage,
           });
           recordTiming(timingStages, 'eventPersistence', eventStartedAt, false);
           throw new AssistantPluginError(
@@ -1538,6 +1548,9 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
                 completedMutations,
                 retryWholeBatch,
                 causeCode: normalized.code,
+                ...(causePhase ? { causePhase } : {}),
+                ...(causeMutationDispatched === undefined ? {} : { mutationDispatched: causeMutationDispatched }),
+                causeMessage,
               },
             },
           );

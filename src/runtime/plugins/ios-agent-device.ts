@@ -2327,7 +2327,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
     };
     writeInteractionSession(input.repoRoot, record);
     writeSigningConfig(input, interactionId, signingFromArgs(input.args));
-    const args = ['open', app, '--device', selected.name];
+    const args = ['open', app, '--device', selected.id];
     if (input.args.relaunch === true) args.push('--relaunch');
     try {
       const result = await runJsonAsync(input, [...args, '--session', record.sessionId, '--platform', 'ios', '--json'], {
