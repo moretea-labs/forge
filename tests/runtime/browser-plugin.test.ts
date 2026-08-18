@@ -779,6 +779,56 @@ describe('browser plugin', () => {
     expect(bResumed.browserConnection).toMatchObject({ sessionResume: { status: 'matched' } });
   });
 
+  test('reload reuses the exact managed page and fails closed after that page lifecycle is lost', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+    });
+    const runtime = mockManagedPersistentPlaywright() as unknown as {
+      events: { launches: number; newPages: number; gotos: Array<{ id: string; url: string }> };
+      states: Array<{ id: string; url: string; ownerToken?: string; closed: boolean }>;
+    };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+
+    const opened = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-managed-keepalive-open', args: { url: 'https://example.com/keepalive' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    const launchesBeforeReload = runtime.events.launches;
+    const pagesBeforeReload = runtime.states.length;
+
+    const reloaded = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'reload',
+      requestId: 'browser-managed-keepalive-reload', args: { session_id: sessionId },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(runtime.events.launches).toBe(launchesBeforeReload);
+    expect(runtime.states).toHaveLength(pagesBeforeReload);
+    expect(reloaded.browserConnection).toMatchObject({ sessionResume: { status: 'matched' }, tab: { ownership: 'plugin_owned' } });
+
+    resetBrowserPluginRuntimeHooksForTest();
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'reload',
+      requestId: 'browser-managed-keepalive-stale', args: { session_id: sessionId },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('PLUGIN_BROWSER_SESSION_STATE_LOST');
+    expect(runtime.events.launches).toBe(launchesBeforeReload);
+    expect(runtime.states).toHaveLength(pagesBeforeReload);
+    const listed = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'list_sessions',
+      requestId: 'browser-managed-keepalive-list-after-stale', args: {},
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect((listed.sessions as Array<{ sessionId: string }>).some((session) => session.sessionId === sessionId)).toBe(false);
+  });
+
   test('returns a clear dependency error when playwright is missing', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {
