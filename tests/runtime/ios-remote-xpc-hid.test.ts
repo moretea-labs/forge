@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import {
   executeRemoteXpcHidInput,
   parseMacOSTrustedRsdEndpoints,
+  remoteXpcHidWarmupFailureErrorForTest,
   remoteXpcHidWorkerSourceForTest,
   remoteXpcHidStatus,
   resetRemoteXpcHidForTest,
@@ -11,7 +12,7 @@ import {
 afterEach(() => resetRemoteXpcHidForTest());
 
 describe('RemoteXPC HID backend', () => {
-  it('pairs trusted macOS tunnel addresses with RSD server ports and prefers newest observations', () => {
+  it('pairs RSD ports only with the latest trusted macOS tunnel host', () => {
     const udid = '00008150-000429063E01401C';
     const log = [
       `2026-08-17 16:40:00 remotepairingd device-21 (${udid}): Tunnel established - interface: utun10, local fd00:1::2-> remote fd00:1::1`,
@@ -21,17 +22,46 @@ describe('RemoteXPC HID backend', () => {
     ].join('\n');
     expect(parseMacOSTrustedRsdEndpoints(log, udid)).toEqual([
       { host: 'fd00:2::1', port: 53194 },
-      { host: 'fd00:1::1', port: 53190 },
     ]);
   });
 
-  it('uses a dedicated CoreDevice virtual keyboard for text so modifier chords use the sniffed bitmap protocol', () => {
+  it('keeps direct ASCII/backspace on the connected CoreDevice keyboard and isolates modifier chords', () => {
     const source = remoteXpcHidWorkerSourceForTest();
-    expect(source).toContain("keyboardSource': 'virtual_coredevice_lazy'");
-    expect(source).toContain("keyboard_service = await hid.create_keyboard_service(product='Forge virtual keyboard')");
-    expect(source).toContain("'keyboardSource': 'virtual_coredevice'");
-    expect(source).not.toContain("keyboardSource': 'connected_coredevice'");
-    expect(source).not.toContain('No connected CoreDevice keyboard HID service is available');
+    expect(source).toContain("'keyboardSource': 'connected_coredevice' if direct_keyboard_service is not None else 'none'");
+    expect(source).toContain("needs_modifier_keyboard = use_pasteboard or replace_existing");
+    expect(source).toContain("keyboard_service = direct_keyboard_service");
+    expect(source).toContain("modifier_keyboard_service = await hid.create_keyboard_service(product='Forge modifier keyboard')");
+    expect(source).toContain("keyboard_source = 'virtual_coredevice_modifier' if needs_modifier_keyboard else 'virtual_coredevice_fallback'");
+    expect(source.indexOf("keyboard_service = direct_keyboard_service")).toBeLessThan(source.indexOf("modifier_keyboard_service = await hid.create_keyboard_service"));
+  });
+
+  it('keeps only recent ports from the latest tunnel host and never falls back to an older host', () => {
+    const udid = '00008150-000429063E01401C';
+    const log = [
+      `2026-08-17 16:40:00 remotepairingd (${udid}): Tunnel established - interface: utun10, local fd00:1::2-> remote fd00:1::1`,
+      `2026-08-17 16:40:00 remotepairingd (${udid}): Creating RSD backend client device for server port 51001`,
+      `2026-08-17 16:50:00 remotepairingd (${udid}): Tunnel established - interface: utun11, local fd00:2::2-> remote fd00:2::1`,
+      `2026-08-17 16:50:00 remotepairingd (${udid}): Creating RSD backend client device for server port 52001`,
+      `2026-08-17 16:51:00 remotepairingd (${udid}): Creating RSD backend client device for server port 52002`,
+    ].join('\n');
+    expect(parseMacOSTrustedRsdEndpoints(log, udid)).toEqual([
+      { host: 'fd00:2::1', port: 52002 },
+      { host: 'fd00:2::1', port: 52001 },
+    ]);
+  });
+
+  it('surfaces the bounded warmup failure instead of degrading it to a generic still-warming error', () => {
+    const error = remoteXpcHidWarmupFailureErrorForTest('device-1', 'RSD handshake closed before ready');
+    expect(error).toMatchObject({
+      code: 'IOS_HID_INPUT_NOT_SENT',
+      retryable: true,
+      details: {
+        deviceIdentifier: 'device-1',
+        mutationDispatched: false,
+        phase: 'worker_warmup',
+      },
+    });
+    expect(error.message).toContain('RSD handshake closed before ready');
   });
 
   it('reports a controller-owned toolchain and never claims Runner ownership', () => {
@@ -85,15 +115,17 @@ describe('RemoteXPC HID backend', () => {
     expect(observed).not.toHaveProperty('height');
   });
 
-  it('maps backspace through the virtual keyboard report path', () => {
+  it('maps backspace through the direct built-in keyboard report path', () => {
     const source = remoteXpcHidWorkerSourceForTest();
     expect(source).toContain('KEY_BACKSPACE');
     expect(source).toContain("if char == '\\b':");
     expect(source).toContain('return (KEY_BACKSPACE, False)');
     expect(source).toContain('mapping = keyboard_mapping(char)');
+    expect(source).toContain("keyboard_service = direct_keyboard_service");
+    expect(source).toContain("needs_modifier_keyboard = use_pasteboard or replace_existing");
   });
 
-  it('uses verified virtual-keyboard Command-A and Command-V chords for whole-field Unicode replacement', () => {
+  it('uses a modifier-only virtual keyboard for Command-A and Command-V whole-field replacement', () => {
     const source = remoteXpcHidWorkerSourceForTest();
     expect(source).toContain("phase = 'hid_keyboard_select_all'");
     expect(source).toContain('await send_keyboard_chord(hid, keyboard_service, [select_usage, KEY_LEFT_GUI])');

@@ -67,6 +67,12 @@ class WorkerRequestError extends Error {
   }
 }
 
+interface WarmupFailure {
+  generation: number;
+  recordedAt: number;
+  message: string;
+}
+
 interface WorkerRecord {
   key: string;
   endpoint: RsdEndpoint;
@@ -84,6 +90,7 @@ let testExecutor: TestExecutor | undefined;
 const workers = new Map<string, WorkerRecord>();
 const warmups = new Map<string, Promise<void>>();
 const workerGenerations = new Map<string, number>();
+const warmupFailures = new Map<string, WarmupFailure>();
 
 export function setRemoteXpcHidExecutorForTest(executor: TestExecutor | undefined): void {
   testExecutor = executor;
@@ -95,6 +102,7 @@ export function resetRemoteXpcHidForTest(): void {
   workers.clear();
   warmups.clear();
   workerGenerations.clear();
+  warmupFailures.clear();
 }
 
 export function remoteXpcHidStatus(controllerHome: string, env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
@@ -184,14 +192,30 @@ async def main():
             service_rows = connected.get('connectedServices', []) if isinstance(connected, dict) else []
             service_ids = [row.get('_ServiceID') for row in service_rows if isinstance(row, dict)]
             rsd_services = sorted((getattr(rsd, 'peer_info', {}) or {}).get('Services', {}).keys())
-            keyboard_service = None
-            keyboard_create_ms = None
+            direct_keyboard_service = None
+            direct_keyboard_product = None
+            for row in service_rows:
+                if not isinstance(row, dict):
+                    continue
+                service_id = row.get('_ServiceID')
+                if not isinstance(service_id, int) or service_id <= 0:
+                    continue
+                device_hint = str(row.get('DeviceTypeHint') or '').lower()
+                product = str(row.get('Product') or '')
+                if device_hint == 'keyboard' or 'keyboard' in product.lower():
+                    direct_keyboard_service = service_id
+                    direct_keyboard_product = product or None
+                    break
+            modifier_keyboard_service = None
+            modifier_keyboard_create_ms = None
             print(json.dumps({
                 'ready': True,
                 'serviceIds': service_ids,
-                'keyboardReady': False,
-                'keyboardReused': False,
-                'keyboardSource': 'virtual_coredevice_lazy',
+                'keyboardReady': direct_keyboard_service is not None,
+                'keyboardReused': direct_keyboard_service is not None,
+                'keyboardSource': 'connected_coredevice' if direct_keyboard_service is not None else 'none',
+                'keyboardProduct': direct_keyboard_product,
+                'modifierKeyboardSource': 'virtual_coredevice_lazy',
                 'pasteboardAvailable': 'com.apple.coredevice.pasteboardservice' in rsd_services,
                 'pasteboardTransport': 'independent_rsd',
             }), flush=True)
@@ -253,13 +277,23 @@ async def main():
                         if text_mode == 'keys' and not key_supported:
                             raise ValueError('unsupported HID character in keys mode')
 
+                        needs_modifier_keyboard = use_pasteboard or replace_existing
+                        keyboard_service = direct_keyboard_service
+                        keyboard_source = 'connected_coredevice' if direct_keyboard_service is not None else None
+                        keyboard_create_ms = 0.0
+                        if needs_modifier_keyboard or keyboard_service is None:
+                            if modifier_keyboard_service is None:
+                                phase = 'hid_modifier_keyboard_create' if needs_modifier_keyboard else 'hid_keyboard_fallback_create'
+                                keyboard_started = time.perf_counter()
+                                modifier_keyboard_service = await hid.create_keyboard_service(product='Forge modifier keyboard')
+                                modifier_keyboard_create_ms = (time.perf_counter() - keyboard_started) * 1000.0
+                                await hid.send_keyboard(modifier_keyboard_service, [])
+                                await asyncio.sleep(0.060)
+                            keyboard_service = modifier_keyboard_service
+                            keyboard_create_ms = modifier_keyboard_create_ms or 0.0
+                            keyboard_source = 'virtual_coredevice_modifier' if needs_modifier_keyboard else 'virtual_coredevice_fallback'
                         if keyboard_service is None:
-                            phase = 'hid_keyboard_create'
-                            keyboard_started = time.perf_counter()
-                            keyboard_service = await hid.create_keyboard_service(product='Forge virtual keyboard')
-                            keyboard_create_ms = (time.perf_counter() - keyboard_started) * 1000.0
-                            await hid.send_keyboard(keyboard_service, [])
-                            await asyncio.sleep(0.060)
+                            raise RuntimeError('No usable CoreDevice keyboard HID service is available')
 
                         if use_pasteboard:
                             phase = 'pasteboard_connect'
@@ -301,8 +335,8 @@ async def main():
                                 'length': len(text),
                                 'inputMode': 'pasteboard',
                                 'replaceExisting': replace_existing,
-                                'keyboardSource': 'virtual_coredevice',
-                                'keyboardCreateMs': round(keyboard_create_ms or 0.0, 2),
+                                'keyboardSource': keyboard_source,
+                                'keyboardCreateMs': round(keyboard_create_ms, 2),
                                 'pasteboardTransport': 'independent_rsd',
                                 'pasteboardRestored': pasteboard_restored,
                             }
@@ -337,8 +371,8 @@ async def main():
                                 'length': len(text),
                                 'inputMode': 'keys',
                                 'replaceExisting': replace_existing,
-                                'keyboardSource': 'virtual_coredevice',
-                                'keyboardCreateMs': round(keyboard_create_ms or 0.0, 2),
+                                'keyboardSource': keyboard_source,
+                                'keyboardCreateMs': round(keyboard_create_ms, 2),
                             }
                     else:
                         raise ValueError('unsupported action')
@@ -384,11 +418,13 @@ function materializeWorker(controllerHome: string): string {
 export function parseMacOSTrustedRsdEndpoints(output: string, udid: string): RsdEndpoint[] {
   const endpoints: RsdEndpoint[] = [];
   let host: string | undefined;
+  let latestHost: string | undefined;
   for (const line of output.split(/\r?\n/)) {
     if (!line.includes(udid)) continue;
     const tunnel = line.match(/remote\s+([0-9a-fA-F:]+)\s*$/);
     if (tunnel) {
       host = tunnel[1];
+      latestHost = host;
       continue;
     }
     const portMatch = line.match(/Creating RSD backend client device for server port\s+(\d+)/);
@@ -397,9 +433,12 @@ export function parseMacOSTrustedRsdEndpoints(output: string, udid: string): Rsd
       if (Number.isInteger(port) && port > 0 && port <= 65_535) endpoints.push({ host, port });
     }
   }
+  if (!latestHost) return [];
   const unique = new Map<string, RsdEndpoint>();
-  for (const endpoint of endpoints) unique.set(`${endpoint.host}:${endpoint.port}`, endpoint);
-  return [...unique.values()].slice(-12).reverse();
+  for (const endpoint of endpoints) {
+    if (endpoint.host === latestHost) unique.set(`${endpoint.host}:${endpoint.port}`, endpoint);
+  }
+  return [...unique.values()].slice(-3).reverse();
 }
 
 function trustedTunnelLogArgs(udid: string): string[] {
@@ -475,11 +514,36 @@ function workerGeneration(deviceIdentifier: string): number {
   return workerGenerations.get(deviceIdentifier) ?? 0;
 }
 
+function warmupFailureError(deviceIdentifier: string, failure: WarmupFailure): AssistantPluginError {
+  return new AssistantPluginError(
+    'IOS_HID_INPUT_NOT_SENT',
+    `RemoteXPC HID warmup failed before any input was sent: ${failure.message}`,
+    {
+      retryable: true,
+      details: {
+        deviceIdentifier,
+        mutationDispatched: false,
+        phase: 'worker_warmup',
+        warmupFailureAgeMs: Math.max(0, Date.now() - failure.recordedAt),
+      },
+    },
+  );
+}
+
+export function remoteXpcHidWarmupFailureErrorForTest(deviceIdentifier: string, message: string): AssistantPluginError {
+  return warmupFailureError(deviceIdentifier, {
+    generation: workerGeneration(deviceIdentifier),
+    recordedAt: Date.now(),
+    message: message.slice(0, 1024),
+  });
+}
+
 export function stopRemoteXpcHidForDevice(deviceIdentifier: string): Record<string, unknown> {
   const worker = workers.get(deviceIdentifier);
   const cancelledWarmup = warmups.has(deviceIdentifier);
   workerGenerations.set(deviceIdentifier, workerGeneration(deviceIdentifier) + 1);
   warmups.delete(deviceIdentifier);
+  warmupFailures.delete(deviceIdentifier);
   if (worker) stopWorker(worker);
   return {
     backend: 'remote-xpc-hid',
@@ -686,6 +750,7 @@ async function establishWorker(
         stopWorker(worker);
         return;
       }
+      warmupFailures.delete(input.deviceIdentifier);
       return;
     } catch (error) {
       lastError = error;
@@ -707,9 +772,15 @@ export function prewarmRemoteXpcHid(input: Pick<RemoteXpcHidInput, 'controllerHo
     return { backend: 'remote-xpc-hid', state: 'unavailable', runnerOwned: false, reason: 'toolchain_missing' };
   }
   const generation = workerGeneration(input.deviceIdentifier);
+  warmupFailures.delete(input.deviceIdentifier);
   let warmup!: Promise<void>;
   warmup = establishWorker(input, generation)
-    .catch(() => undefined)
+    .catch((error) => {
+      if (workerGeneration(input.deviceIdentifier) === generation) {
+        const message = (error instanceof Error ? error.message : String(error)).slice(0, 1024);
+        warmupFailures.set(input.deviceIdentifier, { generation, recordedAt: Date.now(), message });
+      }
+    })
     .then(() => undefined)
     .finally(() => {
       if (warmups.get(input.deviceIdentifier) === warmup) warmups.delete(input.deviceIdentifier);
@@ -755,6 +826,10 @@ async function waitForMutationWorker(
   const waitMs = Math.round((performance.now() - startedAt) * 100) / 100;
   const worker = workers.get(input.deviceIdentifier);
   if (!worker || worker.readyState !== 'ready') {
+    const failure = warmupFailures.get(input.deviceIdentifier);
+    if (failure?.generation === workerGeneration(input.deviceIdentifier) && !warmups.has(input.deviceIdentifier)) {
+      throw warmupFailureError(input.deviceIdentifier, failure);
+    }
     throw new AssistantPluginError(
       'IOS_HID_INPUT_NOT_READY',
       `RemoteXPC HID is still warming after the ${MUTATION_READY_BUDGET_MS}ms mutation readiness budget. No input was sent; retry the same action after prewarm completes.`,
