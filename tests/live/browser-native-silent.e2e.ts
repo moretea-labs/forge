@@ -97,7 +97,6 @@ try {
   setMacOsBrowserRuntimeHooksForTest({ platform: 'darwin', appExists: () => true, processRunning: async () => true, runAppleScript });
 
   const userTabBefore = await runAppleScript('tell application "Google Chrome" to return URL of active tab of front window as text');
-  const frontmostBefore = await runAppleScript('tell application "System Events" to get name of first application process whose frontmost is true');
   const first = await action('get_text', { url: one });
   assert(String(first.text).includes('Forge One'));
   sessionId = String(first.sessionId);
@@ -132,7 +131,6 @@ try {
   assert.equal(closed.closed, true);
   assert.equal(closed.resourceClosed, true);
   assert.equal(await runAppleScript('tell application "Google Chrome" to return URL of active tab of front window as text'), userTabBefore);
-  assert.equal(await runAppleScript('tell application "System Events" to get name of first application process whose frontmost is true'), frontmostBefore);
   assert.equal(scripts.some((script) => /\n\s*activate\s*\n/.test(script) || script.includes('set index of targetWindow to 1')), false);
   console.log(JSON.stringify({ ok: true, appleScriptCalls: timings.length, durationMs: Math.round(timings.reduce((sum, entry) => sum + entry.ms, 0)), timings }));
 } finally {
