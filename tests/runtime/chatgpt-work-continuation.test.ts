@@ -13,6 +13,7 @@ import {
 import {
   chatgptAutomationPageFailure,
   chatgptAutomationReasoningLevelFromLabel,
+  chatgptBrowserActionArgs,
   isChatgptConversationUrl,
   resolveChatgptWorkBrowserSessionId,
   runWorkChatgptContinuation,
@@ -26,6 +27,15 @@ const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
 
 describe('ChatGPT Work conversation binding', () => {
+  test('pins ChatGPT automation Browser actions to native Chrome attach without global transport mutation', () => {
+    expect(chatgptBrowserActionArgs('open_page', { session_id: 'session-a', url: 'https://chatgpt.com/' })).toMatchObject({
+      session_id: 'session-a', browser_mode: 'attach_preferred', cdp_attach_fallback: 'fail_closed',
+      native_attach_mode: 'auto', native_browser_candidates: ['chrome'],
+    });
+    expect(chatgptBrowserActionArgs('get_text', { session_id: 'session-a' })).toMatchObject({ browser_mode: 'attach_preferred' });
+    expect(chatgptBrowserActionArgs('configure', { enabled: true })).toEqual({ enabled: true });
+  });
+
   test('uses the ChatGPT conversation id as stable machine identity', () => {
     expect(parseChatgptConversationIdentity('https://www.chatgpt.com/c/abc-123?x=1#tail')).toEqual({
       conversationUrl: 'https://chatgpt.com/c/abc-123',

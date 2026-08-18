@@ -418,7 +418,7 @@ export async function resolveBrowserPluginAuthorizationContext(
   const action = actions().find((entry) => entry.actionId === input.actionId);
   if (!action || action.confirmation !== 'authorization' || !action.scopes.includes('browser.interact')) return undefined;
 
-  const config = loadConfig(input.repoRoot);
+  const config = effectiveBrowserActionConfig(loadConfig(input.repoRoot), input.args);
   const sessionId = stringValue(input.args.session_id);
   if (!sessionId || config.browserMode === 'isolated') return undefined;
   const session = findSession(input.repoRoot, sessionId);
@@ -563,6 +563,16 @@ function parseNativeBrowserCandidatesInput(value: unknown): MacOsBrowserProduct[
   const parsed = browserProductList(value);
   if (parsed) return parsed;
   throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'native_browser_candidates must contain chrome and/or vivaldi.', { retryable: false });
+}
+
+function effectiveBrowserActionConfig(config: BrowserPluginConfig, args: Record<string, unknown>): BrowserPluginConfig {
+  return {
+    ...config,
+    browserMode: parseBrowserModeInput(args.browser_mode) ?? config.browserMode,
+    cdpAttachFallback: parseCdpAttachFallbackInput(args.cdp_attach_fallback) ?? config.cdpAttachFallback,
+    nativeAttachMode: parseNativeAttachModeInput(args.native_attach_mode) ?? config.nativeAttachMode,
+    nativeBrowserCandidates: parseNativeBrowserCandidatesInput(args.native_browser_candidates) ?? config.nativeBrowserCandidates,
+  };
 }
 
 function cdpEndpoints(config: BrowserPluginConfig): string[] {
@@ -2290,6 +2300,10 @@ function sessionTargetSchema(extra: Record<string, unknown> = {}, required: stri
       wait_until: { type: 'string', enum: ['load', 'domcontentloaded', 'networkidle'] },
       timeout_ms: { type: 'number' },
       retries: { type: 'number' },
+      browser_mode: { type: 'string', enum: ['attach_preferred', 'managed_persistent', 'isolated'] },
+      cdp_attach_fallback: { type: 'string', enum: ['managed_persistent', 'fail_closed'] },
+      native_attach_mode: { type: 'string', enum: ['auto', 'disabled'] },
+      native_browser_candidates: { type: 'array', items: { type: 'string', enum: ['vivaldi', 'chrome'] }, maxItems: 2 },
       ...extra,
     },
     ...(required.length > 0 ? { required } : {}),
@@ -2886,7 +2900,8 @@ export function buildBrowserPluginManifest(previousRevision = 0, previousUpdated
 }
 
 export async function executeBrowserPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
-  const current = loadConfig(input.repoRoot);
+  const persisted = loadConfig(input.repoRoot);
+  const current = input.actionId === 'configure' ? persisted : effectiveBrowserActionConfig(persisted, input.args);
   if (!current.enabled && input.actionId !== 'configure') {
     throw new AssistantPluginError('PLUGIN_DISABLED', 'Browser plugin is disabled.', { retryable: false });
   }

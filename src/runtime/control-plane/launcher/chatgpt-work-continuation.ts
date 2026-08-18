@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { executeBrowserPluginAction, readBrowserPluginConfiguration } from '../../plugins/browser-adapter';
+import { executeBrowserPluginAction } from '../../plugins/browser-adapter';
 import { controllerPluginRepository } from '../../plugins/store';
 import { getWorkContract } from '../facade/work-contract-store';
 import {
@@ -90,6 +90,18 @@ function requestId(workId: string, actionId: string): string {
   return `chatgpt-work:${workId}:${actionId}:${randomUUID()}`;
 }
 
+const CHATGPT_BROWSER_TRANSPORT_OVERRIDES = {
+  browser_mode: 'attach_preferred',
+  cdp_attach_fallback: 'fail_closed',
+  native_attach_mode: 'auto',
+  native_browser_candidates: ['chrome'],
+} as const;
+
+export function chatgptBrowserActionArgs(actionId: string, args: Record<string, unknown>): Record<string, unknown> {
+  if (actionId === 'configure' || actionId === 'list_sessions' || actionId === 'reconcile_sessions') return args;
+  return { ...args, ...CHATGPT_BROWSER_TRANSPORT_OVERRIDES };
+}
+
 async function controllerBrowserAction(
   controllerHome: string,
   workId: string,
@@ -107,7 +119,7 @@ async function controllerBrowserAction(
     pluginId: 'browser',
     actionId,
     requestId: requestId(workId, actionId),
-    args,
+    args: chatgptBrowserActionArgs(actionId, args),
     timeoutMs,
     origin: { surface: 'schedule', actor: 'chatgpt-work-continuation' },
   });
@@ -117,18 +129,7 @@ async function ensureControllerChatgptBrowser(controllerHome: string, workId: st
   const repository = controllerPluginRepository(controllerHome);
   const repoRoot = repository.canonicalRoot ?? repository.localRoot;
   if (!repoRoot) throw new Error('CHATGPT_CONTROLLER_BROWSER_ROOT_UNAVAILABLE');
-  const existing = readBrowserPluginConfiguration(repoRoot);
-  await controllerBrowserAction(controllerHome, workId, 'configure', {
-    enabled: true,
-    ...(!existing.enabled ? {
-      browser_mode: 'attach_preferred',
-      profile_mode: 'repo_local',
-      browser_channel: 'chromium',
-      cdp_attach_fallback: 'fail_closed',
-      native_attach_mode: 'auto',
-      native_browser_candidates: ['chrome'],
-    } : {}),
-  });
+  await controllerBrowserAction(controllerHome, workId, 'configure', { enabled: true });
 }
 
 function stringField(value: unknown): string | undefined {

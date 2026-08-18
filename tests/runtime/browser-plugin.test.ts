@@ -737,6 +737,23 @@ describe('browser plugin', () => {
     expect(loadRoots).toEqual([repoRoot]);
   });
 
+  test('per-action transport override is ephemeral and fail-closed without changing persistent managed config', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'managed_persistent', profileMode: 'repo_local', browserChannel: 'chromium' });
+    const runtime = mockManagedPersistentPlaywright() as unknown as { events: { launches: number } };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page', requestId: 'browser-action-ephemeral-attach-fail-closed',
+      args: { url: 'https://example.com/ephemeral-transport', browser_mode: 'attach_preferred', cdp_attach_fallback: 'fail_closed', native_attach_mode: 'disabled', native_browser_candidates: ['chrome'] },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('PLUGIN_CONFIGURATION_INVALID');
+    expect(runtime.events.launches).toBe(0);
+    const persisted = JSON.parse(readFileSync(join(repoRoot, '.forge/plugins/browser.json'), 'utf8')) as Record<string, unknown>;
+    expect(persisted.browserMode).toBe('managed_persistent');
+    expect(persisted.cdpAttachFallback).toBeUndefined();
+    expect(persisted.nativeAttachMode).toBeUndefined();
+  });
+
   test('managed persistent sessions share one context but keep separate owner-bound pages across A-B-A reuse', async () => {
     const { repoRoot, controllerHome } = repoFixture();
     writeBrowserConfig(repoRoot, {
