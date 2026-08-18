@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -21,6 +21,8 @@ import {
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
+  AssistantPluginAuthorizationContext,
+  AssistantPluginAuthorizationTarget,
   AssistantPluginCapability,
 } from './types';
 import { awaitRemoteXpcHidPrewarm, executeRemoteXpcHidInput, remoteXpcHidStatus, stopRemoteXpcHidForDevice } from './ios/remote-xpc-hid';
@@ -918,6 +920,60 @@ async function waitPhysicalInputBatch(durationMs: number, signal?: AbortSignal):
 
 export function isIosPhysicalDeviceAction(actionId: string): boolean {
   return actionId.startsWith('physical_device_');
+}
+
+function physicalDeviceAuthorizationTarget(device: PhysicalDevice): AssistantPluginAuthorizationTarget {
+  const identityFingerprint = createHash('sha256')
+    .update(`${device.identifier}\0${device.udid ?? ''}`)
+    .digest('hex');
+  return {
+    kind: 'ios-physical-device',
+    id: device.identifier,
+    identityFingerprint,
+  };
+}
+
+/**
+ * Resolve authorization against the exact CoreDevice identity. Interaction ids are
+ * intentionally never grant identities: follow-up input actions must recover and
+ * verify the immutable device target stored when the session was opened.
+ */
+export async function resolveIosPhysicalDeviceAuthorizationContext(
+  input: AssistantPluginActionExecutionInput,
+): Promise<AssistantPluginAuthorizationContext | undefined> {
+  const action = iosPhysicalDeviceActions().find((entry) => entry.actionId === input.actionId);
+  if (!action || action.confirmation !== 'authorization') return undefined;
+
+  if (input.actionId === 'physical_device_open') {
+    const selected = await selectDevice(input, input.args.device);
+    return {
+      target: physicalDeviceAuthorizationTarget(selected),
+      expiresInMinutes: 30 * 24 * 60,
+    };
+  }
+
+  const { record, state } = requireRecord(input, input.actionId === 'physical_device_close');
+  const aliases = new Set([record.targetId, ...(record.targetAliases ?? [])]);
+  if (record.targetId !== state.device.identifier
+    || !aliases.has(state.device.identifier)
+    || (state.device.udid && !aliases.has(state.device.udid))) {
+    throw new AssistantPluginError(
+      'IOS_DEVICE_AUTHORIZATION_TARGET_MISMATCH',
+      'The persisted physical iOS session no longer matches its exact device authorization identity.',
+      {
+        retryable: false,
+        details: {
+          interactionId: record.interactionId,
+          sessionTargetId: record.targetId,
+          stateDeviceIdentifier: state.device.identifier,
+        },
+      },
+    );
+  }
+  return {
+    target: physicalDeviceAuthorizationTarget(state.device),
+    expiresInMinutes: 30 * 24 * 60,
+  };
 }
 
 export function iosPhysicalDeviceCapabilities(): AssistantPluginCapability[] {

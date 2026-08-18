@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { spawnSync } from 'child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   executeIosPhysicalDeviceAction,
   resetIosPhysicalDeviceRuntimeHooksForTest,
+  resolveIosPhysicalDeviceAuthorizationContext,
   setIosPhysicalDeviceRuntimeHooksForTest,
 } from '../../src/runtime/plugins/ios-physical-device';
 import {
@@ -12,6 +14,10 @@ import {
   setRemoteXpcHidExecutorForTest,
 } from '../../src/runtime/plugins/ios/remote-xpc-hid';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
+import { readInteractionSession, writeInteractionSession } from '../../src/runtime/plugins/interaction-session';
+import { registerRepository } from '../../src/cli/repositories/registry';
+import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
+import { listPluginCapabilityAuthorizations } from '../../src/runtime/plugins/capability-authorization-grants';
 
 const roots: string[] = [];
 
@@ -150,6 +156,9 @@ describe('CoreDevice-first physical iPhone provider', () => {
 
   it('opens, types, and screenshots without probing or creating a semantic Runner session', async () => {
     const value = fixture();
+    spawnSync('git', ['init', '-b', 'main'], { cwd: value.repoRoot, stdio: 'ignore' });
+    const repository = registerRepository({ path: value.repoRoot, controllerHome: value.controllerHome });
+    value.repoId = repository.repoId;
     const commands: string[][] = [];
     setRemoteXpcHidExecutorForTest(async (request) => ({
       backend: 'remote-xpc-hid', reusedWorker: true,
@@ -188,13 +197,30 @@ describe('CoreDevice-first physical iPhone provider', () => {
       },
     });
 
-    const opened = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
+    const openAuthorization = await resolveIosPhysicalDeviceAuthorizationContext(input(value, 'physical_device_open', {
       device: 'greyson', bundle_id: 'com.xingin.discover',
     }));
+    expect(openAuthorization?.target).toMatchObject({
+      kind: 'ios-physical-device',
+      id: 'CORE-DEVICE-1',
+    });
+    expect(openAuthorization?.target.identityFingerprint).toHaveLength(64);
+
+    const openedSubmission = await submitAssistantPluginAction(value.controllerHome, repository, {
+      pluginId: 'ios', actionId: 'physical_device_open', requestId: 'physical-open-grant',
+      args: { device: 'greyson', bundle_id: 'com.xingin.discover' }, origin: { surface: 'mcp', actor: 'principal:test-user' },
+    });
+    expect(openedSubmission.authorization).toMatchObject({ source: 'host_permission_model', reusable: true, established: true, capabilityId: 'ios-physical-device' });
+    const opened = openedSubmission.result?.result as Record<string, unknown>;
     const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
     expect(opened.provider).toBe('coredevice');
     expect(opened.controlPlane).toMatchObject({ lifecycle: 'coredevice', observation: 'coredevice', semanticFallback: 'agent-device', runnerOwned: false });
     expect(opened.foregroundVerification).toMatchObject({ authority: 'screenshot_observation', required: true });
+    const sessionAuthorization = await resolveIosPhysicalDeviceAuthorizationContext(input(value, 'physical_device_type_text', {
+      interaction_id: interactionId, text: 'Forge123',
+    }));
+    expect(sessionAuthorization?.target).toEqual(openAuthorization?.target);
+
     await observeAndConfirmForeground(value, interactionId);
     const typed = await executeIosPhysicalDeviceAction(input(value, 'physical_device_type_text', {
       interaction_id: interactionId, text: 'Forge123',
@@ -202,13 +228,31 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(typed.text).toBe('<redacted>');
     expect(commands.some((argv) => argv.join(' ').includes('device info displays'))).toBe(false);
 
-    const screenshot = await executeIosPhysicalDeviceAction(input(value, 'physical_device_screenshot', {
-      interaction_id: interactionId, label: 'xhs',
-    }));
+    const screenshotSubmission = await submitAssistantPluginAction(value.controllerHome, repository, {
+      pluginId: 'ios', actionId: 'physical_device_screenshot', requestId: 'physical-screenshot-grant',
+      args: { interaction_id: interactionId, label: 'xhs' }, origin: { surface: 'mcp', actor: 'principal:test-user' },
+    });
+    expect(screenshotSubmission.authorization).toMatchObject({ source: 'capability_grant', grantId: openedSubmission.authorization?.grantId });
+    expect(listPluginCapabilityAuthorizations(value.controllerHome)).toHaveLength(1);
+    const screenshot = screenshotSubmission.result?.result as Record<string, unknown>;
     const artifact = (screenshot.artifactCandidates as Array<Record<string, unknown>>)[0]!;
     expect(existsSync(String(artifact.path))).toBe(true);
     expect(commands.some((argv) => argv.includes('xcodebuild'))).toBe(false);
     expect(commands.some((argv) => argv.includes('prepare'))).toBe(false);
+
+    const originalSession = readInteractionSession(value.repoRoot, 'ios-device', interactionId)!;
+    writeInteractionSession(value.repoRoot, { ...originalSession, targetId: 'CORE-DEVICE-2' });
+    try {
+      await resolveIosPhysicalDeviceAuthorizationContext(input(value, 'physical_device_type_text', {
+        interaction_id: interactionId, text: 'must-not-authorize',
+      }));
+      throw new Error('expected tampered session target to be rejected');
+    } catch (error) {
+      expect(error).toBeInstanceOf(AssistantPluginError);
+      expect((error as AssistantPluginError).code).toBe('IOS_DEVICE_AUTHORIZATION_TARGET_MISMATCH');
+    } finally {
+      writeInteractionSession(value.repoRoot, originalSession);
+    }
 
     const closed = await executeIosPhysicalDeviceAction(input(value, 'physical_device_close', { interaction_id: interactionId }));
     expect(closed.inputWorkerRelease).toMatchObject({ backend: 'remote-xpc-hid', state: 'stopped', runnerOwned: false });

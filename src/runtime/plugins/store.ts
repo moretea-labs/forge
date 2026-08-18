@@ -9,6 +9,12 @@ import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/
 import { createFirstPartyPluginAdapterMap } from './first-party-registry';
 import { getExternalPluginAdapter, listExternalPluginAdapters } from './external-adapter';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
+import {
+  findActivePluginCapabilityAuthorization,
+  pluginCapabilityAuthorizationOwnerScope,
+  recordPluginCapabilityAuthorization,
+  type PluginCapabilityAuthorizationGrant,
+} from './capability-authorization-grants';
 import { markControllerContextProjectionDirty } from '../projections/controller-context';
 import { classifyRepositoryCommand } from '../../cli/repositories/command-classifier';
 import {
@@ -24,6 +30,7 @@ import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
   AssistantPluginActionRequest,
+  AssistantPluginAuthorizationContext,
   AssistantPluginManifest,
   AssistantPluginRegistryIndex,
   AssistantPluginRegistryIndexEntry,
@@ -356,10 +363,59 @@ function enforceConfirmation(action: AssistantPluginActionDescriptor, request: A
   }
 }
 
+export interface PluginActionAuthorizationEvidence {
+  source: 'none' | 'host_permission_model' | 'capability_grant' | 'strong_confirmation';
+  reusable: boolean;
+  capabilityId?: string;
+  target?: { kind: string; id: string };
+  grantId?: string;
+  established?: boolean;
+  lookupError?: string;
+  persistenceError?: string;
+}
+
 function actionForManifest(manifest: AssistantPluginManifest, actionId: string): AssistantPluginActionDescriptor {
   const action = manifest.actions.find((entry) => entry.actionId === actionId);
   if (!action) throw new Error(`PLUGIN_ACTION_NOT_FOUND: ${manifest.pluginId}/${actionId}`);
   return action;
+}
+
+function reusableCapabilityId(manifest: AssistantPluginManifest, action: AssistantPluginActionDescriptor): string {
+  const matches = manifest.capabilities
+    .filter((capability) => capability.actions.includes(action.actionId))
+    .map((capability) => capability.capabilityId)
+    .filter(Boolean)
+    .sort();
+  // Overlapping capability groups are ambiguous privilege boundaries. Fall back
+  // to action-local reuse instead of silently choosing a broader capability.
+  return matches.length === 1 ? matches[0]! : `action:${action.actionId}`;
+}
+
+const INTERACTIVE_PLUGIN_AUTHORIZATION_SURFACES = new Set(['mcp', 'local-ui', 'chatgpt-action']);
+
+function originMayEstablishCapabilityAuthorization(origin: AssistantPluginActionExecutionInput['origin']): boolean {
+  return INTERACTIVE_PLUGIN_AUTHORIZATION_SURFACES.has(origin.surface);
+}
+
+function authorizationTargetSummary(context: AssistantPluginAuthorizationContext): { kind: string; id: string } {
+  return { kind: context.target.kind, id: context.target.id };
+}
+
+function authorizationError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.slice(0, 500);
+}
+
+function initialAuthorizationEvidence(
+  manifest: AssistantPluginManifest,
+  action: AssistantPluginActionDescriptor,
+): PluginActionAuthorizationEvidence {
+  if (action.confirmation === 'none') return { source: 'none', reusable: false };
+  const capabilityId = reusableCapabilityId(manifest, action);
+  if (action.confirmation === 'strong_confirmation') {
+    return { source: 'strong_confirmation', reusable: false, capabilityId };
+  }
+  return { source: 'host_permission_model', reusable: false, capabilityId };
 }
 
 const STANDING_GRANT_SAFE_ACTIONS = new Set([
@@ -544,6 +600,7 @@ export interface PluginActionReceipt {
   createdAt: string;
   workId?: string;
   origin?: { surface: string; actor?: string; correlationId?: string };
+  authorization?: PluginActionAuthorizationEvidence;
   result?: Record<string, unknown>;
   error?: { code: string; message: string };
 }
@@ -785,8 +842,11 @@ export async function submitAssistantPluginAction(
   deduplicated: boolean;
   result?: Record<string, unknown>;
   receipt: PluginActionReceipt;
+  authorization?: PluginActionAuthorizationEvidence;
   workId?: string;
 }> {
+  const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
+  if (!adapter) throw new Error(`PLUGIN_NOT_FOUND: ${request.pluginId}`);
   const manifest = getAssistantPluginManifest(controllerHome, repository, request.pluginId);
   const action = actionForManifest(manifest, request.actionId);
   if (!manifest.enabled && action.actionId !== 'configure') {
@@ -820,12 +880,17 @@ export async function submitAssistantPluginAction(
       deduplicated: true,
       result: existing.result,
       receipt: existing,
+      authorization: existing.authorization,
       workId: existing.workId,
     };
   }
 
   const createdAt = new Date().toISOString();
   const receiptId = `PLG-${Date.now()}-${createHash('sha256').update(request.requestId).digest('hex').slice(0, 8)}`;
+  const capabilityId = reusableCapabilityId(manifest, action);
+  let authorization = initialAuthorizationEvidence(manifest, action);
+  let authorizationContext: AssistantPluginAuthorizationContext | undefined;
+  let activeAuthorizationGrant: PluginCapabilityAuthorizationGrant | undefined;
   const boundRemoteWork = remoteEffectWorkForPluginAction(controllerHome, repository, action, request);
   const requiresLocalEffectWork = localSystemActionRequiresWork(
     repository,
@@ -885,10 +950,63 @@ export async function submitAssistantPluginAction(
       receiptId,
       risk: action.risk,
       confirmation: action.confirmation,
+      capabilityId,
+      authorizationReuseSupported: action.confirmation === 'authorization' && Boolean(adapter.resolveAuthorizationContext),
     },
   });
 
   try {
+    if (action.confirmation === 'authorization'
+      && adapter.resolveAuthorizationContext
+      && originMayEstablishCapabilityAuthorization(request.origin)) {
+      authorizationContext = await adapter.resolveAuthorizationContext({
+        controllerHome,
+        repoId: repository.repoId,
+        repoRoot: repository.canonicalRoot,
+        pluginId: request.pluginId,
+        actionId: request.actionId,
+        requestId: request.requestId,
+        args: normalizedArgs,
+        origin: request.origin,
+        jobId: receiptId,
+        timeoutMs: request.timeoutMs,
+        signal: request.signal,
+      });
+      if (authorizationContext) {
+        authorization = {
+          source: 'host_permission_model',
+          reusable: false,
+          capabilityId,
+          target: authorizationTargetSummary(authorizationContext),
+        };
+        try {
+          activeAuthorizationGrant = findActivePluginCapabilityAuthorization(controllerHome, {
+            ownerScope: pluginCapabilityAuthorizationOwnerScope(request.origin),
+            repoId: repository.repoId,
+            pluginId: request.pluginId,
+            capabilityId,
+            target: authorizationContext.target,
+            scopes: action.scopes,
+            risk: action.risk,
+          });
+          if (activeAuthorizationGrant) {
+            authorization = {
+              source: 'capability_grant',
+              reusable: true,
+              capabilityId,
+              target: authorizationTargetSummary(authorizationContext),
+              grantId: activeAuthorizationGrant.grantId,
+            };
+          }
+        } catch (error) {
+          authorization = {
+            ...authorization,
+            lookupError: authorizationError(error),
+          };
+        }
+      }
+    }
+
     const result = await executeAssistantPluginAction({
       controllerHome,
       repoId: repository.repoId,
@@ -905,6 +1023,39 @@ export async function submitAssistantPluginAction(
         ? Date.now() + Math.max(1, Math.trunc(request.timeoutMs))
         : undefined,
     });
+    if (action.confirmation === 'authorization'
+      && authorizationContext
+      && !activeAuthorizationGrant
+      && originMayEstablishCapabilityAuthorization(request.origin)) {
+      try {
+        const grant = recordPluginCapabilityAuthorization(controllerHome, {
+          ownerScope: pluginCapabilityAuthorizationOwnerScope(request.origin),
+          repoId: repository.repoId,
+          pluginId: request.pluginId,
+          capabilityId,
+          target: authorizationContext.target,
+          scopes: action.scopes,
+          riskCeiling: action.risk,
+          expiresInMinutes: authorizationContext.expiresInMinutes,
+        });
+        authorization = {
+          source: 'host_permission_model',
+          reusable: true,
+          capabilityId,
+          target: authorizationTargetSummary(authorizationContext),
+          grantId: grant.grantId,
+          established: true,
+          ...(authorization.lookupError ? { lookupError: authorization.lookupError } : {}),
+        };
+      } catch (error) {
+        authorization = {
+          ...authorization,
+          reusable: false,
+          persistenceError: authorizationError(error),
+        };
+      }
+    }
+
     let resultWithLineage = result;
     if (boundRemoteWork) {
       resultWithLineage = {
@@ -963,6 +1114,7 @@ export async function submitAssistantPluginAction(
       createdAt,
       ...(acceptedWork ? { workId: acceptedWork.workId } : boundRemoteWork ? { workId: boundRemoteWork.workId } : {}),
       origin: request.origin,
+      authorization,
       result: resultWithLineage,
     };
     writeJsonAtomic(pluginActionReceiptPath(controllerHome, repository.repoId, receiptId), receipt);
@@ -982,6 +1134,7 @@ export async function submitAssistantPluginAction(
       deduplicated: false,
       result: resultWithLineage,
       receipt,
+      authorization,
       workId: acceptedWork?.workId ?? boundRemoteWork?.workId,
     };
   } catch (error) {
@@ -1020,6 +1173,7 @@ export async function submitAssistantPluginAction(
       createdAt,
       ...(acceptedWork ? { workId: acceptedWork.workId } : boundRemoteWork ? { workId: boundRemoteWork.workId } : {}),
       origin: request.origin,
+      authorization,
       error: { code, message },
     };
     writeJsonAtomic(pluginActionReceiptPath(controllerHome, repository.repoId, receiptId), receipt);

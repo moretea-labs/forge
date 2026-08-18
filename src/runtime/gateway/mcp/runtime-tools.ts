@@ -736,7 +736,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     repo_id: repoId,
     plugin_id: { type: 'string' },
   }, ['plugin_id']),
-  definition('plugin_action_execute', 'Submit one typed repository or controller-scoped plugin action through the durable execution layer.', {
+  definition('plugin_action_execute', 'Submit one typed repository or controller-scoped plugin action through the durable execution layer. For confirmation=authorization, normal host permission is authoritative and an exact-target Forge capability grant may be reused; do not set confirm_authorization merely because an ordinary authorization-class action was previously allowed. Strong-confirmation actions still require their explicit confirmation contract.', {
     repo_id: repoId,
     plugin_id: { type: 'string' },
     action_id: { type: 'string' },
@@ -744,8 +744,8 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     work_id: { type: 'string', description: 'Optional existing remote-effect Work that should own the successful typed plugin receipt.' },
     arguments: { type: 'object' },
     timeout_ms: { type: 'number' },
-    confirm_authorization: { type: 'boolean' },
-    confirmation_text: { type: 'string' },
+    confirm_authorization: { type: 'boolean', description: 'Explicit confirmation flag for strong_confirmation actions. Ordinary confirmation=authorization actions follow the host permission model and do not require this field.' },
+    confirmation_text: { type: 'string', description: 'Exact confirmation text for strong_confirmation actions only.' },
   }, ['plugin_id', 'action_id', 'request_id'], false),
   definition('toolchain_plugin_summary', 'Return a redacted, low-interception plugin summary without raw config files or full action schemas.', {
     repo_id: repoId,
@@ -6150,6 +6150,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           receiptId: submitted.receipt.receiptId,
           requestId: submitted.receipt.requestId,
           ...(submitted.receipt.workId ? { workId: submitted.receipt.workId } : {}),
+          authorization: submitted.authorization,
           result: submitted.result,
           detail: {
             tool: 'rh_context',

@@ -3,13 +3,20 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import { join } from 'path';
-import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
+import { installExternalPluginRegistration, type ExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
+import { createExternalPluginAdapter } from '../../src/runtime/plugins/external-adapter';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { finalizeGoalWorkloop, startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
 import { createFirstPartyPluginAdapterMap } from '../../src/runtime/plugins/first-party-registry';
 import { DEFAULT_REPORT_SINKS } from '../../src/runtime/personal-assistant/reporting-runtime';
+import { getPluginActionCapabilitySchema } from '../../src/runtime/control-plane/facade/capability-registry';
+import { buildPluginManagementManifest } from '../../src/runtime/plugins/plugin-management-adapter';
+import {
+  findActivePluginCapabilityAuthorization,
+  recordPluginCapabilityAuthorization,
+} from '../../src/runtime/plugins/capability-authorization-grants';
 import {
   completeResendOAuthLogin,
   getResendOAuthAccessToken,
@@ -209,6 +216,63 @@ describe('plugin management external registration lifecycle', () => {
       pluginId: 'plugin_management', actionId: 'list_registrations', requestId: 'plugin-management-list-after-remove', args: {}, origin: { surface: 'mcp', actor: 'test' },
     });
     expect((after.result!.result as Record<string, unknown>).registrations).toEqual([]);
+  });
+});
+
+describe('plugin capability authorization management', () => {
+  test('lists/revokes only the current principal and keeps strong confirmation non-reusable', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-capability-management-'));
+    roots.push(controllerHome);
+    const base = {
+      repoId: 'repo-test', pluginId: 'ios', capabilityId: 'ios-physical-device',
+      target: { kind: 'ios-physical-device', id: 'CORE-DEVICE-1', identityFingerprint: 'fingerprint-1' }, scopes: ['ios.device'],
+    };
+    const owned = recordPluginCapabilityAuthorization(controllerHome, {
+      ...base, ownerScope: 'mcp:principal:test-user', riskCeiling: 'workspace_write',
+    });
+    recordPluginCapabilityAuthorization(controllerHome, {
+      ...base, ownerScope: 'mcp:principal:other-user', target: { ...base.target, id: 'CORE-DEVICE-2' }, riskCeiling: 'workspace_write',
+    });
+    const repository = controllerPluginRepository(controllerHome);
+    const listed = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'plugin_management', actionId: 'list_capability_authorizations', requestId: 'capability-list', args: {},
+      origin: { surface: 'mcp', actor: 'principal:test-user' },
+    });
+    expect(((listed.result?.result as { authorizations: Array<{ grantId: string }> }).authorizations).map((entry) => entry.grantId)).toEqual([owned.grantId]);
+    await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'plugin_management', actionId: 'revoke_capability_authorization', requestId: 'capability-revoke',
+      args: { grant_id: owned.grantId, reason: 'user revoked test grant' }, origin: { surface: 'mcp', actor: 'principal:test-user' },
+    });
+    expect(findActivePluginCapabilityAuthorization(controllerHome, {
+      ...base, ownerScope: 'mcp:principal:test-user', risk: 'workspace_write',
+    })).toBeUndefined();
+    const manifest = buildPluginManagementManifest();
+    expect(getPluginActionCapabilitySchema('plugin.plugin_management.revoke_capability_authorization', [manifest])?.authorizationReuse).toMatchObject({ mode: 'exact_target_persistent_when_adapter_supported' });
+    expect(getPluginActionCapabilitySchema('plugin.plugin_management.remove_registration', [manifest])).toMatchObject({ confirmation: 'strong_confirmation', authorizationReuse: { mode: 'not_reusable' } });
+  });
+});
+
+describe('external plugin reusable authorization targets', () => {
+  test('maps Desktop Operator interaction ids to a verified stable application identity and fails closed when missing', async () => {
+    const registration: ExternalPluginRegistration = {
+      schemaVersion: 1, revision: 1, pluginId: 'desktop_operator', providerPluginId: 'desktop_operator', displayName: 'Forge Desktop Operator', provider: 'local-macos',
+      pluginVersion: '0.2.1', protocolVersion: '1.0', scope: 'controller', enabled: true,
+      transport: { kind: 'unix_socket_jsonl', socketPath: '/tmp/desktop.sock', maxRequestBytes: 1_048_576, maxResponseBytes: 1_048_576, healthTimeoutMs: 2_000, actionTimeoutMs: 30_000 },
+      permissions: [{ scope: 'desktop.interact', mode: 'write', description: 'Interact with one desktop app.', granted: true, required: true }],
+      capabilities: [{ capabilityId: 'desktop.interact', title: 'Desktop interaction', description: 'Interact with one desktop app.', scopes: ['desktop.interact'], actions: ['desktop_press'] }],
+      actions: [{ actionId: 'desktop_press', title: 'Press', description: 'Press one element.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 10_000, cancellable: true, idempotent: false, scopes: ['desktop.interact'], resourceClaims: [{ resource: 'provider-state', mode: 'write' }], argumentsSchema: { type: 'object', properties: { interaction_id: { type: 'string' } }, required: ['interaction_id'], additionalProperties: false } }],
+      legacyIdentities: [], registrationFingerprint: 'f'.repeat(64), installedAt: '2026-08-18T00:00:00.000Z', updatedAt: '2026-08-18T00:00:00.000Z',
+    };
+    const providerManifest = { id: 'desktop_operator', name: 'Forge Desktop Operator', version: '0.2.1', protocolVersion: '1.0', mode: 'external', scope: 'controller', provider: 'local-macos', capabilities: ['desktop.interact'], actions: ['desktop_press'] };
+    const adapter = createExternalPluginAdapter(registration, {
+      call: async (options) => options.method === 'manifest' ? providerManifest : { sessions: [{ interactionId: 'desk_123', bundleIdentifier: 'com.example.Editor', appName: 'Editor' }] },
+    });
+    const input = (interactionId: string) => ({ controllerHome: '/tmp/controller', repoId: '__controller__', repoRoot: '/tmp/controller', pluginId: 'desktop_operator', actionId: 'desktop_press', requestId: `desktop-auth-${interactionId}`, args: { interaction_id: interactionId }, origin: { surface: 'mcp', actor: 'principal:test-user' } } as const);
+    const resolved = await adapter.resolveAuthorizationContext?.(input('desk_123'));
+    expect(resolved?.target).toMatchObject({ kind: 'desktop-application', id: 'com.example.Editor' });
+    expect(resolved?.target.identityFingerprint).toHaveLength(64);
+    const missing = createExternalPluginAdapter(registration, { call: async (options) => options.method === 'manifest' ? providerManifest : { sessions: [] } });
+    await expect(missing.resolveAuthorizationContext?.(input('desk_missing'))).rejects.toThrow('EXTERNAL_PLUGIN_AUTHORIZATION_TARGET_UNAVAILABLE');
   });
 });
 

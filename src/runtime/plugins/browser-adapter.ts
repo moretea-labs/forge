@@ -5,6 +5,7 @@ import { basename, dirname, join, relative, resolve } from 'path';
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
+  AssistantPluginAuthorizationContext,
   AssistantPluginCapability,
   AssistantPluginHealth,
   AssistantPluginManifest,
@@ -365,6 +366,55 @@ function writeJson(path: string, value: unknown): void {
 
 function loadConfig(repoRoot: string): BrowserPluginConfig {
   return normalizeConfig(readJson<Partial<BrowserPluginConfig>>(configPath(repoRoot)) ?? {});
+}
+
+export async function resolveBrowserPluginAuthorizationContext(
+  input: AssistantPluginActionExecutionInput,
+): Promise<AssistantPluginAuthorizationContext | undefined> {
+  const action = actions().find((entry) => entry.actionId === input.actionId);
+  if (!action || action.confirmation !== 'authorization' || !action.scopes.includes('browser.interact')) return undefined;
+
+  const config = loadConfig(input.repoRoot);
+  const sessionId = stringValue(input.args.session_id);
+  if (!sessionId || config.browserMode === 'isolated') return undefined;
+  const session = findSession(input.repoRoot, sessionId);
+  const connection = session?.browser;
+  if (!session || !connection || connection.activeMode === 'isolated') return undefined;
+
+  let origin: string;
+  try {
+    const parsed = new URL(session.url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
+    origin = parsed.origin.toLowerCase();
+  } catch {
+    return undefined;
+  }
+
+  const profile = selectedProfile(config, input.repoRoot, connection.activeMode, sessionId);
+  const providerId = connection.browserProduct ?? connection.provider;
+  const identity = {
+    provider: connection.provider,
+    browserProduct: connection.browserProduct,
+    activeMode: connection.activeMode,
+    endpoint: connection.endpoint,
+    origin,
+    browserChannel: config.browserChannel,
+    executablePath: config.executablePath ? resolveConfiguredPath(input.repoRoot, config.executablePath) : undefined,
+    profileMode: config.profileMode,
+    selectedProfilePath: profile.selectedProfilePath,
+    profileDirectory: profile.profileDirectory,
+    cdpAttachFallback: config.cdpAttachFallback,
+    nativeAttachMode: config.nativeAttachMode,
+    nativeBrowserCandidates: config.nativeBrowserCandidates,
+  };
+  return {
+    target: {
+      kind: 'browser-origin',
+      id: `${providerId}@${origin}`,
+      identityFingerprint: createHash('sha256').update(JSON.stringify(identity)).digest('hex'),
+    },
+    expiresInMinutes: 30 * 24 * 60,
+  };
 }
 
 export function readBrowserPluginConfiguration(repoRoot: string): { enabled: boolean } {
@@ -2960,4 +3010,5 @@ export const browserPluginAdapter = {
   pluginId: BROWSER_PLUGIN_ID,
   buildManifest: buildBrowserPluginManifest,
   executeAction: executeBrowserPluginAction,
+  resolveAuthorizationContext: resolveBrowserPluginAuthorizationContext,
 };

@@ -7,6 +7,11 @@ import type {
 } from './types';
 import { AssistantPluginError } from './errors';
 import {
+  listPluginCapabilityAuthorizations,
+  pluginCapabilityAuthorizationOwnerScope,
+  revokePluginCapabilityAuthorization,
+} from './capability-authorization-grants';
+import {
   disableExternalPluginRegistration,
   getExternalPluginRegistration,
   installExternalPluginRegistration,
@@ -42,17 +47,28 @@ function permissions(): AssistantPluginPermissionScope[] {
     { scope: 'external-plugins.read', mode: 'read', description: 'Read and validate external plugin registrations.', granted: true, required: true },
     { scope: 'external-plugins.write', mode: 'write', description: 'Install, update, and disable validated external plugin registrations.', granted: true, required: true },
     { scope: 'external-plugins.remove', mode: 'write', description: 'Remove one external plugin registration after strong confirmation.', granted: true, required: true },
+    { scope: 'plugin-authorizations.read', mode: 'read', description: 'List reusable plugin capability authorizations owned by the current principal.', granted: true, required: true },
+    { scope: 'plugin-authorizations.revoke', mode: 'write', description: 'Revoke one reusable plugin capability authorization owned by the current principal.', granted: true, required: true },
   ];
 }
 
 function capabilities(): AssistantPluginCapability[] {
-  return [{
-    capabilityId: 'external-plugin-registration-management',
-    title: 'External Plugin Registration Management',
-    description: 'Preview, install/update, inspect, disable, and remove external provider registrations through the canonical validation authority.',
-    scopes: ['external-plugins.read', 'external-plugins.write', 'external-plugins.remove'],
-    actions: ['list_registrations', 'get_registration', 'preview_registration', 'install_registration', 'disable_registration', 'remove_registration'],
-  }];
+  return [
+    {
+      capabilityId: 'external-plugin-registration-management',
+      title: 'External Plugin Registration Management',
+      description: 'Preview, install/update, inspect, disable, and remove external provider registrations through the canonical validation authority.',
+      scopes: ['external-plugins.read', 'external-plugins.write', 'external-plugins.remove'],
+      actions: ['list_registrations', 'get_registration', 'preview_registration', 'install_registration', 'disable_registration', 'remove_registration'],
+    },
+    {
+      capabilityId: 'plugin-capability-authorization-management',
+      title: 'Plugin Capability Authorization Management',
+      description: 'List and revoke persistent exact-target plugin capability authorizations for the current principal.',
+      scopes: ['plugin-authorizations.read', 'plugin-authorizations.revoke'],
+      actions: ['list_capability_authorizations', 'revoke_capability_authorization'],
+    },
+  ];
 }
 
 const registrationProperty = { type: 'object', description: 'ExternalPluginRegistrationInput. Canonical Forge validation rejects invalid identity, transport, lifecycle, permissions, capabilities, and actions.' };
@@ -94,6 +110,18 @@ function actions(): AssistantPluginActionDescriptor[] {
       scopes: ['external-plugins.remove'], resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
       argumentsSchema: { type: 'object', properties: { plugin_id: { type: 'string' }, expected_revision: { type: 'number' } }, required: ['plugin_id'], additionalProperties: false },
     },
+    {
+      actionId: 'list_capability_authorizations', title: 'List plugin capability authorizations', description: 'List persistent exact-target plugin capability authorizations owned by the current principal; grants owned by other principals are not returned.',
+      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true,
+      scopes: ['plugin-authorizations.read'], resourceClaims: [{ resource: 'provider-state', mode: 'read' }],
+      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+      actionId: 'revoke_capability_authorization', title: 'Revoke plugin capability authorization', description: 'Revoke one persistent exact-target plugin capability authorization owned by the current principal.',
+      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true,
+      scopes: ['plugin-authorizations.revoke'], resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
+      argumentsSchema: { type: 'object', properties: { grant_id: { type: 'string' }, reason: { type: 'string' } }, required: ['grant_id', 'reason'], additionalProperties: false },
+    },
   ];
 }
 
@@ -101,7 +129,7 @@ export function buildPluginManagementManifest(previousRevision = 0, previousUpda
   return {
     schemaVersion: 1, manifestVersion: 1, revision: Math.max(1, previousRevision || 1), pluginId: PLUGIN_ID,
     provider: 'forge-controller', displayName: 'Forge Plugin Management', pluginVersion: '1.0.0',
-    authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-home:plugins/external/registrations'] },
+    authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-home:plugins/external/registrations', 'controller-home:system/plugin-capability-authorizations/grants.json'] },
     enabled: true, lifecycle: { state: 'enabled', reason: 'Canonical external plugin registration authority is available.' },
     health: { state: 'ready', checkedAt: now(), ready: true, probed: true, errors: [], warnings: [] },
     permissions: permissions(), capabilities: capabilities(), actions: actions(), updatedAt: previousUpdatedAt ?? now(),
@@ -121,6 +149,19 @@ export async function executePluginManagementAction(input: AssistantPluginAction
     case 'install_registration': return { registration: installExternalPluginRegistration(input.controllerHome, registrationInput(input.args.registration), { expectedRevision: expectedRevision(input.args.expected_revision) }) };
     case 'disable_registration': return { registration: disableExternalPluginRegistration(input.controllerHome, requiredString(input.args.plugin_id, 'plugin_id'), { expectedRevision: expectedRevision(input.args.expected_revision) }) };
     case 'remove_registration': return { removed: removeExternalPluginRegistration(input.controllerHome, requiredString(input.args.plugin_id, 'plugin_id'), { expectedRevision: expectedRevision(input.args.expected_revision) }) };
+    case 'list_capability_authorizations': return {
+      authorizations: listPluginCapabilityAuthorizations(
+        input.controllerHome,
+        pluginCapabilityAuthorizationOwnerScope(input.origin),
+      ),
+    };
+    case 'revoke_capability_authorization': return {
+      authorization: revokePluginCapabilityAuthorization(input.controllerHome, {
+        grantId: requiredString(input.args.grant_id, 'grant_id'),
+        ownerScope: pluginCapabilityAuthorizationOwnerScope(input.origin),
+        reason: requiredString(input.args.reason, 'reason'),
+      }),
+    };
     default: throw new AssistantPluginError('PLUGIN_ACTION_NOT_SUPPORTED', `${PLUGIN_ID}/${input.actionId} is not supported.`, { retryable: false });
   }
 }

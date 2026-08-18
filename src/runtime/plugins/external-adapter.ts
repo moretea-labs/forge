@@ -1,9 +1,10 @@
+import { createHash } from 'crypto';
 import { AssistantPluginError } from './errors';
 import { getExternalPluginRegistration, listExternalPluginRegistrations, type ExternalPluginRegistration } from './external-registration';
 import { callExternalUnixSocket, probeExternalUnixSocketSync, type ExternalUnixSocketCallOptions } from './external-unix-socket';
 import { executeManagedPluginProcess, executeManagedPluginProcessSync, type ManagedPluginProcessSpec } from './managed-process-adapter';
 import { restartVerifiedUserLaunchAgent, startVerifiedUserLaunchAgent, stopVerifiedUserLaunchAgent } from './local-system-adapter';
-import type { AssistantPluginActionDescriptor, AssistantPluginAdapter, AssistantPluginCapability, AssistantPluginHealth, AssistantPluginManifest, AssistantPluginPermissionScope } from './types';
+import type { AssistantPluginActionDescriptor, AssistantPluginAdapter, AssistantPluginAuthorizationContext, AssistantPluginCapability, AssistantPluginHealth, AssistantPluginManifest, AssistantPluginPermissionScope } from './types';
 
 interface ProviderManifest {
   id: string;
@@ -189,6 +190,96 @@ async function callProvider(
   });
 }
 
+function externalProviderAuthorizationContext(registration: ExternalPluginRegistration): AssistantPluginAuthorizationContext {
+  return {
+    target: {
+      kind: 'external-provider',
+      id: registration.pluginId,
+      identityFingerprint: registration.registrationFingerprint,
+    },
+    expiresInMinutes: 30 * 24 * 60,
+  };
+}
+
+function desktopApplicationAuthorizationContext(
+  registration: ExternalPluginRegistration,
+  stableApplicationId: string,
+): AssistantPluginAuthorizationContext {
+  const normalized = stableApplicationId.trim();
+  return {
+    target: {
+      kind: 'desktop-application',
+      id: normalized,
+      identityFingerprint: createHash('sha256')
+        .update(`${registration.registrationFingerprint}\0${normalized}`)
+        .digest('hex'),
+    },
+    expiresInMinutes: 30 * 24 * 60,
+  };
+}
+
+async function resolveExternalAuthorizationContext(
+  registration: ExternalPluginRegistration,
+  input: Parameters<NonNullable<AssistantPluginAdapter['resolveAuthorizationContext']>>[0],
+  dependencies: ExternalPluginAdapterDependencies,
+): Promise<AssistantPluginAuthorizationContext | undefined> {
+  if (EXTERNAL_PROVIDER_LIFECYCLE_ACTIONS.has(input.actionId)) {
+    return externalProviderAuthorizationContext(registration);
+  }
+  if (registration.pluginId !== 'desktop_operator') return undefined;
+  if (input.actionId === 'desktop_permissions_request') {
+    return externalProviderAuthorizationContext(registration);
+  }
+  if (input.actionId === 'desktop_session_open') {
+    const bundleId = typeof input.args.bundle_id === 'string' ? input.args.bundle_id.trim() : '';
+    return bundleId ? desktopApplicationAuthorizationContext(registration, bundleId) : undefined;
+  }
+
+  const interactionId = typeof input.args.interaction_id === 'string' ? input.args.interaction_id.trim() : '';
+  if (!interactionId) return undefined;
+
+  const providerManifest = await callProvider(
+    registration,
+    `${input.requestId}:authorization-target:manifest`,
+    'manifest',
+    {},
+    undefined,
+    input.signal,
+    dependencies,
+  );
+  parseProviderManifest(providerManifest, registration);
+  const status = await callProvider(
+    registration,
+    `${input.requestId}:authorization-target:desktop-status`,
+    'desktop_status',
+    { limit: 500 },
+    input.timeoutMs,
+    input.signal,
+    dependencies,
+  );
+  const sessions = Array.isArray(status.sessions) ? status.sessions : [];
+  const session = sessions.find((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const record = entry as Record<string, unknown>;
+    const id = typeof record.interactionId === 'string' ? record.interactionId : typeof record.interaction_id === 'string' ? record.interaction_id : '';
+    return id === interactionId;
+  }) as Record<string, unknown> | undefined;
+  if (!session) {
+    throw providerError('EXTERNAL_PLUGIN_AUTHORIZATION_TARGET_UNAVAILABLE', `Desktop session ${interactionId} was not found while resolving its stable authorization target.`, false);
+  }
+  const bundleId = typeof session.bundleIdentifier === 'string' ? session.bundleIdentifier.trim()
+    : typeof session.bundle_identifier === 'string' ? session.bundle_identifier.trim()
+      : '';
+  const appName = typeof session.appName === 'string' ? session.appName.trim()
+    : typeof session.app_name === 'string' ? session.app_name.trim()
+      : '';
+  const stableApplicationId = bundleId || (appName ? `name:${appName.toLowerCase()}` : '');
+  if (!stableApplicationId) {
+    throw providerError('EXTERNAL_PLUGIN_AUTHORIZATION_TARGET_UNAVAILABLE', `Desktop session ${interactionId} has no stable application identity.`, false);
+  }
+  return desktopApplicationAuthorizationContext(registration, stableApplicationId);
+}
+
 export function getExternalPluginAdapter(controllerHome: string, pluginId: string): AssistantPluginAdapter | undefined {
   const registration = getExternalPluginRegistration(controllerHome, pluginId);
   return registration ? createExternalPluginAdapter(registration) : undefined;
@@ -211,6 +302,7 @@ export function createExternalPluginAdapter(
   return {
     pluginId: registration.pluginId,
     scope: registration.scope,
+    resolveAuthorizationContext: (input) => resolveExternalAuthorizationContext(registration, input, dependencies),
     buildManifest(previousRevision = 0, previousUpdatedAt?: string): AssistantPluginManifest {
       const checkedAt = now().toISOString();
       if (!registration.enabled) {
