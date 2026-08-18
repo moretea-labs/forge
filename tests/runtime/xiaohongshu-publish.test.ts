@@ -37,6 +37,7 @@ describe('xiaohongshu publish recipe', () => {
     expect(image.normalizedMode).toBe('image_note');
     const imageSteps = image.steps as Array<Record<string, any>>;
     expect(imageSteps[1]).toMatchObject({ id: 'preflight.probe_image_page', actionId: 'query_all', args: { selector: 'input[type=file]', limit: 1 } });
+    expect(imageSteps.find((step) => step.id === 'image.wait_file_input')?.args.state).toBe('attached');
     expect(imageSteps.find((step) => step.id === 'image.attach_files')?.args.file_paths).toEqual(['cover.png', 'detail.png']);
     expect(imageSteps.find((step) => step.id === 'publish.semantic_submit')).toMatchObject({
       actionId: 'dispatch_event',
