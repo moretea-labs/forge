@@ -32,24 +32,10 @@ export interface TestManifestEntry {
   smoke?: boolean;
 }
 
-export interface TestBudgetPolicy {
-  maxTestFiles: number;
-  maxTestLines: number;
-  maxPureFiles: number;
-  maxTempIsolatedFiles: number;
-  maxProcessTreeFiles: number;
-  maxGitWorktreeFiles: number;
-  maxFixedPortFiles: number;
-  maxRuntimeSingletonFiles: number;
-  maxControllerHomeIsolatedFiles: number;
-  maxDestructiveFiles: number;
-}
-
 export interface TestManifest {
   version: 1;
   modules: TestModule[];
   resources: TestResource[];
-  policy: TestBudgetPolicy;
   pathModuleRules: Array<{ prefix: string; modules: TestModule[] }>;
   tests: Record<string, TestManifestEntry>;
 }
@@ -232,32 +218,6 @@ export function validateTestManifest(repoRoot: string, manifest = loadTestManife
     if (!TEST_RESOURCES.includes(entry.resource)) errors.push(`${file}: invalid resource ${String(entry.resource)}`);
   }
   if (!Object.values(manifest.tests).some((entry) => entry.smoke)) errors.push('manifest has no core smoke tests');
-  const resourceCounts = Object.values(manifest.tests).reduce<Record<string, number>>((counts, entry) => {
-    counts[entry.resource] = (counts[entry.resource] ?? 0) + 1;
-    return counts;
-  }, {});
-  const testLines = declaredFiles.reduce((total, file) => {
-    try {
-      return total + readFileSync(resolve(repoRoot, file), 'utf8').split('\n').length;
-    } catch (_error) {
-      return total;
-    }
-  }, 0);
-  const budgetChecks: Array<[string, number, number | undefined]> = [
-    ['maxTestFiles', declaredFiles.length, manifest.policy?.maxTestFiles],
-    ['maxTestLines', testLines, manifest.policy?.maxTestLines],
-    ['maxPureFiles', resourceCounts.pure ?? 0, manifest.policy?.maxPureFiles],
-    ['maxTempIsolatedFiles', resourceCounts['temp-isolated'] ?? 0, manifest.policy?.maxTempIsolatedFiles],
-    ['maxProcessTreeFiles', resourceCounts['process-tree'] ?? 0, manifest.policy?.maxProcessTreeFiles],
-    ['maxGitWorktreeFiles', resourceCounts['git-worktree'] ?? 0, manifest.policy?.maxGitWorktreeFiles],
-    ['maxFixedPortFiles', resourceCounts['fixed-port'] ?? 0, manifest.policy?.maxFixedPortFiles],
-    ['maxRuntimeSingletonFiles', resourceCounts['runtime-singleton'] ?? 0, manifest.policy?.maxRuntimeSingletonFiles],
-    ['maxControllerHomeIsolatedFiles', resourceCounts['controller-home-isolated'] ?? 0, manifest.policy?.maxControllerHomeIsolatedFiles],
-    ['maxDestructiveFiles', resourceCounts.destructive ?? 0, manifest.policy?.maxDestructiveFiles],
-  ];
-  for (const [name, actual, limit] of budgetChecks) {
-    if (typeof limit !== 'number' || actual > limit) errors.push(`test budget ${name} exceeded: ${actual} > ${String(limit)}`);
-  }
   return errors;
 }
 

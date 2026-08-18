@@ -22,18 +22,6 @@
     "runtime-singleton",
     "destructive"
   ],
-  "policy": {
-    "maxTestFiles": 121,
-    "maxTestLines": 50145,
-    "maxPureFiles": 35,
-    "maxTempIsolatedFiles": 47,
-    "maxProcessTreeFiles": 16,
-    "maxGitWorktreeFiles": 15,
-    "maxFixedPortFiles": 6,
-    "maxRuntimeSingletonFiles": 6,
-    "maxControllerHomeIsolatedFiles": 17,
-    "maxDestructiveFiles": 0
-  },
   "pathModuleRules": [
     {
       "prefix": "src/cli/controller/",

@@ -196,46 +196,6 @@ describe("Local Execution Bridge", () => {
     expect((await fetch(new URL("/health", handle.url))).status).toBe(200);
   });
 
-  test('keeps a healthy local Run alive while its controller owner is still active', async () => {
-    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
-    // Historical records remain readable; new work uses WorkContract + Process Runtime.
-    expect(() => {
-      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
-    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
-  });
-
-  test('uses the current workspace for one Run and auto-integrates a concurrent worktree Run', async () => {
-    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
-    // Historical records remain readable; new work uses WorkContract + Process Runtime.
-    expect(() => {
-      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
-    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
-  });
-
-  test('runs checks without blocking Controller health and deduplicates only active checks', async () => {
-    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
-    // Historical records remain readable; new work uses WorkContract + Process Runtime.
-    expect(() => {
-      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
-    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
-  });
-
-  test('rebuilds the active check index beyond recent history and keeps listings bounded', async () => {
-    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
-    // Historical records remain readable; new work uses WorkContract + Process Runtime.
-    expect(() => {
-      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
-    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
-  });
-
-  test('deduplicates concurrent launch-task submissions with the same requestId', async () => {
-    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
-    // Historical records remain readable; new work uses WorkContract + Process Runtime.
-    expect(() => {
-      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
-    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
-  });
-
   test("classifies full repository gates as heavy while leaving focused checks concurrent", () => {
     expect(controllerCheckConcurrencyClass("package:test")).toBe("heavy");
     // The unified Forge Runtime suite is an ordinary heavy repository gate.
@@ -365,22 +325,6 @@ describe("Local Execution Bridge", () => {
     expect(firstResult.ok).toBe(true);
     expect(secondResult.ok).toBe(true);
     expect(secondResult.executedAt).toBe(firstResult.executedAt);
-  });
-
-  test('does not time out a queued check before its worker spawns', async () => {
-    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
-    // Historical records remain readable; new work uses WorkContract + Process Runtime.
-    expect(() => {
-      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
-    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
-  });
-
-  test('reconciles stale running checks after a Controller restart', async () => {
-    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
-    // Historical records remain readable; new work uses WorkContract + Process Runtime.
-    expect(() => {
-      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
-    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
   });
 
   test("startup reconciliation detects Worker PID reuse without killing the unrelated process", async () => {
@@ -538,22 +482,6 @@ describe("Local Execution Bridge", () => {
     } finally {
       if (worker.exitCode === null) worker.kill("SIGKILL");
     }
-  });
-
-  test('accepts high-risk quick sessions immediately without an approval queue', async () => {
-    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
-    // Historical records remain readable; new work uses WorkContract + Process Runtime.
-    expect(() => {
-      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
-    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
-  });
-
-  test('does not create an approval queue for ordinary local work', async () => {
-    // Retired: Local Bridge no longer creates Agent/check/command Jobs.
-    // Historical records remain readable; new work uses WorkContract + Process Runtime.
-    expect(() => {
-      throw new Error('LOCAL_BRIDGE_JOB_RETIRED: New Local Bridge Jobs are disabled. Use WorkContract with Process Runtime or an explicitly claimed external Controller.');
-    }).toThrow(/LOCAL_BRIDGE_JOB_RETIRED/);
   });
 
   test("serves V5 focus, governance, direct action, worklog, and GitHub plugin APIs", async () => {

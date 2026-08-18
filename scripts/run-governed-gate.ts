@@ -17,15 +17,17 @@ export function stepsFor(gate: Gate): Step[] {
   if (gate === 'task') return [
     { label: 'typecheck', command: 'bun', args: ['run', 'check:type'], timeoutMs: 10 * 60_000 },
     { label: 'static architecture', command: 'bun', args: ['run', 'check:runtime-architecture'], timeoutMs: 5 * 60_000 },
-    { label: 'test budget', command: 'bun', args: ['run', 'check:test-governance'], timeoutMs: 5 * 60_000 },
+    { label: 'test manifest', command: 'bun', args: ['run', 'check:test-governance'], timeoutMs: 5 * 60_000 },
     { label: 'affected tests', command: 'bun', args: ['run', 'test'], timeoutMs: 30 * 60_000 },
   ];
   if (gate === 'main') return [
     { label: 'focused task receipt', gate: 'task' },
+    { label: 'core regression', command: 'bun', args: ['run', 'test:core'], timeoutMs: 20 * 60_000 },
     { label: 'runtime smoke', command: 'bun', args: ['run', 'check:smoke'], timeoutMs: 10 * 60_000 },
   ];
   return [
     { label: 'main candidate receipt', gate: 'main' },
+    { label: 'full regression', command: 'bun', args: ['run', 'test:full'], timeoutMs: 45 * 60_000 },
     { label: 'release surface and tarball', command: 'bash', args: ['scripts/check-release-readiness.sh'], timeoutMs: 30 * 60_000 },
   ];
 }
