@@ -21,7 +21,7 @@ import { globMatches } from '../../../cli/mcp/paths';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { listControllerChecks } from '../../../cli/controller/check-runner';
 import { readRepositoryAccessPolicy } from '../../control-plane/governance/access-policy';
-import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, updateWorkContract, appendVerificationRecord } from '../../control-plane/facade/work-contract-store';
+import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, transitionWorkContractPhase, updateWorkContract, appendVerificationRecord } from '../../control-plane/facade/work-contract-store';
 import { completeRequirementFromWork } from '../../control-plane/persistence/requirement-store';
 import { isTerminalWorkContractStatus, type WorkReconciliationRecord } from '../../control-plane/facade/types';
 import { buildWorkContinuationSnapshot } from '../../control-plane/facade/work-continuation';
@@ -1490,6 +1490,30 @@ function failedCleanupOnlyHead(
   return { currentHead: expectedHead, worktreeMissing: false, targetBranch };
 }
 
+type RetryableFinalizationStage = 'commit' | 'merge' | 'branchCleanup' | 'worktreeCleanup';
+
+function requestedFailedFinalizationRetry(
+  stages: WorkFinalizationStages,
+  wants: { commit: boolean; merge: boolean; cleanup: boolean },
+): RetryableFinalizationStage | undefined {
+  if (stages.validation === 'failed') return undefined;
+  if (wants.commit && stages.commit === 'failed') return 'commit';
+  if (wants.merge && stages.merge === 'failed') return 'merge';
+  if (wants.cleanup && stages.worktreeCleanup === 'failed') return 'worktreeCleanup';
+  if (wants.cleanup && stages.branchCleanup === 'failed') return 'branchCleanup';
+  return undefined;
+}
+
+function retryPhaseForFinalizationStage(stage: RetryableFinalizationStage): 'delivery' | 'cleanup' {
+  return stage === 'commit' || stage === 'merge' ? 'delivery' : 'cleanup';
+}
+
+function retryHandleStateForFinalization(stages: WorkFinalizationStages): WorkHandleState['state'] {
+  if (stages.merge === 'done') return 'merged';
+  if (stages.commit === 'done') return 'committed';
+  return 'validating';
+}
+
 function resetFailedFinalizationStages(stages: WorkFinalizationStages, wants: { commit: boolean; merge: boolean; cleanup: boolean }): WorkFinalizationStages {
   const next = { ...stages };
   let reset = false;
@@ -1556,6 +1580,28 @@ function currentWorkValidationInput(
 async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const session = requireSession(ctx, args);
   let current = workForSession(ctx, session, args);
+  const requestedWants = { commit: args.commit === true, merge: args.merge === true, cleanup: args.cleanup === true };
+  const retryStage = current.state === 'failed'
+    ? requestedFailedFinalizationRetry(current.finalization, requestedWants)
+    : undefined;
+  const retryContract = retryStage ? contractFor(ctx, current) : undefined;
+  if (
+    retryStage
+    && retryContract?.status === 'failed'
+    && !retryContract.completionOutcome
+    && !retryContract.completionReceipt
+  ) {
+    transitionWorkContractPhase(
+      { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
+      retryContract.workId,
+      {
+        phase: retryPhaseForFinalizationStage(retryStage),
+        status: 'running',
+        state: 'active',
+        summary: `Retrying previously failed Work finalization stage ${retryStage}.`,
+      },
+    );
+  }
   const terminalOutcome = terminalCleanupOutcome(ctx, current);
   if (terminalOutcome && args.cleanup !== false) {
     return await reconcileTerminalCleanup(ctx, session, current, args, terminalOutcome);
@@ -1593,7 +1639,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
   if (requestedOutcome === 'completed_no_change' && (!noChangeProof || args.commit === true || args.merge === true)) {
     throw new Error('WORK_NO_CHANGE_PROOF_REQUIRED: completed_no_change requires objective-specific evidence and forbids commit/merge');
   }
-  const wants = { commit: args.commit === true, merge: args.merge === true, cleanup: args.cleanup === true };
+  const wants = requestedWants;
   const noChangeFastPath = requestedOutcome === 'completed_no_change'
     && !wants.commit
     && !wants.merge
@@ -1610,15 +1656,31 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       const finalization = { ...fresh.finalization, [stage]: 'failed', lastError: reason } as WorkFinalizationStages;
       return markWorkHandleFailed(ctx.controllerHome, { ...fresh, finalization }, reason);
     });
-    if (current.workContractId) updateWorkContract({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId, { status: 'failed' });
-    markRepositoryProjectionDirty(ctx.controllerHome, current.repositoryId, `cleanup:${current.workId}:failed`);
+    if (current.workContractId) {
+      if (stage === 'validation') {
+        updateWorkContract({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId, { status: 'failed' });
+      } else if (stage === 'commit' || stage === 'merge' || stage === 'branchCleanup' || stage === 'worktreeCleanup') {
+        transitionWorkContractPhase(
+          { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
+          current.workContractId,
+          {
+            phase: retryPhaseForFinalizationStage(stage),
+            status: 'blocked',
+            state: 'blocked',
+            summary: `Retryable Work finalization stage ${stage} failed: ${reason}`,
+          },
+        );
+      }
+    }
+    markRepositoryProjectionDirty(ctx.controllerHome, current.repositoryId, `finalize:${current.workId}:${String(stage)}-failed`);
     return { work: compactHandle(current), stages: current.finalization, completed: false };
   };
 
   const failedCleanupRequested = current.state === 'failed'
     && wants.cleanup
     && !wants.commit
-    && !wants.merge;
+    && !wants.merge
+    && retryStage === undefined;
   const failedCleanupProof = failedCleanupRequested
     ? failedCleanupOnlyHead(ctx, current, args)
     : undefined;
@@ -1629,7 +1691,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
   if (!failedCleanupRequested && !noChangeFastPath) {
     current = transact('begin', (fresh) => writeWorkHandle(ctx.controllerHome, {
       ...fresh,
-      state: fresh.state === 'failed' ? 'validating' : fresh.state,
+      state: fresh.state === 'failed' ? retryHandleStateForFinalization(fresh.finalization) : fresh.state,
       failureReason: undefined,
       finalization: resetFailedFinalizationStages(fresh.finalization, wants),
     }));
