@@ -3,6 +3,7 @@ import {
   executeRemoteXpcHidInput,
   parseMacOSTrustedRsdEndpoints,
   remoteXpcHidEndpointCacheForTest,
+  remoteXpcHidNovelEndpointsForTest,
   remoteXpcHidWarmupFailureErrorForTest,
   remoteXpcHidWorkerSourceForTest,
   remoteXpcHidStatus,
@@ -58,6 +59,28 @@ describe('RemoteXPC HID backend', () => {
     const endpoints = [{ host: 'fd00:2::1', port: 52002 }];
     expect(remoteXpcHidEndpointCacheForTest('UDID-CACHE', endpoints, 0)).toEqual(endpoints);
     expect(remoteXpcHidEndpointCacheForTest('UDID-CACHE', endpoints, 30_001)).toBeUndefined();
+  });
+
+  it('retries only newly discovered RSD endpoints after a cached tunnel generation fails', () => {
+    const cached = [
+      { host: 'fd00:old::1', port: 51001 },
+      { host: 'fd00:old::1', port: 51002 },
+    ];
+    const refreshed = [
+      { host: 'fd00:new::1', port: 52001 },
+      { host: 'fd00:old::1', port: 51002 },
+    ];
+    expect(remoteXpcHidNovelEndpointsForTest(cached, refreshed)).toEqual([
+      { host: 'fd00:new::1', port: 52001 },
+    ]);
+  });
+
+  it('does not pay a second worker startup when forced RSD refresh returns only already-tried endpoints', () => {
+    const attempted = [{ host: 'fd00:same::1', port: 53001 }];
+    expect(remoteXpcHidNovelEndpointsForTest(attempted, [
+      { host: 'fd00:same::1', port: 53001 },
+      { host: 'fd00:same::1', port: 53001 },
+    ])).toEqual([]);
   });
 
   it('surfaces the bounded warmup failure instead of degrading it to a generic still-warming error', () => {

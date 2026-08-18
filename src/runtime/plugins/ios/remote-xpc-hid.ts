@@ -508,6 +508,22 @@ export function remoteXpcHidEndpointCacheForTest(
   return cachedEndpoints(udid);
 }
 
+function endpointIdentity(endpoint: RsdEndpoint): string {
+  return `${endpoint.host}:${endpoint.port}`;
+}
+
+function novelEndpoints(previous: readonly RsdEndpoint[], refreshed: readonly RsdEndpoint[]): RsdEndpoint[] {
+  const attempted = new Set(previous.map(endpointIdentity));
+  return refreshed.filter((endpoint) => !attempted.has(endpointIdentity(endpoint)));
+}
+
+export function remoteXpcHidNovelEndpointsForTest(
+  previous: readonly RsdEndpoint[],
+  refreshed: readonly RsdEndpoint[],
+): RsdEndpoint[] {
+  return novelEndpoints(previous, refreshed);
+}
+
 function trustedTunnelLogArgs(udid: string): string[] {
   if (!/^[A-Za-z0-9-]+$/.test(udid)) {
     throw new AssistantPluginError('IOS_HID_DEVICE_ID_INVALID', 'The physical iPhone UDID cannot be used for trusted-tunnel discovery.', { retryable: false });
@@ -516,9 +532,11 @@ function trustedTunnelLogArgs(udid: string): string[] {
   return ['show', '--last', '12h', '--style', 'compact', '--predicate', predicate];
 }
 
-async function discoverEndpoints(udid: string): Promise<RsdEndpoint[]> {
-  const cached = cachedEndpoints(udid);
-  if (cached?.length) return cached;
+async function discoverEndpoints(udid: string, forceRefresh = false): Promise<RsdEndpoint[]> {
+  if (!forceRefresh) {
+    const cached = cachedEndpoints(udid);
+    if (cached?.length) return cached;
+  }
   const args = trustedTunnelLogArgs(udid);
   return await new Promise<RsdEndpoint[]>((resolve, reject) => {
     const child = spawn('/usr/bin/log', args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -808,29 +826,68 @@ async function establishWorker(
   generation = workerGeneration(input.deviceIdentifier),
 ): Promise<void> {
   if (workers.has(input.deviceIdentifier)) return;
-  const endpoints = await discoverEndpoints(input.udid);
+  const cached = cachedEndpoints(input.udid);
+  const initialEndpoints = cached?.length
+    ? cached
+    : await discoverEndpoints(input.udid, true);
   if (workerGeneration(input.deviceIdentifier) !== generation) return;
+
   let lastError: unknown;
-  for (const endpoint of endpoints) {
-    if (workerGeneration(input.deviceIdentifier) !== generation) return;
-    const worker = startWorker(input, endpoint);
-    try {
-      await worker.ready;
-      if (workerGeneration(input.deviceIdentifier) !== generation) {
+  let attemptedEndpointCount = 0;
+  const tryEndpoints = async (endpoints: readonly RsdEndpoint[]): Promise<'ready' | 'cancelled' | 'failed'> => {
+    for (const endpoint of endpoints) {
+      if (workerGeneration(input.deviceIdentifier) !== generation) return 'cancelled';
+      attemptedEndpointCount += 1;
+      const worker = startWorker(input, endpoint);
+      try {
+        await worker.ready;
+        if (workerGeneration(input.deviceIdentifier) !== generation) {
+          stopWorker(worker);
+          return 'cancelled';
+        }
+        warmupFailures.delete(input.deviceIdentifier);
+        return 'ready';
+      } catch (error) {
+        lastError = error;
         stopWorker(worker);
-        return;
       }
-      warmupFailures.delete(input.deviceIdentifier);
-      return;
+    }
+    return 'failed';
+  };
+
+  const initialResult = await tryEndpoints(initialEndpoints);
+  if (initialResult !== 'failed') return;
+
+  let refreshedEndpointCount = 0;
+  let novelEndpointCount = 0;
+  if (cached?.length) {
+    endpointCache.delete(input.udid);
+    try {
+      const refreshed = await discoverEndpoints(input.udid, true);
+      refreshedEndpointCount = refreshed.length;
+      const novel = novelEndpoints(initialEndpoints, refreshed);
+      novelEndpointCount = novel.length;
+      if (novel.length > 0) {
+        const refreshedResult = await tryEndpoints(novel);
+        if (refreshedResult !== 'failed') return;
+      }
     } catch (error) {
       lastError = error;
-      stopWorker(worker);
     }
+  } else {
+    endpointCache.delete(input.udid);
   }
-  endpointCache.delete(input.udid);
+
   throw new AssistantPluginError('IOS_HID_INPUT_FAILED', lastError instanceof Error ? lastError.message : 'RemoteXPC HID input failed on all discovered trusted tunnel endpoints.', {
     retryable: true,
-    details: { deviceIdentifier: input.deviceIdentifier, endpointCount: endpoints.length },
+    details: {
+      deviceIdentifier: input.deviceIdentifier,
+      endpointCount: attemptedEndpointCount,
+      initialEndpointCount: initialEndpoints.length,
+      cacheRefreshAttempted: Boolean(cached?.length),
+      refreshedEndpointCount,
+      novelEndpointCount,
+    },
   });
 }
 
