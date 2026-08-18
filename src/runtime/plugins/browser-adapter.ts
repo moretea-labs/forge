@@ -2761,14 +2761,9 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
   const managedRouteReady = dependencyReady
     && (config.browserMode !== 'attach_preferred' || config.cdpAttachFallback === 'managed_persistent');
   const nativeRouteReady = nativeAttachConfigured && nativeObservation?.ready === true;
-  const nativeRouteUnverified = nativeAttachConfigured
-    && cdpEndpoints(config).length === 0
-    && config.cdpAttachFallback === 'fail_closed'
-    && nativeObservation === undefined;
-  const nativeRouteFailed = nativeAttachConfigured
-    && cdpEndpoints(config).length === 0
-    && config.cdpAttachFallback === 'fail_closed'
-    && nativeObservation?.ready === false;
+  const nativeOnlyRoute = nativeAttachConfigured && !cdpRouteReady && !managedRouteReady;
+  const nativeRouteUnverified = nativeOnlyRoute && nativeObservation === undefined;
+  const nativeRouteFailed = nativeOnlyRoute && nativeObservation?.ready === false;
   if (nativeRouteUnverified || nativeRouteFailed) {
     const nativeWarnings = nativeRouteFailed
       ? nativeObservation?.attempts.map((attempt) => `${attempt.appName}: ${attempt.error ?? attempt.status}`) ?? []
@@ -2783,7 +2778,7 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
       details: {
         ...baseDetails,
         nativeAttachObservation: nativeObservation,
-        provider: 'macos-active-browser-fail-closed',
+        provider: 'macos-active-browser',
         userFacingStatus: 'not ready',
       },
     };

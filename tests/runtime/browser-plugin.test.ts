@@ -1402,6 +1402,40 @@ describe('browser plugin', () => {
     expect(ready.health).toMatchObject({ state: 'ready', ready: true, probed: true });
   });
 
+  test('managed fallback health stays degraded on the viable native route when Playwright is missing', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'managed_persistent',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async () => { throw new Error('Chrome window is temporarily unavailable'); },
+    });
+
+    const unverified = buildBrowserPluginManifest(0, undefined, repoRoot);
+    expect(unverified.health).toMatchObject({ state: 'degraded', ready: false, probed: false });
+    expect(unverified.health.errors).toEqual([]);
+    expect(unverified.health.warnings.join('\n')).toContain('Native active-browser attach has not completed a live probe');
+    expect(unverified.health.details?.provider).toBe('macos-active-browser');
+
+    const failed = await discoverMacOsBrowserAttachment(['chrome']);
+    expect(failed.attachment).toBeUndefined();
+    const degraded = buildBrowserPluginManifest(0, undefined, repoRoot);
+    expect(degraded.health).toMatchObject({ state: 'degraded', ready: false, probed: true });
+    expect(degraded.health.errors).toEqual([]);
+    expect(degraded.health.warnings.join('\n')).toContain('Chrome window is temporarily unavailable');
+    expect(degraded.health.warnings.join('\n')).not.toContain('requires Playwright');
+  });
+
   test('native open_page waits past transient Chrome new-tab metadata before accepting the final HTTPS URL', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {
