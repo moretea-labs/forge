@@ -58,6 +58,25 @@ interface SourceSymbolIndex {
   declarations: IndexedDeclaration[];
 }
 
+const SOURCE_SYMBOL_INDEX_CACHE_MAX_ENTRIES = 32;
+const sourceSymbolIndexCache = new Map<string, SourceSymbolIndex>();
+let sourceSymbolIndexCacheHits = 0;
+let sourceSymbolIndexCacheMisses = 0;
+
+export function sourceSymbolIndexCacheSnapshotForTest(): { entries: number; hits: number; misses: number } {
+  return {
+    entries: sourceSymbolIndexCache.size,
+    hits: sourceSymbolIndexCacheHits,
+    misses: sourceSymbolIndexCacheMisses,
+  };
+}
+
+export function clearSourceSymbolIndexCacheForTest(): void {
+  sourceSymbolIndexCache.clear();
+  sourceSymbolIndexCacheHits = 0;
+  sourceSymbolIndexCacheMisses = 0;
+}
+
 function boundedContent(content: string, maxChars: number): { content: string; truncated: boolean } {
   if (content.length <= maxChars) return { content, truncated: false };
   return { content: `${content.slice(0, maxChars)}\n... <snippet truncated>`, truncated: true };
@@ -131,9 +150,7 @@ function enclosingName(node: ts.Node): string | undefined {
   return undefined;
 }
 
-function buildSourceSymbolIndex(path: string, source: string): SourceSymbolIndex | undefined {
-  const kind = scriptKind(path);
-  if (kind === undefined) return undefined;
+function buildSourceSymbolIndex(path: string, source: string, kind: ts.ScriptKind): SourceSymbolIndex {
   const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, kind);
   const declarations: IndexedDeclaration[] = [];
   const visit = (node: ts.Node): void => {
@@ -150,6 +167,29 @@ function buildSourceSymbolIndex(path: string, source: string): SourceSymbolIndex
   };
   visit(sourceFile);
   return { sourceFile, declarations };
+}
+
+function cachedSourceSymbolIndex(path: string, fileSha: string, numberedSource: string): SourceSymbolIndex | undefined {
+  const kind = scriptKind(path);
+  if (kind === undefined) return undefined;
+  const key = `${kind}:${fileSha}`;
+  const cached = sourceSymbolIndexCache.get(key);
+  if (cached) {
+    sourceSymbolIndexCache.delete(key);
+    sourceSymbolIndexCache.set(key, cached);
+    sourceSymbolIndexCacheHits += 1;
+    return cached;
+  }
+
+  sourceSymbolIndexCacheMisses += 1;
+  const built = buildSourceSymbolIndex(path, plainSource(numberedSource), kind);
+  sourceSymbolIndexCache.set(key, built);
+  while (sourceSymbolIndexCache.size > SOURCE_SYMBOL_INDEX_CACHE_MAX_ENTRIES) {
+    const oldest = sourceSymbolIndexCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    sourceSymbolIndexCache.delete(oldest);
+  }
+  return built;
 }
 
 function symbolAtLine(index: SourceSymbolIndex | undefined, line: number): SymbolRange | undefined {
@@ -217,8 +257,7 @@ export function materializeSource(options: MaterializeSourceOptions): Materializ
     return [materializedSnippet(full, { startLine: 1, endLine: full.totalLines }, options, 'complete_file')];
   }
 
-  const source = plainSource(full.content);
-  const symbolIndex = buildSourceSymbolIndex(options.path, source);
+  const symbolIndex = cachedSourceSymbolIndex(options.path, full.sha256, full.content);
   const snippets: MaterializedSourceSnippet[] = [];
   const seen = new Set<string>();
   for (const line of mergeHitLines(options.hitLines.length > 0 ? options.hitLines : [1])) {

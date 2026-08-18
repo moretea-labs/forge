@@ -4,6 +4,7 @@ import { chmodSync, mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } fr
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildControllerContextPack } from '../../src/cli/controller/context-pack';
+import { clearSourceSymbolIndexCacheForTest, materializeSource, sourceSymbolIndexCacheSnapshotForTest } from '../../src/cli/controller/context/source-materializer';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { clearAllSessionCachesForTest } from '../../src/cli/repository/session-cache';
 import { filterGitIgnoredCodeGraphChanges, queryCodeGraphReadProvider, resolveCodeGraphBundledRuntime, type CodeGraphReadProviderResponse } from '../../src/runtime/context/codegraph-read-provider';
@@ -11,6 +12,7 @@ import { filterGitIgnoredCodeGraphChanges, queryCodeGraphReadProvider, resolveCo
 const roots: string[] = [];
 afterEach(() => {
   clearAllSessionCachesForTest();
+  clearSourceSymbolIndexCacheForTest();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -203,6 +205,42 @@ describe('CodeGraph read provider', () => {
     expect(second.cache).toMatchObject({ sessionBound: true, lexicalHit: true, rangeHits: 1, rangeMisses: 0, reused: true });
     expect(second.search.cacheHit).toBe(true);
     expect(second.coverage.inspectedFiles).toContain('src/service.ts');
+  });
+
+  test('reuses a content-addressed source symbol index and misses after the file SHA changes', () => {
+    const root = contextRepo();
+    const path = 'src/large-cache-target.ts';
+    const source = [
+      ...Array.from({ length: 260 }, (_, index) => `export const prefix${index} = ${index};`),
+      'export function cachedFunction() {',
+      '  const cacheNeedle = 1;',
+      '  return cacheNeedle;',
+      '}',
+      '',
+    ].join('\n');
+    writeFileSync(join(root, path), source);
+    clearSourceSymbolIndexCacheForTest();
+    const options = {
+      repoRoot: root,
+      policy: getMcpPolicy('controller'),
+      path,
+      hitLines: [262],
+      reasons: ['cache-test'],
+      maxSnippets: 2,
+      maxCharsPerSnippet: 50_000,
+    };
+
+    const first = materializeSource(options);
+    expect(first[0]?.materialization).toBe('symbol');
+    expect(sourceSymbolIndexCacheSnapshotForTest()).toEqual({ entries: 1, hits: 0, misses: 1 });
+
+    const second = materializeSource(options);
+    expect(second[0]?.content).toBe(first[0]?.content);
+    expect(sourceSymbolIndexCacheSnapshotForTest()).toEqual({ entries: 1, hits: 1, misses: 1 });
+
+    writeFileSync(join(root, path), `${source}\nexport const changedAfterCache = true;\n`);
+    materializeSource(options);
+    expect(sourceSymbolIndexCacheSnapshotForTest()).toEqual({ entries: 2, hits: 1, misses: 2 });
   });
 
   test('materializes a complete matched function instead of a fixed line window', () => {
