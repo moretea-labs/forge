@@ -259,6 +259,7 @@ function isReadOnlySegment(segment: string): boolean {
   if (!program) return false;
   if (program === 'git') return readOnlyGitSegment(words, segment);
   if (isReadOnlyCodegraphCommand(words)) return true;
+  if (program === 'curl') return isReadOnlyLoopbackCurl(words);
   if (program === 'sqlite3') return isSafeReadOnlySqliteSegment(segment);
   if (program === 'find') return !/(?:-delete|-exec|-execdir|-ok|-okdir)\b/.test(segment);
   if (program === 'sed') return !isSedInPlaceSegment(segment);
@@ -275,15 +276,37 @@ function isReadOnlyLoopbackCurl(words: string[]): boolean {
   const program = words[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
   if (program !== 'curl') return false;
   const args = words.slice(1);
-  const writeFlags = new Set(['-d', '--data', '--data-raw', '--data-binary', '-f', '--form', '-t', '--upload-file', '-o', '--output', '-O', '--remote-name']);
-  if (args.some((arg) => writeFlags.has(arg))) return false;
+  const urls: string[] = [];
+  const safeLongFlags = new Set(['--fail', '--fail-with-body', '--silent', '--show-error', '--head']);
+  const safeValueFlags = new Set(['--connect-timeout', '--max-time', '--retry', '--retry-delay', '--retry-max-time']);
   for (let index = 0; index < args.length; index += 1) {
-    if (args[index] === '-X' || args[index] === '--request') {
-      if (!/^(?:GET|HEAD)$/i.test(args[index + 1] ?? '')) return false;
-      index += 1;
+    const arg = args[index] ?? '';
+    if (arg.startsWith('http://') || arg.startsWith('https://')) {
+      urls.push(arg);
+      continue;
     }
+    const lower = arg.toLowerCase();
+    if (lower === '-x' || lower === '--request') {
+      const method = (args[index + 1] ?? '').toUpperCase();
+      if (method !== 'GET' && method !== 'HEAD') return false;
+      index += 1;
+      continue;
+    }
+    if (lower.startsWith('--request=')) {
+      const method = arg.slice(arg.indexOf('=') + 1).toUpperCase();
+      if (method !== 'GET' && method !== 'HEAD') return false;
+      continue;
+    }
+    if (safeLongFlags.has(lower)) continue;
+    if (safeValueFlags.has(lower)) {
+      const value = Number(args[index + 1]);
+      if (!Number.isFinite(value) || value < 0) return false;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('-') && arg.length > 1 && Array.from(arg.slice(1)).every((flag) => ['f', 's', 'S', 'I'].includes(flag))) continue;
+    return false;
   }
-  const urls = args.filter((arg) => /^https?:\/\//i.test(arg));
   if (urls.length === 0) return false;
   return urls.every((url) => {
     try { return ['127.0.0.1', 'localhost', '::1'].includes(new URL(url).hostname.toLowerCase()); }

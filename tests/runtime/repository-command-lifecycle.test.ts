@@ -146,6 +146,29 @@ describe('repository command execution lifecycle', () => {
     }
   });
 
+  test('routes fixed shell-wrapped loopback GET diagnostics directly without weakening unsafe command boundaries', () => {
+    expect(classifyRepositoryCommandRoute(['bash', '-lc', 'curl -fsS http://127.0.0.1:8765/ready'])).toEqual({
+      route: 'process_direct',
+      reason: 'readonly_fast_path',
+    });
+    expect(classifyRepositoryCommandRoute(['bash', '-lc', 'curl -fsS -X POST http://127.0.0.1:8765/ready'])).toEqual({
+      route: 'process_managed',
+      reason: 'local_workspace_mutation',
+    });
+    expect(classifyRepositoryCommandRoute(['bash', '-lc', 'curl -fsS -d payload http://127.0.0.1:8765/ready'])).toEqual({
+      route: 'process_managed',
+      reason: 'local_workspace_mutation',
+    });
+    expect(classifyRepositoryCommandRoute(['bash', '-lc', 'curl -fsS https://example.com/'])).toEqual({
+      route: 'process_managed',
+      reason: 'local_workspace_mutation',
+    });
+    expect(classifyRepositoryCommandRoute(['bun', '-e', 'await fetch("http://127.0.0.1:8765/ready")'])).toEqual({
+      route: 'process_managed',
+      reason: 'local_workspace_mutation',
+    });
+  });
+
   test('mutating commands remain on the managed Process Runtime route', () => {
     expect(classifyRepositoryCommandRoute(['touch', 'marker.txt'])).toEqual({
       route: 'process_managed',
