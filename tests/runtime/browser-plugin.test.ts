@@ -857,6 +857,85 @@ describe('browser plugin', () => {
     expect((listed.sessions as Array<{ sessionId: string }>).some((session) => session.sessionId === sessionId)).toBe(false);
   });
 
+  test('existing-session actions never relaunch a stale managed context or create replacement pages', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+    });
+    const runtime = mockManagedPersistentPlaywright() as unknown as {
+      events: { launches: number; newPages: number };
+      states: Array<{ id: string; url: string; ownerToken?: string; closed: boolean }>;
+    };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+    const opened = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-existing-stale-open', args: { url: 'https://example.com/existing-stale' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    const launchesBefore = runtime.events.launches;
+    const newPagesBefore = runtime.events.newPages;
+    const pageCountBefore = runtime.states.length;
+
+    resetBrowserPluginRuntimeHooksForTest();
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+    const staleActions: Array<{ actionId: string; args: Record<string, unknown> }> = [
+      { actionId: 'get_text', args: { session_id: sessionId } },
+      { actionId: 'query_all', args: { session_id: sessionId, selector: 'body' } },
+      { actionId: 'click', args: { session_id: sessionId, selector: 'button' } },
+      { actionId: 'fill', args: { session_id: sessionId, selector: 'input', text: 'x' } },
+      { actionId: 'press', args: { session_id: sessionId, selector: 'body', key: 'Enter' } },
+      { actionId: 'wait_for_selector', args: { session_id: sessionId, selector: 'body' } },
+    ];
+    for (const [index, action] of staleActions.entries()) {
+      await expect(executeBrowserPluginAction({
+        controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: action.actionId,
+        requestId: `browser-existing-stale-${index}`, args: action.args,
+        origin: { surface: 'local-ui', actor: 'test' },
+      })).rejects.toThrow('PLUGIN_BROWSER_SESSION_STATE_LOST');
+    }
+    expect(runtime.events.launches).toBe(launchesBefore);
+    expect(runtime.events.newPages).toBe(newPagesBefore);
+    expect(runtime.states).toHaveLength(pageCountBefore);
+  });
+
+  test('existing native session is not cross-provider migrated by read actions while explicit navigate may replace it', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+    });
+    const runtime = mockManagedPersistentPlaywright() as unknown as {
+      events: { launches: number; newPages: number };
+    };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+    const sessionId = 'legacy-native-session';
+    writeAuthorizationBrowserSession(repoRoot, sessionId, 'https://example.com/legacy-native', 'chrome');
+
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'query_all',
+      requestId: 'browser-legacy-native-read', args: { session_id: sessionId, selector: 'body' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('PLUGIN_BROWSER_SESSION_STATE_LOST');
+    expect(runtime.events.launches).toBe(0);
+    expect(runtime.events.newPages).toBe(0);
+
+    const navigated = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'navigate',
+      requestId: 'browser-legacy-native-explicit-navigate', args: { session_id: sessionId, url: 'https://example.com/explicit-replacement' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(runtime.events.launches).toBe(1);
+    expect(navigated).toMatchObject({ session: { sessionId, url: 'https://example.com/explicit-replacement' } });
+  });
+
   test('list_sessions distinguishes saved metadata from live managed sessions without creating pages', async () => {
     const { repoRoot, controllerHome } = repoFixture();
     writeBrowserConfig(repoRoot, {
