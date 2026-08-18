@@ -163,10 +163,29 @@ def keyboard_mapping(char):
     return ASCII_TO_HID.get(char)
 
 
+class KeyboardChordError(RuntimeError):
+    def __init__(self, primary_error, release_error=None):
+        super().__init__(str(primary_error))
+        self.primary_error = primary_error
+        self.release_error = release_error
+
+
 async def send_keyboard_chord(hid, service_id, usage_codes, hold_s=0.040, settle_s=0.040):
-    await hid.send_keyboard(service_id, usage_codes)
-    await asyncio.sleep(hold_s)
-    await hid.send_keyboard(service_id, [])
+    primary_error = None
+    release_error = None
+    try:
+        try:
+            await hid.send_keyboard(service_id, usage_codes)
+            await asyncio.sleep(hold_s)
+        except Exception as error:
+            primary_error = error
+    finally:
+        try:
+            await hid.send_keyboard(service_id, [])
+        except Exception as error:
+            release_error = error
+    if primary_error is not None or release_error is not None:
+        raise KeyboardChordError(primary_error or release_error, release_error) from (primary_error or release_error)
     await asyncio.sleep(settle_s)
 
 
@@ -392,11 +411,16 @@ async def main():
                     result['mutationDispatched'] = mutation_dispatched
                     response(request_id, True, result)
                 except Exception as error:
+                    primary_error = error.primary_error if isinstance(error, KeyboardChordError) else error
+                    release_error = error.release_error if isinstance(error, KeyboardChordError) else None
+                    error_details = {'phase': phase, 'mutationDispatched': mutation_dispatched}
+                    if release_error is not None:
+                        error_details['releaseFailure'] = f'{type(release_error).__name__}: {release_error}'[:512]
                     response(
                         str(request.get('id', '')) if isinstance(request, dict) else '',
                         False,
-                        error=f'{type(error).__name__}: {error}',
-                        details={'phase': phase, 'mutationDispatched': mutation_dispatched},
+                        error=f'{type(primary_error).__name__}: {primary_error}',
+                        details=error_details,
                     )
 
 

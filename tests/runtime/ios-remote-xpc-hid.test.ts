@@ -132,6 +132,21 @@ describe('RemoteXPC HID backend', () => {
     expect(source).toContain("needs_modifier_keyboard = use_pasteboard or replace_existing");
   });
 
+  it('always attempts keyboard release in finally and preserves the primary chord error', () => {
+    const source = remoteXpcHidWorkerSourceForTest();
+    const helperStart = source.indexOf('async def send_keyboard_chord');
+    const helperEnd = source.indexOf('def normalized_point', helperStart);
+    const helper = source.slice(helperStart, helperEnd);
+    expect(helper).toContain('finally:');
+    expect(helper).toContain('await hid.send_keyboard(service_id, [])');
+    expect(helper).toContain('primary_error = error');
+    expect(helper).toContain('release_error = error');
+    expect(helper).toContain('raise KeyboardChordError(primary_error or release_error, release_error)');
+    expect(source).toContain("primary_error = error.primary_error if isinstance(error, KeyboardChordError) else error");
+    expect(source).toContain("error_details['releaseFailure'] = f'{type(release_error).__name__}: {release_error}'[:512]");
+    expect(source).toContain("error=f'{type(primary_error).__name__}: {primary_error}'");
+  });
+
   it('uses a modifier-only virtual keyboard for Command-A and Command-V whole-field replacement', () => {
     const source = remoteXpcHidWorkerSourceForTest();
     expect(source).toContain("phase = 'hid_keyboard_select_all'");
