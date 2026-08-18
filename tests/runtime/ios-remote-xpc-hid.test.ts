@@ -229,6 +229,17 @@ describe('RemoteXPC HID backend', () => {
     expect(source).toContain("'pasteboardTransport': 'independent_rsd'");
   });
 
+  it('fails clipboard-preserving text input closed when snapshot or restoration cannot be proven', () => {
+    const source = remoteXpcHidWorkerSourceForTest();
+    expect(source).toContain("raise RuntimeError('CoreDevice pasteboard snapshot is not restorable; refusing temporary clipboard overwrite')");
+    expect(source.indexOf('if not isinstance(previous_items, list):')).toBeLessThan(source.indexOf('await pasteboard.set_text(text)'));
+    const setTextIndex = source.indexOf('await pasteboard.set_text(text)');
+    expect(source.lastIndexOf('mutation_dispatched = True', setTextIndex)).toBeGreaterThan(source.indexOf("phase = 'pasteboard_set_text'"));
+    expect(source).toContain('class PasteboardOperationError(RuntimeError):');
+    expect(source).toContain("raise PasteboardOperationError(primary_error, primary_phase, restore_error) from primary_error");
+    expect(source).toContain("error_details['pasteboardRestoreFailure'] = f'{type(pasteboard_restore_error).__name__}: {pasteboard_restore_error}'[:512]");
+  });
+
   it('rejects Unicode only when explicit direct-key mode is requested', async () => {
     let dispatched = false;
     setRemoteXpcHidExecutorForTest(async (input) => {

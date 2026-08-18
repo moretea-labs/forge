@@ -173,6 +173,14 @@ class KeyboardChordError(RuntimeError):
         self.release_error = release_error
 
 
+class PasteboardOperationError(RuntimeError):
+    def __init__(self, primary_error, primary_phase, restore_error=None):
+        super().__init__(str(primary_error))
+        self.primary_error = primary_error
+        self.primary_phase = primary_phase
+        self.restore_error = restore_error
+
+
 async def send_keyboard_chord(hid, service_id, usage_codes, hold_s=0.040, settle_s=0.040):
     primary_error = None
     release_error = None
@@ -337,8 +345,14 @@ async def main():
                                         previous_snapshot = previous.get('pasteboard') if isinstance(previous.get('pasteboard'), dict) else previous
                                         previous_items = previous_snapshot.get('items') if isinstance(previous_snapshot, dict) else None
                                         previous_source = previous_snapshot.get('sourceMetadata') if isinstance(previous_snapshot, dict) else None
+                                        if not isinstance(previous_items, list):
+                                            raise RuntimeError('CoreDevice pasteboard snapshot is not restorable; refusing temporary clipboard overwrite')
+                                        operation_error = None
+                                        operation_phase = None
+                                        restore_error = None
                                         try:
                                             phase = 'pasteboard_set_text'
+                                            mutation_dispatched = True
                                             await pasteboard.set_text(text)
                                             if replace_existing:
                                                 select_mapping = keyboard_mapping('a')
@@ -346,22 +360,27 @@ async def main():
                                                     raise RuntimeError('HID A key mapping unavailable')
                                                 select_usage, _ = select_mapping
                                                 phase = 'hid_keyboard_select_all'
-                                                mutation_dispatched = True
                                                 await send_keyboard_chord(keyboard_hid, keyboard_service, [select_usage, KEY_LEFT_GUI])
                                             paste_mapping = keyboard_mapping('v')
                                             if paste_mapping is None:
                                                 raise RuntimeError('HID V key mapping unavailable')
                                             paste_usage, _ = paste_mapping
                                             phase = 'hid_keyboard_paste'
-                                            mutation_dispatched = True
                                             await send_keyboard_chord(keyboard_hid, keyboard_service, [paste_usage, KEY_LEFT_GUI], settle_s=0.120)
+                                        except Exception as error:
+                                            operation_error = error
+                                            operation_phase = phase
                                         finally:
                                             phase = 'pasteboard_restore'
-                                            if isinstance(previous_items, list):
-                                                try:
-                                                    await pasteboard.set(previous_items, source_metadata=previous_source if isinstance(previous_source, dict) else None)
-                                                except Exception:
-                                                    pasteboard_restored = False
+                                            try:
+                                                await pasteboard.set(previous_items, source_metadata=previous_source if isinstance(previous_source, dict) else None)
+                                            except Exception as error:
+                                                pasteboard_restored = False
+                                                restore_error = error
+                                        if operation_error is not None or restore_error is not None:
+                                            primary_error = operation_error or restore_error
+                                            primary_phase = operation_phase or 'pasteboard_restore'
+                                            raise PasteboardOperationError(primary_error, primary_phase, restore_error) from primary_error
                                 return {
                                     'action': 'type',
                                     'length': len(text),
@@ -424,11 +443,21 @@ async def main():
                     result['mutationDispatched'] = mutation_dispatched
                     response(request_id, True, result)
                 except Exception as error:
-                    primary_error = error.primary_error if isinstance(error, KeyboardChordError) else error
-                    release_error = error.release_error if isinstance(error, KeyboardChordError) else None
-                    error_details = {'phase': phase, 'mutationDispatched': mutation_dispatched}
+                    if isinstance(error, PasteboardOperationError):
+                        primary_error = error.primary_error
+                        error_phase = error.primary_phase
+                        release_error = None
+                        pasteboard_restore_error = error.restore_error
+                    else:
+                        primary_error = error.primary_error if isinstance(error, KeyboardChordError) else error
+                        error_phase = phase
+                        release_error = error.release_error if isinstance(error, KeyboardChordError) else None
+                        pasteboard_restore_error = None
+                    error_details = {'phase': error_phase, 'mutationDispatched': mutation_dispatched}
                     if release_error is not None:
                         error_details['releaseFailure'] = f'{type(release_error).__name__}: {release_error}'[:512]
+                    if pasteboard_restore_error is not None:
+                        error_details['pasteboardRestoreFailure'] = f'{type(pasteboard_restore_error).__name__}: {pasteboard_restore_error}'[:512]
                     response(
                         str(request.get('id', '')) if isinstance(request, dict) else '',
                         False,
