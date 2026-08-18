@@ -2246,6 +2246,20 @@ describe("MCP controller profile", () => {
       });
       expect(retrieved.data.structuralContext.requestedMode).toBe("auto");
 
+      const longQuery = "Investigate value implementation authority performance cache materialization routing execution readiness repeated parsing and repository discovery behavior without treating this entire semantic request as one exact source phrase";
+      const longRaw = await callRuntimeTool(multi, "rh_context", {
+        operation: "search",
+        query: longQuery,
+        structural_context: "off",
+        include_globs: ["src/**"],
+        max_files: 2,
+      });
+      expect(longRaw).toBeTruthy();
+      const longRetrieved = JSON.parse(longRaw!.content[0].text);
+      expect(longRetrieved.data.search.terms).not.toContain(longQuery);
+      expect(longRetrieved.data.search.terms).toContain("value");
+      expect(longRetrieved.data.files[0]).toMatchObject({ path: "src/example.ts" });
+
       const planRaw = await callRuntimeTool(multi, "rh_context", {
         operation: "search",
         query: "value = 1",

@@ -2999,7 +2999,11 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           });
           const pack = await buildControllerContextPackAsync(repository.canonicalRoot, ctx.policy, {
             description: query,
-            searchTerms: [query],
+            // Short code-like queries remain useful exact lexical needles. Long
+            // semantic prompts are already tokenized from description; adding the
+            // whole prompt as an exact needle prevents batch-search early exit and
+            // forces a full bounded repository scan for a phrase that will not match.
+            searchTerms: query.length <= 160 ? [query] : undefined,
             knownPaths: list(args.known_paths),
             includeGlobs: list(args.include_globs),
             excludeGlobs: list(args.exclude_globs),
