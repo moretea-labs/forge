@@ -8,6 +8,7 @@ import {
   remoteXpcHidEndpointCacheForTest,
   remoteXpcHidNovelEndpointsForTest,
   remoteXpcHidPersistentEndpointCacheForTest,
+  remoteXpcHidPersistedEndpointActiveForTest,
   remoteXpcHidWarmupFailureErrorForTest,
   remoteXpcHidWorkerSourceForTest,
   remoteXpcHidStatus,
@@ -98,6 +99,22 @@ describe('RemoteXPC HID backend', () => {
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
+  });
+
+  it('recognizes a persisted RSD endpoint only when the matching /64 CoreDevice utun is still active', () => {
+    const ifconfig = [
+      'utun4: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1380',
+      '\tinet6 fd7a:115c:a1e0::9901:1ab0 prefixlen 48',
+      'utun10: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1380',
+      '\tinet6 fd7f:efe1:538::2 prefixlen 64',
+    ].join('\n');
+    expect(remoteXpcHidPersistedEndpointActiveForTest('fd7f:efe1:538::1', ifconfig)).toBe(true);
+    expect(remoteXpcHidPersistedEndpointActiveForTest('fd54:542:99e1::1', ifconfig)).toBe(false);
+  });
+
+  it('keeps persisted endpoint validation conservative when the host shape or interface data is unsupported', () => {
+    expect(remoteXpcHidPersistedEndpointActiveForTest('fd7f:efe1:538::99', 'utun10:\n\tinet6 fd7f:efe1:538::2 prefixlen 64')).toBeUndefined();
+    expect(remoteXpcHidPersistedEndpointActiveForTest('fd7f:efe1:538::1', 'en0:\n\tinet6 fe80::1 prefixlen 64')).toBeUndefined();
   });
 
   it('surfaces the bounded warmup failure instead of degrading it to a generic still-warming error', () => {

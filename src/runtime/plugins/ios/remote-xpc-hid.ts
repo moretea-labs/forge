@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'child_process';
 import { createInterface } from 'readline';
 import { performance } from 'perf_hooks';
 import { AssistantPluginError } from '../errors';
@@ -518,6 +518,42 @@ export function remoteXpcHidPersistentEndpointCacheForTest(
   return readPersistentEndpoint(controllerHome, udid);
 }
 
+function persistedEndpointActiveInIfconfig(host: string, output: string): boolean | undefined {
+  const normalizedHost = host.toLowerCase();
+  const remoteMatch = normalizedHost.match(/^([0-9a-f:]+)::1$/);
+  if (!remoteMatch) return undefined;
+  const expectedLocal = `${remoteMatch[1]}::2`;
+  let inUtun = false;
+  let sawUtun = false;
+  for (const line of output.split(/\r?\n/)) {
+    const interfaceMatch = line.match(/^([A-Za-z0-9._-]+):/);
+    if (interfaceMatch) {
+      inUtun = interfaceMatch[1].startsWith('utun');
+      if (inUtun) sawUtun = true;
+      continue;
+    }
+    if (!inUtun) continue;
+    const ipv6 = line.match(/\binet6\s+([0-9a-fA-F:]+)\s+prefixlen\s+(\d+)/);
+    if (!ipv6 || Number(ipv6[2]) !== 64) continue;
+    if (ipv6[1].toLowerCase() === expectedLocal) return true;
+  }
+  return sawUtun ? false : undefined;
+}
+
+function persistedEndpointActive(host: string): boolean | undefined {
+  const result = spawnSync('/sbin/ifconfig', [], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2_000 });
+  if (result.status !== 0 || result.error || typeof result.stdout !== 'string') return undefined;
+  return persistedEndpointActiveInIfconfig(host, result.stdout);
+}
+
+function invalidatePersistentEndpoint(controllerHome: string, udid: string): void {
+  try { unlinkSync(persistentEndpointPath(controllerHome, udid)); } catch {}
+}
+
+export function remoteXpcHidPersistedEndpointActiveForTest(host: string, ifconfigOutput: string): boolean | undefined {
+  return persistedEndpointActiveInIfconfig(host, ifconfigOutput);
+}
+
 export function parseMacOSTrustedRsdEndpoints(output: string, udid: string): RsdEndpoint[] {
   const endpoints: RsdEndpoint[] = [];
   let host: string | undefined;
@@ -886,7 +922,11 @@ async function establishWorker(
 ): Promise<void> {
   if (workers.has(input.deviceIdentifier)) return;
   const cached = cachedEndpoints(input.udid);
-  const persisted = cached?.length ? undefined : readPersistentEndpoint(input.controllerHome, input.udid);
+  let persisted = cached?.length ? undefined : readPersistentEndpoint(input.controllerHome, input.udid);
+  if (persisted && persistedEndpointActive(persisted.host) === false) {
+    invalidatePersistentEndpoint(input.controllerHome, input.udid);
+    persisted = undefined;
+  }
   const initialEndpoints = cached?.length
     ? cached
     : persisted
