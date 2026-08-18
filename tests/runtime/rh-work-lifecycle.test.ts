@@ -189,6 +189,23 @@ describe('rh_work managed lifecycle closure', () => {
     expect(verified?.isError).not.toBe(true); expect(processId).toBeTruthy();
     expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.checkoutId).toBe(contract.checkoutId);
     await waitForProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 5_000 });
+
+    const continued = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'continue',
+      work_id: workId,
+    });
+    expect(continued?.isError).not.toBe(true);
+    expect(continued?.structuredContent).toMatchObject({ status: 'ok', data: { nextStep: 'finalize' } });
+    const afterContinue = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
+    const reconciled = afterContinue.checkRefs.find((record) => record.checkId === 'package:check:checkout' && record.outcome === 'valid_pass');
+    expect(reconciled?.receipt).toMatchObject({
+      processId,
+      workId,
+      checkoutId: contract.checkoutId,
+      checkId: 'package:check:checkout',
+      ok: true,
+    });
   });
   test('waits through brief build-cache contention instead of creating a terminal failed verification Process', async () => {
     const fx = fixture('verify-build-cache-lease-wait');
@@ -279,6 +296,137 @@ describe('rh_work managed lifecycle closure', () => {
     const after = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
     expect(after.checkRefs).toEqual(before.checkRefs);
   });
+  test('continue reconciles one completed Work-bound verification Process without a second verify call', async () => {
+    const fx = fixture('managed-verification-reconcile-on-continue');
+    writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({
+      scripts: { 'check:reconcile': 'node -e "setTimeout(() => process.exit(0), 250)"' },
+    }, null, 2));
+    git(fx.repoRoot, ['add', 'package.json']);
+    git(fx.repoRoot, ['commit', '-m', 'add reconciliation check']);
+
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Reconcile one terminal managed verification process',
+      scope_clear: true,
+      expected_files: 2,
+      expected_changed_lines: 20,
+      requires_recovery: true,
+      constraints: { requireWorktree: true },
+    });
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    expect(workId).toBeTruthy();
+
+    const verified = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'verify',
+      work_id: workId,
+      check_id: 'package:check:reconcile',
+      request_id: 'managed-reconcile-on-continue',
+    });
+    const verification = (verified?.structuredContent as { data?: { verification?: { processId?: string; outcome?: string } } })?.data?.verification;
+    expect(verification?.outcome).toBe('running');
+    expect(verification?.processId).toBeTruthy();
+    await waitForProcess(fx.controllerHome, fx.repository.repoId, verification!.processId!, { timeoutMs: 5_000 });
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.checkRefs).toHaveLength(0);
+
+    const continued = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'continue',
+      work_id: workId,
+    });
+    expect(continued?.isError, JSON.stringify(continued?.structuredContent)).not.toBe(true);
+    expect(continued?.structuredContent).toMatchObject({ status: 'ok', data: { nextStep: 'finalize' } });
+    const reconciled = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
+    expect(reconciled.checkRefs).toHaveLength(1);
+    expect(reconciled.checkRefs[0]).toMatchObject({
+      checkId: 'package:check:reconcile',
+      outcome: 'valid_pass',
+      receipt: { processId: verification!.processId, ok: true, timedOut: false, cancelled: false },
+    });
+  });
+
+  test('continue does not reconcile a completed verification Process after Work revision drift', async () => {
+    const fx = fixture('managed-verification-reconcile-drift');
+    writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({
+      scripts: { 'check:reconcile-drift': 'node -e "setTimeout(() => process.exit(0), 250)"' },
+    }, null, 2));
+    git(fx.repoRoot, ['add', 'package.json']);
+    git(fx.repoRoot, ['commit', '-m', 'add drift reconciliation check']);
+
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Reject stale terminal verification evidence after drift',
+      scope_clear: true,
+      expected_files: 2,
+      expected_changed_lines: 20,
+      requires_recovery: true,
+      allowed_paths: ['drift.txt'],
+      constraints: { requireWorktree: true },
+    });
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
+    const verified = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'verify',
+      work_id: workId,
+      check_id: 'package:check:reconcile-drift',
+      request_id: 'managed-reconcile-drift',
+    });
+    const processId = String((verified?.structuredContent as { data?: { verification?: { processId?: string } } })?.data?.verification?.processId ?? '');
+    expect(processId).toBeTruthy();
+    await waitForProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 5_000 });
+
+    writeFileSync(join(contract.worktreeRef!, 'drift.txt'), 'new revision\n');
+    git(contract.worktreeRef!, ['add', 'drift.txt']);
+    git(contract.worktreeRef!, ['commit', '-m', 'drift after managed verification']);
+    await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'continue',
+      work_id: workId,
+    });
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.checkRefs).toHaveLength(0);
+  });
+
+  test('finalize safely adopts one clean Work-owned successor commit before merge', async () => {
+    const fx = fixture('finalize-adopt-clean-successor');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Integrate one clean Work-owned successor commit',
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 10,
+      requires_recovery: true,
+      allowed_paths: ['successor.txt'],
+      constraints: { requireWorktree: true },
+    });
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
+    const worktreePath = contract.worktreeRef!;
+    const branch = git(worktreePath, ['branch', '--show-current']);
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)?.state).toBe('prepared');
+
+    writeFileSync(join(worktreePath, 'successor.txt'), 'successor\n');
+    git(worktreePath, ['add', 'successor.txt']);
+    git(worktreePath, ['commit', '-m', 'work-owned successor']);
+
+    const finalized = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'finalize',
+      work_id: workId,
+      commit: false,
+      merge: true,
+      cleanup: true,
+    });
+    expect(finalized?.isError, JSON.stringify(finalized?.structuredContent)).not.toBe(true);
+    expect(finalized?.structuredContent).toMatchObject({ status: 'ok', data: { lifecycleClosed: true } });
+    expect(readFileSync(join(fx.repoRoot, 'successor.txt'), 'utf8')).toBe('successor\n');
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(branchExists(fx.repoRoot, branch)).toBe(false);
+  });
+
   test('persists current Work-bound verification receipt and rejects it after revision drift', async () => {
     const fx = fixture('work-bound-verification-evidence');
     writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({

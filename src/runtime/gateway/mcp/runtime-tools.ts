@@ -1739,7 +1739,7 @@ async function finalizeFacadeWorkHandle(
 ): Promise<CallToolResult | undefined> {
   const workId = String(args.work_id ?? '').trim();
   if (!workId) return undefined;
-  const handle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
+  let handle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
   if (!handle) return undefined;
   const session = bindFacadeExecutionSession(ctx, repository, handle, args);
   const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
@@ -1767,6 +1767,37 @@ async function finalizeFacadeWorkHandle(
   const head = status.head ?? handle.expectedHead ?? handle.baseCommit;
   const committedDelta = Boolean(head && handle.baseCommit && head !== handle.baseCommit);
   const commit = typeof args.commit === 'boolean' ? args.commit : !status.clean;
+  const workContract = getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, workId);
+  if (
+    status.clean
+    && committedDelta
+    && commit === false
+    && (workContract?.allowedPaths.length ?? 0) > 0
+    && head
+    && handle.expectedHead
+    && head !== handle.expectedHead
+    && (handle.state === 'prepared' || handle.state === 'editing')
+  ) {
+    const contract = getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, workId);
+    if ((contract?.allowedPaths.length ?? 0) > 0 || (contract?.forbiddenPaths.length ?? 0) > 0) {
+      const adopted = await callExecutionTool(ctx, 'work_prepare', {
+        session_id: session.sessionId,
+        repo_id: repository.repoId,
+        checkout_id: handle.checkoutId,
+        work_id: workId,
+        expected_previous_head: handle.expectedHead,
+        adopt_candidate_head: head,
+      });
+      if (!adopted || adopted.isError === true) return adopted;
+      handle = readWorkHandle(ctx.controllerHome, repository.repoId, workId) ?? handle;
+    } else if (handle.state === 'prepared') {
+      // A Work without explicit path allow/deny constraints historically permits
+      // repository-scoped committed progress. Preserve that contract while moving
+      // the handle onto a legal lifecycle edge before the physical finalizer
+      // validates and adopts the exact delivery HEAD.
+      handle = transitionWorkHandle(ctx.controllerHome, handle, 'editing', { failureReason: undefined });
+    }
+  }
   const requestedOutcome = args.completion_outcome === 'completed_no_change' || args.completion_outcome === 'completed_changed'
     ? args.completion_outcome
     : undefined;
@@ -2674,6 +2705,131 @@ async function runFacadeRepair(
     },
   );
   return result(facade as unknown as Record<string, unknown>, facade.status === 'blocked' || facade.status === 'approval_required' || facade.status === 'failed');
+}
+
+function reconcileTerminalFacadeWorkVerifications(
+  ctx: MultiRepositoryMcpToolContext,
+  repository: ReturnType<typeof selected>,
+  workId: string,
+): { sourceRevision?: string; reconciledProcessIds: string[] } {
+  const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
+  const workContract = getWorkContract(store, workId);
+  if (!workContract || workContract.completionReceipt) return { reconciledProcessIds: [] };
+
+  let verificationRepository: ReturnType<typeof selectRepositoryCheckout>;
+  try {
+    verificationRepository = workContract.checkoutId
+      ? selectRepositoryCheckout(repository, workContract.checkoutId, { allowArchived: true })
+      : repository;
+  } catch {
+    return { reconciledProcessIds: [] };
+  }
+  const verificationStatus = repositoryGitStatus(verificationRepository);
+  const sourceRevision = verificationStatus.head ?? undefined;
+  if (!sourceRevision) return { reconciledProcessIds: [] };
+  const workspaceFingerprint = workspaceValidationFingerprint(verificationRepository.canonicalRoot, verificationStatus);
+  const availableChecks = listControllerChecks(repository.canonicalRoot);
+  const workloopCtx = {
+    workStore: store,
+    handoffStore: store,
+    repoId: repository.repoId,
+    availableChecks,
+  };
+  const seenChecks = new Set<string>();
+  const reconciledProcessIds: string[] = [];
+  const candidates = listProcessRecords(ctx.controllerHome, repository.repoId, 500)
+    .filter((record) => (
+      record.workId === workId
+      && record.checkoutId === verificationRepository.activeCheckoutId
+      && !isManagedProcessActive(record)
+      && record.origin?.workVerificationSnapshot === true
+      && typeof record.origin?.checkId === 'string'
+      && typeof record.origin?.requestSemanticFingerprint === 'string'
+    ));
+
+  for (const record of candidates) {
+    const checkId = record.origin?.checkId?.trim() ?? '';
+    if (!checkId || seenChecks.has(checkId)) continue;
+    seenChecks.add(checkId);
+    const classified = classifyVerificationOutcome({ checkId, available: availableChecks });
+    if (classified.outcome === 'invalid_check_id' || !classified.normalizedCheckId) continue;
+    const normalizedCheckId = classified.normalizedCheckId;
+    const requestedChecks = workContract.checks.length ? workContract.checks : [normalizedCheckId];
+    const currentFingerprint = verificationInputFingerprint({
+      sourceRevision,
+      workspaceFingerprint,
+      checkId: normalizedCheckId,
+      requestedChecks,
+    });
+    if (record.origin?.requestSemanticFingerprint !== currentFingerprint || !record.checkExecution) continue;
+
+    try {
+      const receipt = processCheckCompletionReceipt(record, {
+        repoId: verificationRepository.repoId,
+        checkoutId: verificationRepository.activeCheckoutId,
+        workId,
+        checkId: normalizedCheckId,
+        processId: record.processId,
+        requestId: record.origin?.requestId,
+        checkExecution: {
+          cacheKey: record.checkExecution.cacheKey,
+          revision: record.checkExecution.revision,
+          definitionDigest: record.checkExecution.definitionDigest,
+          environmentFingerprint: record.checkExecution.environmentFingerprint,
+          timeoutMs: record.checkExecution.timeoutMs,
+          scopeKey: record.checkExecution.scopeKey,
+        },
+      });
+      const latestContract = getWorkContract(store, workId);
+      if (latestContract?.checkRefs.some((entry) => entry.receipt?.receiptId === receipt.receiptId)) continue;
+
+      const structuredCheckResult = readPersistedCheckResultReceipt(record.origin?.checkResultReceiptPath);
+      const structuredResultMatchesProcess = Boolean(
+        structuredCheckResult
+        && structuredCheckResult.checkId === normalizedCheckId
+        && structuredCheckResult.cacheKey === record.checkExecution.cacheKey,
+      );
+      const legacyEvidence = record.origin?.checkResultReceiptPath
+        ? undefined
+        : readLatestControllerCheckEvidence(verificationRepository.canonicalRoot, normalizedCheckId);
+      const legacyEvidenceMatchesProcess = Boolean(
+        legacyEvidence?.cacheKey
+        && legacyEvidence.cacheKey === record.checkExecution.cacheKey,
+      );
+      const evidenceState = classifyTerminalCheckEvidence({
+        processError: record.error,
+        structuredPresent: Boolean(structuredCheckResult),
+        structuredMatches: structuredResultMatchesProcess,
+        legacyPresent: Boolean(legacyEvidence),
+        legacyMatches: legacyEvidenceMatchesProcess,
+      });
+      const failureClass = structuredResultMatchesProcess
+        ? structuredCheckResult?.failureClass
+        : legacyEvidenceMatchesProcess ? legacyEvidence?.failureClass : undefined;
+      const infrastructureFailed = receipt.timedOut
+        || receipt.cancelled
+        || evidenceState.state !== 'matched'
+        || (!receipt.ok && failureClass !== 'acceptance_failure');
+      const checkFailed = !receipt.ok && !infrastructureFailed;
+      verifyGoalWorkloop(workloopCtx, {
+        workId,
+        checkId: normalizedCheckId,
+        sourceRevision,
+        workspaceFingerprint,
+        verificationInputFingerprint: currentFingerprint,
+        commandFingerprint: commandFingerprint(normalizedCheckId, receipt.commandId),
+        receipt,
+        infrastructureFailed,
+        checkFailed,
+      });
+      reconciledProcessIds.push(record.processId);
+    } catch {
+      // Exact receipt/process identity is mandatory. Any malformed, stale, or
+      // mismatched terminal Process remains non-authoritative and is ignored.
+    }
+  }
+
+  return { sourceRevision, reconciledProcessIds };
 }
 
 async function runFacadeVerify(
@@ -4221,6 +4377,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
 
         if (operation === 'finalize') {
           const workId = String(args.work_id ?? '').trim();
+          if (workId) reconcileTerminalFacadeWorkVerifications(ctx, repository, workId);
           let before = workId ? getWorkContract(store, workId) : undefined;
           if (before && !before.completionReceipt && args.reconcile_historical_delivery === true) {
             try {
@@ -4289,6 +4446,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         }
 
         let resumedControllerSession: ReturnType<typeof resumeControllerSession> | undefined;
+        let continuationSourceRevision = workloopCtx.sourceRevision;
         if (operation === 'continue') {
           try {
             const workId = String(args.work_id ?? '').trim();
@@ -4306,13 +4464,17 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 leaseMs: 3_600_000,
               });
             }
+            if (workId) {
+              const reconciled = reconcileTerminalFacadeWorkVerifications(ctx, repository, workId);
+              continuationSourceRevision = reconciled.sourceRevision ?? continuationSourceRevision;
+            }
           } catch (error) {
             const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller resume failed.', data: { operation, executionStarted: false, ownershipResumed: false } });
             return result(facade as unknown as Record<string, unknown>, true);
           }
         }
 
-        const facade = runGoalWorkloop({ ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined }, operation as 'start' | 'continue', args);
+        const facade = runGoalWorkloop({ ...workloopCtx, sourceRevision: continuationSourceRevision ?? undefined }, operation as 'start' | 'continue', args);
         const facadeData = facade.data && typeof facade.data === 'object' ? facade.data as Record<string, unknown> : {};
         const facadeWorkId = contextText(contextRecord(facadeData.work).workId, 200);
         if (facade.status === 'ok' && facadeWorkId) {
