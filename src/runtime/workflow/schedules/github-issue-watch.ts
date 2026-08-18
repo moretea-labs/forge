@@ -1,5 +1,6 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { resolveTrustedExecutable } from '../../shared/trusted-executable';
 
 const execFileAsync = promisify(execFile);
 
@@ -89,6 +90,33 @@ export function classifyGithubIssueWatchObservation(
   };
 }
 
+const DEFAULT_GH_EXECUTABLE_CANDIDATES = [
+  '/opt/homebrew/bin/gh',
+  '/usr/local/bin/gh',
+  '/usr/bin/gh',
+] as const;
+
+export function resolveGithubIssueWatchExecutable(
+  args: Record<string, unknown>,
+  env: NodeJS.ProcessEnv = process.env,
+  preferredPaths: readonly string[] = DEFAULT_GH_EXECUTABLE_CANDIDATES,
+): string {
+  const configured = stringValue(args.gh_executable) ?? stringValue(env.FORGE_GH_EXECUTABLE);
+  const resolved = resolveTrustedExecutable({
+    name: 'gh',
+    configured,
+    preferredPaths,
+    env,
+  });
+  if (resolved.configuredInvalid) {
+    throw new Error('SCHEDULE_GITHUB_ISSUE_WATCH_GH_EXECUTABLE_INVALID: gh_executable/FORGE_GH_EXECUTABLE must be an absolute executable path.');
+  }
+  if (!resolved.executable) {
+    throw new Error('SCHEDULE_GITHUB_ISSUE_WATCH_GH_EXECUTABLE_NOT_FOUND: GitHub CLI was not found in trusted Homebrew/system locations or PATH.');
+  }
+  return resolved.executable;
+}
+
 export async function executeScheduledGithubIssueWatch(input: {
   repoRoot: string;
   args: Record<string, unknown>;
@@ -101,7 +129,8 @@ export async function executeScheduledGithubIssueWatch(input: {
   const limit = boundedNumber(input.args.issue_limit, 50, 10, 100);
   const timeoutMs = boundedNumber(input.args.timeout_ms, 15_000, 1_000, 60_000);
   try {
-    const result = await execFileAsync('gh', [
+    const ghExecutable = resolveGithubIssueWatchExecutable(input.args);
+    const result = await execFileAsync(ghExecutable, [
       'api',
       '-H', 'Accept: application/vnd.github+json',
       `repos/${repository}/issues?state=all&sort=updated&direction=desc&per_page=${limit}`,
@@ -123,6 +152,7 @@ export async function executeScheduledGithubIssueWatch(input: {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith('SCHEDULE_GITHUB_ISSUE_WATCH_GH_EXECUTABLE_')) throw error;
     throw new Error(`SCHEDULE_GITHUB_ISSUE_WATCH_FAILED: ${message}`);
   }
 }
