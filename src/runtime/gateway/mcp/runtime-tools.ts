@@ -256,6 +256,16 @@ function isCurrentRhContextWork(
   return timestampIsCurrent(contract.updatedAt, cutoffMs);
 }
 
+function rhContextReadSessionId(ctx: MultiRepositoryMcpToolContext): string | undefined {
+  const principal = ctx.principalId?.trim();
+  if (principal) {
+    const controllerInstance = ctx.controllerInstanceId?.trim() || currentControllerInstanceId();
+    return `controller:${principal}:${controllerInstance}`;
+  }
+  const transportSession = ctx.sessionId?.trim();
+  return transportSession ? `transport:${transportSession}` : undefined;
+}
+
 export function summarizeControllerReadyPayload(fullPayload: Record<string, unknown>): Record<string, unknown> {
   const health = (fullPayload.health ?? {}) as Record<string, unknown>;
   const workerLoop = (fullPayload.workerLoop ?? {}) as Record<string, unknown>;
@@ -2903,8 +2913,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             structuralIndexRoot: structuralContext === 'off' ? undefined : structuralIndexRoot(repository),
             retrievalMode,
             impactDomains,
-            session: ctx.sessionId?.trim()
-              ? { sessionId: ctx.sessionId.trim(), repoId: repository.repoId, checkoutId: repository.activeCheckoutId }
+            session: rhContextReadSessionId(ctx)
+              ? { sessionId: rhContextReadSessionId(ctx)!, repoId: repository.repoId, checkoutId: repository.activeCheckoutId }
               : undefined,
           });
           const warnings = structuralContext === 'required' && !pack.structuralContext.requiredSatisfied

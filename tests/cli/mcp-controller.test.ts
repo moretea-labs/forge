@@ -39,6 +39,7 @@ import {
   forgeToolSurfaceFingerprint} from "../../src/cli/controller/runtime-config";
 import { writeMcpServiceLocalConfig, writeMcpServiceRuntimeState } from "../../src/cli/mcp/auth";
 import { persistControllerAccessMode } from "../../src/cli/mcp/access-mode";
+import { clearAllSessionCachesForTest } from "../../src/cli/repository/session-cache";
 import {
   clearControllerContextPerformanceSnapshotForTest,
   queueControllerContextProjectionRefresh,
@@ -97,6 +98,55 @@ test("reports checkout dependency readiness before tests and provides a lockfile
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
+});
+
+test("reuses rh_context repository reads across short-lived transport sessions for one controller", async () => {
+  await withController(async (repoRoot) => {
+    clearAllSessionCachesForTest();
+    const controllerHome = String(process.env.FORGE_CONTROLLER_HOME);
+    writeFileSync(join(repoRoot, "source.ts"), "export const stableContextMarker = 1;\n");
+    spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
+    spawnSync("git", ["config", "user.name", "Forge Test"], { cwd: repoRoot, stdio: "ignore" });
+    spawnSync("git", ["config", "user.email", "forge@example.test"], { cwd: repoRoot, stdio: "ignore" });
+    spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" });
+    const repository = registerRepository({ path: repoRoot, controllerHome });
+    const context = (sessionId: string) => createMultiRepositoryContext({
+      repo: repoRoot,
+      controllerHome,
+      profile: "controller",
+      toolset: "advanced",
+      sessionId,
+      principalId: "controller-cache-test",
+      controllerInstanceId: "controller-instance-a",
+    });
+    const args = {
+      repo_id: repository.repoId,
+      operation: "search",
+      query: "stableContextMarker",
+      known_paths: ["source.ts"],
+      structural_context: "off",
+    };
+    const first = JSON.parse((await callRuntimeTool(context("transport-a"), "rh_context", args))!.content[0]!.text);
+    const second = JSON.parse((await callRuntimeTool(context("transport-b"), "rh_context", args))!.content[0]!.text);
+    expect(first.data.cache).toMatchObject({ sessionBound: true, lexicalHit: false, reused: false });
+    expect(second.data.cache.sessionBound).toBe(true);
+    expect(second.data.cache.lexicalHit).toBe(true);
+    expect(second.data.cache.rangeHits).toBeGreaterThan(0);
+    expect(second.data.cache.reused).toBe(true);
+
+    const otherController = createMultiRepositoryContext({
+      repo: repoRoot,
+      controllerHome,
+      profile: "controller",
+      toolset: "advanced",
+      sessionId: "transport-c",
+      principalId: "other-controller-cache-test",
+      controllerInstanceId: "controller-instance-a",
+    });
+    const isolated = JSON.parse((await callRuntimeTool(otherController, "rh_context", args))!.content[0]!.text);
+    expect(isolated.data.cache.lexicalHit).toBe(false);
+    expect(isolated.data.cache.rangeHits).toBe(0);
+  });
 });
 
 test("returns execution readiness and registered checks in one rh_context search", async () => {
