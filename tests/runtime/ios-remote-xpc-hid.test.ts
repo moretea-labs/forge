@@ -30,10 +30,13 @@ describe('RemoteXPC HID backend', () => {
     const source = remoteXpcHidWorkerSourceForTest();
     expect(source).toContain("'keyboardSource': 'connected_coredevice' if direct_keyboard_service is not None else 'none'");
     expect(source).toContain("needs_modifier_keyboard = use_pasteboard or replace_existing");
-    expect(source).toContain("keyboard_service = direct_keyboard_service");
-    expect(source).toContain("modifier_keyboard_service = await hid.create_keyboard_service(product='Forge modifier keyboard')");
-    expect(source).toContain("keyboard_source = 'virtual_coredevice_modifier' if needs_modifier_keyboard else 'virtual_coredevice_fallback'");
-    expect(source.indexOf("keyboard_service = direct_keyboard_service")).toBeLessThan(source.indexOf("modifier_keyboard_service = await hid.create_keyboard_service"));
+    expect(source).toContain("result = await dispatch_text(hid, direct_keyboard_service, 'connected_coredevice', 0.0)");
+    expect(source).toContain('async def isolated_modifier_keyboard(host, port):');
+    expect(source).toContain('async with RemoteServiceDiscoveryService((host, port)) as modifier_rsd:');
+    expect(source).toContain('async with UniversalHIDServiceService(modifier_rsd) as modifier_hid:');
+    expect(source).toContain("service_id = await modifier_hid.create_keyboard_service(product='Forge modifier keyboard')");
+    expect(source).not.toContain('modifier_keyboard_service =');
+    expect(source).not.toContain('async with touch_session(modifier_rsd)');
   });
 
   it('keeps only recent ports from the latest tunnel host and never falls back to an older host', () => {
@@ -128,7 +131,7 @@ describe('RemoteXPC HID backend', () => {
     expect(source).toContain("if char == '\\b':");
     expect(source).toContain('return (KEY_BACKSPACE, False)');
     expect(source).toContain('mapping = keyboard_mapping(char)');
-    expect(source).toContain("keyboard_service = direct_keyboard_service");
+    expect(source).toContain("result = await dispatch_text(hid, direct_keyboard_service, 'connected_coredevice', 0.0)");
     expect(source).toContain("needs_modifier_keyboard = use_pasteboard or replace_existing");
   });
 
@@ -147,20 +150,24 @@ describe('RemoteXPC HID backend', () => {
     expect(source).toContain("error=f'{type(primary_error).__name__}: {primary_error}'");
   });
 
-  it('uses a modifier-only virtual keyboard for Command-A and Command-V whole-field replacement', () => {
+  it('uses an isolated modifier-only virtual keyboard for Command-A and Command-V whole-field replacement', () => {
     const source = remoteXpcHidWorkerSourceForTest();
+    expect(source).toContain("phase = 'hid_modifier_session_connect'");
+    expect(source).toContain('async with isolated_modifier_keyboard(args.host, args.port) as (modifier_hid, modifier_service, modifier_create_ms):');
     expect(source).toContain("phase = 'hid_keyboard_select_all'");
-    expect(source).toContain('await send_keyboard_chord(hid, keyboard_service, [select_usage, KEY_LEFT_GUI])');
+    expect(source).toContain('await send_keyboard_chord(keyboard_hid, keyboard_service, [select_usage, KEY_LEFT_GUI])');
     expect(source).toContain("phase = 'hid_keyboard_paste'");
-    expect(source).toContain('await send_keyboard_chord(hid, keyboard_service, [paste_usage, KEY_LEFT_GUI], settle_s=0.120)');
+    expect(source).toContain('await send_keyboard_chord(keyboard_hid, keyboard_service, [paste_usage, KEY_LEFT_GUI], settle_s=0.120)');
     expect(source).not.toContain("phase = 'replace_existing_preflight'");
   });
 
-  it('isolates pasteboard traffic on a second RSD connection and stages text before selecting existing content', () => {
+  it('isolates pasteboard and modifier traffic from the primary RSD worker and stages text before selecting existing content', () => {
     const source = remoteXpcHidWorkerSourceForTest();
     expect(source).toContain('async with RemoteServiceDiscoveryService((args.host, args.port)) as pasteboard_rsd:');
     expect(source).toContain('async with PasteboardService(pasteboard_rsd) as pasteboard:');
     expect(source).not.toContain('async with PasteboardService(rsd) as pasteboard:');
+    expect(source).toContain('async with RemoteServiceDiscoveryService((host, port)) as modifier_rsd:');
+    expect(source).toContain('async with UniversalHIDServiceService(modifier_rsd) as modifier_hid:');
     expect(source.indexOf('await pasteboard.set_text(text)')).toBeLessThan(source.indexOf("phase = 'hid_keyboard_select_all'"));
     expect(source).toContain("'pasteboardTransport': 'independent_rsd'");
   });
