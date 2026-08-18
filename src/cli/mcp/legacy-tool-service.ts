@@ -1785,22 +1785,6 @@ export function buildMcpToolDefinitions(
         annotations: readOnly,
       },
       {
-        name: "read_repository_file",
-        description:
-          "Read a line range from one policy-readable repository file.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            path: { type: "string" },
-            start_line: { type: "number" },
-            end_line: { type: "number" },
-          },
-          required: ["path"],
-          additionalProperties: false,
-        },
-        annotations: readOnly,
-      },
-      {
         name: "get_git_diff",
         description:
           "Return the current unstaged Git diff, optionally limited to one repo-relative path.",
@@ -1820,28 +1804,6 @@ export function buildMcpToolDefinitions(
           "List focused repository checks from safe package scripts and .forge/checks.json.",
         inputSchema: EMPTY_SCHEMA,
         annotations: readOnly,
-      },
-      {
-        name: "run_check",
-        description:
-          "Run one named focused repository check ephemerally by default. Work/Edit-bound verification retains a persisted Process receipt; release and multi-phase checks require an explicit Durable workflow.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            check_id: { type: "string" },
-            timeout_ms: { type: "number" },
-            request_id: { type: "string" },
-            issue_id: { type: "string", description: "Optional exact Issue verification consumer; requires task_id." },
-            task_id: { type: "string", description: "Optional exact Task verification consumer; requires issue_id." },
-          },
-          required: ["check_id"],
-          additionalProperties: false,
-        },
-        annotations: {
-          readOnlyHint: false,
-          openWorldHint: false,
-          destructiveHint: false,
-        },
       },
       {
         name: "list_issues",

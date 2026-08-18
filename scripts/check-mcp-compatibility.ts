@@ -56,6 +56,7 @@ if (defaultNames.length > MAX_DEFAULT_TOOL_COUNT) {
 if (duplicateDefault.length) failures.push(`default duplicate names: ${[...new Set(duplicateDefault)].join(', ')}`);
 if (missingDefault.length) failures.push(`default tools missing from registered definitions: ${missingDefault.join(', ')}`);
 if (missingCatalog.length) failures.push(`compatibility catalog tools missing from registered definitions: ${missingCatalog.join(', ')}`);
+if (sourceCollisions.length) failures.push(`tool schema authority collisions: ${sourceCollisions.join(', ')}`);
 if (coreNames.join('\n') !== defaultNames.join('\n')) {
   failures.push('core surface must alias the bounded default ChatGPT surface');
 }
