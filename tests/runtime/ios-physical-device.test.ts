@@ -120,6 +120,77 @@ afterEach(() => {
 });
 
 describe('CoreDevice-first physical iPhone provider', () => {
+  it('overlaps independent open preflights while keeping display readiness ahead of app activation', async () => {
+    const value = fixture();
+    const order: string[] = [];
+    let preflightStarted = 0;
+    let releasePreflight!: () => void;
+    const preflightGate = new Promise<void>((resolve) => { releasePreflight = resolve; });
+    const waitForPeer = async (label: string) => {
+      order.push(`${label}-start`);
+      preflightStarted += 1;
+      if (preflightStarted === 2) releasePreflight();
+      await Promise.race([
+        preflightGate,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${label} did not overlap peer preflight`)), 250)),
+      ]);
+      order.push(`${label}-end`);
+    };
+    setRemoteXpcHidExecutorForTest(async (request) => ({
+      backend: 'remote-xpc-hid', reusedWorker: true,
+      endpoint: { host: 'fd00::1', port: 53194 }, result: { action: request.action },
+      timings: { workerStartupMs: 0, workerReadyMs: 0, requestMs: 1, hidMs: 1 },
+    }));
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      now: () => new Date('2026-08-17T08:00:00.000Z'),
+      runCommand: (command, args) => {
+        if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
+        throw new Error(`unexpected sync command: ${[command, ...args].join(' ')}`);
+      },
+      runCommandAsync: async (command, args) => {
+        if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
+        const joined = args.join(' ');
+        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info apps')) {
+          await waitForPeer('apps');
+          return { ok: true, status: 0, stdout: json({ apps: [{ name: '小红书', bundleIdentifier: 'com.xingin.discover' }] }), stderr: '', command: [command, ...args] };
+        }
+        if (joined.includes('device info lockState')) {
+          await waitForPeer('lock');
+          return { ok: true, status: 0, stdout: json({ passcodeRequired: false, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        }
+        if (joined.includes('device info displays')) {
+          order.push('display-start');
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          order.push('display-end');
+          return { ok: true, status: 0, stdout: json({ displays: [{ bounds: [[0, 0], [1206, 2622]], nativeSize: [1206, 2622], pointScale: 3, primary: true }] }), stderr: '', command: [command, ...args] };
+        }
+        if (joined.includes('device process launch')) {
+          order.push('launch-start');
+          expect(order).toContain('display-end');
+          return { ok: true, status: 0, stdout: json({ processIdentifier: 123, launchOptions: { activatedWhenStarted: true } }), stderr: '', command: [command, ...args] };
+        }
+        throw new Error(`unexpected async command: ${[command, ...args].join(' ')}`);
+      },
+    });
+
+    const opened = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
+      device: 'greyson', bundle_id: 'com.xingin.discover', prewarm_input: true,
+    }));
+    expect(order.indexOf('apps-start')).toBeLessThan(order.indexOf('apps-end'));
+    expect(order.indexOf('lock-start')).toBeLessThan(order.indexOf('lock-end'));
+    expect(order.indexOf('apps-start')).toBeLessThan(Math.min(order.indexOf('apps-end'), order.indexOf('lock-end')));
+    expect(order.indexOf('lock-start')).toBeLessThan(Math.min(order.indexOf('apps-end'), order.indexOf('lock-end')));
+    expect(order.indexOf('display-end')).toBeLessThan(order.indexOf('launch-start'));
+    expect(opened.inputPrewarm).toMatchObject({ backend: 'remote-xpc-hid', state: 'test' });
+    const timing = opened.timing as { totalMs: number; stages: Record<string, { ms: number }> };
+    expect(timing.stages.installedAppLookup.ms).toBeGreaterThanOrEqual(0);
+    expect(timing.stages.lockState.ms).toBeGreaterThanOrEqual(0);
+    expect(timing.stages.displayInfo.ms).toBeGreaterThanOrEqual(0);
+    expect(timing.stages.activationRequest.ms).toBeGreaterThanOrEqual(0);
+  });
+
   it('yields the event loop while a CoreDevice action subprocess is pending', async () => {
     const value = fixture();
     let releaseList!: () => void;
@@ -516,6 +587,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(batched.executionPlan).toEqual({
       foregroundActivations: 0,
       foregroundObservationChecks: 1,
+      foregroundObservationSource: 'explicit_confirmation',
       unlockChecks: 0,
       displayLookups: 1,
       pluginRoundTrips: 1,
@@ -535,6 +607,147 @@ describe('CoreDevice-first physical iPhone provider', () => {
     const events = await executeIosPhysicalDeviceAction(input(value, 'physical_device_events', { interaction_id: interactionId }));
     expect(JSON.stringify(events)).not.toContain('小红书资料');
     expect(JSON.stringify(events)).toContain('batch_input');
+  });
+
+  it('atomically consumes a fresh screenshot in one batch without a confirm_foreground round-trip', async () => {
+    const value = fixture();
+    const hidCalls: Array<Record<string, unknown>> = [];
+    setRemoteXpcHidExecutorForTest(async (request) => {
+      hidCalls.push({ ...request, text: request.text === undefined ? undefined : '<redacted>' });
+      return {
+        backend: 'remote-xpc-hid', reusedWorker: true,
+        endpoint: { host: 'fd00::1', port: 53194 },
+        result: { action: request.action, ...(request.action === 'type' ? { inputMode: 'pasteboard' } : {}) },
+        timings: { workerStartupMs: 0, workerReadyMs: 0, requestMs: 5, hidMs: 3 },
+      };
+    });
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      now: () => new Date('2026-08-17T08:00:00.000Z'),
+      runCommand: (command, args) => {
+        const screenshotResult = maybeScreenshotCommand(command, args);
+        if (screenshotResult) return screenshotResult;
+        if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
+        const joined = args.join(' ');
+        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: '小红书', bundleIdentifier: 'com.xingin.discover' }] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: false, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device process launch')) return { ok: true, status: 0, stdout: json({ processIdentifier: 123, launchOptions: { activatedWhenStarted: true } }), stderr: '', command: [command, ...args] };
+        throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
+      },
+    });
+
+    const opened = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', {
+      device: 'greyson', bundle_id: 'com.xingin.discover',
+    }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    const screenshot = await executeIosPhysicalDeviceAction(input(value, 'physical_device_screenshot', {
+      interaction_id: interactionId, label: 'atomic-batch-proof',
+    }));
+    const observationId = String((screenshot.observation as Record<string, unknown>).observationId);
+
+    const batched = await executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
+      interaction_id: interactionId,
+      observation_id: observationId,
+      steps: [{ kind: 'type', text: '慢慢变富', input_mode: 'auto', replace_existing: true }],
+    }));
+    expect(hidCalls).toHaveLength(1);
+    expect(hidCalls[0]).toMatchObject({ action: 'type', text: '<redacted>', textMode: 'auto', replaceExisting: true });
+    expect(batched.foregroundObservation).toMatchObject({ observationId, source: 'atomic_screenshot', consumed: true });
+    expect(batched.executionPlan).toMatchObject({ foregroundObservationChecks: 1, foregroundObservationSource: 'atomic_screenshot', pluginRoundTrips: 1 });
+
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
+      interaction_id: interactionId,
+      observation_id: observationId,
+      steps: [{ kind: 'type', text: 'must-not-replay' }],
+    }))).rejects.toMatchObject({ code: 'IOS_DEVICE_SCREEN_OBSERVATION_REQUIRED', retryable: true });
+    expect(hidCalls).toHaveLength(1);
+
+    const events = await executeIosPhysicalDeviceAction(input(value, 'physical_device_events', { interaction_id: interactionId }));
+    expect(JSON.stringify(events)).not.toContain('慢慢变富');
+    expect(JSON.stringify(events)).not.toContain('foreground_confirmed');
+  });
+
+  it('rejects superseded and stale atomic batch observations before HID dispatch', async () => {
+    const value = fixture();
+    let now = new Date('2026-08-17T08:00:00.000Z');
+    let hidCalls = 0;
+    setRemoteXpcHidExecutorForTest(async (request) => {
+      hidCalls += 1;
+      return { backend: 'remote-xpc-hid', reusedWorker: true, endpoint: { host: 'fd00::1', port: 53194 }, result: { action: request.action }, timings: { workerStartupMs: 0, workerReadyMs: 0, requestMs: 1, hidMs: 1 } };
+    });
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      now: () => now,
+      runCommand: (command, args) => {
+        const screenshotResult = maybeScreenshotCommand(command, args);
+        if (screenshotResult) return screenshotResult;
+        if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
+        const joined = args.join(' ');
+        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: '小红书', bundleIdentifier: 'com.xingin.discover' }] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: false, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device process launch')) return { ok: true, status: 0, stdout: json({ processIdentifier: 123, launchOptions: { activatedWhenStarted: true } }), stderr: '', command: [command, ...args] };
+        throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
+      },
+    });
+
+    const opened = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', { device: 'greyson', bundle_id: 'com.xingin.discover' }));
+    const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
+    const first = await executeIosPhysicalDeviceAction(input(value, 'physical_device_screenshot', { interaction_id: interactionId, label: 'first' }));
+    const firstId = String((first.observation as Record<string, unknown>).observationId);
+    const second = await executeIosPhysicalDeviceAction(input(value, 'physical_device_screenshot', { interaction_id: interactionId, label: 'second' }));
+    const secondId = String((second.observation as Record<string, unknown>).observationId);
+
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
+      interaction_id: interactionId, observation_id: firstId, steps: [{ kind: 'type', text: 'must-not-dispatch' }],
+    }))).rejects.toMatchObject({ code: 'IOS_DEVICE_SCREEN_OBSERVATION_REQUIRED', retryable: true });
+    expect(hidCalls).toBe(0);
+
+    now = new Date('2026-08-17T08:00:31.000Z');
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
+      interaction_id: interactionId, observation_id: secondId, steps: [{ kind: 'type', text: 'must-not-dispatch' }],
+    }))).rejects.toMatchObject({ code: 'IOS_DEVICE_SCREEN_OBSERVATION_REQUIRED', retryable: true });
+    expect(hidCalls).toBe(0);
+  });
+
+  it('rejects an observation from a closed prior session before HID dispatch', async () => {
+    const value = fixture();
+    let hidCalls = 0;
+    setRemoteXpcHidExecutorForTest(async (request) => {
+      hidCalls += 1;
+      return { backend: 'remote-xpc-hid', reusedWorker: true, endpoint: { host: 'fd00::1', port: 53194 }, result: { action: request.action }, timings: { workerStartupMs: 0, workerReadyMs: 0, requestMs: 1, hidMs: 1 } };
+    });
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      now: () => new Date('2026-08-17T08:00:00.000Z'),
+      runCommand: (command, args) => {
+        const screenshotResult = maybeScreenshotCommand(command, args);
+        if (screenshotResult) return screenshotResult;
+        if (args[0] === 'devicectl' && args[1] === '--version') return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
+        const joined = args.join(' ');
+        if (joined.includes('list devices')) return { ok: true, status: 0, stdout: json({ devices: [deviceEntry()] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info apps')) return { ok: true, status: 0, stdout: json({ apps: [{ name: '小红书', bundleIdentifier: 'com.xingin.discover' }] }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device info lockState')) return { ok: true, status: 0, stdout: json({ passcodeRequired: false, unlockedSinceBoot: true }), stderr: '', command: [command, ...args] };
+        if (joined.includes('device process launch')) return { ok: true, status: 0, stdout: json({ processIdentifier: 123, launchOptions: { activatedWhenStarted: true } }), stderr: '', command: [command, ...args] };
+        throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
+      },
+    });
+
+    const first = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', { device: 'greyson', bundle_id: 'com.xingin.discover' }));
+    const firstInteractionId = String((first.interaction as Record<string, unknown>).interactionId);
+    const screenshot = await executeIosPhysicalDeviceAction(input(value, 'physical_device_screenshot', { interaction_id: firstInteractionId, label: 'prior-session' }));
+    const oldObservationId = String((screenshot.observation as Record<string, unknown>).observationId);
+    await executeIosPhysicalDeviceAction(input(value, 'physical_device_close', { interaction_id: firstInteractionId }));
+
+    const second = await executeIosPhysicalDeviceAction(input(value, 'physical_device_open', { device: 'greyson', bundle_id: 'com.xingin.discover' }));
+    const secondInteractionId = String((second.interaction as Record<string, unknown>).interactionId);
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_batch', {
+      interaction_id: secondInteractionId,
+      observation_id: oldObservationId,
+      steps: [{ kind: 'type', text: 'must-not-dispatch' }],
+    }))).rejects.toMatchObject({ code: 'IOS_DEVICE_SCREEN_OBSERVATION_REQUIRED', retryable: true });
+    expect(hidCalls).toBe(0);
   });
 
   it('preflights every touch coordinate before dispatching any batch mutation', async () => {
