@@ -166,6 +166,7 @@ type PageLike = {
   bringToFront?(): Promise<void>;
   keyboard?: { press(key: string): Promise<void> };
   setInputFiles?: (selector: string, files: string | string[]) => Promise<void>;
+  close?(): Promise<void>;
 };
 
 type PlaywrightRuntime = {
@@ -227,6 +228,15 @@ const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
 let runtimeHooks: BrowserPluginRuntimeHooks = { ...defaultRuntimeHooks };
 let runtimeHooksCustomized = false;
 
+interface ManagedBrowserContextState {
+  repoRoot: string;
+  profilePath: string;
+  context: BrowserContextLike;
+  pagesBySession: Map<string, PageLike>;
+}
+
+const managedBrowserContexts = new Map<string, Promise<ManagedBrowserContextState>>();
+
 export function setBrowserPluginRuntimeHooksForTest(hooks: Partial<BrowserPluginRuntimeHooks>): void {
   runtimeHooks = { ...defaultRuntimeHooks, ...hooks };
   runtimeHooksCustomized = true;
@@ -235,6 +245,7 @@ export function setBrowserPluginRuntimeHooksForTest(hooks: Partial<BrowserPlugin
 export function resetBrowserPluginRuntimeHooksForTest(): void {
   runtimeHooks = { ...defaultRuntimeHooks };
   runtimeHooksCustomized = false;
+  managedBrowserContexts.clear();
 }
 
 function now(): string {
@@ -1136,6 +1147,174 @@ function launchOptionsForRepo(repoRoot: string, config: BrowserPluginConfig, pro
   };
 }
 
+function managedContextKey(profile: BrowserProfileSelection): string {
+  return resolve(profile.selectedProfilePath);
+}
+
+async function evictManagedContext(key: string): Promise<void> {
+  const pending = managedBrowserContexts.get(key);
+  managedBrowserContexts.delete(key);
+  if (!pending) return;
+  try {
+    const state = await pending;
+    await state.context.close().catch(() => undefined);
+  } catch {
+    // Failed launches are already unusable; removing the cache entry is enough.
+  }
+}
+
+async function closeManagedContextsForRepo(repoRoot: string): Promise<void> {
+  const canonicalRoot = resolve(repoRoot);
+  for (const [key, pending] of [...managedBrowserContexts.entries()]) {
+    try {
+      const state = await pending;
+      if (state.repoRoot !== canonicalRoot) continue;
+      managedBrowserContexts.delete(key);
+      await state.context.close().catch(() => undefined);
+    } catch {
+      managedBrowserContexts.delete(key);
+    }
+  }
+}
+
+async function managedContextState(
+  runtime: PlaywrightRuntime,
+  repoRoot: string,
+  config: BrowserPluginConfig,
+  profile: BrowserProfileSelection,
+): Promise<ManagedBrowserContextState> {
+  const key = managedContextKey(profile);
+  const existing = managedBrowserContexts.get(key);
+  if (existing) {
+    try {
+      const state = await existing;
+      state.context.pages();
+      return state;
+    } catch {
+      managedBrowserContexts.delete(key);
+    }
+  }
+  const launch = (async () => {
+    const context = await runtime.chromium.launchPersistentContext(profile.profileDir, launchOptionsForRepo(repoRoot, config, profile));
+    return {
+      repoRoot: resolve(repoRoot),
+      profilePath: key,
+      context,
+      pagesBySession: new Map<string, PageLike>(),
+    } satisfies ManagedBrowserContextState;
+  })();
+  managedBrowserContexts.set(key, launch);
+  try {
+    return await launch;
+  } catch (error) {
+    if (managedBrowserContexts.get(key) === launch) managedBrowserContexts.delete(key);
+    throw error;
+  }
+}
+
+async function markManagedPageOwner(page: PageLike, ownerToken: string): Promise<void> {
+  await page.evaluate((_token) => {
+    if (typeof window !== 'undefined') window.name = String(_token ?? '');
+  }, ownerToken).catch(() => undefined);
+}
+
+async function selectManagedSessionPage(state: ManagedBrowserContextState, target: BrowserActionTarget) {
+  const pages = state.context.pages();
+  const inventory = await inventoryTabs(state.context);
+  const ownerToken = ownerTokenForSession(target.sessionId);
+  const mapped = state.pagesBySession.get(target.sessionId);
+  if (mapped && pages.includes(mapped)) {
+    const index = pages.indexOf(mapped);
+    await markManagedPageOwner(mapped, ownerToken);
+    return {
+      page: mapped,
+      matchedBy: 'owned_token' as const,
+      inventory,
+      selectedEntry: inventory[index],
+      sessionResume: {
+        sessionId: target.sessionId,
+        status: 'matched' as const,
+        reason: 'Reused the live managed page bound to this browser session.',
+        savedTab: target.existingSession?.browser?.tab,
+      },
+      ownerToken,
+    };
+  }
+  state.pagesBySession.delete(target.sessionId);
+
+  const ownerIndex = inventory.findIndex((entry) => entry.ownerToken === ownerToken);
+  if (ownerIndex >= 0) {
+    const page = pages[ownerIndex];
+    if (page) {
+      state.pagesBySession.set(target.sessionId, page);
+      return {
+        page,
+        matchedBy: 'owned_token' as const,
+        inventory,
+        selectedEntry: inventory[ownerIndex],
+        sessionResume: {
+          sessionId: target.sessionId,
+          status: 'matched' as const,
+          reason: 'Rediscovered the managed page from its stable session owner marker.',
+          savedTab: target.existingSession?.browser?.tab,
+        },
+        ownerToken,
+      };
+    }
+  }
+
+  const blankIndex = inventory.findIndex((entry) => isBlankPage(entry.url) && !entry.ownerToken);
+  const page = blankIndex >= 0 && pages[blankIndex] ? pages[blankIndex]! : await state.context.newPage();
+  const matchedBy: BrowserTabMatchReason = blankIndex >= 0 ? 'blank' : 'new_page';
+  await markManagedPageOwner(page, ownerToken);
+  state.pagesBySession.set(target.sessionId, page);
+  return {
+    page,
+    matchedBy,
+    inventory,
+    selectedEntry: blankIndex >= 0 ? inventory[blankIndex] : undefined,
+    sessionResume: target.existingSession?.browser?.tab
+      ? {
+          sessionId: target.sessionId,
+          status: 'stale_tab' as const,
+          reason: 'The previously owned managed page no longer exists; created one replacement page for this session only.',
+          savedTab: target.existingSession.browser.tab,
+        }
+      : {
+          sessionId: target.sessionId,
+          status: 'no_saved_tab' as const,
+          reason: matchedBy === 'blank'
+            ? 'Claimed one unowned blank page for this managed browser session.'
+            : 'Created one dedicated managed page for this browser session.',
+        },
+    ownerToken,
+  };
+}
+
+async function closeManagedSessionPage(repoRoot: string, config: BrowserPluginConfig, session: BrowserSessionState): Promise<boolean> {
+  if (session.browser?.provider !== 'playwright-persistent-context' || session.browser.activeMode !== 'managed_persistent') return false;
+  const profile = selectedProfile(config, repoRoot, 'managed_persistent', session.sessionId);
+  const pending = managedBrowserContexts.get(managedContextKey(profile));
+  if (!pending) return false;
+  let state: ManagedBrowserContextState;
+  try {
+    state = await pending;
+  } catch {
+    return false;
+  }
+  let page = state.pagesBySession.get(session.sessionId);
+  if (!page) {
+    const expectedOwnerToken = session.browser.tab?.ownerToken ?? ownerTokenForSession(session.sessionId);
+    const inventory = await inventoryTabs(state.context).catch(() => [] as BrowserTabInventoryEntry[]);
+    const index = inventory.findIndex((entry) => entry.ownerToken === expectedOwnerToken);
+    if (index >= 0) page = state.context.pages()[index];
+  }
+  state.pagesBySession.delete(session.sessionId);
+  if (!page || typeof page.close !== 'function') return false;
+  await page.close().catch(() => undefined);
+  return true;
+}
+
 async function openManagedContext(
   runtime: PlaywrightRuntime,
   repoRoot: string,
@@ -1147,15 +1326,34 @@ async function openManagedContext(
   fallback?: BrowserConnectionFallback,
 ): Promise<BrowserOpenHandle> {
   const profile = selectedProfile(config, repoRoot, activeMode, target.sessionId);
+  const persistentKey = managedContextKey(profile);
   assertBrowserProfileAvailable(repoRoot, profile.selectedProfilePath);
   mkdirSync(profile.profileDir, { recursive: true });
-  const context = await runtime.chromium.launchPersistentContext(profile.profileDir, launchOptionsForRepo(repoRoot, config, profile));
-  const selected = await selectPage(context, target);
+  let context: BrowserContextLike;
+  let selected: Awaited<ReturnType<typeof selectManagedSessionPage>> | Awaited<ReturnType<typeof selectPage>>;
+  let managedState: ManagedBrowserContextState | undefined;
+  if (activeMode === 'managed_persistent') {
+    managedState = await managedContextState(runtime, repoRoot, config, profile);
+    context = managedState.context;
+    try {
+      selected = await selectManagedSessionPage(managedState, target);
+    } catch {
+      await evictManagedContext(persistentKey);
+      assertBrowserProfileAvailable(repoRoot, profile.selectedProfilePath);
+      managedState = await managedContextState(runtime, repoRoot, config, profile);
+      context = managedState.context;
+      selected = await selectManagedSessionPage(managedState, target);
+    }
+  } else {
+    context = await runtime.chromium.launchPersistentContext(profile.profileDir, launchOptionsForRepo(repoRoot, config, profile));
+    selected = await selectPage(context, target);
+  }
   const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
   let response: { status?: () => number } | null | undefined;
   if (selected.matchedBy === 'new_page' || selected.matchedBy === 'blank' || comparableUrl(selected.page.url()) !== comparableUrl(target.url)) {
     response = await selected.page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout }) as { status?: () => number } | null | undefined;
   }
+  if (managedState && 'ownerToken' in selected) await markManagedPageOwner(selected.page, selected.ownerToken);
   const diagnostics = attachDiagnostics(selected.page);
   diagnostics.navigation = {
     url: target.url,
@@ -1175,13 +1373,16 @@ async function openManagedContext(
     },
     tabInventory: selected.inventory,
     sessionResume: selected.sessionResume,
-  }, normalizedUrl(selected.page.url()), title, selected.matchedBy);
+  }, normalizedUrl(selected.page.url()), title, selected.matchedBy,
+  managedState && 'ownerToken' in selected
+    ? { ownership: 'plugin_owned', ownerToken: selected.ownerToken }
+    : undefined);
   return {
     page: selected.page,
     diagnostics,
     connection,
     close: async () => {
-      await context.close().catch(() => undefined);
+      if (activeMode === 'isolated') await context.close().catch(() => undefined);
     },
   };
 }
@@ -2408,6 +2609,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         if (configErrors.length > 0) {
           throw new AssistantPluginError('PLUGIN_CONFIGURATION_INVALID', configErrors[0], { retryable: false });
         }
+        await closeManagedContextsForRepo(input.repoRoot);
         return { config, health: health(config, input.repoRoot) };
       }
       case 'list_sessions':
@@ -2428,6 +2630,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         assertBrowserSessionAvailable(input.repoRoot, sessionId);
         const session = findSession(input.repoRoot, sessionId);
         const tab = session?.browser?.tab;
+        const managedClosed = session ? await closeManagedSessionPage(input.repoRoot, current, session) : false;
         if (session?.browser?.provider === 'macos-apple-events'
           && session.browser.browserProduct
           && tab?.ownership === 'plugin_owned'
@@ -2437,11 +2640,12 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             .catch(() => undefined);
         }
         rmSync(sessionPath(input.repoRoot, sessionId), { force: true });
-        return { closed: true, sessionId, resourceClosed: tab?.ownership === 'plugin_owned' };
+        return { closed: true, sessionId, resourceClosed: managedClosed || tab?.ownership === 'plugin_owned' };
       }
       case 'clear_session': {
         assertBrowserSessionAvailable(input.repoRoot);
         const sessions = listSavedSessions(input.repoRoot);
+        await closeManagedContextsForRepo(input.repoRoot);
         for (const session of sessions) {
           const tab = session.browser?.tab;
           if (session.browser?.provider === 'macos-apple-events'

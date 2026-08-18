@@ -241,6 +241,96 @@ function mockAttachPlaywright(
   } as never;
 }
 
+function mockManagedPersistentPlaywright() {
+  type PageState = { id: string; url: string; title: string; ownerToken?: string; closed: boolean };
+  const events = {
+    launches: 0,
+    contextCloses: 0,
+    newPages: 0,
+    pageCloses: [] as string[],
+    gotos: [] as Array<{ id: string; url: string }>,
+  };
+  const states: PageState[] = [{ id: 'page-1', url: 'about:blank', title: 'New Tab', closed: false }];
+  const pageByState = new Map<PageState, any>();
+
+  const makePage = (state: PageState): any => {
+    const existing = pageByState.get(state);
+    if (existing) return existing;
+    const page = {
+      async goto(url: string) {
+        state.url = url;
+        state.title = url;
+        events.gotos.push({ id: state.id, url });
+      },
+      async title() {
+        return state.title;
+      },
+      url() {
+        return state.url;
+      },
+      async evaluate<T>(expression?: unknown, arg?: unknown) {
+        if (typeof expression === 'function' && typeof arg === 'string') {
+          state.ownerToken = arg;
+          return undefined as T;
+        }
+        if (typeof expression === 'string' && expression.includes('window.name')) {
+          return (state.ownerToken ?? '') as T;
+        }
+        return 'Managed page text' as T;
+      },
+      async screenshot(args: Record<string, unknown>) {
+        const path = typeof args.path === 'string' ? args.path : undefined;
+        if (path) writeFileSync(path, 'png');
+        return Buffer.from('png');
+      },
+      async click() {},
+      async fill() {},
+      async press() {},
+      async waitForSelector() { return {}; },
+      async close() {
+        if (state.closed) return;
+        state.closed = true;
+        events.pageCloses.push(state.id);
+      },
+    };
+    pageByState.set(state, page);
+    return page;
+  };
+
+  const context = {
+    pages() {
+      return states.filter((state) => !state.closed).map(makePage);
+    },
+    async newPage() {
+      events.newPages += 1;
+      const state: PageState = {
+        id: `page-${states.length + 1}`,
+        url: 'about:blank',
+        title: 'New Tab',
+        closed: false,
+      };
+      states.push(state);
+      return makePage(state);
+    },
+    async close() {
+      events.contextCloses += 1;
+      for (const state of states) state.closed = true;
+    },
+    async route() {},
+  };
+
+  return {
+    chromium: {
+      async launchPersistentContext() {
+        events.launches += 1;
+        return context;
+      },
+    },
+    events,
+    states,
+  } as never;
+}
+
 function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', options: { javaScriptEnabled?: boolean; targetTitleMetadataFails?: boolean; transitionalNewTabReads?: number; transitionalUrl?: string; frontmost?: boolean } = {}) {
   const javaScriptEnabled = options.javaScriptEnabled !== false;
   const separator = '\x1e';
@@ -613,6 +703,76 @@ describe('browser plugin', () => {
     });
     expect(moduleRoots.every((root) => root === repoRoot)).toBe(true);
     expect(loadRoots).toEqual([repoRoot]);
+  });
+
+  test('managed persistent sessions share one context but keep separate owner-bound pages across A-B-A reuse', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+    });
+    const runtime = mockManagedPersistentPlaywright() as unknown as {
+      events: { launches: number; contextCloses: number; newPages: number; pageCloses: string[] };
+      states: Array<{ id: string; url: string; ownerToken?: string; closed: boolean }>;
+    };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+
+    const a = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-managed-session-a-open', args: { url: 'https://example.com/shared' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const aSessionId = String((a.session as Record<string, unknown>).sessionId);
+    const b = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-managed-session-b-open', args: { url: 'https://example.com/shared' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const bSessionId = String((b.session as Record<string, unknown>).sessionId);
+
+    expect(aSessionId).not.toBe(bSessionId);
+    expect(runtime.events.launches).toBe(1);
+    expect(runtime.events.contextCloses).toBe(0);
+    const liveAfterAB = runtime.states.filter((state) => !state.closed);
+    expect(liveAfterAB).toHaveLength(2);
+    expect(liveAfterAB[0]?.ownerToken).toBeTruthy();
+    expect(liveAfterAB[1]?.ownerToken).toBeTruthy();
+    expect(liveAfterAB[0]?.ownerToken).not.toBe(liveAfterAB[1]?.ownerToken);
+
+    const aResumed = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'navigate',
+      requestId: 'browser-managed-session-a-resume', args: { session_id: aSessionId, url: 'https://example.com/a-resumed' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(runtime.events.launches).toBe(1);
+    expect(aResumed.browserConnection).toMatchObject({
+      provider: 'playwright-persistent-context',
+      tab: { ownership: 'plugin_owned' },
+      sessionResume: { status: 'matched' },
+    });
+    const aOwner = (aResumed.browserConnection as Record<string, any>).tab.ownerToken;
+    expect(runtime.states.find((state) => state.ownerToken === aOwner)?.url).toBe('https://example.com/a-resumed');
+    expect(runtime.states.filter((state) => !state.closed).some((state) => state.url === 'https://example.com/shared')).toBe(true);
+
+    const closedA = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'close_page',
+      requestId: 'browser-managed-session-a-close', args: { session_id: aSessionId },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(closedA).toMatchObject({ closed: true, resourceClosed: true });
+    expect(runtime.events.contextCloses).toBe(0);
+    expect(runtime.states.filter((state) => !state.closed)).toHaveLength(1);
+
+    const bResumed = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'browser-managed-session-b-resume', args: { session_id: bSessionId },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(runtime.events.launches).toBe(1);
+    expect(bResumed.browserConnection).toMatchObject({ sessionResume: { status: 'matched' } });
   });
 
   test('returns a clear dependency error when playwright is missing', async () => {
