@@ -55,6 +55,9 @@ import {
 } from '../../runtime/execution/process-runtime/command-facade';
 import { assessWorkMode, parseExplicitTaskMode } from '../controller/work-mode';
 import { normalizeRepositoryCommand } from '../repositories/command-normalization';
+import { readRepositoryRange } from '../repository/inspector';
+import { getMcpPolicy } from './policy';
+import { redactMcpText } from './redaction';
 import type { CallToolResult, McpToolDefinition } from './tools';
 import {
   boundUtf8,
@@ -117,6 +120,13 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     include_removed: { type: 'boolean' },
     detail_level: { type: 'string', enum: ['summary', 'detail'], description: 'Defaults to summary; detail returns the complete checkout history.' },
   }, ['repo_id'], true),
+  definition('read_repository_file', 'Read a line range from one policy-readable repository file.', {
+    repo_id: repoId,
+    checkout_id: { type: 'string' },
+    path: { type: 'string' },
+    start_line: { type: 'number' },
+    end_line: { type: 'number' },
+  }, ['path'], true),
   definition('repository_validate', 'Validate repository identity and migrate legacy ownership.', {
     repo_id: repoId,
     detail_level: { type: 'string', enum: ['summary', 'detail'], description: 'Defaults to summary; detail returns full migration evidence.' },
@@ -694,10 +704,33 @@ export async function callRepositoryTool(
   args: Record<string, unknown>,
   caller?: RepositoryToolCallerContext,
 ): Promise<RepositoryToolResult | undefined> {
-  if (!name.startsWith('repository_')) return undefined;
+  if (!name.startsWith('repository_') && name !== 'read_repository_file') return undefined;
   try {
     const repoIdValue = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
     switch (name) {
+      case 'read_repository_file': {
+        const repository = resolveRepositorySelection({
+          repoId: typeof args.repo_id === 'string' ? args.repo_id : undefined,
+          checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
+          controllerHome,
+          allowSoleRepository: true,
+        });
+        const path = String(args.path ?? '').trim();
+        if (!path) throw new Error('REPOSITORY_PATH_REQUIRED: path is required');
+        const session = caller?.sessionId
+          ? { sessionId: caller.sessionId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId }
+          : undefined;
+        const range = readRepositoryRange(
+          repository.canonicalRoot,
+          getMcpPolicy('controller', { repoRoot: repository.canonicalRoot }),
+          path,
+          typeof args.start_line === 'number' ? args.start_line : 1,
+          typeof args.end_line === 'number' ? args.end_line : 200,
+          session,
+        );
+        const redacted = redactMcpText(range.content);
+        return result({ ...range, content: redacted.text, redactions: redacted.redactions });
+      }
       case 'repository_register': {
         const startedAt = performance.now();
         const registerInput = {

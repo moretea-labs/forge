@@ -50,6 +50,24 @@ const processIdProp = {
 
 export const processToolDefinitions: McpToolDefinition[] = [
   definition(
+    'run_check',
+    'Run one named focused repository check through Process Runtime. Ordinary checks stay ephemeral/lightweight; release or multi-phase checks require an explicit durable workflow.',
+    {
+      repo_id: repoIdProp,
+      checkout_id: { type: 'string' },
+      check_id: { type: 'string' },
+      timeout_ms: { type: 'number' },
+      request_id: { type: 'string' },
+      issue_id: { type: 'string' },
+      task_id: { type: 'string' },
+      mode: { type: 'string', enum: ['direct', 'async', 'durable'] },
+      apply_mode: { type: 'string', enum: ['sync', 'async'] },
+      force_durable: { type: 'boolean' },
+    },
+    ['check_id'],
+    false,
+  ),
+  definition(
     'process_get',
     'Get the current status of a lightweight or durable process without re-executing the command. Readonly.',
     {

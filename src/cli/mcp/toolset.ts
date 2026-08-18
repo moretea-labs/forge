@@ -158,13 +158,19 @@ function staticExposureCacheKey(ctx: MultiRepositoryMcpToolContext): string {
 function buildStaticControllerExposureSnapshot(
   ctx: MultiRepositoryMcpToolContext,
 ): StaticControllerExposureSnapshot {
-  const rawDefinitions = runtimeToolDefinitions.concat(
+  const currentDefinitions = runtimeToolDefinitions.concat(
     executionToolDefinitions,
     processToolDefinitions,
     accessToolDefinitions,
     repositoryToolDefinitions,
-    buildMultiRepositoryToolDefinitions(ctx),
   );
+  const rawDefinitions = ctx.toolset === 'full'
+    ? currentDefinitions.concat(
+      buildMultiRepositoryToolDefinitions(ctx).filter(
+        (legacy) => !currentDefinitions.some((current) => current.name === legacy.name),
+      ),
+    )
+    : currentDefinitions;
   const unique = uniqueDefinitions(rawDefinitions);
   const allowed = controllerToolNamesForToolset(ctx.toolset, ctx);
   const expectedToolNames = allowed === null
