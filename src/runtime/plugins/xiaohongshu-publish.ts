@@ -10,7 +10,7 @@ import { AssistantPluginError } from './errors';
 import { executeBrowserPluginAction } from './browser-adapter';
 
 const PLUGIN_ID = 'xiaohongshu';
-const RECIPE_VERSION = 1;
+const RECIPE_VERSION = 2;
 const CREATOR_BASE_URL = 'https://creator.xiaohongshu.com/publish/publish?source=official';
 const CREATOR_ARTICLE_URL = `${CREATOR_BASE_URL}&target=article`;
 const IMAGE_TAB_TEXT = '上传图文';
@@ -141,6 +141,31 @@ function parseRecipeArgs(args: Record<string, unknown>) {
 
 export function buildXiaohongshuPublishRecipe(args: Record<string, unknown>): Record<string, unknown> {
   const parsed = parseRecipeArgs(args);
+  const generationRequired = parsed.mode === 'generated_image_note' && parsed.imagePaths.length === 0;
+  if (generationRequired) {
+    return {
+      schemaVersion: 1,
+      recipeVersion: RECIPE_VERSION,
+      provider: 'xiaohongshu-web',
+      requestedMode: parsed.mode,
+      normalizedMode: parsed.normalizedMode,
+      generationRequired: true,
+      sessionId: parsed.sessionId,
+      profileUrl: parsed.profileUrl,
+      generationHandoff: {
+        status: 'required',
+        requiredInput: 'image_paths',
+        minImages: 1,
+        maxImages: 18,
+        resumeAction: 'publish_note',
+        resumeMode: 'generated_image_note',
+        next: 'Generate one or more image files, then call publish_note again with image_paths. The publishing path will normalize to image_note.',
+      },
+      steps: [],
+      verification: [],
+    };
+  }
+
   const creatorUrl = parsed.normalizedMode === 'long_text' ? CREATOR_ARTICLE_URL : CREATOR_BASE_URL;
   const steps: RecipeStep[] = [
     {
@@ -199,7 +224,7 @@ export function buildXiaohongshuPublishRecipe(args: Record<string, unknown>): Re
     provider: 'xiaohongshu-web',
     requestedMode: parsed.mode,
     normalizedMode: parsed.normalizedMode,
-    generationRequired: parsed.mode === 'generated_image_note' && parsed.imagePaths.length === 0,
+    generationRequired: false,
     sessionId: parsed.sessionId,
     profileUrl: parsed.profileUrl,
     authPolicy: {

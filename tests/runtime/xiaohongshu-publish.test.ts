@@ -46,6 +46,9 @@ describe('xiaohongshu publish recipe', () => {
     const generatedPending = buildXiaohongshuPublishRecipe({ ...baseArgs, mode: 'generated_image_note' });
     expect(generatedPending.normalizedMode).toBe('image_note');
     expect(generatedPending.generationRequired).toBe(true);
+    expect(generatedPending.steps).toEqual([]);
+    expect(generatedPending.verification).toEqual([]);
+    expect(generatedPending.generationHandoff).toMatchObject({ requiredInput: 'image_paths', resumeAction: 'publish_note', minImages: 1, maxImages: 18 });
 
     const generatedReady = buildXiaohongshuPublishRecipe({ ...baseArgs, mode: 'generated_image_note', image_paths: ['generated.png'] });
     expect(generatedReady.normalizedMode).toBe('image_note');
