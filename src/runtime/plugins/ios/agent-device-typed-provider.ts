@@ -237,7 +237,7 @@ function snapshotOptions(
 ): Record<string, unknown> {
   return {
     platform: context.platform,
-    device: context.device,
+    ...(context.device ? { device: context.device } : {}),
     session: context.session,
     requestId: context.requestId,
     interactiveOnly: request.interactiveOnly === true,

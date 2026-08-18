@@ -1177,7 +1177,6 @@ async function executeSessionSnapshotBackend(
         return await typed.snapshot({
           stateDir: runtimeStateDir(input, record),
           session: record.sessionId,
-          device: record.targetId,
           platform: 'ios',
           requestId: input.requestId,
           cwd: input.repoRoot,
@@ -2327,7 +2326,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
     };
     writeInteractionSession(input.repoRoot, record);
     writeSigningConfig(input, interactionId, signingFromArgs(input.args));
-    const args = ['open', app, '--device', selected.id];
+    const args = ['open', app, '--device', selected.name];
     if (input.args.relaunch === true) args.push('--relaunch');
     try {
       const result = await runJsonAsync(input, [...args, '--session', record.sessionId, '--platform', 'ios', '--json'], {

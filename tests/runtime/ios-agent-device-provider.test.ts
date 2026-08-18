@@ -1040,7 +1040,7 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(recorded?.targetId).toBe('SIM-1');
 
     const openCommand = commands.find(({ argv }) => argv[1] === 'open')!;
-    expect(openCommand.argv).toEqual(expect.arrayContaining(['--device', 'SIM-1', '--session', sessionId, '--platform', 'ios', '--json', '--relaunch']));
+    expect(openCommand.argv).toEqual(expect.arrayContaining(['--device', 'iPhone 17 Pro', '--session', sessionId, '--platform', 'ios', '--json', '--relaunch']));
     const sessionCommands = commands.filter(({ argv }) => ['open', 'snapshot', 'press', 'fill', 'scroll', 'screenshot', 'events', 'close'].includes(argv[1]!));
     const stateDirs = new Set(sessionCommands.map(({ env }) => env?.AGENT_DEVICE_STATE_DIR));
     expect(stateDirs.size).toBe(1);
@@ -1477,10 +1477,10 @@ describe('optional agent-device iOS Simulator provider', () => {
     });
     expect(typedCalls[0]?.options).toMatchObject({
       platform: 'ios',
-      device: 'PHONE-1',
       raw: true,
       depth: 20,
     });
+    expect(typedCalls[0]?.options.device).toBeUndefined();
     expect(commands.some((command) => command[1] === 'snapshot')).toBe(false);
 
     await executeIosPluginAction(pluginInput(value, 'agent_device_close', { interaction_id: interactionId }));

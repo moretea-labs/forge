@@ -14,7 +14,7 @@ export interface AgentDeviceProviderIdentity {
 export interface AgentDeviceSessionContext {
   stateDir: string;
   session: string;
-  device: string;
+  device?: string;
   platform: 'ios';
   requestId: string;
   cwd: string;
