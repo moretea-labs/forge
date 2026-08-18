@@ -242,6 +242,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
     closed: [] as string[],
     navigated: [] as Array<{ tabId: string; url: string }>,
     activeTabId: userTab.id,
+    windowId: 'window-77',
     targetMetadataReads: 0,
     localFileInput: undefined as { name: string; size: number } | undefined,
     localFileInputs: [] as Array<{ name: string; size: number }>,
@@ -250,11 +251,21 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
   const appName = product === 'chrome' ? 'Google Chrome' : 'Vivaldi';
 
   const tabIdFromScript = (script: string): string | undefined => {
+    const targetVariable = script.match(/set targetTabId to "([^"]+)"/)?.[1];
+    if (targetVariable) return targetVariable;
     const matches = [...script.matchAll(/whose id is "([^"]+)"/g)];
     return matches.at(-1)?.[1];
   };
+  const hintedWindowIdFromScript = (script: string): string | undefined =>
+    script.match(/first window whose id is "([^"]+)"/)?.[1];
+  const assertWindowResolution = (script: string): void => {
+    const hintedWindowId = hintedWindowIdFromScript(script);
+    if (hintedWindowId && hintedWindowId !== events.windowId && !script.includes('repeat with candidateWindow in windows')) {
+      throw new Error(`missing browser window ${hintedWindowId}`);
+    }
+  };
   const metadata = (tabId: string, url: string, title: string, active: boolean, loading?: boolean) =>
-    `${options.frontmost === false ? 'false' : 'true'}${separator}${url}${separator}${title}${separator}0${separator}25${separator}1280${separator}925${separator}77${separator}${tabId}${separator}${active ? 'true' : 'false'}${loading === undefined ? '' : `${separator}${loading ? 'true' : 'false'}`}`;
+    `${options.frontmost === false ? 'false' : 'true'}${separator}${url}${separator}${title}${separator}0${separator}25${separator}1280${separator}925${separator}${events.windowId}${separator}${tabId}${separator}${active ? 'true' : 'false'}${loading === undefined ? '' : `${separator}${loading ? 'true' : 'false'}`}`;
 
   return {
     events,
@@ -274,11 +285,13 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
           return `window-77${separator}${tabId}`;
         }
         if (script.includes('close targetTab')) {
+          assertWindowResolution(script);
           const tabId = tabIdFromScript(script);
           if (tabId && ownedTabs.delete(tabId)) events.closed.push(tabId);
           return '';
         }
         if (script.includes('set URL of targetTab to targetUrl')) {
+          assertWindowResolution(script);
           const tabId = tabIdFromScript(script);
           const entry = tabId ? ownedTabs.get(tabId) : undefined;
           if (!tabId || !entry) throw new Error('missing owned tab');
@@ -287,6 +300,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
           return entry.url;
         }
         if (script.includes('execute targetTab javascript javascriptSource')) {
+          assertWindowResolution(script);
           if (!javaScriptEnabled) throw new Error('Executing JavaScript through AppleScript is turned off. Allow JavaScript from Apple Events.');
           const tabId = tabIdFromScript(script);
           const entry = tabId ? tabEntry(tabId) : undefined;
@@ -320,12 +334,14 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
           return JSON.stringify({ ok: true, value: true });
         }
         if (script.includes('set targetTabIndex to 1')) {
+          assertWindowResolution(script);
           const tabId = tabIdFromScript(script);
           if (!tabId || !tabEntry(tabId)) throw new Error('missing browser tab');
           events.activeTabId = tabId;
           return '';
         }
         if (script.includes('set targetIsActive')) {
+          assertWindowResolution(script);
           if (options.targetTitleMetadataFails && script.includes('title of targetTab as text')) throw new Error('Can’t make name of background Chrome tab into type text. (-1700)');
           const tabId = tabIdFromScript(script);
           const entry = tabId ? tabEntry(tabId) : undefined;
@@ -801,14 +817,17 @@ describe('browser plugin', () => {
     setMacOsBrowserRuntimeHooksForTest(runtime.hooks);
     const discovered = await discoverMacOsBrowserAttachment(['chrome']);
     expect(discovered.attachment).toBeDefined();
-    expect(discovered.attachment?.metadata).toMatchObject({ windowId: '77', tabId: '501', active: true, loading: false });
+    expect(discovered.attachment?.metadata).toMatchObject({ windowId: 'window-77', tabId: '501', active: true, loading: false });
     const attachment = discovered.attachment!;
     const page = await import('../../src/runtime/plugins/browser-macos-bridge').then(({ createMacOsBrowserOwnedPage }) =>
       createMacOsBrowserOwnedPage(attachment, 'https://example.com/native-handoff'));
     const ref = page.tabRef();
     expect(ref).toBeDefined();
     expect(runtime.events.activeTabId).toBe('501');
+    runtime.events.windowId = 'window-88';
     const metadata = await activateMacOsBrowserOwnedTab('chrome', ref!);
+    expect(metadata.windowId).toBe('window-88');
+    expect(runtime.events.created).toEqual(['9001']);
     expect(runtime.events.activeTabId).toBe(ref!.tabId);
     expect(metadata.active).toBe(true);
   });
@@ -997,6 +1016,44 @@ describe('browser plugin', () => {
     });
     expect(closed).toMatchObject({ closed: true, resourceClosed: true });
     expect(native.events.closed).toEqual(['9001', '9002']);
+    expect(native.events.activeTabId).toBe('501');
+  });
+
+  test('native session reattaches the same tab after its Chrome window id changes instead of opening a duplicate', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const first = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-native-window-move-first', args: { session_id: 'window-move-session', url: 'https://example.com/stable' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(first.browserConnection).toMatchObject({ tab: { windowId: 'window-77', tabId: '9001' } });
+
+    native.events.windowId = 'window-88';
+    const second = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'browser-native-window-move-second', args: { session_id: 'window-move-session' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(native.events.created).toEqual(['9001']);
+    expect(second.browserConnection).toMatchObject({
+      provider: 'macos-apple-events',
+      tab: { ownership: 'plugin_owned', windowId: 'window-88', tabId: '9001' },
+      sessionResume: { status: 'matched' },
+    });
     expect(native.events.activeTabId).toBe('501');
   });
 
@@ -1743,7 +1800,7 @@ describe('browser plugin', () => {
     });
     const adoptedSession = adopted.session as Record<string, any>;
     expect(adoptedSession.browser.tab.ownership).toBe('user_owned');
-    expect(adoptedSession.browser.tab.windowId).toBe('77');
+    expect(adoptedSession.browser.tab.windowId).toBe('window-77');
     expect(adoptedSession.browser.tab.tabId).toBe('501');
     expect(native.events.created).toEqual([]);
     expect(native.events.navigated).toEqual([]);
@@ -1792,7 +1849,7 @@ describe('browser plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     });
     const adoptedSession = adopted.session as Record<string, any>;
-    expect(adoptedSession.browser.tab).toMatchObject({ ownership: 'user_owned', windowId: '77', tabId: '501' });
+    expect(adoptedSession.browser.tab).toMatchObject({ ownership: 'user_owned', windowId: 'window-77', tabId: '501' });
     expect(native.events.created).toEqual([]);
     expect(native.events.navigated).toEqual([]);
 

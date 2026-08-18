@@ -203,7 +203,28 @@ return (frontmost as text) & separator & (URL of targetTab as text) & separator 
 }
 
 function targetTabPreamble(ref: MacOsBrowserTabRef): string {
-  return `set targetWindow to first window whose id is ${quotedAppleScript(ref.windowId)}\nset targetTab to first tab of targetWindow whose id is ${quotedAppleScript(ref.tabId)}`;
+  return `set targetTabId to ${quotedAppleScript(ref.tabId)}
+set targetWindow to missing value
+set targetTab to missing value
+try
+  set hintedWindow to first window whose id is ${quotedAppleScript(ref.windowId)}
+  set hintedTab to first tab of hintedWindow whose id is targetTabId
+  set targetWindow to hintedWindow
+  set targetTab to hintedTab
+end try
+if targetTab is missing value then
+  repeat with candidateWindow in windows
+    repeat with candidateTab in tabs of candidateWindow
+      if ((id of candidateTab) as text) is targetTabId then
+        set targetWindow to candidateWindow
+        set targetTab to candidateTab
+        exit repeat
+      end if
+    end repeat
+    if targetTab is not missing value then exit repeat
+  end repeat
+end if
+if targetTab is missing value then error "FORGE_BROWSER_TAB_NOT_FOUND:" & targetTabId`;
 }
 
 function targetMetadataScript(browser: MacOsBrowserDefinition, ref: MacOsBrowserTabRef): string {
@@ -212,7 +233,7 @@ ${targetTabPreamble(ref)}
 set windowBounds to bounds of targetWindow
 set separator to ASCII character 30
 set targetIsActive to ((id of active tab of targetWindow) is (id of targetTab))
-return (frontmost as text) & separator & (URL of targetTab as text) & separator & "" & separator & ((item 1 of windowBounds) as text) & separator & ((item 2 of windowBounds) as text) & separator & ((item 3 of windowBounds) as text) & separator & ((item 4 of windowBounds) as text) & separator & "" & separator & "" & separator & (targetIsActive as text) & separator & (loading of targetTab as text)
+return (frontmost as text) & separator & (URL of targetTab as text) & separator & "" & separator & ((item 1 of windowBounds) as text) & separator & ((item 2 of windowBounds) as text) & separator & ((item 3 of windowBounds) as text) & separator & ((item 4 of windowBounds) as text) & separator & ((id of targetWindow) as text) & separator & ((id of targetTab) as text) & separator & (targetIsActive as text) & separator & (loading of targetTab as text)
 `);
 }
 
@@ -469,7 +490,7 @@ export class MacOsAppleEventsPage {
   private metadata: MacOsBrowserMetadata;
   private readonly browser: MacOsBrowserDefinition;
   private readonly timeoutMs: number;
-  private readonly targetRef?: MacOsBrowserTabRef;
+  private targetRef?: MacOsBrowserTabRef;
 
   constructor(attachment: MacOsBrowserAttachment, timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS, targetRef?: MacOsBrowserTabRef) {
     this.metadata = { ...attachment.metadata, ...(targetRef ? { windowId: targetRef.windowId, tabId: targetRef.tabId } : {}) };
@@ -501,6 +522,9 @@ export class MacOsAppleEventsPage {
       { action: 'metadata', product: this.browser.product, ...(this.targetRef ? { ref: this.targetRef } : {}) },
       script,
     ));
+    if (this.targetRef && this.metadata.windowId && this.metadata.tabId) {
+      this.targetRef = { windowId: this.metadata.windowId, tabId: this.metadata.tabId };
+    }
     return this.metadata;
   }
 
@@ -1000,7 +1024,10 @@ export async function reattachMacOsBrowserOwnedPage(
     metadata,
     attempts: [{ product, appName: metadata.appName, bundleId: metadata.bundleId, status: 'selected', frontmost: metadata.frontmost }],
   };
-  return { page: new MacOsAppleEventsPage(attachment, timeoutMs, ref), attachment };
+  const resolvedRef = metadata.windowId && metadata.tabId
+    ? { windowId: metadata.windowId, tabId: metadata.tabId }
+    : ref;
+  return { page: new MacOsAppleEventsPage(attachment, timeoutMs, resolvedRef), attachment };
 }
 
 export async function closeMacOsBrowserOwnedTab(
