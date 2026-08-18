@@ -18,6 +18,7 @@ import {
   runControllerCheckAsync,
 } from '../../../cli/controller/check-runner';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
+import { runBoundedProcess } from '../thin-harness/async-process';
 import type { ProcessHandle, ProcessLogSlice, WaitProcessOptions } from './types';
 
 const EMPTY_EFFECTS = {
@@ -153,6 +154,20 @@ export interface StartLightweightCheckInput {
   commandId?: string;
 }
 
+export interface StartLightweightInternalProcessInput {
+  repoId: string;
+  executable: string;
+  args: readonly string[];
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  interactiveWaitMs: number;
+  timeoutMs: number;
+  maxOutputBytes?: number;
+  workId?: string;
+  commandId?: string;
+  signal?: AbortSignal;
+}
+
 export async function startLightweightRepositoryCommand(
   input: StartLightweightCommandInput,
 ): Promise<{ handle: ProcessHandle; metrics: LightweightCommandMetrics }> {
@@ -222,6 +237,105 @@ export async function startLightweightRepositoryCommand(
     entry.result = result;
     entry.finishedAtMs = Date.now();
     input.execution.signal?.removeEventListener('abort', onCallerAbort);
+    return result;
+  });
+  entries.set(processId, entry);
+
+  if (entry.interactiveWaitMs > 0) {
+    await Promise.race([
+      entry.promise,
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, entry.interactiveWaitMs);
+        timer.unref?.();
+      }),
+    ]);
+  }
+  const returnedAtMs = Date.now();
+  return {
+    handle: entryHandle(entry),
+    metrics: {
+      lane: 'lightweight_managed',
+      preSpawnHarnessMs: entry.spawnedAtMs === undefined ? undefined : Math.max(0, entry.spawnedAtMs - entry.startedAtMs),
+      childDurationMs: entry.finishedAtMs === undefined || entry.spawnedAtMs === undefined
+        ? undefined
+        : Math.max(0, entry.finishedAtMs - entry.spawnedAtMs),
+      interactiveReturnMs: Math.max(0, returnedAtMs - entry.startedAtMs),
+      durableWrites: 0,
+      leaseOperations: 0,
+    },
+  };
+}
+
+export async function startLightweightInternalProcess(
+  input: StartLightweightInternalProcessInput,
+): Promise<{ handle: ProcessHandle; metrics: LightweightCommandMetrics }> {
+  sweep();
+  const stableCommandId = input.commandId?.trim();
+  const requestFingerprint = JSON.stringify({
+    repoId: input.repoId,
+    executable: input.executable,
+    args: input.args,
+    cwd: input.cwd,
+    timeoutMs: input.timeoutMs,
+  });
+  if (stableCommandId) {
+    const existing = [...entries.values()].find((entry) => (
+      entry.repoId === input.repoId && entry.commandId === stableCommandId
+    ));
+    if (existing) {
+      if (existing.requestFingerprint !== requestFingerprint) {
+        throw new Error(`PROCESS_REQUEST_CONFLICT: command id ${stableCommandId} already identifies a different lightweight process`);
+      }
+      return {
+        handle: entryHandle(existing),
+        metrics: {
+          lane: 'lightweight_managed',
+          preSpawnHarnessMs: existing.spawnedAtMs === undefined ? undefined : Math.max(0, existing.spawnedAtMs - existing.startedAtMs),
+          childDurationMs: existing.finishedAtMs === undefined || existing.spawnedAtMs === undefined
+            ? undefined
+            : Math.max(0, existing.finishedAtMs - existing.spawnedAtMs),
+          interactiveReturnMs: 0,
+          durableWrites: 0,
+          leaseOperations: 0,
+        },
+      };
+    }
+  }
+
+  const processId = `lightweight:${randomUUID()}`;
+  const abort = new AbortController();
+  const maxOutputBytes = Math.max(1_024, input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES);
+  const entry: LightweightEntry = {
+    processId,
+    repoId: input.repoId,
+    workId: input.workId,
+    commandId: stableCommandId || processId,
+    requestFingerprint,
+    startedAt: new Date().toISOString(),
+    startedAtMs: Date.now(),
+    interactiveWaitMs: Math.max(0, input.interactiveWaitMs),
+    timeoutMs: input.timeoutMs,
+    maxOutputBytes,
+    stdout: '',
+    stderr: '',
+    abort,
+    promise: undefined as never,
+  };
+  const onCallerAbort = () => abort.abort();
+  input.signal?.addEventListener('abort', onCallerAbort, { once: true });
+  entry.promise = runBoundedProcess(input.executable, input.args, {
+    cwd: input.cwd,
+    env: input.env,
+    timeoutMs: input.timeoutMs,
+    maxOutputBytes,
+    signal: abort.signal,
+    onSpawn: (pid) => { entry.pid = pid; entry.spawnedAtMs = Date.now(); },
+    onStdout: (chunk) => { entry.stdout = boundedAppend(entry.stdout, chunk, maxOutputBytes); },
+    onStderr: (chunk) => { entry.stderr = boundedAppend(entry.stderr, chunk, maxOutputBytes); },
+  }).then((result) => {
+    entry.result = result;
+    entry.finishedAtMs = Date.now();
+    input.signal?.removeEventListener('abort', onCallerAbort);
     return result;
   });
   entries.set(processId, entry);

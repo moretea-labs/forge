@@ -10,6 +10,9 @@ export interface BoundedProcessOptions {
   signal?: AbortSignal;
   /** When true (default on non-Windows), create a new process group for tree kill. */
   processGroup?: boolean;
+  onSpawn?: (pid: number) => void;
+  onStdout?: (chunk: string) => void;
+  onStderr?: (chunk: string) => void;
 }
 
 export interface BoundedProcessResult {
@@ -114,6 +117,7 @@ export async function runBoundedProcess(
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: useProcessGroup,
     });
+    if (child.pid) options.onSpawn?.(child.pid);
 
     const finish = (exitCode: number) => {
       if (settled) return;
@@ -150,8 +154,14 @@ export async function runBoundedProcess(
 
     options.signal?.addEventListener('abort', onAbort, { once: true });
 
-    child.stdout?.on('data', (chunk: Buffer) => stdout.write(chunk));
-    child.stderr?.on('data', (chunk: Buffer) => stderr.write(chunk));
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout.write(chunk);
+      options.onStdout?.(chunk.toString('utf8'));
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr.write(chunk);
+      options.onStderr?.(chunk.toString('utf8'));
+    });
     child.on('error', (error) => {
       spawnError = error.message;
     });

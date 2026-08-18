@@ -113,7 +113,7 @@ function safeRepoRelativePath(repoRoot: string, value: string | undefined): stri
 
 function safeArtifactDir(
   repository: RepositoryRecord,
-  leaf: 'screenshots' | 'logs' | 'build-reports' | 'DerivedData',
+  leaf: 'screenshots' | 'logs' | 'build-reports' | 'test-results' | 'DerivedData',
   overrideRoot?: string,
 ): string {
   const root = overrideRoot
@@ -387,6 +387,58 @@ export function iosAppBuild(repository: RepositoryRecord, input: { scheme?: stri
     error: result.ok
       ? productError
       : { code: 'IOS_BUILD_FAILED', message: (result.stderr || result.stdout).slice(0, 2000) },
+  };
+}
+
+export function iosXcodeTest(repository: RepositoryRecord, input: {
+  scheme?: string;
+  udid?: string;
+  simulatorName?: string;
+  workspace?: string;
+  project?: string;
+  configuration?: string;
+  onlyTesting?: string[];
+  timeoutMs?: number;
+}) {
+  const unsupported = assertDarwin();
+  if (unsupported) return unsupported;
+  const listed = iosSchemesList(repository, { workspace: input.workspace, project: input.project });
+  if (!listed.ready) return listed;
+  const listedReady = listed as { ready: true; workspace?: string; project?: string; schemes: string[] };
+  const scheme = String(input.scheme ?? listedReady.schemes?.[0] ?? '').trim();
+  if (!scheme) throw new Error('IOS_SCHEME_REQUIRED: provide scheme or share at least one Xcode scheme');
+  const workspace = safeRepoRelativePath(repository.canonicalRoot, input.workspace ?? listedReady.workspace);
+  const project = safeRepoRelativePath(repository.canonicalRoot, input.project ?? listedReady.project);
+  const derivedDataPath = join(safeArtifactDir(repository, 'DerivedData'), `tests-${sanitize(scheme)}`);
+  const resultBundlePath = join(safeArtifactDir(repository, 'test-results'), `${timestamp()}-${sanitize(scheme)}.xcresult`);
+  mkdirSync(derivedDataPath, { recursive: true });
+  const args = ['test'];
+  if (workspace) args.push('-workspace', workspace);
+  else if (project) args.push('-project', project);
+  args.push('-scheme', scheme, '-configuration', input.configuration ?? 'Debug');
+  if (input.udid) args.push('-destination', `platform=iOS Simulator,id=${String(input.udid).trim()}`);
+  else args.push('-destination', 'platform=iOS Simulator,name=' + (input.simulatorName ?? 'iPhone 16 Pro'));
+  args.push('-parallel-testing-enabled', 'NO', '-maximum-parallel-testing-workers', '1');
+  for (const selector of (input.onlyTesting ?? []).slice(0, 50)) {
+    const normalized = String(selector).trim();
+    if (normalized) args.push(`-only-testing:${normalized}`);
+  }
+  args.push('-derivedDataPath', derivedDataPath, '-resultBundlePath', resultBundlePath);
+  const result = runCommand('xcodebuild', args, { cwd: repository.canonicalRoot, timeoutMs: input.timeoutMs ?? 15 * 60_000 });
+  return {
+    ready: result.ok,
+    ok: result.ok,
+    scheme,
+    configuration: input.configuration ?? 'Debug',
+    onlyTesting: (input.onlyTesting ?? []).map((entry) => String(entry).trim()).filter(Boolean).slice(0, 50),
+    derivedDataPath: artifactRelativePath(repository, derivedDataPath),
+    resultBundlePath: artifactRelativePath(repository, resultBundlePath),
+    command: result.command,
+    stdout: boundedText(result.stdout, 64 * 1024),
+    stderr: boundedText(result.stderr, 32 * 1024),
+    error: result.ok
+      ? undefined
+      : { code: 'IOS_TEST_FAILED', message: (result.stderr || result.stdout).slice(0, 4000) },
   };
 }
 

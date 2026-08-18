@@ -53,6 +53,7 @@ export interface AssistantPluginActionDescriptor {
   defaultTimeoutMs: number;
   cancellable: boolean;
   idempotent: boolean;
+  executionMode?: 'runtime' | 'lightweight_process';
   scopes: string[];
   resourceClaims: AssistantPluginActionResourceClaim[];
   argumentsSchema: Record<string, unknown>;

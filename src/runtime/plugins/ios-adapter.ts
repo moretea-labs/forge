@@ -5,6 +5,7 @@ import {
   iosAppBuild,
   iosAppInstall,
   iosAppLaunch,
+  iosXcodeTest,
   iosDevelopmentPlatform,
   iosProjectDiscover,
   iosSchemesList,
@@ -168,7 +169,7 @@ function capabilities(): AssistantPluginCapability[] {
       title: 'iOS Staged Smoke Review',
       description: 'Run a staged build/install/launch/screenshot workflow with per-stage evidence.',
       scopes: ['ios.build', 'ios.simulator'],
-      actions: ['smoke_review', 'build', 'launch_simulator', 'capture_screenshot'],
+      actions: ['smoke_review', 'build', 'xcode_test', 'launch_simulator', 'capture_screenshot'],
     },
     ...iosAgentDeviceCapabilities(),
     ...iosPhysicalDeviceCapabilities(),
@@ -262,6 +263,7 @@ function actions(): AssistantPluginActionDescriptor[] {
       defaultTimeoutMs: 10 * 60_000,
       cancellable: true,
       idempotent: false,
+      executionMode: 'lightweight_process',
       scopes: ['ios.build'],
       resourceClaims: writeClaims,
       argumentsSchema: {
@@ -279,6 +281,34 @@ function actions(): AssistantPluginActionDescriptor[] {
       },
     },
     {
+      actionId: 'xcode_test',
+      title: 'Run focused Xcode tests',
+      description: 'Run an Xcode test scheme, optionally narrowed with exact -only-testing selectors, and return bounded xcresult evidence.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 15 * 60_000,
+      cancellable: true,
+      idempotent: false,
+      executionMode: 'lightweight_process',
+      scopes: ['ios.build', 'ios.simulator'],
+      resourceClaims: writeClaims,
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          scheme: { type: 'string' },
+          udid: { type: 'string' },
+          simulator_name: { type: 'string' },
+          workspace: { type: 'string' },
+          project: { type: 'string' },
+          configuration: { type: 'string' },
+          only_testing: { type: 'array', items: { type: 'string' }, maxItems: 50 },
+          timeout_ms: { type: 'number' },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
       actionId: 'launch_simulator',
       title: 'Boot simulator',
       description: 'Boot an iOS Simulator device.',
@@ -288,6 +318,7 @@ function actions(): AssistantPluginActionDescriptor[] {
       defaultTimeoutMs: 60_000,
       cancellable: true,
       idempotent: true,
+      executionMode: 'lightweight_process',
       scopes: ['ios.simulator'],
       resourceClaims: writeClaims,
       argumentsSchema: {
@@ -311,6 +342,7 @@ function actions(): AssistantPluginActionDescriptor[] {
       defaultTimeoutMs: 60_000,
       cancellable: true,
       idempotent: false,
+      executionMode: 'lightweight_process',
       scopes: ['ios.simulator'],
       resourceClaims: writeClaims,
       argumentsSchema: {
@@ -333,6 +365,7 @@ function actions(): AssistantPluginActionDescriptor[] {
       defaultTimeoutMs: 15 * 60_000,
       cancellable: true,
       idempotent: false,
+      executionMode: 'lightweight_process',
       scopes: ['ios.build', 'ios.simulator'],
       resourceClaims: writeClaims,
       argumentsSchema: {
@@ -432,6 +465,23 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
           timeoutMs: typeof input.args.timeout_ms === 'number' ? input.args.timeout_ms : undefined,
         }),
       };
+    case 'xcode_test': {
+      const onlyTesting = Array.isArray(input.args.only_testing)
+        ? input.args.only_testing.map((entry) => String(entry).trim()).filter(Boolean).slice(0, 50)
+        : undefined;
+      return {
+        ...iosXcodeTest(repository, {
+          scheme: stringValue(input.args.scheme),
+          udid: stringValue(input.args.udid),
+          simulatorName: stringValue(input.args.simulator_name),
+          workspace: stringValue(input.args.workspace),
+          project: stringValue(input.args.project),
+          configuration: stringValue(input.args.configuration),
+          onlyTesting,
+          timeoutMs: typeof input.args.timeout_ms === 'number' ? input.args.timeout_ms : undefined,
+        }),
+      };
+    }
     case 'launch_simulator': {
       const udid = stringValue(input.args.udid);
       if (!udid) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'udid is required.', { retryable: false });

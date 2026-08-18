@@ -106,6 +106,7 @@ import {
 import { redactMcpText } from '../../../cli/mcp/redaction';
 import { resolveLocalBridgeSurface, summarizeRecentJobs } from '../../shared/local-bridge-surface';
 import { assistantPluginScope, controllerPluginRepository, executeAssistantPluginReadDirect, getAssistantPluginManifest, isDirectPluginReadAction, listAssistantPluginManifests, submitAssistantPluginAction } from '../../plugins/store';
+import { startLightweightPluginAction, waitLightweightPluginAction } from '../../plugins/lightweight-action';
 import { mcpPluginExecutionOrigin } from '../../plugins/execution-origin';
 import {
   summarizeExecutionJobForMcp,
@@ -5576,6 +5577,60 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           };
           return resultWithPluginArtifactImages(value, ctx.controllerHome, repository.repoId, direct.result);
         }
+        if (repository.repoId !== '__controller__' && action?.executionMode === 'lightweight_process') {
+          const timeoutMs = Math.max(1_000, request.timeoutMs ?? action?.defaultTimeoutMs ?? 10 * 60_000);
+          let { handle } = await startLightweightPluginAction({
+            controllerHome: ctx.controllerHome,
+            repository,
+            request,
+            interactiveWaitMs: typeof args.interactive_wait_ms === 'number' ? args.interactive_wait_ms : 750,
+            timeoutMs,
+          });
+          if (!handle.completed && args.wait === true) {
+            handle = await waitLightweightPluginAction(
+              repository.repoId,
+              handle.processId,
+              typeof args.wait_ms === 'number' ? Math.max(1, args.wait_ms) : 15_000,
+              ctx.signal,
+            );
+          }
+          if (!handle.completed) {
+            return result({
+              accepted: true,
+              direct: false,
+              durable: false,
+              mode: 'lightweight_process',
+              plugin: summarizePluginActionReceipt(manifest),
+              action: action ? {
+                actionId: action.actionId,
+                risk: action.risk,
+                confirmation: action.confirmation,
+                requiredConfirmationText: action.requiredConfirmationText,
+              } : { actionId },
+              scope: 'repository',
+              requestId,
+              process: handle,
+              resultRef: { kind: 'process_logs', processId: handle.processId },
+              next: 'The typed plugin action is isolated from the Canonical Runtime. Use process_wait on processId; after completion, call plugin_action_execute again with the same request_id to retrieve the deduplicated structured receipt.',
+            });
+          }
+          if (!handle.ok) {
+            return result({
+              accepted: true,
+              direct: false,
+              durable: false,
+              mode: 'lightweight_process',
+              requestId,
+              process: handle,
+              error: {
+                code: handle.timedOut ? 'PLUGIN_ACTION_TIMEOUT' : handle.cancelled ? 'PLUGIN_ACTION_CANCELLED' : 'PLUGIN_ACTION_FAILED',
+                message: handle.stderrTail || handle.stdoutTail || `Plugin action process exited with code ${String(handle.exitCode)}`,
+              },
+            }, true);
+          }
+        }
+        // The sidecar writes the authoritative receipt. Re-entering the store
+        // with the same request id is a bounded deduplicated read of that result.
         const submitted = await submitAssistantPluginAction(ctx.controllerHome, repository, request);
         const compactResult = compactSubmittedPluginActionResult(submitted.result);
         const value = {
