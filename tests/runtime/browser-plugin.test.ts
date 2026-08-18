@@ -525,6 +525,30 @@ describe('browser plugin', () => {
     expect(accepted?.risk).toBe('remote_write');
   });
 
+  test('plugin store submission preserves a valid HTTPS URL through browser.open_page', async () => {
+    const { repoRoot, controllerHome, repository } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+    });
+    const runtime = mockPlaywright();
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+
+    const submitted = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'browser',
+      actionId: 'open_page',
+      requestId: 'browser-store-open-valid-https',
+      args: { url: 'https://example.com/store-path' },
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+
+    expect((submitted.result?.result as Record<string, unknown>).session).toMatchObject({
+      url: 'https://example.com/store-path',
+    });
+  });
+
   test('returns a clear dependency error when playwright is missing', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {
