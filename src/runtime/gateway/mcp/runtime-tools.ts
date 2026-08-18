@@ -1323,6 +1323,17 @@ function summarizePluginActionReceipt(manifest: ReturnType<typeof getAssistantPl
   };
 }
 
+function compactSubmittedPluginActionResult(value: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!value) return undefined;
+  const nested = value.result;
+  if (!nested || typeof nested !== 'object' || Array.isArray(nested)) return value;
+  const work = value.work;
+  return {
+    ...(nested as Record<string, unknown>),
+    ...(work && typeof work === 'object' && !Array.isArray(work) ? { work } : {}),
+  };
+}
+
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).map((entry) => entry.trim()).filter(Boolean) : [];
@@ -6134,6 +6145,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           return resultWithPluginArtifactImages(value, ctx.controllerHome, repository.repoId, direct.result);
         }
         const submitted = await submitAssistantPluginAction(ctx.controllerHome, repository, request);
+        const compactResult = compactSubmittedPluginActionResult(submitted.result);
         const value = {
           accepted: true,
           deduplicated: submitted.deduplicated,
@@ -6151,7 +6163,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           requestId: submitted.receipt.requestId,
           ...(submitted.receipt.workId ? { workId: submitted.receipt.workId } : {}),
           authorization: submitted.authorization,
-          result: submitted.result,
+          result: compactResult,
           detail: {
             tool: 'rh_context',
             arguments: {
@@ -6162,7 +6174,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           },
           next: 'Continue with the returned bounded plugin result; use rh_context capability detail only when the typed action schema/policy is needed.',
         };
-        return resultWithPluginArtifactImages(value, ctx.controllerHome, repository.repoId, submitted.result);
+        return resultWithPluginArtifactImages(value, ctx.controllerHome, repository.repoId, compactResult);
       }
       case 'toolchain_plugin_summary': {
         const pluginId = String(args.plugin_id ?? '').trim();

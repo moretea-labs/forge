@@ -746,10 +746,13 @@ describe("MCP controller profile", () => {
       expect(acceptedValue.plugin.permissions).toBeUndefined();
       expect(acceptedValue.plugin.capabilities).toBeUndefined();
       expect(acceptedValue.plugin.health.ready).toBeBoolean();
+      expect(acceptedValue.result).toMatchObject({ config: expect.any(Object), status: expect.any(Object) });
+      expect(acceptedValue.result.plugin).toBeUndefined();
+      expect(acceptedValue.result.action).toBeUndefined();
       expect(acceptedValue.detail).toEqual({
         tool: "rh_context",
         arguments: { repo_id: expect.any(String), capability_id: "plugin.github.configure", detail_level: "detail" }});
-      expect(Buffer.byteLength(JSON.stringify(acceptedValue))).toBeLessThan(16_000);
+      expect(Buffer.byteLength(JSON.stringify(acceptedValue))).toBeLessThan(8_000);
 
       registerRepository({ path: repoRoot, controllerHome });
       // Authorization-only configure may not enable until confirmed; confirm explicitly.
