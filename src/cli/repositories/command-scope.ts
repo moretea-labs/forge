@@ -94,6 +94,52 @@ function macOsTccSensitiveArgvTool(command: CanonicalRepositoryCommand): string 
   return typeof shellPayload === 'string' ? macOsTccSensitiveShellTool(shellPayload) : undefined;
 }
 
+const INLINE_INTERPRETERS = new Set(['node', 'nodejs', 'bun', 'deno']);
+const SHELL_INTERPRETERS = new Set(['bash', 'sh', 'zsh', 'fish', 'dash']);
+const FORGE_PLUGIN_ACTION_EXECUTOR = /\b(?:submitAssistantPluginAction|executeAssistantPluginAction|executeBrowserPluginAction)\b/;
+const FORGE_RUNTIME_PLUGIN_IMPORT = /(?:\bfrom\s*|\bimport\s*\(|\brequire\s*\()\s*['"][^'"]*(?:^|[\\/])(?:src[\\/])?runtime[\\/]plugins[\\/][^'"]+['"]/m;
+
+function inlineEvalPayload(command: CanonicalRepositoryCommand): string | undefined {
+  if (command.kind === 'shell') {
+    const shell = command.shellCommand ?? '';
+    return /(?:^|[;&|]\s*|\s)(?:node|nodejs|bun|deno)(?:\s+[^\n;&|]*)?\s(?:-e|--eval)(?:\s|=)/i.test(shell)
+      ? shell
+      : undefined;
+  }
+  const executableName = command.executable!.split(/[\\/]/).at(-1)?.toLowerCase() ?? '';
+  const args = command.args ?? [];
+  if (SHELL_INTERPRETERS.has(executableName)) {
+    const commandFlagIndex = args.findIndex((arg) => /^(?:-[^-]*c[^-]*)$/i.test(arg));
+    const payload = commandFlagIndex >= 0 ? args[commandFlagIndex + 1] : undefined;
+    return typeof payload === 'string'
+      && /(?:^|[;&|]\s*|\s)(?:node|nodejs|bun|deno)(?:\s+[^\n;&|]*)?\s(?:-e|--eval)(?:\s|=)/i.test(payload)
+      ? payload
+      : undefined;
+  }
+  if (!INLINE_INTERPRETERS.has(executableName)) return undefined;
+  const evalIndex = args.findIndex((arg) => arg === '-e' || arg === '--eval');
+  if (evalIndex >= 0) return args[evalIndex + 1];
+  const inline = args.find((arg) => arg.startsWith('--eval='));
+  return inline?.slice('--eval='.length);
+}
+
+/**
+ * Process Runtime deliberately supports bounded direct argv eval for diagnostics
+ * and test helpers. What it must not support is using that escape hatch as a
+ * second plugin executor: typed plugin actions own authorization, resource
+ * claims, receipts, and recovery semantics through plugin_action_execute.
+ */
+export function assertRepositoryCommandNoPluginExecutionBypass(input: unknown): CanonicalRepositoryCommand {
+  const command = normalizeRepositoryCommand(input);
+  const payload = inlineEvalPayload(command);
+  if (payload && FORGE_PLUGIN_ACTION_EXECUTOR.test(payload) && FORGE_RUNTIME_PLUGIN_IMPORT.test(payload)) {
+    throw new Error(
+      'PLUGIN_ACTION_EXECUTION_REQUIRES_TYPED_PLUGIN_TOOL: repository commands may not invoke Forge runtime plugin action internals; use plugin_action_execute so typed authorization, resource claims, receipts, and recovery remain authoritative',
+    );
+  }
+  return command;
+}
+
 /**
  * Runtime releases live at release-specific executable paths. Never let those
  * binaries become macOS TCC principals: GUI automation and screen capture must
