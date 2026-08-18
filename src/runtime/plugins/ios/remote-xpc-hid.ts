@@ -132,12 +132,19 @@ from pymobiledevice3.remote.core_device.pasteboard_service import PasteboardServ
 from pymobiledevice3.remote.core_device.hid_service import (
     ASCII_TO_HID,
     DIGITIZER_SURFACE_MAIN_TOUCHSCREEN,
+    KEY_BACKSPACE,
     KEY_LEFT_GUI,
     KEY_LEFT_SHIFT,
     TOUCHSCREEN_STATE_CONTACT,
     TOUCHSCREEN_STATE_RELEASE,
     touch_session,
 )
+
+
+def keyboard_mapping(char):
+    if char == '\b':
+        return (KEY_BACKSPACE, False)
+    return ASCII_TO_HID.get(char)
 
 
 def normalized_point(x, y, width, height):
@@ -244,7 +251,7 @@ async def main():
                         text_mode = str(request.get('textMode', 'auto'))
                         if text_mode not in ('auto', 'keys', 'pasteboard'):
                             raise ValueError('unsupported textMode')
-                        key_supported = all(ASCII_TO_HID.get(char) is not None for char in text)
+                        key_supported = all(keyboard_mapping(char) is not None for char in text)
                         replace_existing = bool(request.get('replaceExisting', False))
                         pasteboard_available = 'com.apple.coredevice.pasteboardservice' in rsd_services
                         use_pasteboard = text_mode == 'pasteboard' or (text_mode == 'auto' and (not key_supported or len(text) >= 32))
@@ -289,7 +296,7 @@ async def main():
                             result = {'action': 'type', 'length': len(text), 'inputMode': 'pasteboard', 'pasteboardRestored': pasteboard_restored}
                         else:
                             for char in text:
-                                mapping = ASCII_TO_HID.get(char)
+                                mapping = keyboard_mapping(char)
                                 if mapping is None:
                                     raise ValueError('unsupported HID character in keys mode')
                                 usage, shifted = mapping

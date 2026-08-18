@@ -87,6 +87,14 @@ describe('RemoteXPC HID backend', () => {
     expect(observed).not.toHaveProperty('height');
   });
 
+  it('maps backspace through the verified built-in keyboard report path', () => {
+    const source = remoteXpcHidWorkerSourceForTest();
+    expect(source).toContain('KEY_BACKSPACE');
+    expect(source).toContain("if char == '\\b':");
+    expect(source).toContain('return (KEY_BACKSPACE, False)');
+    expect(source).toContain('mapping = keyboard_mapping(char)');
+  });
+
   it('fails replace_existing closed inside the real iOS 27 worker before any HID mutation', () => {
     const source = remoteXpcHidWorkerSourceForTest();
     expect(source).toContain("phase = 'replace_existing_preflight'");
