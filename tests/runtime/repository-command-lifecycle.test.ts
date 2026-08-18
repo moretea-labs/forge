@@ -10,6 +10,8 @@ import {
   reconcileLocalBridgeJobs,
   submitLocalBridgeJob} from '../../src/cli/local-bridge/job-store';
 import {
+  executeRepositoryCommand,
+  executeRepositoryReadOnlyCommandDirect,
   previewRepositoryCommandExecution,
   REPOSITORY_COMMAND_DEFAULT_TIMEOUT_MS,
   REPOSITORY_COMMAND_MAX_TIMEOUT_MS,
@@ -161,6 +163,34 @@ describe('repository command execution lifecycle', () => {
     for (const payload of ['printf local > marker.txt', 'bun -e "console.log(1)"']) expect(route(['bash', '-lc', payload])).toEqual({ route: 'process_direct', reason: 'lightweight_local_shell_wrapper' });
     expect(route(['bun', '-e', 'await fetch("http://127.0.0.1:8765/ready")'])).toEqual({ route: 'process_direct', reason: 'lightweight_local_inline_interpreter' });
     expect(route(['touch', 'marker.txt'])).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
+  });
+
+  test('readonly direct execution reuses its pre-execution snapshot instead of taking a redundant post snapshot', async () => {
+    const controllerHome = tempRoot('forge-cmd-read-snapshot-home-');
+    const repoRoot = tempRoot('forge-cmd-read-snapshot-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    const result = await executeRepositoryReadOnlyCommandDirect(repository, {
+      command: ['git', 'status', '--short'],
+      timeoutMs: 10_000,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.after).toBe(result.before);
+    expect(result.repositoryChanged).toBe(false);
+    expect(result.changedPaths).toEqual([]);
+  });
+
+  test('write-capable command execution still reports repository changes', () => {
+    const controllerHome = tempRoot('forge-cmd-write-snapshot-home-');
+    const repoRoot = tempRoot('forge-cmd-write-snapshot-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    const result = executeRepositoryCommand(controllerHome, repository, {
+      command: ['touch', 'marker.txt'],
+      timeoutMs: 10_000,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.repositoryChanged).toBe(true);
+    expect(result.changedPaths).toContain('marker.txt');
   });
 
   test('Work identity does not upgrade an ordinary readonly command into Process Runtime', async () => {

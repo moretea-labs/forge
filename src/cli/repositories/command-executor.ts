@@ -471,7 +471,12 @@ export async function executeRepositoryReadOnlyCommandDirect(
   }
 
   const result = await runCanonicalCommand(command, cwd, timeoutMs, maxOutputBytes, { signal });
-  const after = input.allowNonGitWorkspace ? before : await repositorySnapshotAsync(root, signal?.aborted ? undefined : signal);
+  // This entry point is reachable only after the bounded classifier has proven
+  // the command readonly. A second full repository snapshot would start four
+  // extra Git processes merely to rediscover the invariant we already used to
+  // select this lane. Keep the captured pre-execution snapshot as both sides of
+  // the receipt; write-capable lanes still take independent before/after snapshots.
+  const after = before;
   return {
     ...base,
     status: 'executed',
@@ -482,8 +487,8 @@ export async function executeRepositoryReadOnlyCommandDirect(
     stdout: result.stdout,
     stderr: result.stderr,
     after,
-    repositoryChanged: snapshotChanged(before, after),
-    changedPaths: changedSnapshotPaths(before, after),
+    repositoryChanged: false,
+    changedPaths: [],
     policyDecision: 'allowed',
     externalPathUsages: externalPathUsages.length > 0 ? externalPathUsages : undefined,
     infrastructureError: result.timedOut
