@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { createInterface } from 'readline';
@@ -12,6 +12,7 @@ const WORKER_STARTUP_MS = 12_000;
 const MUTATION_READY_BUDGET_MS = 2_500;
 const REQUEST_TIMEOUT_MS = 12_000;
 const RSD_ENDPOINT_CACHE_TTL_MS = 30_000;
+const RSD_ENDPOINT_PERSISTED_TTL_MS = 10 * 60_000;
 const MAX_TEXT_LENGTH = 2048;
 const MAX_STDERR = 8 * 1024;
 
@@ -459,6 +460,64 @@ function materializeWorker(controllerHome: string): string {
   return path;
 }
 
+function persistentEndpointPath(controllerHome: string, udid: string): string {
+  const identity = createHash('sha256').update(udid).digest('hex').slice(0, 24);
+  return join(deviceInputRoot(controllerHome), `rsd-endpoint-${identity}.json`);
+}
+
+function validEndpoint(value: unknown): RsdEndpoint | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const endpoint = value as Record<string, unknown>;
+  if (typeof endpoint.host !== 'string' || !/^[0-9a-fA-F:]+$/.test(endpoint.host)) return undefined;
+  if (typeof endpoint.port !== 'number' || !Number.isInteger(endpoint.port) || endpoint.port <= 0 || endpoint.port > 65_535) return undefined;
+  return { host: endpoint.host, port: endpoint.port };
+}
+
+function readPersistentEndpoint(controllerHome: string, udid: string, now = Date.now()): RsdEndpoint | undefined {
+  const path = persistentEndpointPath(controllerHome, udid);
+  if (!existsSync(path)) return undefined;
+  try {
+    const record = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    const observedAt = typeof record.observedAt === 'number' ? record.observedAt : Number.NaN;
+    const ageMs = now - observedAt;
+    const endpoint = record.schemaVersion === 1 ? validEndpoint(record.endpoint) : undefined;
+    if (!endpoint || !Number.isFinite(ageMs) || ageMs < -5_000 || ageMs > RSD_ENDPOINT_PERSISTED_TTL_MS) {
+      try { unlinkSync(path); } catch {}
+      return undefined;
+    }
+    return endpoint;
+  } catch {
+    try { unlinkSync(path); } catch {}
+    return undefined;
+  }
+}
+
+function rememberPersistentEndpoint(
+  controllerHome: string,
+  udid: string,
+  endpoint: RsdEndpoint,
+  observedAt = Date.now(),
+): void {
+  const path = persistentEndpointPath(controllerHome, udid);
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify({ schemaVersion: 1, observedAt, endpoint }), { encoding: 'utf8', mode: 0o600 });
+    renameSync(tmp, path);
+  } catch {
+    try { unlinkSync(tmp); } catch {}
+  }
+}
+
+export function remoteXpcHidPersistentEndpointCacheForTest(
+  controllerHome: string,
+  udid: string,
+  endpoint?: RsdEndpoint,
+  ageMs = 0,
+): RsdEndpoint | undefined {
+  if (endpoint) rememberPersistentEndpoint(controllerHome, udid, endpoint, Date.now() - Math.max(0, ageMs));
+  return readPersistentEndpoint(controllerHome, udid);
+}
+
 export function parseMacOSTrustedRsdEndpoints(output: string, udid: string): RsdEndpoint[] {
   const endpoints: RsdEndpoint[] = [];
   let host: string | undefined;
@@ -827,9 +886,12 @@ async function establishWorker(
 ): Promise<void> {
   if (workers.has(input.deviceIdentifier)) return;
   const cached = cachedEndpoints(input.udid);
+  const persisted = cached?.length ? undefined : readPersistentEndpoint(input.controllerHome, input.udid);
   const initialEndpoints = cached?.length
     ? cached
-    : await discoverEndpoints(input.udid, true);
+    : persisted
+      ? [persisted]
+      : await discoverEndpoints(input.udid, true);
   if (workerGeneration(input.deviceIdentifier) !== generation) return;
 
   let lastError: unknown;
@@ -846,6 +908,7 @@ async function establishWorker(
           return 'cancelled';
         }
         warmupFailures.delete(input.deviceIdentifier);
+        rememberPersistentEndpoint(input.controllerHome, input.udid, endpoint);
         return 'ready';
       } catch (error) {
         lastError = error;
@@ -860,7 +923,7 @@ async function establishWorker(
 
   let refreshedEndpointCount = 0;
   let novelEndpointCount = 0;
-  if (cached?.length) {
+  if (cached?.length || persisted) {
     endpointCache.delete(input.udid);
     try {
       const refreshed = await discoverEndpoints(input.udid, true);
@@ -884,7 +947,8 @@ async function establishWorker(
       deviceIdentifier: input.deviceIdentifier,
       endpointCount: attemptedEndpointCount,
       initialEndpointCount: initialEndpoints.length,
-      cacheRefreshAttempted: Boolean(cached?.length),
+      cacheRefreshAttempted: Boolean(cached?.length || persisted),
+      persistentEndpointUsed: Boolean(persisted),
       refreshedEndpointCount,
       novelEndpointCount,
     },

@@ -1,9 +1,13 @@
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { afterEach, describe, expect, it } from 'bun:test';
 import {
   executeRemoteXpcHidInput,
   parseMacOSTrustedRsdEndpoints,
   remoteXpcHidEndpointCacheForTest,
   remoteXpcHidNovelEndpointsForTest,
+  remoteXpcHidPersistentEndpointCacheForTest,
   remoteXpcHidWarmupFailureErrorForTest,
   remoteXpcHidWorkerSourceForTest,
   remoteXpcHidStatus,
@@ -81,6 +85,19 @@ describe('RemoteXPC HID backend', () => {
       { host: 'fd00:same::1', port: 53001 },
       { host: 'fd00:same::1', port: 53001 },
     ])).toEqual([]);
+  });
+
+  it('persists only a short-lived successful RSD endpoint across Runtime memory loss', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-rxpc-endpoint-cache-'));
+    try {
+      const endpoint = { host: 'fd00:cafe::1', port: 54001 };
+      expect(remoteXpcHidPersistentEndpointCacheForTest(controllerHome, 'UDID-PERSIST', endpoint, 0)).toEqual(endpoint);
+      expect(remoteXpcHidPersistentEndpointCacheForTest(controllerHome, 'UDID-PERSIST')).toEqual(endpoint);
+      expect(remoteXpcHidPersistentEndpointCacheForTest(controllerHome, 'UDID-PERSIST', endpoint, 10 * 60_000 + 1)).toBeUndefined();
+      expect(remoteXpcHidPersistentEndpointCacheForTest(controllerHome, 'UDID-PERSIST')).toBeUndefined();
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
   });
 
   it('surfaces the bounded warmup failure instead of degrading it to a generic still-warming error', () => {
