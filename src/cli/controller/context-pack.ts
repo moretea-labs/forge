@@ -36,6 +36,7 @@ import {
   cleanList,
   gitStatusChangedPaths,
   pathNoisePenalty,
+  structuralIntentQuery,
   textTokens,
 } from './context/query-planning';
 import { issueTaskFocus, ledgerTask } from './context/focus';
@@ -165,7 +166,7 @@ export function buildControllerContextPack(
 
   const structuralStartedAt = performance.now();
   if (structuralMode !== "off") {
-    const structuralQuery = [goal || terms.join(" "), ...impactDomains].filter(Boolean).join(" ");
+    const structuralQuery = structuralIntentQuery(goal, terms, impactDomains);
     if (!structuralQuery) {
       structuralContext = {
         ...structuralContext,
@@ -686,7 +687,7 @@ export async function buildControllerContextPackAsync(
     ...impactDomains.flatMap((domain) => IMPACT_DOMAIN_TERMS[domain]),
     ...terms.slice(1),
   ]).slice(0, 32);
-  const structuralQuery = [options.description || terms.join(' '), ...impactDomains].filter(Boolean).join(' ');
+  const structuralQuery = structuralIntentQuery(options.description ?? '', terms, impactDomains);
   const structuralIndexRoot = options.structuralIndexRoot?.trim() || repoRoot;
   const structuralRequest = {
     operation: 'context' as const,

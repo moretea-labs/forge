@@ -4,6 +4,7 @@ import { chmodSync, mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } fr
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildControllerContextPack } from '../../src/cli/controller/context-pack';
+import { structuralIntentQuery } from '../../src/cli/controller/context/query-planning';
 import { clearSourceSymbolIndexCacheForTest, materializeSource, sourceSymbolIndexCacheSnapshotForTest } from '../../src/cli/controller/context/source-materializer';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { clearAllSessionCachesForTest } from '../../src/cli/repository/session-cache';
@@ -115,6 +116,18 @@ describe('CodeGraph read provider', () => {
     roots.push(root);
     const response = queryCodeGraphReadProvider(root, { operation: 'status' });
     expect(response).toMatchObject({ ok: false, status: 'unavailable', metadata: { initialized: false } });
+  });
+
+  test('keeps short structural intents exact and compacts long intents around code anchors', () => {
+    const short = 'callRuntimeTool MCP dispatch';
+    expect(structuralIntentQuery(short)).toBe(short);
+
+    const long = 'Investigate the current Runtime MCP dispatch implementation and impact closure. Find the authoritative implementation of callRuntimeTool in src/runtime/gateway/mcp/runtime-tools.ts, all relevant dispatch and execution paths, current callers, compatibility delegates, related tests, and any duplicate or legacy mechanism that could remain reachable after a change.';
+    const compact = structuralIntentQuery(long);
+    expect(compact.length).toBeLessThan(long.length);
+    expect(compact).toContain('callRuntimeTool');
+    expect(compact).toContain('src/runtime/gateway/mcp/runtime-tools.ts');
+    expect(compact).not.toContain('compatibility delegates');
   });
 
   test('does no CodeGraph work when structural context is omitted/default-off', () => {

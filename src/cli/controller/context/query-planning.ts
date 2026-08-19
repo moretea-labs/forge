@@ -54,6 +54,38 @@ export function textTokens(value: string): string[] {
     .filter((entry) => !/^\d+$/.test(entry)))).slice(0, 12);
 }
 
+function codeShapedAnchors(value: string): string[] {
+  const raw = value.split(/[^\p{L}\p{N}_./:-]+/u)
+    .map((entry) => entry.replace(/^[\'"`]+|[\'"`]+$/g, '').trim())
+    .filter((entry) => entry.length >= 3)
+    .filter((entry) => entry.includes('/')
+      || entry.includes('_')
+      || /[a-z0-9][A-Z]/.test(entry)
+      || /\.[A-Za-z0-9]+$/.test(entry));
+  return Array.from(new Set(raw)).slice(0, 8);
+}
+
+/**
+ * CodeGraph's semantic query cost grows materially with long natural-language
+ * prompts. Keep short intents exact, but compact long intents around concrete
+ * code anchors plus bounded semantic tokens. This affects only structural
+ * discovery; lexical search and raw-source retrieval still consume the full
+ * controller description.
+ */
+export function structuralIntentQuery(
+  description: string,
+  fallbackTerms: readonly string[] = [],
+  impactDomains: readonly string[] = [],
+): string {
+  const normalized = description.trim();
+  const intent = !normalized
+    ? cleanList([...fallbackTerms]).slice(0, 16).join(' ')
+    : normalized.length <= 160
+      ? normalized
+      : Array.from(new Set([...codeShapedAnchors(normalized), ...textTokens(normalized)])).slice(0, 16).join(' ');
+  return [intent, ...impactDomains].filter(Boolean).join(' ');
+}
+
 export function gitStatusChangedPaths(status: string): string[] {
   const paths: string[] = [];
   for (const line of status.split(/\r?\n/)) {
