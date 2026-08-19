@@ -2,7 +2,10 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { GlobalScheduler } from '../../src/runtime/control-plane/global-scheduler/scheduler';
+import {
+  GlobalScheduler,
+  selectSchedulerSourceScanRepositories,
+} from '../../src/runtime/control-plane/global-scheduler/scheduler';
 import {
   cleanupControllerRuntimeState,
   runtimeCleanupLogPath,
@@ -371,6 +374,33 @@ describe('runtime cleanup', () => {
 
     expect(preview.candidates).toHaveLength(3);
     expect(preview.truncated.candidates).toBe(true);
+  });
+
+  test('source scan selection prefers active repositories and bounds the idle safety scan', () => {
+    const repositories = [
+      { repoId: 'repo-a' },
+      { repoId: 'repo-b' },
+      { repoId: 'repo-c' },
+    ];
+    const now = 10 * 60_000;
+    expect(selectSchedulerSourceScanRepositories(
+      repositories,
+      new Set(['repo-b', 'repo-c']),
+      now,
+      now,
+    ).map((repository) => repository.repoId)).toEqual(['repo-b', 'repo-c']);
+    expect(selectSchedulerSourceScanRepositories(
+      repositories,
+      new Set(),
+      now,
+      now,
+    )).toEqual([]);
+    expect(selectSchedulerSourceScanRepositories(
+      repositories,
+      new Set(),
+      now,
+      now - 60_000,
+    )).toHaveLength(1);
   });
 
   test('periodic scheduler cleanup runs Process GC for only one enabled repository', async () => {

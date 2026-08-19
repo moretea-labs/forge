@@ -72,6 +72,22 @@ const IDLE_REPOSITORY_SCAN_INTERVAL_MS = Math.max(
   GIT_STATUS_SAMPLE_INTERVAL_MS,
   Number(process.env.FORGE_IDLE_REPOSITORY_SCAN_INTERVAL_MS ?? 60_000),
 );
+
+export function selectSchedulerSourceScanRepositories<T extends { repoId: string }>(
+  repositories: readonly T[],
+  activeRepoIds: ReadonlySet<string>,
+  nowMs: number,
+  lastSourceScanAt: number,
+): T[] {
+  const active = repositories.filter((repository) => activeRepoIds.has(repository.repoId));
+  if (active.length > 0) return active;
+  if (repositories.length === 0 || nowMs - lastSourceScanAt < IDLE_REPOSITORY_SCAN_INTERVAL_MS) return [];
+  // fs.watch/dirty markers drive prompt refresh for active mutations. The idle
+  // scan is only a safety net, so spread it across minutes instead of blocking
+  // the Runtime event loop on every registered repository at once.
+  const slot = Math.floor(nowMs / IDLE_REPOSITORY_SCAN_INTERVAL_MS) % repositories.length;
+  return [repositories[slot]!];
+}
 const DARWIN_RECLAIMABLE_PAGE_LABELS = new Set([
   'Pages free',
   'Pages inactive',
@@ -663,13 +679,20 @@ export class GlobalScheduler {
       this.lastReconcileAt = new Date(now).toISOString();
     }
     const activeJobSnapshot = listActiveExecutionJobs(this.controllerHome);
-    const hasActiveWork = activeJobSnapshot.length > 0;
-    const sourceScanDue = hasActiveWork || now - this.lastSourceScanAt >= IDLE_REPOSITORY_SCAN_INTERVAL_MS;
+    const activeSourceRepoIds = new Set(activeJobSnapshot.map((job) => job.repoId));
+    const sourceScanRepositories = selectSchedulerSourceScanRepositories(
+      repositories,
+      activeSourceRepoIds,
+      now,
+      this.lastSourceScanAt,
+    );
+    const sourceScanDue = sourceScanRepositories.length > 0;
     if (sourceScanDue && now - this.lastGitStatusSampleAt >= GIT_STATUS_SAMPLE_INTERVAL_MS) {
       this.lastGitStatusSampleAt = now;
       this.lastSourceScanAt = now;
-      this.lastSourceScanRepoCount = repositories.length;
-      sampleRepositoryGitStatusForRepositories(this.controllerHome, repositories);
+      this.lastSourceScanRepoCount = sourceScanRepositories.length;
+      sampleRepositoryGitStatusForRepositories(this.controllerHome, sourceScanRepositories);
+      this.sourceScansAvoided += Math.max(0, repositories.length - sourceScanRepositories.length);
     } else if (!sourceScanDue) {
       // fs.watch wakeups cover active mutations; a bounded safety rescan keeps
       // idle repositories fresh without re-running a full source scan per tick.
@@ -823,12 +846,12 @@ export class GlobalScheduler {
       // leave all jobs queued for the next wake/tick rather than risking overrun.
       activeJobs = listActiveExecutionJobs(this.controllerHome).length;
     }
-    // Repo Actor mutations leave projection dirty markers. Source-revision changes
-    // are independent of legacy Job dispatch, so scan every enabled repository
-    // after the global dispatch reservation lock is free.
-    const projectionRefreshCandidates = sourceScanDue
-      ? new Map(repositories.map((repository) => [repository.repoId, repository]))
-      : new Map<string, (typeof repositories)[number]>();
+    // Repo Actor mutations leave projection dirty markers. Refresh those repos
+    // immediately; the independent source safety scan contributes only its bounded
+    // active/round-robin candidates after the dispatch reservation lock is free.
+    const projectionRefreshCandidates = new Map(
+      sourceScanRepositories.map((repository) => [repository.repoId, repository]),
+    );
     for (const repoId of projectionRefreshRepos) {
       const repository = repositories.find((entry) => entry.repoId === repoId);
       if (repository) projectionRefreshCandidates.set(repoId, repository);

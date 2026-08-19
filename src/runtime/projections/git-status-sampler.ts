@@ -1,9 +1,6 @@
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
-import {
-  repositoryCheckoutLifecycle,
-  selectRepositoryCheckout,
-} from '../../cli/repositories/registry';
+import { selectRepositoryCheckout } from '../../cli/repositories/registry';
 import {
   repositoryGitStatus,
   type RepositoryGitStatusSnapshot,
@@ -66,18 +63,21 @@ export function sampleRepositoryGitStatusForRepositories(
   let sampled = 0;
   const failed: Array<{ repoId: string; checkoutId: string; message: string }> = [];
   for (const repository of repositories) {
-    for (const checkout of repository.checkouts) {
-      if (repositoryCheckoutLifecycle(checkout) !== 'active') continue;
-      try {
-        writeRepositoryGitStatusSample(controllerHome, selectRepositoryCheckout(repository, checkout.checkoutId));
-        sampled += 1;
-      } catch (error) {
-        failed.push({
-          repoId: repository.repoId,
-          checkoutId: checkout.checkoutId,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
+    try {
+      // Scheduler projections consume only the currently selected checkout.
+      // Historical/parallel checkouts can be refreshed explicitly when selected;
+      // sampling all of them turns stale registry history into Runtime hot-path work.
+      writeRepositoryGitStatusSample(
+        controllerHome,
+        selectRepositoryCheckout(repository, repository.activeCheckoutId),
+      );
+      sampled += 1;
+    } catch (error) {
+      failed.push({
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   }
   return { sampled, failed };
