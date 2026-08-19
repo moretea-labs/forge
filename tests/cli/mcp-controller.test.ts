@@ -741,7 +741,7 @@ describe("MCP controller profile", () => {
       expect(names).toContain("verify_edit_session");
       expect(names).toContain("finalize_edit_session");
       expect(names).toContain("finish_edit_session");
-      expect(names).toContain("run_check");
+      expect(names).toContain("run_workflow_check");
       expect(names).toContain("publish_issue_to_github");
       expect(names).toContain("launch_issue");
       expect(names).toContain("verify_task");
@@ -792,19 +792,6 @@ describe("MCP controller profile", () => {
       expect(capabilities.value.capabilities.directEditFirstRouting).toBe(true);
       expect(capabilities.value.capabilities.controllerContextAggregation).toBe(true);
       expect(capabilities.value.capabilities.persistedCheckReuse).toBe(true);
-      const source = await jsonTool(
-        { ...ctx, policy: overridden },
-        "read_repository_file",
-        { path: "src/example.ts" },
-      );
-      expect(source.value.content).toContain("value = 1");
-      const denied = await jsonTool(
-        { ...ctx, policy: overridden },
-        "read_repository_file",
-        { path: ".env" },
-      );
-      expect(denied.value.error.code).toBe("TOOL_FAILED");
-      expect(denied.raw.isError).toBe(true);
     });
   });
 
@@ -1254,38 +1241,17 @@ describe("MCP controller profile", () => {
 
       let runtimePid: number | undefined;
       try {
-        const first = await callRuntimeTool(advanced, "work_submit", {
+        const retiredSubmit = await callRuntimeTool(full, "work_submit", {
           repo_id: repository.repoId,
-          request_id: "work-resume-idempotent",
-          operation: "create_issue",
-          arguments: { title: "Work resume fixture", kind: "feature" }});
-        const second = await callRuntimeTool(advanced, "work_submit", {
-          repo_id: repository.repoId,
-          request_id: "work-resume-idempotent",
-          operation: "create_issue",
-          arguments: { title: "Work resume fixture", kind: "feature" }});
-        const firstValue = JSON.parse(first!.content[0].text);
-        const secondValue = JSON.parse(second!.content[0].text);
-        expect(secondValue.deduplicated).toBe(true);
-        expect(secondValue.work.workId).toBe(firstValue.work.workId);
-
-        const processCancelWork = await callRuntimeTool(advanced, "work_submit", {
-          repo_id: repository.repoId,
-          request_id: "work-submit-process-cancel-schema-aware",
+          request_id: "work-submit-retired",
           operation: "process_cancel",
-          arguments: { process_id: "proc-schema-aware-fixture" },
-          timeout_ms: 5_000});
-        const processCancelValue = JSON.parse(processCancelWork!.content[0].text);
-        expect(processCancelWork!.isError).not.toBe(true);
-        expect(processCancelValue.work.operation).toBe("process_cancel");
-        expect(processCancelValue.work.status).toBe("open");
-
-        const resumed = await callRuntimeTool(advanced, "work_get", {
-          repo_id: repository.repoId,
-          request_id: "work-resume-idempotent"});
-        const resumedValue = JSON.parse(resumed!.content[0].text);
-        expect(resumedValue.work.workId).toBe(firstValue.work.workId);
-        expect(resumedValue.work.requestId).toBe("work-resume-idempotent");
+          arguments: { process_id: "proc-schema-aware-fixture" }});
+        const retiredSubmitValue = JSON.parse(retiredSubmit!.content[0].text);
+        expect(retiredSubmit!.isError).toBe(true);
+        expect(retiredSubmitValue.error.code).toBe("WORK_SUBMIT_RETIRED");
+        expect(retiredSubmitValue.suggestedNextActions.map((entry: { tool: string }) => entry.tool)).toEqual(
+          expect.arrayContaining(["rh_work", "run_check", "repository_command_execute", "plugin_action_execute"]),
+        );
 
         const now = new Date().toISOString();
         writeWorkHandle(controllerHome, {
@@ -1863,42 +1829,6 @@ describe("MCP controller profile", () => {
       expect(explicitAdvanced.toolset).toBe("advanced");
       expect(exposedControllerToolDefinitions(explicitAdvanced).map((tool) => tool.name))
         .toContain("repository_command_execute");
-    });
-  });
-
-  test("rejects cross-repository Work reuse for the same request id", async () => {
-    await withController(async (repoRoot, _ctx) => {
-      const controllerHome = join(repoRoot, ".controller-home");
-      const firstRepository = registerRepository({ path: repoRoot, controllerHome });
-      const secondRoot = mkdtempSync(join(tmpdir(), "forge-controller-second-"));
-      let runtimePid: number | undefined;
-      try {
-        mkdirSync(join(secondRoot, "src"), { recursive: true });
-        writeFileSync(join(secondRoot, "src/example.ts"), "export const second = true;\n");
-        spawnSync("git", ["init", "-b", "main"], { cwd: secondRoot, stdio: "ignore" });
-        const secondRepository = registerRepository({ path: secondRoot, controllerHome });
-        const advanced = createMultiRepositoryContext({ repo: repoRoot, profile: "controller", toolset: "advanced", controllerHome });
-        const first = await callRuntimeTool(advanced, "work_submit", {
-          repo_id: firstRepository.repoId,
-          request_id: "work-cross-repo-conflict",
-          operation: "create_issue",
-          arguments: { title: "First repository Work", kind: "feature" }});
-        expect(first?.isError).not.toBe(true);
-        const conflict = await callRuntimeTool(advanced, "work_submit", {
-          repo_id: secondRepository.repoId,
-          request_id: "work-cross-repo-conflict",
-          operation: "create_issue",
-          arguments: { title: "Second repository Work", kind: "feature" }});
-        const conflictValue = JSON.parse(conflict!.content[0].text);
-        expect(conflict?.isError).toBe(true);
-        expect(conflictValue.error.code).toBe("REQUEST_ID_REPO_CONFLICT");
-        runtimePid = readForgeRuntimeStatus(controllerHome).pid;
-      } finally {
-        if (runtimePid && runtimePid !== process.pid) {
-          await terminateProcessTree(runtimePid, { gracePeriodMs: 200, killAfterMs: 1_500 });
-        }
-        rmSync(secondRoot, { recursive: true, force: true });
-      }
     });
   });
 

@@ -190,7 +190,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     detail_level: { type: 'string', enum: ['summary', 'detail'] },
     reason: { type: 'string', description: 'Bounded reason for a work stop or repair record.' },
   }, [], false),
-  definition('work_submit', 'Submit one durable repository operation and return a resumable Work handle.', {
+  definition('work_submit', 'Retired full-profile compatibility endpoint. Arbitrary durable-operation submission moved to the current typed execution authorities.', {
     repo_id: repoId,
     request_id: { type: 'string', description: 'Stable idempotency key used to resume the same execution-child Work after reconnecting.' },
     parent_work_id: { type: 'string', description: 'Optional active primary Work that owns this low-level execution child. work_submit never creates a second business-workflow authority.' },

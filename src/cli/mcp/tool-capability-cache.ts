@@ -13,7 +13,7 @@ export interface ToolDefinitionCacheOptions {
   maxEntriesPerSession?: number;
 }
 
-const CORE_TOOL_NAMES = new Set(['rh_context', 'rh_access', 'work_submit', 'work_get', 'work_list', 'controller_ready']);
+const CORE_TOOL_NAMES = new Set(['rh_context', 'rh_access', 'rh_work', 'rh_status', 'rh_inbox']);
 
 export function controllerCapabilityGroupForTool(name: string): ControllerCapabilityGroup {
   if (CORE_TOOL_NAMES.has(name)) return 'core';

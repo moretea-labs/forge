@@ -55,13 +55,8 @@ import { createPortfolioWorkflow, getPortfolioWorkflow, listPortfolioWorkflows }
 import { claimsForMcpOperation } from './resource-policy';
 import {
   gatewayRouteBehaviorSnapshot,
-  getMcpToolDefinition,
-  hashMcpToolArguments,
-  injectDurableCommandFields,
-  operationMetadataForTool,
   RETIRED_AGENT_OPERATIONS,
   routeDurableMcpCall,
-  validateMcpToolArguments,
 } from './router';
 import { assertAutomatedOperationAllowed } from '../../control-plane/governance/external-effects';
 import { getCandidateFinding, listCandidateFindings, recordCandidateFinding } from '../../workflow/findings/store';
@@ -179,7 +174,6 @@ import {
   getWorkContract,
   getWorkContractByRequestId,
   buildWorkContinuationSnapshot,
-  acceptSubmittedWorkContract,
   acceptPlanStepEvidence,
   approvePlanContract,
   createPlanContract,
@@ -1257,27 +1251,6 @@ function selected(ctx: MultiRepositoryMcpToolContext, args: Record<string, unkno
     controllerHome: ctx.controllerHome,
     allowSoleRepository: true,
   });
-}
-
-function schemaAwareWorkSubmitArguments(
-  name: string,
-  explicitArguments: Record<string, unknown>,
-  repository: ReturnType<typeof selected>,
-  definition: McpToolDefinition,
-  timeoutMs: unknown,
-): Record<string, unknown> {
-  const schema = definition.inputSchema as { properties?: Record<string, unknown> };
-  const declared = new Set(Object.keys(schema.properties ?? {}));
-  const candidates = repositoryScopedToolArgs(name, {
-    ...explicitArguments,
-    ...(declared.has('repo_id') ? { repo_id: repository.repoId } : {}),
-    ...(declared.has('timeout_ms') && typeof timeoutMs === 'number' ? { timeout_ms: timeoutMs } : {}),
-  }, repository);
-  const scoped: Record<string, unknown> = { ...explicitArguments };
-  for (const [key, value] of Object.entries(candidates)) {
-    if (Object.hasOwn(explicitArguments, key) || declared.has(key)) scoped[key] = value;
-  }
-  return scoped;
 }
 
 function pluginRepository(
@@ -4088,93 +4061,20 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         return result(response as unknown as Record<string, unknown>, response.status === 'blocked' || response.status === 'failed' || response.status === 'not_found');
       }
       case 'work_submit': {
-        const operationArgs = args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
-          ? { ...(args.arguments as Record<string, unknown>) }
-          : {};
-        const requestedCheckoutId = typeof operationArgs.checkout_id === 'string' && operationArgs.checkout_id.trim()
-          ? operationArgs.checkout_id.trim()
-          : undefined;
-        const repository = selected(ctx, requestedCheckoutId ? { ...args, checkout_id: requestedCheckoutId } : args);
-        const requestId = String(args.request_id ?? '').trim();
-        const operation = String(args.operation ?? '').trim();
-        if (!requestId) throw new Error('INVALID_ARGUMENT: work_submit is missing required argument(s): request_id');
-        if (!operation) throw new Error('INVALID_ARGUMENT: work_submit is missing required argument(s): operation');
-        if (operation.startsWith('work_')) {
-          throw new Error('WORK_OPERATION_INVALID: choose an existing durable controller operation');
-        }
-        if (RETIRED_AGENT_OPERATIONS.has(operation)) {
-          throw new Error('AGENT_RUN_RETIRED: Kernel-managed Agent Runs are retired. Accept a WorkContract and launch an external SuperController instead.');
-        }
-        const definition = getMcpToolDefinition(ctx, operation);
-        if (!definition) {
-          throw new Error(`WORK_OPERATION_INVALID: ${operation} is unknown or not eligible for durable execution`);
-        }
-
-        const isRepositoryTool = operation.startsWith('repository_');
-        const workerArgs = schemaAwareWorkSubmitArguments(
-          operation,
-          operationArgs,
-          repository,
-          definition,
-          args.timeout_ms,
-        );
-        // Validate the target operation before any WorkContract / index write.
-        validateMcpToolArguments(operation, injectDurableCommandFields(definition), workerArgs);
-        delete workerArgs.request_id;
-        delete workerArgs.apply_mode;
-        delete workerArgs.wait;
-        delete workerArgs.wait_ms;
-        delete workerArgs.await_result;
-        delete workerArgs.wait_for_result;
-
-        const existingRequest = getWorkContractByRequestId(ctx.controllerHome, requestId);
-        if (existingRequest && existingRequest.repoId !== repository.repoId) {
-          throw new Error(`REQUEST_ID_REPO_CONFLICT: ${requestId} already belongs to repository ${existingRequest.repoId}`);
-        }
-
-        const argumentHash = hashMcpToolArguments(workerArgs);
-        const semanticKey = `${isRepositoryTool ? 'repository-tool' : 'mcp-tool'}:${operation}:${repository.repoId}:${argumentHash}`;
-        const claims = claimsForMcpOperation(operation, workerArgs, repository.repoId, repository.activeCheckoutId);
-        const operationMetadata = operationMetadataForTool(
-          operation,
-          definition,
-          claims,
-          typeof args.timeout_ms === 'number' ? args.timeout_ms : 30_000,
-          workerArgs,
-          repository.defaultBranch,
-        );
-
-        const accepted = acceptSubmittedWorkContract(ctx.controllerHome, {
-          requestId,
-          repoId: repository.repoId,
-          parentWorkId: typeof args.parent_work_id === 'string' && args.parent_work_id.trim() ? args.parent_work_id.trim() : undefined,
-          semanticKey,
-          operation: {
-            name: operation,
-            semanticKey,
-            argumentHash,
-            mode: operationMetadata.mode,
-            idempotent: operationMetadata.idempotent,
-            replayable: operationMetadata.replayable,
-            resourceClaims: operationMetadata.resourceClaims.map((claim) => ({
-              resourceKey: claim.resourceKey,
-              mode: claim.mode,
-              ...(claim.quantity !== undefined ? { quantity: claim.quantity } : {}),
-            })),
-          },
-          objective: `Accepted operation ${operation}`,
-          mode: 'direct_control',
-        });
-
-        const work = summarizeSubmittedWorkContract(accepted.contract);
         return result({
-          accepted: true,
-          deduplicated: accepted.deduplicated,
-          operation,
-          nextAction: work.nextAction,
-          work,
-          workContract: accepted.contract,
-        });
+          error: {
+            code: 'WORK_SUBMIT_RETIRED',
+            errorClass: 'retired',
+            message: 'work_submit no longer accepts arbitrary durable operations. Use rh_work for objective continuity and the typed repository/check/plugin executors for execution.',
+            summary: 'work_submit compatibility authority is retired.',
+          },
+          suggestedNextActions: [
+            { tool: 'rh_work', operation: 'start', reason: 'Create or continue one objective-level Work lane.' },
+            { tool: 'run_check', reason: 'Run a focused repository check through Process Runtime.' },
+            { tool: 'repository_command_execute', reason: 'Run a repository-scoped command through the current execution authority.' },
+            { tool: 'plugin_action_execute', reason: 'Run a typed plugin action through its declared execution mode.' },
+          ],
+        }, true);
       }
       case 'work_get': {
         const repository = selected(ctx, args);
