@@ -32,7 +32,6 @@ export interface StagedRuntimeRelease {
   browserNodeBridgeArtifactIdentity?: string;
   browserHandoffArtifactIdentity?: string;
   processRunnerArtifactIdentity?: string;
-  searchWorkerArtifactIdentity?: string;
   checkRunnerArtifactIdentity?: string;
   pluginActionSidecarArtifactIdentity?: string;
   externalPluginProbeArtifactIdentity?: string;
@@ -480,19 +479,6 @@ export function stageRuntimeRelease(input: {
     chmodSync(processRunnerPath, 0o700);
     const processRunnerArtifactIdentity = `sha256:${sha256(processRunnerPath)}`;
 
-    const searchWorkerEntrypoint = 'search-worker.js' as const;
-    const searchWorkerPath = join(staging, searchWorkerEntrypoint);
-    const searchWorkerBundle = bundleNodeHost({
-      sourceRoot,
-      outputPath: searchWorkerPath,
-      entryPath: join(sourceRoot, 'src/runtime/execution/thin-harness/search-worker.ts'),
-    });
-    if (!searchWorkerBundle.ok) {
-      throw new Error(`RUNTIME_RELEASE_SEARCH_WORKER_BUILD_FAILED: ${searchWorkerBundle.stderr || searchWorkerBundle.stdout || searchWorkerBundle.error}`.slice(0, 2_000));
-    }
-    chmodSync(searchWorkerPath, 0o700);
-    const searchWorkerArtifactIdentity = `sha256:${sha256(searchWorkerPath)}`;
-
     const checkRunnerEntrypoint = 'forge-check-runner' as const;
     const checkRunnerPath = join(staging, checkRunnerEntrypoint);
     const checkRunnerCompile = compileBinary({
@@ -575,8 +561,6 @@ export function stageRuntimeRelease(input: {
       browserHandoffArtifactIdentity,
       processRunnerEntrypoint,
       processRunnerArtifactIdentity,
-      searchWorkerEntrypoint,
-      searchWorkerArtifactIdentity,
       checkRunnerEntrypoint,
       checkRunnerArtifactIdentity,
       pluginActionSidecarEntrypoint,
@@ -617,7 +601,6 @@ export function stageRuntimeRelease(input: {
       browserNodeBridgeArtifactIdentity,
       browserHandoffArtifactIdentity,
       processRunnerArtifactIdentity,
-      searchWorkerArtifactIdentity,
       checkRunnerArtifactIdentity,
       externalPluginProbeArtifactIdentity,
       codeGraphNodeArtifactIdentity,
@@ -662,9 +645,6 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease, depende
   }
   if (release.processRunnerArtifactIdentity && !existsSync(join(release.releasePath, 'process-runner.js'))) {
     throw new Error(`RUNTIME_RELEASE_PROCESS_RUNNER_MISSING: ${join(release.releasePath, 'process-runner.js')}`);
-  }
-  if (release.searchWorkerArtifactIdentity && !existsSync(join(release.releasePath, 'search-worker.js'))) {
-    throw new Error(`RUNTIME_RELEASE_SEARCH_WORKER_MISSING: ${join(release.releasePath, 'search-worker.js')}`);
   }
   if (release.checkRunnerArtifactIdentity && !existsSync(join(release.releasePath, 'forge-check-runner'))) {
     throw new Error(`RUNTIME_RELEASE_CHECK_RUNNER_MISSING: ${join(release.releasePath, 'forge-check-runner')}`);

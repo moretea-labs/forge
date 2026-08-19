@@ -7,7 +7,6 @@ import { spawnSync } from 'child_process';
 import { FORGE_MACOS_RUNTIME_SIGNING_IDENTIFIER, assertRuntimeReleaseFiles, stageRuntimeRelease, stageRuntimeReleaseFromCandidateSource, type MacOSRuntimeCodeSigning } from '../../src/runtime/root/release-materialize';
 import { loadRuntimeReleaseManifest } from '../../src/runtime/root/release-manifest';
 import { cleanupControllerReleaseHistory } from '../../src/runtime/control-plane/release-retention';
-import { resolveInspectorSearchWorkerEntrypoint } from '../../src/runtime/execution/thin-harness/search-worker';
 
 const roots: string[] = [];
 
@@ -154,18 +153,6 @@ describe('persistent Gateway release retention', () => {
 });
 
 describe('runtime release materialization', () => {
-  test('search worker resolver prefers the immutable release sibling artifact', () => {
-    const root = mkdtempSync(join(tmpdir(), 'forge-search-worker-release-'));
-    roots.push(root);
-    const runtimePath = join(root, 'forge-runtime');
-    const workerPath = join(root, 'search-worker.js');
-    writeFileSync(runtimePath, 'runtime');
-    writeFileSync(workerPath, 'worker');
-    expect(resolveInspectorSearchWorkerEntrypoint(runtimePath)).toBe(workerPath);
-    rmSync(workerPath);
-    expect(resolveInspectorSearchWorkerEntrypoint(runtimePath)).not.toBe(workerPath);
-  });
-
   test('accepts a first-generation candidate release with a parent-unknown sidecar', () => {
     const { root, controllerHome } = sourceFixture();
     const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
@@ -214,9 +201,8 @@ describe('runtime release materialization', () => {
       bundleNodeHost: ({ outputPath, entryPath }) => {
         const nodeBridge = entryPath.endsWith('src/runtime/plugins/browser-node-bridge-host.ts');
         const handoff = entryPath.endsWith('src/runtime/plugins/browser-handoff-host.ts');
-        const searchWorker = entryPath.endsWith('src/runtime/execution/thin-harness/search-worker.ts');
-        expect(nodeBridge || handoff || searchWorker).toBe(true);
-        writeFileSync(outputPath, nodeBridge ? 'node-host-bundle' : handoff ? 'handoff-host-bundle' : 'search-worker-bundle');
+        expect(nodeBridge || handoff).toBe(true);
+        writeFileSync(outputPath, nodeBridge ? 'node-host-bundle' : 'handoff-host-bundle');
         return { ok: true };
       },
       bundleProcessRunner: ({ outputPath, entryPath }) => {
@@ -245,10 +231,6 @@ describe('runtime release materialization', () => {
     expect(existsSync(processRunnerPath)).toBe(true);
     expect(readFileSync(processRunnerPath, 'utf8')).toBe('process-runner-bundle');
     expect(staged.processRunnerArtifactIdentity).toMatch(/^sha256:/);
-    const searchWorkerPath = join(staged.releasePath, 'search-worker.js');
-    expect(existsSync(searchWorkerPath)).toBe(true);
-    expect(readFileSync(searchWorkerPath, 'utf8')).toBe('search-worker-bundle');
-    expect(staged.searchWorkerArtifactIdentity).toMatch(/^sha256:/);
     const checkRunnerPath = join(staged.releasePath, 'forge-check-runner');
     expect(existsSync(checkRunnerPath)).toBe(true);
     expect(readFileSync(checkRunnerPath, 'utf8')).toBe('check-runner-binary');
@@ -262,8 +244,6 @@ describe('runtime release materialization', () => {
     expect(manifest.desktopHelperArtifactIdentity).toBeUndefined();
     expect(manifest.processRunnerEntrypoint).toBe('process-runner.js');
     expect(manifest.processRunnerArtifactIdentity).toBe(staged.processRunnerArtifactIdentity);
-    expect(manifest.searchWorkerEntrypoint).toBe('search-worker.js');
-    expect(manifest.searchWorkerArtifactIdentity).toBe(staged.searchWorkerArtifactIdentity);
     expect(manifest.checkRunnerEntrypoint).toBe('forge-check-runner');
     expect(manifest.checkRunnerArtifactIdentity).toBe(staged.checkRunnerArtifactIdentity);
     expect(manifest.externalPluginProbeEntrypoint).toBe('external-unix-socket-probe.cjs');

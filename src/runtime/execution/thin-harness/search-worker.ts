@@ -3,8 +3,6 @@
  * Keeps the Gateway event loop free of synchronous inspector walks.
  */
 import { isMainThread, parentPort, workerData, Worker } from 'worker_threads';
-import { existsSync } from 'fs';
-import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { getMcpPolicy } from '../../../cli/mcp/policy';
 import type { McpPolicy } from '../../../cli/mcp/types';
@@ -73,18 +71,13 @@ function runSearchSync(input: SearchWorkerInput | SearchManyWorkerInput): Search
   }
 }
 
-export function resolveInspectorSearchWorkerEntrypoint(execPath = process.execPath): string {
-  const releaseSibling = join(dirname(execPath), 'search-worker.js');
-  return existsSync(releaseSibling) ? releaseSibling : fileURLToPath(import.meta.url);
-}
-
 async function runSearchWorker(
   input: SearchWorkerInput | SearchManyWorkerInput,
   options: { timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<Record<string, unknown>> {
   if (options.signal?.aborted) throw new Error('CANCELLED: search aborted');
   const timeoutMs = options.timeoutMs ?? 10_000;
-  const modulePath = resolveInspectorSearchWorkerEntrypoint();
+  const modulePath = fileURLToPath(import.meta.url);
 
   return await new Promise<Record<string, unknown>>((resolve, reject) => {
     let settled = false;
