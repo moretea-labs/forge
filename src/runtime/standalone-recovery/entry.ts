@@ -18,6 +18,7 @@ import {
   repairPublicTunnel,
   restartPrimaryConnector,
   restartPrimaryRuntime,
+  restartRecoveryWatchdog,
   stageAndActivateConfiguredRuntimeRelease,
   rollbackPrevious,
   secureEqual,
@@ -27,6 +28,12 @@ import {
   type WatchdogState,
   type RecoveryConfig,
 } from './core';
+import {
+  createRecoveryWatchdogHeartbeat,
+  observeRecoveryWatchdogHealth,
+  writeRecoveryWatchdogHeartbeat,
+  type RecoveryWatchdogHeartbeat,
+} from './watchdog-heartbeat';
 import {
   RECOVERY_RELEASE_ROLE_CANARY_ARG,
   writeRecoveryRuntimeIdentity,
@@ -139,12 +146,24 @@ export function resetWatchdogStateForRecoveryRelease(
     // budget. Those counters are bound to the Runtime release and survive both
     // watchdog process exits and immutable Recovery release activation.
     recoveryGatewayRestartUsed: false,
+    primaryConnectorFailures: 0,
+    primaryConnectorFirstFailureAt: undefined,
+    primaryConnectorRestartAttempts: 0,
+    primaryConnectorRestartFailures: 0,
+    primaryConnectorRestartLastAttemptAt: undefined,
     recoveryReleaseRevision: releaseRevision,
   };
 }
 
 async function startWatchdog(config: RecoveryConfig): Promise<void> {
   const runtimeIdentity = writeRecoveryRuntimeIdentity(config.controllerHome, 'watchdog');
+  let heartbeat: RecoveryWatchdogHeartbeat = createRecoveryWatchdogHeartbeat(runtimeIdentity);
+  const persistHeartbeat = (patch: Partial<RecoveryWatchdogHeartbeat> = {}) => {
+    heartbeat = writeRecoveryWatchdogHeartbeat(config.controllerHome, { ...heartbeat, ...patch });
+  };
+  persistHeartbeat();
+  const pulse = setInterval(() => persistHeartbeat({ lastPulseAt: new Date().toISOString() }), 5_000);
+  pulse.unref?.();
   process.stdout.write(JSON.stringify({ status: 'ready', role: 'watchdog', runtimeIdentity }) + '\n');
   const loadedState = loadWatchdogState(config);
   let state = runtimeIdentity?.releaseRevision
@@ -152,9 +171,13 @@ async function startWatchdog(config: RecoveryConfig): Promise<void> {
     : loadedState;
   if (state !== loadedState) state = saveWatchdogState(config, state);
   for (;;) {
+    const tickStartedAt = new Date().toISOString();
+    persistHeartbeat({ lastPulseAt: tickStartedAt, lastTickStartedAt: tickStartedAt, lastError: undefined });
     try {
       const result = await watchdogTick(config, state);
       state = saveWatchdogState(config, result.state);
+      const tickCompletedAt = new Date().toISOString();
+      persistHeartbeat({ lastPulseAt: tickCompletedAt, lastTickCompletedAt: tickCompletedAt, lastError: undefined });
       process.stdout.write(JSON.stringify({
         at: new Date().toISOString(),
         action: result.decision.action,
@@ -170,10 +193,14 @@ async function startWatchdog(config: RecoveryConfig): Promise<void> {
         primaryRuntimeRecoveryDetail: result.primaryRuntimeRecovery?.detail,
         rollbackDetail: result.rollback?.detail,
         publicTunnelDetail: result.publicTunnelRepair?.detail,
+        primaryConnectorRestartDetail: result.primaryConnectorRestart?.detail,
       }) + '\n');
     } catch (error) {
       state = saveWatchdogState(config, { ...state, failures: state.failures + 1, firstFailureAt: state.firstFailureAt ?? Date.now() });
-      process.stderr.write(`watchdog probe failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      const detail = error instanceof Error ? error.message : String(error);
+      const failedAt = new Date().toISOString();
+      persistHeartbeat({ lastPulseAt: failedAt, lastTickFailedAt: failedAt, lastError: detail.slice(0, 500) });
+      process.stderr.write(`watchdog probe failed: ${detail}\n`);
     }
     await new Promise((resolveSleep) => setTimeout(resolveSleep, 5_000));
   }
@@ -498,6 +525,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
     throw new Error('RECOVERY_GATEWAY_CONFIG_INVALID');
   }
   let runtimeIdentity: RecoveryRuntimeIdentity | undefined;
+  let watchdogRestartInFlight = false;
   const recentMutations = new Map<string, number[]>();
   const oauthCodes = new Map<string, PendingOAuthCode>();
   const oauthClients = new Map<string, OAuthClient>();
@@ -509,9 +537,18 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
       return;
     }
     if (request.method === 'GET' && matchesAnyPath(request.url, ['/health', '/recovery/health'])) {
+      const watchdog = observeRecoveryWatchdogHealth(config.controllerHome);
       json(response, 200, {
-        status: 'ok',
+        status: watchdog.ok ? 'ok' : 'degraded',
         service: 'forge-standalone-recovery',
+        watchdog: {
+          ok: watchdog.ok,
+          detail: watchdog.detail,
+          pulseAgeMs: watchdog.pulseAgeMs,
+          tickAgeMs: watchdog.tickAgeMs,
+          releaseRevision: watchdog.runtimeIdentity?.releaseRevision,
+          pid: watchdog.runtimeIdentity?.pid,
+        },
         version: FORGE_VERSION,
         ...(runtimeIdentity ? {
           releasePath: runtimeIdentity.releasePath,
@@ -675,6 +712,25 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
   });
   await new Promise<void>((resolveListen, reject) => { server.once('error', reject); server.listen(gateway.port, gateway.host, () => resolveListen()); });
   runtimeIdentity = writeRecoveryRuntimeIdentity(config.controllerHome, 'gateway');
+  const superviseWatchdog = async () => {
+    if (!runtimeIdentity || watchdogRestartInFlight) return;
+    const watchdog = observeRecoveryWatchdogHealth(config.controllerHome);
+    if (watchdog.ok) return;
+    watchdogRestartInFlight = true;
+    try {
+      const recovery = await restartRecoveryWatchdog(config);
+      auditGateway({
+        watchdog_supervision: recovery.ok ? 'recovered' : 'failed',
+        detail: recovery.detail,
+        attempted: recovery.attempted,
+        serviceTarget: recovery.serviceTarget,
+      });
+    } finally {
+      watchdogRestartInFlight = false;
+    }
+  };
+  const watchdogSupervisor = setInterval(() => { void superviseWatchdog(); }, 15_000);
+  watchdogSupervisor.unref?.();
   process.stdout.write(JSON.stringify({ status: 'ready', host: gateway.host, port: gateway.port, runtimeIdentity }) + '\n');
 }
 

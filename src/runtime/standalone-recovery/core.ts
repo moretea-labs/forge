@@ -22,6 +22,8 @@ import {
 } from '../root/release-store';
 import type { RuntimeReleaseManifest } from '../root/types';
 import { createRecoveryHttpTransport, type RecoveryHttpTransport } from './http-transport';
+import { observeRecoveryWatchdogHealth } from './watchdog-heartbeat';
+import { RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
 import {
   migrateStoppedRepoLocalControllerHomeStorage,
   repoLocalControllerHomeStorageNeedsMigration,
@@ -56,6 +58,10 @@ export interface PrimaryConnectorServiceConfig {
   platform: 'launchd';
   label: string;
   plistPath?: string;
+  minimumFailures?: number;
+  minimumFailureDurationMs?: number;
+  restartCooldownMs?: number;
+  maximumRestartAttempts?: number;
   postRestartVerifyTimeoutMs?: number;
 }
 
@@ -101,6 +107,7 @@ export type RecoveryMutationAction =
   | 'stage_and_activate_runtime_release'
   | 'restart_primary_connector'
   | 'restart_recovery_gateway'
+  | 'restart_recovery_watchdog'
   | 'repair_public_tunnel';
 
 interface RecoveryLock {
@@ -138,8 +145,8 @@ export interface VerifyStableRuntimeOptions {
 export interface RecoveryWatchdogDiagnosticEvidence {
   fingerprint: string;
   releaseIdentity: string;
-  components: Array<'runtime' | 'gateway' | 'public_mcp' | 'recovery_gateway' | 'recovery_tunnel'>;
-  failedProbes: Array<{ name: string; component: 'runtime' | 'gateway' | 'public_mcp' | 'recovery_gateway' | 'recovery_tunnel'; detail: string; status?: number }>;
+  components: Array<'runtime' | 'gateway' | 'public_mcp' | 'recovery_gateway' | 'recovery_watchdog' | 'recovery_tunnel'>;
+  failedProbes: Array<{ name: string; component: 'runtime' | 'gateway' | 'public_mcp' | 'recovery_gateway' | 'recovery_watchdog' | 'recovery_tunnel'; detail: string; status?: number }>;
   firstObservedAt: string;
   lastObservedAt: string;
   occurrences: number;
@@ -159,7 +166,7 @@ export interface RollbackResult {
 }
 
 export interface WatchdogDecision {
-  action: 'healthy' | 'degraded' | 'repair_public_tunnel' | 'restart_recovery_gateway' | 'restart_primary_runtime' | 'rollback' | 'recovery_exhausted';
+  action: 'healthy' | 'degraded' | 'repair_public_tunnel' | 'restart_recovery_gateway' | 'restart_primary_connector' | 'restart_primary_runtime' | 'rollback' | 'recovery_exhausted';
   reason: string;
 }
 
@@ -181,6 +188,11 @@ export interface WatchdogState {
   publicTunnelFailures?: number;
   publicTunnelFirstFailureAt?: number;
   publicTunnelRepairFailures?: number;
+  primaryConnectorFailures?: number;
+  primaryConnectorFirstFailureAt?: number;
+  primaryConnectorRestartAttempts?: number;
+  primaryConnectorRestartFailures?: number;
+  primaryConnectorRestartLastAttemptAt?: number;
   recoveryGatewayRestartUsed?: boolean;
   recoveryReleaseRevision?: string;
   lastFullVerifyAt?: number;
@@ -429,6 +441,7 @@ function watchdogProbeComponent(name: string): RecoveryWatchdogDiagnosticEvidenc
   if (name === 'runtime_status') return 'runtime';
   if (name === 'active_gateway') return 'gateway';
   if (name === 'recovery_gateway') return 'recovery_gateway';
+  if (name === 'recovery_watchdog') return 'recovery_watchdog';
   if (name === 'recovery_external_http') return 'recovery_tunnel';
   return 'public_mcp';
 }
@@ -761,6 +774,18 @@ export async function verifyStableRuntime(
     : { ok: false, detail: 'canonical Runtime endpoint is unavailable' };
   if (config.publicMcpUrl) probes.external_mcp_http = await probeExternalMcp(transport, config.publicMcpUrl);
   if (config.gateway) probes.recovery_gateway = await probe(transport, `http://${config.gateway.host}:${config.gateway.port}/health`);
+  const watchdogHealth = observeRecoveryWatchdogHealth(config.controllerHome);
+  probes.recovery_watchdog = {
+    ok: watchdogHealth.ok,
+    detail: watchdogHealth.detail,
+    value: {
+      pulseAgeMs: watchdogHealth.pulseAgeMs,
+      tickAgeMs: watchdogHealth.tickAgeMs,
+      currentReleaseRevision: watchdogHealth.currentReleaseRevision,
+      watchdogReleaseRevision: watchdogHealth.runtimeIdentity?.releaseRevision,
+      watchdogPid: watchdogHealth.runtimeIdentity?.pid,
+    },
+  };
   const recoveryPublicUrl = configuredRecoveryPublicUrl(config);
   if (recoveryPublicUrl) probes.recovery_external_http = await probeExternalMcp(transport, recoveryPublicUrl);
   if (options.probeMcpProtocol !== false) Object.assign(probes, await probeMcp(config, transport));
@@ -1043,6 +1068,16 @@ export function decideWatchdog(input: {
   rollbackUsed: boolean;
   recoveryGatewayFailed?: boolean;
   recoveryGatewayRestartUsed?: boolean;
+  primaryConnectorConfigured?: boolean;
+  primaryConnectorFailed?: boolean;
+  primaryConnectorFailures?: number;
+  primaryConnectorFirstFailureAt?: number;
+  primaryConnectorRestartAttempts?: number;
+  primaryConnectorMaximumRestartAttempts?: number;
+  primaryConnectorRestartLastAttemptAt?: number;
+  primaryConnectorRestartCooldownMs?: number;
+  primaryConnectorMinimumFailures?: number;
+  primaryConnectorMinimumFailureDurationMs?: number;
   primaryRuntimeFailed?: boolean;
   runtimeRestartAttempts?: number;
   runtimeMaximumRestartAttempts?: number;
@@ -1069,6 +1104,22 @@ export function decideWatchdog(input: {
     const sustained = input.publicTunnelFirstFailureAt !== undefined && now - input.publicTunnelFirstFailureAt >= minimumDuration;
     if (failures >= minimumFailures && sustained) return { action: 'repair_public_tunnel', reason: 'local runtime and Recovery Gateway are healthy while the dedicated Recovery public endpoint is unavailable' };
     return { action: 'degraded', reason: 'Recovery tunnel failure has not yet met the bounded repair threshold' };
+  }
+  if (input.primaryConnectorConfigured && input.primaryConnectorFailed) {
+    const failures = input.primaryConnectorFailures ?? 0;
+    const minimumFailures = Math.max(1, input.primaryConnectorMinimumFailures ?? 2);
+    const minimumDurationMs = Math.max(0, input.primaryConnectorMinimumFailureDurationMs ?? 5_000);
+    const sustained = input.primaryConnectorFirstFailureAt !== undefined && now - input.primaryConnectorFirstFailureAt >= minimumDurationMs;
+    const attempts = input.primaryConnectorRestartAttempts ?? 0;
+    const maximumAttempts = Math.max(1, input.primaryConnectorMaximumRestartAttempts ?? 3);
+    const cooldownMs = Math.max(0, input.primaryConnectorRestartCooldownMs ?? 30_000);
+    const cooldownElapsed = input.primaryConnectorRestartLastAttemptAt === undefined || now - input.primaryConnectorRestartLastAttemptAt >= cooldownMs;
+    if (failures >= minimumFailures && sustained && attempts < maximumAttempts && cooldownElapsed) {
+      return { action: 'restart_primary_connector', reason: `local Runtime is healthy but the primary Connector endpoint is unavailable; restart attempt ${attempts + 1}/${maximumAttempts}` };
+    }
+    return { action: 'degraded', reason: attempts >= maximumAttempts
+      ? `primary Connector restart budget exhausted (${attempts}/${maximumAttempts}); keeping the local Runtime available for independent Recovery`
+      : 'primary Connector failure has not yet met its bounded restart threshold or cooldown' };
   }
   if (input.failures === 0) return { action: 'healthy', reason: 'all recovery probes healthy' };
   const recoveryRestartSustained = input.firstFailureAt !== undefined && now - input.firstFailureAt >= 5_000;
@@ -2163,17 +2214,32 @@ export interface RecoveryGatewayRestartResult {
   serviceTarget?: string;
 }
 
-export interface RecoveryGatewayRestartDependencies {
+export interface RecoveryWatchdogRestartResult {
+  ok: boolean;
+  attempted: boolean;
+  noOp?: boolean;
+  detail: string;
+  serviceTarget?: string;
+}
+
+interface RecoveryRoleRestartDependencies {
   platform?: NodeJS.Platform;
   currentUid?: () => Promise<number | undefined>;
   runCommand?: CommandRunner;
-  probeGateway?: (config: RecoveryConfig) => Promise<{ ok: boolean; detail: string }>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
 
-function recoveryGatewayLaunchdService(config: RecoveryConfig, uid: number): LaunchdService {
-  const label = 'com.moretea.forge-recovery-gateway';
+export interface RecoveryGatewayRestartDependencies extends RecoveryRoleRestartDependencies {
+  probeGateway?: (config: RecoveryConfig) => Promise<{ ok: boolean; detail: string }>;
+}
+
+export interface RecoveryWatchdogRestartDependencies extends RecoveryRoleRestartDependencies {
+  probeWatchdog?: (config: RecoveryConfig) => Promise<{ ok: boolean; detail: string }>;
+}
+
+function recoveryRoleLaunchdService(config: RecoveryConfig, uid: number, role: 'gateway' | 'watchdog'): LaunchdService {
+  const label = role === 'gateway' ? RECOVERY_GATEWAY_LABEL : RECOVERY_WATCHDOG_LABEL;
   const generated = join(recoveryRoot(config), 'launchd', `${label}.plist`);
   const installed = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
   return {
@@ -2190,44 +2256,79 @@ async function probeRecoveryGateway(config: RecoveryConfig): Promise<{ ok: boole
   return probe(createRecoveryHttpTransport(config.controllerHome), `http://${config.gateway.host}:${config.gateway.port}/health`);
 }
 
+async function probeRecoveryWatchdog(config: RecoveryConfig): Promise<{ ok: boolean; detail: string }> {
+  const health = observeRecoveryWatchdogHealth(config.controllerHome);
+  return { ok: health.ok, detail: health.detail };
+}
+
+async function restartRecoveryRole(input: {
+  config: RecoveryConfig;
+  role: 'gateway' | 'watchdog';
+  action: 'restart_recovery_gateway' | 'restart_recovery_watchdog';
+  check: (config: RecoveryConfig) => Promise<{ ok: boolean; detail: string }>;
+  dependencies: RecoveryRoleRestartDependencies;
+}): Promise<RecoveryGatewayRestartResult> {
+  const display = input.role === 'gateway' ? 'Recovery Gateway' : 'Recovery Watchdog';
+  if ((input.dependencies.platform ?? process.platform) !== 'darwin') return { ok: false, attempted: false, noOp: true, detail: `${display} launchd restart is only supported on macOS` };
+  const initial = await input.check(input.config);
+  if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: `${display} is already healthy` };
+  const uid = await (input.dependencies.currentUid ?? currentUid)();
+  if (uid === undefined) return { ok: false, attempted: false, noOp: true, detail: `${display} launchd UID is unavailable` };
+  const service = recoveryRoleLaunchdService(input.config, uid, input.role);
+  if (!existsSync(service.plistPath)) return { ok: false, attempted: false, noOp: true, detail: `${display} launchd plist is missing: ${service.plistPath}`, serviceTarget: service.target };
+  const eventPrefix = input.role === 'gateway' ? 'recovery_gateway' : 'recovery_watchdog';
+  const locked = await withLock(input.config, { action: input.action }, async () => {
+    const before = await input.check(input.config);
+    if (before.ok) return { ok: true, attempted: false, noOp: true, detail: `${display} recovered before restart`, serviceTarget: service.target } satisfies RecoveryGatewayRestartResult;
+    const started = await ensureLaunchdServiceStarted(service, input.dependencies.runCommand ?? command);
+    if (!started.ok) {
+      audit(input.config, `${eventPrefix}_restart_failed`, { serviceTarget: service.target, detail: started.detail });
+      return { ok: false, attempted: true, detail: started.detail, serviceTarget: service.target } satisfies RecoveryGatewayRestartResult;
+    }
+    const now = input.dependencies.now ?? Date.now;
+    const wait = input.dependencies.sleep ?? sleep;
+    const deadline = now() + 20_000;
+    let observed = before;
+    while (now() < deadline) {
+      await wait(1_000);
+      observed = await input.check(input.config);
+      if (observed.ok) {
+        audit(input.config, `${eventPrefix}_restart_succeeded`, { serviceTarget: service.target });
+        return { ok: true, attempted: true, detail: `${display} restarted and passed local health verification`, serviceTarget: service.target } satisfies RecoveryGatewayRestartResult;
+      }
+    }
+    audit(input.config, `${eventPrefix}_restart_unverified`, { serviceTarget: service.target, detail: observed.detail });
+    return { ok: false, attempted: true, detail: `${display} restarted but did not pass local health verification before timeout`, serviceTarget: service.target } satisfies RecoveryGatewayRestartResult;
+  });
+  if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), serviceTarget: service.target };
+  return locked.value;
+}
+
 export async function restartRecoveryGateway(
   config: RecoveryConfig,
   dependencies: RecoveryGatewayRestartDependencies = {},
 ): Promise<RecoveryGatewayRestartResult> {
   if (!config.gateway) return { ok: false, attempted: false, noOp: true, detail: 'Recovery Gateway is not configured' };
-  if ((dependencies.platform ?? process.platform) !== 'darwin') return { ok: false, attempted: false, noOp: true, detail: 'Recovery Gateway launchd restart is only supported on macOS' };
-  const check = dependencies.probeGateway ?? probeRecoveryGateway;
-  const initial = await check(config);
-  if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: 'Recovery Gateway is already healthy' };
-  const uid = await (dependencies.currentUid ?? currentUid)();
-  if (uid === undefined) return { ok: false, attempted: false, noOp: true, detail: 'Recovery Gateway launchd UID is unavailable' };
-  const service = recoveryGatewayLaunchdService(config, uid);
-  if (!existsSync(service.plistPath)) return { ok: false, attempted: false, noOp: true, detail: `Recovery Gateway launchd plist is missing: ${service.plistPath}`, serviceTarget: service.target };
-  const locked = await withLock(config, { action: 'restart_recovery_gateway' }, async () => {
-    const before = await check(config);
-    if (before.ok) return { ok: true, attempted: false, noOp: true, detail: 'Recovery Gateway recovered before restart', serviceTarget: service.target } satisfies RecoveryGatewayRestartResult;
-    const started = await ensureLaunchdServiceStarted(service, dependencies.runCommand ?? command);
-    if (!started.ok) {
-      audit(config, 'recovery_gateway_restart_failed', { serviceTarget: service.target, detail: started.detail });
-      return { ok: false, attempted: true, detail: started.detail, serviceTarget: service.target } satisfies RecoveryGatewayRestartResult;
-    }
-    const now = dependencies.now ?? Date.now;
-    const wait = dependencies.sleep ?? sleep;
-    const deadline = now() + 20_000;
-    let observed = before;
-    while (now() < deadline) {
-      await wait(1_000);
-      observed = await check(config);
-      if (observed.ok) {
-        audit(config, 'recovery_gateway_restart_succeeded', { serviceTarget: service.target });
-        return { ok: true, attempted: true, detail: 'Recovery Gateway restarted and its local health endpoint recovered', serviceTarget: service.target } satisfies RecoveryGatewayRestartResult;
-      }
-    }
-    audit(config, 'recovery_gateway_restart_unverified', { serviceTarget: service.target, detail: observed.detail });
-    return { ok: false, attempted: true, detail: 'Recovery Gateway restarted but did not pass local health verification before timeout', serviceTarget: service.target } satisfies RecoveryGatewayRestartResult;
+  return restartRecoveryRole({
+    config,
+    role: 'gateway',
+    action: 'restart_recovery_gateway',
+    check: dependencies.probeGateway ?? probeRecoveryGateway,
+    dependencies,
   });
-  if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), serviceTarget: service.target };
-  return locked.value;
+}
+
+export async function restartRecoveryWatchdog(
+  config: RecoveryConfig,
+  dependencies: RecoveryWatchdogRestartDependencies = {},
+): Promise<RecoveryWatchdogRestartResult> {
+  return restartRecoveryRole({
+    config,
+    role: 'watchdog',
+    action: 'restart_recovery_watchdog',
+    check: dependencies.probeWatchdog ?? probeRecoveryWatchdog,
+    dependencies,
+  });
 }
 
 function pidAlive(pid: number | undefined): boolean {
@@ -2276,6 +2377,7 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   rollback?: RollbackResult;
   publicTunnelRepair?: PublicTunnelRepairResult;
   recoveryGatewayRestart?: RecoveryGatewayRestartResult;
+  primaryConnectorRestart?: PrimaryConnectorRestartResult;
   primaryRuntimeRestart?: PrimaryRuntimeRestartResult;
   primaryRuntimeRecovery?: PrimaryRuntimeRecoveryResult;
 }> {
@@ -2325,8 +2427,14 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   }
   const recoveryHealthy = verified.probes.recovery_gateway?.ok !== false
     && verified.probes.recovery_external_http?.ok !== false;
-  const primaryRuntimeHealthy = verified.ok && localVerify.ok;
-  if (primaryRuntimeHealthy && recoveryHealthy) {
+  const primaryRuntimeHealthy = localVerify.ok;
+  const primaryConnectorConfigured = Boolean(config.primaryConnectorService && config.publicMcpUrl);
+  const primaryConnectorFailed = Boolean(
+    primaryConnectorConfigured
+    && primaryRuntimeHealthy
+    && verified.probes.external_mcp_http?.ok === false,
+  );
+  if (primaryRuntimeHealthy && !primaryConnectorFailed && recoveryHealthy) {
     const stable = recordWatchdogRuntimeHealthy(
       scopeWatchdogStateToRuntimeRelease(scopedPrior, verified.releases.active),
       now,
@@ -2341,6 +2449,11 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
       publicTunnelFailures: 0,
       publicTunnelFirstFailureAt: undefined,
       publicTunnelRepairFailures: 0,
+      primaryConnectorFailures: 0,
+      primaryConnectorFirstFailureAt: undefined,
+      primaryConnectorRestartAttempts: 0,
+      primaryConnectorRestartFailures: 0,
+      primaryConnectorRestartLastAttemptAt: undefined,
       recoveryGatewayRestartUsed: false,
       lastFullVerifyAt,
       lastDecision: 'healthy',
@@ -2369,15 +2482,30 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
       firstFailureAt: budgetPrior.firstFailureAt ?? now,
       publicTunnelFailures: (budgetPrior.publicTunnelFailures ?? 0) + 1,
       publicTunnelFirstFailureAt: budgetPrior.publicTunnelFirstFailureAt ?? now,
+      primaryConnectorFailures: 0,
+      primaryConnectorFirstFailureAt: undefined,
     }
-    : {
-      ...budgetPrior,
-      lastFullVerifyAt,
-      failures: budgetPrior.failures + 1,
-      firstFailureAt: budgetPrior.firstFailureAt ?? now,
-      publicTunnelFailures: 0,
-      publicTunnelFirstFailureAt: undefined,
-    };
+    : primaryConnectorFailed
+      ? {
+        ...budgetPrior,
+        lastFullVerifyAt,
+        failures: budgetPrior.failures + 1,
+        firstFailureAt: budgetPrior.firstFailureAt ?? now,
+        publicTunnelFailures: 0,
+        publicTunnelFirstFailureAt: undefined,
+        primaryConnectorFailures: (budgetPrior.primaryConnectorFailures ?? 0) + 1,
+        primaryConnectorFirstFailureAt: budgetPrior.primaryConnectorFirstFailureAt ?? now,
+      }
+      : {
+        ...budgetPrior,
+        lastFullVerifyAt,
+        failures: budgetPrior.failures + 1,
+        firstFailureAt: budgetPrior.firstFailureAt ?? now,
+        publicTunnelFailures: 0,
+        publicTunnelFirstFailureAt: undefined,
+        primaryConnectorFailures: 0,
+        primaryConnectorFirstFailureAt: undefined,
+      };
   if (!localVerify.ok) state.runtimeHealthySince = undefined;
   const primaryConfig = configuredPrimaryRuntimeService(config);
   const decision = decideWatchdog({
@@ -2394,6 +2522,16 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     runtimeRecoveryLastAttemptAt: state.runtimeRecoveryLastAttemptAt,
     runtimeRecoveryCooldownMs: primaryConfig.recoveryCooldownMs,
     recoveryGatewayFailed: verified.probes.recovery_gateway?.ok === false,
+    primaryConnectorConfigured,
+    primaryConnectorFailed,
+    primaryConnectorFailures: state.primaryConnectorFailures,
+    primaryConnectorFirstFailureAt: state.primaryConnectorFirstFailureAt,
+    primaryConnectorRestartAttempts: state.primaryConnectorRestartAttempts,
+    primaryConnectorMaximumRestartAttempts: config.primaryConnectorService?.maximumRestartAttempts,
+    primaryConnectorRestartLastAttemptAt: state.primaryConnectorRestartLastAttemptAt,
+    primaryConnectorRestartCooldownMs: config.primaryConnectorService?.restartCooldownMs,
+    primaryConnectorMinimumFailures: config.primaryConnectorService?.minimumFailures,
+    primaryConnectorMinimumFailureDurationMs: config.primaryConnectorService?.minimumFailureDurationMs,
     publicTunnelConfigured: Boolean(configuredRecoveryTunnel(config)),
     publicTunnelFailed,
     publicTunnelMinimumFailures: configuredRecoveryTunnel(config)?.minimumFailures,
@@ -2410,6 +2548,28 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   if (decision.action === 'restart_recovery_gateway') {
     const recoveryGatewayRestart = await restartRecoveryGateway(config);
     return { state: { ...state, recoveryGatewayRestartUsed: true }, decision, verify: verified, recoveryGatewayRestart };
+  }
+  if (decision.action === 'restart_primary_connector') {
+    const primaryConnectorRestart = await restartPrimaryConnector(config);
+    const attempts = (state.primaryConnectorRestartAttempts ?? 0) + (primaryConnectorRestart.attempted ? 1 : 0);
+    const nextState: WatchdogState = primaryConnectorRestart.ok
+      ? {
+        ...state,
+        failures: 0,
+        firstFailureAt: undefined,
+        primaryConnectorFailures: 0,
+        primaryConnectorFirstFailureAt: undefined,
+        primaryConnectorRestartAttempts: 0,
+        primaryConnectorRestartFailures: 0,
+        primaryConnectorRestartLastAttemptAt: now,
+      }
+      : {
+        ...state,
+        primaryConnectorRestartAttempts: attempts,
+        primaryConnectorRestartFailures: (state.primaryConnectorRestartFailures ?? 0) + (primaryConnectorRestart.attempted ? 1 : 0),
+        primaryConnectorRestartLastAttemptAt: now,
+      };
+    return { state: nextState, decision, verify: verified, primaryConnectorRestart };
   }
   if (decision.action === 'restart_primary_runtime') {
     const primaryRuntimeRestart = await restartPrimaryRuntime(config);

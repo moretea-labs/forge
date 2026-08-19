@@ -25,6 +25,8 @@ import {
 import { isProcessAlive } from '../shared/process-tree';
 import { FORGE_VERSION } from '../../version';
 import { initializeStandaloneRecovery, loadRecoveryConfig, type PrimaryConnectorServiceConfig, type PrimaryRuntimeServiceConfig, type PublicTunnelServiceConfig, type RecoveryConfig } from './core';
+import { RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
+export { RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
 import {
   RECOVERY_RELEASE_BINARIES,
   RECOVERY_RELEASE_ROLE_CANARY_ARG,
@@ -43,9 +45,6 @@ import {
   type RecoveryReleaseManifest,
   type RecoveryRuntimeRole,
 } from './release';
-
-export const RECOVERY_GATEWAY_LABEL = 'com.moretea.forge-recovery-gateway';
-export const RECOVERY_WATCHDOG_LABEL = 'com.moretea.forge-recovery-watchdog';
 
 function defaultRecoveryLaunchctl(args: string[]): ReturnType<LaunchctlCommandRunner> {
   const result = runProcess('launchctl', args, { timeoutMs: 10_000, maxOutputBytes: 64 * 1024 });

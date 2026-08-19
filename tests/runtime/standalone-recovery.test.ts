@@ -18,6 +18,7 @@ import {
   restartPrimaryConnector,
   restartPrimaryRuntime,
   restartRecoveryGateway,
+  restartRecoveryWatchdog,
   scopeWatchdogStateToRuntimeRelease,
   stageAndActivateConfiguredRuntimeRelease,
   rollbackPrevious,
@@ -35,6 +36,10 @@ import {
   RECOVERY_TOOLS,
   resetWatchdogStateForRecoveryRelease,
 } from '../../src/runtime/standalone-recovery/entry';
+import {
+  evaluateRecoveryWatchdogHealth,
+  RECOVERY_WATCHDOG_MAX_TICK_AGE_MS,
+} from '../../src/runtime/standalone-recovery/watchdog-heartbeat';
 import { inspectControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from '../../src/runtime/root/ownership';
 import {
@@ -1435,6 +1440,118 @@ describe('standalone recovery on canonical Runtime', () => {
         return { ok: true, status: 0, stdout: '', stderr: '' };
       },
       probeGateway: async () => ({ ok: ++probes >= 3, detail: probes >= 3 ? 'healthy' : 'unavailable' }),
+      now: (() => { let now = 0; return () => now += 1_000; })(),
+      sleep: async () => undefined,
+    });
+    expect(result).toMatchObject({ ok: true, attempted: true });
+    expect(commands.some((args) => args.includes('kickstart'))).toBe(true);
+  });
+
+  test('restarts a failed primary Connector automatically only after a bounded sustained failure', () => {
+    const now = Date.parse('2026-08-19T01:40:00.000Z');
+    expect(decideWatchdog({
+      failures: 2,
+      firstFailureAt: now - 6_000,
+      evidenceClasses: [],
+      activeKnownGood: true,
+      previousKnownGood: true,
+      rollbackUsed: false,
+      primaryConnectorConfigured: true,
+      primaryConnectorFailed: true,
+      primaryConnectorFailures: 2,
+      primaryConnectorFirstFailureAt: now - 6_000,
+      primaryConnectorRestartAttempts: 0,
+      primaryConnectorMaximumRestartAttempts: 3,
+      nowMs: now,
+    })).toMatchObject({ action: 'restart_primary_connector' });
+
+    expect(decideWatchdog({
+      failures: 2,
+      firstFailureAt: now - 6_000,
+      evidenceClasses: [],
+      activeKnownGood: true,
+      previousKnownGood: true,
+      rollbackUsed: false,
+      primaryConnectorConfigured: true,
+      primaryConnectorFailed: true,
+      primaryConnectorFailures: 2,
+      primaryConnectorFirstFailureAt: now - 6_000,
+      primaryConnectorRestartAttempts: 3,
+      primaryConnectorMaximumRestartAttempts: 3,
+      nowMs: now,
+    })).toMatchObject({ action: 'degraded' });
+  });
+
+  test('proves Recovery Watchdog liveness with heartbeat, PID, release identity, and stuck-tick fencing', () => {
+    const now = Date.parse('2026-08-19T01:40:00.000Z');
+    const release = {
+      releasePath: '/controller/recovery/releases/recovery-r1',
+      releaseRevision: 'recovery-r1',
+      sourceCommit: 'commit-r1',
+      manifestSha256: 'manifest-r1',
+    };
+    const runtimeIdentity = {
+      schemaVersion: 1 as const,
+      role: 'watchdog' as const,
+      pid: 4242,
+      startedAt: new Date(now - 60_000).toISOString(),
+      ...release,
+    };
+    const heartbeat = {
+      schemaVersion: 1 as const,
+      pid: runtimeIdentity.pid,
+      startedAt: runtimeIdentity.startedAt,
+      ...release,
+      lastPulseAt: new Date(now - 1_000).toISOString(),
+      lastTickStartedAt: new Date(now - 5_000).toISOString(),
+      lastTickCompletedAt: new Date(now - 2_000).toISOString(),
+    };
+
+    expect(evaluateRecoveryWatchdogHealth({ heartbeat, runtimeIdentity, currentRelease: release, nowMs: now, pidAlive: () => true })).toMatchObject({ ok: true });
+    expect(evaluateRecoveryWatchdogHealth({
+      heartbeat: { ...heartbeat, lastPulseAt: new Date(now - 60_000).toISOString() },
+      runtimeIdentity,
+      currentRelease: release,
+      nowMs: now,
+      pidAlive: () => true,
+    })).toMatchObject({ ok: false, detail: 'Recovery Watchdog heartbeat is stale' });
+    expect(evaluateRecoveryWatchdogHealth({
+      heartbeat: {
+        ...heartbeat,
+        lastPulseAt: new Date(now - 1_000).toISOString(),
+        lastTickStartedAt: new Date(now - RECOVERY_WATCHDOG_MAX_TICK_AGE_MS - 1).toISOString(),
+        lastTickCompletedAt: new Date(now - RECOVERY_WATCHDOG_MAX_TICK_AGE_MS - 10_000).toISOString(),
+      },
+      runtimeIdentity,
+      currentRelease: release,
+      nowMs: now,
+      pidAlive: () => true,
+    })).toMatchObject({ ok: false, detail: 'Recovery Watchdog tick is stuck beyond its bounded recovery window' });
+    expect(evaluateRecoveryWatchdogHealth({
+      heartbeat: { ...heartbeat, releaseRevision: 'stale-recovery' },
+      runtimeIdentity,
+      currentRelease: release,
+      nowMs: now,
+      pidAlive: () => true,
+    })).toMatchObject({ ok: false, detail: 'Recovery Watchdog is not running the current immutable Recovery release' });
+  });
+
+  test('Recovery Gateway can restart a stale independent Watchdog through the shared bounded launchd primitive', async () => {
+    const home = controllerHome();
+    const config = initializeStandaloneRecovery(home, 8787);
+    const plist = join(home, 'recovery', 'launchd', 'com.moretea.forge-recovery-watchdog.plist');
+    mkdirSync(dirname(plist), { recursive: true });
+    writeFileSync(plist, '<plist/>');
+    let probes = 0;
+    const commands: string[][] = [];
+    const result = await restartRecoveryWatchdog(config, {
+      platform: 'darwin',
+      currentUid: async () => 501,
+      runCommand: async (_command, args) => {
+        commands.push(args);
+        return { ok: true, status: 0, stdout: '', stderr: '' };
+      },
+      probeWatchdog: async () => ({ ok: ++probes >= 3, detail: probes >= 3 ? 'healthy' : 'stale' }),
       now: (() => { let now = 0; return () => now += 1_000; })(),
       sleep: async () => undefined,
     });
