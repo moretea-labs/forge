@@ -2198,6 +2198,15 @@ describe("MCP controller profile", () => {
       });
       expect(payload.data.capabilityLookup.pluginAction.argumentsSchema).toHaveProperty("type", "object");
       expect(payload.data.capabilityLookup.pluginAction.provider).not.toBe("stored-browser-stale");
+      expect(payload.data.toolArchitecture.domainSchemaLoading).toBe("exact_capability_fast_path");
+      expect(payload.data.capabilityCount).toBeUndefined();
+      expect(payload.data.capabilityGroups).toBeUndefined();
+      expect(payload.data.activeWork).toBeUndefined();
+      expect(payload.data.activeProcesses).toBeUndefined();
+      expect(payload.data.recentProcesses).toBeUndefined();
+      expect(payload.data.activeAttention).toBeUndefined();
+      expect(payload.data.checks).toBeUndefined();
+      expect(payload.responseMeta.structuredPayloadBytes).toBeLessThan(6_000);
 
       const controllerRaw = await callRuntimeTool(multi, "rh_context", {
         repo_id: repository.repoId,

@@ -190,8 +190,11 @@ function exposedViaFromPluginAction(_readOnly: boolean, _risk: string): Capabili
   return 'plugin_action_execute';
 }
 
-export function pluginCapabilities(manifests: readonly AssistantPluginManifest[] = []): CapabilityDescriptor[] {
-  return manifests.flatMap((manifest) => manifest.actions.map((action) => ({
+function pluginCapabilityDescriptor(
+  manifest: AssistantPluginManifest,
+  action: AssistantPluginManifest['actions'][number],
+): CapabilityDescriptor {
+  return {
     capabilityId: `plugin.${manifest.pluginId}.${action.actionId}`,
     domain: domainFromPlugin(manifest.pluginId),
     group: manifest.pluginId === 'browser' ? 'browser' : 'plugin',
@@ -200,7 +203,11 @@ export function pluginCapabilities(manifests: readonly AssistantPluginManifest[]
     exposedVia: exposedViaFromPluginAction(action.readOnly, action.risk),
     schemaExposure: 'plugin_manifest',
     summary: `${manifest.displayName}: ${action.title}. ${action.description}`,
-  } satisfies CapabilityDescriptor)));
+  } satisfies CapabilityDescriptor;
+}
+
+export function pluginCapabilities(manifests: readonly AssistantPluginManifest[] = []): CapabilityDescriptor[] {
+  return manifests.flatMap((manifest) => manifest.actions.map((action) => pluginCapabilityDescriptor(manifest, action)));
 }
 
 export function listCapabilityDescriptors(manifests: readonly AssistantPluginManifest[] = []): CapabilityDescriptor[] {
@@ -272,5 +279,14 @@ export function getPluginActionCapabilitySchema(
 }
 
 export function getCapabilityDescriptor(capabilityId: string, manifests: readonly AssistantPluginManifest[] = []): CapabilityDescriptor | undefined {
-  return listCapabilityDescriptors(manifests).find((descriptor) => descriptor.capabilityId === capabilityId);
+  const core = CORE_CAPABILITIES.find((descriptor) => descriptor.capabilityId === capabilityId);
+  if (core) return core;
+  for (const manifest of manifests) {
+    for (const action of manifest.actions) {
+      if (`plugin.${manifest.pluginId}.${action.actionId}` === capabilityId) {
+        return pluginCapabilityDescriptor(manifest, action);
+      }
+    }
+  }
+  return undefined;
 }

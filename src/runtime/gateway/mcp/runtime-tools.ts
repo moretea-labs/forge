@@ -165,6 +165,7 @@ import {
   dismissHandoffItem,
   getHandoffItem,
   listCapabilityDescriptors,
+  getCapabilityDescriptor,
   getPluginActionCapabilitySchema,
   summarizeCapabilityGroups,
   listHandoffItems,
@@ -3058,6 +3059,66 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           });
           return result(facade as unknown as Record<string, unknown>);
         }
+        const startedAt = performance.now();
+        const requestedCapabilityId = typeof args.capability_id === 'string' ? args.capability_id.trim() : '';
+        if (requestedCapabilityId) {
+          const pluginMatch = /^plugin\.([^.]+)\.(.+)$/.exec(requestedCapabilityId);
+          const manifests = pluginMatch ? (() => {
+            const pluginId = pluginMatch[1];
+            const targets = [repository];
+            const controllerRepository = controllerPluginRepository(ctx.controllerHome);
+            if (controllerRepository.repoId !== repository.repoId) targets.push(controllerRepository);
+            for (const target of targets) {
+              try {
+                return [getAssistantPluginManifest(ctx.controllerHome, target, pluginId)];
+              } catch (error) {
+                if (error instanceof Error && error.message.startsWith('PLUGIN_NOT_FOUND:')) continue;
+                throw error;
+              }
+            }
+            return [];
+          })() : [];
+          const descriptor = getCapabilityDescriptor(requestedCapabilityId, manifests);
+          const pluginAction = getPluginActionCapabilitySchema(requestedCapabilityId, manifests);
+          const facade = buildFacadeResult({
+            status: 'ok',
+            summary: descriptor
+              ? `Exact capability ${requestedCapabilityId} is available.`
+              : `Capability ${requestedCapabilityId} was not found.`,
+            data: {
+              operation,
+              repoId: repository.repoId,
+              repository: {
+                repoId: repository.repoId,
+                displayName: repository.displayName,
+                defaultBranch: repository.defaultBranch,
+                repositoryType: repository.repositoryType,
+              },
+              capabilityLookup: {
+                requestedCapabilityId,
+                found: Boolean(descriptor),
+                descriptor,
+                pluginAction,
+              },
+              toolArchitecture: {
+                facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
+                domainSchemaLoading: 'exact_capability_fast_path',
+              },
+              bounded: true,
+            },
+            warnings: [],
+            suggestedNextActions: [],
+            detailLevel: args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary',
+            rawAvailable: false,
+          });
+          const payload = facade as unknown as Record<string, unknown>;
+          payload.responseMeta = {
+            serverDurationMs: Number((performance.now() - startedAt).toFixed(2)),
+            structuredPayloadBytes: 0,
+          };
+          (payload.responseMeta as { structuredPayloadBytes: number }).structuredPayloadBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+          return result(payload);
+        }
         const checks = listControllerChecks(repository.canonicalRoot);
         const requested = Array.isArray(args.requested_check_ids) ? args.requested_check_ids.map(String) : [];
         const normalizedChecks = normalizeCheckIds(requested, checks);
@@ -3074,7 +3135,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           });
           return result(facade as unknown as Record<string, unknown>, true);
         }
-        const startedAt = performance.now();
         const detailLevel = args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary';
         const isSummary = detailLevel === 'summary';
         const activeContractScan = operation === 'list' || !workId
@@ -3095,11 +3155,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const activeRuntimeInstanceId = currentControllerInstanceId();
         const activeProcesses = relevantProcesses.filter((process) => isManagedProcessActive(process) && (!process.runtimeInstanceId || process.runtimeInstanceId === activeRuntimeInstanceId));
         const workController = work ? getControllerSession(store, work.workId) : undefined;
-        const requestedCapabilityId = typeof args.capability_id === 'string' ? args.capability_id.trim() : '';
-        const exactPluginCapabilityLookup = requestedCapabilityId.startsWith('plugin.');
-        const manifestOptions = exactPluginCapabilityLookup
-          ? { forceRefresh: true }
-          : { preferStored: true };
+        const manifestOptions = { preferStored: true };
         const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, manifestOptions);
         const controllerRepository = controllerPluginRepository(ctx.controllerHome);
         const controllerManifests = repository.repoId === controllerRepository.repoId
@@ -3110,18 +3166,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         ).values()];
         const capabilities = listCapabilityDescriptors(manifests);
         const capabilityGroups = summarizeCapabilityGroups(manifests);
-        const selectedCapability = requestedCapabilityId
-          ? capabilities.find((descriptor) => descriptor.capabilityId === requestedCapabilityId)
-          : undefined;
-        const pluginActionSchema = requestedCapabilityId
-          ? getPluginActionCapabilitySchema(requestedCapabilityId, manifests)
-          : undefined;
-        const capabilityLookup = requestedCapabilityId ? {
-          requestedCapabilityId,
-          found: Boolean(selectedCapability),
-          descriptor: selectedCapability,
-          pluginAction: pluginActionSchema,
-        } : undefined;
+        const capabilityLookup = undefined;
         const selectedChecks = normalizedChecks.validCheckIds
           .map((id) => checks.find((check) => check.id === id))
           .filter((check): check is (typeof checks)[number] => Boolean(check))
