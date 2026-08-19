@@ -17,7 +17,7 @@ import { repositoryControllerRoot } from '../../../cli/repositories/controller-h
 import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../execution/jobs/store';
 import { waitForExecutionJob } from '../../execution/jobs/wait';
 import type { ExecutionJob } from '../../execution/jobs/types';
-import { getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
+import { getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, listRecoverableProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
 import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../../execution/process-runtime/command-facade';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
@@ -2939,7 +2939,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const activePrimaryWork = activeContracts.filter((contract) => (contract.lifecycleRole ?? 'primary') === 'primary');
         const activeExecutionChildren = activeContracts.filter((contract) => contract.lifecycleRole === 'execution_child');
         const activeRuntimeInstanceId = currentControllerInstanceId();
-        const activeProcessRecords = listProcessRecords(ctx.controllerHome, repository.repoId, 500).filter((process) => isManagedProcessActive(process) && (!process.runtimeInstanceId || process.runtimeInstanceId === activeRuntimeInstanceId));
+        // Status only needs live Process membership. The recovery index is the
+        // existing Process authority for active/pending membership; do not parse
+        // hundreds of unrelated terminal Process receipts just to count activity.
+        const activeProcessRecords = listRecoverableProcessRecords(ctx.controllerHome, repository.repoId).filter((process) => isManagedProcessActive(process) && (!process.runtimeInstanceId || process.runtimeInstanceId === activeRuntimeInstanceId));
         markDetailPhase('process_state');
         const activeProcessWorkIds = new Set(activeProcessRecords.map((process) => process.workId).filter((workId): workId is string => Boolean(workId)));
         const activeControllerWorkIds = new Set(activePrimaryWork.filter((contract) => Boolean(getControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId))).map((contract) => contract.workId));
