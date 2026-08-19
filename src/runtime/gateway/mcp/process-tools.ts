@@ -113,6 +113,7 @@ export const processToolDefinitions: McpToolDefinition[] = [
 ];
 
 const processToolNames = new Set(processToolDefinitions.map((tool) => tool.name));
+const processAttachmentToolNames = new Set(['process_get', 'process_wait', 'process_logs', 'process_cancel']);
 // Public MCP clients commonly detach around one minute. Return a normal attach
 // snapshot before that deadline rather than allowing transport timeout to turn
 // a healthy Process into an error-shaped response.
@@ -186,7 +187,10 @@ export async function callProcessTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<CallToolResult | undefined> {
-  if (!processToolNames.has(name)) return undefined;
+  // run_check shares this module's public schema, but its execution authority is
+  // the Gateway check facade in router.ts. Only attachment/lifecycle operations
+  // consume an existing process_id here.
+  if (!processAttachmentToolNames.has(name)) return undefined;
   try {
     const { repoId, processId } = requireRepoAndProcess(ctx, args);
     switch (name) {

@@ -2257,6 +2257,7 @@ describe('process MCP live surface', () => {
       'process_get',
       'process_logs',
       'process_wait',
+      'run_check',
     ].sort());
     const fx = fixture();
     const handle = await spawnManagedProcess({
@@ -2276,6 +2277,10 @@ describe('process MCP live surface', () => {
       controllerHome: fx.controllerHome,
       repo: fx.repoRoot,
     } as unknown as MultiRepositoryMcpToolContext;
+    expect(await callProcessTool(ctx, 'run_check', {
+      repo_id: fx.repository.repoId,
+      check_id: 'package:check:type',
+    })).toBeUndefined();
     const got = await callProcessTool(ctx, 'process_get', {
       repo_id: fx.repository.repoId,
       process_id: handle.processId,
