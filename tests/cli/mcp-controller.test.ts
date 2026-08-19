@@ -180,6 +180,21 @@ test("returns bounded policy-checked TypeScript semantic navigation through rh_c
     });
     expect(value.data.semanticNavigation.errors).toEqual([]);
     expect(value.data.semanticNavigation.results[0].totalLocations).toBeGreaterThanOrEqual(2);
+    expect(value.data.semanticNavigation.requestSource).toBe("semantic_navigation");
+
+    const compatibilityResponse = await callRuntimeTool(ctx, "rh_context", {
+      repo_id: repository.repoId,
+      operation: "search",
+      query: "semanticTarget @tsnav references src/semantic-target.ts:1:17",
+      known_paths: ["src/semantic-target.ts", "src/semantic-use.ts"],
+      structural_context: "off",
+    });
+    const compatibility = JSON.parse(compatibilityResponse!.content[0]!.text);
+    expect(compatibility.data.semanticNavigation.staticClosure.status).toBe("complete_for_requested_symbols");
+    expect(compatibility.data.semanticNavigation.requestSource).toBe("query_compatibility");
+    expect(compatibility.data.semanticNavigation.results[0].totalLocations).toBeGreaterThanOrEqual(2);
+    expect(compatibility.data.goal).not.toContain("@tsnav");
+    expect(compatibility.data.semanticNavigation.compatibilityQuerySyntax).toContain("@tsnav");
 
     const deniedResponse = await callRuntimeTool(ctx, "rh_context", {
       repo_id: repository.repoId,

@@ -25,7 +25,8 @@ Quality is prioritized over interactive performance; performance is prioritized 
 - Exact known paths reserve retrieval budget and current raw source is authoritative.
 - Complete small files and complete matched symbols are preferred over arbitrary line windows.
 - CodeGraph is discovery/relationship evidence, not semantic-completeness authority. Stale structural evidence must be labeled and current changed files remain raw-source authoritative.
-- The internal TypeScript Language Service navigation prototype provides compiler-backed definition/reference/implementation lookup for TypeScript symbols. It is currently an internal primitive, not a new MCP lifecycle or durable index.
+- TypeScript Language Service navigation provides compiler-backed definition/reference/implementation lookup for TypeScript symbols through `rh_context`. It is bounded static evidence, not a new lifecycle, durable index, or semantic-completeness oracle.
+- The default 19-tool MCP schemas are a deployment ABI because approved ChatGPT apps may retain a frozen action/input snapshot. Core quality capabilities therefore need a path through already-stable facade fields. `rh_context` supports precise `@tsnav` directives in `query` as a compatibility path; refreshed clients may use the structured `semantic_navigation` field.
 - Exact lexical search remains necessary for dynamic registrations, manifests, string capability IDs, persisted aliases, and unrelated same-name implementations.
 
 ## Execution lanes
@@ -103,7 +104,6 @@ Research notes, tasks, reviews, old architecture pages, plans and Git history ar
 
 - Explicit `toolset=full` remains a supported legacy compatibility boundary for now.
 - Some large runtime modules still aggregate multiple responsibilities and should be decomposed only when a clear ownership boundary is available.
-- TypeScript semantic navigation is proven as an internal prototype but is not yet part of the public `rh_context` schema.
 - CodeGraph may be structurally stale between index refreshes; current raw source and changed-file overlays remain authoritative.
 
 These items belong on the roadmap, not in parallel current-architecture documents.

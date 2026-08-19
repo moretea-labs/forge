@@ -265,6 +265,37 @@ function rhContextReadSessionId(ctx: MultiRepositoryMcpToolContext): string | un
 
 const RH_CONTEXT_SEMANTIC_QUERY_LIMIT = 8;
 const RH_CONTEXT_SEMANTIC_LOCATION_LIMIT = 200;
+const RH_CONTEXT_LEGACY_TSNAV_SYNTAX = '@tsnav references <repo-path>:<line>:<column>';
+
+type RhContextSemanticNavigationRequest = {
+  navigation: TypeScriptNavigationKind;
+  path: string;
+  line: number;
+  column: number;
+  tsconfig_path?: string;
+};
+
+function rhContextLegacySemanticQuery(query: string): {
+  retrievalQuery: string;
+  requests: RhContextSemanticNavigationRequest[];
+} {
+  const requests: RhContextSemanticNavigationRequest[] = [];
+  const directive = /(?:^|\s)@tsnav\s+(definition|references|implementations)\s+([^\s]+):(\d+):(\d+)(?:\s+tsconfig=([^\s]+))?/gi;
+  const retrievalQuery = query.replace(directive, (_match, navigation, path, line, column, tsconfigPath) => {
+    requests.push({
+      navigation: String(navigation).toLowerCase() as TypeScriptNavigationKind,
+      path: String(path),
+      line: Number(line),
+      column: Number(column),
+      ...(tsconfigPath ? { tsconfig_path: String(tsconfigPath) } : {}),
+    });
+    return ' ';
+  }).replace(/\s+/g, ' ').trim();
+  const fallback = requests.length > 0
+    ? `TypeScript ${requests[0]!.navigation} ${requests[0]!.path}`
+    : query;
+  return { retrievalQuery: retrievalQuery || fallback, requests };
+}
 
 function rhContextSemanticNavigation(
   repoRoot: string,
@@ -3060,6 +3091,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             });
             return result(facade as unknown as Record<string, unknown>, true);
           }
+          const legacySemanticQuery = rhContextLegacySemanticQuery(query);
+          const retrievalQuery = legacySemanticQuery.retrievalQuery;
           const list = (value: unknown): string[] => Array.isArray(value)
             ? value.map(String).map((entry) => entry.trim()).filter(Boolean)
             : [];
@@ -3080,12 +3113,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             checkoutId: repository.activeCheckoutId,
           });
           const pack = await buildControllerContextPackAsync(repository.canonicalRoot, ctx.policy, {
-            description: query,
+            description: retrievalQuery,
             // Short code-like queries remain useful exact lexical needles. Long
             // semantic prompts are already tokenized from description; adding the
             // whole prompt as an exact needle prevents batch-search early exit and
             // forces a full bounded repository scan for a phrase that will not match.
-            searchTerms: query.length <= 160 ? [query] : undefined,
+            searchTerms: retrievalQuery.length <= 160 ? [retrievalQuery] : undefined,
             knownPaths: list(args.known_paths),
             includeGlobs: list(args.include_globs),
             excludeGlobs: list(args.exclude_globs),
@@ -3099,7 +3132,19 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               ? { sessionId: rhContextReadSessionId(ctx)!, repoId: repository.repoId, checkoutId: repository.activeCheckoutId }
               : undefined,
           });
-          const semanticNavigation = rhContextSemanticNavigation(repository.canonicalRoot, ctx.policy, args.semantic_navigation);
+          const explicitSemanticNavigation = Array.isArray(args.semantic_navigation) ? args.semantic_navigation : [];
+          const semanticRequests = [...explicitSemanticNavigation, ...legacySemanticQuery.requests];
+          const semanticNavigation = {
+            ...rhContextSemanticNavigation(repository.canonicalRoot, ctx.policy, semanticRequests),
+            requestSource: explicitSemanticNavigation.length > 0 && legacySemanticQuery.requests.length > 0
+              ? 'schema_and_query'
+              : explicitSemanticNavigation.length > 0
+                ? 'semantic_navigation'
+                : legacySemanticQuery.requests.length > 0
+                  ? 'query_compatibility'
+                  : 'none',
+            compatibilityQuerySyntax: RH_CONTEXT_LEGACY_TSNAV_SYNTAX,
+          };
           const warnings = structuralContext === 'required' && !pack.structuralContext.requiredSatisfied
             ? [pack.structuralContext.fallbackReason ?? 'Required structural context is not ready; lexical retrieval results are returned as degraded evidence.']
             : [];
