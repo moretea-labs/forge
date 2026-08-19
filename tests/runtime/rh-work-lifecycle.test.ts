@@ -10,7 +10,8 @@ import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools
 import { callRuntimeTool, classifyTerminalCheckEvidence, RH_WORK_VERIFY_LEASE_WAIT_MS } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { getProcessRecord, waitForProcess } from '../../src/runtime/execution/process-runtime';
 import { getWorkContract, listWorkContracts, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { continueGoalWorkloop, finalizeGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
+import { continueGoalWorkloop, finalizeGoalWorkloop, verifyGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
+import { listHandoffItems, resolveHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
@@ -501,6 +502,45 @@ describe('rh_work managed lifecycle closure', () => {
     expect(staleFinalize.status).toBe('blocked');
     expect(staleFinalize.summary).toContain('verification evidence is stale');
     expect(staleFinalize.data).toMatchObject({ validPasses: [], durableResultEvidence: false });
+  });
+
+  test('reuses one acceptance-failure handoff until newer failure evidence appears', async () => {
+    const fx = fixture('acceptance-handoff-dedupe');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Repair one acceptance failure without repeated review handoffs',
+      requires_recovery: true,
+    });
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    expect(workId).toBeTruthy();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    updateWorkContract(store, workId, { checks: ['decision-check'] });
+    const workloopCtx = { workStore: store, handoffStore: store, repoId: fx.repository.repoId, availableChecks: [{ id: 'decision-check' }] };
+
+    verifyGoalWorkloop(workloopCtx, { workId, checkId: 'decision-check', checkFailed: true });
+    const first = continueGoalWorkloop(workloopCtx, { workId });
+    expect(first.status).toBe('blocked');
+    const firstId = String((first.data as { handoffId?: string })?.handoffId ?? '');
+    expect(firstId).toBeTruthy();
+
+    const repeated = continueGoalWorkloop(workloopCtx, { workId });
+    expect(repeated.status).toBe('blocked');
+    expect((repeated.data as { handoffId?: string })?.handoffId).toBe(firstId);
+    expect(listHandoffItems({ ...store, status: 'all', limit: 100 }).filter((item) => item.workId === workId)).toHaveLength(1);
+
+    resolveHandoffItem(store, firstId, { decision: 'Repair and continue verification.', resolver: 'chatgpt' });
+    const resolved = continueGoalWorkloop(workloopCtx, { workId });
+    expect(resolved.status).toBe('ok');
+    expect(resolved.data).toMatchObject({ nextStep: 'verify' });
+    expect(listHandoffItems({ ...store, status: 'all', limit: 100 }).filter((item) => item.workId === workId)).toHaveLength(1);
+
+    await Bun.sleep(5);
+    verifyGoalWorkloop(workloopCtx, { workId, checkId: 'decision-check', checkFailed: true });
+    const newFailure = continueGoalWorkloop(workloopCtx, { workId });
+    expect(newFailure.status).toBe('blocked');
+    expect((newFailure.data as { handoffId?: string })?.handoffId).not.toBe(firstId);
+    expect(listHandoffItems({ ...store, status: 'all', limit: 100 }).filter((item) => item.workId === workId)).toHaveLength(2);
   });
 
   test('keeps ordinary repository commands independent from active Work while preserving the raw default-branch merge guard', async () => {

@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import {
   createHandoffItem,
+  listHandoffItems,
   type HandoffInboxStoreOptions,
 } from './handoff-inbox-store';
 import {
@@ -892,75 +893,118 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     work.checkRefs.map((record) => ({ checkId: record.checkId, outcome: record.outcome, recordedAt: record.recordedAt })),
   );
 
-  // Ambiguous: acceptance failure present → handoff for ChatGPT review rather than pretend progress.
+  // Ambiguous: acceptance failure present → ask once per distinct failure evidence.
+  // Repeated continue calls must not manufacture an unbounded handoff loop. A
+  // resolved handoff remains the decision authority until the same check records
+  // newer valid-fail evidence; an unresolved matching handoff is simply reused.
   if (history.acceptanceFailures.length > 0 && work.recoveryPolicy.handoffOnAmbiguity) {
-    const continuation = buildWorkContinuationSnapshot(work);
-    const handoff = createHandoffItem(ctx.handoffStore, {
-      id: handoffIdFor('continue'),
-      repoId: ctx.repoId,
-      workId: work.workId,
-      title: 'Acceptance failure needs review',
-      severity: 'needs_review',
-      creationReason: 'ambiguous_outcome',
-      reason: `Acceptance checks failed: ${history.acceptanceFailures.join(', ')}`,
-      summary: 'Continue paused; ChatGPT must decide repair vs re-scope.',
-      currentState: {
-        repoId: ctx.repoId,
-        workId: work.workId,
-        mode: work.mode,
-        statusSummary: 'waiting_for_review after acceptance failure',
-        checks: history.acceptanceFailures.map((checkId) => ({ checkId, ok: false, outcome: 'valid_fail' as const })),
-        workSemantics: continuation.semantics,
-        reconciliationRequired: continuation.reconciliationRequired,
-        nextSafeAction: continuation.nextSafeAction,
-      },
-      attemptedActions: ['continue'],
-      evidenceRefs: work.evidenceRefs.slice(0, 5),
-      blockingDecision: 'Decide whether to repair code, adjust acceptance criteria, or stop.',
-      recommendedDecision: 'Inspect evidence and either repair or stop the workloop.',
-      recommendedPrompt: work.continuationPrompt ?? `Continue from work ${work.workId}.`,
-      recommendedContinuationPrompt: continuation.continuationPrompt,
-      suggestedNextActions: [
-        {
-          label: 'Read work context',
-          tool: 'rh_context',
-          operation: 'get',
-          payload: { work_id: work.workId },
-          risk: 'readonly',
+    const failureReason = `Acceptance checks failed: ${history.acceptanceFailures.join(', ')}`;
+    const latestFailureAt = work.checkRefs
+      .filter((record) => record.outcome === 'valid_fail' && history.acceptanceFailures.includes(record.checkId))
+      .map((record) => record.recordedAt)
+      .sort((left, right) => right.localeCompare(left))[0];
+    const matchingHandoffs = listHandoffItems({ ...ctx.handoffStore, status: 'all', limit: 100 })
+      .filter((item) => (
+        item.workId === work.workId
+        && item.creationReason === 'ambiguous_outcome'
+        && item.title === 'Acceptance failure needs review'
+        && item.reason === failureReason
+        && (!latestFailureAt || item.createdAt >= latestFailureAt)
+      ));
+    const activeHandoff = matchingHandoffs.find((item) => item.status === 'pending' || item.status === 'acknowledged');
+    if (activeHandoff) {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `Continue remains paused for ChatGPT review through existing handoff ${activeHandoff.id}.`,
+        data: {
+          work: summarizeWorkContract(work),
+          handoffId: activeHandoff.id,
+          acceptanceFailures: history.acceptanceFailures,
+          infrastructureIssues: history.infrastructureIssues,
+          backgroundCompleted: false,
         },
-      ],
-    });
-    transitionWorkContractPhase(ctx.workStore, work.workId, {
-      status: 'ready',
-      phase: 'verification',
-      state: 'blocked',
-      summary: `Acceptance failure requires review through handoff ${handoff.id}.`,
-      evidenceRefs: work.evidenceRefs,
-    });
-    const updated = appendWorkHandoffRef(ctx.workStore, work.workId, handoff.id);
-
-    return buildFacadeResult({
-      status: 'blocked',
-      summary: `Continue paused for ChatGPT review; handoff ${handoff.id} created. No background execution pretended.`,
-      data: {
-        work: summarizeWorkContract(updated),
-        handoffId: handoff.id,
-        acceptanceFailures: history.acceptanceFailures,
-        infrastructureIssues: history.infrastructureIssues,
-        backgroundCompleted: false,
-      },
-      evidenceRefs: work.evidenceRefs.slice(0, 5),
-      suggestedNextActions: [
-        {
+        evidenceRefs: work.evidenceRefs.slice(0, 5),
+        suggestedNextActions: [{
           label: 'Get handoff',
           tool: 'rh_inbox',
           operation: 'get',
-          payload: { handoff_id: handoff.id },
+          payload: { handoff_id: activeHandoff.id },
           risk: 'readonly',
           confidence: 'high',
+        }],
+      });
+    }
+
+    const resolvedHandoff = matchingHandoffs.find((item) => item.status === 'resolved');
+    if (!resolvedHandoff) {
+      const continuation = buildWorkContinuationSnapshot(work);
+      const handoff = createHandoffItem(ctx.handoffStore, {
+        id: handoffIdFor('continue'),
+        repoId: ctx.repoId,
+        workId: work.workId,
+        title: 'Acceptance failure needs review',
+        severity: 'needs_review',
+        creationReason: 'ambiguous_outcome',
+        reason: failureReason,
+        summary: 'Continue paused; ChatGPT must decide repair vs re-scope.',
+        currentState: {
+          repoId: ctx.repoId,
+          workId: work.workId,
+          mode: work.mode,
+          statusSummary: 'waiting_for_review after acceptance failure',
+          checks: history.acceptanceFailures.map((checkId) => ({ checkId, ok: false, outcome: 'valid_fail' as const })),
+          workSemantics: continuation.semantics,
+          reconciliationRequired: continuation.reconciliationRequired,
+          nextSafeAction: continuation.nextSafeAction,
         },
-      ],
-    });
+        attemptedActions: ['continue'],
+        evidenceRefs: work.evidenceRefs.slice(0, 5),
+        blockingDecision: 'Decide whether to repair code, adjust acceptance criteria, or stop.',
+        recommendedDecision: 'Inspect evidence and either repair or stop the workloop.',
+        recommendedPrompt: work.continuationPrompt ?? `Continue from work ${work.workId}.`,
+        recommendedContinuationPrompt: continuation.continuationPrompt,
+        suggestedNextActions: [
+          {
+            label: 'Read work context',
+            tool: 'rh_context',
+            operation: 'get',
+            payload: { work_id: work.workId },
+            risk: 'readonly',
+          },
+        ],
+      });
+      transitionWorkContractPhase(ctx.workStore, work.workId, {
+        status: 'ready',
+        phase: 'verification',
+        state: 'blocked',
+        summary: `Acceptance failure requires review through handoff ${handoff.id}.`,
+        evidenceRefs: work.evidenceRefs,
+      });
+      const updated = appendWorkHandoffRef(ctx.workStore, work.workId, handoff.id);
+
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `Continue paused for ChatGPT review; handoff ${handoff.id} created. No background execution pretended.`,
+        data: {
+          work: summarizeWorkContract(updated),
+          handoffId: handoff.id,
+          acceptanceFailures: history.acceptanceFailures,
+          infrastructureIssues: history.infrastructureIssues,
+          backgroundCompleted: false,
+        },
+        evidenceRefs: work.evidenceRefs.slice(0, 5),
+        suggestedNextActions: [
+          {
+            label: 'Get handoff',
+            tool: 'rh_inbox',
+            operation: 'get',
+            payload: { handoff_id: handoff.id },
+            risk: 'readonly',
+            confidence: 'high',
+          },
+        ],
+      });
+    }
   }
 
   // Infrastructure issues: suggest self-healing, not acceptance failure.
