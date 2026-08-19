@@ -1558,6 +1558,33 @@ describe('browser plugin', () => {
     expect(native.events.activeTabId).toBe('501');
   });
 
+  test('explicit-session native open_page recovers when a newly created Chrome tab is still about:blank', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome', { transitionalNewTabReads: 1, transitionalUrl: 'about:blank' });
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const targetUrl = 'https://old.reddit.com/r/SideProject/';
+    const opened = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-native-explicit-session-aboutblank', args: { session_id: 'reddit-growth', url: targetUrl },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect((opened.session as Record<string, unknown>).url).toBe(targetUrl);
+    expect(native.events.created).toEqual(['9001']);
+    expect(native.events.navigated).toContainEqual({ tabId: '9001', url: targetUrl });
+  });
+
   test('native open_page treats other Chrome internal URLs as transitional before final HTTPS identity', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {

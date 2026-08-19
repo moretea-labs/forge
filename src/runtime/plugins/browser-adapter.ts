@@ -1871,6 +1871,11 @@ async function openNativeAttachedContext(
     if (!page) {
       page = await createMacOsBrowserOwnedPage(activeAttachment, target.url, timeout) as unknown as PageLike;
       createdThisCallRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
+      const liveIdentity = await (page as unknown as { identity?: () => Promise<{ url: string; title: string }> }).identity?.()
+        .catch(() => undefined);
+      if (!liveIdentity?.url || isBlankPage(liveIdentity.url) || comparableUrl(liveIdentity.url) !== comparableUrl(target.url)) {
+        await page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout });
+      }
     }
     if (comparableUrl(page.url()) !== comparableUrl(target.url)) {
       const currentRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
