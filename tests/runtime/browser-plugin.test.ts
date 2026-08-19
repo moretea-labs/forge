@@ -1663,6 +1663,62 @@ describe('browser plugin', () => {
     expect(native.events.activeTabId).toBe('501');
   });
 
+  test('sessionless native open_page reuses the live Forge-owned tab for the same origin instead of opening one tab per URL', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const firstUrl = 'https://www.google.com/search?q=avela+meds';
+    const secondUrl = 'https://www.google.com/search?q=medication+reminder+app';
+    await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'sessionless-owned-first', args: { url: firstUrl }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const second = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'sessionless-owned-second', args: { url: secondUrl }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(native.events.created).toEqual(['9001']);
+    expect(native.events.navigated).toContainEqual({ tabId: '9001', url: secondUrl });
+    expect(second.browserConnection).toMatchObject({
+      provider: 'macos-apple-events',
+      tab: { ownership: 'plugin_owned', windowId: 'window-77', tabId: '9001', url: secondUrl },
+      sessionResume: { status: 'matched' },
+    });
+  });
+
+  test('sessionless native open_page adopts a unique exact existing user tab instead of opening a duplicate', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+    const url = 'https://search.google.com/search-console/';
+    native.setUserTab(url, 'Google Search Console');
+
+    const opened = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'sessionless-exact-user-tab', args: { url }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(native.events.created).toEqual([]);
+    expect(native.events.navigated).toEqual([]);
+    expect(opened.browserConnection).toMatchObject({
+      provider: 'macos-apple-events',
+      tab: { ownership: 'user_owned', windowId: 'window-77', tabId: '501', url },
+      sessionResume: { status: 'matched' },
+    });
+  });
+
   test('native attach safely rebinds a disappeared plugin-owned tab to the unique current tab for the same app entity', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {

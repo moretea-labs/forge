@@ -484,6 +484,18 @@ function findSession(repoRoot: string, sessionId: string): BrowserSessionState |
   return readJson<BrowserSessionState>(sessionPath(repoRoot, sessionId));
 }
 
+function listSavedBrowserSessions(repoRoot: string): BrowserSessionState[] {
+  const root = stateDir(repoRoot, 'sessions');
+  try {
+    return readdirSync(root)
+      .filter((name) => name.endsWith('.json'))
+      .map((name) => readJson<BrowserSessionState>(join(root, name)))
+      .filter((session): session is BrowserSessionState => Boolean(session));
+  } catch {
+    return [];
+  }
+}
+
 function loadSession(repoRoot: string, sessionId: string): BrowserSessionState {
   const state = findSession(repoRoot, sessionId);
   if (!state) {
@@ -984,6 +996,58 @@ function selectReusableNativeTab(
   const matches = scored.filter((entry) => entry.score === maxScore);
   if (matches.length !== 1) return { match: 'ambiguous', candidateCount: matches.length };
   return { candidate: matches[0]!.candidate, match: matches[0]!.matchScore === 100 ? 'exact_url' : 'stable_entity', candidateCount: 1 };
+}
+
+function selectLiveForgeOwnedNativeTab(
+  repoRoot: string,
+  targetUrl: string,
+  product: MacOsBrowserProduct,
+  inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>>,
+): {
+  session?: BrowserSessionState;
+  candidate?: (typeof inventory.tabs)[number];
+  match: 'exact_url' | 'same_origin' | 'none' | 'ambiguous';
+  candidateCount: number;
+} {
+  const liveByRef = new Map(inventory.tabs.map((tab) => [`${tab.windowId}:${tab.tabId}`, tab]));
+  const candidates = new Map<string, { session: BrowserSessionState; candidate: (typeof inventory.tabs)[number] }>();
+  for (const session of listSavedBrowserSessions(repoRoot)) {
+    const browser = session.browser;
+    const tab = browser?.tab;
+    if (browser?.provider !== 'macos-apple-events' || browser.browserProduct !== product || tab?.ownership !== 'plugin_owned') continue;
+    if (!tab.windowId || !tab.tabId) continue;
+    const key = `${tab.windowId}:${tab.tabId}`;
+    const live = liveByRef.get(key);
+    if (!live) continue;
+    const previous = candidates.get(key);
+    if (!previous || session.updatedAt > previous.session.updatedAt) candidates.set(key, { session, candidate: live });
+  }
+
+  const values = [...candidates.values()];
+  const exact = values.filter(({ candidate }) => comparableUrl(candidate.url) === comparableUrl(targetUrl));
+  const choose = (matches: typeof values, match: 'exact_url' | 'same_origin') => {
+    if (matches.length === 1) return { ...matches[0], match, candidateCount: 1 } as const;
+    const active = matches.filter(({ candidate }) => candidate.active);
+    if (active.length === 1) return { ...active[0], match, candidateCount: matches.length } as const;
+    return { match: 'ambiguous' as const, candidateCount: matches.length };
+  };
+  if (exact.length > 0) return choose(exact, 'exact_url');
+
+  const sameOriginCandidates = values.filter(({ candidate }) => sameOrigin(candidate.url, targetUrl));
+  if (sameOriginCandidates.length > 0) return choose(sameOriginCandidates, 'same_origin');
+  return { match: 'none', candidateCount: 0 };
+}
+
+function selectExactNativeTab(
+  targetUrl: string,
+  inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>>,
+): { candidate?: (typeof inventory.tabs)[number]; match: 'exact_url' | 'none' | 'ambiguous'; candidateCount: number } {
+  const matches = inventory.tabs.filter((candidate) => comparableUrl(candidate.url) === comparableUrl(targetUrl));
+  if (matches.length === 0) return { match: 'none', candidateCount: 0 };
+  if (matches.length === 1) return { candidate: matches[0], match: 'exact_url', candidateCount: 1 };
+  const active = matches.filter((candidate) => candidate.active);
+  if (active.length === 1) return { candidate: active[0], match: 'exact_url', candidateCount: matches.length };
+  return { match: 'ambiguous', candidateCount: matches.length };
 }
 
 function isBlankPage(url: string): boolean {
@@ -1741,11 +1805,71 @@ async function openNativeAttachedContext(
     discovered = await discoverMacOsBrowserAttachment(candidates, Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));
   }
   if (!discovered.attachment) return { attempts: discovered.attempts };
+  let activeAttachment = discovered.attachment;
 
   let createdThisCallRef: MacOsBrowserTabRef | undefined;
   try {
+    if (!page && !savedTab && !stringValue(args.session_id)) {
+      const inventory = await listMacOsBrowserTabs(activeAttachment.metadata.product, timeout);
+      const ownedSelection = selectLiveForgeOwnedNativeTab(repoRoot, target.url, activeAttachment.metadata.product, inventory);
+      if (ownedSelection.match === 'ambiguous') {
+        throw new AssistantPluginError(
+          'PLUGIN_BROWSER_REUSABLE_TAB_AMBIGUOUS',
+          'Multiple live Forge-owned browser tabs can satisfy this sessionless navigation; refusing to open another duplicate tab.',
+          { retryable: false, details: { targetUrl: target.url, candidateCount: ownedSelection.candidateCount } },
+        );
+      }
+      if (ownedSelection.candidate) {
+        const rebound = await reattachMacOsBrowserOwnedPage(
+          activeAttachment.metadata.product,
+          { windowId: ownedSelection.candidate.windowId, tabId: ownedSelection.candidate.tabId },
+          timeout,
+        );
+        page = rebound.page as unknown as PageLike;
+        discovered = { attachment: rebound.attachment, attempts: rebound.attachment.attempts };
+        activeAttachment = rebound.attachment;
+        matchedBy = 'owned_token';
+        effectiveOwnership = 'plugin_owned';
+        sessionResume = {
+          sessionId: target.sessionId,
+          status: 'matched',
+          reason: ownedSelection.match === 'exact_url'
+            ? 'No session id was supplied; reused the unique live Forge-owned native tab already at the target URL.'
+            : 'No session id was supplied; reused the unique live Forge-owned native tab for the same origin and navigated it in place.',
+          savedTab: ownedSelection.session?.browser?.tab,
+        };
+      } else {
+        const exactSelection = selectExactNativeTab(target.url, inventory);
+        if (exactSelection.match === 'ambiguous') {
+          throw new AssistantPluginError(
+            'PLUGIN_BROWSER_REUSABLE_TAB_AMBIGUOUS',
+            'Multiple existing browser tabs already match the target URL; refusing to open another duplicate tab.',
+            { retryable: false, details: { targetUrl: target.url, candidateCount: exactSelection.candidateCount } },
+          );
+        }
+        if (exactSelection.candidate) {
+          const rebound = await reattachMacOsBrowserOwnedPage(
+            activeAttachment.metadata.product,
+            { windowId: exactSelection.candidate.windowId, tabId: exactSelection.candidate.tabId },
+            timeout,
+          );
+          page = rebound.page as unknown as PageLike;
+          discovered = { attachment: rebound.attachment, attempts: rebound.attachment.attempts };
+        activeAttachment = rebound.attachment;
+          matchedBy = 'exact_url';
+          effectiveOwnership = 'user_owned';
+          recoveredTabTitle = exactSelection.candidate.title;
+          recoveredTabUrl = exactSelection.candidate.url;
+          sessionResume = {
+            sessionId: target.sessionId,
+            status: 'matched',
+            reason: 'No session id was supplied; reused the unique existing native browser tab with the exact target URL instead of opening a duplicate.',
+          };
+        }
+      }
+    }
     if (!page) {
-      page = await createMacOsBrowserOwnedPage(discovered.attachment, target.url, timeout) as unknown as PageLike;
+      page = await createMacOsBrowserOwnedPage(activeAttachment, target.url, timeout) as unknown as PageLike;
       createdThisCallRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
     }
     if (comparableUrl(page.url()) !== comparableUrl(target.url)) {
@@ -1783,7 +1907,7 @@ async function openNativeAttachedContext(
     if (!nativeRef) throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Native browser did not return a stable plugin-owned tab reference.', { retryable: true });
     const title = matchedBy === 'owned_token' ? (target.existingSession?.title ?? '') : matchedBy === 'recovered_tab' ? recoveredTabTitle : '';
     const inventory: BrowserTabInventoryEntry[] = [{ index: 0, key: tabKey(pageUrl, title), url: pageUrl, title }];
-    const metadata = discovered.attachment.metadata;
+    const metadata = activeAttachment.metadata;
     const connection = refreshConnectionTab({
       requestedMode: 'attach_preferred',
       mode: 'attach_preferred',
@@ -1807,7 +1931,7 @@ async function openNativeAttachedContext(
     return { attempts: discovered.attempts, handle: { page, diagnostics, connection, close: async () => undefined } };
   } catch (error) {
     if (createdThisCallRef) {
-      await closeMacOsBrowserOwnedTab(discovered.attachment.metadata.product, createdThisCallRef, timeout).catch(() => undefined);
+      await closeMacOsBrowserOwnedTab(activeAttachment.metadata.product, createdThisCallRef, timeout).catch(() => undefined);
     }
     throw error;
   }
