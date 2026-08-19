@@ -386,8 +386,8 @@ function claimedSessionEditBinding(
   };
 }
 
-function activeWorkflowRawDefaultMergeBlocked(repository: ReturnType<typeof resolveRepositorySelection>, workId: string | undefined, command: unknown): boolean {
-  if (!workId || !repository.defaultBranch) return false;
+function rawDefaultBranchMergeCommand(repository: ReturnType<typeof resolveRepositorySelection>, command: unknown): boolean {
+  if (!repository.defaultBranch) return false;
   const checkout = repository.checkouts.find((entry) => entry.checkoutId === repository.activeCheckoutId);
   if (checkout?.branch !== repository.defaultBranch) return false;
   const normalized = normalizeRepositoryCommand(command);
@@ -433,7 +433,10 @@ function resolveRepositoryCommandTarget(
     controllerHome,
     allowSoleRepository: true,
   });
-  const workId = claimedSessionWorkId(controllerHome, repository, caller, args.work_id);
+  const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+  const workId = explicitWorkId
+    ? claimedSessionWorkId(controllerHome, repository, caller, explicitWorkId)
+    : undefined;
   return {
     repository,
     executionIdentity: {
@@ -1088,8 +1091,11 @@ export async function callRepositoryTool(
         const explorationGuidance = fragmentedRepositoryExplorationGuidance(args.command);
         const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
         const { repository, executionIdentity } = target;
-        if (activeWorkflowRawDefaultMergeBlocked(repository, executionIdentity.workId, args.command)) {
-          throw new Error(`WORK_DELIVERY_REQUIRES_FINALIZE: ${executionIdentity.workId} must pass Work verification and use rh_work finalize before default-branch integration`);
+        const deliveryWorkId = rawDefaultBranchMergeCommand(repository, args.command)
+          ? executionIdentity.workId ?? claimedSessionWorkId(controllerHome, repository, caller)
+          : undefined;
+        if (deliveryWorkId) {
+          throw new Error(`WORK_DELIVERY_REQUIRES_FINALIZE: ${deliveryWorkId} must pass Work verification and use rh_work finalize before default-branch integration`);
         }
         const timeoutMs = typeof args.timeout_ms === 'number'
           ? args.timeout_ms

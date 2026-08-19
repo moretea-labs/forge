@@ -503,7 +503,41 @@ describe('rh_work managed lifecycle closure', () => {
     expect(staleFinalize.data).toMatchObject({ validPasses: [], durableResultEvidence: false });
   });
 
-  test('requires Work finalize instead of raw default-branch merge for an active Workflow', async () => { const fx = fixture('workflow-delivery-guard'); const started = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'start', objective: 'Own a recoverable default-checkout change', scope_clear: true, expected_files: 2, expected_changed_lines: 20, requires_recovery: true }); const workId = (started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId; expect(workId).toBeTruthy(); const claimed = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId, controller_type: 'chatgpt' }); expect(claimed?.isError).not.toBe(true); const blocked = await (await import('../../src/cli/mcp/repository-tools')).callRepositoryTool(fx.controllerHome, 'repository_command_execute', { repo_id: fx.repository.repoId, command: ['git', 'merge', '--ff-only', 'nonexistent'] }, fx.ctx); expect(blocked?.isError).toBe(true); expect((blocked?.structuredContent as { error?: { code?: string } }).error?.code).toBe('WORK_DELIVERY_REQUIRES_FINALIZE'); });
+  test('keeps ordinary repository commands independent from active Work while preserving the raw default-branch merge guard', async () => {
+    const fx = fixture('workflow-command-attribution');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Own a recoverable default-checkout change',
+      scope_clear: true,
+      expected_files: 2,
+      expected_changed_lines: 20,
+      requires_recovery: true,
+    });
+    const workId = (started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId;
+    expect(workId).toBeTruthy();
+    const claimed = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId, controller_type: 'chatgpt' });
+    expect(claimed?.isError).not.toBe(true);
+
+    const repositoryTools = await import('../../src/cli/mcp/repository-tools');
+    const ordinary = await repositoryTools.callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
+      repo_id: fx.repository.repoId,
+      command: [process.execPath, '-e', 'setTimeout(() => process.exit(0), 250)'],
+      apply_mode: 'async',
+    }, fx.ctx);
+    expect(ordinary?.isError).not.toBe(true);
+    const processId = String((ordinary?.structuredContent as { processId?: string })?.processId ?? '');
+    expect(processId).toBeTruthy();
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.workId).toBeUndefined();
+    await Bun.sleep(350);
+
+    const blocked = await repositoryTools.callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
+      repo_id: fx.repository.repoId,
+      command: ['git', 'merge', '--ff-only', 'nonexistent'],
+    }, fx.ctx);
+    expect(blocked?.isError).toBe(true);
+    expect((blocked?.structuredContent as { error?: { code?: string } }).error?.code).toBe('WORK_DELIVERY_REQUIRES_FINALIZE');
+  });
   test('reuses exact Plan scope but resolves distinct slices under the same Requirement before creation', async () => { const fx = fixture('plan-admission'); const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim(); const step = (id: string) => [{ id, objective: 'Implement it', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [], check_ids: [], acceptance_criteria: ['done'] }]; const first = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-primary', requirement_id: 'REQ-primary', scope_key: 'primary-scope', source_revision: sourceRevision, objective: 'Implement the primary requirement', plan_steps: step('step-a'), }); expect(first?.isError).not.toBe(true); expect(first?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new' } }); const exactDuplicate = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-duplicate', requirement_id: 'REQ-primary', scope_key: 'primary-scope', source_revision: sourceRevision, objective: 'Duplicate exact scope', plan_steps: step('step-dup'), }); expect(exactDuplicate?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: false, admissionDecision: 'reuse_existing', plan: { planId: 'PLAN-primary' } } }); const ambiguousSlice = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-slice-b', requirement_id: 'REQ-primary', scope_key: 'parallel-scope', source_revision: sourceRevision, objective: 'A distinct slice under the same broad requirement', plan_steps: step('step-b'), }); expect(ambiguousSlice?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: false, admissionDecision: 'resolution_required', resolutionRequired: true, allowedPlanRelations: ['extend', 'parallel'] }, }); const parallelSlice = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-slice-b', requirement_id: 'REQ-primary', scope_key: 'parallel-scope', plan_relation: 'parallel', source_revision: sourceRevision, objective: 'A distinct explicitly parallel slice', plan_steps: step('step-b'), }); expect(parallelSlice?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new', plan: { planId: 'PLAN-slice-b', requirementId: 'REQ-primary' } } }); });
   test('exposes explicit Controller semantic acceptance for a delivered validating Plan step', async () => {
     const fx = fixture('plan-semantic-accept');
@@ -1249,7 +1283,7 @@ describe('rh_work managed lifecycle closure', () => {
     expect(continuedPayload.data?.ownershipResumed).toBe(true);
     expect(continuedPayload.data?.controllerSession?.controllerId).toBe(externalPrincipal); const claimed = await callRuntimeTool(externalCtx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: work.workId, controller_type: 'codex' }); expect(claimed?.isError).not.toBe(true);
     expect(continuedPayload.data?.controllerSession?.sessionId).toBe(externalSession); const executionSession = (await import('../../src/runtime/control-plane/execution/session-store')).readExecutionSession(fx.controllerHome, { sessionId: externalSession, principalId: externalPrincipal, controllerInstanceId: fx.owner.record.runtimeInstanceId }); expect(executionSession?.activeWorkId).toBe(work.workId);
-    expect(continuedPayload.data?.controllerSession?.controllerType).toBe('codex'); const transientCtx = { ...externalCtx, sessionId: `${externalSession}-next` }; const command = await (await import('../../src/cli/mcp/repository-tools')).callRepositoryTool(fx.controllerHome, 'repository_command_execute', { repo_id: fx.repository.repoId, checkout_id: executionSession?.activeCheckoutId, command: ['bun', '-e', 'await Bun.sleep(250)'], detail_level: 'detail', return_handle_immediately: true }, transientCtx); expect((command?.structuredContent as { process?: { workId?: string } }).process?.workId).toBe(work.workId); await Bun.sleep(300); const patch = await (await import('../../src/cli/mcp/repository-tools')).callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', { repo_id: fx.repository.repoId, checkout_id: executionSession?.activeCheckoutId, purpose: 'Workflow-bound edit', allowed_paths: ['workflow-attribution.txt'], operations: [{ type: 'create', path: 'workflow-attribution.txt', content: 'owned\n' }] }, transientCtx); expect((patch?.structuredContent as { session?: { workId?: string } }).session?.workId).toBe(work.workId);
+    expect(continuedPayload.data?.controllerSession?.controllerType).toBe('codex'); const transientCtx = { ...externalCtx, sessionId: `${externalSession}-next` }; const command = await (await import('../../src/cli/mcp/repository-tools')).callRepositoryTool(fx.controllerHome, 'repository_command_execute', { repo_id: fx.repository.repoId, checkout_id: executionSession?.activeCheckoutId, command: ['bun', '-e', 'await Bun.sleep(250)'], detail_level: 'detail', return_handle_immediately: true }, transientCtx); expect((command?.structuredContent as { process?: { workId?: string } }).process?.workId).toBeUndefined(); await Bun.sleep(300); const patch = await (await import('../../src/cli/mcp/repository-tools')).callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', { repo_id: fx.repository.repoId, checkout_id: executionSession?.activeCheckoutId, purpose: 'Workflow-bound edit', allowed_paths: ['workflow-attribution.txt'], operations: [{ type: 'create', path: 'workflow-attribution.txt', content: 'owned\n' }] }, transientCtx); expect((patch?.structuredContent as { session?: { workId?: string } }).session?.workId).toBe(work.workId);
     const ownerAfterMcp = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_get_owner', work_id: work.workId });
     const ownerAfterMcpPayload = ownerAfterMcp?.structuredContent as { data?: { owner?: { controllerId?: string; sessionId?: string; controllerType?: string } } };
     expect(ownerAfterMcpPayload.data?.owner?.controllerId).toBe(externalPrincipal);
