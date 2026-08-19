@@ -45,7 +45,7 @@ import {
   type RuntimeOperationalView,
   type GradedObservation,
 } from '../../health';
-import { applyScheduleDedupe, buildScheduleDedupeReport, createSchedule, getSchedule, getScheduleDecision, listOccurrences, listSchedules, saveSchedule } from '../../workflow/schedules/store';
+import { applyScheduleDedupe, buildScheduleDedupeReport, createSchedule, deleteSchedule, getSchedule, getScheduleDecision, listOccurrences, listSchedules, saveSchedule } from '../../workflow/schedules/store';
 import { evaluateSchedule } from '../../workflow/schedules/engine';
 import {
   createWorkContinuationSchedule,
@@ -3624,6 +3624,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
               const saved = saveSchedule(ctx.controllerHome, { ...schedule, enabled: true, pausedReason: undefined, consecutiveFailures: 0, nextEligibleAt: undefined });
               return result(buildFacadeResult({ summary: `Schedule ${scheduleId} is resumed.`, data: { schedule: saved } }) as unknown as Record<string, unknown>);
+            }
+            if (operation === 'schedule_delete') {
+              const schedule = deleteSchedule(ctx.controllerHome, repository.repoId, scheduleId);
+              return result(buildFacadeResult({
+                summary: `Schedule ${scheduleId} is deleted; historical occurrences and evidence are retained.`,
+                data: { scheduleId, deleted: true, requestId: schedule.requestId },
+              }) as unknown as Record<string, unknown>);
             }
             if (operation === 'schedule_trigger') {
               const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);

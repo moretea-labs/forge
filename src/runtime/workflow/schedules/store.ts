@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, readdirSync } from 'fs';
+import { existsSync, readdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { withControllerLock } from '../../../cli/repositories/locks';
@@ -162,6 +162,32 @@ export function listSchedules(controllerHome: string, repoId: string): Repositor
       .map((name) => getSchedule(controllerHome, repoId, name.slice(0, -'.json'.length)))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   } catch { return []; }
+}
+
+export function deleteSchedule(controllerHome: string, repoId: string, scheduleId: string): RepositorySchedule {
+  return withControllerLock(controllerHome, { scope: 'task', repoId, taskId: `schedule-${scheduleId}` }, `delete-schedule:${scheduleId}`, () => {
+    const current = getSchedule(controllerHome, repoId, scheduleId);
+    if (current.enabled) throw new Error(`SCHEDULE_DELETE_REQUIRES_PAUSED: ${scheduleId}`);
+    if (listActiveOccurrences(controllerHome, repoId, scheduleId).length > 0) {
+      throw new Error(`SCHEDULE_DELETE_ACTIVE_OCCURRENCE: ${scheduleId}`);
+    }
+    rmSync(schedulePath(controllerHome, repoId, scheduleId), { force: true });
+    const requestRecordPath = requestPath(controllerHome, repoId, current.requestId);
+    if (existsSync(requestRecordPath)) {
+      const record = readJsonFile<ScheduleRequestRecord>(requestRecordPath);
+      if (record.scheduleId === scheduleId) rmSync(requestRecordPath, { force: true });
+    }
+    appendRuntimeEvent(controllerHome, {
+      repoId,
+      entityType: 'schedule',
+      entityId: scheduleId,
+      eventType: 'schedule_deleted',
+      requestId: current.requestId,
+      revision: current.revision + 1,
+      data: { name: current.name },
+    });
+    return current;
+  }, 10_000);
 }
 
 function scheduleFailureClass(reason: string): string {

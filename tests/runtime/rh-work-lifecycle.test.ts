@@ -14,7 +14,7 @@ import { continueGoalWorkloop, finalizeGoalWorkloop } from '../../src/runtime/co
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
-import { getSchedule, saveSchedule } from '../../src/runtime/workflow/schedules/store';
+import { getSchedule, listOccurrences, saveOccurrence, saveSchedule } from '../../src/runtime/workflow/schedules/store';
 import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
@@ -1037,6 +1037,72 @@ describe('rh_work managed lifecycle closure', () => {
   });
 
   test('rh_work creates a Work-free workflow schedule with one finite shadow occurrence', async () => { const fx = fixture('schedule-workflow'); expect(listWorkContracts({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId })).toHaveLength(0); const created = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'schedule_create', schedule_mode: 'workflow', objective: 'Review current Forge issues and repair only a clear reproducible defect; otherwise do nothing.', schedule_name: 'Forge issue workflow', trigger_type: 'manual', shadow_mode: true, schedule_request_id: 'generic-workflow-schedule-stable' }); expect(created?.isError).not.toBe(true); const schedule = (created?.structuredContent as { data?: { schedule?: { scheduleId?: string; action?: { operation?: string; arguments?: Record<string, unknown> } } } })?.data?.schedule; const scheduleId = schedule?.scheduleId ?? ''; expect(scheduleId).toBeTruthy(); expect(schedule?.action?.operation).toBe('chatgpt_browser_prompt'); expect(schedule?.action?.arguments?.prompt).toContain('repair only a clear reproducible defect'); expect(schedule?.action?.arguments?.work_id).toBeUndefined(); expect(listWorkContracts({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId })).toHaveLength(0); const triggered = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'schedule_trigger', schedule_id: scheduleId }); expect(triggered?.isError).not.toBe(true); const occurrence = (triggered?.structuredContent as { data?: { occurrence?: { status?: string; decision?: string; occurrenceId?: string } } })?.data?.occurrence; expect(occurrence).toMatchObject({ status: 'shadowed', decision: 'would_execute' }); expect(occurrence?.occurrenceId).toBeTruthy(); expect(listWorkContracts({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId })).toHaveLength(0); const fetched = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'schedule_get', schedule_id: scheduleId, include_occurrences: true }); expect((fetched?.structuredContent as { data?: { occurrences?: Array<{ occurrenceId?: string }> } })?.data?.occurrences?.map((entry) => entry.occurrenceId)).toContain(occurrence?.occurrenceId); });
+
+  test('rh_work deletes only paused idle schedules and releases the request id while retaining history', async () => {
+    const fx = fixture('schedule-delete');
+    const createArgs = {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_create',
+      schedule_mode: 'workflow',
+      objective: 'Run a bounded workflow only when explicitly triggered.',
+      trigger_type: 'manual',
+      shadow_mode: true,
+      schedule_request_id: 'schedule-delete-stable',
+    };
+    const created = await callRuntimeTool(fx.ctx, 'rh_work', createArgs);
+    const scheduleId = ((created?.structuredContent as { data?: { schedule?: { scheduleId?: string } } })?.data?.schedule?.scheduleId) ?? '';
+    expect(scheduleId).toBeTruthy();
+
+    const enabledDelete = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_delete',
+      schedule_id: scheduleId,
+    });
+    expect(enabledDelete?.isError).toBe(true);
+    expect(JSON.stringify(enabledDelete?.structuredContent)).toContain('SCHEDULE_DELETE_REQUIRES_PAUSED');
+
+    await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_pause',
+      schedule_id: scheduleId,
+      reason: 'ready to delete',
+    });
+    const now = new Date().toISOString();
+    const activeOccurrence = saveOccurrence(fx.controllerHome, {
+      schemaVersion: 1,
+      revision: 0,
+      occurrenceId: 'OCC-schedule-delete-active',
+      scheduleId,
+      repoId: fx.repository.repoId,
+      windowKey: 'manual-delete-test',
+      status: 'running',
+      decision: 'execute',
+      createdAt: now,
+      updatedAt: now,
+    });
+    const activeDelete = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_delete',
+      schedule_id: scheduleId,
+    });
+    expect(activeDelete?.isError).toBe(true);
+    expect(JSON.stringify(activeDelete?.structuredContent)).toContain('SCHEDULE_DELETE_ACTIVE_OCCURRENCE');
+
+    saveOccurrence(fx.controllerHome, { ...activeOccurrence, status: 'succeeded' });
+    const deleted = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_delete',
+      schedule_id: scheduleId,
+    });
+    expect(deleted?.isError).not.toBe(true);
+    expect((deleted?.structuredContent as { data?: { deleted?: boolean; scheduleId?: string } })?.data).toMatchObject({ deleted: true, scheduleId });
+    expect(listOccurrences(fx.controllerHome, fx.repository.repoId, scheduleId, 10).map((entry) => entry.occurrenceId)).toContain(activeOccurrence.occurrenceId);
+
+    const recreated = await callRuntimeTool(fx.ctx, 'rh_work', createArgs);
+    const recreatedScheduleId = ((recreated?.structuredContent as { data?: { schedule?: { scheduleId?: string } } })?.data?.schedule?.scheduleId) ?? '';
+    expect(recreatedScheduleId).toBeTruthy();
+    expect(recreatedScheduleId).not.toBe(scheduleId);
+  });
 
   test('rh_work manages one idempotent continuation schedule for bounded Work', async () => {
     const fx = fixture('schedule-management');

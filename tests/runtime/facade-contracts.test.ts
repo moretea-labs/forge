@@ -26,6 +26,7 @@ describe('handoff and facade contracts', () => {
       'schedule_get',
       'schedule_pause',
       'schedule_resume',
+      'schedule_delete',
       'schedule_trigger',
     ]));
     expect(FACADE_TOOLS).toHaveLength(5);
