@@ -2,6 +2,7 @@ import {
   gitSnapshot,
   getRepositoryReadSessionCache,
   searchRepositoryMany,
+  searchRepositoryManyCacheIdentity,
 } from "../repository/inspector";
 import { globMatches } from "../mcp/paths";
 import type { McpPolicy } from "../mcp/types";
@@ -15,6 +16,7 @@ import {
   type CodeGraphNodeSummary,
   type CodeGraphReadProviderResponse,
 } from "../../runtime/context/codegraph-read-provider";
+import { runInspectorSearchManyInWorker } from "../../runtime/execution/thin-harness/search-worker";
 import {
   CONTEXT_PACK_SCHEMA_VERSION,
   CONTROLLER_CONTEXT_IMPACT_DOMAINS,
@@ -659,8 +661,8 @@ export function buildControllerContextPack(
 
 /**
  * Broad first-call fan-in for the canonical rh_context path. CodeGraph runs in
- * its sidecar while the current process performs the multi-query lexical scan;
- * the sync builder then consumes the warm session cache and prefetched graph.
+ * its sidecar while broad lexical retrieval reuses the Thin Harness search
+ * worker; the sync builder then consumes the warmed session cache/evidence.
  */
 export async function buildControllerContextPackAsync(
   repoRoot: string,
@@ -669,7 +671,7 @@ export async function buildControllerContextPackAsync(
   dependencies: ControllerContextPackDependencies = {},
 ): Promise<ControllerContextPackProjection> {
   const structuralMode = options.structuralContext ?? 'off';
-  if (structuralMode === 'off' || dependencies.queryCodeGraph || !options.session || options.issueId || options.taskId) {
+  if (dependencies.queryCodeGraph || !options.session || options.issueId || options.taskId) {
     return buildControllerContextPack(repoRoot, policy, options, dependencies);
   }
   const prefetchStartedAt = performance.now();
@@ -687,7 +689,9 @@ export async function buildControllerContextPackAsync(
     ...impactDomains.flatMap((domain) => IMPACT_DOMAIN_TERMS[domain]),
     ...terms.slice(1),
   ]).slice(0, 32);
-  const structuralQuery = structuralIntentQuery(options.description ?? '', terms, impactDomains);
+  const structuralQuery = structuralMode === 'off'
+    ? ''
+    : structuralIntentQuery(options.description ?? '', terms, impactDomains);
   const structuralIndexRoot = options.structuralIndexRoot?.trim() || repoRoot;
   const structuralRequest = {
     operation: 'context' as const,
@@ -698,27 +702,53 @@ export async function buildControllerContextPackAsync(
   };
   const structuralCacheKey = JSON.stringify({ queryRoot: structuralIndexRoot, request: structuralRequest });
   const sessionCache = getRepositoryReadSessionCache(repoRoot, options.session);
-  if (structuralQuery && sessionCache?.peekStructural(structuralCacheKey)) {
+  const cachedStructural = structuralQuery
+    ? sessionCache?.peekStructural(structuralCacheKey) as CodeGraphReadProviderResponse | undefined
+    : undefined;
+  const lexicalOptions = searchQueries.length > 0
+    ? (() => {
+        const git = gitSnapshot(repoRoot, options.session);
+        return {
+          queries: searchQueries,
+          includeGlobs,
+          excludeGlobs,
+          maxResultsPerQuery: Math.max(maxFiles * 4, 12),
+          maxFiles: MAX_TOTAL_SEARCHED_FILES,
+          caseSensitive: false,
+          cacheKey: JSON.stringify({ head: git.head, status: git.status, diffStat: git.diffStat }),
+        };
+      })()
+    : undefined;
+  const lexicalIdentity = lexicalOptions ? searchRepositoryManyCacheIdentity(lexicalOptions) : undefined;
+  const cachedLexical = lexicalIdentity && sessionCache
+    ? sessionCache.getSearch(lexicalIdentity.batchQueryKey, lexicalIdentity.includeKey)
+    : undefined;
+  if ((!structuralQuery || cachedStructural) && (!lexicalIdentity || cachedLexical?.result)) {
     const pack = buildControllerContextPack(repoRoot, policy, options, dependencies);
     pack.timingsMs.parallelFirstPass = false;
     pack.timingsMs.parallelPrefetch = 0;
     return pack;
   }
-  const structuralPromise = structuralQuery
-    ? queryCodeGraphReadProviderAsync(structuralIndexRoot, structuralRequest)
-    : Promise.resolve<CodeGraphReadProviderResponse>({
-        schemaVersion: 1, provider: 'codegraph', operation: 'context', ok: false, status: 'degraded',
-        error: { code: 'CODEGRAPH_QUERY_REQUIRED', message: 'No context query was provided.' }, timingsMs: { total: 0 },
-      });
-  if (searchQueries.length > 0) {
-    const git = gitSnapshot(repoRoot, options.session);
-    searchRepositoryMany(repoRoot, policy, {
-      queries: searchQueries, includeGlobs, excludeGlobs,
-      maxResultsPerQuery: Math.max(maxFiles * 4, 12), maxFiles: MAX_TOTAL_SEARCHED_FILES,
-      caseSensitive: false, cacheKey: JSON.stringify({ head: git.head, status: git.status, diffStat: git.diffStat }), session: options.session,
-    });
-  }
-  const prefetched = await structuralPromise;
+  const structuralPromise = cachedStructural
+    ? Promise.resolve(cachedStructural)
+    : structuralQuery
+      ? queryCodeGraphReadProviderAsync(structuralIndexRoot, structuralRequest)
+      : Promise.resolve<CodeGraphReadProviderResponse>({
+          schemaVersion: 1, provider: 'codegraph', operation: 'context', ok: false, status: 'degraded',
+          error: { code: 'CODEGRAPH_QUERY_REQUIRED', message: 'No context query was provided.' }, timingsMs: { total: 0 },
+        });
+  const lexicalPromise = lexicalOptions && lexicalIdentity && !cachedLexical?.result
+    ? runInspectorSearchManyInWorker({ repoRoot, policy, ...lexicalOptions }).then((result) => {
+        sessionCache?.putSearch({
+          query: lexicalIdentity.batchQueryKey,
+          includeKey: lexicalIdentity.includeKey,
+          result,
+          scannedFiles: result.scannedFiles,
+        });
+        return result;
+      })
+    : Promise.resolve(cachedLexical?.result);
+  const [prefetched] = await Promise.all([structuralPromise, lexicalPromise]);
   const pack = buildControllerContextPack(repoRoot, policy, options, {
     queryCodeGraph: (queryRoot, request) => request.operation === 'context' && queryRoot === structuralIndexRoot
       ? prefetched

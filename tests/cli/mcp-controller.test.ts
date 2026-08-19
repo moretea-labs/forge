@@ -41,6 +41,8 @@ import {
 import { writeMcpServiceLocalConfig, writeMcpServiceRuntimeState } from "../../src/cli/mcp/auth";
 import { persistControllerAccessMode } from "../../src/cli/mcp/access-mode";
 import { clearAllSessionCachesForTest } from "../../src/cli/repository/session-cache";
+import { searchRepositoryMany } from "../../src/cli/repository/inspector";
+import { runInspectorSearchManyInWorker } from "../../src/runtime/execution/thin-harness/search-worker";
 import {
   clearControllerContextPerformanceSnapshotForTest,
   queueControllerContextProjectionRefresh,
@@ -192,6 +194,24 @@ test("invalidates cached rh_context raw ranges immediately after a same-session 
     expect(changedSnippet.sha256).not.toBe(warmSnippet.sha256);
     expect(changedSnippet.content).toContain("changingContextMarker = 2");
     expect(changedSnippet.cacheHit).not.toBe(true);
+  });
+});
+
+test("keeps worker-prefetched rh_context lexical search identical to the synchronous search authority", async () => {
+  await withController(async (repoRoot) => {
+    writeFileSync(join(repoRoot, "alpha.ts"), "export const alphaNeedle = 'betaNeedle';\nexport const secondAlpha = 'alphaNeedle';\n");
+    writeFileSync(join(repoRoot, "beta.ts"), "export const betaNeedle = 'alphaNeedle';\n");
+    const policy = getMcpPolicy("controller");
+    const options = {
+      queries: ["alphaNeedle", "betaNeedle"],
+      files: ["alpha.ts", "beta.ts"],
+      maxResultsPerQuery: 3,
+      maxFiles: 10,
+      caseSensitive: true,
+    };
+    const sync = searchRepositoryMany(repoRoot, policy, options);
+    const worker = await runInspectorSearchManyInWorker({ repoRoot, policy, ...options });
+    expect(worker).toEqual(sync);
   });
 });
 

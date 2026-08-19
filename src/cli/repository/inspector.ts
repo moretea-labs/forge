@@ -325,6 +325,50 @@ export interface SearchRepositoryManyResult {
   cacheHit?: boolean;
 }
 
+export interface SearchRepositoryManyCacheIdentity {
+  queries: string[];
+  maxResultsPerQuery: number;
+  maxFiles: number;
+  includes: string[];
+  excludes: string[];
+  directCandidates?: string[];
+  includeKey: string;
+  batchQueryKey: string;
+}
+
+/** Shared normalization/cache identity for sync search and worker-prefetched search. */
+export function searchRepositoryManyCacheIdentity(opts: SearchRepositoryManyOptions): SearchRepositoryManyCacheIdentity {
+  const queries = Array.from(new Set(opts.queries.map((query) => query.trim()).filter(Boolean)));
+  if (queries.length === 0) throw new Error('at least one search query is required');
+  const maxResultsPerQuery = Math.min(Math.max(opts.maxResultsPerQuery ?? 100, 1), 500);
+  const maxFiles = Math.min(Math.max(opts.maxFiles ?? 5000, 1), 20_000);
+  const includes = opts.includeGlobs ?? [];
+  const excludes = [...(includes.length === 0 ? DEFAULT_EXCLUDES : []), ...(opts.excludeGlobs ?? [])];
+  const directFiles = opts.files?.map((path) => path.trim()).filter(Boolean);
+  const directCandidates = directFiles
+    ? Array.from(new Set(directFiles)).filter((path) => !isExcluded(path, excludes))
+    : undefined;
+  const includeKey = JSON.stringify({
+    files: directCandidates,
+    includes,
+    excludes,
+    maxResultsPerQuery,
+    maxFiles,
+    caseSensitive: opts.caseSensitive === true,
+    cacheKey: opts.cacheKey,
+  });
+  return {
+    queries,
+    maxResultsPerQuery,
+    maxFiles,
+    includes,
+    excludes,
+    directCandidates,
+    includeKey,
+    batchQueryKey: queries.join('\u0000'),
+  };
+}
+
 function searchInventory(
   repoRoot: string,
   includes: string[],
@@ -362,27 +406,17 @@ export function searchRepositoryMany(
   policy: McpPolicy,
   opts: SearchRepositoryManyOptions,
 ): SearchRepositoryManyResult {
-  const queries = Array.from(new Set(opts.queries.map((query) => query.trim()).filter(Boolean)));
-  if (queries.length === 0) throw new Error('at least one search query is required');
-  const maxResultsPerQuery = Math.min(Math.max(opts.maxResultsPerQuery ?? 100, 1), 500);
-  const maxFiles = Math.min(Math.max(opts.maxFiles ?? 5000, 1), 20_000);
-  const includes = opts.includeGlobs ?? [];
-  const excludes = [...(includes.length === 0 ? DEFAULT_EXCLUDES : []), ...(opts.excludeGlobs ?? [])];
-  const directFiles = opts.files?.map((path) => path.trim()).filter(Boolean);
-  const directCandidates = directFiles
-    ? Array.from(new Set(directFiles)).filter((path) => !isExcluded(path, excludes))
-    : undefined;
-  const includeKey = JSON.stringify({
-    files: directCandidates,
-    includes,
-    excludes,
+  const {
+    queries,
     maxResultsPerQuery,
     maxFiles,
-    caseSensitive: opts.caseSensitive === true,
-    cacheKey: opts.cacheKey,
-  });
+    includes,
+    excludes,
+    directCandidates,
+    includeKey,
+    batchQueryKey,
+  } = searchRepositoryManyCacheIdentity(opts);
   const sessionCache = bindSessionCache(repoRoot, opts.session);
-  const batchQueryKey = queries.join('\u0000');
   if (sessionCache) {
     const cached = sessionCache.getSearch(batchQueryKey, includeKey);
     if (cached?.result && typeof cached.result === 'object') {

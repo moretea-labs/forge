@@ -5,7 +5,12 @@
 import { isMainThread, parentPort, workerData, Worker } from 'worker_threads';
 import { fileURLToPath } from 'url';
 import { getMcpPolicy } from '../../../cli/mcp/policy';
-import { searchRepository } from '../../../cli/repository/inspector';
+import type { McpPolicy } from '../../../cli/mcp/types';
+import {
+  searchRepository,
+  searchRepositoryMany,
+  type SearchRepositoryManyResult,
+} from '../../../cli/repository/inspector';
 
 export interface SearchWorkerInput {
   repoRoot: string;
@@ -14,14 +19,44 @@ export interface SearchWorkerInput {
   maxFiles: number;
 }
 
+export interface SearchManyWorkerInput {
+  repoRoot: string;
+  policy: McpPolicy;
+  queries: string[];
+  files?: string[];
+  includeGlobs?: string[];
+  excludeGlobs?: string[];
+  maxResultsPerQuery?: number;
+  maxFiles?: number;
+  caseSensitive?: boolean;
+  cacheKey?: string;
+}
+
 export interface SearchWorkerResult {
   ok: boolean;
   payload?: Record<string, unknown>;
   error?: string;
 }
 
-function runSearchSync(input: SearchWorkerInput): SearchWorkerResult {
+function isManySearch(input: SearchWorkerInput | SearchManyWorkerInput): input is SearchManyWorkerInput {
+  return Array.isArray((input as SearchManyWorkerInput).queries);
+}
+
+function runSearchSync(input: SearchWorkerInput | SearchManyWorkerInput): SearchWorkerResult {
   try {
+    if (isManySearch(input)) {
+      const result = searchRepositoryMany(input.repoRoot, input.policy, {
+        queries: input.queries,
+        files: input.files,
+        includeGlobs: input.includeGlobs,
+        excludeGlobs: input.excludeGlobs,
+        maxResultsPerQuery: input.maxResultsPerQuery,
+        maxFiles: input.maxFiles,
+        caseSensitive: input.caseSensitive,
+        cacheKey: input.cacheKey,
+      }) as unknown as Record<string, unknown>;
+      return { ok: true, payload: result };
+    }
     const result = searchRepository(input.repoRoot, getMcpPolicy('controller', { repoRoot: input.repoRoot }), {
       query: input.query,
       maxResults: input.maxResults,
@@ -36,8 +71,8 @@ function runSearchSync(input: SearchWorkerInput): SearchWorkerResult {
   }
 }
 
-export async function runInspectorSearchInWorker(
-  input: SearchWorkerInput,
+async function runSearchWorker(
+  input: SearchWorkerInput | SearchManyWorkerInput,
   options: { timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<Record<string, unknown>> {
   if (options.signal?.aborted) throw new Error('CANCELLED: search aborted');
@@ -108,7 +143,21 @@ export async function runInspectorSearchInWorker(
   });
 }
 
+export async function runInspectorSearchInWorker(
+  input: SearchWorkerInput,
+  options: { timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<Record<string, unknown>> {
+  return await runSearchWorker(input, options);
+}
+
+export async function runInspectorSearchManyInWorker(
+  input: SearchManyWorkerInput,
+  options: { timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<SearchRepositoryManyResult> {
+  return await runSearchWorker(input, options) as unknown as SearchRepositoryManyResult;
+}
+
 if (!isMainThread && parentPort) {
-  const input = workerData as SearchWorkerInput;
+  const input = workerData as SearchWorkerInput | SearchManyWorkerInput;
   parentPort.postMessage(runSearchSync(input));
 }
