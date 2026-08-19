@@ -190,6 +190,29 @@ describe('CodeGraph read provider', () => {
     });
   });
 
+  test('does not let a known directory starve an exact known file', () => {
+    const root = contextRepo();
+    writeFileSync(join(root, 'zeta.ts'), 'export const zeta = true;\n');
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      knownPaths: ['src', 'zeta.ts'],
+      structuralContext: 'off',
+      maxFiles: 1,
+      maxSnippets: 1,
+    });
+    expect(pack.files.map((file) => file.path)).toEqual(['zeta.ts']);
+    expect(pack.coverage.exactKnownPaths).toEqual({
+      requested: ['zeta.ts'],
+      materialized: ['zeta.ts'],
+      missing: [],
+    });
+    expect(pack.limits).toMatchObject({
+      maxFiles: 1,
+      maxSnippets: 1,
+      reservedExactKnownFiles: 1,
+    });
+    expect(pack.omitted).toContainEqual({ path: 'src/service.ts', reason: 'max_files' });
+  });
+
   test('reuses lexical and source materialization across progressive session calls', () => {
     const root = contextRepo();
     const session = { sessionId: 'context-session-a', repoId: 'repo-a', checkoutId: 'checkout-a' };

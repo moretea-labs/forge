@@ -348,8 +348,12 @@ export function buildControllerContextPack(
   const rankedCandidates = Array.from(candidates.entries())
     .map(([path, entry]) => ({ path, reasons: Array.from(entry.reasons), lines: Array.from(entry.lines) }))
     .sort((left, right) => {
-      const leftExplicit = left.reasons.some((reason) => reason === "explicit-known-path" || reason.startsWith("explicit-known-directory:")) ? 1 : 0;
-      const rightExplicit = right.reasons.some((reason) => reason === "explicit-known-path" || reason.startsWith("explicit-known-directory:")) ? 1 : 0;
+      const leftExplicit = left.reasons.includes("explicit-known-path")
+        ? 2
+        : left.reasons.some((reason) => reason.startsWith("explicit-known-directory:")) ? 1 : 0;
+      const rightExplicit = right.reasons.includes("explicit-known-path")
+        ? 2
+        : right.reasons.some((reason) => reason.startsWith("explicit-known-directory:")) ? 1 : 0;
       if (leftExplicit !== rightExplicit) return rightExplicit - leftExplicit;
       const leftPrimary = primarySearchReason && left.reasons.includes(primarySearchReason) ? 1 : 0;
       const rightPrimary = primarySearchReason && right.reasons.includes(primarySearchReason) ? 1 : 0;
