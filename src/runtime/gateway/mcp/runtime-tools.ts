@@ -2938,11 +2938,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         markDetailPhase('work_state');
         const activePrimaryWork = activeContracts.filter((contract) => (contract.lifecycleRole ?? 'primary') === 'primary');
         const activeExecutionChildren = activeContracts.filter((contract) => contract.lifecycleRole === 'execution_child');
-        const activeRuntimeInstanceId = currentControllerInstanceId();
-        // Status only needs live Process membership. The recovery index is the
-        // existing Process authority for active/pending membership; do not parse
-        // hundreds of unrelated terminal Process receipts just to count activity.
-        const activeProcessRecords = listRecoverableProcessRecords(ctx.controllerHome, repository.repoId).filter((process) => isManagedProcessActive(process) && (!process.runtimeInstanceId || process.runtimeInstanceId === activeRuntimeInstanceId));
+        const activeRuntimeInstanceId = ctx.controllerInstanceId?.trim();
+        // Canonical Runtime injects its runtimeInstanceId into the MCP context.
+        // Status only counts Process records owned by that exact Runtime; legacy
+        // records without runtime identity are recovery debt, not current activity.
+        const activeProcessRecords = activeRuntimeInstanceId
+          ? listRecoverableProcessRecords(ctx.controllerHome, repository.repoId)
+            .filter((process) => isManagedProcessActive(process) && process.runtimeInstanceId === activeRuntimeInstanceId)
+          : [];
         markDetailPhase('process_state');
         const activeProcessWorkIds = new Set(activeProcessRecords.map((process) => process.workId).filter((workId): workId is string => Boolean(workId)));
         const activeControllerWorkIds = new Set(activePrimaryWork.filter((contract) => Boolean(getControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId))).map((contract) => contract.workId));
@@ -3303,8 +3306,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           : [];
         const processScan = listProcessRecords(ctx.controllerHome, repository.repoId, workId ? 100 : 50);
         const relevantProcesses = processScan.filter((process) => workId ? process.workId === workId : timestampIsCurrent(process.updatedAt, currentCutoffMs));
-        const activeRuntimeInstanceId = currentControllerInstanceId();
-        const activeProcesses = relevantProcesses.filter((process) => isManagedProcessActive(process) && (!process.runtimeInstanceId || process.runtimeInstanceId === activeRuntimeInstanceId));
+        const activeRuntimeInstanceId = ctx.controllerInstanceId?.trim();
+        const activeProcesses = activeRuntimeInstanceId
+          ? relevantProcesses.filter((process) => isManagedProcessActive(process) && process.runtimeInstanceId === activeRuntimeInstanceId)
+          : [];
         const workController = work ? getControllerSession(store, work.workId) : undefined;
         const manifestOptions = { preferStored: true };
         const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, manifestOptions);
