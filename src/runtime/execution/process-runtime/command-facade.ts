@@ -275,11 +275,14 @@ export async function executeRepositoryCommandViaProcessRuntime(
     const readonly = canonicalCommand.kind === 'argv'
       && classifyRepositoryCommand(input.command, input.repository.defaultBranch).risk === 'readonly';
     if (!readonly) {
-      const interactiveWaitMs = durationAwareInteractiveWaitMs(
-        input.command,
-        input.returnHandleImmediately ? 0 : input.interactiveWaitMs,
-        Math.min(DEFAULT_INTERACTIVE_WAIT_MS, 250),
-      );
+      const deferLongPreparation = decision.reason === 'ephemeral_local_build_or_test';
+      const interactiveWaitMs = deferLongPreparation
+        ? 0
+        : durationAwareInteractiveWaitMs(
+            input.command,
+            input.returnHandleImmediately ? 0 : input.interactiveWaitMs,
+            Math.min(DEFAULT_INTERACTIVE_WAIT_MS, 250),
+          );
       const timeoutMs = Math.max(
         interactiveWaitMs + 1,
         Math.min(input.timeoutMs ?? 15 * 60_000, 24 * 60 * 60_000),
@@ -293,6 +296,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
         maxOutputBytes: input.maxOutputBytes,
         workId: input.workId,
         commandId: input.commandId ?? input.requestId,
+        deferStart: deferLongPreparation,
       });
       const handle = lightweight.handle;
       return {

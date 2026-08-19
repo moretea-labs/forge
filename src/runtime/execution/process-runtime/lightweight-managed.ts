@@ -28,8 +28,8 @@ const EMPTY_EFFECTS = {
   projectionUpdateCount: 0,
 };
 const DEFAULT_MAX_OUTPUT_BYTES = 128 * 1024;
-const TERMINAL_RETENTION_MS = 15 * 60_000;
-const MAX_RETAINED_HANDLES = 128;
+const TERMINAL_RETENTION_MS = 60 * 60_000;
+const MAX_RETAINED_HANDLES = 256;
 
 interface LightweightExecutionResult {
   ok?: boolean;
@@ -133,6 +133,8 @@ export interface StartLightweightCommandInput {
   maxOutputBytes?: number;
   workId?: string;
   commandId?: string;
+  /** Start repository preparation on the next event-loop turn so the caller can receive a handle first. */
+  deferStart?: boolean;
 }
 
 export interface LightweightCommandMetrics {
@@ -223,7 +225,7 @@ export async function startLightweightRepositoryCommand(
   };
   const onCallerAbort = () => abort.abort();
   input.execution.signal?.addEventListener('abort', onCallerAbort, { once: true });
-  entry.promise = executeRepositoryCommandAsync(
+  const startExecution = () => executeRepositoryCommandAsync(
     input.controllerHome,
     input.repository,
     { ...input.execution, timeoutMs: input.timeoutMs, maxOutputBytes, signal: abort.signal },
@@ -239,6 +241,13 @@ export async function startLightweightRepositoryCommand(
     input.execution.signal?.removeEventListener('abort', onCallerAbort);
     return result;
   });
+  entry.promise = input.deferStart
+    ? new Promise<LightweightExecutionResult>((resolve, reject) => {
+        setTimeout(() => {
+          startExecution().then(resolve, reject);
+        }, 0);
+      })
+    : startExecution();
   entries.set(processId, entry);
 
   if (entry.interactiveWaitMs > 0) {

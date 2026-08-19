@@ -43,6 +43,7 @@ import {
 import {
   classifyRepositoryCommandRoute,
   executeRepositoryCommandViaProcessRuntime,
+  waitRepositoryCommandProcess,
 } from '../../src/runtime/execution/process-runtime/command-facade';
 import { classifyGatewayExecutionPath } from '../../src/runtime/gateway/mcp/router';
 import { persistedCheckSemanticScopeKey, runPersistedCheckViaProcessRuntime } from '../../src/runtime/gateway/mcp/persisted-check-process';
@@ -1067,6 +1068,27 @@ describe('run_check Process Runtime facade', () => {
     expect(classification.path).toBe('fast');
     expect(classification.reasons).toContain('repository_command_process_runtime');
     expect(classification.reasons.some((reason) => reason.includes('timeout_exceeds_fast_cap'))).toBe(false);
+  });
+
+  test('returns a lightweight handle before starting long build/test preparation', async () => {
+    const fx = fixture();
+    const result = await executeRepositoryCommandViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      command: ['bun', 'test', '--help'],
+      timeoutMs: 30_000,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+    });
+    expect(result.route).toBe('process_managed');
+    expect(result.process).toMatchObject({ completed: false, route: 'managed', interactiveWaitMs: 0 });
+    expect(result.process?.processId).toStartWith('lightweight:');
+    const terminal = await waitRepositoryCommandProcess(
+      fx.controllerHome,
+      fx.repository.repoId,
+      result.process!.processId,
+      { timeoutMs: 30_000 },
+    );
+    expect(terminal.completed).toBe(true);
   });
 });
 
