@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
+import { readFile as readFileAsync, stat as statAsync } from 'fs/promises';
 import { join } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { globMatches, resolveMcpPath } from '../mcp/paths';
@@ -472,6 +473,147 @@ export function searchRepositoryMany(
   // Consumers may bound distinct candidate files after this call. Preserve the
   // caller's query priority so an exact symbol/phrase cannot be displaced by
   // earlier alphabetic files that only matched broad recall tokens.
+  const queryPriority = new Map(queries.map((query, index) => [query, index]));
+  results.sort((left, right) => {
+    const priority = (queryPriority.get(left.query) ?? queries.length) - (queryPriority.get(right.query) ?? queries.length);
+    if (priority !== 0) return priority;
+    const pathOrder = left.path.localeCompare(right.path);
+    return pathOrder !== 0 ? pathOrder : left.line - right.line;
+  });
+
+  const hitResultLimit = needles.some(({ query }) => (counts.get(query) ?? 0) >= maxResultsPerQuery);
+  const truncationReason = hitResultLimit
+    ? 'max_results' as const
+    : inventory.candidateCount > inventory.files.length
+      ? 'max_files' as const
+      : undefined;
+  const payload: SearchRepositoryManyResult = {
+    queries,
+    results,
+    scannedFiles,
+    policyDeniedFiles,
+    skippedLargeFiles,
+    skippedBinaryFiles,
+    truncated: Boolean(truncationReason),
+    truncationReason,
+    cacheHit: inventory.cacheHit,
+  };
+  if (sessionCache) {
+    sessionCache.putSearch({
+      query: batchQueryKey,
+      includeKey,
+      result: payload,
+      scannedFiles,
+    });
+  }
+  return payload;
+}
+
+const ASYNC_SEARCH_READ_BATCH_SIZE = 16;
+
+type AsyncSearchCandidate =
+  | { path: string; kind: 'denied' }
+  | { path: string; kind: 'large' }
+  | { path: string; kind: 'binary' }
+  | { path: string; kind: 'source'; bytes: Buffer }
+  | { path: string; kind: 'error'; error: unknown };
+
+async function readSearchCandidateAsync(
+  repoRoot: string,
+  policy: McpPolicy,
+  canonicalRepoRoot: string,
+  path: string,
+): Promise<AsyncSearchCandidate> {
+  try {
+    const decision = resolveMcpPath(repoRoot, path, policy, 'read', canonicalRepoRoot);
+    if (!decision.ok || !decision.absolutePath) return { path, kind: 'denied' };
+    const size = (await statAsync(decision.absolutePath)).size;
+    if (size > policy.maxFileBytes) return { path, kind: 'large' };
+    const bytes = await readFileAsync(decision.absolutePath);
+    if (binary(bytes)) return { path, kind: 'binary' };
+    return { path, kind: 'source', bytes };
+  } catch (error) {
+    return { path, kind: 'error', error };
+  }
+}
+
+/**
+ * Async Context Plane batch search with result semantics matching
+ * searchRepositoryMany. Candidate reads happen in bounded batches, while policy
+ * accounting, early-stop behavior, matching, and result ordering are consumed in
+ * original repository order on the caller thread.
+ */
+export async function searchRepositoryManyAsync(
+  repoRoot: string,
+  policy: McpPolicy,
+  opts: SearchRepositoryManyOptions,
+): Promise<SearchRepositoryManyResult> {
+  const {
+    queries,
+    maxResultsPerQuery,
+    maxFiles,
+    includes,
+    excludes,
+    directCandidates,
+    includeKey,
+    batchQueryKey,
+  } = searchRepositoryManyCacheIdentity(opts);
+  const sessionCache = bindSessionCache(repoRoot, opts.session);
+  if (sessionCache) {
+    const cached = sessionCache.getSearch(batchQueryKey, includeKey);
+    if (cached?.result && typeof cached.result === 'object') {
+      return { ...(cached.result as SearchRepositoryManyResult), cacheHit: true };
+    }
+  }
+  const inventory = directCandidates && directCandidates.length > 0
+    ? {
+        files: directCandidates.slice(0, maxFiles),
+        candidateCount: directCandidates.length,
+        cacheHit: false,
+      }
+    : searchInventory(repoRoot, includes, excludes, maxFiles, opts.cacheKey);
+  const needles = queries.map((query) => ({ query, needle: opts.caseSensitive ? query : query.toLowerCase() }));
+  const counts = new Map(queries.map((query) => [query, 0]));
+  const results: SearchRepositoryManyResult['results'] = [];
+  let scannedFiles = 0;
+  let policyDeniedFiles = 0;
+  let skippedLargeFiles = 0;
+  let skippedBinaryFiles = 0;
+  const canonicalRepoRoot = realpathSync(repoRoot);
+  const complete = (): boolean => needles.every(({ query }) => (counts.get(query) ?? 0) >= maxResultsPerQuery);
+
+  for (let offset = 0; offset < inventory.files.length && !complete(); offset += ASYNC_SEARCH_READ_BATCH_SIZE) {
+    const batchPaths = inventory.files.slice(offset, offset + ASYNC_SEARCH_READ_BATCH_SIZE);
+    const batch = await Promise.all(batchPaths.map((path) => readSearchCandidateAsync(repoRoot, policy, canonicalRepoRoot, path)));
+    for (const candidate of batch) {
+      if (complete()) break;
+      if (candidate.kind === 'denied') {
+        policyDeniedFiles += 1;
+        continue;
+      }
+      if (candidate.kind === 'large') {
+        skippedLargeFiles += 1;
+        continue;
+      }
+      if (candidate.kind === 'binary') {
+        skippedBinaryFiles += 1;
+        continue;
+      }
+      if (candidate.kind === 'error') throw candidate.error;
+      scannedFiles += 1;
+      const lines = candidate.bytes.toString('utf-8').split(/\r?\n/);
+      for (let index = 0; index < lines.length; index += 1) {
+        const text = lines[index]!;
+        const haystack = opts.caseSensitive ? text : text.toLowerCase();
+        for (const { query, needle } of needles) {
+          if ((counts.get(query) ?? 0) >= maxResultsPerQuery || !haystack.includes(needle)) continue;
+          results.push({ query, path: candidate.path, line: index + 1, text: text.slice(0, 500) });
+          counts.set(query, (counts.get(query) ?? 0) + 1);
+        }
+      }
+    }
+  }
+
   const queryPriority = new Map(queries.map((query, index) => [query, index]));
   results.sort((left, right) => {
     const priority = (queryPriority.get(left.query) ?? queries.length) - (queryPriority.get(right.query) ?? queries.length);

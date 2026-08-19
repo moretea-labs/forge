@@ -2,6 +2,7 @@ import {
   gitSnapshot,
   getRepositoryReadSessionCache,
   searchRepositoryMany,
+  searchRepositoryManyAsync,
   searchRepositoryManyCacheIdentity,
 } from "../repository/inspector";
 import { globMatches } from "../mcp/paths";
@@ -16,7 +17,6 @@ import {
   type CodeGraphNodeSummary,
   type CodeGraphReadProviderResponse,
 } from "../../runtime/context/codegraph-read-provider";
-import { runInspectorSearchManyInWorker } from "../../runtime/execution/thin-harness/search-worker";
 import {
   CONTEXT_PACK_SCHEMA_VERSION,
   CONTROLLER_CONTEXT_IMPACT_DOMAINS,
@@ -661,8 +661,8 @@ export function buildControllerContextPack(
 
 /**
  * Broad first-call fan-in for the canonical rh_context path. CodeGraph runs in
- * its sidecar while broad lexical retrieval reuses the Thin Harness search
- * worker; the sync builder then consumes the warmed session cache/evidence.
+ * its sidecar while broad lexical retrieval performs bounded async file I/O;
+ * the sync builder then consumes the warmed session cache/evidence.
  */
 export async function buildControllerContextPackAsync(
   repoRoot: string,
@@ -738,7 +738,7 @@ export async function buildControllerContextPackAsync(
           error: { code: 'CODEGRAPH_QUERY_REQUIRED', message: 'No context query was provided.' }, timingsMs: { total: 0 },
         });
   const lexicalPromise = lexicalOptions && lexicalIdentity && !cachedLexical?.result
-    ? runInspectorSearchManyInWorker({ repoRoot, policy, ...lexicalOptions }).then((result) => {
+    ? searchRepositoryManyAsync(repoRoot, policy, lexicalOptions).then((result) => {
         sessionCache?.putSearch({
           query: lexicalIdentity.batchQueryKey,
           includeKey: lexicalIdentity.includeKey,

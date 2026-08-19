@@ -41,7 +41,7 @@ import {
 import { writeMcpServiceLocalConfig, writeMcpServiceRuntimeState } from "../../src/cli/mcp/auth";
 import { persistControllerAccessMode } from "../../src/cli/mcp/access-mode";
 import { clearAllSessionCachesForTest } from "../../src/cli/repository/session-cache";
-import { searchRepositoryMany } from "../../src/cli/repository/inspector";
+import { searchRepositoryMany, searchRepositoryManyAsync } from "../../src/cli/repository/inspector";
 import { runInspectorSearchManyInWorker } from "../../src/runtime/execution/thin-harness/search-worker";
 import {
   clearControllerContextPerformanceSnapshotForTest,
@@ -212,6 +212,41 @@ test("keeps worker-prefetched rh_context lexical search identical to the synchro
     const sync = searchRepositoryMany(repoRoot, policy, options);
     const worker = await runInspectorSearchManyInWorker({ repoRoot, policy, ...options });
     expect(worker).toEqual(sync);
+  });
+});
+
+test("keeps async rh_context lexical prefetch identical to the synchronous search authority", async () => {
+  await withController(async (repoRoot) => {
+    writeFileSync(join(repoRoot, "async-alpha.ts"), "export const asyncAlpha = 'asyncBeta';\nexport const secondAsyncAlpha = 'asyncAlpha';\n");
+    writeFileSync(join(repoRoot, "async-beta.ts"), "export const asyncBeta = 'asyncAlpha';\n");
+    const policy = getMcpPolicy("controller");
+    const options = {
+      queries: ["asyncAlpha", "asyncBeta"],
+      files: ["async-alpha.ts", "async-beta.ts"],
+      maxResultsPerQuery: 3,
+      maxFiles: 10,
+      caseSensitive: true,
+    };
+    const sync = searchRepositoryMany(repoRoot, policy, options);
+    const asyncResult = await searchRepositoryManyAsync(repoRoot, policy, options);
+    expect(asyncResult).toEqual(sync);
+  });
+});
+
+test("async rh_context lexical prefetch preserves synchronous early-stop error semantics", async () => {
+  await withController(async (repoRoot) => {
+    writeFileSync(join(repoRoot, "complete-first.ts"), "needleOne needleTwo\n");
+    const policy = getMcpPolicy("controller");
+    const options = {
+      queries: ["needleOne", "needleTwo"],
+      files: ["complete-first.ts", "missing-after-complete.ts"],
+      maxResultsPerQuery: 1,
+      maxFiles: 10,
+      caseSensitive: true,
+    };
+    const sync = searchRepositoryMany(repoRoot, policy, options);
+    const asyncResult = await searchRepositoryManyAsync(repoRoot, policy, options);
+    expect(asyncResult).toEqual(sync);
   });
 });
 
