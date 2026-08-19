@@ -17,7 +17,7 @@ import { repositoryControllerRoot } from '../../../cli/repositories/controller-h
 import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../execution/jobs/store';
 import { waitForExecutionJob } from '../../execution/jobs/wait';
 import type { ExecutionJob } from '../../execution/jobs/types';
-import { getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, listRecoverableProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
+import { getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
 import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../../execution/process-runtime/command-facade';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
@@ -2938,14 +2938,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         markDetailPhase('work_state');
         const activePrimaryWork = activeContracts.filter((contract) => (contract.lifecycleRole ?? 'primary') === 'primary');
         const activeExecutionChildren = activeContracts.filter((contract) => contract.lifecycleRole === 'execution_child');
-        const activeRuntimeInstanceId = ctx.controllerInstanceId?.trim();
-        // Canonical Runtime injects its runtimeInstanceId into the MCP context.
-        // Status only counts Process records owned by that exact Runtime; legacy
-        // records without runtime identity are recovery debt, not current activity.
-        const activeProcessRecords = activeRuntimeInstanceId
-          ? listRecoverableProcessRecords(ctx.controllerHome, repository.repoId)
-            .filter((process) => isManagedProcessActive(process) && process.runtimeInstanceId === activeRuntimeInstanceId)
-          : [];
+        // Current Runtime activity is owned by the in-memory Process monitor set.
+        // Do not route an interactive status read through the retired cross-restart
+        // recovery index, which may contain historical starting/running records.
+        const activeProcessRecords = processRuntimeResourceDiagnostics().activeProcessIds
+          .map((processId) => getProcessRecord(ctx.controllerHome, repository.repoId, processId))
+          .filter((process): process is NonNullable<typeof process> => Boolean(process && isManagedProcessActive(process)));
         markDetailPhase('process_state');
         const activeProcessWorkIds = new Set(activeProcessRecords.map((process) => process.workId).filter((workId): workId is string => Boolean(workId)));
         const activeControllerWorkIds = new Set(activePrimaryWork.filter((contract) => Boolean(getControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId))).map((contract) => contract.workId));
@@ -3306,10 +3304,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           : [];
         const processScan = listProcessRecords(ctx.controllerHome, repository.repoId, workId ? 100 : 50);
         const relevantProcesses = processScan.filter((process) => workId ? process.workId === workId : timestampIsCurrent(process.updatedAt, currentCutoffMs));
-        const activeRuntimeInstanceId = ctx.controllerInstanceId?.trim();
-        const activeProcesses = activeRuntimeInstanceId
-          ? relevantProcesses.filter((process) => isManagedProcessActive(process) && process.runtimeInstanceId === activeRuntimeInstanceId)
-          : [];
+        const liveProcessIds = new Set(processRuntimeResourceDiagnostics().activeProcessIds);
+        const activeProcesses = relevantProcesses.filter((process) => liveProcessIds.has(process.processId) && isManagedProcessActive(process));
         const workController = work ? getControllerSession(store, work.workId) : undefined;
         const manifestOptions = { preferStored: true };
         const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, manifestOptions);
