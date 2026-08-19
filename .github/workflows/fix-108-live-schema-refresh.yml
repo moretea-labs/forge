@@ -1,0 +1,131 @@
+name: One-shot fix issue 108
+
+on:
+  push:
+    branches:
+      - fix/108-live-schema-refresh
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: fix/108-live-schema-refresh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Apply live MCP schema refresh patch
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one match, got {count}: {old[:100]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          session = 'src/cli/mcp/transports/session-registry.ts'
+          replace_once(
+              session,
+              "export interface ClosableMcpTransport {\n  close(): Promise<void> | void;\n}\n",
+              "export interface ClosableMcpTransport {\n  close(): Promise<void> | void;\n}\n\nexport interface McpToolSurfaceRefresh {\n  toolSurfaceFingerprint: string;\n  toolNames?: string[];\n}\n",
+          )
+          replace_once(
+              session,
+              "  /** Standard MCP tools/list_changed notification bound to this session's connected Server. */\n  notifyToolListChanged?: () => Promise<void> | void;\n  lastNotifiedToolSurfaceFingerprint?: string;\n",
+              "  /** Standard MCP tools/list_changed notification bound to this session's connected Server. */\n  notifyToolListChanged?: () => Promise<void> | void;\n  /** Refreshes the mutable Runtime schema snapshot backing this live MCP session. */\n  refreshToolSurface?: () => Promise<McpToolSurfaceRefresh | undefined>;\n  lastNotifiedToolSurfaceFingerprint?: string;\n",
+          )
+          replace_once(
+              session,
+              "  toolNames?: string[];\n  notifyToolListChanged?: () => Promise<void> | void;\n  initialPost?: boolean;\n",
+              "  toolNames?: string[];\n  notifyToolListChanged?: () => Promise<void> | void;\n  refreshToolSurface?: () => Promise<McpToolSurfaceRefresh | undefined>;\n  initialPost?: boolean;\n",
+          )
+          replace_once(
+              session,
+              "  async notifyToolListChanged(currentFingerprint: string | undefined): Promise<number> {\n    if (!currentFingerprint) return 0;\n    let notified = 0;\n    await Promise.all(Array.from(this.sessions.values()).map(async (session) => {\n      if (!session.toolSurfaceFingerprint\n        || session.toolSurfaceFingerprint === currentFingerprint\n        || session.lastNotifiedToolSurfaceFingerprint === currentFingerprint\n        || !session.notifyToolListChanged) return;\n      try {\n        await session.notifyToolListChanged();\n        session.lastNotifiedToolSurfaceFingerprint = currentFingerprint;\n        notified += 1;\n      } catch {\n        // Fingerprint fencing remains authoritative. A broken notification\n        // stream must not mark a stale session as refreshed or close active work.\n      }\n    }));\n    return notified;\n  }\n",
+              "  async notifyToolListChanged(currentFingerprint: string | undefined): Promise<number> {\n    if (!currentFingerprint) return 0;\n    let notified = 0;\n    await Promise.all(Array.from(this.sessions.values()).map(async (session) => {\n      if (!session.toolSurfaceFingerprint\n        || session.toolSurfaceFingerprint === currentFingerprint\n        || session.lastNotifiedToolSurfaceFingerprint === currentFingerprint\n        || !session.notifyToolListChanged) return;\n      try {\n        await session.notifyToolListChanged();\n        session.lastNotifiedToolSurfaceFingerprint = currentFingerprint;\n        notified += 1;\n      } catch {\n        // Fingerprint fencing remains authoritative. A broken notification\n        // stream must not mark a stale session as refreshed or close active work.\n      }\n    }));\n    return notified;\n  }\n\n  async refreshToolSurface(sessionId: string): Promise<McpToolSurfaceRefresh | undefined> {\n    const session = this.sessions.get(sessionId);\n    if (!session?.refreshToolSurface) return undefined;\n    const refreshed = await session.refreshToolSurface();\n    if (!refreshed?.toolSurfaceFingerprint) return undefined;\n    session.toolSurfaceFingerprint = refreshed.toolSurfaceFingerprint;\n    session.toolNames = refreshed.toolNames;\n    session.lastNotifiedToolSurfaceFingerprint = refreshed.toolSurfaceFingerprint;\n    session.lastActivityAt = this.now();\n    return refreshed;\n  }\n",
+          )
+
+          http = 'src/cli/mcp/transports/http.ts'
+          replace_once(
+              http,
+              "function toolCallOutsideSessionSchema(body: unknown, toolNames: readonly string[] | undefined): boolean {\n",
+              "export function isMcpToolsListRequest(body: unknown): boolean {\n  const messages = Array.isArray(body) ? body : [body];\n  return messages.length > 0 && messages.every((message) => {\n    if (!message || typeof message !== 'object') return false;\n    return (message as { method?: unknown }).method === 'tools/list';\n  });\n}\n\nfunction toolCallOutsideSessionSchema(body: unknown, toolNames: readonly string[] | undefined): boolean {\n",
+          )
+          replace_once(
+              http,
+              "      const runtimeSchema = await resolveRuntimeSchema?.(sessionContext);\n",
+              "      let runtimeSchema = await resolveRuntimeSchema?.(sessionContext);\n",
+          )
+          replace_once(
+              http,
+              "            toolSurfaceFingerprint: runtimeSchema?.fingerprint ?? currentToolSurfaceFingerprint(),\n            toolNames: runtimeSchema?.toolNames,\n            notifyToolListChanged: async () => { await server?.sendToolListChanged(); },\n",
+              "            toolSurfaceFingerprint: runtimeSchema?.fingerprint ?? currentToolSurfaceFingerprint(),\n            toolNames: runtimeSchema?.toolNames,\n            notifyToolListChanged: async () => { await server?.sendToolListChanged(); },\n            ...(runtimeSchema && resolveRuntimeSchema\n              ? {\n                  refreshToolSurface: async () => {\n                    const refreshed = await resolveRuntimeSchema(sessionContext);\n                    if (!refreshed || !runtimeSchema) return undefined;\n                    runtimeSchema.definitions = refreshed.definitions;\n                    runtimeSchema.toolNames = refreshed.toolNames;\n                    runtimeSchema.fingerprint = refreshed.fingerprint;\n                    return {\n                      toolSurfaceFingerprint: refreshed.fingerprint,\n                      toolNames: refreshed.toolNames,\n                    };\n                  },\n                }\n              : {}),\n",
+          )
+          replace_once(
+              http,
+              "        if (!mcpSessionToolSurfaceFingerprintIsCurrent(managed.toolSurfaceFingerprint, currentFingerprint)) {\n          // Keep the transport/session alive long enough for the host to observe\n          // the recoverable reset and issue a replacement initialize request.\n          // The initialize path explicitly supersedes this session afterward.\n          sendMcpToolSurfaceReset(res, managed.toolSurfaceFingerprint, currentFingerprint);\n          return;\n        }\n",
+              "        if (!mcpSessionToolSurfaceFingerprintIsCurrent(managed.toolSurfaceFingerprint, currentFingerprint)) {\n          // Standard MCP hot refresh: allow an explicitly requested tools/list\n          // to replace the live session's mutable Runtime schema snapshot. Hosts\n          // that ignore list_changed and call directly still hit the reset fence.\n          if (isMcpToolsListRequest(body)) {\n            const refreshed = await registry.refreshToolSurface(sessionId);\n            if (refreshed\n              && (!currentFingerprint || refreshed.toolSurfaceFingerprint === currentFingerprint)) {\n              await managed.transport.handleRequest(req, res, body);\n              return;\n            }\n          }\n          // Keep the transport/session alive long enough for the host to observe\n          // the recoverable reset and issue a replacement initialize request.\n          // The initialize path explicitly supersedes this session afterward.\n          sendMcpToolSurfaceReset(res, managed.toolSurfaceFingerprint, currentFingerprint);\n          return;\n        }\n",
+          )
+
+          proxy_test = 'tests/cli/mcp-runtime-proxy-routing.test.ts'
+          replace_once(
+              proxy_test,
+              "  mcpSessionToolSurfaceFingerprintIsCurrent,\n  resolveMcpSessionCurrentFingerprint,\n",
+              "  isMcpToolsListRequest,\n  mcpSessionToolSurfaceFingerprintIsCurrent,\n  resolveMcpSessionCurrentFingerprint,\n",
+          )
+          replace_once(
+              proxy_test,
+              "describe('MCP canonical Runtime schema fencing', () => {\n",
+              "describe('MCP canonical Runtime schema fencing', () => {\n  test('recognizes only pure tools/list refresh requests', () => {\n    expect(isMcpToolsListRequest({ jsonrpc: '2.0', id: 1, method: 'tools/list' })).toBe(true);\n    expect(isMcpToolsListRequest([\n      { jsonrpc: '2.0', id: 1, method: 'tools/list' },\n      { jsonrpc: '2.0', id: 2, method: 'tools/list' },\n    ])).toBe(true);\n    expect(isMcpToolsListRequest({ jsonrpc: '2.0', id: 1, method: 'tools/call' })).toBe(false);\n    expect(isMcpToolsListRequest([\n      { jsonrpc: '2.0', id: 1, method: 'tools/list' },\n      { jsonrpc: '2.0', id: 2, method: 'tools/call' },\n    ])).toBe(false);\n  });\n\n",
+          )
+
+          lifecycle_test = 'tests/unit/fix-mcp-session-lifecycle.test.ts'
+          replace_once(
+              lifecycle_test,
+              "    toolSurfaceFingerprint?: string; notifyToolListChanged?: () => Promise<void> | void;\n",
+              "    toolSurfaceFingerprint?: string; notifyToolListChanged?: () => Promise<void> | void;\n    refreshToolSurface?: () => Promise<{ toolSurfaceFingerprint: string; toolNames?: string[] } | undefined>;\n",
+          )
+          replace_once(
+              lifecycle_test,
+              "    toolSurfaceFingerprint: options.toolSurfaceFingerprint, notifyToolListChanged: options.notifyToolListChanged,\n",
+              "    toolSurfaceFingerprint: options.toolSurfaceFingerprint, notifyToolListChanged: options.notifyToolListChanged,\n    refreshToolSurface: options.refreshToolSurface,\n",
+          )
+          replace_once(
+              lifecycle_test,
+              "  test('survives 500 initialize and client-close cycles without consuming capacity', async () => {\n",
+              "  test('refreshes a stale session fingerprint and tool names in place after tools/list', async () => {\n    const registry = new McpSessionRegistry();\n    addSession(registry, 'refreshable', {\n      toolSurfaceFingerprint: 'schema-v1',\n      refreshToolSurface: async () => ({\n        toolSurfaceFingerprint: 'schema-v2',\n        toolNames: ['rh_status', 'rh_work'],\n      }),\n    });\n\n    const refreshed = await registry.refreshToolSurface('refreshable');\n    expect(refreshed).toEqual({\n      toolSurfaceFingerprint: 'schema-v2',\n      toolNames: ['rh_status', 'rh_work'],\n    });\n    expect(registry.get('refreshable')).toMatchObject({\n      toolSurfaceFingerprint: 'schema-v2',\n      toolNames: ['rh_status', 'rh_work'],\n      lastNotifiedToolSurfaceFingerprint: 'schema-v2',\n    });\n    expect(mcpSessionToolSurfaceFingerprintIsCurrent(\n      registry.get('refreshable')?.toolSurfaceFingerprint,\n      'schema-v2',\n    )).toBe(true);\n  });\n\n  test('survives 500 initialize and client-close cycles without consuming capacity', async () => {\n",
+          )
+          PY
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run focused MCP tests
+        run: bun test tests/unit/fix-mcp-session-lifecycle.test.ts tests/cli/mcp-runtime-proxy-routing.test.ts tests/cli/mcp-http.test.ts
+
+      - name: Commit verified fix and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name "forge-issue-repair"
+          git config user.email "actions@users.noreply.github.com"
+          git rm .github/workflows/fix-108-live-schema-refresh.yml
+          git add src/cli/mcp/transports/http.ts src/cli/mcp/transports/session-registry.ts tests/cli/mcp-runtime-proxy-routing.test.ts tests/unit/fix-mcp-session-lifecycle.test.ts
+          git commit -m "fix(mcp): hot-refresh live session tool schema"
+          git push origin HEAD:fix/108-live-schema-refresh
