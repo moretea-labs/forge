@@ -514,7 +514,7 @@ function normalizedUrl(value: unknown): string {
     throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'url must be absolute.', { retryable: false });
   }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Only http and https URLs are supported.', {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Only http and https URLs are supported; observed protocol: ${parsed.protocol}`, {
       retryable: false,
       details: {
         observedProtocol: parsed.protocol,
