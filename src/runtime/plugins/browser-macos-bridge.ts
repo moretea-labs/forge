@@ -906,7 +906,24 @@ export class MacOsAppleEventsPage {
   }
 
   async click(selector: string): Promise<void> {
-    await this.evaluate(selectorSource(selector, 'if (typeof element.click !== "function") throw new Error("Element is not clickable."); element.click(); return true;'));
+    await this.evaluate(selectorSource(selector, `
+      if (typeof element.click !== "function") throw new Error("Element is not clickable.");
+      const rect = typeof element.getBoundingClientRect === 'function' ? element.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
+      const clientX = Number(rect.left || 0) + Number(rect.width || 0) / 2;
+      const clientY = Number(rect.top || 0) + Number(rect.height || 0) / 2;
+      const mouseInit = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: 1, clientX, clientY };
+      if (typeof PointerEvent === 'function') {
+        element.dispatchEvent(new PointerEvent('pointerdown', { ...mouseInit, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      }
+      element.dispatchEvent(new MouseEvent('mousedown', mouseInit));
+      if (typeof element.focus === 'function') element.focus();
+      if (typeof PointerEvent === 'function') {
+        element.dispatchEvent(new PointerEvent('pointerup', { ...mouseInit, buttons: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      }
+      element.dispatchEvent(new MouseEvent('mouseup', { ...mouseInit, buttons: 0 }));
+      element.click();
+      return true;
+    `));
   }
 
   async dblclick(selector: string): Promise<void> {

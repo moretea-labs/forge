@@ -352,6 +352,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
     targetMetadataReads: 0,
     localFileInput: undefined as { name: string; size: number } | undefined,
     localFileInputs: [] as Array<{ name: string; size: number }>,
+    evaluatedJavaScript: [] as string[],
   };
   let nextTabId = 9001;
   const appName = product === 'chrome' ? 'Google Chrome' : 'Vivaldi';
@@ -440,6 +441,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
           const entry = tabId ? tabEntry(tabId) : undefined;
           if (!tabId || !entry) throw new Error('missing browser tab');
           const source = args[0] ?? '';
+          events.evaluatedJavaScript.push(source);
           if (source.includes('document.readyState')) return JSON.stringify({ ok: true, value: 'complete' });
           if (source.includes('document.title')) return JSON.stringify({ ok: true, value: entry.title });
           if (source.includes('document.body ? document.body.innerText')) return JSON.stringify({ ok: true, value: 'Native page text' });
@@ -1419,6 +1421,35 @@ describe('browser plugin', () => {
     expect(runtime.events.created).toEqual(['9001']);
     expect(runtime.events.activeTabId).toBe(ref!.tabId);
     expect(metadata.active).toBe(true);
+  });
+
+  test('native click sends pointer and mouse preparation events before preserving DOM click default behavior', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page', requestId: 'browser-native-sequenced-click-open',
+      args: { session_id: 'browser-native-sequenced-click', url: 'https://example.com/click' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    native.events.evaluatedJavaScript.length = 0;
+
+    await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'click', requestId: 'browser-native-sequenced-click-action',
+      args: { session_id: 'browser-native-sequenced-click', selector: '#verify', post_action_wait_ms: 1 }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    const clickSource = native.events.evaluatedJavaScript.find((source) => source.includes('Element is not clickable.')) ?? '';
+    expect(clickSource).toContain("PointerEvent('pointerdown'");
+    expect(clickSource).toContain("MouseEvent('mousedown'");
+    expect(clickSource).toContain("PointerEvent('pointerup'");
+    expect(clickSource).toContain("MouseEvent('mouseup'");
+    expect(clickSource).toContain('element.click()');
   });
 
   test('browser activate_page foregrounds the exact saved native tab without creating a duplicate', async () => {
