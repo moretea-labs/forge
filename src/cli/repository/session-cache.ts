@@ -102,7 +102,6 @@ function rangeKey(path: string, start: number, end: number): string {
 export class RepositorySessionCache {
   private identity: SessionIdentity;
   private readonly repoRoot: string;
-  private readonly fileSha = new Map<string, string>();
   private readonly ranges = new Map<string, FileRangeCacheEntry>();
   private readonly searches = new Map<string, SearchCacheEntry>();
   private readonly structural = new Map<string, { at: number; value: unknown }>();
@@ -181,16 +180,12 @@ export class RepositorySessionCache {
   }
 
   getFileSha(relativePath: string): string | null {
-    const cached = this.fileSha.get(relativePath);
-    if (cached) {
-      this.metrics.cacheHit += 1;
-      return cached;
-    }
-    const absolute = join(this.repoRoot, relativePath);
-    const sha = fileShaOf(absolute);
-    if (sha) this.fileSha.set(relativePath, sha);
-    this.metrics.cacheMiss += 1;
-    return sha;
+    // Range reuse is correctness-sensitive: Git identity is intentionally sampled
+    // with a short TTL, so it can lag an edit by a few seconds. Hash the current
+    // file bytes before serving a cached range instead of trusting an older
+    // session-level SHA. Warm filesystem hashing is sub-millisecond for normal
+    // source files and still preserves the expensive range/materialization reuse.
+    return fileShaOf(join(this.repoRoot, relativePath));
   }
 
   /**
@@ -234,7 +229,6 @@ export class RepositorySessionCache {
   }
 
   putRange(entry: FileRangeCacheEntry): void {
-    this.fileSha.set(entry.path, entry.fileSha);
     this.ranges.set(rangeKey(entry.path, entry.startLine, entry.endLine), entry);
   }
 
@@ -315,7 +309,6 @@ export class RepositorySessionCache {
 
   /** Precise invalidation when one file changes. */
   invalidateFile(relativePath: string): void {
-    this.fileSha.delete(relativePath);
     for (const key of [...this.ranges.keys()]) {
       if (key.startsWith(`${relativePath}:`)) this.ranges.delete(key);
     }
@@ -325,7 +318,6 @@ export class RepositorySessionCache {
   }
 
   invalidateCheckout(): void {
-    this.fileSha.clear();
     this.ranges.clear();
     this.searches.clear();
     this.structural.clear();

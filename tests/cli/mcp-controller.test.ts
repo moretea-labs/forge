@@ -150,6 +150,51 @@ test("reuses rh_context repository reads across short-lived transport sessions f
   });
 });
 
+test("invalidates cached rh_context raw ranges immediately after a same-session file edit", async () => {
+  await withController(async (repoRoot) => {
+    clearAllSessionCachesForTest();
+    const controllerHome = String(process.env.FORGE_CONTROLLER_HOME);
+    writeFileSync(join(repoRoot, "source.ts"), "export const changingContextMarker = 1;\n");
+    spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
+    spawnSync("git", ["config", "user.name", "Forge Test"], { cwd: repoRoot, stdio: "ignore" });
+    spawnSync("git", ["config", "user.email", "forge@example.test"], { cwd: repoRoot, stdio: "ignore" });
+    spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" });
+    const repository = registerRepository({ path: repoRoot, controllerHome });
+    const context = (sessionId: string) => createMultiRepositoryContext({
+      repo: repoRoot,
+      controllerHome,
+      profile: "controller",
+      toolset: "advanced",
+      sessionId,
+      principalId: "controller-range-invalidation-test",
+      controllerInstanceId: "controller-instance-a",
+    });
+    const args = {
+      repo_id: repository.repoId,
+      operation: "search",
+      query: "changingContextMarker",
+      known_paths: ["source.ts"],
+      structural_context: "off",
+    };
+    const first = JSON.parse((await callRuntimeTool(context("transport-range-a"), "rh_context", args))!.content[0]!.text);
+    const warm = JSON.parse((await callRuntimeTool(context("transport-range-b"), "rh_context", args))!.content[0]!.text);
+    const firstSnippet = first.data.files.find((file: any) => file.path === "source.ts").snippets[0];
+    const warmSnippet = warm.data.files.find((file: any) => file.path === "source.ts").snippets[0];
+    expect(warm.data.cache.rangeHits).toBeGreaterThan(0);
+    expect(warmSnippet.sha256).toBe(firstSnippet.sha256);
+    expect(warmSnippet.content).toContain("changingContextMarker = 1");
+
+    // Keep this inside the Git identity sample TTL: raw range correctness must not
+    // depend on waiting for the broader working-tree fingerprint to refresh.
+    writeFileSync(join(repoRoot, "source.ts"), "export const changingContextMarker = 2;\n");
+    const changed = JSON.parse((await callRuntimeTool(context("transport-range-c"), "rh_context", args))!.content[0]!.text);
+    const changedSnippet = changed.data.files.find((file: any) => file.path === "source.ts").snippets[0];
+    expect(changedSnippet.sha256).not.toBe(warmSnippet.sha256);
+    expect(changedSnippet.content).toContain("changingContextMarker = 2");
+    expect(changedSnippet.cacheHit).not.toBe(true);
+  });
+});
+
 test("returns bounded policy-checked TypeScript semantic navigation through rh_context", async () => {
   await withController(async (repoRoot) => {
     const controllerHome = String(process.env.FORGE_CONTROLLER_HOME);
