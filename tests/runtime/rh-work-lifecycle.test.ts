@@ -571,6 +571,32 @@ describe('rh_work managed lifecycle closure', () => {
     expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.workId).toBeUndefined();
     await Bun.sleep(350);
 
+    const remoteRoot = join(fx.root, 'remote.git');
+    git(fx.root, ['init', '--bare', remoteRoot]);
+    git(fx.repoRoot, ['remote', 'add', 'origin', remoteRoot]);
+    const router = await import('../../src/runtime/gateway/mcp/router');
+    const routed = await router.routeDurableMcpCall(fx.ctx, 'repository_command_execute', {
+      repo_id: fx.repository.repoId,
+      command: ['git', 'push', 'origin', 'main'],
+      request_id: 'claimed-controller-push',
+    });
+    expect(routed).toBeUndefined();
+    const pushed = await repositoryTools.callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
+      repo_id: fx.repository.repoId,
+      command: ['git', 'push', 'origin', 'main'],
+      request_id: 'claimed-controller-push',
+    }, fx.ctx);
+    expect(pushed?.isError).not.toBe(true);
+    expect(pushed?.structuredContent).toMatchObject({
+      accepted: true,
+      mode: 'external_controller_direct',
+      workId,
+      completed: true,
+      ok: true,
+      externalEffect: { outcome: 'succeeded', replayPolicy: 'never_auto_retry' },
+    });
+    expect(git(remoteRoot, ['rev-parse', 'refs/heads/main'])).toBe(git(fx.repoRoot, ['rev-parse', 'HEAD']));
+
     const blocked = await repositoryTools.callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
       repo_id: fx.repository.repoId,
       command: ['git', 'merge', '--ff-only', 'nonexistent'],

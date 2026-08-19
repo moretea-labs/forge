@@ -6,7 +6,7 @@ import { readExecutionSession } from '../../runtime/control-plane/execution/sess
 import { getWorkContract } from '../../runtime/control-plane/facade/work-contract-store';
 import { getControllerSession, listControllerSessions } from '../../runtime/control-plane/facade/controller-session-store';
 import { isTerminalWorkContractStatus } from '../../runtime/control-plane/facade/types';
-import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../repositories/command-executor';
+import { executeRepositoryCommand, executeRepositoryCommandAsync, previewRepositoryCommandExecution } from '../repositories/command-executor';
 import { withControllerLock } from '../repositories/locks';
 import {
   disableRepository,
@@ -326,7 +326,7 @@ export interface RepositoryToolCallerContext {
   controllerInstanceId?: string;
 }
 
-function claimedSessionWorkId(
+export function claimedSessionWorkId(
   controllerHome: string,
   repository: ReturnType<typeof resolveRepositorySelection>,
   caller?: RepositoryToolCallerContext,
@@ -1264,6 +1264,79 @@ export async function callRepositoryTool(
             return failure(error);
           }
         }
+        if (!forceDurable && !fromDurableWorker && !target.workspace) {
+          const externalRouteClass = classifyRepositoryCommandRoute(args.command as string | string[], {
+            forceDurable: false,
+            defaultBranch: repository.defaultBranch,
+            timeoutMs,
+          });
+          if (externalRouteClass.route === 'durable') {
+            const externalWorkId = executionIdentity.workId
+              ?? claimedSessionWorkId(controllerHome, repository, caller, args.work_id);
+            if (externalWorkId) {
+              const execution = await executeRepositoryCommandAsync(controllerHome, repository, {
+                command: args.command as string | string[],
+                cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
+                approvalToken: typeof args.approval_token === 'string' ? args.approval_token : undefined,
+                approvalRequestId: typeof args.approval_request_id === 'string' ? args.approval_request_id : undefined,
+                timeoutMs,
+                maxOutputBytes,
+                sessionId: caller?.sessionId,
+                principalId: caller?.principalId,
+                workId: externalWorkId,
+              });
+              if (execution.status !== 'executed') {
+                return result({
+                  accepted: false,
+                  mode: 'external_controller_direct',
+                  path: 'external_controller_direct',
+                  repoId: repository.repoId,
+                  checkoutId: repository.activeCheckoutId,
+                  workId: externalWorkId,
+                  status: execution.status,
+                  policyDecision: execution.policyDecision ?? 'approval_required',
+                  authorization: execution.authorizationDecision,
+                  ...(execution.approvalRequestId ? { approvalRequestId: execution.approvalRequestId } : {}),
+                  message: execution.authorizationDecision?.decision === 'user_confirmation_required'
+                    ? execution.authorizationDecision.humanSummary
+                    : execution.authorizationDecision?.reason ?? 'Remote write requires authorization.',
+                  suggestedOperation: 'repository_command_preview',
+                });
+              }
+              const ok = execution.ok === true;
+              const payload = {
+                accepted: true,
+                mode: 'external_controller_direct',
+                path: 'external_controller_direct',
+                route: 'external_controller_direct',
+                routing: compactRoutingSummary({
+                  path: 'external_controller_direct',
+                  mode: 'durable',
+                  reasons: ['claimed_external_controller', externalRouteClass.reason, ...routingDecision.reasons],
+                }),
+                repoId: repository.repoId,
+                checkoutId: repository.activeCheckoutId,
+                workId: externalWorkId,
+                completed: true,
+                ok,
+                status: ok ? 'succeeded' : 'failed',
+                exitCode: execution.exitCode,
+                ...compactCommandOutput(execution.stdout, execution.stderr, { ok }),
+                externalEffect: {
+                  outcome: ok ? 'succeeded' : 'failed',
+                  replayPolicy: 'never_auto_retry',
+                  reconciliation: 'After any ambiguous transport failure, inspect the remote state before deciding whether to retry.',
+                },
+                authorization: execution.authorizationDecision,
+                next: ok
+                  ? 'Claimed external Controller completed the remote effect without creating an ExecutionJob.'
+                  : 'Remote effect failed with a terminal command result; inspect stderr and remote state before any retry.',
+              };
+              return ok ? result(payload) : { ...result(payload), isError: true };
+            }
+          }
+        }
+
         if (target.workspace && (forceDurable || returnHandleImmediately)) {
           return result({
             accepted: false,

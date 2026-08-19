@@ -4,7 +4,7 @@ import {
   buildMultiRepositoryToolDefinitions,
   type MultiRepositoryMcpToolContext,
 } from '../../../cli/mcp/multi-repository';
-import { callRepositoryTool, repositoryToolDefinitions } from '../../../cli/mcp/repository-tools';
+import { callRepositoryTool, claimedSessionWorkId, repositoryToolDefinitions } from '../../../cli/mcp/repository-tools';
 import { runtimeToolDefinitions } from './runtime-tools';
 import { executionToolDefinitions } from './execution-tools';
 import { processToolDefinitions } from './process-tools';
@@ -785,6 +785,33 @@ export async function routeDurableMcpCall(
   }
 
   if (classification.path === 'durable' && executionJobCreationRetired()) {
+    if (name === 'repository_command_execute') {
+      try {
+        const repository = resolveRepositorySelection({
+          repoId: typeof args.repo_id === 'string' ? args.repo_id : undefined,
+          checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
+          explicitPath: ctx.explicitRepository?.canonicalRoot,
+          controllerHome: ctx.controllerHome,
+          allowSoleRepository: true,
+        });
+        if (repository && claimedSessionWorkId(ctx.controllerHome, repository, ctx, args.work_id)) {
+          // The claimed external Controller is the durable executor. Fall through
+          // to repository_command_execute instead of creating a retired ExecutionJob.
+          return undefined;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const code = message.includes(':') ? message.slice(0, message.indexOf(':')) : 'WORK_CONTROLLER_CLAIM_REQUIRED';
+        return result({
+          accepted: false,
+          mode: 'external_controller_required',
+          path: 'external_controller_required',
+          rejectCode: code,
+          message,
+          suggestedOperation: 'Claim exactly one active Work for this repository, then retry the remote effect once.',
+        }, true);
+      }
+    }
     return result({
       accepted: false,
       mode: 'external_controller_required',
