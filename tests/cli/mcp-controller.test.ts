@@ -2143,6 +2143,25 @@ describe("MCP controller profile", () => {
     });
   });
 
+  test("keeps rh_status summary on the canonical Runtime snapshot without broad governance inventories", async () => {
+    await withController(async (repoRoot, _ctx) => {
+      const multi = createMultiRepositoryContext({ repo: repoRoot, profile: "controller" });
+      const raw = await callRuntimeTool(multi, "rh_status", { detail_level: "summary" });
+      expect(raw).toBeTruthy();
+      const payload = JSON.parse(raw!.content[0].text);
+      expect(payload.data.readiness).toBeTruthy();
+      expect(payload.data.repositoryState).toBeTruthy();
+      expect(payload.data.toolSurfaceStatus).toBeTruthy();
+      expect(payload.data.toolArchitecture.domainSchemaLoading).toBe("status_summary_runtime_snapshot");
+      expect(payload.data.capabilityCount).toBeUndefined();
+      expect(payload.data.capabilityGroups).toBeUndefined();
+      expect(payload.data.pendingHandoffCount).toBeUndefined();
+      expect(payload.data.activeWorkCount).toBeUndefined();
+      expect(payload.data.activeProcessCount).toBeUndefined();
+      expect(payload.responseMeta.structuredPayloadBytes).toBeLessThan(8_000);
+    });
+  });
+
   test("keeps rh_context detail capability payload bounded", async () => {
     await withController(async (repoRoot, _ctx) => {
       const multi = createMultiRepositoryContext({ repo: repoRoot, profile: "controller" });

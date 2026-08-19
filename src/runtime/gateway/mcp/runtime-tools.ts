@@ -2715,6 +2715,115 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         if (operation === 'repair') {
           return await runFacadeRepair(ctx, repository, args);
         }
+        const detailLevel = args.detail_level === 'detail' ? 'detail' : 'summary';
+        if (detailLevel === 'summary') {
+          const startedAt = performance.now();
+          const observation = observeRuntimeStatus(ctx.controllerHome);
+          const daemon = readForgeRuntimeStatus(ctx.controllerHome);
+          const liveGit = gitSnapshot(repository.canonicalRoot);
+          const runtimeSource = runtimeSourceSnapshotStatus(daemon.source, ctx.runtimeSourceRoot);
+          const sourceSnapshotStale = runtimeSource.restartRequired;
+          const toolset = await import('../../../cli/mcp/toolset');
+          const exposure = toolset.controllerExposureSnapshot(ctx);
+          const toolSurfaceReady = exposure.ready && exposure.missingToolNames.length === 0;
+          const ready = observation.ready && toolSurfaceReady && !sourceSnapshotStale;
+          const reasonCodes = [...observation.reasonCodes];
+          if (!toolSurfaceReady) reasonCodes.push('MCP_TOOL_SURFACE_INCOMPLETE');
+          if (sourceSnapshotStale) reasonCodes.push(runtimeSource.code === 'RUNTIME_SOURCE_SNAPSHOT_MISSING'
+            ? 'RUNTIME_SOURCE_SNAPSHOT_MISSING'
+            : runtimeSource.code === 'RUNTIME_SOURCE_CURRENT_UNAVAILABLE'
+              ? 'RUNTIME_SOURCE_CURRENT_UNAVAILABLE'
+              : 'RUNTIME_SOURCE_SNAPSHOT_STALE');
+          const runtimeReadiness = observation.snapshot?.readiness;
+          const releaseDiagnostic = runtimeReadiness?.diagnostics.releaseCoherence;
+          const preferredFacadeTools = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'] as const;
+          const facade = buildFacadeResult({
+            status: ready ? 'ok' : 'blocked',
+            summary: ready ? 'Controller and MCP tool surface are ready for bounded work.' : 'Controller or MCP tool surface needs attention before work.',
+            data: {
+              operation,
+              repoId: repository.repoId,
+              readiness: {
+                ready,
+                reasonCodes: [...new Set(reasonCodes)],
+                diagnostics: {
+                  runtime: { ready: observation.ready },
+                  runtimeReadiness: runtimeReadiness ? {
+                    observedAt: runtimeReadiness.observedAt,
+                    database: runtimeReadiness.diagnostics.database,
+                    scheduler: runtimeReadiness.diagnostics.scheduler,
+                    releaseCoherence: runtimeReadiness.diagnostics.releaseCoherence,
+                    mcpEndToEnd: runtimeReadiness.diagnostics.mcpEndToEnd,
+                  } : undefined,
+                  toolSurface: {
+                    ready: toolSurfaceReady,
+                    expectedToolCount: exposure.expectedToolNames.length,
+                    actualToolCount: exposure.actualToolNames.length,
+                    observation: 'computed',
+                    missingTools: exposure.missingToolNames,
+                    unexpectedTools: exposure.unexpectedToolNames,
+                    duplicateTools: exposure.duplicateToolNames,
+                    fingerprint: exposure.fingerprint,
+                    schemaStableAcrossAccessModes: exposure.schemaStableAcrossAccessModes,
+                  },
+                  semantics: {
+                    executionReady: observation.ready,
+                    maintenanceHealthy: null,
+                    maintenanceCandidateCount: 0,
+                    releaseReady: releaseDiagnostic?.outcome === 'pass',
+                    executionBlockers: observation.ready ? [] : observation.reasonCodes,
+                    releaseBlockers: releaseDiagnostic?.outcome === 'fail' && releaseDiagnostic.reasonCode ? [releaseDiagnostic.reasonCode] : [],
+                  },
+                  sourceCoherence: { ready: !sourceSnapshotStale, reasons: runtimeSource.reasons },
+                },
+                observedAt: observation.observedAt,
+              },
+              repositoryState: {
+                ...liveGit,
+                observedAt: new Date().toISOString(),
+                sourceSnapshotAgeMs: daemon.source?.observedAt
+                  ? Math.max(0, Date.now() - Date.parse(daemon.source.observedAt))
+                  : undefined,
+                sourceSnapshotStale,
+                sourceSnapshotReasons: runtimeSource.reasons,
+                runtimeSourceDirty: runtimeSource.current?.dirty === true,
+              },
+              toolArchitecture: {
+                facadeTools: [...preferredFacadeTools],
+                domainSchemaLoading: 'status_summary_runtime_snapshot',
+              },
+              toolSurface: preferredFacadeTools.filter((tool) => exposure.actualToolNames.includes(tool)),
+              toolSurfaceStatus: {
+                ready: toolSurfaceReady,
+                expectedToolCount: exposure.expectedToolNames.length,
+                actualToolCount: exposure.actualToolNames.length,
+                observation: 'computed',
+                missingTools: exposure.missingToolNames,
+                unexpectedTools: exposure.unexpectedToolNames,
+                duplicateTools: exposure.duplicateToolNames,
+                fingerprint: exposure.fingerprint,
+                schemaStableAcrossAccessModes: exposure.schemaStableAcrossAccessModes,
+              },
+              access: exposure.access,
+            },
+            suggestedNextActions: [{
+              label: 'Read repository context',
+              tool: 'rh_context',
+              operation: 'get',
+              risk: 'readonly',
+              confidence: 'medium',
+            }],
+            rawAvailable: false,
+            detailLevel,
+          });
+          const payload = facade as unknown as Record<string, unknown>;
+          payload.responseMeta = {
+            serverDurationMs: Number((performance.now() - startedAt).toFixed(2)),
+            structuredPayloadBytes: 0,
+          };
+          (payload.responseMeta as { structuredPayloadBytes: number }).structuredPayloadBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+          return result(payload, facade.status !== 'ok');
+        }
         const readiness = await controllerReadinessEvidence(ctx, repository);
         const liveGit = gitSnapshot(repository.canonicalRoot);
         // Compare startup Runtime Source against the Controller package authority —
@@ -2801,8 +2910,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           },
           observedAt: new Date().toISOString(),
         };
-        const detailLevel = args.detail_level === 'detail' ? 'detail' : 'summary';
-        // Always prefer stored plugin manifests on rh_status get. Live host probes
+        // Always prefer stored plugin manifests on rh_status detail. Live host probes
         // (Xcode/simctl, etc.) must not stall Managed MCP gateways on reconnect/status.
         const manifests = listAssistantPluginManifests(ctx.controllerHome, repository, {
           preferStored: true,
