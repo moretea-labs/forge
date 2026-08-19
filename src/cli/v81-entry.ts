@@ -1,11 +1,8 @@
 import { buildProgram } from './index';
-import { buildRepositoryCommand } from './commands/repository';
 import { CLI_VERSION } from './commands/status';
 
 export function buildV81Program() {
-  const program = buildProgram();
-  program.addCommand(buildRepositoryCommand());
-  return program;
+  return buildProgram();
 }
 
 export async function runV81Cli(argv: string[] = process.argv): Promise<void> {
