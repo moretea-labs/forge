@@ -51,7 +51,7 @@ import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { recoveryConnectorDescriptor } from '../../src/cli/commands/recovery';
 import { ensureMcpControllerHomeOAuthPassphrase } from '../../src/cli/mcp/auth';
-import { inspectPrimaryConnectorLaunchdContract, inspectRecoveryTunnelLaunchdContract, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
+import { inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -1703,6 +1703,24 @@ describe('standalone recovery on canonical Runtime', () => {
       plistPath,
     })).toMatchObject({ plistInstalled: true, runAtLoad: true, keepAliveAlways: true, restartSafe: true });
   });
+  test('accepts failure-triggered KeepAlive for the explicitly managed primary public tunnel', () => {
+    const home = controllerHome();
+    const plistPath = join(home, 'Library', 'LaunchAgents', 'com.cloudflare.cloudflared.plist');
+    mkdirSync(dirname(plistPath), { recursive: true });
+    writeFileSync(plistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict></dict></plist>');
+    expect(inspectPrimaryPublicTunnelLaunchdContract({
+      platform: 'launchd',
+      label: 'com.cloudflare.cloudflared',
+      plistPath,
+    })).toMatchObject({
+      plistInstalled: true,
+      runAtLoad: true,
+      keepAliveAlways: false,
+      keepAliveOnFailure: true,
+      restartSafe: true,
+    });
+  });
+
   test('accepts failure-triggered KeepAlive for the explicitly managed primary Connector', () => {
     const home = controllerHome();
     const plistPath = join(home, 'Library', 'LaunchAgents', 'com.moretea.forge.mcp-gateway.plist');

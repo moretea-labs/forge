@@ -681,6 +681,12 @@ export function inspectPrimaryConnectorLaunchdContract(
   return inspectLaunchdRestartContract(service, true);
 }
 
+export function inspectPrimaryPublicTunnelLaunchdContract(
+  service: Pick<PublicTunnelServiceConfig, 'platform' | 'label' | 'plistPath'>,
+): RecoveryTunnelLaunchdContract {
+  return inspectLaunchdRestartContract(service, true);
+}
+
 export async function installStandaloneRecovery(input: {
   controllerHome: string;
   repoRoot: string;
@@ -706,12 +712,12 @@ export async function installStandaloneRecovery(input: {
     }
   }
   if (input.primaryPublicTunnelService?.platform === 'launchd') {
-    const tunnelContract = inspectRecoveryTunnelLaunchdContract(input.primaryPublicTunnelService);
+    const tunnelContract = inspectPrimaryPublicTunnelLaunchdContract(input.primaryPublicTunnelService);
     if (!tunnelContract.plistInstalled) {
       throw new Error(`RECOVERY_PRIMARY_TUNNEL_LAUNCHD_PLIST_MISSING: ${tunnelContract.plistPath}`);
     }
     if (!tunnelContract.restartSafe) {
-      throw new Error('RECOVERY_PRIMARY_TUNNEL_LAUNCHD_RESTART_CONTRACT_REQUIRED: RunAtLoad=true and KeepAlive=true');
+      throw new Error('RECOVERY_PRIMARY_TUNNEL_LAUNCHD_RESTART_CONTRACT_REQUIRED: RunAtLoad=true and KeepAlive=true or KeepAlive.SuccessfulExit=false');
     }
   }
   if (input.primaryConnectorService?.platform === 'launchd') {
