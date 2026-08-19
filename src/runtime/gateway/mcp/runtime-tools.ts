@@ -3484,14 +3484,18 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       case 'rh_work': {
         const repository = selected(ctx, args);
         const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
-        const operation = String(args.operation ?? 'start');
+        const requestedOperation = String(args.operation ?? 'start');
+        const frozenScheduleDeleteId = requestedOperation === 'repair' && typeof args.capability_id === 'string' && args.capability_id.startsWith('schedule.delete:')
+          ? args.capability_id.slice('schedule.delete:'.length).trim()
+          : '';
+        const operation = frozenScheduleDeleteId ? 'schedule_delete' : requestedOperation;
         if (!allowedFacadeOperations('rh_work').includes(operation)) {
           return invalidFacadeOperation('rh_work', operation);
         }
         if (operation.startsWith('schedule_')) {
           try {
             const workId = String(args.work_id ?? '').trim();
-            const scheduleId = String(args.schedule_id ?? '').trim();
+            const scheduleId = frozenScheduleDeleteId || String(args.schedule_id ?? '').trim();
             if (operation === 'schedule_create') {
               const controllerType = String(args.controller_type ?? 'chatgpt').trim();
               if (!['chatgpt', 'codex', 'claude', 'grok'].includes(controllerType)) throw new Error('CONTROLLER_TYPE_INVALID');

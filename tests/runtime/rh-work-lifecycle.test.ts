@@ -1102,6 +1102,23 @@ describe('rh_work managed lifecycle closure', () => {
     const recreatedScheduleId = ((recreated?.structuredContent as { data?: { schedule?: { scheduleId?: string } } })?.data?.schedule?.scheduleId) ?? '';
     expect(recreatedScheduleId).toBeTruthy();
     expect(recreatedScheduleId).not.toBe(scheduleId);
+
+    await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_pause',
+      schedule_id: recreatedScheduleId,
+      reason: 'frozen schema compatibility delete',
+    });
+    const compatibilityDelete = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'repair',
+      capability_id: `schedule.delete:${recreatedScheduleId}`,
+    });
+    expect(compatibilityDelete?.isError).not.toBe(true);
+    expect((compatibilityDelete?.structuredContent as { data?: { deleted?: boolean; scheduleId?: string } })?.data).toMatchObject({
+      deleted: true,
+      scheduleId: recreatedScheduleId,
+    });
   });
 
   test('rh_work manages one idempotent continuation schedule for bounded Work', async () => {
