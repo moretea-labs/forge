@@ -9,7 +9,6 @@
 
 import type { McpToolDefinition, CallToolResult } from '../../../cli/mcp/tools';
 import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
-import { getRepository } from '../../../cli/repositories/registry';
 import {
   cancelRepositoryCommandProcess,
   getRepositoryCommandProcess,
@@ -41,7 +40,7 @@ function definition(
 
 const repoIdProp = {
   type: 'string',
-  description: 'Stable repository id. Process must belong to this repository.',
+  description: 'Repository or ephemeral workspace scope id returned by the originating command. Process must belong to this scope.',
 };
 const processIdProp = {
   type: 'string',
@@ -143,13 +142,10 @@ function requireRepoAndProcess(
   if (!repoId) throw new Error('REPOSITORY_ID_REQUIRED: repo_id is required for process tools');
   if (!processId) throw new Error('PROCESS_ID_REQUIRED: process_id is required for process tools');
 
-  // Force repo scope: repository must exist under this controller home.
-  const repository = getRepository(repoId, ctx.controllerHome);
-  if (!repository) {
-    throw new Error(`REPOSITORY_NOT_FOUND: ${repoId}`);
-  }
-
-  // Process must belong to the requested repo.
+  // The Process handle is the scope authority. Ephemeral workspace targets are
+  // intentionally not registered in Repository Registry, so requiring a live
+  // repository record here would make their returned managed handles impossible
+  // to resume. Exact repo/workspace scope + process id still fails closed.
   const handle = getRepositoryCommandProcess(ctx.controllerHome, repoId, processId);
   if (!handle) {
     throw new Error(`PROCESS_NOT_FOUND: process ${processId} is not registered under repo ${repoId}`);

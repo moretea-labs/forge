@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawn, spawnSync } from 'child_process';
-import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
+import { executionIdentityForRepository, executionIdentityFromCoordinates } from '../../src/runtime/control-plane/execution/execution-identity';
 import {
   __resetLiveMonitorsForTests,
   cancelProcess,
@@ -60,6 +60,7 @@ import {
 } from '../../src/runtime/root/write-fence';
 import { defaultProcessIdentityProbe, executableFingerprint } from '../../src/runtime/shared/process-identity';
 import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
+import { resolveEphemeralWorkspaceTarget } from '../../src/cli/repositories/ephemeral-workspace';
 import { callProcessTool, processToolDefinitions } from '../../src/runtime/gateway/mcp/process-tools';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { rebuildRepositoryProjection } from '../../src/runtime/projections/materialized-view';
@@ -681,6 +682,60 @@ describe('Unified Process Runtime', () => {
     expect(JSON.stringify(logs?.structuredContent)).toContain('SAFE_STATE => running');
     const record = getProcessRecord(fx.controllerHome, fx.repository.repoId, started.processId)!;
     expect(record.stdoutPath && readFileSync(record.stdoutPath, 'utf8')).not.toContain(syntheticSecret);
+  });
+
+  test('process attachment tools resume handles from unregistered ephemeral workspace scopes', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-ephemeral-process-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller-home');
+    const workspaceRoot = join(root, 'workspace');
+    mkdirSync(controllerHome, { recursive: true });
+    mkdirSync(workspaceRoot, { recursive: true });
+    const target = resolveEphemeralWorkspaceTarget(workspaceRoot, controllerHome);
+    const started = await spawnManagedProcess({
+      controllerHome,
+      repoId: target.workspaceId,
+      checkoutId: target.checkoutId,
+      executionIdentity: executionIdentityFromCoordinates({
+        repositoryId: target.workspaceId,
+        checkoutId: target.checkoutId,
+        canonicalRoot: target.canonicalRoot,
+        authority: 'ephemeral_workspace',
+      }),
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', "setTimeout(() => { process.stdout.write('EPHEMERAL_DONE\\n'); }, 40);"],
+        cwd: target.canonicalRoot,
+      },
+      interactiveWaitMs: 1,
+      timeoutMs: 5_000,
+    });
+    expect(started.completed).toBe(false);
+
+    const ctx = { controllerHome, repo: workspaceRoot } as unknown as MultiRepositoryMcpToolContext;
+    const got = await callProcessTool(ctx, 'process_get', {
+      repo_id: target.workspaceId,
+      process_id: started.processId,
+    });
+    expect(got?.isError).not.toBe(true);
+    expect((got?.structuredContent as { process?: { processId?: string } })?.process?.processId).toBe(started.processId);
+
+    const waited = await callProcessTool(ctx, 'process_wait', {
+      repo_id: target.workspaceId,
+      process_id: started.processId,
+      timeout_ms: 5_000,
+    });
+    expect(waited?.isError).not.toBe(true);
+    expect((waited?.structuredContent as { process?: { completed?: boolean; stdout?: string } })?.process?.completed).toBe(true);
+    expect((waited?.structuredContent as { process?: { stdout?: string } })?.process?.stdout).toContain('EPHEMERAL_DONE');
+
+    const logs = await callProcessTool(ctx, 'process_logs', {
+      repo_id: target.workspaceId,
+      process_id: started.processId,
+    });
+    expect(logs?.isError).not.toBe(true);
+    expect((logs?.structuredContent as { stdout?: string })?.stdout).toContain('EPHEMERAL_DONE');
   });
 
   test('sanitizes historical terminal logs and removes stale command descriptors on read', async () => {
