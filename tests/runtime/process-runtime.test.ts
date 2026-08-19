@@ -43,8 +43,11 @@ import {
 import {
   classifyRepositoryCommandRoute,
   executeRepositoryCommandViaProcessRuntime,
+  getRepositoryCommandProcess,
+  readRepositoryCommandProcessLogs,
   waitRepositoryCommandProcess,
 } from '../../src/runtime/execution/process-runtime/command-facade';
+import { clearLightweightProcessMemoryForTest } from '../../src/runtime/execution/process-runtime/lightweight-managed';
 import { classifyGatewayExecutionPath } from '../../src/runtime/gateway/mcp/router';
 import { persistedCheckSemanticScopeKey, runPersistedCheckViaProcessRuntime } from '../../src/runtime/gateway/mcp/persisted-check-process';
 import { claimsForMcpOperation } from '../../src/runtime/gateway/mcp/resource-policy';
@@ -1089,6 +1092,16 @@ describe('run_check Process Runtime facade', () => {
       { timeoutMs: 30_000 },
     );
     expect(terminal.completed).toBe(true);
+    clearLightweightProcessMemoryForTest();
+    const recovered = await waitRepositoryCommandProcess(
+      fx.controllerHome,
+      fx.repository.repoId,
+      result.process!.processId,
+      { timeoutMs: 30_000 },
+    );
+    expect(recovered).toMatchObject({ processId: result.process!.processId, completed: true, ok: terminal.ok, exitCode: terminal.exitCode });
+    expect(getRepositoryCommandProcess(fx.controllerHome, fx.repository.repoId, result.process!.processId)).toMatchObject({ completed: true });
+    expect(readRepositoryCommandProcessLogs(fx.controllerHome, fx.repository.repoId, result.process!.processId)?.processId).toBe(result.process!.processId);
   });
 });
 

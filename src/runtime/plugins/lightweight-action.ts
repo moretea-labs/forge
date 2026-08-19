@@ -72,6 +72,7 @@ export async function startLightweightPluginAction(input: {
   const sourceSidecarPath = resolve(import.meta.dir, 'plugin-action-sidecar.ts');
   const loaderPath = resolve(import.meta.dir, '../shared/node-ts-loader.mjs');
   const { handle } = await startLightweightInternalProcess({
+    controllerHome: input.controllerHome,
     repoId: input.repository.repoId,
     executable: useBundledSidecar ? runtimeSidecar : nodeExecutable!,
     args: useBundledSidecar
@@ -94,10 +95,11 @@ export async function startLightweightPluginAction(input: {
 }
 
 export async function waitLightweightPluginAction(
+  controllerHome: string,
   repoId: string,
   processId: string,
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<ProcessHandle> {
-  return waitForLightweightProcess(repoId, processId, { timeoutMs, signal });
+  return waitForLightweightProcess(controllerHome, repoId, processId, { timeoutMs, signal });
 }

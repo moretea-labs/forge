@@ -247,7 +247,7 @@ async function sampleCase(
   // as a benchmark regression.
   if (phases.path === 'process_managed' && processId) {
     const settled = isLightweightProcessId(processId)
-      ? await waitForLightweightProcess(fixture.repository.repoId, processId, { timeoutMs: 10_000 })
+      ? await waitForLightweightProcess(fixture.controllerHome, fixture.repository.repoId, processId, { timeoutMs: 10_000 })
       : await waitForProcess(fixture.controllerHome, fixture.repository.repoId, processId, { timeoutMs: 10_000 });
     if (!settled.completed) {
       throw new Error(`BENCHMARK_PROCESS_DID_NOT_SETTLE: ${processId}`);

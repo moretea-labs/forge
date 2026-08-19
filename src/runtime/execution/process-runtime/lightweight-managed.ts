@@ -1,13 +1,15 @@
 /**
- * In-memory process handles for ordinary local repository commands.
+ * Lightweight process handles for ordinary local repository commands.
  *
- * This deliberately has no SQLite record, lease, recovery membership, runner
- * indirection, or replay binding. Repository state and the command audit remain
- * the post-crash reconciliation evidence. A controller restart may lose the
- * handle; it must never re-execute the command to reconstruct it.
+ * Running state deliberately has no SQLite record, lease, recovery membership,
+ * runner indirection, or replay binding. Only a bounded terminal receipt is
+ * persisted so a controller restart can recover completed evidence; it must
+ * never re-execute a command to reconstruct a missing running handle.
  */
 
 import { randomUUID } from 'crypto';
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'fs';
+import { join } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../../effects/process-runner';
 import {
   executeRepositoryCommandAsync,
@@ -17,7 +19,9 @@ import {
   releaseControllerCheckSubscription,
   runControllerCheckAsync,
 } from '../../../cli/controller/check-runner';
+import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
+import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import { runBoundedProcess } from '../thin-harness/async-process';
 import type { ProcessHandle, ProcessLogSlice, WaitProcessOptions } from './types';
 
@@ -30,6 +34,8 @@ const EMPTY_EFFECTS = {
 const DEFAULT_MAX_OUTPUT_BYTES = 128 * 1024;
 const TERMINAL_RETENTION_MS = 60 * 60_000;
 const MAX_RETAINED_HANDLES = 256;
+const TERMINAL_RECEIPT_RETENTION_MS = 6 * 60 * 60_000;
+const MAX_TERMINAL_RECEIPTS = 256;
 
 interface LightweightExecutionResult {
   ok?: boolean;
@@ -64,8 +70,99 @@ interface LightweightEntry {
 
 const entries = new Map<string, LightweightEntry>();
 
+interface LightweightTerminalReceipt {
+  schemaVersion: 1;
+  repoId: string;
+  processId: string;
+  finishedAt: string;
+  handle: ProcessHandle;
+}
+
+function terminalReceiptRoot(controllerHome: string, repoId: string): string {
+  return join(repositoryControllerRoot(controllerHome, repoId), 'process-runtime', 'lightweight-terminal');
+}
+
+function terminalReceiptPath(controllerHome: string, repoId: string, processId: string): string {
+  return join(terminalReceiptRoot(controllerHome, repoId), `${sanitizeFileComponent(processId)}.json`);
+}
+
 function boundedAppend(current: string, chunk: string, maxBytes: number): string {
   return capProcessOutput(redactProcessOutput(`${current}${chunk}`), maxBytes);
+}
+
+function terminalHandle(entry: LightweightEntry): ProcessHandle {
+  const handle = entryHandle(entry);
+  const stdout = capProcessOutput(redactProcessOutput(handle.stdout ?? ''), entry.maxOutputBytes);
+  const stderr = capProcessOutput(redactProcessOutput(handle.stderr ?? ''), entry.maxOutputBytes);
+  return { ...handle, stdout, stderr, stdoutTail: stdout, stderrTail: stderr };
+}
+
+function pruneTerminalReceipts(root: string, keepPath: string): void {
+  try {
+    const now = Date.now();
+    const retained: Array<{ path: string; mtimeMs: number }> = [];
+    for (const file of readdirSync(root)) {
+      if (!file.endsWith('.json')) continue;
+      const path = join(root, file);
+      try {
+        const mtimeMs = statSync(path).mtimeMs;
+        if (path !== keepPath && now - mtimeMs > TERMINAL_RECEIPT_RETENTION_MS) {
+          rmSync(path, { force: true });
+          continue;
+        }
+        retained.push({ path, mtimeMs });
+      } catch {
+        // A concurrently removed receipt is already pruned.
+      }
+    }
+    const excess = retained.length - MAX_TERMINAL_RECEIPTS;
+    if (excess <= 0) return;
+    const candidates = retained
+      .filter((entry) => entry.path !== keepPath)
+      .sort((left, right) => left.mtimeMs - right.mtimeMs);
+    for (const entry of candidates.slice(0, excess)) rmSync(entry.path, { force: true });
+  } catch {
+    // Terminal receipts are recovery evidence only; cleanup must not fail execution.
+  }
+}
+
+function persistTerminalReceipt(controllerHome: string, entry: LightweightEntry): void {
+  if (!entry.result || !entry.finishedAtMs) return;
+  try {
+    const root = terminalReceiptRoot(controllerHome, entry.repoId);
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    const path = terminalReceiptPath(controllerHome, entry.repoId, entry.processId);
+    const receipt: LightweightTerminalReceipt = {
+      schemaVersion: 1,
+      repoId: entry.repoId,
+      processId: entry.processId,
+      finishedAt: new Date(entry.finishedAtMs).toISOString(),
+      handle: terminalHandle(entry),
+    };
+    writeJsonAtomic(path, receipt);
+    try { chmodSync(path, 0o600); } catch { /* Windows or restricted filesystem. */ }
+    pruneTerminalReceipts(root, path);
+  } catch {
+    // A receipt failure must never turn a completed local command into a failure.
+  }
+}
+
+function readTerminalReceipt(controllerHome: string, repoId: string, processId: string): LightweightTerminalReceipt | undefined {
+  const path = terminalReceiptPath(controllerHome, repoId, processId);
+  if (!existsSync(path)) return undefined;
+  try {
+    const receipt = readJsonFile<LightweightTerminalReceipt>(path);
+    if (receipt.schemaVersion !== 1 || receipt.repoId !== repoId || receipt.processId !== processId) return undefined;
+    if (!receipt.handle?.completed || receipt.handle.processId !== processId) return undefined;
+    const finishedAtMs = Date.parse(receipt.finishedAt);
+    if (!Number.isFinite(finishedAtMs) || Date.now() - finishedAtMs > TERMINAL_RECEIPT_RETENTION_MS) {
+      rmSync(path, { force: true });
+      return undefined;
+    }
+    return receipt;
+  } catch {
+    return undefined;
+  }
 }
 
 function sweep(): void {
@@ -147,6 +244,7 @@ export interface LightweightCommandMetrics {
 }
 
 export interface StartLightweightCheckInput {
+  controllerHome: string;
   repoId: string;
   repoRoot: string;
   checkId: string;
@@ -163,6 +261,7 @@ export interface StartLightweightInternalProcessInput {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   interactiveWaitMs: number;
+  controllerHome: string;
   timeoutMs: number;
   maxOutputBytes?: number;
   workId?: string;
@@ -239,6 +338,7 @@ export async function startLightweightRepositoryCommand(
     entry.result = result;
     entry.finishedAtMs = Date.now();
     input.execution.signal?.removeEventListener('abort', onCallerAbort);
+    persistTerminalReceipt(input.controllerHome, entry);
     return result;
   });
   entry.promise = input.deferStart
@@ -345,6 +445,7 @@ export async function startLightweightInternalProcess(
     entry.result = result;
     entry.finishedAtMs = Date.now();
     input.signal?.removeEventListener('abort', onCallerAbort);
+    persistTerminalReceipt(input.controllerHome, entry);
     return result;
   });
   entries.set(processId, entry);
@@ -450,6 +551,7 @@ export async function startLightweightControllerCheck(
   })).then((result) => {
     entry.result = result;
     entry.finishedAtMs = Date.now();
+    persistTerminalReceipt(input.controllerHome, entry);
     return result;
   });
   entries.set(processId, entry);
@@ -490,18 +592,30 @@ export function isLightweightProcessId(processId: string): boolean {
   return processId.startsWith('lightweight:');
 }
 
-export function getLightweightProcessHandle(repoId: string, processId: string): ProcessHandle | undefined {
+/** Test seam for proving terminal receipt recovery across Runtime-memory loss. */
+export function clearLightweightProcessMemoryForTest(): void {
+  entries.clear();
+}
+
+export function getLightweightProcessHandle(controllerHome: string, repoId: string, processId: string): ProcessHandle | undefined {
   const entry = entries.get(processId);
-  if (!entry || entry.repoId !== repoId) return undefined;
-  return entryHandle(entry);
+  if (entry?.repoId === repoId) return entryHandle(entry);
+  return readTerminalReceipt(controllerHome, repoId, processId)?.handle;
 }
 
 export async function waitForLightweightProcess(
+  controllerHome: string,
   repoId: string,
   processId: string,
   options: WaitProcessOptions = {},
 ): Promise<ProcessHandle> {
-  const entry = requireEntry(repoId, processId);
+  const entry = entries.get(processId);
+  if (!entry) {
+    const receipt = readTerminalReceipt(controllerHome, repoId, processId);
+    if (receipt) return receipt.handle;
+    throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
+  }
+  if (entry.repoId !== repoId) throw new Error(`PROCESS_REPO_MISMATCH: process ${processId} belongs to ${entry.repoId}, not ${repoId}`);
   if (entry.result) return entryHandle(entry);
   const timeoutMs = Math.max(1, options.timeoutMs ?? 15_000);
   await Promise.race([
@@ -515,8 +629,14 @@ export async function waitForLightweightProcess(
   return entryHandle(entry);
 }
 
-export async function cancelLightweightProcess(repoId: string, processId: string): Promise<ProcessHandle> {
-  const entry = requireEntry(repoId, processId);
+export async function cancelLightweightProcess(controllerHome: string, repoId: string, processId: string): Promise<ProcessHandle> {
+  const entry = entries.get(processId);
+  if (!entry) {
+    const receipt = readTerminalReceipt(controllerHome, repoId, processId);
+    if (receipt) return receipt.handle;
+    throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
+  }
+  if (entry.repoId !== repoId) throw new Error(`PROCESS_REPO_MISMATCH: process ${processId} belongs to ${entry.repoId}, not ${repoId}`);
   if (!entry.result) {
     entry.abort.abort();
     await entry.promise;
@@ -525,12 +645,28 @@ export async function cancelLightweightProcess(repoId: string, processId: string
 }
 
 export function readLightweightProcessLogs(
+  controllerHome: string,
   repoId: string,
   processId: string,
   maxBytes = 32 * 1024,
 ): ProcessLogSlice | undefined {
   const entry = entries.get(processId);
-  if (!entry || entry.repoId !== repoId) return undefined;
+  if (!entry) {
+    const receipt = readTerminalReceipt(controllerHome, repoId, processId);
+    if (!receipt) return undefined;
+    const stdout = capProcessOutput(receipt.handle.stdout ?? '', maxBytes);
+    const stderr = capProcessOutput(receipt.handle.stderr ?? '', maxBytes);
+    return {
+      processId,
+      stdout,
+      stderr,
+      stdoutBytes: Buffer.byteLength(receipt.handle.stdout ?? '', 'utf8'),
+      stderrBytes: Buffer.byteLength(receipt.handle.stderr ?? '', 'utf8'),
+      truncated: Buffer.byteLength(receipt.handle.stdout ?? '', 'utf8') > maxBytes
+        || Buffer.byteLength(receipt.handle.stderr ?? '', 'utf8') > maxBytes,
+    };
+  }
+  if (entry.repoId !== repoId) return undefined;
   const stdout = capProcessOutput(entry.result?.stdout ?? entry.stdout, maxBytes);
   const stderr = capProcessOutput(entry.result?.stderr ?? entry.stderr, maxBytes);
   return {

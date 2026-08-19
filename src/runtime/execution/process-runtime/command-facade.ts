@@ -425,7 +425,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
 
 export function getRepositoryCommandProcess(controllerHome: string, repoId: string, processId: string): ProcessHandle | undefined {
   return isLightweightProcessId(processId)
-    ? getLightweightProcessHandle(repoId, processId)
+    ? getLightweightProcessHandle(controllerHome, repoId, processId)
     : getProcessHandle(controllerHome, repoId, processId);
 }
 
@@ -436,7 +436,7 @@ export function waitRepositoryCommandProcess(
   options?: Parameters<typeof waitForProcess>[3],
 ): Promise<ProcessHandle> {
   return isLightweightProcessId(processId)
-    ? waitForLightweightProcess(repoId, processId, options)
+    ? waitForLightweightProcess(controllerHome, repoId, processId, options)
     : waitForProcess(controllerHome, repoId, processId, options);
 }
 
@@ -446,7 +446,7 @@ export function cancelRepositoryCommandProcess(
   processId: string,
 ): Promise<ProcessHandle> {
   return isLightweightProcessId(processId)
-    ? cancelLightweightProcess(repoId, processId)
+    ? cancelLightweightProcess(controllerHome, repoId, processId)
     : cancelProcess(controllerHome, repoId, processId);
 }
 
@@ -457,6 +457,6 @@ export function readRepositoryCommandProcessLogs(
   maxBytes?: number,
 ) {
   return isLightweightProcessId(processId)
-    ? readLightweightProcessLogs(repoId, processId, maxBytes)
+    ? readLightweightProcessLogs(controllerHome, repoId, processId, maxBytes)
     : readProcessLogs(controllerHome, repoId, processId, maxBytes);
 }

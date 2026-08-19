@@ -190,6 +190,7 @@ export async function runCheckViaProcessRuntime(
   }
   if (!durableVerificationBinding) {
     const lightweight = await startLightweightControllerCheck({
+      controllerHome: input.controllerHome,
       repoId: input.repoId,
       repoRoot: input.repoRoot,
       checkId: input.checkId,
@@ -291,7 +292,7 @@ export async function waitForCheckProcess(
   timeoutMs?: number,
 ): Promise<ProcessHandle> {
   if (isLightweightProcessId(processId)) {
-    return waitForLightweightProcess(repoId, processId, { timeoutMs });
+    return waitForLightweightProcess(controllerHome, repoId, processId, { timeoutMs });
   }
   return waitForProcess(controllerHome, repoId, processId, { timeoutMs });
 }
@@ -302,7 +303,7 @@ export function getCheckProcessHandle(
   processId: string,
 ): ProcessHandle | undefined {
   if (isLightweightProcessId(processId)) {
-    return getLightweightProcessHandle(repoId, processId);
+    return getLightweightProcessHandle(controllerHome, repoId, processId);
   }
   return getProcessHandle(controllerHome, repoId, processId);
 }

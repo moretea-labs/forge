@@ -5835,6 +5835,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           });
           if (!handle.completed && args.wait === true) {
             handle = await waitLightweightPluginAction(
+              ctx.controllerHome,
               repository.repoId,
               handle.processId,
               typeof args.wait_ms === 'number' ? Math.max(1, args.wait_ms) : 15_000,
