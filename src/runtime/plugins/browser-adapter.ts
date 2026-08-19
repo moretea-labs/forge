@@ -2413,7 +2413,7 @@ function capabilities(): AssistantPluginCapability[] {
       description: 'Perform explicit form and pointer interactions on HTTP(S) pages through the persistent Playwright profile.',
       scopes: ['browser.interact', 'browser.profile'],
       actions: [
-        'click', 'click_text', 'double_click', 'hover', 'focus', 'type', 'fill', 'select_option',
+        'activate_page', 'click', 'click_text', 'double_click', 'hover', 'focus', 'type', 'fill', 'select_option',
         'check', 'uncheck', 'press', 'keyboard_shortcut', 'dispatch_event', 'wait_for_selector', 'attach_local_file', 'await_file_transfer',
       ],
     },
@@ -2714,6 +2714,14 @@ function actions(): AssistantPluginActionDescriptor[] {
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
       scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
       argumentsSchema: sessionTargetSchema({}),
+    },
+    {
+      actionId: 'activate_page',
+      title: 'Activate browser page',
+      description: 'Bring the exact saved browser page/tab to the foreground without opening or replacing a tab.',
+      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
+      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
+      argumentsSchema: interactSchema({}, []),
     },
     {
       actionId: 'click',
@@ -3559,6 +3567,17 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             ? { consoleErrors: diagnostics.consoleErrors.slice(0, 50) }
             : { failedRequests: diagnostics.failedRequests.slice(0, 50) }),
         }), { persistSession: true });
+      }
+      case 'activate_page': {
+        const target = resolveActionTarget(input.repoRoot, input.args);
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+          if (!page.bringToFront) {
+            throw new AssistantPluginError('PLUGIN_BROWSER_ACTIVATION_UNSUPPORTED', 'The selected browser provider cannot bring the saved page to the foreground.', { retryable: false });
+          }
+          await page.bringToFront();
+          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'activate_page', 'Activated the exact saved browser page in the foreground.', {});
+        });
       }
       case 'click_text': {
         const target = resolveActionTarget(input.repoRoot, input.args);

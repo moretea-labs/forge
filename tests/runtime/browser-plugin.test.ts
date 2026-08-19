@@ -533,6 +533,7 @@ describe('browser plugin', () => {
       'query_selector',
       'screenshot',
       'extract_links',
+      'activate_page',
       'click',
       'click_text',
       'dispatch_event',
@@ -563,6 +564,8 @@ describe('browser plugin', () => {
       ]));
     }
 
+    expect(actions.activate_page?.risk).toBe('workspace_write');
+    expect(actions.activate_page?.confirmation).toBe('authorization');
     expect(actions.click?.risk).toBe('remote_write');
     expect(actions.click?.confirmation).toBe('authorization');
     expect(actions.click_text?.risk).toBe('remote_write');
@@ -1416,6 +1419,38 @@ describe('browser plugin', () => {
     expect(runtime.events.created).toEqual(['9001']);
     expect(runtime.events.activeTabId).toBe(ref!.tabId);
     expect(metadata.active).toBe(true);
+  });
+
+  test('browser activate_page foregrounds the exact saved native tab without creating a duplicate', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const opened = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page', requestId: 'browser-native-activate-open',
+      args: { session_id: 'browser-native-activate', url: 'https://example.com/foreground' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect((opened.session as Record<string, unknown>).sessionId).toBe('browser-native-activate');
+    expect(native.events.created).toEqual(['9001']);
+    expect(native.events.activeTabId).toBe('501');
+
+    const activated = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'activate_page', requestId: 'browser-native-activate-page',
+      args: { session_id: 'browser-native-activate', post_action_wait_ms: 1 }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect((activated.action as Record<string, unknown>).actionId).toBe('activate_page');
+    expect(native.events.created).toEqual(['9001']);
+    expect(native.events.activeTabId).toBe('9001');
   });
 
   test('native attach fails closed when the stable macOS capability broker is unavailable', async () => {
