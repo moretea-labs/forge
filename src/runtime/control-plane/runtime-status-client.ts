@@ -1,6 +1,5 @@
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
 import { readSchedulerHealthSnapshot } from './global-scheduler/scheduler';
-import type { ControllerStartupRecoveryResult } from './startup-recovery';
 import type { RuntimeSourceIdentity } from './runtime-generation';
 import { readRuntimeOwner } from '../root/ownership';
 import { observeRuntimeStatus } from '../root/status';
@@ -26,7 +25,6 @@ export interface ForgeRuntimeStatus {
   gatewaySeparated?: boolean;
   workerIsolation?: boolean;
   degraded?: boolean;
-  recovery?: ControllerStartupRecoveryResult;
   generation?: string;
   source?: RuntimeSourceIdentity;
   restartRequired?: boolean;
