@@ -2828,8 +2828,18 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           (payload.responseMeta as { structuredPayloadBytes: number }).structuredPayloadBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
           return result(payload, facade.status !== 'ok');
         }
+        const detailTimingStartedAt = performance.now();
+        let detailTimingMark = detailTimingStartedAt;
+        const detailPhaseTimingsMs: Record<string, number> = {};
+        const markDetailPhase = (phase: string): void => {
+          const now = performance.now();
+          detailPhaseTimingsMs[phase] = Number((now - detailTimingMark).toFixed(2));
+          detailTimingMark = now;
+        };
         const readiness = await controllerReadinessEvidence(ctx, repository);
+        markDetailPhase('readiness');
         const liveGit = gitSnapshot(repository.canonicalRoot);
+        markDetailPhase('git');
         // Compare startup Runtime Source against the Controller package authority —
         // never against the selected execution repository.
         const runtimeSource = runtimeSourceSnapshotStatus(readiness.daemon.source, ctx.runtimeSourceRoot);
@@ -2838,6 +2848,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const toolset = await import('../../../cli/mcp/toolset');
         const exposure = toolset.controllerExposureSnapshot(ctx);
         const localRegisteredToolNames = toolset.allControllerToolDefinitions(ctx).map((tool) => tool.name).sort();
+        markDetailPhase('tool_surface');
         const toolSurfaceReady = exposure.ready && exposure.missingToolNames.length === 0;
         // Ordinary interactive execution depends on the execution axis only.
         // Maintenance debt / durable queue debt are reported as separate
@@ -2857,6 +2868,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             maintenanceHealthy = null;
           }
         }
+        markDetailPhase('maintenance');
         const effectiveReady = executionReady && toolSurfaceReady && !sourceSnapshotStale;
         const readinessReasons = [...readiness.reasons];
         if (!toolSurfaceReady) {
@@ -2920,15 +2932,19 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           preferStored: true,
         });
         const capabilities = listCapabilityDescriptors(manifests);
+        markDetailPhase('plugins');
         const pendingHandoffs = listHandoffItems({ ...store, status: 'pending', limit: 20 });
         const activeContracts = listWorkContracts({ ...store, status: 'active', limit: 200 });
+        markDetailPhase('work_state');
         const activePrimaryWork = activeContracts.filter((contract) => (contract.lifecycleRole ?? 'primary') === 'primary');
         const activeExecutionChildren = activeContracts.filter((contract) => contract.lifecycleRole === 'execution_child');
         const activeRuntimeInstanceId = currentControllerInstanceId();
         const activeProcessRecords = listProcessRecords(ctx.controllerHome, repository.repoId, 500).filter((process) => isManagedProcessActive(process) && (!process.runtimeInstanceId || process.runtimeInstanceId === activeRuntimeInstanceId));
+        markDetailPhase('process_state');
         const activeProcessWorkIds = new Set(activeProcessRecords.map((process) => process.workId).filter((workId): workId is string => Boolean(workId)));
         const activeControllerWorkIds = new Set(activePrimaryWork.filter((contract) => Boolean(getControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId))).map((contract) => contract.workId));
         const executingPrimaryWorkIds = new Set([...activeProcessWorkIds, ...activeControllerWorkIds].filter((workId) => activePrimaryWork.some((contract) => contract.workId === workId)));
+        markDetailPhase('controller_sessions');
         const preferredFacadeTools = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'] as const;
         const facade = buildFacadeResult({
           status: effectiveReady ? 'ok' : 'blocked',
@@ -2989,7 +3005,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           rawAvailable: detailLevel === 'detail',
           detailLevel,
         });
-        return result(facade as unknown as Record<string, unknown>, facade.status !== 'ok');
+        markDetailPhase('response_build');
+        const payload = facade as unknown as Record<string, unknown>;
+        payload.responseMeta = {
+          serverDurationMs: Number((performance.now() - detailTimingStartedAt).toFixed(2)),
+          phaseTimingsMs: detailPhaseTimingsMs,
+        };
+        return result(payload, facade.status !== 'ok');
       }
       case 'rh_inbox': {
         const repository = selected(ctx, args);

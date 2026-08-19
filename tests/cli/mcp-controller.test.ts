@@ -2172,6 +2172,27 @@ describe("MCP controller profile", () => {
     });
   });
 
+  test("reports bounded rh_status detail phase timings without changing the summary fast path", async () => {
+    await withController(async (repoRoot, _ctx) => {
+      const multi = createMultiRepositoryContext({ repo: repoRoot, profile: "controller" });
+      const raw = await callRuntimeTool(multi, "rh_status", { detail_level: "detail" });
+      expect(raw).toBeTruthy();
+      const payload = JSON.parse(raw!.content[0].text);
+      expect(payload.responseMeta.serverDurationMs).toBeGreaterThanOrEqual(0);
+      expect(payload.responseMeta.phaseTimingsMs).toMatchObject({
+        readiness: expect.any(Number),
+        git: expect.any(Number),
+        tool_surface: expect.any(Number),
+        maintenance: expect.any(Number),
+        plugins: expect.any(Number),
+        work_state: expect.any(Number),
+        process_state: expect.any(Number),
+        controller_sessions: expect.any(Number),
+        response_build: expect.any(Number),
+      });
+    });
+  });
+
   test("keeps rh_context detail capability payload bounded", async () => {
     await withController(async (repoRoot, _ctx) => {
       const multi = createMultiRepositoryContext({ repo: repoRoot, profile: "controller" });
