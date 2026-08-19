@@ -397,6 +397,84 @@ function searchInventory(
   return { files: candidates.slice(0, maxFiles), candidateCount: candidates.length, cacheHit };
 }
 
+interface SearchManyMatchState {
+  queries: string[];
+  needles: Array<{ query: string; needle: string }>;
+  counts: Map<string, number>;
+  results: SearchRepositoryManyResult['results'];
+  maxResultsPerQuery: number;
+  caseSensitive: boolean;
+}
+
+function createSearchManyMatchState(
+  queries: string[],
+  maxResultsPerQuery: number,
+  caseSensitive: boolean,
+): SearchManyMatchState {
+  return {
+    queries,
+    needles: queries.map((query) => ({ query, needle: caseSensitive ? query : query.toLowerCase() })),
+    counts: new Map(queries.map((query) => [query, 0])),
+    results: [],
+    maxResultsPerQuery,
+    caseSensitive,
+  };
+}
+
+function searchManyComplete(state: SearchManyMatchState): boolean {
+  return state.needles.every(({ query }) => (state.counts.get(query) ?? 0) >= state.maxResultsPerQuery);
+}
+
+function matchSearchManySource(state: SearchManyMatchState, path: string, bytes: Buffer): void {
+  const lines = bytes.toString('utf-8').split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const text = lines[index]!;
+    const haystack = state.caseSensitive ? text : text.toLowerCase();
+    for (const { query, needle } of state.needles) {
+      if ((state.counts.get(query) ?? 0) >= state.maxResultsPerQuery || !haystack.includes(needle)) continue;
+      state.results.push({ query, path, line: index + 1, text: text.slice(0, 500) });
+      state.counts.set(query, (state.counts.get(query) ?? 0) + 1);
+    }
+  }
+}
+
+function finalizeSearchManyResult(input: {
+  state: SearchManyMatchState;
+  scannedFiles: number;
+  policyDeniedFiles: number;
+  skippedLargeFiles: number;
+  skippedBinaryFiles: number;
+  candidateCount: number;
+  inventoryFileCount: number;
+  inventoryCacheHit: boolean;
+}): SearchRepositoryManyResult {
+  const { state } = input;
+  const queryPriority = new Map(state.queries.map((query, index) => [query, index]));
+  state.results.sort((left, right) => {
+    const priority = (queryPriority.get(left.query) ?? state.queries.length) - (queryPriority.get(right.query) ?? state.queries.length);
+    if (priority !== 0) return priority;
+    const pathOrder = left.path.localeCompare(right.path);
+    return pathOrder !== 0 ? pathOrder : left.line - right.line;
+  });
+  const hitResultLimit = state.needles.some(({ query }) => (state.counts.get(query) ?? 0) >= state.maxResultsPerQuery);
+  const truncationReason = hitResultLimit
+    ? 'max_results' as const
+    : input.candidateCount > input.inventoryFileCount
+      ? 'max_files' as const
+      : undefined;
+  return {
+    queries: state.queries,
+    results: state.results,
+    scannedFiles: input.scannedFiles,
+    policyDeniedFiles: input.policyDeniedFiles,
+    skippedLargeFiles: input.skippedLargeFiles,
+    skippedBinaryFiles: input.skippedBinaryFiles,
+    truncated: Boolean(truncationReason),
+    truncationReason,
+    cacheHit: input.inventoryCacheHit,
+  };
+}
+
 /**
  * Internal Context Plane batch search. Every candidate file is policy-checked
  * and read at most once while all lexical terms are matched in the same pass.
@@ -431,9 +509,7 @@ export function searchRepositoryMany(
         cacheHit: false,
       }
     : searchInventory(repoRoot, includes, excludes, maxFiles, opts.cacheKey);
-  const needles = queries.map((query) => ({ query, needle: opts.caseSensitive ? query : query.toLowerCase() }));
-  const counts = new Map(queries.map((query) => [query, 0]));
-  const results: SearchRepositoryManyResult['results'] = [];
+  const matchState = createSearchManyMatchState(queries, maxResultsPerQuery, opts.caseSensitive === true);
   let scannedFiles = 0;
   let policyDeniedFiles = 0;
   let skippedLargeFiles = 0;
@@ -441,7 +517,7 @@ export function searchRepositoryMany(
   const canonicalRepoRoot = realpathSync(repoRoot);
 
   for (const path of inventory.files) {
-    if (needles.every(({ query }) => (counts.get(query) ?? 0) >= maxResultsPerQuery)) break;
+    if (searchManyComplete(matchState)) break;
     const decision = resolveMcpPath(repoRoot, path, policy, 'read', canonicalRepoRoot);
     if (!decision.ok || !decision.absolutePath) {
       policyDeniedFiles += 1;
@@ -458,46 +534,22 @@ export function searchRepositoryMany(
       continue;
     }
     scannedFiles += 1;
-    const lines = bytes.toString('utf-8').split(/\r?\n/);
-    for (let index = 0; index < lines.length; index += 1) {
-      const text = lines[index]!;
-      const haystack = opts.caseSensitive ? text : text.toLowerCase();
-      for (const { query, needle } of needles) {
-        if ((counts.get(query) ?? 0) >= maxResultsPerQuery || !haystack.includes(needle)) continue;
-        results.push({ query, path, line: index + 1, text: text.slice(0, 500) });
-        counts.set(query, (counts.get(query) ?? 0) + 1);
-      }
-    }
+    matchSearchManySource(matchState, path, bytes);
   }
 
   // Consumers may bound distinct candidate files after this call. Preserve the
   // caller's query priority so an exact symbol/phrase cannot be displaced by
   // earlier alphabetic files that only matched broad recall tokens.
-  const queryPriority = new Map(queries.map((query, index) => [query, index]));
-  results.sort((left, right) => {
-    const priority = (queryPriority.get(left.query) ?? queries.length) - (queryPriority.get(right.query) ?? queries.length);
-    if (priority !== 0) return priority;
-    const pathOrder = left.path.localeCompare(right.path);
-    return pathOrder !== 0 ? pathOrder : left.line - right.line;
-  });
-
-  const hitResultLimit = needles.some(({ query }) => (counts.get(query) ?? 0) >= maxResultsPerQuery);
-  const truncationReason = hitResultLimit
-    ? 'max_results' as const
-    : inventory.candidateCount > inventory.files.length
-      ? 'max_files' as const
-      : undefined;
-  const payload: SearchRepositoryManyResult = {
-    queries,
-    results,
+  const payload = finalizeSearchManyResult({
+    state: matchState,
     scannedFiles,
     policyDeniedFiles,
     skippedLargeFiles,
     skippedBinaryFiles,
-    truncated: Boolean(truncationReason),
-    truncationReason,
-    cacheHit: inventory.cacheHit,
-  };
+    candidateCount: inventory.candidateCount,
+    inventoryFileCount: inventory.files.length,
+    inventoryCacheHit: inventory.cacheHit,
+  });
   if (sessionCache) {
     sessionCache.putSearch({
       query: batchQueryKey,
@@ -572,21 +624,17 @@ export async function searchRepositoryManyAsync(
         cacheHit: false,
       }
     : searchInventory(repoRoot, includes, excludes, maxFiles, opts.cacheKey);
-  const needles = queries.map((query) => ({ query, needle: opts.caseSensitive ? query : query.toLowerCase() }));
-  const counts = new Map(queries.map((query) => [query, 0]));
-  const results: SearchRepositoryManyResult['results'] = [];
+  const matchState = createSearchManyMatchState(queries, maxResultsPerQuery, opts.caseSensitive === true);
   let scannedFiles = 0;
   let policyDeniedFiles = 0;
   let skippedLargeFiles = 0;
   let skippedBinaryFiles = 0;
   const canonicalRepoRoot = realpathSync(repoRoot);
-  const complete = (): boolean => needles.every(({ query }) => (counts.get(query) ?? 0) >= maxResultsPerQuery);
-
-  for (let offset = 0; offset < inventory.files.length && !complete(); offset += ASYNC_SEARCH_READ_BATCH_SIZE) {
+  for (let offset = 0; offset < inventory.files.length && !searchManyComplete(matchState); offset += ASYNC_SEARCH_READ_BATCH_SIZE) {
     const batchPaths = inventory.files.slice(offset, offset + ASYNC_SEARCH_READ_BATCH_SIZE);
     const batch = await Promise.all(batchPaths.map((path) => readSearchCandidateAsync(repoRoot, policy, canonicalRepoRoot, path)));
     for (const candidate of batch) {
-      if (complete()) break;
+      if (searchManyComplete(matchState)) break;
       if (candidate.kind === 'denied') {
         policyDeniedFiles += 1;
         continue;
@@ -601,44 +649,20 @@ export async function searchRepositoryManyAsync(
       }
       if (candidate.kind === 'error') throw candidate.error;
       scannedFiles += 1;
-      const lines = candidate.bytes.toString('utf-8').split(/\r?\n/);
-      for (let index = 0; index < lines.length; index += 1) {
-        const text = lines[index]!;
-        const haystack = opts.caseSensitive ? text : text.toLowerCase();
-        for (const { query, needle } of needles) {
-          if ((counts.get(query) ?? 0) >= maxResultsPerQuery || !haystack.includes(needle)) continue;
-          results.push({ query, path: candidate.path, line: index + 1, text: text.slice(0, 500) });
-          counts.set(query, (counts.get(query) ?? 0) + 1);
-        }
-      }
+      matchSearchManySource(matchState, candidate.path, candidate.bytes);
     }
   }
 
-  const queryPriority = new Map(queries.map((query, index) => [query, index]));
-  results.sort((left, right) => {
-    const priority = (queryPriority.get(left.query) ?? queries.length) - (queryPriority.get(right.query) ?? queries.length);
-    if (priority !== 0) return priority;
-    const pathOrder = left.path.localeCompare(right.path);
-    return pathOrder !== 0 ? pathOrder : left.line - right.line;
-  });
-
-  const hitResultLimit = needles.some(({ query }) => (counts.get(query) ?? 0) >= maxResultsPerQuery);
-  const truncationReason = hitResultLimit
-    ? 'max_results' as const
-    : inventory.candidateCount > inventory.files.length
-      ? 'max_files' as const
-      : undefined;
-  const payload: SearchRepositoryManyResult = {
-    queries,
-    results,
+  const payload = finalizeSearchManyResult({
+    state: matchState,
     scannedFiles,
     policyDeniedFiles,
     skippedLargeFiles,
     skippedBinaryFiles,
-    truncated: Boolean(truncationReason),
-    truncationReason,
-    cacheHit: inventory.cacheHit,
-  };
+    candidateCount: inventory.candidateCount,
+    inventoryFileCount: inventory.files.length,
+    inventoryCacheHit: inventory.cacheHit,
+  });
   if (sessionCache) {
     sessionCache.putSearch({
       query: batchQueryKey,
