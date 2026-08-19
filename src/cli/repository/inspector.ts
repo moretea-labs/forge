@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
+import { execFile } from 'child_process';
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
-import { readFile as readFileAsync, stat as statAsync } from 'fs/promises';
+import { lstat as lstatAsync, readFile as readFileAsync, readdir as readdirAsync, stat as statAsync } from 'fs/promises';
 import { join } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { globMatches, resolveMcpPath } from '../mcp/paths';
@@ -246,6 +247,15 @@ const SEARCH_GIT_INVENTORY_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
  * output is truncated so non-Git/ephemeral workspaces retain the filesystem
  * fallback below.
  */
+function parseGitSearchFileInventory(stdout: string): string[] {
+  return stdout
+    .split('\0')
+    // NUL framing already gives exact Git paths; do not trim because leading
+    // or trailing whitespace is legal in a repository filename.
+    .filter((path) => path.length > 0)
+    .sort((left, right) => left.localeCompare(right));
+}
+
 function gitSearchFileInventory(repoRoot: string): string[] | null {
   try {
     const result = runProcess('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
@@ -254,15 +264,32 @@ function gitSearchFileInventory(repoRoot: string): string[] | null {
       maxOutputBytes: SEARCH_GIT_INVENTORY_MAX_OUTPUT_BYTES,
     });
     if (!result.ok || result.stdout.includes('[output truncated after')) return null;
-    return result.stdout
-      .split('\0')
-      // NUL framing already gives exact Git paths; do not trim because leading
-      // or trailing whitespace is legal in a repository filename.
-      .filter((path) => path.length > 0)
-      .sort((left, right) => left.localeCompare(right));
+    return parseGitSearchFileInventory(result.stdout);
   } catch {
     return null;
   }
+}
+
+function gitSearchFileInventoryAsync(repoRoot: string): Promise<string[] | null> {
+  return new Promise((resolve) => {
+    execFile(
+      'git',
+      ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+      {
+        cwd: repoRoot,
+        timeout: 10_000,
+        maxBuffer: SEARCH_GIT_INVENTORY_MAX_OUTPUT_BYTES,
+        encoding: 'utf8',
+      },
+      (error, stdout) => {
+        if (error || typeof stdout !== 'string') {
+          resolve(null);
+          return;
+        }
+        resolve(parseGitSearchFileInventory(stdout));
+      },
+    );
+  });
 }
 
 function binary(bytes: Buffer): boolean {
@@ -285,6 +312,36 @@ function walk(repoRoot: string, root: string, maxFiles: number, excludes: string
     const child = root ? `${root}/${entry.name}` : entry.name;
     if (isExcluded(child, excludes) || isExcluded(`${child}/`, excludes)) continue;
     if (entry.isDirectory()) walk(repoRoot, child, maxFiles, excludes, output);
+    else if (entry.isFile()) output.push(child);
+  }
+}
+
+async function walkAsync(repoRoot: string, root: string, maxFiles: number, excludes: string[], output: string[]): Promise<void> {
+  if (output.length >= maxFiles) return;
+  const absolute = join(repoRoot, root);
+  let info;
+  try {
+    info = await lstatAsync(absolute);
+  } catch {
+    return;
+  }
+  if (info.isSymbolicLink()) return;
+  if (info.isFile()) {
+    output.push(root);
+    return;
+  }
+  if (!info.isDirectory()) return;
+  let entries;
+  try {
+    entries = await readdirAsync(absolute, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (output.length >= maxFiles) break;
+    const child = root ? `${root}/${entry.name}` : entry.name;
+    if (isExcluded(child, excludes) || isExcluded(`${child}/`, excludes)) continue;
+    if (entry.isDirectory()) await walkAsync(repoRoot, child, maxFiles, excludes, output);
     else if (entry.isFile()) output.push(child);
   }
 }
@@ -393,6 +450,35 @@ function searchInventory(
       searchFileInventoryCache.set(inventoryKey, { createdAt: now, files });
       return files;
     })();
+  const candidates = inventory.filter((path) => isIncluded(path, includes) && !isExcluded(path, excludes));
+  return { files: candidates.slice(0, maxFiles), candidateCount: candidates.length, cacheHit };
+}
+
+async function searchInventoryAsync(
+  repoRoot: string,
+  includes: string[],
+  excludes: string[],
+  maxFiles: number,
+  cacheKey?: string,
+): Promise<{ files: string[]; candidateCount: number; cacheHit: boolean }> {
+  const inventoryKey = JSON.stringify({ repoRoot, excludes, cacheKey });
+  const now = Date.now();
+  const cachedInventory = searchFileInventoryCache.get(inventoryKey);
+  const cacheHit = Boolean(cachedInventory && now - cachedInventory.createdAt < SEARCH_FILE_INVENTORY_CACHE_TTL_MS);
+  let inventory: string[];
+  if (cacheHit) {
+    inventory = cachedInventory!.files;
+  } else {
+    const gitFiles = await gitSearchFileInventoryAsync(repoRoot);
+    if (gitFiles) {
+      inventory = gitFiles;
+    } else {
+      const walked: string[] = [];
+      await walkAsync(repoRoot, '', 20_000, excludes, walked);
+      inventory = walked;
+    }
+    searchFileInventoryCache.set(inventoryKey, { createdAt: now, files: inventory });
+  }
   const candidates = inventory.filter((path) => isIncluded(path, includes) && !isExcluded(path, excludes));
   return { files: candidates.slice(0, maxFiles), candidateCount: candidates.length, cacheHit };
 }
@@ -623,7 +709,7 @@ export async function searchRepositoryManyAsync(
         candidateCount: directCandidates.length,
         cacheHit: false,
       }
-    : searchInventory(repoRoot, includes, excludes, maxFiles, opts.cacheKey);
+    : await searchInventoryAsync(repoRoot, includes, excludes, maxFiles, opts.cacheKey);
   const matchState = createSearchManyMatchState(queries, maxResultsPerQuery, opts.caseSensitive === true);
   let scannedFiles = 0;
   let policyDeniedFiles = 0;

@@ -233,6 +233,46 @@ test("keeps async rh_context lexical prefetch identical to the synchronous searc
   });
 });
 
+test("keeps async rh_context repository inventory identical to the synchronous search authority", async () => {
+  await withController(async (repoRoot) => {
+    writeFileSync(join(repoRoot, "inventory-alpha.ts"), "export const inventoryAlpha = 'inventoryBeta';\n");
+    writeFileSync(join(repoRoot, "inventory-beta.ts"), "export const inventoryBeta = 'inventoryAlpha';\n");
+    const policy = getMcpPolicy("controller");
+    const base = {
+      queries: ["inventoryAlpha", "inventoryBeta"],
+      includeGlobs: ["inventory-*.ts"],
+      maxResultsPerQuery: 3,
+      maxFiles: 10,
+      caseSensitive: true,
+    };
+    const asyncResult = await searchRepositoryManyAsync(repoRoot, policy, { ...base, cacheKey: `async-inventory-${Date.now()}` });
+    const sync = searchRepositoryMany(repoRoot, policy, { ...base, cacheKey: `sync-inventory-${Date.now()}` });
+    expect({ ...asyncResult, cacheHit: false }).toEqual({ ...sync, cacheHit: false });
+  });
+});
+
+test("keeps async rh_context non-Git inventory identical to the synchronous filesystem fallback", async () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-context-nongit-"));
+  try {
+    mkdirSync(join(root, "nested"), { recursive: true });
+    writeFileSync(join(root, "plain-alpha.ts"), "export const plainAlpha = 'plainBeta';\n");
+    writeFileSync(join(root, "nested", "plain-beta.ts"), "export const plainBeta = 'plainAlpha';\n");
+    const policy = getMcpPolicy("controller", { repoRoot: root });
+    const base = {
+      queries: ["plainAlpha", "plainBeta"],
+      includeGlobs: ["**/*.ts", "*.ts"],
+      maxResultsPerQuery: 3,
+      maxFiles: 10,
+      caseSensitive: true,
+    };
+    const asyncResult = await searchRepositoryManyAsync(root, policy, { ...base, cacheKey: `async-nongit-${Date.now()}` });
+    const sync = searchRepositoryMany(root, policy, { ...base, cacheKey: `sync-nongit-${Date.now()}` });
+    expect({ ...asyncResult, cacheHit: false }).toEqual({ ...sync, cacheHit: false });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("async rh_context lexical prefetch preserves synchronous early-stop error semantics", async () => {
   await withController(async (repoRoot) => {
     writeFileSync(join(repoRoot, "complete-first.ts"), "needleOne needleTwo\n");
