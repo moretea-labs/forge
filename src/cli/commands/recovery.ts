@@ -514,11 +514,15 @@ export function buildRecoveryCommand(): Command {
       const home = resolveControllerHome(opts.controllerHome);
       const repoRoot = resolve(opts.repo);
       const current = loadRecoveryConfig(home);
-      const primaryConnectorService = launchdService(
+      const primaryConnectorBase = launchdService(
         opts.primaryConnectorServiceLabel,
         opts.primaryConnectorServicePlist,
         'RECOVERY_PRIMARY_CONNECTOR',
       ) as PrimaryConnectorServiceConfig;
+      const primaryConnectorService: PrimaryConnectorServiceConfig = {
+        ...primaryConnectorBase,
+        ...(current.primaryConnectorService?.localMcpUrl ? { localMcpUrl: current.primaryConnectorService.localMcpUrl } : {}),
+      };
       const installed = await installStandaloneRecovery({
         controllerHome: home,
         repoRoot,
@@ -526,6 +530,7 @@ export function buildRecoveryCommand(): Command {
         publicMcpUrl: current.publicMcpUrl,
         recoveryPublicUrl: current.recoveryPublicUrl,
         recoveryTunnelService: current.recoveryTunnelService,
+        primaryPublicTunnelService: current.primaryPublicTunnelService,
         primaryRuntimeService: current.primaryRuntimeService ?? { platform: 'launchd' },
         primaryConnectorService,
       });
@@ -622,6 +627,9 @@ export function buildRecoveryCommand(): Command {
     .option('--recovery-tunnel-service-plist <path>', 'Absolute Recovery tunnel launchd plist path')
     .option('--primary-connector-service-label <label>', 'Primary OAuth/Connector launchd label managed by standalone Recovery')
     .option('--primary-connector-service-plist <path>', 'Absolute primary OAuth/Connector launchd plist path')
+    .option('--primary-connector-local-url <url>', 'Local primary OAuth/Connector MCP endpoint used to distinguish Connector from tunnel failures')
+    .option('--primary-tunnel-service-label <label>', 'Primary public MCP tunnel launchd label managed by standalone Recovery')
+    .option('--primary-tunnel-service-plist <path>', 'Absolute primary public MCP tunnel launchd plist path')
     .option('--stage-only', 'Build and canary the Recovery release without activating services')
     .action(async (opts: {
       controllerHome: string;
@@ -632,13 +640,23 @@ export function buildRecoveryCommand(): Command {
       recoveryTunnelServicePlist?: string;
       primaryConnectorServiceLabel?: string;
       primaryConnectorServicePlist?: string;
+      primaryConnectorLocalUrl?: string;
+      primaryTunnelServiceLabel?: string;
+      primaryTunnelServicePlist?: string;
       stageOnly?: boolean;
     }) => {
       const home = resolveControllerHome(opts.controllerHome);
       const port = Number(opts.port);
       if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('RECOVERY_PORT_INVALID');
       const recoveryTunnelService = launchdService(opts.recoveryTunnelServiceLabel, opts.recoveryTunnelServicePlist, 'RECOVERY_TUNNEL') as PublicTunnelServiceConfig | undefined;
-      const primaryConnectorService = launchdService(opts.primaryConnectorServiceLabel, opts.primaryConnectorServicePlist, 'RECOVERY_PRIMARY_CONNECTOR') as PrimaryConnectorServiceConfig | undefined;
+      const primaryConnectorBase = launchdService(opts.primaryConnectorServiceLabel, opts.primaryConnectorServicePlist, 'RECOVERY_PRIMARY_CONNECTOR') as PrimaryConnectorServiceConfig | undefined;
+      const primaryConnectorLocalUrl = endpoint(opts.primaryConnectorLocalUrl, 'RECOVERY_PRIMARY_CONNECTOR_LOCAL_URL');
+      if (primaryConnectorLocalUrl && !primaryConnectorBase) throw new Error('RECOVERY_PRIMARY_CONNECTOR_LABEL_REQUIRED_FOR_LOCAL_URL');
+      const primaryConnectorService = primaryConnectorBase
+        ? { ...primaryConnectorBase, ...(primaryConnectorLocalUrl ? { localMcpUrl: primaryConnectorLocalUrl } : {}) }
+        : undefined;
+      const primaryPublicTunnelService = launchdService(opts.primaryTunnelServiceLabel, opts.primaryTunnelServicePlist, 'RECOVERY_PRIMARY_TUNNEL') as PublicTunnelServiceConfig | undefined;
+      if (primaryPublicTunnelService && !primaryConnectorService) throw new Error('RECOVERY_PRIMARY_CONNECTOR_REQUIRED_FOR_PRIMARY_TUNNEL');
       const recoveryPublicUrl = endpoint(opts.recoveryPublicUrl, 'RECOVERY_PUBLIC_URL');
       if (Boolean(recoveryTunnelService) !== Boolean(recoveryPublicUrl)) {
         throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
@@ -653,6 +671,7 @@ export function buildRecoveryCommand(): Command {
         publicMcpUrl: endpoint(opts.publicMcpUrl, 'PUBLIC_MCP_URL'),
         recoveryPublicUrl,
         recoveryTunnelService,
+        primaryPublicTunnelService,
         primaryConnectorService,
       });
       output({

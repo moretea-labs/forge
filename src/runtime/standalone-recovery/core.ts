@@ -58,6 +58,8 @@ export interface PrimaryConnectorServiceConfig {
   platform: 'launchd';
   label: string;
   plistPath?: string;
+  /** Local OAuth MCP endpoint used to distinguish Connector failure from tunnel failure. */
+  localMcpUrl?: string;
   minimumFailures?: number;
   minimumFailureDurationMs?: number;
   restartCooldownMs?: number;
@@ -71,6 +73,8 @@ export interface RecoveryConfig {
   publicMcpUrl?: string;
   recoveryPublicUrl?: string;
   recoveryTunnelService?: PublicTunnelServiceConfig;
+  /** Optional public tunnel serving publicMcpUrl; independent from the OAuth Connector process. */
+  primaryPublicTunnelService?: PublicTunnelServiceConfig;
   primaryRuntimeService?: PrimaryRuntimeServiceConfig;
   primaryRuntimeSourceRoot?: string;
   primaryConnectorService?: PrimaryConnectorServiceConfig;
@@ -318,6 +322,10 @@ function configuredRecoveryTunnel(config: RecoveryConfig): PublicTunnelServiceCo
   return config.recoveryTunnelService;
 }
 
+function configuredPrimaryPublicTunnel(config: RecoveryConfig): PublicTunnelServiceConfig | undefined {
+  return config.primaryPublicTunnelService;
+}
+
 function configuredRecoveryPublicUrl(config: RecoveryConfig): string | undefined {
   return config.recoveryPublicUrl;
 }
@@ -342,6 +350,7 @@ export function loadRecoveryConfig(controllerHome: string, explicit?: string): R
     ...(typeof loaded.publicMcpUrl === 'string' ? { publicMcpUrl: loaded.publicMcpUrl } : {}),
     ...(typeof loaded.recoveryPublicUrl === 'string' ? { recoveryPublicUrl: loaded.recoveryPublicUrl } : {}),
     ...(loaded.recoveryTunnelService ? { recoveryTunnelService: loaded.recoveryTunnelService } : {}),
+    ...(loaded.primaryPublicTunnelService ? { primaryPublicTunnelService: loaded.primaryPublicTunnelService } : {}),
     ...(loaded.primaryRuntimeService ? { primaryRuntimeService: loaded.primaryRuntimeService } : {}),
     ...(typeof loaded.primaryRuntimeSourceRoot === 'string' ? { primaryRuntimeSourceRoot: resolve(loaded.primaryRuntimeSourceRoot) } : {}),
     ...(loaded.primaryConnectorService ? { primaryConnectorService: loaded.primaryConnectorService } : {}),
@@ -1315,6 +1324,7 @@ export interface PrimaryConnectorRecoveryDependencies {
   runCommand?: CommandRunner;
   verifyLocal?: (config: RecoveryConfig) => Promise<VerifyResult>;
   reconnect?: (config: RecoveryConfig) => Promise<{ ok: boolean; detail: string; verify: VerifyResult }>;
+  probeConnectorLocal?: (config: RecoveryConfig) => Promise<{ ok: boolean; detail: string; status?: number } | undefined>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -1327,6 +1337,12 @@ function primaryConnectorLaunchdService(config: RecoveryConfig, uid: number): La
   if (!existsSync(plistPath)) return undefined;
   const domain = `gui/${uid}`;
   return { uid, domain, target: `${domain}/${label}`, label, plistPath };
+}
+
+async function probePrimaryConnectorLocal(config: RecoveryConfig): Promise<{ ok: boolean; detail: string; status?: number } | undefined> {
+  const localMcpUrl = config.primaryConnectorService?.localMcpUrl?.trim();
+  if (!localMcpUrl) return undefined;
+  return probeExternalMcp(createRecoveryHttpTransport(config.controllerHome), localMcpUrl);
 }
 
 export async function restartPrimaryConnector(
@@ -1353,21 +1369,87 @@ export async function restartPrimaryConnector(
     return { ok: false, attempted: false, noOp: true, detail: 'primary Connector launchd service is not configured or installed', verify: initialLocal };
   }
   const reconnect = dependencies.reconnect ?? reconnectMain;
+  const probeConnectorLocal = dependencies.probeConnectorLocal ?? probePrimaryConnectorLocal;
   const now = dependencies.now ?? Date.now;
   const wait = dependencies.sleep ?? sleep;
   const timeoutMs = config.primaryConnectorService?.postRestartVerifyTimeoutMs ?? 30_000;
   const locked = await withLock(config, { action: 'restart_primary_connector' }, async () => {
-    const restarted = await ensureLaunchdServiceStarted(service, dependencies.runCommand ?? command);
-    if (!restarted.ok) {
-      audit(config, 'primary_connector_restart_failed', { serviceTarget: service.target, detail: restarted.detail });
-      return { ok: false, attempted: true, detail: restarted.detail, serviceTarget: service.target, verify: initialLocal } satisfies PrimaryConnectorRestartResult;
+    const tunnelConfigured = Boolean(configuredPrimaryPublicTunnel(config));
+    let localConnector = await probeConnectorLocal(config);
+    let observed = localConnector?.ok ? await reconnect(config) : undefined;
+    if (observed?.ok) {
+      return {
+        ok: true,
+        attempted: false,
+        noOp: true,
+        detail: 'primary Connector and public MCP endpoint recovered before restart',
+        serviceTarget: service.target,
+        verify: observed.verify,
+      } satisfies PrimaryConnectorRestartResult;
     }
-    const deadline = now() + timeoutMs;
-    let observed = await reconnect(config);
-    while (!observed.ok && now() < deadline) {
-      await wait(1_000);
-      observed = await reconnect(config);
+
+    // A healthy local OAuth endpoint proves the Connector is not the broken hop.
+    // If a distinct primary tunnel is configured, skip the pointless Gateway
+    // restart and repair the public hop directly.
+    const restartConnector = !localConnector?.ok || !tunnelConfigured;
+    if (restartConnector) {
+      const restarted = await ensureLaunchdServiceStarted(service, dependencies.runCommand ?? command);
+      if (!restarted.ok) {
+        audit(config, 'primary_connector_restart_failed', { serviceTarget: service.target, detail: restarted.detail });
+        return { ok: false, attempted: true, detail: restarted.detail, serviceTarget: service.target, verify: initialLocal } satisfies PrimaryConnectorRestartResult;
+      }
+
+      const localDeadline = now() + timeoutMs;
+      localConnector = await probeConnectorLocal(config);
+      while (localConnector && !localConnector.ok && now() < localDeadline) {
+        await wait(1_000);
+        localConnector = await probeConnectorLocal(config);
+      }
+      if (localConnector && !localConnector.ok) {
+        audit(config, 'primary_connector_restart_local_unverified', { serviceTarget: service.target, detail: localConnector.detail });
+        return {
+          ok: false,
+          attempted: true,
+          detail: 'primary Connector restarted but its local MCP endpoint did not recover before timeout',
+          serviceTarget: service.target,
+          verify: initialLocal,
+        } satisfies PrimaryConnectorRestartResult;
+      }
     }
+
+    observed ??= await reconnect(config);
+    if (!observed.ok && localConnector?.ok && configuredPrimaryPublicTunnel(config)) {
+      const tunnel = primaryPublicTunnelService(config, service.uid);
+      if (tunnel) {
+        const tunnelRestarted = await ensureLaunchdServiceStarted(tunnel, dependencies.runCommand ?? command);
+        if (!tunnelRestarted.ok) {
+          audit(config, 'primary_public_tunnel_restart_failed', { serviceTarget: tunnel.target, detail: tunnelRestarted.detail });
+          return {
+            ok: false,
+            attempted: true,
+            detail: `primary Connector is locally healthy but public tunnel restart failed: ${tunnelRestarted.detail}`,
+            serviceTarget: service.target,
+            verify: observed.verify,
+          } satisfies PrimaryConnectorRestartResult;
+        }
+        const tunnelDeadline = now() + (configuredPrimaryPublicTunnel(config)?.postRestartVerifyTimeoutMs ?? 20_000);
+        while (!observed.ok && now() < tunnelDeadline) {
+          await wait(1_000);
+          observed = await reconnect(config);
+        }
+        audit(config, observed.ok ? 'primary_public_tunnel_restart_succeeded' : 'primary_public_tunnel_restart_unverified', {
+          serviceTarget: tunnel.target,
+          detail: observed.detail,
+        });
+      }
+    } else {
+      const deadline = now() + timeoutMs;
+      while (!observed.ok && now() < deadline) {
+        await wait(1_000);
+        observed = await reconnect(config);
+      }
+    }
+
     audit(config, observed.ok ? 'primary_connector_restart_succeeded' : 'primary_connector_restart_unverified', {
       serviceTarget: service.target,
       detail: observed.detail,
@@ -1375,7 +1457,9 @@ export async function restartPrimaryConnector(
     return {
       ok: observed.ok,
       attempted: true,
-      detail: observed.ok ? 'primary Connector restarted and the public MCP endpoint is reachable' : 'primary Connector restarted but the public MCP endpoint did not recover before timeout',
+      detail: observed.ok
+        ? 'primary Connector recovery completed and the public MCP endpoint is reachable'
+        : 'primary Connector recovery completed but the public MCP endpoint did not recover before timeout',
       serviceTarget: service.target,
       verify: observed.verify,
     } satisfies PrimaryConnectorRestartResult;
@@ -2132,8 +2216,7 @@ export async function stageAndActivateConfiguredRuntimeRelease(
   };
 }
 
-function recoveryTunnelService(config: RecoveryConfig, uid: number): LaunchdService | undefined {
-  const configured = configuredRecoveryTunnel(config);
+function tunnelLaunchdService(configured: PublicTunnelServiceConfig | undefined, uid: number): LaunchdService | undefined {
   if (!configured || configured.platform !== 'launchd') return undefined;
   if (!/^com\.[A-Za-z0-9._-]{1,180}$/.test(configured.label)) return undefined;
   const plistPath = configured.plistPath;
@@ -2145,6 +2228,14 @@ function recoveryTunnelService(config: RecoveryConfig, uid: number): LaunchdServ
     label: configured.label,
     plistPath: plistPath ?? join(homedir(), 'Library', 'LaunchAgents', `${configured.label}.plist`),
   };
+}
+
+function recoveryTunnelService(config: RecoveryConfig, uid: number): LaunchdService | undefined {
+  return tunnelLaunchdService(configuredRecoveryTunnel(config), uid);
+}
+
+function primaryPublicTunnelService(config: RecoveryConfig, uid: number): LaunchdService | undefined {
+  return tunnelLaunchdService(configuredPrimaryPublicTunnel(config), uid);
 }
 
 function tunnelRepairAllowed(config: RecoveryConfig, now: number): boolean {
@@ -2350,7 +2441,7 @@ export function gatewayToken(config: RecoveryConfig): string | undefined {
 export function initializeStandaloneRecovery(
   controllerHome: string,
   port = 8787,
-  extensions: Partial<Pick<RecoveryConfig, 'publicMcpUrl' | 'recoveryPublicUrl' | 'recoveryTunnelService' | 'primaryRuntimeService' | 'primaryRuntimeSourceRoot' | 'primaryConnectorService' | 'readOnlyTool'>> = {},
+  extensions: Partial<Pick<RecoveryConfig, 'publicMcpUrl' | 'recoveryPublicUrl' | 'recoveryTunnelService' | 'primaryPublicTunnelService' | 'primaryRuntimeService' | 'primaryRuntimeSourceRoot' | 'primaryConnectorService' | 'readOnlyTool'>> = {},
 ): RecoveryConfig {
   const root = resolve(controllerHome);
   const tokenPath = join(root, 'recovery', 'config', 'gateway-token.json');

@@ -689,6 +689,7 @@ export async function installStandaloneRecovery(input: {
   publicMcpUrl?: string;
   recoveryPublicUrl?: string;
   recoveryTunnelService?: PublicTunnelServiceConfig;
+  primaryPublicTunnelService?: PublicTunnelServiceConfig;
   primaryRuntimeService?: PrimaryRuntimeServiceConfig;
   primaryConnectorService?: PrimaryConnectorServiceConfig;
   stageOnly?: boolean;
@@ -704,6 +705,15 @@ export async function installStandaloneRecovery(input: {
       throw new Error('RECOVERY_TUNNEL_LAUNCHD_RESTART_CONTRACT_REQUIRED: RunAtLoad=true and KeepAlive=true');
     }
   }
+  if (input.primaryPublicTunnelService?.platform === 'launchd') {
+    const tunnelContract = inspectRecoveryTunnelLaunchdContract(input.primaryPublicTunnelService);
+    if (!tunnelContract.plistInstalled) {
+      throw new Error(`RECOVERY_PRIMARY_TUNNEL_LAUNCHD_PLIST_MISSING: ${tunnelContract.plistPath}`);
+    }
+    if (!tunnelContract.restartSafe) {
+      throw new Error('RECOVERY_PRIMARY_TUNNEL_LAUNCHD_RESTART_CONTRACT_REQUIRED: RunAtLoad=true and KeepAlive=true');
+    }
+  }
   if (input.primaryConnectorService?.platform === 'launchd') {
     const connectorContract = inspectPrimaryConnectorLaunchdContract(input.primaryConnectorService);
     if (!connectorContract.plistInstalled) {
@@ -717,6 +727,7 @@ export async function installStandaloneRecovery(input: {
     ...(input.publicMcpUrl ? { publicMcpUrl: input.publicMcpUrl } : {}),
     ...(input.recoveryPublicUrl ? { recoveryPublicUrl: input.recoveryPublicUrl } : {}),
     ...(input.recoveryTunnelService ? { recoveryTunnelService: input.recoveryTunnelService } : {}),
+    ...(input.primaryPublicTunnelService ? { primaryPublicTunnelService: input.primaryPublicTunnelService } : {}),
     ...(input.primaryRuntimeService ? { primaryRuntimeService: input.primaryRuntimeService } : {}),
     primaryRuntimeSourceRoot: resolve(input.repoRoot),
     ...(input.primaryConnectorService ? { primaryConnectorService: input.primaryConnectorService } : {}),

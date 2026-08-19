@@ -312,6 +312,55 @@ test('standalone Recovery restarts only the configured primary Connector service
   expect(commands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
 });
 
+test('standalone Recovery restarts the configured primary public tunnel when the local Connector is healthy but public MCP stays unavailable', async () => {
+  const home = controllerHome();
+  const connectorPlistPath = join(home, 'connector.plist');
+  const tunnelPlistPath = join(home, 'primary-tunnel.plist');
+  writeFileSync(connectorPlistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
+  writeFileSync(tunnelPlistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
+  const config = createRecoveryConfig(home, {
+    publicMcpUrl: 'https://mcp.example.test/mcp',
+    primaryConnectorService: {
+      platform: 'launchd',
+      label: 'com.moretea.forge.mcp-gateway',
+      plistPath: connectorPlistPath,
+      localMcpUrl: 'http://127.0.0.1:8767/mcp',
+      postRestartVerifyTimeoutMs: 0,
+    },
+    primaryPublicTunnelService: {
+      platform: 'launchd',
+      label: 'com.cloudflare.cloudflared',
+      plistPath: tunnelPlistPath,
+      postRestartVerifyTimeoutMs: 5_000,
+    },
+  });
+  const commands: string[][] = [];
+  let reconnectCalls = 0;
+  let clock = 0;
+  const result = await restartPrimaryConnector(config, {
+    platform: 'darwin',
+    currentUid: async () => 501,
+    verifyLocal: async () => healthyVerify(),
+    probeConnectorLocal: async () => ({ ok: true, detail: 'HTTP 401 OAuth challenge', status: 401 }),
+    reconnect: async () => {
+      reconnectCalls += 1;
+      return reconnectCalls >= 2
+        ? { ok: true, detail: 'public MCP reachable', verify: healthyVerify() }
+        : { ok: false, detail: 'HTTP 530', verify: { ...healthyVerify(), ok: false } };
+    },
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    runCommand: async (name, args) => {
+      commands.push([name, ...args]);
+      return { ok: true, status: 0, stdout: '', stderr: '' };
+    },
+  });
+  expect(result).toMatchObject({ ok: true, attempted: true, serviceTarget: 'gui/501/com.moretea.forge.mcp-gateway' });
+  expect(commands).not.toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
+  expect(commands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.cloudflare.cloudflared']);
+  expect(reconnectCalls).toBe(2);
+});
+
 test('standalone Recovery stages only its configured Runtime source and hands a first-generation future sidecar release to activation', async () => {
   const home = controllerHome();
   const sourceRoot = join(home, 'source');
