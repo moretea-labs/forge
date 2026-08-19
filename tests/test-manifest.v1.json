@@ -247,6 +247,14 @@
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
+    "tests/cli/v81-entry.test.ts": {
+      "module": "controller",
+      "resource": "pure"
+    },
+    "tests/runtime/git-status-sampler.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/runtime-release-store.test.ts": {
       "module": "release",
       "resource": "controller-home-isolated"
