@@ -36,7 +36,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     detail_level: { type: 'string', enum: ['summary', 'detail'] },
     limit: { type: 'number' },
   }),
-  definition('rh_context', 'Preferred ChatGPT facade and default repository code-discovery/read path. Start broad to combine lexical retrieval, current raw source, checks, and optional CodeGraph structural evidence with few round trips. Call rh_context repeatedly whenever further repository understanding, impact analysis, debugging, or review can materially improve correctness; follow-ups reuse session-scoped evidence when source identity is unchanged. Shell rg/grep/sed/cat loops are fallback-only when this Context Plane cannot supply the needed evidence.', {
+  definition('rh_context', 'Preferred ChatGPT facade and default repository code-discovery/read path. Start broad once to combine heuristic lexical discovery, current raw source, checks, and optional CodeGraph structural evidence with few round trips. Natural-language lexical terms are discovery hints: do not require every guessed term to match and do not repeat the same broad search merely because a heuristic term missed. After credible files or symbols are found, derive follow-up paths/symbols from the returned source and prefer known_paths, compiler semantic_navigation/@tsnav for TypeScript, or structural relationships before another broad lexical pass. Call rh_context repeatedly only when that progressive expansion can materially improve correctness; follow-ups reuse session-scoped evidence when source identity is unchanged. Shell rg/grep/sed/cat loops are fallback-only when this Context Plane cannot supply the needed evidence.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple worktrees.' },
     operation: { type: 'string', enum: ['list', 'get', 'search'], description: 'Defaults to get. Use search as the default code-location path when an exact file is unknown.' },
@@ -50,7 +50,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     semantic_navigation: {
       type: 'array',
       maxItems: 8,
-      description: 'Optional bounded TypeScript Language Service navigation. Use for precise definition/reference/implementation evidence after lexical discovery; it proves only requested static TypeScript relationships, not dynamic/string/config runtime edges.',
+      description: 'Optional bounded TypeScript Language Service navigation. After lexical/raw-source discovery identifies a concrete TypeScript symbol, prefer this for precise definition/reference/implementation closure instead of repeating broad lexical search. It proves only requested static TypeScript relationships, not dynamic/string/config runtime edges.',
       items: {
         type: 'object',
         required: ['navigation', 'path', 'line', 'column'],

@@ -626,7 +626,7 @@ export function buildControllerContextPack(
     },
     contextContract: {
       strategy: retrievalMode === "implementation"
-        ? "Use the broad current-source pack as the first implementation evidence set. ChatGPT owns semantic sufficiency and may repeat rh_context whenever additional repository understanding or impact evidence could materially improve correctness."
+        ? "Use one broad current-source pack to discover credible entry points, then progressively expand from returned paths and symbols. Lexical terms are heuristic hints rather than completeness requirements. ChatGPT owns semantic sufficiency and should prefer targeted known_paths, compiler semantic navigation for concrete TypeScript symbols, or structural relationships before repeating broad lexical discovery."
         : "Use this pack as progressive investigation evidence and repeat rh_context to expand exact ranges, symbols, relationships, tests, or neighboring modules whenever that can improve the plan, diagnosis, or review.",
       retrievalMode,
       semanticSufficiencyAuthority: "chatgpt",
@@ -634,7 +634,7 @@ export function buildControllerContextPack(
       expansionSignals,
       notes: [
         retrievalMode === "implementation"
-          ? "The pack contains policy-approved current raw source with file SHA identities, but returned snippets are bounded evidence rather than proof of semantic completeness. Follow-up rh_context calls are expected when the controller identifies uncertainty, impact candidates, or useful expansion."
+          ? "The pack contains policy-approved current raw source with file SHA identities, but returned snippets are bounded evidence rather than proof of semantic completeness. After reading this evidence, derive new exact paths, symbols, tests, or relationships from the source itself. A guessed lexical term with no result is not by itself a reason to keep scanning or repeat the same broad query."
           : "Investigation modes may intentionally expand exact ranges, structural relationships, tests, and neighboring modules before any implementation decision.",
         "Search/CodeGraph ranking is discovery evidence, not a business-semantics authority. impactContext makes the bounded evidence surface and coverage gaps explicit; ChatGPT still decides semantic sufficiency.",
         impactDomains.length > 0 ? `Impact domains were selected by ChatGPT and expanded mechanically in this same retrieval call: ${impactDomains.join(", ")}. Missing or omitted domain evidence is an ambiguity signal, not proof that the domain is irrelevant.` : "No explicit cross-cutting impact domains were requested; ChatGPT may add them when state, scheduling, notifications, events, caching, API, or concurrency could materially change the implementation.",
@@ -650,7 +650,7 @@ export function buildControllerContextPack(
         : []),
       files.length > 0
         ? retrievalMode === "implementation"
-          ? "ChatGPT should decide whether impact coverage is sufficient. Edit when it is; otherwise repeat rh_context with selected paths, symbols, tests, or impact domains."
+          ? "ChatGPT should decide whether impact coverage is sufficient. Edit when it is; otherwise derive the next exact paths/symbols/tests from this source and repeat rh_context narrowly. For concrete TypeScript symbols prefer semantic navigation; use another broad lexical pass only when no credible entry point exists or a dynamic/string/config edge still needs discovery."
           : "Expand exact ranges or neighboring evidence when that investigation can materially change the plan, diagnosis, or review conclusion."
         : "Provide known_paths or narrower search_terms before attempting implementation.",
       "After editing, review the bounded diff/evidence for the coherent edit batch.",

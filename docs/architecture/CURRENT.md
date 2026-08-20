@@ -21,13 +21,14 @@ Quality is prioritized over interactive performance; performance is prioritized 
 ## Context engine
 
 - `rh_context` is the primary discovery/read path and may be called repeatedly.
-- The first request performs broad parallel fan-in where useful; follow-up requests reuse in-process/session caches.
+- The first request may perform one broad parallel discovery fan-in; natural-language lexical terms are heuristic hints, not completeness obligations, so individual guessed terms do not need to produce results.
+- Once credible paths or symbols are discovered, the semantic controller derives the next retrieval from returned source and prefers exact known paths, compiler-backed symbol navigation, or structural relationships over repeating the same broad lexical scan. Follow-up requests reuse in-process/session caches.
 - Exact known paths reserve retrieval budget and current raw source is authoritative.
 - Complete small files and complete matched symbols are preferred over arbitrary line windows.
 - CodeGraph is discovery/relationship evidence, not semantic-completeness authority. Stale structural evidence must be labeled and current changed files remain raw-source authoritative.
 - TypeScript Language Service navigation provides compiler-backed definition/reference/implementation lookup for TypeScript symbols through `rh_context`. It is bounded static evidence, not a new lifecycle, durable index, or semantic-completeness oracle.
 - The default 19-tool MCP schemas are a deployment ABI because approved ChatGPT apps may retain a frozen action/input snapshot. Core quality capabilities therefore need a path through already-stable facade fields. `rh_context` supports precise `@tsnav` directives in `query` as a compatibility path; refreshed clients may use the structured `semantic_navigation` field.
-- Exact lexical search remains necessary for dynamic registrations, manifests, string capability IDs, persisted aliases, and unrelated same-name implementations.
+- Exact lexical search remains necessary for dynamic registrations, manifests, string capability IDs, persisted aliases, and unrelated same-name implementations, but it is a discovery/fallback mechanism rather than the proof of static symbol completeness.
 
 ## Execution lanes
 
