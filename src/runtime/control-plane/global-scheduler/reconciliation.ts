@@ -1,4 +1,4 @@
-import { listActiveExecutionJobs, transitionExecutionJob } from '../../execution/jobs/store';
+import { reconcileActiveExecutionJobIndex, transitionExecutionJob } from '../../execution/jobs/store';
 import type { ExecutionJob } from '../../execution/jobs/types';
 import {
   executionTimeoutDecision,
@@ -142,7 +142,7 @@ function reconcileExecutionJobsWith(
   terminateWorker: (pid: number | undefined) => ProcessTreeTerminationResult,
   repoId?: string,
 ): ReconcileSummary {
-  const jobs = listActiveExecutionJobs(controllerHome, repoId);
+  const jobs = reconcileActiveExecutionJobIndex(controllerHome, repoId);
   let requeued = 0;
   let terminal = 0;
   let recovered = 0;
@@ -200,7 +200,7 @@ async function reconcileExecutionJobsAsyncWith(
   terminateWorker: (pid: number | undefined) => Promise<ProcessTreeTerminationResult>,
   repoId?: string,
 ): Promise<ReconcileSummary> {
-  const jobs = listActiveExecutionJobs(controllerHome, repoId);
+  const jobs = reconcileActiveExecutionJobIndex(controllerHome, repoId);
   let requeued = 0;
   let terminal = 0;
   let recovered = 0;

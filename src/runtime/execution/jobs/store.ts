@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { ensureControllerHome, ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
-import { withControllerLock } from '../../../cli/repositories/locks';
+import { releaseControllerLock, tryAcquireControllerLock, withControllerLock } from '../../../cli/repositories/locks';
 import { appendJobEvent } from '../../evidence/event-ledger';
 import { writeExecutionArtifact } from '../../evidence/artifact-store';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
@@ -648,9 +648,59 @@ export function listActiveExecutionJobs(controllerHome: string, repoId?: string)
     try {
       const job = getExecutionJob(controllerHome, entry.repoId, entry.jobId);
       if (ACTIVE_JOB_STATUSES.has(job.status)) output.push(job);
-    } catch { /* stale index repaired below */ }
+    } catch { /* maintenance reconciliation owns stale-index repair */ }
   }
   return output;
+}
+
+/**
+ * Maintenance-only active-index convergence. The active index itself is the
+ * bounded candidate set; this never scans historical Job directories. Ordinary
+ * read APIs remain side-effect free, while the Scheduler can remove terminal or
+ * missing entries once and make subsequent idle reads genuinely cheap.
+ */
+export function reconcileActiveExecutionJobIndex(
+  controllerHome: string,
+  repoId?: string,
+): ExecutionJob[] {
+  const key = { scope: 'global' as const, resource: 'execution-index' };
+  const owner = `execution-index-active-reconcile:${repoId ?? 'all'}`;
+  const acquired = tryAcquireControllerLock(controllerHome, key, owner);
+  if (!acquired.acquired) return listActiveExecutionJobs(controllerHome, repoId);
+  try {
+    const index = readActiveIndex(controllerHome);
+    const jobs: ExecutionJob[] = [];
+    const retained: ActiveJobIndex['jobs'] = [];
+    let removed = 0;
+    for (const entry of index.jobs) {
+      if (repoId && entry.repoId !== repoId) {
+        retained.push(entry);
+        continue;
+      }
+      try {
+        const job = getExecutionJob(controllerHome, entry.repoId, entry.jobId);
+        if (!ACTIVE_JOB_STATUSES.has(job.status)) {
+          removed += 1;
+          continue;
+        }
+        jobs.push(job);
+        retained.push({
+          jobId: job.jobId,
+          repoId: job.repoId,
+          status: job.status,
+          priority: job.priority,
+          queuedAt: job.queuedAt,
+          updatedAt: job.updatedAt,
+        });
+      } catch {
+        removed += 1;
+      }
+    }
+    if (removed > 0) writeActiveIndex(controllerHome, { ...index, jobs: retained });
+    return jobs;
+  } finally {
+    releaseControllerLock(controllerHome, key, acquired.lock.lockId);
+  }
 }
 
 function executionJobApprovalRequestId(job: ExecutionJob): string | undefined {

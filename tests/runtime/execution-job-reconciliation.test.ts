@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -134,5 +134,25 @@ describe('ExecutionJob reconciliation isolation', () => {
     expect(listActiveExecutionJobs(controllerHome, 'repo-test')).toHaveLength(0);
     rebuildExecutionJobIndexes(controllerHome, ['repo-test']);
     expect(listActiveExecutionJobs(controllerHome, 'repo-test')).toHaveLength(0);
+  });
+
+  test('scheduler reconciliation prunes terminal records left behind in the active index', async () => {
+    const controllerHome = tempControllerHome();
+    const queued = executionJob('stale-active-entry', 'queued');
+    persistFixtureJobs(controllerHome, [queued]);
+
+    const terminal = { ...queued, status: 'timed_out' as const, finishedAt: new Date().toISOString() };
+    const records = join(executionJobRoot(controllerHome, 'repo-test'), 'records');
+    writeFileSync(join(records, `${terminal.jobId}.json`), `${JSON.stringify(terminal)}\n`, 'utf8');
+
+    expect(listActiveExecutionJobs(controllerHome, 'repo-test')).toHaveLength(0);
+    const before = JSON.parse(readFileSync(join(controllerHome, 'indexes', 'execution-jobs', 'active.json'), 'utf8'));
+    expect(before.jobs.map((entry: { jobId: string }) => entry.jobId)).toEqual(['stale-active-entry']);
+
+    const summary = await reconcileExecutionJobsAsync(controllerHome, 'repo-test');
+    expect(summary.inspected).toBe(0);
+
+    const after = JSON.parse(readFileSync(join(controllerHome, 'indexes', 'execution-jobs', 'active.json'), 'utf8'));
+    expect(after.jobs).toEqual([]);
   });
 });
