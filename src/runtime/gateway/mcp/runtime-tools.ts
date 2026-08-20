@@ -6,6 +6,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { CallToolResult as SdkCallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { collectRuntimePerformanceDiagnostics, inferLocalControllerProcess } from '../../diagnostics/performance';
 import { navigateTypeScriptSymbol, type TypeScriptNavigationKind } from '../../context/typescript-navigation';
+import { navigateSwiftSymbols, type SwiftNavigationKind } from '../../context/swift-navigation';
 import type { McpToolDefinition, CallToolResult } from '../../../cli/mcp/tools';
 import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
 import { repositoryScopedToolArgs } from '../../../cli/mcp/multi-repository';
@@ -265,14 +266,15 @@ function rhContextReadSessionId(ctx: MultiRepositoryMcpToolContext): string | un
 
 const RH_CONTEXT_SEMANTIC_QUERY_LIMIT = 8;
 const RH_CONTEXT_SEMANTIC_LOCATION_LIMIT = 200;
-const RH_CONTEXT_LEGACY_TSNAV_SYNTAX = '@tsnav references <repo-path>:<line>:<column>';
+const RH_CONTEXT_LEGACY_SEMANTIC_SYNTAX = '@tsnav references <repo-path>:<line>:<column> | @swiftnav references <repo-path>:<line>:<column>';
 
 type RhContextSemanticNavigationRequest = {
-  navigation: TypeScriptNavigationKind;
+  navigation: TypeScriptNavigationKind | SwiftNavigationKind;
   path: string;
   line: number;
   column: number;
   tsconfig_path?: string;
+  language?: 'typescript' | 'swift';
 };
 
 function rhContextLegacySemanticQuery(query: string): {
@@ -280,28 +282,30 @@ function rhContextLegacySemanticQuery(query: string): {
   requests: RhContextSemanticNavigationRequest[];
 } {
   const requests: RhContextSemanticNavigationRequest[] = [];
-  const directive = /(?:^|\s)@tsnav\s+(definition|references|implementations)\s+([^\s]+):(\d+):(\d+)(?:\s+tsconfig=([^\s]+))?/gi;
-  const retrievalQuery = query.replace(directive, (_match, navigation, path, line, column, tsconfigPath) => {
+  const directive = /(?:^|\s)@(tsnav|swiftnav)\s+(definition|references|implementations)\s+([^\s]+):(\d+):(\d+)(?:\s+tsconfig=([^\s]+))?/gi;
+  const retrievalQuery = query.replace(directive, (_match, directiveKind, navigation, path, line, column, tsconfigPath) => {
+    const language = String(directiveKind).toLowerCase() === 'swiftnav' ? 'swift' : 'typescript';
     requests.push({
       navigation: String(navigation).toLowerCase() as TypeScriptNavigationKind,
       path: String(path),
       line: Number(line),
       column: Number(column),
+      language,
       ...(tsconfigPath ? { tsconfig_path: String(tsconfigPath) } : {}),
     });
     return ' ';
   }).replace(/\s+/g, ' ').trim();
   const fallback = requests.length > 0
-    ? `TypeScript ${requests[0]!.navigation} ${requests[0]!.path}`
+    ? `${requests[0]!.language === 'swift' ? 'Swift' : 'TypeScript'} ${requests[0]!.navigation} ${requests[0]!.path}`
     : query;
   return { retrievalQuery: retrievalQuery || fallback, requests };
 }
 
-function rhContextSemanticNavigation(
+async function rhContextSemanticNavigation(
   repoRoot: string,
   policy: MultiRepositoryMcpToolContext['policy'],
   value: unknown,
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   const raw = Array.isArray(value) ? value : [];
   const requests = raw.slice(0, RH_CONTEXT_SEMANTIC_QUERY_LIMIT);
   const results: Record<string, unknown>[] = [];
@@ -315,6 +319,7 @@ function rhContextSemanticNavigation(
     .digest('hex')
     .slice(0, 20);
 
+  const swiftRequests: Array<{ index: number; request: RhContextSemanticNavigationRequest }> = [];
   requests.forEach((entry, index) => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
       errors.push({ index, code: 'SEMANTIC_NAVIGATION_REQUEST_INVALID', message: 'semantic_navigation entries must be objects.' });
@@ -326,6 +331,7 @@ function rhContextSemanticNavigation(
     const line = Number(item.line);
     const column = Number(item.column);
     const tsconfigPath = typeof item.tsconfig_path === 'string' && item.tsconfig_path.trim() ? item.tsconfig_path.trim() : undefined;
+    const language = item.language === 'swift' || path.endsWith('.swift') ? 'swift' : 'typescript';
     if (!['definition', 'references', 'implementations'].includes(navigation) || !path || !Number.isInteger(line) || line < 1 || !Number.isInteger(column) || column < 1) {
       errors.push({ index, code: 'SEMANTIC_NAVIGATION_REQUEST_INVALID', message: 'navigation, path, and positive 1-based line/column are required.' });
       return;
@@ -333,6 +339,18 @@ function rhContextSemanticNavigation(
     const targetDecision = resolveMcpPath(repoRoot, path, policy, 'read');
     if (!targetDecision.ok) {
       errors.push({ index, code: 'SEMANTIC_NAVIGATION_TARGET_DENIED', message: targetDecision.reason ?? 'target path denied by MCP read policy.' });
+      return;
+    }
+    if (language === 'swift') {
+      if (tsconfigPath) {
+        errors.push({ index, code: 'SWIFT_SEMANTIC_TSCONFIG_UNSUPPORTED', message: 'tsconfig_path applies only to TypeScript semantic navigation.' });
+        return;
+      }
+      if (policy.profile !== 'controller') {
+        errors.push({ index, code: 'SWIFT_SEMANTIC_READ_SCOPE_UNSUPPORTED', message: 'External SourceKit-LSP navigation is restricted to the controller read profile; use lexical/CodeGraph evidence under narrower read policies.' });
+        return;
+      }
+      swiftRequests.push({ index, request: { navigation, path, line, column, language } });
       return;
     }
     try {
@@ -356,6 +374,7 @@ function rhContextSemanticNavigation(
       const truncated = allowedLocations.length > RH_CONTEXT_SEMANTIC_LOCATION_LIMIT;
       anyLocationTruncated ||= truncated;
       results.push({
+        language: 'typescript',
         navigation,
         target: semantic.target,
         locations: allowedLocations.slice(0, RH_CONTEXT_SEMANTIC_LOCATION_LIMIT),
@@ -369,8 +388,63 @@ function rhContextSemanticNavigation(
     }
   });
 
+  if (swiftRequests.length > 0) {
+    const swiftOutcomes = await navigateSwiftSymbols(repoRoot, swiftRequests.map(({ request }) => ({
+      navigation: request.navigation as SwiftNavigationKind,
+      path: request.path,
+      line: request.line,
+      column: request.column,
+    })), {
+      allowRepositoryPath: (relativePath) => resolveMcpPath(repoRoot, relativePath, policy, 'read').ok,
+    });
+    swiftOutcomes.forEach((outcome, offset) => {
+      const original = swiftRequests[offset]!;
+      if (!outcome.ok) {
+        errors.push({ index: original.index, code: outcome.code, message: outcome.message });
+        return;
+      }
+      const allowedLocations = outcome.result.locations.filter((location) => {
+        const decision = resolveMcpPath(repoRoot, location.path, policy, 'read');
+        if (decision.ok) return true;
+        policyDeniedLocations += 1;
+        return false;
+      });
+      const truncated = allowedLocations.length > RH_CONTEXT_SEMANTIC_LOCATION_LIMIT;
+      anyLocationTruncated ||= truncated;
+      results.push({
+        language: 'swift',
+        navigation: outcome.result.navigation,
+        target: outcome.result.target,
+        locations: allowedLocations.slice(0, RH_CONTEXT_SEMANTIC_LOCATION_LIMIT),
+        totalLocations: allowedLocations.length,
+        returnedLocations: Math.min(allowedLocations.length, RH_CONTEXT_SEMANTIC_LOCATION_LIMIT),
+        truncated,
+        workspace: outcome.result.workspace,
+        timingsMs: outcome.result.timingsMs,
+        policyDeniedReads: 0,
+      });
+    });
+  }
+
+  results.sort((left, right) => {
+    const leftTarget = left.target as { path?: string; line?: number; column?: number } | undefined;
+    const rightTarget = right.target as { path?: string; line?: number; column?: number } | undefined;
+    return String(leftTarget?.path ?? '').localeCompare(String(rightTarget?.path ?? ''))
+      || Number(leftTarget?.line ?? 0) - Number(rightTarget?.line ?? 0)
+      || Number(leftTarget?.column ?? 0) - Number(rightTarget?.column ?? 0);
+  });
   const requestTruncated = raw.length > RH_CONTEXT_SEMANTIC_QUERY_LIMIT;
   const incomplete = requestTruncated || anyLocationTruncated || policyDeniedLocations > 0 || policyDeniedReads > 0 || errors.length > 0;
+  const languages = new Set(requests.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return undefined;
+    const item = entry as Record<string, unknown>;
+    return item.language === 'swift' || String(item.path ?? '').endsWith('.swift') ? 'swift' : 'typescript';
+  }).filter(Boolean));
+  const scope = languages.size === 0 || (languages.size === 1 && languages.has('typescript'))
+    ? 'requested_typescript_static_relationships'
+    : languages.size === 1
+      ? 'requested_swift_static_relationships'
+      : 'requested_multilanguage_static_relationships';
   return {
     requested: raw.length,
     executed: requests.length,
@@ -381,9 +455,9 @@ function rhContextSemanticNavigation(
     policyDeniedReadSamples: Array.from(policyDeniedReadSamples),
     requestTruncated,
     staticClosure: {
-      scope: 'requested_typescript_static_relationships',
+      scope,
       status: raw.length === 0 ? 'not_requested' : incomplete ? 'incomplete' : 'complete_for_requested_symbols',
-      limitations: ['dynamic_registration', 'string_or_config_edges', 'reflection', 'runtime_dispatch'],
+      limitations: ['dynamic_registration', 'string_or_config_edges', 'reflection', 'runtime_dispatch', 'stale_or_missing_language_index'],
     },
   };
 }
@@ -3161,7 +3235,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           const explicitSemanticNavigation = Array.isArray(args.semantic_navigation) ? args.semantic_navigation : [];
           const semanticRequests = [...explicitSemanticNavigation, ...legacySemanticQuery.requests];
           const semanticNavigation = {
-            ...rhContextSemanticNavigation(repository.canonicalRoot, ctx.policy, semanticRequests),
+            ...await rhContextSemanticNavigation(repository.canonicalRoot, ctx.policy, semanticRequests),
             requestSource: explicitSemanticNavigation.length > 0 && legacySemanticQuery.requests.length > 0
               ? 'schema_and_query'
               : explicitSemanticNavigation.length > 0
@@ -3169,7 +3243,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 : legacySemanticQuery.requests.length > 0
                   ? 'query_compatibility'
                   : 'none',
-            compatibilityQuerySyntax: RH_CONTEXT_LEGACY_TSNAV_SYNTAX,
+            compatibilityQuerySyntax: RH_CONTEXT_LEGACY_SEMANTIC_SYNTAX,
           };
           const warnings = structuralContext === 'required' && !pack.structuralContext.requiredSatisfied
             ? [pack.structuralContext.fallbackReason ?? 'Required structural context is not ready; lexical retrieval results are returned as degraded evidence.']

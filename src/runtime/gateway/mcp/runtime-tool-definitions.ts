@@ -40,7 +40,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple worktrees.' },
     operation: { type: 'string', enum: ['list', 'get', 'search'], description: 'Defaults to get. Use search as the default code-location path when an exact file is unknown.' },
-    query: { type: 'string', description: 'Code/content intent for operation=search. Frozen-schema clients may append @tsnav references|definition|implementations <repo-path>:<line>:<column> for compiler-backed TypeScript navigation.' },
+    query: { type: 'string', description: 'Code/content intent for operation=search. Frozen-schema clients may append @tsnav or @swiftnav references|definition|implementations <repo-path>:<line>:<column> for compiler/LSP-backed semantic navigation.' },
     known_paths: { type: 'array', items: { type: 'string' }, description: 'Optional exact paths or globs that should receive highest retrieval priority.' },
     include_globs: { type: 'array', items: { type: 'string' } },
     exclude_globs: { type: 'array', items: { type: 'string' } },
@@ -50,7 +50,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     semantic_navigation: {
       type: 'array',
       maxItems: 8,
-      description: 'Optional bounded TypeScript Language Service navigation. After lexical/raw-source discovery identifies a concrete TypeScript symbol, prefer this for precise definition/reference/implementation closure instead of repeating broad lexical search. It proves only requested static TypeScript relationships, not dynamic/string/config runtime edges.',
+      description: 'Optional bounded compiler/LSP semantic navigation. .ts/.tsx targets use the TypeScript Language Service; .swift targets use SourceKit-LSP only when SwiftPM/BSP/compilation build settings are already available. Use after discovery for precise definition/reference/implementation evidence; this never triggers a build and does not prove dynamic/string/config runtime edges.',
       items: {
         type: 'object',
         required: ['navigation', 'path', 'line', 'column'],

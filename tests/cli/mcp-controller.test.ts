@@ -359,6 +359,27 @@ test("returns bounded policy-checked TypeScript semantic navigation through rh_c
     const deniedConfig = JSON.parse(deniedConfigResponse!.content[0]!.text);
     expect(deniedConfig.data.semanticNavigation.staticClosure.status).toBe("incomplete");
     expect(deniedConfig.data.semanticNavigation.errors).toHaveLength(1);
+
+    mkdirSync(join(repoRoot, "ios/App.xcodeproj"), { recursive: true });
+    writeFileSync(join(repoRoot, "ios/Store.swift"), "protocol Store { func save() }\n");
+    const swiftStartedAt = performance.now();
+    const swiftResponse = await callRuntimeTool(ctx, "rh_context", {
+      repo_id: repository.repoId,
+      operation: "search",
+      query: "Store @swiftnav references ios/Store.swift:1:10",
+      known_paths: ["ios/Store.swift"],
+      structural_context: "off",
+    });
+    const swift = JSON.parse(swiftResponse!.content[0]!.text);
+    expect(swift.data.semanticNavigation.staticClosure).toMatchObject({
+      scope: "requested_swift_static_relationships",
+      status: "incomplete",
+    });
+    expect(swift.data.semanticNavigation.errors).toHaveLength(1);
+    expect(swift.data.semanticNavigation.errors[0].code).toBe("SWIFT_SEMANTIC_BUILD_SETTINGS_UNAVAILABLE");
+    expect(swift.data.semanticNavigation.compatibilityQuerySyntax).toContain("@swiftnav");
+    expect(swift.data.goal).not.toContain("@swiftnav");
+    expect(performance.now() - swiftStartedAt).toBeLessThan(1_000);
   });
 });
 
