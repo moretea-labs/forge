@@ -653,7 +653,10 @@ export function searchRepositoryMany(
   return payload;
 }
 
-const ASYNC_SEARCH_READ_BATCH_SIZE = 16;
+// File reads are already bounded by policy/maxFiles. A wider batch keeps broad
+// Context scans from serializing dozens of filesystem waves while still
+// preserving original-order matching and early-stop semantics below.
+const ASYNC_SEARCH_READ_BATCH_SIZE = 64;
 
 type AsyncSearchCandidate =
   | { path: string; kind: 'denied' }
