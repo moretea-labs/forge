@@ -664,6 +664,8 @@ export function buildControllerContextPack(
  * its sidecar while broad lexical retrieval performs bounded async file I/O;
  * the sync builder then consumes the warmed session cache/evidence.
  */
+export const AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS = 2_000;
+
 export async function buildControllerContextPackAsync(
   repoRoot: string,
   policy: McpPolicy,
@@ -732,7 +734,11 @@ export async function buildControllerContextPackAsync(
   const structuralPromise = cachedStructural
     ? Promise.resolve(cachedStructural)
     : structuralQuery
-      ? queryCodeGraphReadProviderAsync(structuralIndexRoot, structuralRequest)
+      ? queryCodeGraphReadProviderAsync(
+          structuralIndexRoot,
+          structuralRequest,
+          structuralMode === 'auto' ? { timeoutMs: AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS } : {},
+        )
       : Promise.resolve<CodeGraphReadProviderResponse>({
           schemaVersion: 1, provider: 'codegraph', operation: 'context', ok: false, status: 'degraded',
           error: { code: 'CODEGRAPH_QUERY_REQUIRED', message: 'No context query was provided.' }, timingsMs: { total: 0 },
