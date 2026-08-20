@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { existsSync, readFileSync, readdirSync } from 'fs';
-import { dirname, relative, resolve, sep } from 'path';
+import { basename, dirname, relative, resolve, sep } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 export type SwiftNavigationKind = 'definition' | 'references' | 'implementations';
@@ -41,10 +41,17 @@ export interface SwiftNavigationAccess {
   allowRepositoryPath(relativePath: string): boolean;
 }
 
+type SwiftBuildServerDescriptor = {
+  argv: string[];
+  kind?: string;
+  bspVersion?: string;
+};
+
 type SwiftWorkspace = {
   root: string;
   relativeRoot: string;
   kind: SwiftNavigationResult['workspace']['kind'];
+  buildServer?: SwiftBuildServerDescriptor;
 };
 
 type PendingRequest = {
@@ -56,6 +63,8 @@ type PendingRequest = {
 const WARM_REQUEST_TIMEOUT_MS = 2_500;
 const COLD_REQUEST_TIMEOUT_MS = 8_000;
 const SWIFT_SEMANTIC_SESSION_TTL_MS = 120_000;
+const SWIFT_BUILD_SETTINGS_PROBE_TTL_MS = 30_000;
+const SWIFT_BUILD_SETTINGS_PROBE_TIMEOUT_MS = 1_500;
 const MAX_STDERR_CHARS = 8_000;
 
 function normalizedRelative(root: string, absolute: string): string | undefined {
@@ -70,6 +79,28 @@ function directoryHasXcodeProject(directory: string): boolean {
   } catch {
     return false;
   }
+}
+
+function readSwiftBuildServerDescriptor(directory: string): SwiftBuildServerDescriptor | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(resolve(directory, 'buildServer.json'), 'utf8')) as Record<string, unknown>;
+    const argv = Array.isArray(raw.argv) ? raw.argv.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0) : [];
+    if (argv.length === 0) return undefined;
+    return {
+      argv,
+      kind: typeof raw.kind === 'string' ? raw.kind : undefined,
+      bspVersion: typeof raw.bspVersion === 'string' ? raw.bspVersion : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export function classifySwiftCompilerArguments(value: unknown): 'usable' | 'fallback' {
+  const args = Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+  const hasSemanticIdentity = args.includes('-module-name') || args.includes('-target');
+  const hasSdk = args.includes('-sdk');
+  return args.length >= 8 && hasSemanticIdentity && hasSdk ? 'usable' : 'fallback';
 }
 
 export function resolveSwiftSemanticWorkspace(repoRoot: string, requestPath: string): SwiftWorkspace {
@@ -87,7 +118,9 @@ export function resolveSwiftSemanticWorkspace(repoRoot: string, requestPath: str
   let sawXcodeProject = false;
   while (current === root || current.startsWith(`${root}${sep}`)) {
     const relativeRoot = normalizedRelative(root, current) ?? '.';
-    if (existsSync(resolve(current, 'buildServer.json'))) return { root: current, relativeRoot, kind: 'build_server' };
+    if (existsSync(resolve(current, 'buildServer.json'))) {
+      return { root: current, relativeRoot, kind: 'build_server', buildServer: readSwiftBuildServerDescriptor(current) };
+    }
     if (existsSync(resolve(current, 'Package.swift'))) return { root: current, relativeRoot, kind: 'swiftpm' };
     if (existsSync(resolve(current, 'compile_commands.json')) || existsSync(resolve(current, 'compile_flags.txt'))) {
       return { root: current, relativeRoot, kind: 'compilation_database' };
@@ -111,6 +144,153 @@ function errorCode(error: unknown): string {
 
 function roundMs(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+type SwiftBuildSettingsProbe =
+  | { ok: true; source: 'manual_compile' | 'bsp_probe'; argumentCount: number }
+  | { ok: false; code: string; message: string };
+
+type JsonRpcProbeState = { buffer: Buffer };
+
+const swiftBuildSettingsProbeCache = new Map<string, { expiresAt: number; probe: Promise<SwiftBuildSettingsProbe> }>();
+
+function writeJsonRpcProbe(child: ChildProcessWithoutNullStreams, message: Record<string, unknown>): void {
+  const body = JSON.stringify(message);
+  child.stdin.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+}
+
+function readJsonRpcProbeResponse(
+  child: ChildProcessWithoutNullStreams,
+  state: JsonRpcProbeState,
+  id: number,
+  timeoutMs: number,
+): Promise<Record<string, unknown>> {
+  return new Promise((resolveResponse, reject) => {
+    const timer = setTimeout(() => finish(new Error(`BSP probe response ${id} exceeded ${timeoutMs}ms.`)), timeoutMs);
+    const onError = (error: Error) => finish(error);
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => finish(new Error(`BSP probe exited before response ${id}: code=${String(code)} signal=${String(signal)}`));
+    const onData = (chunk: Buffer) => {
+      state.buffer = Buffer.concat([state.buffer, chunk]);
+      while (true) {
+        const headerEnd = state.buffer.indexOf('\r\n\r\n');
+        if (headerEnd < 0) return;
+        const header = state.buffer.subarray(0, headerEnd).toString('utf8');
+        const match = /Content-Length:\s*(\d+)/i.exec(header);
+        if (!match) return finish(new Error('BSP probe response omitted Content-Length.'));
+        const length = Number(match[1]);
+        const bodyStart = headerEnd + 4;
+        if (state.buffer.length < bodyStart + length) return;
+        const raw = state.buffer.subarray(bodyStart, bodyStart + length).toString('utf8');
+        state.buffer = state.buffer.subarray(bodyStart + length);
+        let message: Record<string, unknown>;
+        try { message = JSON.parse(raw) as Record<string, unknown>; } catch { return finish(new Error('BSP probe returned invalid JSON.')); }
+        if (message.id === id) return finish(undefined, message);
+      }
+    };
+    function finish(error?: Error, value?: Record<string, unknown>): void {
+      clearTimeout(timer);
+      child.stdout.off('data', onData);
+      child.off('error', onError);
+      child.off('exit', onExit);
+      if (error) reject(error);
+      else resolveResponse(value ?? {});
+    }
+    child.stdout.on('data', onData);
+    child.once('error', onError);
+    child.once('exit', onExit);
+  });
+}
+
+function manualCompileSettingsProbe(workspace: SwiftWorkspace): SwiftBuildSettingsProbe | undefined {
+  if (workspace.buildServer?.kind !== 'manual') return undefined;
+  try {
+    const entries = JSON.parse(readFileSync(resolve(workspace.root, '.compile'), 'utf8')) as Array<Record<string, unknown>>;
+    const command = entries.map((entry) => typeof entry.command === 'string' ? entry.command : '').find(Boolean) ?? '';
+    const hasSemanticIdentity = /(?:^|\s)-(?:module-name|target)(?:\s|$)/.test(command);
+    const hasSdk = /(?:^|\s)-sdk(?:\s|$)/.test(command);
+    if (command.length > 100 && hasSemanticIdentity && hasSdk) {
+      return { ok: true, source: 'manual_compile', argumentCount: command.split(/\s+/).length };
+    }
+    return {
+      ok: false,
+      code: 'SWIFT_SEMANTIC_BUILD_SETTINGS_FALLBACK',
+      message: 'xcode-build-server manual mode exists but .compile does not contain complete Swift module/target/SDK settings. Refresh it from real xcodebuild output with `xcode-build-server parse -a` before requesting compiler semantic navigation.',
+    };
+  } catch {
+    return {
+      ok: false,
+      code: 'SWIFT_SEMANTIC_BUILD_SETTINGS_FALLBACK',
+      message: 'xcode-build-server manual mode exists but .compile is missing or unreadable. Refresh it from real xcodebuild output with `xcode-build-server parse -a` before requesting compiler semantic navigation.',
+    };
+  }
+}
+
+async function probeXcodeBuildServerSettings(
+  workspace: SwiftWorkspace,
+  workspaceRelativePath: string,
+): Promise<SwiftBuildSettingsProbe> {
+  const descriptor = workspace.buildServer;
+  if (!descriptor?.argv[0] || basename(descriptor.argv[0]) !== 'xcode-build-server') {
+    return { ok: true, source: 'bsp_probe', argumentCount: 0 };
+  }
+  const manual = manualCompileSettingsProbe(workspace);
+  if (manual) return manual;
+
+  const key = `${workspace.root}\0${workspaceRelativePath}\0${descriptor.argv.join('\0')}\0${descriptor.kind ?? ''}`;
+  const cached = swiftBuildSettingsProbeCache.get(key);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) return cached.probe;
+
+  const probe = (async (): Promise<SwiftBuildSettingsProbe> => {
+    const child = spawn(descriptor.argv[0]!, descriptor.argv.slice(1), {
+      cwd: workspace.root,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, XBS_LOGPATH: ':null' },
+    });
+    const state: JsonRpcProbeState = { buffer: Buffer.alloc(0) };
+    try {
+      const rootUri = pathToFileURL(workspace.root).href;
+      writeJsonRpcProbe(child, {
+        jsonrpc: '2.0', id: 1, method: 'build/initialize',
+        params: {
+          displayName: 'Forge', version: '1', bspVersion: descriptor.bspVersion ?? '2.2.0', rootUri,
+          capabilities: { languageIds: ['swift'] },
+        },
+      });
+      const initialized = await readJsonRpcProbeResponse(child, state, 1, SWIFT_BUILD_SETTINGS_PROBE_TIMEOUT_MS);
+      if (initialized.error) throw new Error(`build/initialize failed: ${JSON.stringify(initialized.error)}`);
+      writeJsonRpcProbe(child, { jsonrpc: '2.0', method: 'build/initialized', params: {} });
+      writeJsonRpcProbe(child, { jsonrpc: '2.0', id: 2, method: 'workspace/waitForBuildSystemUpdates', params: {} });
+      const synchronized = await readJsonRpcProbeResponse(child, state, 2, SWIFT_BUILD_SETTINGS_PROBE_TIMEOUT_MS);
+      if (synchronized.error) throw new Error(`workspace/waitForBuildSystemUpdates failed: ${JSON.stringify(synchronized.error)}`);
+      writeJsonRpcProbe(child, {
+        jsonrpc: '2.0', id: 3, method: 'textDocument/sourceKitOptions',
+        params: { textDocument: { uri: pathToFileURL(resolve(workspace.root, workspaceRelativePath)).href } },
+      });
+      const response = await readJsonRpcProbeResponse(child, state, 3, SWIFT_BUILD_SETTINGS_PROBE_TIMEOUT_MS);
+      const result = response.result && typeof response.result === 'object' ? response.result as Record<string, unknown> : undefined;
+      const compilerArguments = result?.compilerArguments;
+      const args = Array.isArray(compilerArguments) ? compilerArguments.filter((entry): entry is string => typeof entry === 'string') : [];
+      if (classifySwiftCompilerArguments(args) === 'fallback') {
+        return {
+          ok: false,
+          code: 'SWIFT_SEMANTIC_BUILD_SETTINGS_FALLBACK',
+          message: `xcode-build-server returned fallback Swift settings (${args.length} compiler arguments) rather than target compile settings. Do not trust SourceKit closure from this state. Capture real xcodebuild output and merge it with \`xcode-build-server parse -a\`; Forge will then retry semantic navigation without requiring a full clean build.`,
+        };
+      }
+      return { ok: true, source: 'bsp_probe', argumentCount: args.length };
+    } catch (error) {
+      return {
+        ok: false,
+        code: 'SWIFT_SEMANTIC_BUILD_SETTINGS_PROBE_FAILED',
+        message: `Unable to verify xcode-build-server compiler settings within the bounded probe budget: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    } finally {
+      child.kill();
+    }
+  })();
+  swiftBuildSettingsProbeCache.set(key, { expiresAt: now + SWIFT_BUILD_SETTINGS_PROBE_TTL_MS, probe });
+  return probe;
 }
 
 class SourceKitLspClient {
@@ -434,13 +614,24 @@ export async function navigateSwiftSymbols(
 
   for (const group of groups.values()) {
     try {
-      const acquired = await acquireSwiftSemanticSession(root, group[0]!.workspace.root);
+      const verifiedGroup: typeof group = [];
+      for (const entry of group) {
+        const buildSettings = await probeXcodeBuildServerSettings(entry.workspace, entry.workspaceRelativePath);
+        if (!buildSettings.ok) {
+          outcomes[entry.index] = { ok: false, code: buildSettings.code, message: buildSettings.message };
+          continue;
+        }
+        verifiedGroup.push(entry);
+      }
+      if (verifiedGroup.length === 0) continue;
+
+      const acquired = await acquireSwiftSemanticSession(root, verifiedGroup[0]!.workspace.root);
       await withSwiftSemanticSessionLock(acquired.session, async () => {
-        for (const path of new Set(group.map((entry) => entry.workspaceRelativePath))) {
+        for (const path of new Set(verifiedGroup.map((entry) => entry.workspaceRelativePath))) {
           acquired.session.client.syncDocument(path);
         }
-        for (let groupIndex = 0; groupIndex < group.length; groupIndex += 1) {
-          const entry = group[groupIndex]!;
+        for (let groupIndex = 0; groupIndex < verifiedGroup.length; groupIndex += 1) {
+          const entry = verifiedGroup[groupIndex]!;
           const coldRequest = !acquired.session.warmed;
           const timeoutMs = coldRequest ? COLD_REQUEST_TIMEOUT_MS : WARM_REQUEST_TIMEOUT_MS;
           try {
@@ -478,7 +669,7 @@ export async function navigateSwiftSymbols(
             outcomes[entry.index] = { ok: false, code, message: error instanceof Error ? error.message : String(error) };
             if (coldRequest && code === 'SWIFT_SEMANTIC_TIMEOUT') {
               acquired.session.warmed = true;
-              for (const remaining of group.slice(groupIndex + 1)) {
+              for (const remaining of verifiedGroup.slice(groupIndex + 1)) {
                 outcomes[remaining.index] = {
                   ok: false,
                   code: 'SWIFT_SEMANTIC_COLD_START_PENDING',

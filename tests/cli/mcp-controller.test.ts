@@ -43,6 +43,7 @@ import { persistControllerAccessMode } from "../../src/cli/mcp/access-mode";
 import { clearAllSessionCachesForTest } from "../../src/cli/repository/session-cache";
 import { searchRepositoryMany, searchRepositoryManyAsync } from "../../src/cli/repository/inspector";
 import { runInspectorSearchManyInWorker } from "../../src/runtime/execution/thin-harness/search-worker";
+import { classifySwiftCompilerArguments } from "../../src/runtime/context/swift-navigation";
 import {
   clearControllerContextPerformanceSnapshotForTest,
   queueControllerContextProjectionRefresh,
@@ -288,6 +289,16 @@ test("async rh_context lexical prefetch preserves synchronous early-stop error s
     const asyncResult = await searchRepositoryManyAsync(repoRoot, policy, options);
     expect(asyncResult).toEqual(sync);
   });
+});
+
+test("rejects fallback Swift compiler settings before SourceKit semantic navigation", () => {
+  expect(classifySwiftCompilerArguments([
+    "/repo/App/File.swift", "-sdk", "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
+  ])).toBe("fallback");
+  expect(classifySwiftCompilerArguments([
+    "-module-name", "App", "-sdk", "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk",
+    "-target", "arm64-apple-ios18.0-simulator", "-I", "/tmp/products",
+  ])).toBe("usable");
 });
 
 test("returns bounded policy-checked TypeScript semantic navigation through rh_context", async () => {
