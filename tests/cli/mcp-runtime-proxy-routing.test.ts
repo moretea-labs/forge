@@ -59,6 +59,26 @@ describe('MCP canonical Runtime proxy routing', () => {
     await expect(scheduler.acquire()).rejects.toThrow('CANONICAL_RUNTIME_PROXY_CLOSED');
   });
 
+  test('reserves proxy capacity for interactive calls when process_wait saturates its lane budget', async () => {
+    const scheduler = createCanonicalRuntimeLaneScheduler(3);
+    const waitLane = await scheduler.acquire('wait');
+    let secondWaitResolved = false;
+    const secondWait = scheduler.acquire('wait').then((laneId) => {
+      secondWaitResolved = true;
+      return laneId;
+    });
+    await Bun.sleep(1);
+    expect(secondWaitResolved).toBe(false);
+
+    const interactiveLane = await scheduler.acquire('interactive');
+    expect(interactiveLane).not.toBe(waitLane);
+    scheduler.release(waitLane);
+    expect(await secondWait).toBe(waitLane);
+    scheduler.release(interactiveLane);
+    scheduler.release(waitLane);
+    scheduler.close();
+  });
+
   test('invalidates a hot inner lane when the Canonical Runtime instance changes at the same endpoint and token', () => {
     const baseline = {
       endpoint: new URL('http://127.0.0.1:8766/mcp-bearer'),

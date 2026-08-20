@@ -537,38 +537,66 @@ export function canonicalRuntimeProxyLaneLimit(raw = process.env.FORGE_CANONICAL
   return Math.min(parsed, MAX_CANONICAL_RUNTIME_PROXY_LANES);
 }
 
+export type CanonicalRuntimeLaneClass = 'interactive' | 'wait';
+
 export interface CanonicalRuntimeLaneScheduler {
-  acquire(): Promise<number>;
+  acquire(laneClass?: CanonicalRuntimeLaneClass): Promise<number>;
   release(laneId: number): void;
   close(): void;
   size(): number;
 }
 
+export const RESERVED_INTERACTIVE_CANONICAL_RUNTIME_PROXY_LANES = 2;
+
 /**
  * Lease one inner Runtime MCP session exclusively to each in-flight request.
- * This keeps hot connection reuse while preventing a long process_wait or plugin
- * action from head-of-line blocking unrelated short calls on the same transport.
+ * Long process_wait calls are capped below total capacity so they can never
+ * consume every lane. Interactive waiters are handed released lanes first.
  */
 export function createCanonicalRuntimeLaneScheduler(maxLanes = canonicalRuntimeProxyLaneLimit()): CanonicalRuntimeLaneScheduler {
   const boundedMax = Math.max(1, Math.min(Math.trunc(maxLanes), MAX_CANONICAL_RUNTIME_PROXY_LANES));
+  const maxWaitLanes = boundedMax <= RESERVED_INTERACTIVE_CANONICAL_RUNTIME_PROXY_LANES
+    ? Math.max(1, boundedMax - 1)
+    : boundedMax - RESERVED_INTERACTIVE_CANONICAL_RUNTIME_PROXY_LANES;
   const idle: number[] = [];
-  const waiters: Array<{ resolve: (laneId: number) => void; reject: (error: Error) => void }> = [];
+  const waiters: Array<{ laneClass: CanonicalRuntimeLaneClass; resolve: (laneId: number) => void; reject: (error: Error) => void }> = [];
+  const activeClasses = new Map<number, CanonicalRuntimeLaneClass>();
+  let waitLaneCount = 0;
   let laneCount = 0;
   let closed = false;
 
+  const activate = (laneId: number, laneClass: CanonicalRuntimeLaneClass): number => {
+    activeClasses.set(laneId, laneClass);
+    if (laneClass === 'wait') waitLaneCount += 1;
+    return laneId;
+  };
+
+  const nextEligibleWaiterIndex = (): number => {
+    const interactiveIndex = waiters.findIndex((waiter) => waiter.laneClass === 'interactive');
+    if (interactiveIndex >= 0) return interactiveIndex;
+    return waitLaneCount < maxWaitLanes ? waiters.findIndex((waiter) => waiter.laneClass === 'wait') : -1;
+  };
+
   return {
-    async acquire(): Promise<number> {
+    async acquire(laneClass: CanonicalRuntimeLaneClass = 'interactive'): Promise<number> {
       if (closed) throw new Error('CANONICAL_RUNTIME_PROXY_CLOSED');
+      if (laneClass === 'wait' && waitLaneCount >= maxWaitLanes) {
+        return await new Promise<number>((resolve, reject) => waiters.push({ laneClass, resolve, reject }));
+      }
       const available = idle.shift();
-      if (available !== undefined) return available;
-      if (laneCount < boundedMax) return laneCount++;
-      return await new Promise<number>((resolve, reject) => waiters.push({ resolve, reject }));
+      if (available !== undefined) return activate(available, laneClass);
+      if (laneCount < boundedMax) return activate(laneCount++, laneClass);
+      return await new Promise<number>((resolve, reject) => waiters.push({ laneClass, resolve, reject }));
     },
     release(laneId: number): void {
       if (closed) return;
-      const waiter = waiters.shift();
-      if (waiter) {
-        waiter.resolve(laneId);
+      const previousClass = activeClasses.get(laneId);
+      activeClasses.delete(laneId);
+      if (previousClass === 'wait') waitLaneCount = Math.max(0, waitLaneCount - 1);
+      const waiterIndex = nextEligibleWaiterIndex();
+      if (waiterIndex >= 0) {
+        const [waiter] = waiters.splice(waiterIndex, 1);
+        waiter.resolve(activate(laneId, waiter.laneClass));
         return;
       }
       idle.push(laneId);
@@ -578,6 +606,7 @@ export function createCanonicalRuntimeLaneScheduler(maxLanes = canonicalRuntimeP
       closed = true;
       const error = new Error('CANONICAL_RUNTIME_PROXY_CLOSED');
       for (const waiter of waiters.splice(0)) waiter.reject(error);
+      activeClasses.clear();
       idle.length = 0;
     },
     size(): number {
@@ -683,13 +712,16 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
     }
   };
 
-  const prepareLane = async (timing: MutableGatewayProxyTiming): Promise<{ laneId: number; client: Client }> => {
+  const prepareLane = async (
+    timing: MutableGatewayProxyTiming,
+    laneClass: CanonicalRuntimeLaneClass = 'interactive',
+  ): Promise<{ laneId: number; client: Client }> => {
     if (closed) throw new Error('CANONICAL_RUNTIME_PROXY_CLOSED');
     const handoff = await waitForCanonicalRuntimeReleaseHandoff(
       () => canonicalRuntimeReleaseHandoffActive(ctx.controllerHome),
     );
     if (handoff.waited) await closeAllLanes();
-    const laneId = await scheduler.acquire();
+    const laneId = await scheduler.acquire(laneClass);
     try {
       return { laneId, client: await clientForCurrentRuntime(laneId, timing) };
     } catch (error) {
@@ -711,7 +743,7 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
       }
     },
     async callTool(callerContext, name, args, timing = {}) {
-      const { laneId, client } = await prepareLane(timing);
+      const { laneId, client } = await prepareLane(timing, name === 'process_wait' ? 'wait' : 'interactive');
       const gatewayCallStartedAtMs = Date.now();
       const callStarted = performance.now();
       try {
