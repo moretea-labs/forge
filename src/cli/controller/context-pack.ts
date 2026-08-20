@@ -322,6 +322,11 @@ export function buildControllerContextPack(
       maxFiles: scopedExactKnownFileSearch ? exactKnownFiles.length : MAX_TOTAL_SEARCHED_FILES,
       caseSensitive: false,
       cacheKey: JSON.stringify({ head: git.head, status: git.status, diffStat: git.diffStat }),
+      ...(!scopedExactKnownFileSearch ? {
+        completionMode: 'discovery' as const,
+        discoveryTargetFiles: Math.max(maxFiles * 2, 12),
+        discoveryMinQueryCoverage: Math.min(3, searchQueries.length),
+      } : {}),
       session: options.session,
     });
     lexicalCacheHit = search.cacheHit === true;
@@ -718,6 +723,9 @@ export async function buildControllerContextPackAsync(
           maxFiles: MAX_TOTAL_SEARCHED_FILES,
           caseSensitive: false,
           cacheKey: JSON.stringify({ head: git.head, status: git.status, diffStat: git.diffStat }),
+          completionMode: 'discovery' as const,
+          discoveryTargetFiles: Math.max(maxFiles * 2, 12),
+          discoveryMinQueryCoverage: Math.min(3, searchQueries.length),
         };
       })()
     : undefined;

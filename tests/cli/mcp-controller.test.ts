@@ -234,6 +234,32 @@ test("keeps async rh_context lexical prefetch identical to the synchronous searc
   });
 });
 
+test("broad rh_context discovery stops on candidate sufficiency without requiring every guessed term", async () => {
+  await withController(async (repoRoot) => {
+    writeFileSync(join(repoRoot, "discovery-a.ts"), "export const discoveryAlpha = 1;\n");
+    writeFileSync(join(repoRoot, "discovery-b.ts"), "export const discoveryBeta = 2;\n");
+    writeFileSync(join(repoRoot, "discovery-c.ts"), "export const discoveryAlphaBeta = 'discoveryBeta';\n");
+    writeFileSync(join(repoRoot, "discovery-late.ts"), "export const rareGuessedTerm = 3;\n");
+    const policy = getMcpPolicy("controller");
+    const options = {
+      queries: ["discoveryAlpha", "discoveryBeta", "rareGuessedTerm"],
+      files: ["discovery-a.ts", "discovery-b.ts", "discovery-c.ts", "discovery-late.ts"],
+      maxResultsPerQuery: 10,
+      maxFiles: 10,
+      caseSensitive: true,
+      completionMode: "discovery" as const,
+      discoveryTargetFiles: 3,
+      discoveryMinQueryCoverage: 2,
+    };
+    const sync = searchRepositoryMany(repoRoot, policy, options);
+    const asyncResult = await searchRepositoryManyAsync(repoRoot, policy, options);
+    expect(asyncResult).toEqual(sync);
+    expect(sync.scannedFiles).toBe(3);
+    expect(sync.truncationReason).toBe("discovery_budget");
+    expect(sync.results.some((result) => result.query === "rareGuessedTerm")).toBe(false);
+  });
+});
+
 test("keeps async rh_context repository inventory identical to the synchronous search authority", async () => {
   await withController(async (repoRoot) => {
     writeFileSync(join(repoRoot, "inventory-alpha.ts"), "export const inventoryAlpha = 'inventoryBeta';\n");
