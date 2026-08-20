@@ -49,6 +49,7 @@ import {
   waitRepositoryCommandProcess,
 } from '../../src/runtime/execution/process-runtime/command-facade';
 import {
+  cancelAllLightweightProcesses,
   clearLightweightProcessMemoryForTest,
   getLightweightProcessHandle,
   readLightweightProcessLogs,
@@ -1088,6 +1089,34 @@ describe('run_check Process Runtime facade', () => {
       5_000,
     );
     expect(terminal).toMatchObject({ completed: true, ok: true, route: 'direct' });
+  });
+
+  test('cancels only active lightweight children owned by the stopping Controller Home', async () => {
+    const fx = fixture();
+    const other = fixture();
+    const first = await startLightweightInternalProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      executable: 'node',
+      args: ['-e', 'setTimeout(() => process.exit(0), 5000)'],
+      cwd: fx.repoRoot,
+      timeoutMs: 10_000,
+      interactiveWaitMs: 5,
+    });
+    const second = await startLightweightInternalProcess({
+      controllerHome: other.controllerHome,
+      repoId: other.repository.repoId,
+      executable: 'node',
+      args: ['-e', 'setTimeout(() => process.exit(0), 5000)'],
+      cwd: other.repoRoot,
+      timeoutMs: 10_000,
+      interactiveWaitMs: 5,
+    });
+    expect(await cancelAllLightweightProcesses(fx.controllerHome)).toBe(1);
+    expect(getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, first.handle.processId)).toMatchObject({ completed: true, cancelled: true });
+    expect(getLightweightProcessHandle(other.controllerHome, other.repository.repoId, second.handle.processId)).toMatchObject({ completed: false });
+    await cancelAllLightweightProcesses(other.controllerHome);
+    clearLightweightProcessMemoryForTest();
   });
 
   test('redacts a bearer value split across active lightweight output chunks', async () => {

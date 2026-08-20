@@ -48,6 +48,7 @@ interface LightweightExecutionResult {
 
 interface LightweightEntry {
   processId: string;
+  controllerHome: string;
   repoId: string;
   workId?: string;
   commandId: string;
@@ -336,6 +337,7 @@ export async function startLightweightRepositoryCommand(
   const maxOutputBytes = Math.max(1_024, input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES);
   const entry: LightweightEntry = {
     processId,
+    controllerHome: input.controllerHome,
     repoId: input.repository.repoId,
     workId: input.workId,
     commandId: stableCommandId || processId,
@@ -444,6 +446,7 @@ export async function startLightweightInternalProcess(
   const maxOutputBytes = Math.max(1_024, input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES);
   const entry: LightweightEntry = {
     processId,
+    controllerHome: input.controllerHome,
     repoId: input.repoId,
     workId: input.workId,
     commandId: stableCommandId || processId,
@@ -542,6 +545,7 @@ export async function startLightweightControllerCheck(
   const abort = new AbortController();
   const entry: LightweightEntry = {
     processId,
+    controllerHome: input.controllerHome,
     repoId: input.repoId,
     workId: input.workId,
     commandId: stableCommandId || processId,
@@ -655,6 +659,16 @@ export async function waitForLightweightProcess(
     }),
   ]);
   return entryHandle(entry);
+}
+
+export async function cancelAllLightweightProcesses(controllerHome: string): Promise<number> {
+  const active = [...entries.values()].filter((entry) => entry.controllerHome === controllerHome && entry.result === undefined);
+  await Promise.allSettled(active.map(async (entry) => {
+    entry.cancelRequested = true;
+    entry.abort.abort();
+    await entry.promise;
+  }));
+  return active.length;
 }
 
 export async function cancelLightweightProcess(controllerHome: string, repoId: string, processId: string): Promise<ProcessHandle> {

@@ -444,6 +444,7 @@ describe('canonical single Runtime', () => {
 
   test('Runtime Root publishes one instance-bound status projection and removes it on exit', async () => {
     const fixture = createFixture({ runtimeInstanceId: 'runtime-status-test' });
+    const stoppedLightweightHomes: string[] = [];
     const runtime = new CanonicalForgeRuntime(fixture.config, {
       startScheduler: () => inertScheduler(),
       startTransport: async () => ({
@@ -453,6 +454,10 @@ describe('canonical single Runtime', () => {
         close: async () => undefined,
       }),
       runMcpProbe: async () => undefined,
+      stopLightweightProcesses: async (controllerHome) => {
+        stoppedLightweightHomes.push(controllerHome);
+        return 0;
+      },
     });
     cleanups.push(() => runtime.stop('TEST_CLEANUP'));
 
@@ -476,6 +481,7 @@ describe('canonical single Runtime', () => {
     });
 
     await runtime.stop('TEST_STOP');
+    expect(stoppedLightweightHomes).toEqual([fixture.controllerHome]);
     expect(getRuntimeWriteClaim()).toBeUndefined();
     expect(observeRuntimeStatus(fixture.controllerHome, () => '2026-08-05T00:00:02.000Z')).toEqual({
       schemaVersion: 1,
