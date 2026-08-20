@@ -58,6 +58,28 @@ describe('final SQLite control-plane cutover', () => {
     });
   });
 
+  test('SELECT-only opens do not wait behind a concurrent WAL writer reservation', () => {
+    withHome((controllerHome) => {
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'probe', scope: 'controller', key: 'READ-WHILE-WRITING', schemaVersion: 1,
+        value: { state: 'ready' }, expectedRevision: null,
+      });
+      const writer = new Database(controlPlaneDatabasePath(controllerHome));
+      writer.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE');
+      try {
+        const startedAt = performance.now();
+        expect(readControlPlaneRecord(controllerHome, 'probe', 'controller', 'READ-WHILE-WRITING')).toMatchObject({
+          value: { state: 'ready' },
+        });
+        expect(listControlPlaneRecords(controllerHome, { namespace: 'probe', limit: 10 })).toHaveLength(1);
+        expect(performance.now() - startedAt).toBeLessThan(500);
+      } finally {
+        writer.exec('ROLLBACK');
+        writer.close();
+      }
+    });
+  });
+
   test('unknown required schema versions fail before schema initialization or overwrite', () => {
     withHome((controllerHome) => {
       const path = controlPlaneDatabasePath(controllerHome);

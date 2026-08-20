@@ -207,6 +207,37 @@ function openDatabase(controllerHome: string): SqliteDatabase {
   }
 }
 
+/**
+ * Open an already initialized authority for SELECT-only callers without
+ * re-running WAL/schema setup. In WAL mode a reader can coexist with a writer
+ * holding BEGIN IMMEDIATE; forcing PRAGMA journal_mode/DDL on every read turns
+ * that harmless writer reservation into a synchronous busy_timeout on the
+ * Canonical Runtime event loop.
+ */
+function openDatabaseForRead(controllerHome: string): SqliteDatabase {
+  const path = controlPlaneDatabasePath(controllerHome);
+  if (!existsSync(path)) return openDatabase(controllerHome);
+
+  const database = openRawDatabase(path);
+  try {
+    database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;');
+    const schemaVersion = assertSupportedSchema(database, path);
+    if (schemaVersion !== undefined) return database;
+  } catch (error) {
+    database.close();
+    const busy = sqliteBusyError(path, error);
+    if (busy) throw busy;
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith('CONTROL_PLANE_')) throw error;
+    throw new Error(`CONTROL_PLANE_SQLITE_CORRUPT: ${path}: ${message}`);
+  }
+
+  // Preserve first-use/partially initialized compatibility: only a database
+  // with no schema authority falls back to the initializer/writer path.
+  database.close();
+  return openDatabase(controllerHome);
+}
+
 function rowToRecord<T>(row: StoredRecordRow): ControlPlaneRecord<T> {
   let value: T;
   try {
@@ -321,7 +352,7 @@ export function withControlPlaneTransaction<T>(controllerHome: string, operation
 }
 
 export function readControlPlaneRecord<T>(controllerHome: string, namespace: string, scope: string, key: string): ControlPlaneRecord<T> | undefined {
-  const database = openDatabase(controllerHome);
+  const database = openDatabaseForRead(controllerHome);
   try {
     return selectRecord<T>(database, namespace, scope, key);
   } finally {
@@ -361,7 +392,7 @@ export function listControlPlaneRecords<T>(
   controllerHome: string,
   input: { namespace: string; scope?: string; limit?: number },
 ): ControlPlaneRecord<T>[] {
-  const database = openDatabase(controllerHome);
+  const database = openDatabaseForRead(controllerHome);
   try {
     const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 1000), 5000));
     const rows = input.scope === undefined
