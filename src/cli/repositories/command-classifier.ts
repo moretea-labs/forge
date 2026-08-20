@@ -253,6 +253,55 @@ function isReadOnlyCodegraphCommand(words: string[]): boolean {
   return program === 'codegraph' && words[1]?.toLowerCase() === 'status';
 }
 
+function githubCliApiMethod(words: string[]): string | undefined {
+  for (let index = 2; index < words.length; index += 1) {
+    const word = words[index]?.toLowerCase();
+    if (word === '-x' || word === '--method') return words[index + 1]?.toUpperCase();
+    if (word?.startsWith('--method=')) return word.slice('--method='.length).toUpperCase();
+  }
+  return undefined;
+}
+
+function isReadOnlyGitHubCliCommand(words: string[]): boolean {
+  const program = words[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
+  if (program !== 'gh') return false;
+  const group = words[1]?.toLowerCase() ?? '';
+  const action = words[2]?.toLowerCase() ?? '';
+  if (['--version', 'version', 'help', '--help', '-h'].includes(group)) return true;
+  if (group === 'auth' && action === 'status') return true;
+  if (group === 'search' && ['code', 'commits', 'issues', 'prs', 'repos'].includes(action)) return true;
+  if (group === 'repo' && action === 'view') return true;
+  if (group === 'pr' && ['list', 'view', 'status', 'checks', 'diff'].includes(action)) return true;
+  if (group === 'issue' && ['list', 'view'].includes(action)) return true;
+  if (group === 'run' && ['list', 'view', 'watch'].includes(action)) return true;
+  if (group === 'release' && ['list', 'view', 'download'].includes(action)) return true;
+  if (group !== 'api') return false;
+
+  const method = githubCliApiMethod(words);
+  if (method) return method === 'GET' || method === 'HEAD';
+  const hasBodyInput = words.slice(2).some((word) => {
+    const lower = word.toLowerCase();
+    return lower === '-f' || lower === '--raw-field' || lower === '--field'
+      || lower === '--input' || lower.startsWith('--raw-field=') || lower.startsWith('--field=') || lower.startsWith('--input=');
+  });
+  return !hasBodyInput;
+}
+
+function isLocalGitHubCliWorkspaceCommand(words: string[]): boolean {
+  const program = words[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
+  if (program !== 'gh') return false;
+  const group = words[1]?.toLowerCase() ?? '';
+  const action = words[2]?.toLowerCase() ?? '';
+  return (group === 'repo' && action === 'clone') || (group === 'pr' && action === 'checkout');
+}
+
+function isGitHubCliExternalMutation(words: string[]): boolean {
+  const program = words[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
+  if (program !== 'gh') return false;
+  if (isReadOnlyGitHubCliCommand(words) || isLocalGitHubCliWorkspaceCommand(words)) return false;
+  return true;
+}
+
 function isReadOnlySegment(segment: string): boolean {
   const words = firstWords(segment);
   const program = words[0]?.toLowerCase();
@@ -263,9 +312,7 @@ function isReadOnlySegment(segment: string): boolean {
   if (program === 'sqlite3') return isSafeReadOnlySqliteSegment(segment);
   if (program === 'find') return !/(?:-delete|-exec|-execdir|-ok|-okdir)\b/.test(segment);
   if (program === 'sed') return !isSedInPlaceSegment(segment);
-  if (program === 'gh') {
-    return /\bgh\s+(?:repo\s+view|pr\s+(?:list|view|status|checks|diff)|issue\s+(?:list|view)|run\s+(?:list|view|watch)|release\s+(?:list|view|download))(?:\s|$)/.test(segment);
-  }
+  if (program === 'gh') return isReadOnlyGitHubCliCommand(words);
   return READ_ONLY_PROGRAMS.has(program);
 }
 
@@ -598,18 +645,15 @@ function classifyArgvCommand(
   if (program === 'log' && ['show', 'stream', 'stats', 'config'].includes(subcommand ?? '') && subcommand !== 'config') {
     return { risk: 'readonly', confirmation: 'none', reasons: ['system log observation is read-only'] };
   }
-  // Explicit readonly GitHub CLI observations (must not be treated as workspace write).
   if (program === 'gh') {
-    const group = subcommand ?? '';
-    const action = (argv[2] ?? '').toLowerCase();
-    const readonlyGh =
-      (group === 'repo' && action === 'view')
-      || (group === 'pr' && ['list', 'view', 'status', 'checks', 'diff'].includes(action))
-      || (group === 'issue' && ['list', 'view'].includes(action))
-      || (group === 'run' && ['list', 'view', 'watch'].includes(action))
-      || (group === 'release' && ['list', 'view', 'download'].includes(action));
-    if (readonlyGh) {
+    if (isReadOnlyGitHubCliCommand(argv)) {
       return { risk: 'readonly', confirmation: 'none', reasons: ['the argv command is a recognized GitHub read operation'] };
+    }
+    if (isLocalGitHubCliWorkspaceCommand(argv)) {
+      return { risk: 'workspace_write', confirmation: 'authorization', reasons: ['the GitHub CLI command changes only the local checkout'] };
+    }
+    if (isGitHubCliExternalMutation(argv)) {
+      return { risk: 'remote_write', confirmation: 'authorization', reasons: ['the GitHub CLI command may mutate external GitHub state'] };
     }
   }
   if (program === 'git' && ['add', 'commit', 'pull', 'fetch', 'merge', 'rebase', 'checkout', 'switch', 'cherry-pick', 'revert', 'stash', 'mv', 'restore', 'apply', 'am', 'bisect'].includes(subcommand ?? '')) {
@@ -689,10 +733,12 @@ function classifyShellCommand(
 
   const remoteWritePatterns: Array<[RegExp, string]> = [
     [/\bgit\s+push\b/i, 'writes Git refs to a remote'],
-    [/\bgh\s+(?:pr\s+(?:create|edit|close|reopen|merge|comment|review)|issue\s+(?:create|edit|close|reopen|comment)|release\s+(?:create|edit|delete|upload)|repo\s+(?:create|edit|archive|delete))\b/i, 'writes GitHub remote state'],
     [/\b(?:npm|bun)\s+publish\b/i, 'publishes a package'],
   ];
   for (const [pattern, reason] of remoteWritePatterns) if (pattern.test(normalized)) reasons.push(reason);
+  for (const segment of shellSegments(normalized)) {
+    if (isGitHubCliExternalMutation(firstWords(segment))) reasons.push('writes GitHub remote state');
+  }
   if (reasons.length > 0) return { risk: 'remote_write', confirmation: 'authorization', reasons };
 
   if (hasRepositoryOutputRedirection(normalized)) reasons.push('redirects output into a repository file');
