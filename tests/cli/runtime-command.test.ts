@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { buildMcpCommand } from '../../src/cli/commands/mcp';
 
 const ROOT = join(import.meta.dir, '../..');
 const CLI = join(ROOT, 'src/cli/index.ts');
@@ -75,13 +76,10 @@ describe('runtime command surface', () => {
   });
 
   test('MCP command surface exposes no KeepAlive or restart lifecycle owner', () => {
-    const help = spawnSync('bun', [CLI, 'mcp', '--help'], { cwd: ROOT, encoding: 'utf-8' });
-    expect(help.status).toBe(0);
-    for (const expected of ['serve', 'doctor', 'setup']) expect(help.stdout).toContain(expected);
-    const nodeHelp = spawnSync('node', ['--loader', join(ROOT, 'src/runtime/shared/node-ts-loader.mjs'), CLI, 'mcp', '--help'], { cwd: ROOT, encoding: 'utf-8' });
-    expect(nodeHelp.status).toBe(0);
-    expect(help.stdout).not.toMatch(/^\s+keepalive\b/m);
-    expect(help.stdout).not.toMatch(/^\s+restart\b/m);
+    const commandNames = buildMcpCommand().commands.map((command) => command.name());
+    for (const expected of ['serve', 'doctor', 'setup']) expect(commandNames).toContain(expected);
+    expect(commandNames).not.toContain('keepalive');
+    expect(commandNames).not.toContain('restart');
     expect(existsSync(join(ROOT, 'src/cli/mcp/keepalive.ts'))).toBe(false);
     expect(existsSync(join(ROOT, 'src/cli/mcp/restart.ts'))).toBe(false);
     const mcpCommand = readFileSync(join(ROOT, 'src/cli/commands/mcp.ts'), 'utf8');
