@@ -1738,6 +1738,7 @@ async function openNativeAttachedContext(
       }
       let inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>> | undefined;
       let selection: ReturnType<typeof selectReusableNativeTab> | undefined;
+      let recoveryFailure: string | undefined;
       try {
         inventory = await listMacOsBrowserTabs(savedProduct, timeout);
         selection = selectReusableNativeTab(
@@ -1763,35 +1764,19 @@ async function openNativeAttachedContext(
           };
         }
       } catch (recoveryError) {
-        throw new AssistantPluginError(
-          'PLUGIN_BROWSER_SESSION_STATE_LOST',
-          'Saved macOS browser tab disappeared and current-tab recovery could not be completed safely; no replacement tab was created.',
-          {
-            retryable: false,
-            details: {
-              sessionId: target.sessionId, browserProduct: savedProduct, ownership: savedOwnership,
-              cause: error instanceof Error ? error.message : String(error),
-              recoveryCause: recoveryError instanceof Error ? recoveryError.message : String(recoveryError),
-            },
-          },
-        );
+        recoveryFailure = recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
       }
       if (!page) {
-        throw new AssistantPluginError(
-          'PLUGIN_BROWSER_SESSION_STATE_LOST',
-          selection?.match === 'ambiguous'
-            ? 'Saved macOS browser tab disappeared and multiple reusable current tabs matched; refusing to guess or create a duplicate.'
-            : 'Saved macOS browser tab disappeared and no uniquely reusable current tab matched; refusing to create a duplicate.',
-          {
-            retryable: false,
-            details: {
-              sessionId: target.sessionId, browserProduct: savedProduct, ownership: savedOwnership,
-              windowId: savedTab.windowId, tabId: savedTab.tabId,
-              candidateCount: selection?.candidateCount ?? 0, inventoryCount: inventory?.tabs.length ?? 0, inventoryTruncated: inventory?.truncated ?? false,
-              cause: error instanceof Error ? error.message : String(error),
-            },
-          },
-        );
+        sessionResume = {
+          sessionId: target.sessionId,
+          status: 'stale_tab',
+          reason: recoveryFailure
+            ? `Saved plugin-owned macOS browser tab disappeared and current-tab recovery failed (${recoveryFailure}); creating one replacement plugin-owned tab.`
+            : selection?.match === 'ambiguous'
+              ? 'Saved plugin-owned macOS browser tab disappeared and multiple reusable current tabs matched; refusing to guess between user tabs and creating one replacement plugin-owned tab.'
+              : 'Saved plugin-owned macOS browser tab disappeared and no uniquely reusable current tab matched; creating one replacement plugin-owned tab.',
+          savedTab,
+        };
       }
     }
   } else {

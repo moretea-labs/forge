@@ -1869,32 +1869,42 @@ describe('browser plugin', () => {
     expect(native.events.created).toEqual(['9001']);
   });
 
-  test('native recovery refuses a same-origin tab for a different stable app entity', async () => {
+  test('native recovery creates a replacement plugin-owned tab when the stale session only finds a different app entity', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'] });
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
     const native = mockMacOsOwnedTabRuntime('chrome');
     setMacOsBrowserRuntimeHooksForTest(native.hooks);
-    const first = await executeBrowserPluginAction({ controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text', requestId: 'wrong-app-first', args: { url: 'https://appstoreconnect.apple.com/apps/6775778505/distribution' }, origin: { surface: 'local-ui', actor: 'test' } });
+    const url = 'https://appstoreconnect.apple.com/apps/6775778505/distribution';
+    const first = await executeBrowserPluginAction({ controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text', requestId: 'wrong-app-first', args: { url }, origin: { surface: 'local-ui', actor: 'test' } });
     native.dropOwnedTab('9001');
     native.setUserTab('https://appstoreconnect.apple.com/apps/6796884084/distribution', 'Other App');
-    await expect(executeBrowserPluginAction({ controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text', requestId: 'wrong-app-second', args: { session_id: String(first.sessionId) }, origin: { surface: 'local-ui', actor: 'test' } })).rejects.toThrow('PLUGIN_BROWSER_SESSION_STATE_LOST');
-    expect(native.events.created).toEqual(['9001']);
+    const second = await executeBrowserPluginAction({ controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text', requestId: 'wrong-app-second', args: { session_id: String(first.sessionId) }, origin: { surface: 'local-ui', actor: 'test' } });
+    expect(second.browserConnection).toMatchObject({
+      tab: { ownership: 'plugin_owned', tabId: '9002', url },
+      sessionResume: { status: 'stale_tab' },
+    });
+    expect(native.events.created).toEqual(['9001', '9002']);
   });
 
-  test('native recovery fails closed when multiple current tabs match the saved app entity', async () => {
+  test('native recovery creates a replacement plugin-owned tab instead of guessing between ambiguous user tabs', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'] });
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
     const native = mockMacOsOwnedTabRuntime('chrome');
     setMacOsBrowserRuntimeHooksForTest(native.hooks);
-    const first = await executeBrowserPluginAction({ controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text', requestId: 'ambiguous-first', args: { url: 'https://appstoreconnect.apple.com/apps/6775778505/distribution' }, origin: { surface: 'local-ui', actor: 'test' } });
+    const url = 'https://appstoreconnect.apple.com/apps/6775778505/distribution';
+    const first = await executeBrowserPluginAction({ controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text', requestId: 'ambiguous-first', args: { url }, origin: { surface: 'local-ui', actor: 'test' } });
     native.dropOwnedTab('9001');
     native.setUserTab('https://appstoreconnect.apple.com/apps/6775778505/distribution/ios/version/inflight', 'ASC One');
     native.addUserTab('502', 'https://appstoreconnect.apple.com/apps/6775778505/distribution/inapp-purchases', 'ASC Two');
     native.setActiveTab('999');
-    await expect(executeBrowserPluginAction({ controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text', requestId: 'ambiguous-second', args: { session_id: String(first.sessionId) }, origin: { surface: 'local-ui', actor: 'test' } })).rejects.toThrow('PLUGIN_BROWSER_SESSION_STATE_LOST');
-    expect(native.events.created).toEqual(['9001']);
+    const second = await executeBrowserPluginAction({ controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text', requestId: 'ambiguous-second', args: { session_id: String(first.sessionId) }, origin: { surface: 'local-ui', actor: 'test' } });
+    expect(second.browserConnection).toMatchObject({
+      tab: { ownership: 'plugin_owned', tabId: '9002', url },
+      sessionResume: { status: 'stale_tab' },
+    });
+    expect(native.events.created).toEqual(['9001', '9002']);
   });
 
   test('native session reattaches the same tab after its Chrome window id changes instead of opening a duplicate', async () => {
