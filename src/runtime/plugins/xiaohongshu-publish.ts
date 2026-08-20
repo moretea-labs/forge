@@ -10,7 +10,7 @@ import { AssistantPluginError } from './errors';
 import { executeBrowserPluginAction } from './browser-adapter';
 
 const PLUGIN_ID = 'xiaohongshu';
-const RECIPE_VERSION = 6;
+const RECIPE_VERSION = 7;
 const CREATOR_BASE_URL = 'https://creator.xiaohongshu.com/publish/publish?source=official';
 const CREATOR_ARTICLE_URL = `${CREATOR_BASE_URL}&target=article`;
 const CREATOR_NOTE_MANAGER_URL = 'https://creator.xiaohongshu.com/new/note-manager';
@@ -182,10 +182,10 @@ export function buildXiaohongshuPublishRecipe(args: Record<string, unknown>): Re
     },
     parsed.normalizedMode === 'image_note'
       ? {
-          id: 'preflight.wait_image_page',
-          actionId: 'wait_for_selector',
-          args: { session_id: parsed.sessionId, selector: IMAGE_FILE_SELECTOR, state: 'attached', timeout_ms: 30_000 },
-          expectation: 'A file input attaching within the bounded timeout structurally proves the image-note Creator surface is ready without extracting whole-page text.',
+          id: 'image.select_mode',
+          actionId: 'click_text',
+          args: { session_id: parsed.sessionId, text: IMAGE_TAB_TEXT, post_action_wait_ms: 750 },
+          expectation: 'Creator may default to 上传视频; switch semantically to the exact visible 上传图文 tab before waiting for the image input.',
         }
       : {
           id: 'preflight.read_auth_state',
@@ -197,8 +197,7 @@ export function buildXiaohongshuPublishRecipe(args: Record<string, unknown>): Re
 
   if (parsed.normalizedMode === 'image_note') {
     steps.push(
-      { id: 'image.select_mode', actionId: 'click_text', args: { session_id: parsed.sessionId, text: IMAGE_TAB_TEXT, post_action_wait_ms: 750 }, expectation: 'Exact visible 上传图文 tab.' },
-      { id: 'image.wait_file_input', actionId: 'wait_for_selector', args: { session_id: parsed.sessionId, selector: IMAGE_FILE_SELECTOR, state: 'attached', timeout_ms: 30_000 } },
+      { id: 'image.wait_file_input', actionId: 'wait_for_selector', args: { session_id: parsed.sessionId, selector: IMAGE_FILE_SELECTOR, state: 'attached', timeout_ms: 30_000 }, expectation: 'Wait for the image-upload input only after the semantic 上传图文 mode switch.' },
       { id: 'image.attach_files', actionId: 'attach_local_file', args: { session_id: parsed.sessionId, selector: IMAGE_FILE_SELECTOR, file_paths: parsed.imagePaths, post_action_wait_ms: 1_200 }, expectation: 'One input event/change event after all files are selected.' },
       { id: 'image.wait_editor', actionId: 'wait_for_selector', args: { session_id: parsed.sessionId, selector: IMAGE_TITLE_SELECTOR, state: 'visible', timeout_ms: 30_000 } },
       { id: 'image.fill_title', actionId: 'fill', args: { session_id: parsed.sessionId, selector: IMAGE_TITLE_SELECTOR, text: parsed.title } },
