@@ -1148,6 +1148,31 @@ describe('run_check Process Runtime facade', () => {
     expect(classification.reasons.some((reason) => reason.includes('timeout_exceeds_fast_cap'))).toBe(false);
   });
 
+  test('single-flights equivalent active build/test commands across different request ids', async () => {
+    const fx = fixture();
+    writeFileSync(join(fx.repoRoot, 'slow-build.test.ts'), "import { test } from 'bun:test'; test('slow build fixture', async () => { await Bun.sleep(500); });\n");
+    const base = {
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      command: ['bun', 'test', 'slow-build.test.ts'],
+      timeoutMs: 30_000,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+    } as const;
+    const first = await executeRepositoryCommandViaProcessRuntime({ ...base, requestId: 'build-singleflight-first' });
+    const second = await executeRepositoryCommandViaProcessRuntime({ ...base, requestId: 'build-singleflight-second' });
+    expect(first.process?.processId).toStartWith('lightweight:');
+    expect(second.process?.processId).toBe(first.process?.processId);
+    expect(second.process?.commandId).toBe(first.process?.commandId);
+    const terminal = await waitRepositoryCommandProcess(
+      fx.controllerHome,
+      fx.repository.repoId,
+      first.process!.processId,
+      { timeoutMs: 5_000 },
+    );
+    expect(terminal).toMatchObject({ completed: true, ok: true });
+    clearLightweightProcessMemoryForTest();
+  });
+
   test('returns a lightweight handle before starting long build/test preparation', async () => {
     const fx = fixture();
     const result = await executeRepositoryCommandViaProcessRuntime({

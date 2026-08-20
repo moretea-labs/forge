@@ -303,6 +303,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
         workId: input.workId,
         commandId: input.commandId ?? input.requestId,
         deferStart: deferLongPreparation,
+        reuseActiveEquivalent: deferLongPreparation,
       });
       const handle = lightweight.handle;
       return {

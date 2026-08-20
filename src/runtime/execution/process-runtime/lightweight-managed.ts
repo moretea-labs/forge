@@ -237,6 +237,8 @@ export interface StartLightweightCommandInput {
   commandId?: string;
   /** Start repository preparation on the next event-loop turn so the caller can receive a handle first. */
   deferStart?: boolean;
+  /** Reuse an equivalent active local build/test even when a later caller has a different request id. */
+  reuseActiveEquivalent?: boolean;
 }
 
 export interface LightweightCommandMetrics {
@@ -284,6 +286,7 @@ export async function startLightweightRepositoryCommand(
     command: input.execution.command,
     cwd: input.execution.cwd ?? '.',
     timeoutMs: input.timeoutMs,
+    maxOutputBytes: input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
   });
   if (stableCommandId) {
     const existing = [...entries.values()].find((entry) => (
@@ -301,6 +304,26 @@ export async function startLightweightRepositoryCommand(
           childDurationMs: existing.finishedAtMs === undefined || existing.spawnedAtMs === undefined
             ? undefined
             : Math.max(0, existing.finishedAtMs - existing.spawnedAtMs),
+          interactiveReturnMs: 0,
+          durableWrites: 0,
+          leaseOperations: 0,
+        },
+      };
+    }
+  }
+  if (input.reuseActiveEquivalent) {
+    const existing = [...entries.values()].find((entry) => (
+      entry.repoId === input.repository.repoId
+      && entry.requestFingerprint === requestFingerprint
+      && entry.result === undefined
+    ));
+    if (existing) {
+      return {
+        handle: entryHandle(existing),
+        metrics: {
+          lane: 'lightweight_managed',
+          preSpawnHarnessMs: existing.spawnedAtMs === undefined ? undefined : Math.max(0, existing.spawnedAtMs - existing.startedAtMs),
+          childDurationMs: undefined,
           interactiveReturnMs: 0,
           durableWrites: 0,
           leaseOperations: 0,
