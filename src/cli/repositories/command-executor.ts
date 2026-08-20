@@ -295,7 +295,14 @@ async function prepareRepositoryCommandExecutionAsync(
   const externalGrants = loadExternalFilesystemGrants(root).grants;
   const externalPathUsages = assertCommandPathOperandsStayInRepository(command, cwd, root, externalGrants);
   const classification = classifyRepositoryCommand(command, repository.defaultBranch);
-  const before = input.reuseSnapshot ?? (input.allowNonGitWorkspace ? emptyWorkspaceSnapshot() : await repositorySnapshotAsync(root, input.signal));
+  // A proven readonly direct/preview lane never compares before/after mutation.
+  // Skip per-path fingerprints there so a large dirty worktree cannot block a
+  // harmless read; write-capable lanes keep the strict fingerprint cap.
+  const before = input.reuseSnapshot ?? (input.allowNonGitWorkspace
+    ? emptyWorkspaceSnapshot()
+    : await repositorySnapshotAsync(root, input.signal, {
+        pathFingerprints: !(classification.risk === 'readonly' && controllerHome === undefined),
+      }));
   return finalizePreparedExecution(
     repository,
     input,

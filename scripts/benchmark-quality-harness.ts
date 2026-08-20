@@ -26,9 +26,11 @@ async function rawGitStatus(root: string): Promise<number> {
 
 const iterationsIndex = process.argv.indexOf('--iterations');
 const iterations = Math.max(2, Number(iterationsIndex >= 0 ? process.argv[iterationsIndex + 1] : 7) || 7);
-const root = mkdtempSync(join(tmpdir(), 'forge-quality-harness-benchmark-'));
-const controllerHome = join(root, '.controller');
+const sandboxRoot = mkdtempSync(join(tmpdir(), 'forge-quality-harness-benchmark-'));
+const root = join(sandboxRoot, 'repo');
+const controllerHome = join(sandboxRoot, 'controller');
 try {
+  mkdirSync(root, { recursive: true });
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
   execFileSync('git', ['config', 'user.email', 'benchmark@example.test'], { cwd: root });
   execFileSync('git', ['config', 'user.name', 'Forge Benchmark'], { cwd: root });
@@ -37,12 +39,15 @@ try {
     writeFileSync(join(root, 'src', `module-${index}.ts`), `export function symbol${index}(value: number) {\n  return value + ${index};\n}\n`);
   }
   writeFileSync(join(root, 'src', 'target.ts'), 'export function benchmarkTarget(value: number) {\n  const next = value + 1;\n  return next;\n}\n');
+  writeFileSync(join(root, 'src', 'consumer.ts'), "import { benchmarkTarget } from './target';\nexport function consumeBenchmarkTarget(value: number) {\n  return benchmarkTarget(value) * 2;\n}\n");
   execFileSync('git', ['add', '.'], { cwd: root }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
   const repository = registerRepository({ path: root, controllerHome, displayName: 'quality-harness-benchmark' });
 
   const contextCold: number[] = [];
   const contextHot: number[] = [];
   let hotCacheEvidence: unknown;
+  let contextAccuracyEvidence: { selected: string[]; required: string[]; recall: number; precision: number } | undefined;
+  const requiredContextPaths = ['src/target.ts', 'src/consumer.ts'];
   for (let index = 0; index < iterations; index += 1) {
     clearAllSessionCachesForTest();
     const session = { sessionId: `benchmark-${index}`, repoId: repository.repoId, checkoutId: repository.activeCheckoutId };
@@ -53,6 +58,14 @@ try {
     const hot = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), { description: 'benchmarkTarget implementation and impact', searchTerms: ['benchmarkTarget'], knownPaths: ['src/target.ts'], structuralContext: 'auto', session });
     contextHot.push(performance.now() - started);
     hotCacheEvidence = hot.cache;
+    const selected = [...new Set(hot.files.map((file) => file.path))].sort();
+    const requiredHits = requiredContextPaths.filter((path) => selected.includes(path)).length;
+    contextAccuracyEvidence = {
+      selected,
+      required: requiredContextPaths,
+      recall: requiredHits / requiredContextPaths.length,
+      precision: selected.length === 0 ? 0 : requiredHits / selected.length,
+    };
   }
 
   const rawChild: number[] = [];
@@ -80,6 +93,7 @@ try {
       hotP50Ms: percentile(contextHot, 0.5), hotP95Ms: percentile(contextHot, 0.95),
       hotToColdRatio: Math.round((percentile(contextHot, 0.5) / Math.max(0.01, percentile(contextCold, 0.5))) * 1_000) / 1_000,
       cacheEvidence: hotCacheEvidence,
+      accuracy: contextAccuracyEvidence,
     },
     command: {
       rawChildP50Ms: percentile(rawChild, 0.5), lightweightTotalP50Ms: percentile(harnessTotal, 0.5),
@@ -89,6 +103,8 @@ try {
     },
     thresholds: {
       hotContextToColdP50MaxRatio: 0.9,
+      contextRecallMin: 1,
+      contextPrecisionMin: 1,
       lightweightPreSpawnHarnessP95MaxMs: 750,
       durableProcessWritesMax: 0,
       leaseOperationsMax: 0,
@@ -96,6 +112,8 @@ try {
   };
   const assertions = {
     hotContextReuse: output.context.hotToColdRatio <= output.thresholds.hotContextToColdP50MaxRatio,
+    completeRequiredContext: (output.context.accuracy?.recall ?? 0) >= output.thresholds.contextRecallMin,
+    boundedContextNoise: (output.context.accuracy?.precision ?? 0) >= output.thresholds.contextPrecisionMin,
     boundedPreSpawnHarness: output.command.preSpawnHarnessP95Ms <= output.thresholds.lightweightPreSpawnHarnessP95MaxMs,
     zeroDurableWrites: output.command.durableProcessWrites <= output.thresholds.durableProcessWritesMax,
     zeroLeaseOperations: output.command.leaseOperations <= output.thresholds.leaseOperationsMax,
@@ -103,5 +121,5 @@ try {
   process.stdout.write(`${JSON.stringify({ ...output, assertions, passed: Object.values(assertions).every(Boolean) }, null, 2)}\n`);
   if (!Object.values(assertions).every(Boolean)) process.exitCode = 1;
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  rmSync(sandboxRoot, { recursive: true, force: true });
 }

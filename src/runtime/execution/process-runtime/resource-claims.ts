@@ -511,12 +511,16 @@ export function claimsForCheck(
 ): ResourceClaimSpec[] {
   const heavy = /(?:^|:)(?:test(?::coverage)?|check:(?:ci|forge-runtime|public-export|release(?:-[a-z0-9-]+)?))$/.test(checkId)
     || /release|migration|integrate/i.test(checkId);
-  if (heavy) return [claimHeavyCheck(repoId)];
-  if (effects) return claimsForDeclaredCheckEffects(checkId, effects, repoId, checkoutId);
-  if (staticAnalysisCheckId(checkId)) return [claimWorkspaceRead(checkoutId), claimBuildCacheWrite(repoId)];
-  if (command && command.length > 0) return claimsForRepositoryCommand(command, repoId, checkoutId);
-  // Unknown named checks without a command/effects contract remain conservative.
-  return [claimWorkspaceWrite(checkoutId)];
+  const baseClaims = effects
+    ? claimsForDeclaredCheckEffects(checkId, effects, repoId, checkoutId)
+    : staticAnalysisCheckId(checkId)
+      ? [claimWorkspaceRead(checkoutId), claimBuildCacheWrite(repoId)]
+      : command && command.length > 0
+        ? claimsForRepositoryCommand(command, repoId, checkoutId)
+        : [claimWorkspaceWrite(checkoutId)];
+  // Heavy-check is an additional cross-check serialization fence, not a
+  // substitute for the resources the check actually reads or writes.
+  return heavy ? normalizeClaims([claimHeavyCheck(repoId), ...baseClaims]) : baseClaims;
 }
 
 export function scopeResourceClaims(

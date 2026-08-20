@@ -81,7 +81,11 @@ async function gitAsync(root: string, args: string[], signal?: AbortSignal): Pro
 }
 
 const MAX_DIRTY_PATHS = 200;
-export async function repositorySnapshotAsync(root: string, signal?: AbortSignal): Promise<RepositoryCommandSnapshot> {
+export async function repositorySnapshotAsync(
+  root: string,
+  signal?: AbortSignal,
+  options: { pathFingerprints?: boolean } = {},
+): Promise<RepositoryCommandSnapshot> {
   const [headResult, branchResult, statusResult, refsResult] = await Promise.all([
     gitAsync(root, ['rev-parse', '--verify', 'HEAD'], signal), gitAsync(root, ['branch', '--show-current'], signal),
     gitAsync(root, ['status', '--porcelain=v1', '--branch', '--untracked-files=all', '--', ...SNAPSHOT_PATHS], signal), gitAsync(root, ['show-ref'], signal),
@@ -95,13 +99,18 @@ export async function repositorySnapshotAsync(root: string, signal?: AbortSignal
   const refs = refsResult.ok || (refsResult.exitCode === 1 && (!refsResult.stderr.trim() || /expected|no match|no references/i.test(refsResult.stderr))) ? refsResult.stdout || '' : (() => { throw new Error(`SNAPSHOT_FAILED: git show-ref exit ${refsResult.exitCode}: ${refsResult.stderr}`); })();
   if (signal?.aborted) throw new Error('CANCELLED: repository snapshot aborted');
   const lines = statusResult.stdout.split(/\r?\n/).filter((line) => line && !line.startsWith('##'));
-  if (lines.length > MAX_DIRTY_PATHS) throw new Error(`SNAPSHOT_TOO_DIRTY: ${lines.length} dirty paths exceeds Fast Path cap ${MAX_DIRTY_PATHS}`);
+  const includePathFingerprints = options.pathFingerprints !== false;
+  if (includePathFingerprints && lines.length > MAX_DIRTY_PATHS) throw new Error(`SNAPSHOT_TOO_DIRTY: ${lines.length} dirty paths exceeds Fast Path cap ${MAX_DIRTY_PATHS}`);
   const byPath = new Map<string, string[]>();
   for (const line of lines) { const path = statusPath(line); if (path) byPath.set(path, [...(byPath.get(path) ?? []), line]); }
   const paths = [...byPath.keys()].sort();
-  const { computePathFingerprintsAsync } = await import('../../runtime/execution/thin-harness/fingerprint-worker');
-  const fingerprint = await computePathFingerprintsAsync({ root, paths, statusByPath: Object.fromEntries(byPath), maxFileBytes: 256 * 1024, maxTotalBytes: 8 * 1024 * 1024, maxPaths: MAX_DIRTY_PATHS }, { signal, timeoutMs: 5_000 });
-  return { head, branch: branchResult.ok ? branchResult.stdout || null : null, status: statusResult.stdout, dirty: paths.length > 0, refsHash: createHash('sha256').update(refs).digest('hex'), paths, pathFingerprints: fingerprint.pathFingerprints };
+  let pathFingerprints: Record<string, string> = {};
+  if (includePathFingerprints) {
+    const { computePathFingerprintsAsync } = await import('../../runtime/execution/thin-harness/fingerprint-worker');
+    const fingerprint = await computePathFingerprintsAsync({ root, paths, statusByPath: Object.fromEntries(byPath), maxFileBytes: 256 * 1024, maxTotalBytes: 8 * 1024 * 1024, maxPaths: MAX_DIRTY_PATHS }, { signal, timeoutMs: 5_000 });
+    pathFingerprints = fingerprint.pathFingerprints;
+  }
+  return { head, branch: branchResult.ok ? branchResult.stdout || null : null, status: statusResult.stdout, dirty: paths.length > 0, refsHash: createHash('sha256').update(refs).digest('hex'), paths, pathFingerprints };
 }
 
 export function changedSnapshotPaths(before: RepositoryCommandSnapshot, after: RepositoryCommandSnapshot): string[] {
