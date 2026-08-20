@@ -784,7 +784,11 @@ export async function routeDurableMcpCall(
     }, true);
   }
 
-  if (classification.path === 'durable' && executionJobCreationRetired()) {
+  // repository_command_execute has its own durable boundary: non-destructive
+  // remote writes run through the durable Process Runtime, while destructive or
+  // explicitly delegated commands are refused by the repository facade itself.
+  // Do not intercept that tool with the retired ExecutionJob gate here.
+  if (classification.path === 'durable' && executionJobCreationRetired() && name !== 'repository_command_execute') {
     return result({
       accepted: false,
       mode: 'external_controller_required',

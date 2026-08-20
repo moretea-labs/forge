@@ -200,6 +200,17 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(listLocalBridgeJobSnapshots(fx.repoRoot).length).toBe(localBefore);
   });
 
+  test('repository remote-write commands bypass the retired ExecutionJob gate for self-managed Process handling', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const routed = await routeDurableMcpCall(fx.ctx, 'repository_command_execute', {
+      repo_id: fx.repository.repoId,
+      command: ['gh', 'issue', 'comment', '92', '--repo', 'tscircuit/autorouting', '--body', '/attempt #92'],
+      request_id: 'remote-write-gateway-fallthrough',
+    });
+    expect(routed).toBeUndefined();
+  });
+
   test('registered read-only isolated tools use Process Runtime without durable side effects', async () => {
     const fx = fixture();
     roots.push(fx.root);
