@@ -87,7 +87,12 @@ function terminalReceiptPath(controllerHome: string, repoId: string, processId: 
 }
 
 function boundedAppend(current: string, chunk: string, maxBytes: number): string {
-  return capProcessOutput(redactProcessOutput(`${current}${chunk}`), maxBytes);
+  if (current.endsWith(`[output truncated after ${maxBytes} bytes]`)) return current;
+  return capProcessOutput(`${current}${chunk}`, maxBytes);
+}
+
+function visibleOutput(value: string, maxBytes: number): string {
+  return capProcessOutput(redactProcessOutput(value), maxBytes);
 }
 
 function terminalHandle(entry: LightweightEntry): ProcessHandle {
@@ -189,8 +194,8 @@ function entryHandle(entry: LightweightEntry): ProcessHandle {
         : execution.ok
           ? 'succeeded'
           : 'failed';
-  const stdout = completed ? execution.stdout ?? '' : entry.stdout;
-  const stderr = completed ? execution.stderr ?? '' : entry.stderr;
+  const stdout = completed ? execution.stdout ?? '' : visibleOutput(entry.stdout, entry.maxOutputBytes);
+  const stderr = completed ? execution.stderr ?? '' : visibleOutput(entry.stderr, entry.maxOutputBytes);
   return {
     processId: entry.processId,
     workId: entry.workId,
@@ -667,15 +672,17 @@ export function readLightweightProcessLogs(
     };
   }
   if (entry.repoId !== repoId) return undefined;
-  const stdout = capProcessOutput(entry.result?.stdout ?? entry.stdout, maxBytes);
-  const stderr = capProcessOutput(entry.result?.stderr ?? entry.stderr, maxBytes);
+  const rawStdout = entry.result?.stdout ?? entry.stdout;
+  const rawStderr = entry.result?.stderr ?? entry.stderr;
+  const visibleStdout = visibleOutput(rawStdout, maxBytes);
+  const visibleStderr = visibleOutput(rawStderr, maxBytes);
   return {
     processId,
-    stdout,
-    stderr,
-    stdoutBytes: Buffer.byteLength(entry.result?.stdout ?? entry.stdout, 'utf8'),
-    stderrBytes: Buffer.byteLength(entry.result?.stderr ?? entry.stderr, 'utf8'),
-    truncated: Buffer.byteLength(entry.result?.stdout ?? entry.stdout, 'utf8') > maxBytes
-      || Buffer.byteLength(entry.result?.stderr ?? entry.stderr, 'utf8') > maxBytes,
+    stdout: visibleStdout,
+    stderr: visibleStderr,
+    stdoutBytes: Buffer.byteLength(visibleStdout, 'utf8'),
+    stderrBytes: Buffer.byteLength(visibleStderr, 'utf8'),
+    truncated: Buffer.byteLength(visibleStdout, 'utf8') > maxBytes
+      || Buffer.byteLength(visibleStderr, 'utf8') > maxBytes,
   };
 }

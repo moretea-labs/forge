@@ -48,7 +48,13 @@ import {
   readRepositoryCommandProcessLogs,
   waitRepositoryCommandProcess,
 } from '../../src/runtime/execution/process-runtime/command-facade';
-import { clearLightweightProcessMemoryForTest } from '../../src/runtime/execution/process-runtime/lightweight-managed';
+import {
+  clearLightweightProcessMemoryForTest,
+  getLightweightProcessHandle,
+  readLightweightProcessLogs,
+  startLightweightInternalProcess,
+  waitForLightweightProcess,
+} from '../../src/runtime/execution/process-runtime/lightweight-managed';
 import { classifyGatewayExecutionPath } from '../../src/runtime/gateway/mcp/router';
 import { persistedCheckSemanticScopeKey, runPersistedCheckViaProcessRuntime } from '../../src/runtime/gateway/mcp/persisted-check-process';
 import { claimsForMcpOperation } from '../../src/runtime/gateway/mcp/resource-policy';
@@ -1082,6 +1088,39 @@ describe('run_check Process Runtime facade', () => {
       5_000,
     );
     expect(terminal).toMatchObject({ completed: true, ok: true, route: 'direct' });
+  });
+
+  test('redacts a bearer value split across active lightweight output chunks', async () => {
+    const fx = fixture();
+    const expectedBearer = ['synthetic-bearer-', 'value-0123456789'].join('');
+    const started = await startLightweightInternalProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      executable: 'node',
+      args: ['-e', [
+        "process.stdout.write('Authorization: Bear');",
+        "setTimeout(() => process.stdout.write('er synthetic-bearer-value-0123456789\\nSAFE_LIGHTWEIGHT => running\\n'), 20);",
+        'setTimeout(() => process.exit(0), 500);',
+      ].join('')],
+      cwd: fx.repoRoot,
+      timeoutMs: 5_000,
+      interactiveWaitMs: 5,
+    });
+    expect(started.handle.completed).toBe(false);
+    let activeLogs = readLightweightProcessLogs(fx.controllerHome, fx.repository.repoId, started.handle.processId, 32 * 1024)!;
+    for (let attempt = 0; attempt < 20 && !activeLogs.stdout.includes('SAFE_LIGHTWEIGHT => running'); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      activeLogs = readLightweightProcessLogs(fx.controllerHome, fx.repository.repoId, started.handle.processId, 32 * 1024)!;
+    }
+    const activeHandle = getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, started.handle.processId)!;
+    expect(JSON.stringify(activeHandle)).not.toContain(expectedBearer);
+    expect(JSON.stringify(activeLogs)).not.toContain(expectedBearer);
+    expect(activeLogs.stdout).toContain('SAFE_LIGHTWEIGHT => running');
+    const terminal = await waitForLightweightProcess(fx.controllerHome, fx.repository.repoId, started.handle.processId, { timeoutMs: 2_000 });
+    expect(terminal.completed).toBe(true);
+    expect(JSON.stringify(terminal)).not.toContain(expectedBearer);
+    clearLightweightProcessMemoryForTest();
+    expect(JSON.stringify(getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, started.handle.processId))).not.toContain(expectedBearer);
   });
 
   test('gateway classifies ordinary run_check as fast process path', () => {
