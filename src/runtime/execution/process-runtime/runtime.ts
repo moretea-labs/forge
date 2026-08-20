@@ -306,8 +306,9 @@ function identityStillMatches(identity: ManagedProcessRecord['identity'] | undef
   }
   if (!isProcessAlive(identity.pid)) return false;
   const probe = defaultProcessIdentityProbe;
-  const startTime = probe.startTime(identity.pid);
-  const command = probe.command(identity.pid);
+  const inspected = probe.inspect?.(identity.pid);
+  const startTime = inspected?.startTime ?? probe.startTime(identity.pid);
+  const command = inspected?.command ?? probe.command(identity.pid);
   if (!startTime || !command) return false;
   if (startTime !== identity.processStartTime) return false;
   if (executableFingerprint(command) !== identity.executableFingerprint) return false;
