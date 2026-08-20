@@ -113,10 +113,11 @@ export const processToolDefinitions: McpToolDefinition[] = [
 
 const processToolNames = new Set(processToolDefinitions.map((tool) => tool.name));
 const processAttachmentToolNames = new Set(['process_get', 'process_wait', 'process_logs', 'process_cancel']);
-// Public MCP clients commonly detach around one minute. Return a normal attach
-// snapshot before that deadline rather than allowing transport timeout to turn
-// a healthy Process into an error-shaped response.
-export const DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS = 55_000;
+// A long-lived MCP wait can monopolize shared Runtime request/transport capacity
+// even though the underlying Process wait is asynchronous. Keep public waits
+// short and return a normal running snapshot; the Process continues unchanged
+// and callers can attach again only when the result is a real dependency.
+export const DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS = 5_000;
 
 function result(value: Record<string, unknown>, isError = false): CallToolResult {
   const safe = redactSensitiveValue(value).value;

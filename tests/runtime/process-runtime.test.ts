@@ -66,7 +66,7 @@ import {
 import { defaultProcessIdentityProbe, executableFingerprint } from '../../src/runtime/shared/process-identity';
 import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
 import { resolveEphemeralWorkspaceTarget } from '../../src/cli/repositories/ephemeral-workspace';
-import { callProcessTool, processToolDefinitions } from '../../src/runtime/gateway/mcp/process-tools';
+import { callProcessTool, DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS, processToolDefinitions } from '../../src/runtime/gateway/mcp/process-tools';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { rebuildRepositoryProjection } from '../../src/runtime/projections/materialized-view';
 
@@ -2457,6 +2457,10 @@ describe('process MCP live surface', () => {
     });
     expect(logs?.isError).not.toBe(true);
     expect(String((logs?.structuredContent as { stdout?: string })?.stdout ?? '')).toContain('mcp-ok');
+  });
+
+  test('process_wait keeps the default MCP attach budget short enough for shared Runtime concurrency', () => {
+    expect(DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS).toBeLessThanOrEqual(5_000);
   });
 
   test('process_wait returns a normal running attach result before its transport budget and later attaches to the same execution', async () => {
