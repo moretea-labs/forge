@@ -68,6 +68,8 @@ const CHECKS: readonly CheckDefinition[] = [
     id: 'focused:runtime-architecture-replacement',
     args: [
       'test',
+      '--max-concurrency',
+      '1',
       'tests/runtime/process-runtime.test.ts',
       'tests/runtime/work-terminal-cleanup.test.ts',
       'tests/runtime/canonical-single-runtime.test.ts',
