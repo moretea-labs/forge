@@ -201,6 +201,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
   // a release-specific forge-runtime executable must never own those grants.
   assertRepositoryCommandStableHostIdentity(input.command);
   assertRepositoryCommandNoPluginExecutionBypass(input.command);
+  const classification = classifyRepositoryCommand(input.command, input.repository.defaultBranch);
   const decision = classifyRepositoryCommandRoute(input.command, {
     forceDurable: input.forceDurable,
     // Work identity is continuity/audit metadata only. It must not change the
@@ -208,8 +209,13 @@ export async function executeRepositoryCommandViaProcessRuntime(
     defaultBranch: input.repository.defaultBranch,
     timeoutMs: input.timeoutMs,
   });
+  const executableRemoteWrite = decision.route === 'durable' && classification.risk === 'remote_write' && input.forceDurable !== true;
 
-  if (decision.route === 'durable' || decision.route === 'reject') {
+  // Destructive commands and explicitly forced durable orchestration remain an
+  // external boundary. Non-destructive remote writes are different: the primary
+  // controller may execute them through the existing durable Process Runtime,
+  // whose request binding and Runner receipt semantics prevent silent replay.
+  if (decision.route === 'reject' || (decision.route === 'durable' && !executableRemoteWrite)) {
     return {
       route: decision.route,
       reason: decision.reason,
@@ -325,6 +331,21 @@ export async function executeRepositoryCommandViaProcessRuntime(
       approvalRequestId: direct.approvalRequestId,
       durableSideEffects: emptyEffects,
       executionMetrics: { lane: 'ephemeral_direct', durableWrites: 0, leaseOperations: 0 },
+    };
+  }
+
+  if (executableRemoteWrite && executionIdentity.authority === 'ephemeral_workspace') {
+    return {
+      route: 'durable',
+      reason: 'ephemeral_workspace_promotion_required',
+      durableSideEffects: emptyEffects,
+      suggestedOperation: 'repository_register',
+      externalEffect: {
+        outcome: 'not_started',
+        replayPolicy: 'never_auto_retry',
+        reconciliation: 'Register the workspace before starting a remote effect so durable Process identity and reconciliation have a stable repository authority.',
+      },
+      executionMetrics: { lane: 'durable_external', durableWrites: 0, leaseOperations: 0 },
     };
   }
 

@@ -1142,7 +1142,19 @@ export async function callRepositoryTool(
               defaultBranch: repository.defaultBranch,
               timeoutMs,
             });
-            if (routeClass.route === 'process_direct' || routeClass.route === 'process_managed') {
+            if (routeClass.route === 'durable' && target.workspace) {
+              return result({
+                accepted: false,
+                mode: 'durable',
+                path: 'ephemeral_workspace_promotion_required',
+                repoId: repository.repoId,
+                checkoutId: repository.activeCheckoutId,
+                workspace: target.workspace,
+                message: 'Ephemeral workspaces must be registered before durable remote effects so Process identity and reconciliation have a stable repository authority.',
+                suggestedOperation: 'repository_register',
+              });
+            }
+            if (routeClass.route === 'process_direct' || routeClass.route === 'process_managed' || routeClass.route === 'durable') {
               const processResult = await executeRepositoryCommandViaProcessRuntime({
                 controllerHome,
                 repository,
