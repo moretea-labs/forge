@@ -512,11 +512,17 @@ function searchManyComplete(state: SearchManyMatchState): boolean {
 }
 
 function matchSearchManySource(state: SearchManyMatchState, path: string, bytes: Buffer): void {
-  const lines = bytes.toString('utf-8').split(/\r?\n/);
+  const raw = bytes.toString('utf-8');
+  const searchable = state.caseSensitive ? raw : raw.toLowerCase();
+  const activeNeedles = state.needles.filter(({ query, needle }) =>
+    (state.counts.get(query) ?? 0) < state.maxResultsPerQuery && searchable.includes(needle));
+  if (activeNeedles.length === 0) return;
+
+  const lines = raw.split(/\r?\n/);
   for (let index = 0; index < lines.length; index += 1) {
     const text = lines[index]!;
     const haystack = state.caseSensitive ? text : text.toLowerCase();
-    for (const { query, needle } of state.needles) {
+    for (const { query, needle } of activeNeedles) {
       if ((state.counts.get(query) ?? 0) >= state.maxResultsPerQuery || !haystack.includes(needle)) continue;
       state.results.push({ query, path, line: index + 1, text: text.slice(0, 500) });
       state.counts.set(query, (state.counts.get(query) ?? 0) + 1);
