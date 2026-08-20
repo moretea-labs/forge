@@ -195,8 +195,7 @@ export function createMcpToolContext(opts: McpServerOptions): ServerToolContext 
   return createMultiRepositoryToolContext({ ...opts, repo });
 }
 
-function canonicalRuntimeEndpoint(ctx: MultiRepositoryMcpToolContext): URL {
-  const endpoint = observeRuntimeStatus(ctx.controllerHome).snapshot?.endpoint;
+function canonicalRuntimeEndpoint(endpoint: string | undefined): URL {
   if (!endpoint) throw new Error('CANONICAL_RUNTIME_ENDPOINT_UNAVAILABLE');
   const url = new URL(endpoint);
   const host = url.hostname.replace(/^\[|\]$/g, '');
@@ -426,23 +425,29 @@ function canonicalRuntimeRequestContext(baseContext: ServerToolContext, meta: un
   };
 }
 
-interface CanonicalRuntimeProxyIdentity {
+export interface CanonicalRuntimeProxyIdentity {
   endpoint: URL;
   token: string;
+  runtimeInstanceId: string;
 }
 
 function canonicalRuntimeProxyIdentity(ctx: MultiRepositoryMcpToolContext): CanonicalRuntimeProxyIdentity {
+  const snapshot = observeRuntimeStatus(ctx.controllerHome).snapshot;
+  if (!snapshot?.runtimeInstanceId) throw new Error('CANONICAL_RUNTIME_IDENTITY_UNAVAILABLE');
   return {
-    endpoint: canonicalRuntimeEndpoint(ctx),
+    endpoint: canonicalRuntimeEndpoint(snapshot.endpoint),
     token: canonicalRuntimeToken(ctx),
+    runtimeInstanceId: snapshot.runtimeInstanceId,
   };
 }
 
-function sameCanonicalRuntimeProxyIdentity(
+export function sameCanonicalRuntimeProxyIdentity(
   left: CanonicalRuntimeProxyIdentity,
   right: CanonicalRuntimeProxyIdentity,
 ): boolean {
-  return left.endpoint.href === right.endpoint.href && left.token === right.token;
+  return left.endpoint.href === right.endpoint.href
+    && left.token === right.token
+    && left.runtimeInstanceId === right.runtimeInstanceId;
 }
 
 export interface CanonicalRuntimeProxy {

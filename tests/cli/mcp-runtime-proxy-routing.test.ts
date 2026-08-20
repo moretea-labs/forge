@@ -19,6 +19,7 @@ import {
   createMcpToolContext,
   deriveCanonicalForwardingTiming,
   retryCanonicalRuntimeConnectDuringHandoff,
+  sameCanonicalRuntimeProxyIdentity,
   waitForCanonicalRuntimeReleaseHandoff,
   type CanonicalRuntimeProxy,
   type CanonicalRuntimeToolSchema,
@@ -56,6 +57,16 @@ describe('MCP canonical Runtime proxy routing', () => {
     scheduler.release(first);
     scheduler.close();
     await expect(scheduler.acquire()).rejects.toThrow('CANONICAL_RUNTIME_PROXY_CLOSED');
+  });
+
+  test('invalidates a hot inner lane when the Canonical Runtime instance changes at the same endpoint and token', () => {
+    const baseline = {
+      endpoint: new URL('http://127.0.0.1:8766/mcp-bearer'),
+      token: 'fixture-token',
+      runtimeInstanceId: 'runtime-a',
+    };
+    expect(sameCanonicalRuntimeProxyIdentity(baseline, { ...baseline })).toBe(true);
+    expect(sameCanonicalRuntimeProxyIdentity(baseline, { ...baseline, runtimeInstanceId: 'runtime-b' })).toBe(false);
   });
 
   test('reuses one shared Runtime proxy across outer MCP sessions without collapsing caller session identity', async () => {
