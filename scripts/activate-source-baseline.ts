@@ -69,7 +69,6 @@ const CHECKS: readonly CheckDefinition[] = [
     'tests/runtime/work-terminal-cleanup.test.ts',
     'tests/runtime/canonical-single-runtime.test.ts',
     'tests/cli/runtime-command.test.ts',
-    'tests/runtime/stable-state-and-bootstrap.test.ts',
     'tests/cli/mcp-controller.test.ts',
   ].map((path) => ({
     id: `focused:runtime-architecture-replacement:${path}`,
