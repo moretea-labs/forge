@@ -29,6 +29,7 @@ export interface SwiftNavigationResult {
   timingsMs: {
     initialize: number;
     navigation: number;
+    sessionReused: boolean;
   };
 }
 
@@ -52,7 +53,9 @@ type PendingRequest = {
   timer: NodeJS.Timeout;
 };
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 2_500;
+const WARM_REQUEST_TIMEOUT_MS = 2_500;
+const COLD_REQUEST_TIMEOUT_MS = 8_000;
+const SWIFT_SEMANTIC_SESSION_TTL_MS = 120_000;
 const MAX_STDERR_CHARS = 8_000;
 
 function normalizedRelative(root: string, absolute: string): string | undefined {
@@ -95,7 +98,7 @@ export function resolveSwiftSemanticWorkspace(repoRoot: string, requestPath: str
   }
 
   if (sawXcodeProject) {
-    throw new Error('SWIFT_SEMANTIC_BUILD_SETTINGS_UNAVAILABLE: Xcode project detected but no buildServer.json is available. SourceKit-LSP must not be started without Xcode build settings; use an existing BSP/xcode-build-server configuration or structural fallback.');
+    throw new Error('SWIFT_SEMANTIC_BUILD_SETTINGS_UNAVAILABLE: Xcode project detected but no buildServer.json is available. Configure the project once with xcode-build-server (for example `xcode-build-server config -project <project>.xcodeproj` from the Xcode project root) and perform a normal Xcode/xcodebuild build to refresh compile flags/index data; until then use structural/lexical evidence. Forge never performs that build implicitly from rh_context.');
   }
   throw new Error('SWIFT_SEMANTIC_BUILD_SETTINGS_UNAVAILABLE: no Package.swift, buildServer.json, or compilation database was found for this Swift file.');
 }
@@ -125,6 +128,10 @@ class SourceKitLspClient {
     this.child = process.platform === 'darwin'
       ? spawn('xcrun', ['sourcekit-lsp'], { cwd: workspaceRoot, stdio: ['pipe', 'pipe', 'pipe'] })
       : spawn('sourcekit-lsp', [], { cwd: workspaceRoot, stdio: ['pipe', 'pipe', 'pipe'] });
+    this.child.unref();
+    for (const stream of [this.child.stdin, this.child.stdout, this.child.stderr]) {
+      (stream as typeof stream & { unref?: () => void }).unref?.();
+    }
     this.child.stdout.on('data', (chunk: Buffer) => this.onStdout(chunk));
     this.child.stderr.on('data', (chunk: Buffer) => {
       this.stderr = `${this.stderr}${chunk.toString('utf8')}`.slice(-MAX_STDERR_CHARS);
@@ -134,9 +141,10 @@ class SourceKitLspClient {
       this.rejectAll(new Error(`SWIFT_SEMANTIC_SOURCEKIT_UNAVAILABLE: ${error.message}`));
     });
     this.child.on('exit', (code, signal) => {
-      if (this.pending.size === 0) return;
       const detail = this.stderr.trim() || `exit=${String(code)} signal=${String(signal)}`;
-      this.rejectAll(new Error(`SWIFT_SEMANTIC_SOURCEKIT_EXITED: ${detail}`));
+      const error = new Error(`SWIFT_SEMANTIC_SOURCEKIT_EXITED: ${detail}`);
+      this.processError = error;
+      if (this.pending.size > 0) this.rejectAll(error);
     });
   }
 
@@ -187,7 +195,7 @@ class SourceKitLspClient {
     this.child.stdin.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
   }
 
-  request(method: string, params: unknown, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<unknown> {
+  request(method: string, params: unknown, timeoutMs = WARM_REQUEST_TIMEOUT_MS): Promise<unknown> {
     const id = this.nextId++;
     return new Promise((resolveRequest, reject) => {
       const timer = setTimeout(() => {
@@ -223,19 +231,34 @@ class SourceKitLspClient {
     return roundMs(performance.now() - startedAt);
   }
 
-  open(relativePath: string): void {
+  private readonly openedDocuments = new Map<string, { version: number; text: string }>();
+
+  syncDocument(relativePath: string): void {
     const absolute = resolve(this.workspaceRoot, relativePath);
-    this.notify('textDocument/didOpen', {
-      textDocument: {
-        uri: pathToFileURL(absolute).href,
-        languageId: 'swift',
-        version: 1,
-        text: readFileSync(absolute, 'utf8'),
-      },
+    const uri = pathToFileURL(absolute).href;
+    const text = readFileSync(absolute, 'utf8');
+    const existing = this.openedDocuments.get(relativePath);
+    if (!existing) {
+      this.notify('textDocument/didOpen', {
+        textDocument: { uri, languageId: 'swift', version: 1, text },
+      });
+      this.openedDocuments.set(relativePath, { version: 1, text });
+      return;
+    }
+    if (existing.text === text) return;
+    const version = existing.version + 1;
+    this.notify('textDocument/didChange', {
+      textDocument: { uri, version },
+      contentChanges: [{ text }],
     });
+    this.openedDocuments.set(relativePath, { version, text });
   }
 
-  async navigate(request: SwiftNavigationRequest, workspaceRelativePath: string): Promise<{ locations: SwiftNavigationLocation[]; navigationMs: number }> {
+  async navigate(
+    request: SwiftNavigationRequest,
+    workspaceRelativePath: string,
+    timeoutMs: number,
+  ): Promise<{ locations: SwiftNavigationLocation[]; navigationMs: number }> {
     const uri = pathToFileURL(resolve(this.workspaceRoot, workspaceRelativePath)).href;
     const params = {
       textDocument: { uri },
@@ -243,10 +266,10 @@ class SourceKitLspClient {
     };
     const startedAt = performance.now();
     const raw = request.navigation === 'references'
-      ? await this.request('textDocument/references', { ...params, context: { includeDeclaration: true } })
+      ? await this.request('textDocument/references', { ...params, context: { includeDeclaration: true } }, timeoutMs)
       : request.navigation === 'implementations'
-        ? await this.request('textDocument/implementation', params)
-        : await this.request('textDocument/definition', params);
+        ? await this.request('textDocument/implementation', params, timeoutMs)
+        : await this.request('textDocument/definition', params, timeoutMs);
     const navigationMs = roundMs(performance.now() - startedAt);
     const values = raw === null || raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
     const locations: SwiftNavigationLocation[] = [];
@@ -271,6 +294,103 @@ class SourceKitLspClient {
     try { this.notify('exit', null); } catch { /* process may already be gone */ }
     this.child.kill();
   }
+}
+
+type SwiftSemanticSession = {
+  client: SourceKitLspClient;
+  initializeMs: number;
+  warmed: boolean;
+  lastUsedAt: number;
+  queue: Promise<void>;
+  expiryTimer?: NodeJS.Timeout;
+};
+
+const swiftSemanticSessions = new Map<string, Promise<SwiftSemanticSession>>();
+
+function swiftSemanticSessionKey(repoRoot: string, workspaceRoot: string): string {
+  return `${repoRoot}\0${workspaceRoot}`;
+}
+
+function scheduleSwiftSemanticSessionExpiry(key: string, promise: Promise<SwiftSemanticSession>, session: SwiftSemanticSession): void {
+  if (session.expiryTimer) clearTimeout(session.expiryTimer);
+  session.expiryTimer = setTimeout(() => {
+    if (swiftSemanticSessions.get(key) !== promise) return;
+    const idleMs = Date.now() - session.lastUsedAt;
+    if (idleMs < SWIFT_SEMANTIC_SESSION_TTL_MS) {
+      scheduleSwiftSemanticSessionExpiry(key, promise, session);
+      return;
+    }
+    swiftSemanticSessions.delete(key);
+    void session.client.close();
+  }, SWIFT_SEMANTIC_SESSION_TTL_MS);
+  session.expiryTimer.unref?.();
+}
+
+async function acquireSwiftSemanticSession(
+  repoRoot: string,
+  workspaceRoot: string,
+): Promise<{ session: SwiftSemanticSession; reused: boolean; key: string }> {
+  const key = swiftSemanticSessionKey(repoRoot, workspaceRoot);
+  const existing = swiftSemanticSessions.get(key);
+  if (existing) {
+    const session = await existing;
+    session.lastUsedAt = Date.now();
+    scheduleSwiftSemanticSessionExpiry(key, existing, session);
+    return { session, reused: true, key };
+  }
+  const promise = (async () => {
+    const client = new SourceKitLspClient(repoRoot, workspaceRoot);
+    try {
+      const initializeMs = await client.initialize();
+      return {
+        client,
+        initializeMs,
+        warmed: false,
+        lastUsedAt: Date.now(),
+        queue: Promise.resolve(),
+      } satisfies SwiftSemanticSession;
+    } catch (error) {
+      await client.close();
+      throw error;
+    }
+  })();
+  swiftSemanticSessions.set(key, promise);
+  try {
+    const session = await promise;
+    scheduleSwiftSemanticSessionExpiry(key, promise, session);
+    return { session, reused: false, key };
+  } catch (error) {
+    if (swiftSemanticSessions.get(key) === promise) swiftSemanticSessions.delete(key);
+    throw error;
+  }
+}
+
+async function withSwiftSemanticSessionLock<T>(session: SwiftSemanticSession, action: () => Promise<T>): Promise<T> {
+  const previous = session.queue;
+  let release!: () => void;
+  session.queue = new Promise<void>((resolveQueue) => { release = resolveQueue; });
+  await previous.catch(() => undefined);
+  try {
+    session.lastUsedAt = Date.now();
+    return await action();
+  } finally {
+    session.lastUsedAt = Date.now();
+    release();
+  }
+}
+
+export async function disposeSwiftSemanticSessions(): Promise<void> {
+  const sessions = Array.from(swiftSemanticSessions.values());
+  swiftSemanticSessions.clear();
+  await Promise.all(sessions.map(async (promise) => {
+    try {
+      const session = await promise;
+      if (session.expiryTimer) clearTimeout(session.expiryTimer);
+      await session.client.close();
+    } catch {
+      // Initialization failure already tears down the client.
+    }
+  }));
 }
 
 function dedupeLocations(locations: SwiftNavigationLocation[]): SwiftNavigationLocation[] {
@@ -313,47 +433,68 @@ export async function navigateSwiftSymbols(
   });
 
   for (const group of groups.values()) {
-    const client = new SourceKitLspClient(root, group[0]!.workspace.root);
-    let initializeMs = 0;
     try {
-      initializeMs = await client.initialize();
-      for (const path of new Set(group.map((entry) => entry.workspaceRelativePath))) client.open(path);
-      for (const entry of group) {
-        try {
-          const navigated = await client.navigate(entry.request, entry.workspaceRelativePath);
-          const locations = dedupeLocations(navigated.locations)
-            .filter((location) => !access || access.allowRepositoryPath(location.path));
-          if (locations.length === 0) {
-            outcomes[entry.index] = {
-              ok: false,
-              code: 'SWIFT_SEMANTIC_EMPTY_RESULT',
-              message: `SourceKit-LSP returned no repository locations for ${entry.request.navigation} at ${entry.request.path}:${entry.request.line}:${entry.request.column}; treat static closure as incomplete and use structural/lexical evidence or refresh build/index data.`,
-            };
-            continue;
-          }
-          outcomes[entry.index] = {
-            ok: true,
-            result: {
-              navigation: entry.request.navigation,
-              target: { path: entry.request.path, line: entry.request.line, column: entry.request.column },
-              locations,
-              workspace: {
-                root: entry.workspace.relativeRoot,
-                kind: entry.workspace.kind,
-              },
-              timingsMs: { initialize: initializeMs, navigation: navigated.navigationMs },
-            },
-          };
-        } catch (error) {
-          outcomes[entry.index] = { ok: false, code: errorCode(error), message: error instanceof Error ? error.message : String(error) };
+      const acquired = await acquireSwiftSemanticSession(root, group[0]!.workspace.root);
+      await withSwiftSemanticSessionLock(acquired.session, async () => {
+        for (const path of new Set(group.map((entry) => entry.workspaceRelativePath))) {
+          acquired.session.client.syncDocument(path);
         }
-      }
+        for (let groupIndex = 0; groupIndex < group.length; groupIndex += 1) {
+          const entry = group[groupIndex]!;
+          const coldRequest = !acquired.session.warmed;
+          const timeoutMs = coldRequest ? COLD_REQUEST_TIMEOUT_MS : WARM_REQUEST_TIMEOUT_MS;
+          try {
+            const navigated = await acquired.session.client.navigate(entry.request, entry.workspaceRelativePath, timeoutMs);
+            acquired.session.warmed = true;
+            const locations = dedupeLocations(navigated.locations)
+              .filter((location) => !access || access.allowRepositoryPath(location.path));
+            if (locations.length === 0) {
+              outcomes[entry.index] = {
+                ok: false,
+                code: 'SWIFT_SEMANTIC_EMPTY_RESULT',
+                message: `SourceKit-LSP returned no repository locations for ${entry.request.navigation} at ${entry.request.path}:${entry.request.line}:${entry.request.column}; treat static closure as incomplete and use structural/lexical evidence or refresh build/index data.`,
+              };
+              continue;
+            }
+            outcomes[entry.index] = {
+              ok: true,
+              result: {
+                navigation: entry.request.navigation,
+                target: { path: entry.request.path, line: entry.request.line, column: entry.request.column },
+                locations,
+                workspace: {
+                  root: entry.workspace.relativeRoot,
+                  kind: entry.workspace.kind,
+                },
+                timingsMs: {
+                  initialize: acquired.session.initializeMs,
+                  navigation: navigated.navigationMs,
+                  sessionReused: acquired.reused,
+                },
+              },
+            };
+          } catch (error) {
+            const code = errorCode(error);
+            outcomes[entry.index] = { ok: false, code, message: error instanceof Error ? error.message : String(error) };
+            if (coldRequest && code === 'SWIFT_SEMANTIC_TIMEOUT') {
+              acquired.session.warmed = true;
+              for (const remaining of group.slice(groupIndex + 1)) {
+                outcomes[remaining.index] = {
+                  ok: false,
+                  code: 'SWIFT_SEMANTIC_COLD_START_PENDING',
+                  message: 'The first SourceKit semantic request exceeded the cold-start budget. The lazy session is retained briefly; retry the targeted Swift semantic request instead of widening lexical discovery.',
+                };
+              }
+              break;
+            }
+          }
+        }
+      });
     } catch (error) {
       for (const entry of group) {
+        if (outcomes[entry.index]) continue;
         outcomes[entry.index] = { ok: false, code: errorCode(error), message: error instanceof Error ? error.message : String(error) };
       }
-    } finally {
-      await client.close();
     }
   }
 
