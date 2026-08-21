@@ -146,21 +146,6 @@ export function sampleDarwinAvailableMemoryMb(
   });
 }
 
-interface SchedulerState {
-  schemaVersion: 1;
-  updatedAt: string;
-  loopStartedAt?: string;
-  lastHeartbeatAt?: string;
-  heartbeatTimeoutMs?: number;
-  lastTickAt?: string;
-  lastDispatchAt?: string;
-  lastReconcileAt?: string;
-  lastSourceScanAt?: string;
-  lastSourceScanRepoCount?: number;
-  sourceScansAvoided?: number;
-  lastRepoDispatch: Record<string, number>;
-}
-
 function schedulerStatePath(controllerHome: string): string {
   return join(resolveControllerHome(controllerHome), 'scheduler', 'state.json');
 }
@@ -186,6 +171,56 @@ export function readSchedulerHealthSnapshot(controllerHome: string): SchedulerHe
     updatedAt: new Date().toISOString(),
     lastRepoDispatch: {},
   });
+}
+
+export interface SchedulerRestoredState {
+  lastSourceScanAt: number;
+  lastSourceScanRepoCount: number;
+  sourceScansAvoided: number;
+  lastRepoDispatch: Array<[string, number]>;
+}
+
+export function restoreSchedulerState(state: SchedulerHealthSnapshot): SchedulerRestoredState {
+  return {
+    lastSourceScanAt: state.lastSourceScanAt ? Date.parse(state.lastSourceScanAt) || 0 : 0,
+    lastSourceScanRepoCount: state.lastSourceScanRepoCount ?? 0,
+    sourceScansAvoided: state.sourceScansAvoided ?? 0,
+    lastRepoDispatch: Object.entries(state.lastRepoDispatch)
+      .filter(([, timestamp]) => Number.isFinite(timestamp)),
+  };
+}
+
+export interface SchedulerStateSnapshotInput {
+  loopStartedAt: string;
+  lastHeartbeatAt: string;
+  heartbeatTimeoutMs: number;
+  lastTickAt: string;
+  lastDispatchAt?: string;
+  lastReconcileAt?: string;
+  lastSourceScanAt: number;
+  lastSourceScanRepoCount: number;
+  sourceScansAvoided: number;
+  lastRepoDispatch: ReadonlyMap<string, number>;
+}
+
+export function buildSchedulerHealthSnapshot(
+  input: SchedulerStateSnapshotInput,
+  nowMs = Date.now(),
+): SchedulerHealthSnapshot {
+  return {
+    schemaVersion: 1,
+    updatedAt: new Date(nowMs).toISOString(),
+    loopStartedAt: input.loopStartedAt,
+    lastHeartbeatAt: input.lastHeartbeatAt,
+    heartbeatTimeoutMs: input.heartbeatTimeoutMs,
+    lastTickAt: input.lastTickAt,
+    lastDispatchAt: input.lastDispatchAt,
+    lastReconcileAt: input.lastReconcileAt,
+    lastSourceScanAt: input.lastSourceScanAt ? new Date(input.lastSourceScanAt).toISOString() : undefined,
+    lastSourceScanRepoCount: input.lastSourceScanRepoCount,
+    sourceScansAvoided: input.sourceScansAvoided,
+    lastRepoDispatch: Object.fromEntries(input.lastRepoDispatch),
+  };
 }
 
 export interface SchedulerConfig {
@@ -294,33 +329,29 @@ export class GlobalScheduler {
     this.runtimeSourceRoot = runtime.runtimeSourceRoot ? resolve(runtime.runtimeSourceRoot) : undefined;
     this.workerEntrypoint = runtime.workerEntrypoint ? resolve(runtime.workerEntrypoint) : undefined;
     this.fatalOnTickError = runtime.fatalOnTickError === true;
-    const state = readJsonFile<SchedulerState>(schedulerStatePath(controllerHome), { schemaVersion: 1, updatedAt: new Date().toISOString(), lastRepoDispatch: {} });
-    this.lastSourceScanAt = state.lastSourceScanAt ? Date.parse(state.lastSourceScanAt) || 0 : 0;
-    this.lastSourceScanRepoCount = state.lastSourceScanRepoCount ?? 0;
-    this.sourceScansAvoided = state.sourceScansAvoided ?? 0;
-    for (const [repoId, timestamp] of Object.entries(state.lastRepoDispatch)) {
-      if (Number.isFinite(timestamp)) this.lastRepoDispatch.set(repoId, timestamp);
-    }
+    const restoredState = restoreSchedulerState(readSchedulerHealthSnapshot(controllerHome));
+    this.lastSourceScanAt = restoredState.lastSourceScanAt;
+    this.lastSourceScanRepoCount = restoredState.lastSourceScanRepoCount;
+    this.sourceScansAvoided = restoredState.sourceScansAvoided;
+    for (const [repoId, timestamp] of restoredState.lastRepoDispatch) this.lastRepoDispatch.set(repoId, timestamp);
   }
 
   private persistState(force = false): void {
     const now = Date.now();
     if (!force && now - this.lastPersistedAt < 1_000) return;
     this.lastPersistedAt = now;
-    writeJsonAtomic(schedulerStatePath(this.controllerHome), {
-      schemaVersion: 1,
-      updatedAt: new Date().toISOString(),
+    writeJsonAtomic(schedulerStatePath(this.controllerHome), buildSchedulerHealthSnapshot({
       loopStartedAt: this.loopStartedAt,
       lastHeartbeatAt: this.lastHeartbeatAt,
       heartbeatTimeoutMs: this.config.heartbeatTimeoutMs,
       lastTickAt: this.lastTickAt,
       lastDispatchAt: this.lastDispatchAt,
       lastReconcileAt: this.lastReconcileAt,
-      lastSourceScanAt: this.lastSourceScanAt ? new Date(this.lastSourceScanAt).toISOString() : undefined,
+      lastSourceScanAt: this.lastSourceScanAt,
       lastSourceScanRepoCount: this.lastSourceScanRepoCount,
       sourceScansAvoided: this.sourceScansAvoided,
-      lastRepoDispatch: Object.fromEntries(this.lastRepoDispatch),
-    } satisfies SchedulerState);
+      lastRepoDispatch: this.lastRepoDispatch,
+    }, now));
   }
 
   private pidAlive(pid: number | undefined): boolean {

@@ -18,7 +18,11 @@ import { getControllerSession } from '../../src/runtime/control-plane/facade/con
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
 import { createSchedule, recordScheduleOccurrenceHandoff, saveOccurrence } from '../../src/runtime/workflow/schedules/store';
-import { normalizeSchedulerConfig } from '../../src/runtime/control-plane/global-scheduler/scheduler';
+import {
+  buildSchedulerHealthSnapshot,
+  normalizeSchedulerConfig,
+  restoreSchedulerState,
+} from '../../src/runtime/control-plane/global-scheduler/scheduler';
 
 const roots: string[] = [];
 
@@ -71,6 +75,52 @@ describe('control-plane hardening', () => {
       idleBackoffMaxMs: 3_000,
       heartbeatIntervalMs: 2_000,
       heartbeatTimeoutMs: 12_000,
+    });
+  });
+
+  test('isolates Scheduler state restoration and snapshot serialization from lifecycle mutation', () => {
+    const sourceScanAt = Date.parse('2026-08-20T12:34:56.000Z');
+    expect(restoreSchedulerState({
+      schemaVersion: 1,
+      updatedAt: '2026-08-20T13:00:00.000Z',
+      lastSourceScanAt: '2026-08-20T12:34:56.000Z',
+      lastSourceScanRepoCount: 3,
+      sourceScansAvoided: 5,
+      lastRepoDispatch: {
+        'repo-a': 42,
+        'repo-invalid': Number.NaN,
+      },
+    })).toEqual({
+      lastSourceScanAt: sourceScanAt,
+      lastSourceScanRepoCount: 3,
+      sourceScansAvoided: 5,
+      lastRepoDispatch: [['repo-a', 42]],
+    });
+
+    expect(buildSchedulerHealthSnapshot({
+      loopStartedAt: '2026-08-20T12:00:00.000Z',
+      lastHeartbeatAt: '2026-08-20T12:59:58.000Z',
+      heartbeatTimeoutMs: 60_000,
+      lastTickAt: '2026-08-20T12:59:58.000Z',
+      lastDispatchAt: '2026-08-20T12:59:00.000Z',
+      lastReconcileAt: undefined,
+      lastSourceScanAt: sourceScanAt,
+      lastSourceScanRepoCount: 3,
+      sourceScansAvoided: 5,
+      lastRepoDispatch: new Map([['repo-a', 42]]),
+    }, Date.parse('2026-08-20T13:00:00.000Z'))).toEqual({
+      schemaVersion: 1,
+      updatedAt: '2026-08-20T13:00:00.000Z',
+      loopStartedAt: '2026-08-20T12:00:00.000Z',
+      lastHeartbeatAt: '2026-08-20T12:59:58.000Z',
+      heartbeatTimeoutMs: 60_000,
+      lastTickAt: '2026-08-20T12:59:58.000Z',
+      lastDispatchAt: '2026-08-20T12:59:00.000Z',
+      lastReconcileAt: undefined,
+      lastSourceScanAt: '2026-08-20T12:34:56.000Z',
+      lastSourceScanRepoCount: 3,
+      sourceScansAvoided: 5,
+      lastRepoDispatch: { 'repo-a': 42 },
     });
   });
 
