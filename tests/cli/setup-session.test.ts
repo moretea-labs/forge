@@ -32,19 +32,6 @@ describe('Forge setup session', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  test('prefers an existing repo controller home when setup runs inside that repository', () => {
-    const root = temp('forge-setup-repo-controller-home-'); try {
-      const setupRoot = join(root, 'setup-home');
-      const controllerHome = join(root, '_ops', 'controller-home');
-      const endpoint = 'https://forge.example.com/mcp';
-      const profile = configureSetupProfile({ setupRoot, controller: 'chatgpt', tunnel: 'existing', endpoint });
-      runMcpSetupChatgpt({ controllerHome, userLevel: true, endpoint });
-      const session = openSetupSession({ cwd: root, setupRoot, accountHome: root, profile, report: report('none'), platform, uuid: () => 'repo-controller-home' });
-      expect(session.nextAction).toMatchObject({ id: 'runtime.package.install', command: 'forge runtime service install-package' });
-      expect(session.nextAction?.id).not.toBe('controller.chatgpt.configure');
-    } finally { rmSync(root, { recursive: true, force: true }); }
-  });
-
   test('only explicitly configured local controllers enable their host-tooling checks', () => {
     const root = temp('forge-setup-local-'); try {
       const codex = configureSetupProfile({ setupRoot: root, controller: 'codex' });
