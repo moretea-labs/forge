@@ -68,7 +68,6 @@ const required = [
   'src/runtime/control-plane/global-scheduler/maintenance.ts',
   'src/runtime/control-plane/global-scheduler/source-scan.ts',
   'src/runtime/control-plane/global-scheduler/durable-admission.ts',
-  'src/runtime/control-plane/global-scheduler/dispatch-reservation.ts',
   'src/runtime/control-plane/global-scheduler/worker-exit-decision.ts',
   'src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts',
   'src/runtime/control-plane/global-scheduler/worker-process.ts',
@@ -512,8 +511,6 @@ requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'planSche
 requireText('src/runtime/control-plane/global-scheduler/source-scan.ts', 'selectSchedulerSourceScanRepositories');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'runSchedulerDurableAdmission');
 requireText('src/runtime/control-plane/global-scheduler/durable-admission.ts', 'markExecutionJobSchedulerObserved');
-requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'reserveSchedulerDispatches');
-requireText('src/runtime/control-plane/global-scheduler/dispatch-reservation.ts', 'consumeSchedulerDispatchCapacity');
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'persistSchedulerTerminalWorkerLifecycle');
 requireText('src/runtime/control-plane/global-scheduler/worker-lifecycle-store.ts', 'TERMINAL_JOB_STATUSES');
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'evaluateSchedulerWorkerExitCandidate');

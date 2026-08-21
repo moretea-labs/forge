@@ -31,12 +31,17 @@ import {
 import { planSchedulerSourceSampling } from './source-scan';
 import { runSchedulerDurableAdmission } from './durable-admission';
 import { sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
+import { selectExecutionJobDispatchRepositories } from '../dispatch-priority';
 import {
   buildSchedulerWorkerLaunchDescriptor,
   resolveSchedulerWorkerCommand,
   selectSchedulerWorkerEnvironment,
 } from './worker-launch';
-import { reserveSchedulerDispatches } from './dispatch-reservation';
+import {
+  consumeSchedulerDispatchCapacity,
+  createSchedulerDispatchCapacity,
+  schedulerDispatchCapacityAllows,
+} from './dispatch-capacity';
 import { refreshSchedulerRepositoryProjections } from './projection-refresh';
 import { createSchedulerWorkerStderrCapture } from './worker-stderr';
 import { persistSchedulerWorkerAttachment } from './worker-attachment';
@@ -506,19 +511,47 @@ export class GlobalScheduler {
         },
         `global-scheduler:${this.controllerPid}`,
         () => {
-          const reservation = reserveSchedulerDispatches({
-            activeJobs: listActiveExecutionJobs(this.controllerHome),
-            config: this.config,
-            resourcePressured: pressure.pressured,
-            lastRepoDispatch: this.lastRepoDispatch,
-            getActor: (repoId) => this.actors.get(repoId),
-            now: Date.now,
-            pendingSpawns,
-            projectionRefreshRepoIds: projectionRefreshRepos,
-          });
-          if (reservation.lastDispatchAt) this.lastDispatchAt = reservation.lastDispatchAt;
-          if (reservation.dispatchStateChanged) this.persistState(true);
-          return reservation.activeJobCount;
+          const active = listActiveExecutionJobs(this.controllerHome);
+          const capacity = createSchedulerDispatchCapacity(active, this.config, pressure.pressured);
+          if (capacity.workers <= 0) return active.length;
+
+          const scheduleNow = Date.now();
+          const repoIds = selectExecutionJobDispatchRepositories(active, scheduleNow, this.lastRepoDispatch);
+          const reservedRepos = new Set(capacity.reservedJobs.map((job) => job.repoId));
+          let dispatchStateChanged = false;
+          const canDispatch = (job: (typeof active)[number]): boolean => schedulerDispatchCapacityAllows(capacity, job);
+          for (const repoId of repoIds) {
+            if (capacity.workers <= 0) break;
+            if (!reservedRepos.has(repoId) && reservedRepos.size >= this.config.maxConcurrentRepositories) continue;
+            const actor = this.actors.get(repoId);
+            let dispatch: ReturnType<typeof actor.tryClaimNext>;
+            try {
+              dispatch = actor.tryClaimNext({
+                scheduleNow,
+                canDispatch,
+                refreshProjection: false,
+                lockWaitMs: 0,
+              });
+              projectionRefreshRepos.add(repoId);
+            } catch (error) {
+              if (error instanceof Error && error.message.startsWith('LOCK_HELD:')) continue;
+              throw error;
+            }
+            if (!dispatch) continue;
+
+            // A successful claim is the capacity reservation. Count it immediately,
+            // before the worker PID is spawned or attached, so concurrent schedulers
+            // cannot over-dispatch through the dispatched -> running window.
+            consumeSchedulerDispatchCapacity(capacity, dispatch.job);
+            reservedRepos.add(repoId);
+            const dispatchedAt = Date.now();
+            this.lastRepoDispatch.set(repoId, dispatchedAt);
+            this.lastDispatchAt = new Date(dispatchedAt).toISOString();
+            dispatchStateChanged = true;
+            pendingSpawns.push({ repoId, jobId: dispatch.job.jobId });
+          }
+          if (dispatchStateChanged) this.persistState(true);
+          return active.length;
         },
         5_000,
       );
