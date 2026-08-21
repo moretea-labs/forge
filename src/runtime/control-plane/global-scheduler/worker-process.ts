@@ -41,7 +41,7 @@ export function spawnSchedulerWorkerProcess(
 }
 
 export interface SchedulerWorkerRegistrationDependencies {
-  terminateWorker(pid: number): Promise<unknown>;
+  terminateWorker(pid: number | undefined): Promise<unknown>;
 }
 
 const DEFAULT_REGISTRATION_DEPENDENCIES: SchedulerWorkerRegistrationDependencies = {
@@ -70,6 +70,15 @@ export function registerSchedulerWorkerProcess(input: {
 
   child.unref();
   return true;
+}
+
+export async function cleanupSchedulerWorkerProcesses(
+  children: Map<string, ChildProcess>,
+  dependencies: SchedulerWorkerRegistrationDependencies = DEFAULT_REGISTRATION_DEPENDENCIES,
+): Promise<void> {
+  const workers = [...children.values()];
+  children.clear();
+  await Promise.all(workers.map((child) => dependencies.terminateWorker(child.pid)));
 }
 
 export interface SchedulerWorkerProcessExit {

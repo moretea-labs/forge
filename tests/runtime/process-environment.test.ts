@@ -21,6 +21,7 @@ import {
 import { createSchedulerWorkerStderrCapture } from '../../src/runtime/control-plane/global-scheduler/worker-stderr';
 import { persistSchedulerWorkerAttachment } from '../../src/runtime/control-plane/global-scheduler/worker-attachment';
 import {
+  cleanupSchedulerWorkerProcesses,
   registerSchedulerWorkerProcess,
   spawnSchedulerWorkerProcess,
   wireSchedulerWorkerProcess,
@@ -396,6 +397,21 @@ describe('repository child process environment', () => {
     })).toBe(true);
     expect(children.get('job-a')).toBe(child);
     expect(events).toEqual(['attach:88', 'unref']);
+  });
+
+  test('cleans up all tracked Scheduler workers outside GlobalScheduler shutdown logic', async () => {
+    const terminated: Array<number | undefined> = [];
+    const children = new Map<string, ChildProcess>([
+      ['job-a', { pid: 88 } as ChildProcess],
+      ['job-b', { pid: 99 } as ChildProcess],
+    ]);
+
+    await cleanupSchedulerWorkerProcesses(children, {
+      terminateWorker: async (pid) => { terminated.push(pid); },
+    });
+
+    expect(children.size).toBe(0);
+    expect(terminated.sort()).toEqual([88, 99]);
   });
 
   test('wires Scheduler worker process events with one-shot finalization and tracked-child cleanup', () => {

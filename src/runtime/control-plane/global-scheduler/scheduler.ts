@@ -18,7 +18,7 @@ import { type ExecutionWorkerLifecycle } from '../../execution/jobs/types';
 import { RepoActorRegistry } from '../repo-actor/registry';
 import { reconcileExecutionJobsAsync } from './reconciliation';
 import { tickSchedules } from '../../workflow/schedules/engine';
-import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree';
+import { isProcessAlive } from '../../shared/process-tree';
 import { readSchedulerWakeSignal, waitForSchedulerWakeSignal } from './wake-signal';
 import { cleanupControllerRuntimeState } from '../runtime-cleanup';
 import { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanup';
@@ -42,6 +42,7 @@ import { refreshSchedulerRepositoryProjections } from './projection-refresh';
 import { createSchedulerWorkerStderrCapture } from './worker-stderr';
 import { persistSchedulerWorkerAttachment } from './worker-attachment';
 import {
+  cleanupSchedulerWorkerProcesses,
   registerSchedulerWorkerProcess,
   spawnSchedulerWorkerProcess,
   wireSchedulerWorkerProcess,
@@ -242,12 +243,6 @@ export class GlobalScheduler {
 
   private pidAlive(pid: number | undefined): boolean {
     return isProcessAlive(pid);
-  }
-
-  private async cleanupSpawnedWorkers(): Promise<void> {
-    const workers = [...this.children.values()];
-    this.children.clear();
-    await Promise.all(workers.map((child) => terminateProcessTree(child.pid)));
   }
 
   private async recordWorkerExit(
@@ -679,7 +674,7 @@ export class GlobalScheduler {
       }
     } finally {
       clearInterval(heartbeatTimer);
-      await this.cleanupSpawnedWorkers();
+      await cleanupSchedulerWorkerProcesses(this.children);
     }
   }
 }
