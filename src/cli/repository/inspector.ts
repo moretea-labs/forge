@@ -38,6 +38,8 @@ export interface CachedGitIdentity {
   sampledAt: number;
   head: string | null;
   branch: string | null;
+  /** Dirty state comes from the same porcelain-v2 sample as branch/HEAD. */
+  dirty: boolean;
   workingTreeFingerprint?: string;
 }
 
@@ -78,7 +80,7 @@ function sampleGitIdentity(repoRoot: string): Omit<CachedGitIdentity, 'sampledAt
       timeoutMs: 10_000,
       maxOutputBytes: 4 * 1024 * 1024,
     });
-    if (!result.ok) return { head: null, branch: null };
+    if (!result.ok) return { head: null, branch: null, dirty: false };
 
     let head: string | null = null;
     let branch: string | null = null;
@@ -124,9 +126,14 @@ function sampleGitIdentity(repoRoot: string): Omit<CachedGitIdentity, 'sampledAt
       .update(`${head ?? ''}\n${branch ?? ''}\n${status}\n${dirtyContentIdentity}`)
       .digest('hex')
       .slice(0, 24);
-    return { head, branch, workingTreeFingerprint: head || status ? workingTreeFingerprint : undefined };
+    return {
+      head,
+      branch,
+      dirty: statusLines.length > 0,
+      workingTreeFingerprint: head || status ? workingTreeFingerprint : undefined,
+    };
   } catch {
-    return { head: null, branch: null };
+    return { head: null, branch: null, dirty: false };
   }
 }
 
@@ -375,6 +382,8 @@ export interface SearchRepositoryManyOptions {
   completionMode?: 'per_query' | 'discovery';
   discoveryTargetFiles?: number;
   discoveryMinQueryCoverage?: number;
+  /** Exact caller-supplied needles that discovery must not skip. */
+  requiredQueries?: string[];
   /** MCP/controller session identity used for progressive follow-up reuse. */
   session?: RepositoryReadSession;
 }
@@ -401,6 +410,7 @@ export interface SearchRepositoryManyCacheIdentity {
   completionMode: 'per_query' | 'discovery';
   discoveryTargetFiles: number;
   discoveryMinQueryCoverage: number;
+  requiredQueries: string[];
   includeKey: string;
   batchQueryKey: string;
 }
@@ -424,6 +434,9 @@ export function searchRepositoryManyCacheIdentity(opts: SearchRepositoryManyOpti
   const discoveryMinQueryCoverage = completionMode === 'discovery'
     ? Math.min(Math.max(opts.discoveryMinQueryCoverage ?? Math.min(3, queries.length), 1), queries.length)
     : queries.length;
+  const requiredQueries = completionMode === 'discovery'
+    ? Array.from(new Set((opts.requiredQueries ?? []).map((query) => query.trim()).filter((query) => queries.includes(query))))
+    : [];
   const includeKey = JSON.stringify({
     files: directCandidates,
     includes,
@@ -435,6 +448,7 @@ export function searchRepositoryManyCacheIdentity(opts: SearchRepositoryManyOpti
     completionMode,
     discoveryTargetFiles,
     discoveryMinQueryCoverage,
+    requiredQueries,
   });
   return {
     queries,
@@ -446,6 +460,7 @@ export function searchRepositoryManyCacheIdentity(opts: SearchRepositoryManyOpti
     completionMode,
     discoveryTargetFiles,
     discoveryMinQueryCoverage,
+    requiredQueries,
     includeKey,
     batchQueryKey: queries.join('\u0000'),
   };
@@ -517,6 +532,7 @@ interface SearchManyMatchState {
   completionMode: 'per_query' | 'discovery';
   discoveryTargetFiles: number;
   discoveryMinQueryCoverage: number;
+  requiredQueries: string[];
   caseSensitive: boolean;
 }
 
@@ -526,6 +542,7 @@ function createSearchManyMatchState(
   completionMode: 'per_query' | 'discovery',
   discoveryTargetFiles: number,
   discoveryMinQueryCoverage: number,
+  requiredQueries: string[],
   caseSensitive: boolean,
 ): SearchManyMatchState {
   return {
@@ -538,6 +555,7 @@ function createSearchManyMatchState(
     completionMode,
     discoveryTargetFiles,
     discoveryMinQueryCoverage,
+    requiredQueries,
     caseSensitive,
   };
 }
@@ -546,6 +564,7 @@ function searchManyComplete(state: SearchManyMatchState): boolean {
   if (state.completionMode === 'per_query') {
     return state.needles.every(({ query }) => (state.counts.get(query) ?? 0) >= state.maxResultsPerQuery);
   }
+  if (state.requiredQueries.some((query) => (state.counts.get(query) ?? 0) === 0)) return false;
   const coveredQueries = state.needles.reduce(
     (count, { query }) => count + ((state.counts.get(query) ?? 0) > 0 ? 1 : 0),
     0,
@@ -554,11 +573,19 @@ function searchManyComplete(state: SearchManyMatchState): boolean {
     && coveredQueries >= state.discoveryMinQueryCoverage;
 }
 
+function exactCodeNeedleMatches(haystack: string, needle: string): boolean {
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, (match) => `\\${match}`);
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}_$])${escaped}(?=$|[^\\p{L}\\p{N}_$])`, 'u').test(haystack);
+}
+
 function matchSearchManySource(state: SearchManyMatchState, path: string, bytes: Buffer): void {
   const raw = bytes.toString('utf-8');
   const searchable = state.caseSensitive ? raw : raw.toLowerCase();
   const activeNeedles = state.needles.filter(({ query, needle }) =>
-    (state.counts.get(query) ?? 0) < state.maxResultsPerQuery && searchable.includes(needle));
+    (state.counts.get(query) ?? 0) < state.maxResultsPerQuery
+      && (state.requiredQueries.includes(query)
+        ? exactCodeNeedleMatches(searchable, needle)
+        : searchable.includes(needle)));
   if (activeNeedles.length === 0) return;
 
   const lines = raw.split(/\r?\n/);
@@ -566,7 +593,10 @@ function matchSearchManySource(state: SearchManyMatchState, path: string, bytes:
     const text = lines[index]!;
     const haystack = state.caseSensitive ? text : text.toLowerCase();
     for (const { query, needle } of activeNeedles) {
-      if ((state.counts.get(query) ?? 0) >= state.maxResultsPerQuery || !haystack.includes(needle)) continue;
+      const matches = state.requiredQueries.includes(query)
+        ? exactCodeNeedleMatches(haystack, needle)
+        : haystack.includes(needle);
+      if ((state.counts.get(query) ?? 0) >= state.maxResultsPerQuery || !matches) continue;
       state.results.push({ query, path, line: index + 1, text: text.slice(0, 500) });
       state.matchedPaths.add(path);
       state.counts.set(query, (state.counts.get(query) ?? 0) + 1);
@@ -634,6 +664,7 @@ export function searchRepositoryMany(
     completionMode,
     discoveryTargetFiles,
     discoveryMinQueryCoverage,
+    requiredQueries,
     includeKey,
     batchQueryKey,
   } = searchRepositoryManyCacheIdentity(opts);
@@ -657,6 +688,7 @@ export function searchRepositoryMany(
     completionMode,
     discoveryTargetFiles,
     discoveryMinQueryCoverage,
+    requiredQueries,
     opts.caseSensitive === true,
   );
   let scannedFiles = 0;
@@ -785,6 +817,7 @@ export async function searchRepositoryManyAsync(
     completionMode,
     discoveryTargetFiles,
     discoveryMinQueryCoverage,
+    opts.requiredQueries ?? [],
     opts.caseSensitive === true,
   );
   let scannedFiles = 0;

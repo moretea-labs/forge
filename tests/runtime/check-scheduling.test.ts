@@ -76,19 +76,20 @@ describe('check execution scheduling', () => {
         scripts: {
           'check:type': 'bun x tsc --noEmit',
           'check:quality-harness': 'bun scripts/benchmark-quality-harness.ts',
+          'check:background-check-overlap': 'bun scripts/benchmark-background-check-overlap.ts',
         },
       }));
       const checks = listControllerChecks(root);
       const schedule = buildCheckExecutionSchedule({
         checks,
-        requestedCheckIds: ['package:check:type', 'package:check:quality-harness'],
+        requestedCheckIds: ['package:check:type', 'package:check:quality-harness', 'package:check:background-check-overlap'],
         repoId: 'repo-test',
         checkoutId: 'checkout-test',
       });
 
       expect(schedule.waves).toEqual([{
         wave: 1,
-        checkIds: ['package:check:type', 'package:check:quality-harness'],
+        checkIds: ['package:check:type', 'package:check:quality-harness', 'package:check:background-check-overlap'],
         parallelSafe: true,
       }]);
       expect(schedule.conflicts).toEqual([]);

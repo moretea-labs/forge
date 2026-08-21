@@ -257,6 +257,50 @@ test("broad rh_context discovery stops on candidate sufficiency without requirin
     expect(sync.scannedFiles).toBe(3);
     expect(sync.truncationReason).toBe("discovery_budget");
     expect(sync.results.some((result) => result.query === "rareGuessedTerm")).toBe(false);
+
+    const requiredOptions = {
+      ...options,
+      requiredQueries: ["rareGuessedTerm"],
+      cacheKey: `required-discovery-${Date.now()}`,
+    };
+    const requiredSync = searchRepositoryMany(repoRoot, policy, requiredOptions);
+    const requiredAsync = await searchRepositoryManyAsync(repoRoot, policy, requiredOptions);
+    expect(requiredAsync).toEqual(requiredSync);
+    expect(requiredSync.scannedFiles).toBe(4);
+    expect(requiredSync.results.some((result) => result.query === "rareGuessedTerm")).toBe(true);
+  });
+});
+
+test("rh_context discovery preserves an explicit code symbol embedded in a natural-language query", async () => {
+  await withController(async (repoRoot) => {
+    for (let index = 0; index < 12; index += 1) {
+      writeFileSync(join(repoRoot, `anchor-decoy-${String(index).padStart(2, "0")}.ts`), "export const review = 'behavior rare';\n");
+    }
+    writeFileSync(join(repoRoot, "z-required-anchor.ts"), "export const rareGuessedTerm = 'review behavior rare';\n");
+    const controllerHome = String(process.env.FORGE_CONTROLLER_HOME);
+    const repository = registerRepository({ path: repoRoot, controllerHome });
+    const ctx = createMultiRepositoryContext({ repo: repoRoot, controllerHome, profile: "controller", toolset: "advanced" });
+    const response = await callRuntimeTool(ctx, "rh_context", {
+      repo_id: repository.repoId,
+      operation: "search",
+      query: "review rareGuessedTerm behavior",
+      structural_context: "off",
+      max_files: 4,
+    });
+    const value = JSON.parse(response!.content[0]!.text);
+    expect(value.status).toBe("ok");
+    expect(value.data.files.some((file: { path: string }) => file.path === "z-required-anchor.ts")).toBe(true);
+
+    const longResponse = await callRuntimeTool(ctx, "rh_context", {
+      repo_id: repository.repoId,
+      operation: "search",
+      query: `${"review behavior discovery context ".repeat(8)}rareGuessedTerm`,
+      structural_context: "off",
+      max_files: 4,
+    });
+    const longValue = JSON.parse(longResponse!.content[0]!.text);
+    expect(longValue.status).toBe("ok");
+    expect(longValue.data.files.some((file: { path: string }) => file.path === "z-required-anchor.ts")).toBe(true);
   });
 });
 
@@ -432,6 +476,19 @@ test("returns execution readiness and registered checks in one rh_context search
     spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" });
     const repository = registerRepository({ path: repoRoot, controllerHome });
     const ctx = createMultiRepositoryContext({ repo: repoRoot, controllerHome, profile: "controller", toolset: "advanced" });
+
+    const sourceOnlyResponse = await callRuntimeTool(ctx, "rh_context", {
+      repo_id: repository.repoId,
+      operation: "search",
+      query: "marker execution readiness",
+      structural_context: "off",
+    });
+    const sourceOnly = JSON.parse(sourceOnlyResponse!.content[0]!.text);
+    expect(sourceOnly.status).toBe("ok");
+    expect(sourceOnly.data.executionReadiness).toBeUndefined();
+    expect(sourceOnly.data.registeredChecks).toBeUndefined();
+    expect(sourceOnly.data.retrievalPolicy.executionReadiness).toBe("requested_check_ids_only");
+
     const response = await callRuntimeTool(ctx, "rh_context", {
       repo_id: repository.repoId,
       operation: "search",
@@ -2301,6 +2358,9 @@ describe("MCP controller profile", () => {
       expect(payload.data.pendingHandoffCount).toBeUndefined();
       expect(payload.data.activeWorkCount).toBeUndefined();
       expect(payload.data.activeProcessCount).toBeUndefined();
+      expect(payload.data.access).toBeUndefined();
+      expect(payload.data.repositoryState.status).toBeUndefined();
+      expect(payload.data.repositoryState.diffStat).toBeUndefined();
       expect(payload.responseMeta.structuredPayloadBytes).toBeLessThan(8_000);
     });
   });

@@ -124,7 +124,7 @@ export function compositeRunning(input: {
     keyOutput: boundKeyOutput(input.keyOutput ?? input.summary),
     evidenceRefs: input.evidenceRefs ?? [],
     retryable: false,
-    nextAction: input.nextAction ?? 'poll the same durable request id; do not resubmit',
+    nextAction: input.nextAction ?? 'Continue independent work; inspect this request only when its outcome can change the next decision. Do not resubmit or periodically poll.',
     details: input.details,
   };
 }

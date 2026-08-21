@@ -54,13 +54,15 @@ export function textTokens(value: string): string[] {
     .filter((entry) => !/^\d+$/.test(entry)))).slice(0, 12);
 }
 
-function codeShapedAnchors(value: string): string[] {
+/** Extract exact caller-supplied symbol/path needles from broader prompt text. */
+export function codeShapedAnchors(value: string): string[] {
   const raw = value.split(/[^\p{L}\p{N}_./:-]+/u)
     .map((entry) => entry.replace(/^[\'"`]+|[\'"`]+$/g, '').trim())
     .filter((entry) => entry.length >= 3)
     .filter((entry) => entry.includes('/')
       || entry.includes('_')
       || /[a-z0-9][A-Z]/.test(entry)
+      || /^[A-Z][A-Za-z0-9]*$/.test(entry)
       || /\.[A-Za-z0-9]+$/.test(entry));
   return Array.from(new Set(raw)).slice(0, 8);
 }

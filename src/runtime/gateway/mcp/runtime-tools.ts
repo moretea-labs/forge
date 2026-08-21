@@ -69,6 +69,7 @@ import {
   writeControllerTaskLedgerArtifacts,
 } from '../../../cli/controller/task-ledger';
 import { buildControllerContextPack, buildControllerContextPackAsync, CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from '../../../cli/controller/context-pack';
+import { codeShapedAnchors } from '../../../cli/controller/context/query-planning';
 import { legacyIssueAuthorityRetired } from '../../../cli/controller/legacy-issue-cutover';
 import { buildControllerOperationalPlan } from '../../../cli/controller/operational-plan';
 import { listControllerChecks, readLatestControllerCheckEvidence } from '../../../cli/controller/check-runner';
@@ -2014,14 +2015,10 @@ function managedProcessOperationDigest(
     summary: terminal
       ? `Managed process ${handle.processId} completed with status ${handle.status}.`
       : `Managed process ${handle.processId} is still ${handle.status}.`,
-    suggestedNextActions: terminal ? [] : [{
-      label: 'Poll managed process',
-      tool: 'work_status_digest',
-      operation: 'get',
-      payload: { work_ref: handle.processId },
-      risk: 'readonly',
-      confidence: 'high',
-    }],
+    // A running Process is not itself a request to poll. The controller should
+    // keep making independent progress, then join only at its real dependency
+    // boundary through the Process lifecycle surface.
+    suggestedNextActions: [],
   };
 }
 
@@ -2797,12 +2794,18 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         if (detailLevel === 'summary') {
           const startedAt = performance.now();
           const observation = observeRuntimeStatus(ctx.controllerHome);
-          const daemon = readForgeRuntimeStatus(ctx.controllerHome);
-          const liveGit = gitSnapshot(repository.canonicalRoot);
-          const runtimeSource = runtimeSourceSnapshotStatus(daemon.source, ctx.runtimeSourceRoot);
+          // Summary answers only whether this repository can work now. Reuse one
+          // porcelain-v2 sample for branch/HEAD/dirty and avoid the full Git
+          // status/diff-stat, access-policy, and inventory construction paths.
+          const repositoryIdentity = cachedGitIdentity(repository.canonicalRoot);
+          const runtimeGeneration = readRuntimeGeneration(ctx.controllerHome);
+          const runtimeSource = runtimeSourceSnapshotStatus(
+            runtimeGeneration?.source,
+            ctx.runtimeSourceRoot,
+          );
           const sourceSnapshotStale = runtimeSource.restartRequired;
           const toolset = await import('../../../cli/mcp/toolset');
-          const exposure = toolset.controllerExposureSnapshot(ctx);
+          const exposure = toolset.controllerToolSurfaceStatus(ctx);
           const toolSurfaceReady = exposure.ready && exposure.missingToolNames.length === 0;
           const ready = observation.ready && toolSurfaceReady && !sourceSnapshotStale;
           const reasonCodes = [...observation.reasonCodes];
@@ -2857,10 +2860,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 observedAt: observation.observedAt,
               },
               repositoryState: {
-                ...liveGit,
+                branch: repositoryIdentity.branch,
+                head: repositoryIdentity.head,
+                dirty: repositoryIdentity.dirty,
                 observedAt: new Date().toISOString(),
-                sourceSnapshotAgeMs: daemon.source?.observedAt
-                  ? Math.max(0, Date.now() - Date.parse(daemon.source.observedAt))
+                sourceSnapshotAgeMs: runtimeGeneration?.source.observedAt
+                  ? Math.max(0, Date.now() - Date.parse(runtimeGeneration.source.observedAt))
                   : undefined,
                 sourceSnapshotStale,
                 sourceSnapshotReasons: runtimeSource.reasons,
@@ -2882,7 +2887,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 fingerprint: exposure.fingerprint,
                 schemaStableAcrossAccessModes: exposure.schemaStableAcrossAccessModes,
               },
-              access: exposure.access,
             },
             suggestedNextActions: [{
               label: 'Read repository context',
@@ -3206,19 +3210,29 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             : retrievalMode === 'plan' || retrievalMode === 'debug'
               ? 'required'
               : 'auto';
-          const checks = listControllerChecks(repository.canonicalRoot);
           const requestedCheckIds = list(args.requested_check_ids);
-          const executionReadiness = repositoryExecutionReadiness(repository.canonicalRoot, checks, requestedCheckIds, {
-            repoId: repository.repoId,
-            checkoutId: repository.activeCheckoutId,
-          });
+          // Source retrieval is the default Context responsibility. Check
+          // readiness is only meaningful when the controller has named the
+          // checks it is about to use, so do not pay its Git/dependency/schedule
+          // preflight cost for every broad search.
+          const checks = requestedCheckIds.length > 0
+            ? listControllerChecks(repository.canonicalRoot)
+            : [];
+          const executionReadiness = requestedCheckIds.length > 0
+            ? repositoryExecutionReadiness(repository.canonicalRoot, checks, requestedCheckIds, {
+                repoId: repository.repoId,
+                checkoutId: repository.activeCheckoutId,
+              })
+            : undefined;
           const pack = await buildControllerContextPackAsync(repository.canonicalRoot, ctx.policy, {
             description: retrievalQuery,
             // Short code-like queries remain useful exact lexical needles. Long
             // semantic prompts are already tokenized from description; adding the
             // whole prompt as an exact needle prevents batch-search early exit and
             // forces a full bounded repository scan for a phrase that will not match.
-            searchTerms: retrievalQuery.length <= 160 ? [retrievalQuery] : undefined,
+            searchTerms: retrievalQuery.length <= 160
+              ? [retrievalQuery]
+              : codeShapedAnchors(retrievalQuery),
             knownPaths: list(args.known_paths),
             includeGlobs: list(args.include_globs),
             excludeGlobs: list(args.exclude_globs),
@@ -3269,13 +3283,16 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               omitted: pack.omitted,
               limits: pack.limits,
               contextContract: pack.contextContract,
-              executionReadiness,
-              registeredChecks: checks.slice(0, 80).map((check) => ({ id: check.id, description: check.description, source: check.source, effects: check.effects })),
+              ...(executionReadiness ? {
+                executionReadiness,
+                registeredChecks: checks.slice(0, 80).map((check) => ({ id: check.id, description: check.description, source: check.source, effects: check.effects })),
+              } : {}),
               retrievalPolicy: {
                 defaultBackend: 'bounded_lexical',
                 structuralBackend: 'codegraph',
                 rawReadTool: 'read_repository_file',
                 shellSearchFallbackOnly: true,
+                executionReadiness: 'requested_check_ids_only',
               },
             },
             warnings,

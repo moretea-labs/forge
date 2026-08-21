@@ -49,6 +49,22 @@ export interface ControllerExposureSnapshot {
 }
 
 /**
+ * Cached schema/readiness projection for hot paths that do not need access
+ * policy or a per-tool inventory. Status uses this rather than rebuilding a
+ * complete controller exposure response on every read.
+ */
+export interface ControllerToolSurfaceStatus {
+  expectedToolNames: string[];
+  actualToolNames: string[];
+  missingToolNames: string[];
+  unexpectedToolNames: string[];
+  duplicateToolNames: string[];
+  fingerprint: string;
+  schemaStableAcrossAccessModes: true;
+  ready: boolean;
+}
+
+/**
  * Core and Advanced expose the same bounded default ChatGPT surface
  * (DEFAULT_CONTROLLER_TOOL_NAMES). Full remains the exhaustive compatibility
  * surface for legacy integrations; internal atomic handlers are never deleted.
@@ -266,6 +282,20 @@ export function controllerExposureSnapshot(ctx: MultiRepositoryMcpToolContext): 
     profile: profileForToolset(ctx.toolset),
     inventory: controllerToolInventory(staticSnapshot.actualToolNames, ctx.toolset),
     ...staticSnapshot,
+  };
+}
+
+export function controllerToolSurfaceStatus(ctx: MultiRepositoryMcpToolContext): ControllerToolSurfaceStatus {
+  const snapshot = staticControllerExposureSnapshot(ctx);
+  return {
+    expectedToolNames: snapshot.expectedToolNames,
+    actualToolNames: snapshot.actualToolNames,
+    missingToolNames: snapshot.missingToolNames,
+    unexpectedToolNames: snapshot.unexpectedToolNames,
+    duplicateToolNames: snapshot.duplicateToolNames,
+    fingerprint: snapshot.fingerprint,
+    schemaStableAcrossAccessModes: snapshot.schemaStableAcrossAccessModes,
+    ready: snapshot.ready,
   };
 }
 

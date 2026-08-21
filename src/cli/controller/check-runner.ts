@@ -185,7 +185,7 @@ function inferredPackageCheckEffects(name: string): ControllerCheckEffects | und
   const normalized = name.trim().toLowerCase();
   const staticAnalysis = /(?:^|:)(?:type|typecheck|lint|format:check|runtime-architecture|mcp-compatibility|forge-runtime)$/.test(normalized);
   if (staticAnalysis) return { reads: ['.'], cache: 'write' };
-  const isolatedReadOnlyCheck = /(?:^|:)(?:quality-harness|check-scheduling)$/.test(normalized);
+  const isolatedReadOnlyCheck = /(?:^|:)(?:quality-harness|background-check-overlap|check-scheduling)$/.test(normalized);
   if (isolatedReadOnlyCheck) return { reads: ['.'], temp: 'isolated', git: 'read' };
   const browserLive = /(?:^|:)browser-live$/.test(normalized);
   if (browserLive) {
