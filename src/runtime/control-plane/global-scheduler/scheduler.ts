@@ -51,6 +51,11 @@ import {
   resolveSchedulerWorkerCommand,
   selectSchedulerWorkerEnvironment,
 } from './worker-launch';
+import {
+  consumeSchedulerDispatchCapacity,
+  createSchedulerDispatchCapacity,
+  schedulerDispatchCapacityAllows,
+} from './dispatch-capacity';
 export {
   buildSchedulerWorkerLaunchDescriptor,
   resolveSchedulerWorkerCommand,
@@ -626,12 +631,6 @@ export class GlobalScheduler {
     };
   }
 
-  private agentProvider(job: { payload: { arguments?: Record<string, unknown> } }): 'codex' | 'claude' | 'github-copilot' {
-    const agent = job.payload.arguments?.agent;
-    if (agent === 'claude' || agent === 'github-copilot') return agent;
-    return 'codex';
-  }
-
   async tick(): Promise<{ activeJobs: number }> {
     const now = Date.now();
     this.lastHeartbeatAt = new Date(now).toISOString();
@@ -740,30 +739,8 @@ export class GlobalScheduler {
         `global-scheduler:${this.controllerPid}`,
         () => {
           const active = listActiveExecutionJobs(this.controllerHome);
-          const reserved = active.filter((job) => job.status === 'running' || job.status === 'dispatched');
-          let capacity = this.config.maxWorkers - reserved.length;
-          if (capacity <= 0) return active.length;
-
-          let heavyCapacity = this.config.maxHeavyChecks
-            - reserved.filter((job) => job.type === 'check' || job.type === 'verify-edit').length;
-          const reservedAgents = reserved.filter((job) => job.type === 'agent-run' || job.type === 'dispatch-task');
-          let agentCapacity = this.config.maxAgentProcesses - reservedAgents.length;
-          const providerCapacity = new Map([
-            ['codex', this.config.maxCodexProcesses - reservedAgents.filter((job) => this.agentProvider(job) === 'codex').length],
-            ['claude', this.config.maxClaudeProcesses - reservedAgents.filter((job) => this.agentProvider(job) === 'claude').length],
-            ['github-copilot', this.config.maxGitHubProcesses - reservedAgents.filter((job) => this.agentProvider(job) === 'github-copilot').length],
-          ] as const);
-          if (pressure.pressured) {
-            // Under host pressure, keep one recovery slot available so queued read-only
-            // or bounded repository work does not stall forever behind a global stop.
-            capacity = Math.min(capacity, 1);
-            heavyCapacity = Math.min(heavyCapacity, 1);
-            agentCapacity = 0;
-            providerCapacity.set('codex', 0);
-            providerCapacity.set('claude', 0);
-            providerCapacity.set('github-copilot', 0);
-          }
-          if (capacity <= 0) return active.length;
+          const capacity = createSchedulerDispatchCapacity(active, this.config, pressure.pressured);
+          if (capacity.workers <= 0) return active.length;
 
           const scheduleNow = Date.now();
           const waiting = active.filter(isExecutionJobDispatchCandidate);
@@ -789,18 +766,11 @@ export class GlobalScheduler {
               || leftRank.jobId.localeCompare(rightRank.jobId)
               || left.localeCompare(right);
           });
-          const reservedRepos = new Set(reserved.map((job) => job.repoId));
+          const reservedRepos = new Set(capacity.reservedJobs.map((job) => job.repoId));
           let dispatchStateChanged = false;
-          const canDispatch = (job: (typeof active)[number]): boolean => {
-            if ((job.type === 'check' || job.type === 'verify-edit') && heavyCapacity <= 0) return false;
-            if (job.type === 'agent-run' || job.type === 'dispatch-task') {
-              if (agentCapacity <= 0) return false;
-              if ((providerCapacity.get(this.agentProvider(job)) ?? 0) <= 0) return false;
-            }
-            return true;
-          };
+          const canDispatch = (job: (typeof active)[number]): boolean => schedulerDispatchCapacityAllows(capacity, job);
           for (const repoId of repoIds) {
-            if (capacity <= 0) break;
+            if (capacity.workers <= 0) break;
             if (!reservedRepos.has(repoId) && reservedRepos.size >= this.config.maxConcurrentRepositories) continue;
             const actor = this.actors.get(repoId);
             let dispatch: ReturnType<typeof actor.tryClaimNext>;
@@ -821,14 +791,8 @@ export class GlobalScheduler {
             // A successful claim is the capacity reservation. Count it immediately,
             // before the worker PID is spawned or attached, so concurrent schedulers
             // cannot over-dispatch through the dispatched -> running window.
-            capacity -= 1;
+            consumeSchedulerDispatchCapacity(capacity, dispatch.job);
             reservedRepos.add(repoId);
-            if (dispatch.job.type === 'check' || dispatch.job.type === 'verify-edit') heavyCapacity -= 1;
-            if (dispatch.job.type === 'agent-run' || dispatch.job.type === 'dispatch-task') {
-              agentCapacity -= 1;
-              const provider = this.agentProvider(dispatch.job);
-              providerCapacity.set(provider, (providerCapacity.get(provider) ?? 0) - 1);
-            }
             const dispatchedAt = Date.now();
             this.lastRepoDispatch.set(repoId, dispatchedAt);
             this.lastDispatchAt = new Date(dispatchedAt).toISOString();

@@ -23,6 +23,12 @@ import {
   normalizeSchedulerConfig,
   restoreSchedulerState,
 } from '../../src/runtime/control-plane/global-scheduler/scheduler';
+import {
+  consumeSchedulerDispatchCapacity,
+  createSchedulerDispatchCapacity,
+  schedulerAgentProvider,
+  schedulerDispatchCapacityAllows,
+} from '../../src/runtime/control-plane/global-scheduler/dispatch-capacity';
 
 const roots: string[] = [];
 
@@ -122,6 +128,55 @@ describe('control-plane hardening', () => {
       sourceScansAvoided: 5,
       lastRepoDispatch: { 'repo-a': 42 },
     });
+  });
+
+  test('isolates Scheduler dispatch capacity accounting from the dispatch lock', () => {
+    const executionJob = (input: {
+      jobId: string;
+      type: ExecutionJob['type'];
+      status: ExecutionJob['status'];
+      agent?: 'codex' | 'claude' | 'github-copilot';
+    }) => ({
+      jobId: input.jobId,
+      repoId: 'repo-a',
+      type: input.type,
+      status: input.status,
+      payload: { operation: 'test', arguments: input.agent ? { agent: input.agent } : {} },
+    }) as ExecutionJob;
+    const active = [
+      executionJob({ jobId: 'check-running', type: 'check', status: 'running' }),
+      executionJob({ jobId: 'codex-running', type: 'agent-run', status: 'running', agent: 'codex' }),
+      executionJob({ jobId: 'claude-dispatched', type: 'dispatch-task', status: 'dispatched', agent: 'claude' }),
+    ];
+    const limits = {
+      maxWorkers: 4,
+      maxHeavyChecks: 2,
+      maxAgentProcesses: 3,
+      maxCodexProcesses: 2,
+      maxClaudeProcesses: 1,
+      maxGitHubProcesses: 1,
+    };
+    const capacity = createSchedulerDispatchCapacity(active, limits, false);
+    expect(capacity.workers).toBe(1);
+    expect(capacity.heavyChecks).toBe(1);
+    expect(capacity.agents).toBe(1);
+    expect(Object.fromEntries(capacity.providers)).toEqual({ codex: 1, claude: 0, 'github-copilot': 1 });
+    expect(schedulerAgentProvider(executionJob({ jobId: 'default-agent', type: 'agent-run', status: 'queued' }))).toBe('codex');
+    expect(schedulerDispatchCapacityAllows(capacity, executionJob({
+      jobId: 'claude-waiting', type: 'agent-run', status: 'queued', agent: 'claude',
+    }))).toBe(false);
+    const codexWaiting = executionJob({ jobId: 'codex-waiting', type: 'agent-run', status: 'queued', agent: 'codex' });
+    expect(schedulerDispatchCapacityAllows(capacity, codexWaiting)).toBe(true);
+    consumeSchedulerDispatchCapacity(capacity, codexWaiting);
+    expect(capacity.workers).toBe(0);
+    expect(capacity.agents).toBe(0);
+    expect(capacity.providers.get('codex')).toBe(0);
+
+    const pressured = createSchedulerDispatchCapacity([], limits, true);
+    expect(pressured.workers).toBe(1);
+    expect(pressured.heavyChecks).toBe(1);
+    expect(pressured.agents).toBe(0);
+    expect([...pressured.providers.values()]).toEqual([0, 0, 0]);
   });
 
   test('projects canonical Runtime ownership through the transitional daemon status shape', () => {
