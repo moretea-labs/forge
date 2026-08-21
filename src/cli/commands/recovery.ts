@@ -310,7 +310,10 @@ export async function verifyRecoveryConnector(
       body: initializeBody,
     });
     const challenge = response.headers.get('www-authenticate') ?? '';
-    const ok = response.status === 401 && /\bBearer\b/i.test(challenge) && challenge.includes('oauth-protected-resource');
+    const ok = response.status === 401
+      && /\bBearer\b/i.test(challenge)
+      && challenge.includes('error="invalid_token"')
+      && challenge.includes('oauth-protected-resource');
     probes.unauthenticatedChallenge = { ok, status: response.status };
     if (!ok) failures.push('unauthenticatedChallenge: Recovery MCP did not return the expected OAuth Bearer challenge.');
   } catch (error) {

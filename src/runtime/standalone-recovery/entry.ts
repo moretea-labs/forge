@@ -304,7 +304,8 @@ function requestUrl(request: IncomingMessage): URL {
   return new URL(request.url ?? '/', `${proto}://${host}`);
 }
 
-function publicOrigin(request: IncomingMessage): string {
+function publicOrigin(request: IncomingMessage, config?: Pick<RecoveryConfig, 'recoveryPublicUrl'>): string {
+  if (config?.recoveryPublicUrl) return new URL(config.recoveryPublicUrl).origin;
   const url = requestUrl(request);
   return `${url.protocol}//${url.host}`;
 }
@@ -316,12 +317,12 @@ function resourcePathFromRequest(_request: IncomingMessage): '/recovery/mcp' {
   return '/recovery/mcp';
 }
 
-function recoveryResource(request: IncomingMessage): string {
-  return `${publicOrigin(request)}${resourcePathFromRequest(request)}`;
+function recoveryResource(request: IncomingMessage, config: Pick<RecoveryConfig, 'recoveryPublicUrl'>): string {
+  return `${publicOrigin(request, config)}${resourcePathFromRequest(request)}`;
 }
 
-function recoveryAuthorizationServerMetadata(request: IncomingMessage): Record<string, unknown> {
-  const origin = publicOrigin(request);
+function recoveryAuthorizationServerMetadata(request: IncomingMessage, config: Pick<RecoveryConfig, 'recoveryPublicUrl'>): Record<string, unknown> {
+  const origin = publicOrigin(request, config);
   return {
     issuer: origin,
     authorization_endpoint: `${origin}/recovery/oauth/authorize`,
@@ -335,19 +336,20 @@ function recoveryAuthorizationServerMetadata(request: IncomingMessage): Record<s
   };
 }
 
-function recoveryProtectedResourceMetadata(request: IncomingMessage): Record<string, unknown> {
+function recoveryProtectedResourceMetadata(request: IncomingMessage, config: Pick<RecoveryConfig, 'recoveryPublicUrl'>): Record<string, unknown> {
+  const origin = publicOrigin(request, config);
   return {
-    resource: recoveryResource(request),
-    authorization_servers: [publicOrigin(request)],
+    resource: recoveryResource(request, config),
+    authorization_servers: [origin],
     scopes_supported: [RECOVERY_OAUTH_SCOPE],
     bearer_methods_supported: ['header'],
-    resource_documentation: `${publicOrigin(request)}/recovery/health`,
+    resource_documentation: `${origin}/recovery/health`,
   };
 }
 
-function recoveryWwwAuthenticate(request: IncomingMessage): string {
-  const metadata = `${publicOrigin(request)}/.well-known/oauth-protected-resource${resourcePathFromRequest(request)}`;
-  return `Bearer realm="forge-recovery", resource_metadata="${metadata}", scope="${RECOVERY_OAUTH_SCOPE}"`;
+function recoveryWwwAuthenticate(request: IncomingMessage, config: Pick<RecoveryConfig, 'recoveryPublicUrl'>): string {
+  const metadata = `${publicOrigin(request, config)}/.well-known/oauth-protected-resource${resourcePathFromRequest(request)}`;
+  return `Bearer realm="forge-recovery", error="invalid_token", error_description="Missing or invalid Authorization header", resource_metadata="${metadata}", scope="${RECOVERY_OAUTH_SCOPE}"`;
 }
 
 function parseUrlEncoded(input: string): URLSearchParams {
@@ -559,8 +561,8 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
       });
       return;
     }
-    if (request.method === 'GET' && isProtectedResourceMetadataPath(request)) { json(response, 200, recoveryProtectedResourceMetadata(request)); return; }
-    if (request.method === 'GET' && isOAuthMetadataPath(request)) { json(response, 200, recoveryAuthorizationServerMetadata(request)); return; }
+    if (request.method === 'GET' && isProtectedResourceMetadataPath(request)) { json(response, 200, recoveryProtectedResourceMetadata(request, config)); return; }
+    if (request.method === 'GET' && isOAuthMetadataPath(request)) { json(response, 200, recoveryAuthorizationServerMetadata(request, config)); return; }
     if ((request.method === 'GET' || request.method === 'POST') && isAuthorizePath(request)) {
       const params = request.method === 'GET'
         ? requestUrl(request).searchParams
@@ -680,7 +682,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
     if (request.method !== 'POST' || !matchesAnyPath(request.url, ['/mcp', '/recovery/mcp'])) { json(response, 404, { error: 'NOT_FOUND' }); return; }
     const expected = gatewayToken(config);
     const supplied = request.headers.authorization?.replace(/^Bearer\s+/i, '').trim();
-    if (!expected || !supplied || !secureEqual(supplied, expected)) { response.setHeader('www-authenticate', recoveryWwwAuthenticate(request)); json(response, 401, { error: 'RECOVERY_AUTH_REQUIRED' }); return; }
+    if (!expected || !supplied || !secureEqual(supplied, expected)) { response.setHeader('www-authenticate', recoveryWwwAuthenticate(request, config)); json(response, 401, { error: 'RECOVERY_AUTH_REQUIRED' }); return; }
     if (!/^application\/json(?:\s*;|$)/i.test(String(request.headers['content-type'] ?? ''))) { json(response, 415, { error: 'RECOVERY_CONTENT_TYPE_REQUIRED' }); return; }
     let message: { id?: unknown; method?: unknown; params?: { name?: unknown; arguments?: unknown } };
     try { message = JSON.parse(await readBody(request)) as typeof message; } catch { json(response, 400, rpcError(null, -32700, 'Invalid JSON.')); return; }

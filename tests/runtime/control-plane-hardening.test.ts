@@ -35,6 +35,7 @@ import { selectSchedulerProjectionRefreshTargets } from '../../src/runtime/contr
 import { evaluateSchedulerWorkerExitCandidate } from '../../src/runtime/control-plane/global-scheduler/worker-exit-decision';
 import { reconcileSchedulerWorkerExit } from '../../src/runtime/control-plane/global-scheduler/worker-exit-reconciler';
 import { runSchedulerDurableAdmission } from '../../src/runtime/control-plane/global-scheduler/durable-admission';
+import { reserveSchedulerDispatches } from '../../src/runtime/control-plane/global-scheduler/dispatch-reservation';
 
 const roots: string[] = [];
 
@@ -223,6 +224,38 @@ describe('control-plane hardening', () => {
       lastScheduleTickAt: 60_000,
     }, dependencies)).toEqual({ scheduleTicked: false });
     expect(calls).toEqual(['observe:repo-a:queued']);
+  });
+
+  test('reserves Scheduler dispatch capacity before worker spawn and skips RepoActor lock contention', () => {
+    const nowValues = [1000, 1100, 1200];
+    const pendingSpawns: Array<{ repoId: string; jobId: string }> = [];
+    const projectionRefreshRepoIds = new Set<string>();
+    const lastRepoDispatch = new Map<string, number>();
+    const jobs = [
+      { repoId: 'repo-a', jobId: 'a', priority: 'P0', queuedAt: '2026-08-21T00:00:00.000Z', createdAt: '2026-08-21T00:00:00.000Z', status: 'queued', type: 'repository-command', payload: { operation: 'test' }, resourceClaims: [], dependencies: [] },
+      { repoId: 'repo-b', jobId: 'b', priority: 'P1', queuedAt: '2026-08-21T00:00:01.000Z', createdAt: '2026-08-21T00:00:01.000Z', status: 'queued', type: 'repository-command', payload: { operation: 'test' }, resourceClaims: [], dependencies: [] },
+    ] as unknown as ExecutionJob[];
+    const result = reserveSchedulerDispatches({
+      activeJobs: jobs,
+      config: { maxWorkers: 2, maxHeavyChecks: 2, maxAgentProcesses: 2, maxCodexProcesses: 2, maxClaudeProcesses: 2, maxGitHubProcesses: 2, maxConcurrentRepositories: 2 } as any,
+      resourcePressured: false,
+      lastRepoDispatch,
+      getActor: (repoId) => ({
+        tryClaimNext: () => {
+          if (repoId === 'repo-a') throw new Error('LOCK_HELD: repo-a');
+          return { job: jobs[1], fencingTokens: [] };
+        },
+      }),
+      now: () => nowValues.shift() ?? 1200,
+      pendingSpawns,
+      projectionRefreshRepoIds,
+    });
+    expect(result.activeJobCount).toBe(2);
+    expect(result.dispatchStateChanged).toBe(true);
+    expect(result.lastDispatchAt).toBe(new Date(1100).toISOString());
+    expect(pendingSpawns).toEqual([{ repoId: 'repo-b', jobId: 'b' }]);
+    expect(lastRepoDispatch.get('repo-b')).toBe(1100);
+    expect([...projectionRefreshRepoIds]).toEqual(['repo-b']);
   });
 
   test('isolates per-repository Scheduler priority and fairness ordering from the dispatch lock', () => {

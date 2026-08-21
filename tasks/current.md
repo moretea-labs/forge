@@ -30,6 +30,7 @@ This file is an orientation snapshot, not an execution gate or lifecycle authori
 - Evaluation framework: 3/3 passed.
 - Test governance manifest: 122 registered test files valid; focused residual regressions 7/7 passed.
 - Public documentation check passed again after the final documentation correction.
+- Recovery OAuth tunnel interoperability: the Bearer challenge now reports `invalid_token`, and configured public Recovery URLs remain the OAuth resource/issuer origin even when the local probe uses loopback. The focused Recovery suite passes 41/41, the public PKCE/MCP verification passes, and both OpenAI Secure MCP Tunnel runtimes report ready.
 
 ## Current architecture direction
 
