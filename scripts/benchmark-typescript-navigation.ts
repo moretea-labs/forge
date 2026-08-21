@@ -50,6 +50,18 @@ const cases: BenchmarkCase[] = [
     marker: 'export async function startLightweightRepositoryCommand(',
   },
 ];
+const requestedSymbols = new Set(
+  String(process.env.FORGE_TSNAV_BENCHMARK_SYMBOLS ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean),
+);
+const benchmarkCases = requestedSymbols.size === 0
+  ? cases
+  : cases.filter((case_) => requestedSymbols.has(case_.symbol));
+if (benchmarkCases.length === 0) {
+  throw new Error(`No benchmark cases match FORGE_TSNAV_BENCHMARK_SYMBOLS=${[...requestedSymbols].join(',')}`);
+}
 
 function target(case_: BenchmarkCase): { line: number; column: number } {
   const text = readFileSync(resolve(repoRoot, case_.path), 'utf8');
@@ -79,15 +91,35 @@ function lexicalMatches(symbol: string): string[] {
   }
 }
 
+function percentile(values: number[], ratio: number): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(sorted.length - 1, Math.floor(sorted.length * ratio));
+  return Math.round((sorted[index] ?? 0) * 100) / 100;
+}
+
 const results = [];
-for (const case_ of cases) {
+for (const case_ of benchmarkCases) {
   clearTypeScriptNavigationCache();
-  const coldStartedAt = performance.now();
+  // This first reference call represents the user-visible cold path.
+  const coldReferenceStartedAt = performance.now();
   const coldReferences = navigate(case_, 'references');
-  const coldMs = performance.now() - coldStartedAt;
+  const coldReferenceMs = performance.now() - coldReferenceStartedAt;
+
+  // Then separately initialize a fresh project through the cheap definition
+  // query and measure references on that already-built Language Service. This
+  // makes project construction and high-fanout reference cost visible instead
+  // of attributing both to one opaque cold number.
+  clearTypeScriptNavigationCache();
+  const projectSetupStartedAt = performance.now();
+  const coldDefinition = navigate(case_, 'definition');
+  const projectSetupMs = performance.now() - projectSetupStartedAt;
+  const firstReferenceStartedAt = performance.now();
+  const firstReferencesOnPreparedProject = navigate(case_, 'references');
+  const firstReferenceOnPreparedProjectMs = performance.now() - firstReferenceStartedAt;
 
   const warmDurations: number[] = [];
-  let warmReferences = coldReferences;
+  let warmReferences = firstReferencesOnPreparedProject;
   for (let index = 0; index < 3; index += 1) {
     const startedAt = performance.now();
     warmReferences = navigate(case_, 'references');
@@ -102,6 +134,8 @@ for (const case_ of cases) {
     symbol: case_.symbol,
     target: { path: case_.path, ...target(case_) },
     semantic: {
+      coldReferenceLocations: coldReferences.locations.length,
+      coldDefinitionLocations: coldDefinition.locations.length,
       references: warmReferences.locations.length,
       definitions: definitions.locations.length,
       implementations: implementations.locations.length,
@@ -112,11 +146,40 @@ for (const case_ of cases) {
       sampleMatches: lexical.slice(0, 8),
     },
     latencyMs: {
-      coldReferences: Math.round(coldMs * 100) / 100,
+      coldReferences: Math.round(coldReferenceMs * 100) / 100,
+      projectSetupViaDefinition: Math.round(projectSetupMs * 100) / 100,
+      firstReferencesOnPreparedProject: Math.round(firstReferenceOnPreparedProjectMs * 100) / 100,
       warmReferences: warmDurations.map((value) => Math.round(value * 100) / 100),
     },
   });
 }
 clearTypeScriptNavigationCache();
 
-console.log(JSON.stringify({ repoRoot, cases: results }, null, 2));
+const preparedReferenceDurations = results.map((entry) => entry.latencyMs.firstReferencesOnPreparedProject);
+const warmReferenceDurations = results.flatMap((entry) => entry.latencyMs.warmReferences);
+const thresholds = {
+  firstReferencesOnPreparedProjectP95MaxMs: 250,
+  warmReferencesP95MaxMs: 150,
+};
+const assertions = {
+  allDefinitionsResolved: results.every((entry) => entry.semantic.definitions >= 1),
+  allReferencesResolved: results.every((entry) => entry.semantic.references >= 1),
+  allImplementationsResolved: results.every((entry) => entry.semantic.implementations >= 1),
+  semanticFindsNonLexicalReferences: results.some((entry) => entry.semantic.references > entry.lexical.exactMatches),
+  preparedReferenceLatencyBounded: percentile(preparedReferenceDurations, 0.95) <= thresholds.firstReferencesOnPreparedProjectP95MaxMs,
+  warmReferenceLatencyBounded: percentile(warmReferenceDurations, 0.95) <= thresholds.warmReferencesP95MaxMs,
+};
+const output = {
+  repoRoot,
+  requestedSymbols: [...requestedSymbols],
+  cases: results,
+  summary: {
+    firstReferencesOnPreparedProjectP95Ms: percentile(preparedReferenceDurations, 0.95),
+    warmReferencesP95Ms: percentile(warmReferenceDurations, 0.95),
+  },
+  thresholds,
+  assertions,
+  passed: Object.values(assertions).every(Boolean),
+};
+console.log(JSON.stringify(output, null, 2));
+if (!output.passed) process.exitCode = 1;

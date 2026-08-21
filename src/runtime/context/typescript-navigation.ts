@@ -128,11 +128,11 @@ function loadProject(repoRoot: string, tsconfigPath = 'tsconfig.json', access?: 
   return project;
 }
 
-function sourcePosition(project: CachedProject, fileName: string, line: number, column: number): number {
+function sourcePosition(project: CachedProject, program: ts.Program, fileName: string, line: number, column: number): number {
   if (!Number.isInteger(line) || line < 1 || !Number.isInteger(column) || column < 1) {
     throw new Error('TypeScript navigation line and column must be positive 1-based integers.');
   }
-  const source = project.service.getProgram()?.getSourceFile(fileName);
+  const source = program.getSourceFile(fileName);
   if (!source) throw new Error(`TypeScript project does not include ${normalizePath(relative(project.repoRoot, fileName))}.`);
   if (line > source.getLineAndCharacterOfPosition(source.getEnd()).line + 1) {
     throw new Error(`TypeScript navigation line ${line} is outside ${normalizePath(relative(project.repoRoot, fileName))}.`);
@@ -142,12 +142,13 @@ function sourcePosition(project: CachedProject, fileName: string, line: number, 
 
 function location(
   project: CachedProject,
+  program: ts.Program,
   fileName: string,
   textSpan: ts.TextSpan,
   name?: string,
   kind?: ts.ScriptElementKind,
 ): TypeScriptNavigationLocation {
-  const source = project.service.getProgram()?.getSourceFile(fileName);
+  const source = program.getSourceFile(fileName);
   if (!source) {
     return { path: normalizePath(relative(project.repoRoot, fileName)), line: 1, column: 1, ...(name ? { name } : {}), ...(kind ? { kind } : {}) };
   }
@@ -178,18 +179,23 @@ export function navigateTypeScriptSymbol(
 ): TypeScriptNavigationResult {
   const project = loadProject(repoRoot, request.tsconfigPath, access);
   const fileName = resolve(project.repoRoot, request.path);
-  const position = sourcePosition(project, fileName, request.line, request.column);
+  // A references response may materialize hundreds of locations. Acquire the
+  // Language Service Program once per navigation so that location formatting
+  // does not repeatedly re-enter the service while the result is built.
+  const program = project.service.getProgram();
+  if (!program) throw new Error('TypeScript Language Service did not produce a Program.');
+  const position = sourcePosition(project, program, fileName, request.line, request.column);
   let locations: TypeScriptNavigationLocation[] = [];
 
   if (request.navigation === 'definition') {
     locations = (project.service.getDefinitionAtPosition(fileName, position) ?? [])
-      .map((entry) => location(project, entry.fileName, entry.textSpan, entry.name, entry.kind));
+      .map((entry) => location(project, program, entry.fileName, entry.textSpan, entry.name, entry.kind));
   } else if (request.navigation === 'implementations') {
     locations = (project.service.getImplementationAtPosition(fileName, position) ?? [])
-      .map((entry) => location(project, entry.fileName, entry.textSpan, undefined, entry.kind));
+      .map((entry) => location(project, program, entry.fileName, entry.textSpan, undefined, entry.kind));
   } else {
     locations = (project.service.findReferences(fileName, position) ?? []).flatMap((group) =>
-      group.references.map((entry) => location(project, entry.fileName, entry.textSpan, group.definition.name, group.definition.kind)),
+      group.references.map((entry) => location(project, program, entry.fileName, entry.textSpan, group.definition.name, group.definition.kind)),
     );
   }
 
