@@ -4074,6 +4074,20 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           }
           const facade = runGoalWorkloop({ ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined }, 'finalize', args);
           const completed = getWorkContract(store, workId);
+          let acceptedPlan;
+          const reviewer = ctx.principalId?.trim();
+          if (facade.status === 'ok' && completed?.status === 'completed' && completed.planId && completed.planStepId && reviewer) {
+            const plan = getPlanContract(store, completed.planId);
+            const step = plan?.steps.find((candidate) => candidate.id === completed.planStepId);
+            if (step?.status === 'validating') {
+              acceptedPlan = acceptPlanStepEvidence(store, {
+                planId: completed.planId,
+                stepId: completed.planStepId,
+                reviewer,
+                rationale: `Authenticated semantic controller finalized Work ${workId} after reviewing its completion evidence against the Plan step acceptance criteria.`,
+              });
+            }
+          }
           const lifecycleClosed = Boolean(completed?.completionReceipt)
             && (!readWorkHandle(ctx.controllerHome, repository.repoId, workId)
               || readWorkHandle(ctx.controllerHome, repository.repoId, workId)?.finalization.worktreeCleanup !== 'pending');
@@ -4081,6 +4095,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             ...facade,
             data: {
               ...(facade.data && typeof facade.data === 'object' ? facade.data : {}),
+              ...(acceptedPlan ? { plan: summarizePlanContract(acceptedPlan), semanticAcceptanceRecorded: true } : {}),
               lifecycleClosed,
             },
           };

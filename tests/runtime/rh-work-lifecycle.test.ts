@@ -12,7 +12,7 @@ import { getProcessRecord, waitForProcess } from '../../src/runtime/execution/pr
 import { getWorkContract, listWorkContracts, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { continueGoalWorkloop, finalizeGoalWorkloop, verifyGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { listHandoffItems, resolveHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { createSchedule, getSchedule, listOccurrences, saveOccurrence, saveSchedule } from '../../src/runtime/workflow/schedules/store';
@@ -1022,6 +1022,97 @@ describe('rh_work managed lifecycle closure', () => {
     });
     expect(existsSync(worktreePath)).toBe(false);
     expect(branchExists(fx.repoRoot, branch)).toBe(false);
+  });
+
+  test('authenticated finalize semantically closes its delivered Plan step without a second acceptance call', async () => {
+    const fx = fixture('plan-finalize-semantic-accept');
+    writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({ scripts: { 'check:type': 'node -e "process.exit(0)"' } }, null, 2));
+    git(fx.repoRoot, ['add', 'package.json']);
+    git(fx.repoRoot, ['commit', '-m', 'register semantic acceptance check']);
+    const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim();
+    const created = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'PLAN-finalize-semantic-accept',
+      scope_key: 'plan-finalize-semantic-accept',
+      source_revision: sourceRevision,
+      objective: 'Deliver and semantically accept one no-change Plan slice',
+      plan_steps: [{
+        id: 'step-a',
+        objective: 'Prove the slice already satisfies the required behavior',
+        dependencies: [],
+        authoritative_files: [],
+        allowed_paths: [],
+        forbidden_paths: [],
+        check_ids: ['package:check:type'],
+        acceptance_criteria: ['The authenticated semantic controller reviews the delivered evidence and accepts the slice.'],
+      }],
+    });
+    expect(created?.isError).not.toBe(true);
+    const approved = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'plan_approve',
+      plan_id: 'PLAN-finalize-semantic-accept',
+    });
+    expect(approved?.isError, JSON.stringify(approved?.structuredContent)).not.toBe(true);
+
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      plan_id: 'PLAN-finalize-semantic-accept',
+      plan_step_id: 'step-a',
+      objective: 'Prove the slice already satisfies the required behavior',
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 1,
+      requires_recovery: true,
+      constraints: { requireWorktree: true },
+    });
+    expect(started?.isError, JSON.stringify(started?.structuredContent)).not.toBe(true);
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    expect(workId).toBeTruthy();
+    const verified = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'verify',
+      work_id: workId,
+      check_id: 'package:check:type',
+    });
+    expect(verified?.isError, JSON.stringify(verified?.structuredContent)).not.toBe(true);
+    const processId = String((verified?.structuredContent as { data?: { verification?: { processId?: string } } })?.data?.verification?.processId ?? '');
+    expect(processId).toBeTruthy();
+    await waitForProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 30_000 });
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.status).toBe('succeeded');
+    const continued = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'continue',
+      work_id: workId,
+    });
+    expect(continued?.isError, JSON.stringify(continued?.structuredContent)).not.toBe(true);
+    expect(continued?.structuredContent).toMatchObject({ status: 'ok', data: { nextStep: 'finalize' } });
+
+    const finalized = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'finalize',
+      work_id: workId,
+      commit: false,
+      merge: false,
+      cleanup: true,
+      completion_outcome: 'completed_no_change',
+      no_change_evidence: 'The semantic controller reviewed current behavior and found no repository change required.',
+    });
+    expect(finalized?.isError, JSON.stringify(finalized?.structuredContent)).not.toBe(true);
+    expect(finalized?.structuredContent).toMatchObject({
+      status: 'ok',
+      data: {
+        lifecycleClosed: true,
+        semanticAcceptanceRecorded: true,
+        plan: { planId: 'PLAN-finalize-semantic-accept', status: 'finalized', completedSteps: 1 },
+      },
+    });
+    expect(getPlanContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, 'PLAN-finalize-semantic-accept')).toMatchObject({
+      status: 'finalized',
+      steps: [{ id: 'step-a', status: 'completed', workId }],
+    });
   });
 
   test('stop can close a legacy Work after its source checkout registry entry was removed', async () => {
