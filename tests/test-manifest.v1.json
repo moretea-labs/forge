@@ -293,6 +293,10 @@
       "module": "workflow",
       "resource": "git-worktree"
     },
+    "tests/evaluation-framework.test.ts": {
+      "module": "runner",
+      "resource": "temp-isolated"
+    },
     "tests/hook-contracts.test.ts": {
       "module": "workflow",
       "resource": "temp-isolated"

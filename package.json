@@ -87,6 +87,7 @@
     "benchmark:quality-harness": "bun scripts/benchmark-quality-harness.ts",
     "benchmark:background-check-overlap": "bun scripts/benchmark-background-check-overlap.ts",
     "check:quality-harness": "bun scripts/benchmark-quality-harness.ts",
+    "check:evaluation-framework": "bun test tests/evaluation-framework.test.ts",
     "check:background-check-overlap": "bun scripts/benchmark-background-check-overlap.ts",
     "check:typescript-navigation": "bun scripts/benchmark-typescript-navigation.ts",
     "check:check-scheduling": "bun test tests/runtime/check-scheduling.test.ts",

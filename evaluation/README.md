@@ -1,0 +1,115 @@
+# Forge Evaluation Framework
+
+This directory is a reproducible engineering-scenario harness for comparing
+future Forge versions. It is intentionally separate from `evals/`, which
+benchmarks prompt/skill behavior rather than repository-change scenarios.
+
+## Architecture
+
+```text
+real Git history -> Scenario v1 -> temporary isolated clone -> Forge CLI -> trace + validators -> report
+```
+
+The runner does not contain an agent loop, a database, a scheduler, or a second
+Forge Runtime. Its built-in adapter runs Forge through its normal CLI from a
+clone checked out at the Scenario's immutable commit. An adapter can write a
+small `execution.traceFile` JSON handoff inside that clone with retrieved
+context, inspected evidence, tool calls, and its final result; the runner adds
+those to the canonical trace. This lets a future desktop, controller, or agent
+adapter integrate without changing Scenario or report formats.
+
+## Layout
+
+- `scenarios/` — small Golden Scenario dataset; each JSON file is a behavior-level task with an immutable snapshot reference.
+- `lib/scenario.ts` — Scenario v1 parsing and guardrails.
+- `lib/sandbox.ts` — source-status guard plus `git clone --no-local` isolation.
+- `lib/trace.ts`, `lib/validators.ts`, `lib/metrics.ts`, and `lib/report.ts` — explainable evidence, checks, metrics, diagnosis, and JSON/Markdown output.
+- `run.ts` — explicit-output CLI runner.
+
+## Scenario format
+
+```json
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "short-stable-id",
+  "userIntent": "Behavior-level request",
+  "snapshot": { "source": ".", "commit": "immutable-git-sha" },
+  "groundTruth": {
+    "intendedBehavior": ["observable outcome"],
+    "affectedDomains": ["domain, not a file name"],
+    "behavioralInvariants": ["must remain true"],
+    "regressionRisks": ["what could regress"]
+  },
+  "execution": { "interface": "forge_cli", "arguments": ["status", "--json"], "traceFile": ".forge/evaluation-trace.json" },
+  "validators": [{ "id": "observable-check", "kind": "invariant", "type": "command", "command": "bun", "arguments": ["test", "..."] }]
+}
+```
+
+Ground truth intentionally names behavior and domains, never files that an
+executor must edit. Validators may run focused behavioral checks or protect a
+broad unrelated path boundary; they are not an implementation prescription.
+
+## Isolation strategy
+
+For every run, the framework:
+
+1. hashes the source repository's Git status;
+2. verifies the requested commit exists;
+3. uses `git clone --no-local --no-checkout` in an OS temporary directory, then checks out that commit detached and removes its `origin` remote;
+4. invokes Forge and validators only with that clone as their working directory;
+5. compares the source status after the run and fails the result if it changed;
+6. requires the report directory to be outside the source repository.
+
+No `git worktree` is created in the source repository, and no report is written
+unless `--output` is explicitly supplied. The CLI sets `FORGE_EVALUATION=1` for
+adapter-aware future integrations; it does not grant extra authority.
+
+## Metrics
+
+The first version implements only the requested explainable measures:
+
+- task success rate — the scenario invocation and every validator passed;
+- impact coverage — affected domains with retrieved or inspected evidence;
+- behavioral invariant success — passed invariant validators;
+- regression reintroduction rate — failed regression validators;
+- change precision — passed change-boundary validators;
+- execution latency — wall-clock duration of the Forge invocation;
+- tool interaction count — recorded Forge CLI and validator interactions.
+
+Metrics whose trace evidence is absent are `null`/“not measured”, never a
+synthetic pass. The current CLI adapter can only record its own invocation;
+future task executors must provide retrieved-context and tool evidence to make
+impact coverage diagnostic.
+
+## Example flow
+
+Use a Forge binary/version under evaluation and place reports outside the
+source checkout:
+
+```bash
+bun evaluation/run.ts \
+  --scenario evaluation/scenarios/forge-lightweight-terminal-receipt.json \
+  --output /tmp/forge-eval-terminal-receipt \
+  --forge-command bun \
+  --forge-command-arg /absolute/path/to/forge/bin/forge.mjs
+```
+
+The output contains `report.json` for comparison tooling and `report.md` for a
+human review. `--keep-sandbox` preserves the temporary clone for diagnosis;
+otherwise it is removed after the report is written.
+
+The included lightweight-terminal-receipt Scenario is a safe historical seed:
+its source snapshot is the pre-fix commit and its provenance identifies the
+subsequent fix. It validates dataset shape and isolation plumbing; it does not
+pretend that `forge docs list` is an autonomous code-writing executor.
+
+## Future extension points and open questions
+
+- Add a user-facing Controller or desktop execution adapter that reports
+  `contextRetrieval`, `inspectedEvidence`, and individual tool interactions.
+- Add a small number of verified Forge regressions and public Avela references
+  without copying private source into this repository.
+- Decide how evaluator versions and executor versions should be pinned for
+  longitudinal comparisons.
+- Add explicit remote-snapshot support only with a content-addressed clone and
+  a no-network-after-clone policy.

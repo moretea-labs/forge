@@ -1,0 +1,77 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "forge-lightweight-terminal-receipt",
+  "title": "Recover lightweight terminal command evidence",
+  "userIntent": "Keep a completed ordinary local command readable after in-memory lightweight process state is lost, without replaying the command or creating durable execution ownership for the running command.",
+  "snapshot": {
+    "source": ".",
+    "commit": "846e92a25577f80096195a9d7185e3751300a6e9"
+  },
+  "groundTruth": {
+    "intendedBehavior": [
+      "A completed lightweight command remains readable from bounded terminal evidence after in-memory handle loss.",
+      "A missing running handle is never reconstructed by replaying its command."
+    ],
+    "affectedDomains": [
+      "process-runtime",
+      "repository-command-facade",
+      "recovery-evidence"
+    ],
+    "behavioralInvariants": [
+      "Running lightweight commands retain no durable lifecycle or lease ownership.",
+      "Only bounded terminal evidence may survive memory loss.",
+      "Handle recovery never re-executes a command."
+    ],
+    "regressionRisks": [
+      "Adding a second process authority or a replay path.",
+      "Losing terminal logs and exit evidence after a Runtime-memory reset.",
+      "Broadening the change into unrelated Runtime activation or recovery behavior."
+    ]
+  },
+  "execution": {
+    "interface": "forge_cli",
+    "arguments": [
+      "docs",
+      "list",
+      "--json"
+    ],
+    "timeoutMs": 30000
+  },
+  "validators": [
+    {
+      "id": "lightweight-terminal-behavior",
+      "kind": "invariant",
+      "type": "command",
+      "command": "bun",
+      "arguments": [
+        "test",
+        "tests/runtime/process-runtime.test.ts"
+      ],
+      "expectedExitCode": 0,
+      "timeoutMs": 120000
+    },
+    {
+      "id": "no-unrelated-runtime-activation-change",
+      "kind": "regression",
+      "type": "changed_paths",
+      "forbiddenGlobs": [
+        "src/runtime/root/**",
+        "src/runtime/standalone-recovery/**"
+      ]
+    },
+    {
+      "id": "focused-change-boundary",
+      "kind": "change_precision",
+      "type": "changed_paths",
+      "forbiddenGlobs": [
+        "src/cli/local-bridge/**",
+        "src/runtime/plugins/**"
+      ]
+    }
+  ],
+  "provenance": {
+    "sourceCommit": "846e92a25577f80096195a9d7185e3751300a6e9",
+    "fixCommit": "96890dd9db5e97e39aef2133b17030c84d49231e",
+    "note": "The snapshot predates Forge's terminal lightweight-process receipt fix. It is a seed for a future user-facing execution adapter, not a claim that the built-in CLI command solves the task."
+  }
+}
