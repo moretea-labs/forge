@@ -21,7 +21,11 @@ import {
   transitionExecutionJob,
   updateExecutionJob,
 } from '../../execution/jobs/store';
-import type { ExecutionWorkerLifecycle } from '../../execution/jobs/types';
+import {
+  TERMINAL_JOB_STATUSES,
+  type ExecutionJobStatus,
+  type ExecutionWorkerLifecycle,
+} from '../../execution/jobs/types';
 import { tryRecoverJobFromWorkerReceipt } from '../../execution/jobs/receipt-recovery';
 import { releaseExecutionLeases } from '../../resources/leases/store';
 import { RepoActorRegistry } from '../repo-actor/registry';
@@ -391,6 +395,18 @@ export class GlobalScheduler {
     } catch { /* the Job may have been superseded or made terminal */ }
   }
 
+  private persistTerminalWorkerLifecycle(
+    repoId: string,
+    jobId: string,
+    status: ExecutionJobStatus,
+    lifecycle: ExecutionWorkerLifecycle,
+  ): boolean {
+    if (!TERMINAL_JOB_STATUSES.has(status)) return false;
+    updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({ ...latest, workerLifecycle: lifecycle }));
+    try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
+    return true;
+  }
+
   private async recordWorkerExit(
     repoId: string,
     jobId: string,
@@ -420,11 +436,7 @@ export class GlobalScheduler {
       if (child?.pid && current.workerPid !== undefined && current.workerPid !== child.pid) return;
       const currentLifecycle = current.workerLifecycle ?? lifecycle;
       const mergedLifecycle = { ...currentLifecycle, ...diagnosticLifecycle };
-      if (['succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'stale', 'human_attention_required'].includes(current.status)) {
-        updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({ ...latest, workerLifecycle: mergedLifecycle }));
-        try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
-        return;
-      }
+      if (this.persistTerminalWorkerLifecycle(repoId, jobId, current.status, mergedLifecycle)) return;
 
       // Prefer durable receipt recovery over sleep-based grace. When the Worker
       // already wrote a completed/delegated receipt for this attempt/PID/epoch/
@@ -439,11 +451,7 @@ export class GlobalScheduler {
       if (rechecked.attempt !== attempt) return;
       const recheckedLifecycle = rechecked.workerLifecycle ?? lifecycle;
       const recheckedMerged = { ...recheckedLifecycle, ...diagnosticLifecycle };
-      if (['succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'stale', 'human_attention_required'].includes(rechecked.status)) {
-        updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({ ...latest, workerLifecycle: recheckedMerged }));
-        try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
-        return;
-      }
+      if (this.persistTerminalWorkerLifecycle(repoId, jobId, rechecked.status, recheckedMerged)) return;
 
       const details: Record<string, unknown> = {
         workerLostReason: startupError ? 'spawn_failed' : 'process_exit',
