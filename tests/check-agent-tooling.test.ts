@@ -322,6 +322,7 @@ describe("check-agent-tooling", () => {
           ...process.env,
           HOME: envRoot.home,
           PATH: `${envRoot.fakeBin}:${process.env.PATH ?? ""}`,
+          FORGE_TOOLING_PATH_SNAPSHOT: `${envRoot.fakeBin}:${process.env.PATH ?? ""}`,
           AGENTIC_DEV_CODEGRAPH_ALLOW_REPO_LOCAL: "0",
         },
       });

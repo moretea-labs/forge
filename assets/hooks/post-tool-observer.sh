@@ -47,9 +47,15 @@ case "$tool_name" in
     ;;
 esac
 
-if [[ -n "${CODEX_SESSION_ID:-${CODEX_AGENT_NAME:-}}" ]] || [[ "$session_source" =~ [Cc]odex ]]; then
+# An event source is explicit evidence. Inherited host variables are only a
+# fallback for payloads that omit it, such as local compatibility shims.
+if [[ "$session_source" =~ [Cc]odex ]]; then
   host="codex"
-elif [[ -n "${CLAUDE_SESSION_ID:-${CLAUDE_AGENT_NAME:-}}" ]] || [[ "$session_source" =~ [Cc]laude ]]; then
+elif [[ "$session_source" =~ [Cc]laude ]]; then
+  host="claude"
+elif [[ -n "${CODEX_SESSION_ID:-${CODEX_AGENT_NAME:-}}" ]]; then
+  host="codex"
+elif [[ -n "${CLAUDE_SESSION_ID:-${CLAUDE_AGENT_NAME:-}}" ]]; then
   host="claude"
 fi
 

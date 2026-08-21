@@ -141,7 +141,7 @@ Complete this inventory before implementation. If any line is unknown, keep the 
 
 - **State/progress path**:
 - **Verification evidence**:
-- **Evaluator rubric**:
+- **Impact review**:
 - **Stop condition**:
 - **Rollback surface**:
 

@@ -52,7 +52,6 @@ describe("create-project-dirs runtime smoke", () => {
       expect(existsSync(join(cwd, "docs/reference-configs/agentic-development-flow.md"))).toBe(true);
       expect(existsSync(join(cwd, "docs/reference-configs/external-tooling.md"))).toBe(true);
       expect(existsSync(join(cwd, "docs/reference-configs/sprint-contracts.md"))).toBe(true);
-      expect(existsSync(join(cwd, "docs/reference-configs/heartbeat-triage.md"))).toBe(true);
       expect(existsSync(join(cwd, "docs/reference-configs/document-generation.md"))).toBe(true);
       expect(existsSync(join(cwd, "docs/reference-configs/global-working-rules.md"))).toBe(true);
       expectReferenceConfigStub(cwd, "harness-overview");
@@ -113,7 +112,6 @@ describe("create-project-dirs runtime smoke", () => {
       expect(existsSync(join(cwd, "scripts/check-task-workflow.sh"))).toBe(true);
       expect(existsSync(join(cwd, "scripts/capability-resolver.ts"))).toBe(true);
       expect(existsSync(join(cwd, ".ai/harness/worktrees/.gitkeep"))).toBe(true);
-      expect(existsSync(join(cwd, ".ai/harness/triage/.gitkeep"))).toBe(true);
       for (const helper of [
         "new-spec.sh",
         "new-sprint.sh",
@@ -137,8 +135,6 @@ describe("create-project-dirs runtime smoke", () => {
         "workstream-sync.sh",
         "ensure-task-workflow.sh",
         "check-task-workflow.sh",
-        "maintenance-triage.sh",
-        "heartbeat-triage.sh",
         "sprint-backlog.sh",
       ]) {
         expect(existsSync(join(cwd, ".ai/harness/scripts", helper))).toBe(false);
@@ -226,7 +222,6 @@ describe("create-project-dirs runtime smoke", () => {
       expect(workflowContract.artifacts.runtimeFiles).toContain(".ai/harness/architecture/events.jsonl");
       expect(workflowContract.artifacts.runtimeFiles).toContain(".ai/harness/active-plan");
       expect(workflowContract.artifacts.runtimeFiles).toContain(".ai/harness/active-worktree");
-      expect(workflowContract.artifacts.runtimeFiles).toContain(".ai/harness/triage/inbox.md");
       expect(workflowContract.artifacts.runtimeFiles).not.toContain(".ai/harness/workstreams/events.jsonl");
       expect(workflowContract.artifacts.requiredFiles).toContain("docs/architecture/index.md");
       expect(workflowContract.artifacts.requiredFiles).toContain("tasks/current.md");
@@ -240,7 +235,6 @@ describe("create-project-dirs runtime smoke", () => {
       expect(workflowContract.artifacts.requiredFiles).toContain("docs/reference-configs/external-tooling.md");
       expect(workflowContract.artifacts.requiredFiles).toContain("docs/reference-configs/document-generation.md");
       expect(workflowContract.artifacts.requiredFiles).toContain("docs/reference-configs/global-working-rules.md");
-      expect(workflowContract.artifacts.requiredFiles).toContain("docs/reference-configs/heartbeat-triage.md");
       expect(workflowContract.artifacts.requiredFiles).toContain("deploy/README.md");
       expect(workflowContract.artifacts.requiredDirectories).toContain("deploy/scripts");
       expect(workflowContract.artifacts.requiredDirectories).toContain("deploy/sql");
@@ -248,7 +242,6 @@ describe("create-project-dirs runtime smoke", () => {
       expect(workflowContract.artifacts.requiredDirectories).toContain("tasks/notes");
       expect(workflowContract.artifacts.requiredDirectories).toContain("tasks/workstreams");
       expect(workflowContract.artifacts.requiredDirectories).toContain(".ai/harness/worktrees");
-      expect(workflowContract.artifacts.requiredDirectories).toContain(".ai/harness/triage");
       expect(workflowContract.artifacts.requiredDirectories).toContain(".ai/harness/planning");
       expect(workflowContract.artifacts.requiredDirectories).not.toContain(".ai/harness/scripts");
       expect(workflowContract.artifacts.requiredDirectories).toContain("scripts");

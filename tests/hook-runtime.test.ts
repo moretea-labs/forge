@@ -76,7 +76,6 @@ function writeValidSprintChecks(cwd: string) {
         exit_code: 0,
         generated_at: "2026-03-04T14:10:00+0000",
         contract: { file: "tasks/contracts/demo.contract.md", status: "pass", exit_code: 0 },
-        review: { file: "tasks/reviews/demo.review.md", status: "pass" },
       },
       null,
       2
@@ -98,41 +97,9 @@ function planEvidenceContract(): string {
     "",
     "- **State/progress path**: tasks/todos.md and tasks/notes/demo.notes.md",
     "- **Verification evidence**: .ai/harness/checks/latest.json and verify-sprint",
-    "- **Evaluator rubric**: sprint review must recommend pass",
+    "- **Impact review**: reassess user intent, affected domains, downstream consumers, state transitions, and residual risks",
     "- **Stop condition**: stop on failing contract verification",
     "- **Rollback surface**: revert generated task files and changed source files",
-  ].join("\n");
-}
-
-function externalAcceptanceAdvice(reviewer = "Codex", source = "codex-review"): string {
-  return [
-    "## External Acceptance Advice",
-    "",
-    "> **External Acceptance**: pass",
-    `> **External Reviewer**: ${reviewer}`,
-    `> **External Source**: ${source}`,
-    "> **External Started**: 2026-03-04T14:05:00+0800",
-    "> **External Completed**: 2026-03-04T14:06:00+0800",
-    "",
-    "- P1 blockers: none",
-    "- P2 advisories: none",
-    "- Acceptance checklist: pass",
-  ].join("\n");
-}
-
-function humanReviewCard(verdict = "pass", externalAcceptance = "pass"): string {
-  return [
-    "## Human Review Card",
-    "",
-    `- Verdict: ${verdict}`,
-    "- Change type: code-change",
-    "- Intended files changed: fixture",
-    "- Actual files changed: fixture",
-    "- Commands passed: fixture",
-    `- External acceptance: ${externalAcceptance}`,
-    "- Residual risks: (none)",
-    "- Reviewer action required: approve fixture closeout",
-    "- Rollback: revert fixture branch",
   ].join("\n");
 }
 
@@ -357,7 +324,7 @@ describe("Hook runtime behavior", () => {
     }
   }, HOOK_RUNTIME_TIMEOUT_MS);
 
-  test("prompt-guard: emits host-aware [ExternalAcceptance] prompt at merge and [CrossReview] at debug moments", () => {
+  test("prompt-guard: emits advisory [CrossReview] hints at merge and debug moments", () => {
     const cwd = tmpWorkspace("cross-review-hint");
     try {
       installHooks(cwd);
@@ -368,13 +335,10 @@ describe("Hook runtime behavior", () => {
         env: { HOOK_HOST: "claude" },
       });
       expect(mergeClaude.status).toBe(0);
-      expect(mergeClaude.stdout).toContain("[ExternalAcceptance]");
-      expect(mergeClaude.stdout).toContain("Peer reviewer: Codex via codex-review");
-      expect(mergeClaude.stdout).toContain("Do not run Forge /review or local checks");
-      expect(mergeClaude.stdout).toContain("## External Acceptance Advice");
       expect(mergeClaude.stdout).toContain("[CrossReview]");
       expect(mergeClaude.stdout).toContain("codex-review");
       expect(mergeClaude.stdout).not.toContain("claude-review");
+      expect(mergeClaude.stdout).not.toContain("[ExternalAcceptance]");
 
       // The same intent on the Codex host suggests claude-review instead.
       const mergeCodex = runHook("prompt-guard.sh", cwd, {
@@ -382,11 +346,9 @@ describe("Hook runtime behavior", () => {
         env: { HOOK_HOST: "codex" },
       });
       expect(mergeCodex.status).toBe(0);
-      expect(mergeCodex.stdout).toContain("[ExternalAcceptance]");
-      expect(mergeCodex.stdout).toContain("Peer reviewer: Claude via /claude-review");
-      expect(mergeCodex.stdout).toContain("> **External Reviewer**: Claude");
       expect(mergeCodex.stdout).toContain("[CrossReview]");
       expect(mergeCodex.stdout).toContain("claude-review");
+      expect(mergeCodex.stdout).not.toContain("[ExternalAcceptance]");
 
       // Bug-fix intent gets the debug-flavored cross-review hint.
       const bug = runHook("prompt-guard.sh", cwd, {
@@ -518,6 +480,7 @@ describe("Hook runtime behavior", () => {
 
       const fallback = runHook("prompt-guard.sh", cwd, {
         stdin: JSON.stringify({ prompt: "谁调用了 resolveHooksDir？影响面是什么？" }),
+        env: { CLAUDE_SESSION_ID: "", CODEX_SESSION_ID: "", SESSION_KEY: "" },
       });
       expect(fallback.status).toBe(0);
       expect(readFileSync(join(cwd, ".claude/.session-id"), "utf-8").trim()).toBe("session-S2");
@@ -1126,8 +1089,39 @@ describe("Hook runtime behavior", () => {
       expect(followup.stdout).not.toContain("Yellow zone");
       expect(followup.stdout).not.toContain("/compact");
       expect(existsSync(join(cwd, ".claude/.trace.jsonl"))).toBe(true);
+      const trace = readFileSync(join(cwd, ".claude/.trace.jsonl"), "utf-8")
+        .trim().split("\n").map((line) => JSON.parse(line) as { session_key: string; run_id: string });
+      expect(trace.slice(0, 2)).toEqual([
+        expect.objectContaining({ session_key: "session-a", run_id: "run-session-session-a" }),
+        expect.objectContaining({ session_key: "session-a", run_id: "run-session-session-a" }),
+      ]);
+      expect(trace[2]).toEqual(expect.objectContaining({ session_key: "session-b", run_id: "run-session-session-b" }));
       expect(existsSync(join(cwd, ".claude/.tool-call-count"))).toBe(false);
       expect(existsSync(join(cwd, ".claude/.context-pressure"))).toBe(false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("post-tool observer keeps SESSION_KEY-only trace events correlated", () => {
+    const cwd = tmpWorkspace("post-tool-session-key");
+    try {
+      initGitRepo(cwd);
+      installHooks(cwd);
+
+      expect(runHook("post-tool-observer.sh", cwd, {
+        env: { CLAUDE_SESSION_ID: "", CODEX_SESSION_ID: "", SESSION_KEY: "ambient-session" },
+      }).status).toBe(0);
+      expect(runHook("post-tool-observer.sh", cwd, {
+        env: { CLAUDE_SESSION_ID: "", CODEX_SESSION_ID: "", SESSION_KEY: "ambient-session" },
+      }).status).toBe(0);
+
+      const trace = readFileSync(join(cwd, ".claude/.trace.jsonl"), "utf-8")
+        .trim().split("\n").map((line) => JSON.parse(line) as { session_key: string; run_id: string });
+      expect(trace).toEqual([
+        expect.objectContaining({ session_key: "ambient-session", run_id: "run-session-ambient-session" }),
+        expect.objectContaining({ session_key: "ambient-session", run_id: "run-session-ambient-session" }),
+      ]);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -3297,7 +3291,6 @@ describe("Hook runtime behavior", () => {
       mkdirSync(join(cwd, "plans"), { recursive: true });
       mkdirSync(join(cwd, "tasks"), { recursive: true });
       mkdirSync(join(cwd, "tasks/contracts"), { recursive: true });
-      mkdirSync(join(cwd, "tasks/reviews"), { recursive: true });
       mkdirSync(join(cwd, ".ai/harness/checks"), { recursive: true });
       mkdirSync(join(cwd, "scripts"), { recursive: true });
 
@@ -3311,10 +3304,6 @@ describe("Hook runtime behavior", () => {
         "# Task Execution Checklist (Primary)\n\n> **Source Plan**: plans/plan-20260304-1410-demo.md\n"
       );
       writeFileSync(join(cwd, "tasks/contracts/demo.contract.md"), "# contract\n");
-      writeFileSync(
-        join(cwd, "tasks/reviews/demo.review.md"),
-        ["# Task Review: demo", "", "> **Recommendation**: pass", "", humanReviewCard(), "", externalAcceptanceAdvice(), ""].join("\n")
-      );
       writeValidSprintChecks(cwd);
       writeFileSync(
         join(cwd, "scripts/verify-contract.sh"),
@@ -3334,51 +3323,9 @@ describe("Hook runtime behavior", () => {
 
       expect(res.status).toBe(0);
       expect(res.stdout).toContain("[verify] ok");
+      expect(res.stdout).toContain("[Review] Before declaring completion");
       expect(res.stdout).toContain("[AutoArchive] All quality gates passed");
       expect(res.stdout).toContain("[archive] mocked");
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  });
-
-  test("prompt-guard: blocks done intent when external acceptance advice is missing", () => {
-    const cwd = tmpWorkspace("prompt-guard-external-acceptance-missing");
-    try {
-      initGitRepo(cwd);
-      installHooks(cwd);
-      mkdirSync(join(cwd, "plans"), { recursive: true });
-      mkdirSync(join(cwd, "tasks"), { recursive: true });
-      mkdirSync(join(cwd, "tasks/contracts"), { recursive: true });
-      mkdirSync(join(cwd, "tasks/reviews"), { recursive: true });
-      mkdirSync(join(cwd, ".ai/harness/checks"), { recursive: true });
-      mkdirSync(join(cwd, "scripts"), { recursive: true });
-
-      writeFileSync(
-        join(cwd, "plans/plan-20260304-1410-demo.md"),
-        ["# Plan: demo", "", "> **Status**: Approved", "", planEvidenceContract(), ""].join("\n")
-      );
-      writeActivePlan(cwd, "plans/plan-20260304-1410-demo.md");
-      writeFileSync(
-        join(cwd, "tasks/todos.md"),
-        "# Task Execution Checklist (Primary)\n\n> **Source Plan**: plans/plan-20260304-1410-demo.md\n"
-      );
-      writeFileSync(join(cwd, "tasks/contracts/demo.contract.md"), "# contract\n");
-      writeFileSync(
-        join(cwd, "tasks/reviews/demo.review.md"),
-        ["# Task Review: demo", "", "> **Recommendation**: pass", "", humanReviewCard("pass", "unavailable"), ""].join("\n")
-      );
-      writeValidSprintChecks(cwd);
-      writeFileSync(join(cwd, "scripts/verify-contract.sh"), "#!/bin/bash\nset -euo pipefail\necho \"[verify] ok\"\n");
-      expect(run("chmod", ["+x", "scripts/verify-contract.sh"], cwd).status).toBe(0);
-
-      const res = runHook("prompt-guard.sh", cwd, {
-        stdin: JSON.stringify({ user_message: "任务完成了，结束吧" }),
-      });
-
-      expect(res.status).toBe(2);
-      expect(res.stdout).toContain("[ExternalAcceptanceGuard]");
-      expect(res.stdout).toContain("External acceptance section is missing");
-      expect(res.stdout).not.toContain("[EvidenceGuard]");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -3447,7 +3394,6 @@ describe("Hook runtime behavior", () => {
             source: "verify-sprint",
             exit_code: 0,
             contract: { file: "tasks/contracts/old.contract.md" },
-            review: { file: "tasks/reviews/demo.review.md" },
           },
           null,
           2
@@ -3461,7 +3407,6 @@ describe("Hook runtime behavior", () => {
         mkdirSync(join(cwd, "plans"), { recursive: true });
         mkdirSync(join(cwd, "tasks"), { recursive: true });
         mkdirSync(join(cwd, "tasks/contracts"), { recursive: true });
-        mkdirSync(join(cwd, "tasks/reviews"), { recursive: true });
         mkdirSync(join(cwd, ".ai/harness/checks"), { recursive: true });
         mkdirSync(join(cwd, "scripts"), { recursive: true });
 
@@ -3475,10 +3420,6 @@ describe("Hook runtime behavior", () => {
           "# Task Execution Checklist (Primary)\n\n> **Source Plan**: plans/plan-20260304-1410-demo.md\n"
         );
         writeFileSync(join(cwd, "tasks/contracts/demo.contract.md"), "# contract\n");
-        writeFileSync(
-          join(cwd, "tasks/reviews/demo.review.md"),
-          ["# Task Review: demo", "", "> **Recommendation**: pass", "", humanReviewCard(), "", externalAcceptanceAdvice(), ""].join("\n")
-        );
         writeFileSync(join(cwd, ".ai/harness/checks/latest.json"), checks);
         writeFileSync(
           join(cwd, "scripts/verify-contract.sh"),

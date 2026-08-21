@@ -1,18 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
-if command -v bun >/dev/null 2>&1; then
+if command -v node >/dev/null 2>&1; then
+  RUNTIME_BIN="$(command -v node)"
+elif command -v bun >/dev/null 2>&1; then
   RUNTIME_BIN="$(command -v bun)"
 elif [[ -x "${HOME}/.bun/bin/bun" ]]; then
   RUNTIME_BIN="${HOME}/.bun/bin/bun"
-elif command -v node >/dev/null 2>&1; then
-  RUNTIME_BIN="$(command -v node)"
 else
-  echo "check-agent-tooling.sh requires bun or node" >&2
+  echo "check-agent-tooling.sh requires node or bun" >&2
   exit 1
 fi
 
-export FORGE_TOOLING_PATH_SNAPSHOT="${PATH:-}"
 exec "$RUNTIME_BIN" - "$@" <<'NODE_EOF'
 const fs = require("fs");
 const crypto = require("crypto");
@@ -77,7 +76,6 @@ const WAZA_RAW_BASE_URL = "https://raw.githubusercontent.com/tw93/Waza/main";
 const WAZA_MANAGED_SKILLS = ["think", "hunt", "check", "health"];
 const WAZA_SHARED_RULES = ["anti-patterns.md", "chinese.md", "durable-context.md", "english.md"];
 const CODEX_AUTOMATION_SKILLS = ["health", "check", "mermaid"];
-const SKILLS_CLI_TIMEOUT_MS = 5000;
 const CODEGRAPH_PACKAGE = "@colbymchenry/codegraph";
 const CODEGRAPH_GLOBAL_INSTALL_COMMAND = `bun add -g ${CODEGRAPH_PACKAGE} && forge tools configure codegraph --target codex --location global`;
 const GBRAIN_INSTALL_COMMAND = "bun install -g github:garrytan/gbrain";
@@ -140,21 +138,7 @@ function fileIsExecutable(filePath) {
 
 function detectTimeoutBin() {
   if (timeoutBin !== undefined) return timeoutBin;
-  const candidate = resolvePathCommand("timeout");
-  if (!candidate) {
-    timeoutBin = "";
-    return timeoutBin;
-  }
-
-  const capability = spawnSync(candidate, ["--version"], {
-    encoding: "utf8",
-    timeout: 500,
-    env: process.env,
-  });
-  const output = `${capability.stdout || ""}\n${capability.stderr || ""}`;
-  timeoutBin = capability.status === 0 && /GNU coreutils|coreutils/i.test(output)
-    ? candidate
-    : "";
+  timeoutBin = resolvePathCommand("timeout") || "";
   return timeoutBin;
 }
 
@@ -705,7 +689,7 @@ function detectWaza() {
   const skillLock = readJson(skillLockPath);
   const skillsBin = resolvePathCommand("skills");
   const skillsResult = skillsBin
-    ? run(skillsBin, ["ls", "-g", "--json"], { timeoutMs: SKILLS_CLI_TIMEOUT_MS })
+    ? run(skillsBin, ["ls", "-g", "--json"], { timeoutMs: 1500 })
     : { ok: false, status: null, stdout: "", stderr: "", error: "skills CLI is not installed", timed_out: false };
   const skillItems = skillsResult.ok ? parseJson(skillsResult.stdout) || [] : [];
   const wazaEntries = Object.entries(skillLock?.skills || {}).filter(([, meta]) => meta?.source === WAZA_SOURCE_REPO);
@@ -1178,7 +1162,7 @@ function parseCodeGraphProjectStatus(output) {
 }
 
 function resolvePathCommand(command) {
-  const pathValue = process.env.FORGE_TOOLING_PATH_SNAPSHOT || process.env.PATH || "";
+  const pathValue = process.env.PATH || "";
   for (const dir of pathValue.split(path.delimiter)) {
     if (!dir) continue;
     const candidate = path.join(dir, command);
@@ -1203,18 +1187,7 @@ function codeGraphPlatformPackageName() {
 
 function codeGraphPlatformBundleBin() {
   if (process.platform === "win32") return null;
-  const direct = path.join(REPO_ROOT, "node_modules", codeGraphPlatformPackageName(), "bin", "codegraph");
-  if (fileIsExecutable(direct)) return direct;
-  // Git worktrees commonly reuse the canonical checkout's dependencies. Resolve
-  // the platform package through Node/Bun module lookup instead of declaring the
-  // bundled Runtime missing just because this worktree has no local node_modules.
-  try {
-    const packageJson = require.resolve(`${codeGraphPlatformPackageName()}/package.json`, { paths: [REPO_ROOT] });
-    const resolved = path.join(path.dirname(packageJson), "bin", "codegraph");
-    return fileIsExecutable(resolved) ? resolved : direct;
-  } catch {
-    return direct;
-  }
+  return path.join(REPO_ROOT, "node_modules", codeGraphPlatformPackageName(), "bin", "codegraph");
 }
 
 function resolveCodeGraphBinary() {

@@ -161,7 +161,7 @@ plan_evidence_contract_error() {
   fi
 
   local label line value
-  for label in "State/progress path" "Verification evidence" "Evaluator rubric" "Stop condition" "Rollback surface"; do
+  for label in "State/progress path" "Verification evidence" "Impact review|Evaluator rubric" "Stop condition" "Rollback surface"; do
     line="$(printf '%s\n' "$section" | grep -Ei "^[[:space:]]*-[[:space:]]*(\\*\\*)?${label}(\\*\\*)?[[:space:]]*:" | head -1 || true)"
     if [[ -z "$line" ]]; then
       echo "missing field: ${label}"
@@ -189,7 +189,7 @@ check_plan_template_evidence_contract() {
     return
   }
 
-  for label in "State/progress path" "Verification evidence" "Evaluator rubric" "Stop condition" "Rollback surface"; do
+  for label in "State/progress path" "Verification evidence" "Impact review" "Stop condition" "Rollback surface"; do
     if ! grep -Eiq "^[[:space:]]*-[[:space:]]*(\\*\\*)?${label}(\\*\\*)?[[:space:]]*:" "$file"; then
       report_issue "Plan template Evidence Contract is missing field '${label}': $file"
     fi
@@ -668,11 +668,11 @@ check_helper_runtime_files() {
       new-spec.sh new-sprint.sh new-plan.sh capture-plan.sh plan-to-todo.sh
       contract-run.ts contract-worktree.sh ship-worktrees.sh archive-workflow.sh
       refresh-current-status.sh prepare-handoff.sh verify-contract.sh summarize-failures.sh
-      verify-sprint.sh harness-trace-grade.sh sprint-backlog.sh check-task-sync.sh check-deploy-sql-order.sh
+      verify-sprint.sh sprint-backlog.sh check-task-sync.sh check-deploy-sql-order.sh
       check-architecture-sync.sh check-agent-tooling.sh check-context-files.sh
       check-brain-manifest.sh sync-brain-docs.sh check-skill-version.ts
       select-agent-context-blocks.sh ensure-task-workflow.sh check-task-workflow.sh
-      maintenance-triage.sh heartbeat-triage.sh switch-plan.sh workflow-contract.ts
+      switch-plan.sh workflow-contract.ts
       inspect-project-state.ts migrate-workflow-docs.ts migrate-project-template.sh
       capability-resolver.ts architecture-event.ts capability-config.ts architecture-queue.sh
       archive-architecture-request.sh context-contract-sync.sh workstream-sync.sh

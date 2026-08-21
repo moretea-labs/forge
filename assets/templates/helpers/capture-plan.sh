@@ -302,8 +302,8 @@ See captured planning output.
 
 - **State/progress path**: \`${plan_file}\` task breakdown, \`tasks/todos.md\` deferred-goal ledger, \`tasks/contracts/${artifact_stem}.contract.md\`, \`tasks/reviews/${artifact_stem}.review.md\`, and \`tasks/notes/${artifact_stem}.notes.md\`
 - **Verification evidence**: \`.ai/harness/checks/latest.json\`, \`.ai/harness/runs/\`, and the commands named in the captured planning output
-- **Evaluator rubric**: \`tasks/reviews/${artifact_stem}.review.md\` must record a passing Forge /review style recommendation
-- **Stop condition**: all task breakdown items are complete, sprint verification passes, and the review recommends pass
+- **Impact review**: after direct checks, reassess user intent, affected domains, downstream consumers, state transitions, and residual risks
+- **Stop condition**: all task breakdown items are complete and sprint verification reports direct checks plus declared scope passing
 - **Rollback surface**: before execution remove \`${plan_file}\`; after execution revert branch \`codex/${slug}\` or the generated task artifacts
 
 ## Captured Planning Output

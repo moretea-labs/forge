@@ -17,14 +17,13 @@ session_state_new_session_id() {
 session_state_resolve_key() {
   local session_id_file="$1"
   local arg="${2:-}"
-  local session_key="${HOOK_SESSION_ID:-}"
+  local session_key=""
 
-  if [[ -z "$session_key" ]] && declare -F hook_get_session_id >/dev/null 2>&1; then
+  # An event payload is more specific than ambient host state. This matters for
+  # forwarded or replayed hook input, where the parent process can belong to a
+  # different host session than the event being handled.
+  if declare -F hook_get_session_id >/dev/null 2>&1; then
     session_key="$(hook_get_session_id "$arg")"
-  fi
-
-  if [[ -z "$session_key" ]]; then
-    session_key="${CLAUDE_SESSION_ID:-${CODEX_SESSION_ID:-${SESSION_KEY:-}}}"
   fi
 
   if [[ -n "$session_key" ]]; then
@@ -34,8 +33,12 @@ session_state_resolve_key() {
     return
   fi
 
-  if [[ -z "$session_key" ]] && [[ -s "$session_id_file" ]]; then
+  if [[ -s "$session_id_file" ]]; then
     session_key="$(cat "$session_id_file" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$session_key" ]]; then
+    session_key="${HOOK_SESSION_ID:-${CLAUDE_SESSION_ID:-${CODEX_SESSION_ID:-${SESSION_KEY:-}}}}"
   fi
 
   if [[ -z "$session_key" ]]; then

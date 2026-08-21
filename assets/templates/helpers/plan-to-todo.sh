@@ -63,7 +63,7 @@ plan_evidence_contract_error() {
   fi
 
   local label line value
-  for label in "State/progress path" "Verification evidence" "Evaluator rubric" "Stop condition" "Rollback surface"; do
+  for label in "State/progress path" "Verification evidence" "Impact review|Evaluator rubric" "Stop condition" "Rollback surface"; do
     line="$(printf '%s\n' "$section" | grep -Ei "^[[:space:]]*-[[:space:]]*(\\*\\*)?${label}(\\*\\*)?[[:space:]]*:" | head -1 || true)"
     if [[ -z "$line" ]]; then
       echo "missing field: ${label}"
@@ -323,7 +323,7 @@ Describe the exact outcome this task must deliver.
 - Checks file: `.ai/harness/checks/latest.json`
 - Run snapshots: `.ai/harness/runs/`
 - Scope gate: edit only paths listed under `allowed_paths`; update this contract before widening scope.
-- Completion gate: `scripts/verify-sprint.sh` must see this contract pass, the review recommend pass, and `## External Acceptance Advice` pass or record a manual override.
+- Completion evidence: `scripts/verify-sprint.sh` reports this contract's direct checks and declared scope. Then perform a fresh semantic impact review.
 
 ## Allowed Paths
 
@@ -377,7 +377,7 @@ exit_criteria:
   tests_pass:
     - path: tests/unit/{{TASK_SLUG}}.test.ts
   commands_succeed:
-    - bun run typecheck
+    - bun run check:type
   files_contain:
     - path: src/modules/{{TASK_SLUG}}/index.ts
       pattern: "export"
@@ -691,19 +691,15 @@ else
 > **Notes File**: {{NOTES_FILE}}
 > **Checks File**: {{CHECKS_FILE}}
 > **Last Updated**: {{TIMESTAMP}}
-> **Recommendation**: fail
+> **Summary**:
 
-## Human Review Card
+## Semantic Impact Review
 
-- Verdict: pending
-- Change type: code-change | docs-only | ledger-closeout | migration | eval-only | delegated-run
-- Intended files changed:
-- Actual files changed:
-- Commands passed:
-- External acceptance: unavailable
-- Residual risks:
-- Reviewer action required: inspect diff and card
-- Rollback:
+- User intent:
+- Affected domains and downstream consumers:
+- State transitions and persistence/restart impact:
+- Missing impact areas or uncertainty:
+- Residual risks and recovery:
 
 ## Mode Evidence
 
@@ -713,41 +709,20 @@ else
 
 ## Verification Evidence
 
-- Forge /review run:
+- Focused/full checks:
 - Commands run:
 - Manual checks:
 - Supporting artifacts:
 - Implementation notes reviewed:
 - Run snapshot:
 
-## External Acceptance Advice
-
-> **External Acceptance**: unavailable
-> **External Reviewer**:
-> **External Source**:
-> **External Started**:
-> **External Completed**:
-
-- P1 blockers:
-- P2 advisories:
-- Acceptance checklist:
-
-## Behavior Diff Notes
+## Scenario Evidence
 
 - ...
 
 ## Residual Risks / Follow-ups
 
 - ...
-
-## Scorecard
-
-| Dimension | Score | Notes |
-|-----------|-------|-------|
-| Functionality | 0/10 | |
-| Product depth | 0/10 | |
-| Design quality | 0/10 | |
-| Code quality | 0/10 | |
 
 ## Failing Items
 

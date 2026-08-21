@@ -92,7 +92,7 @@ Required v1 fields:
 - `commands`, `guards`, `handoffs`, `files_changed`, and `allowed_paths_check`
 - `external_acceptance`, `failure_class`, and `next_step`
 
-`scripts/check-task-workflow.sh --strict` validates the latest trace shape when a non-empty latest checks file exists. `scripts/harness-trace-grade.sh --run <trace> --strict` applies the local graders used for workflow regression checks: active plan resolves, contract profile is valid, Human Review Card passes, command evidence exists, and changed files stay inside allowed paths.
+`scripts/check-task-workflow.sh --strict` validates the latest trace shape when a non-empty latest checks file exists. Behavioral evidence comes from the selected checks and fresh controller review, not a score of plan or review metadata.
 
 ## Capability Context
 

@@ -279,13 +279,6 @@
       "ifMissing": true
     },
     {
-      "id": "writeFile:scripts/harness-trace-grade.sh:helper-wrapper",
-      "kind": "writeFile",
-      "status": "planned",
-      "path": "scripts/harness-trace-grade.sh",
-      "ifMissing": true
-    },
-    {
       "id": "writeFile:scripts/sprint-backlog.sh:helper-wrapper",
       "kind": "writeFile",
       "status": "planned",
@@ -367,20 +360,6 @@
       "kind": "writeFile",
       "status": "planned",
       "path": "scripts/check-task-workflow.sh",
-      "ifMissing": true
-    },
-    {
-      "id": "writeFile:scripts/maintenance-triage.sh:helper-wrapper",
-      "kind": "writeFile",
-      "status": "planned",
-      "path": "scripts/maintenance-triage.sh",
-      "ifMissing": true
-    },
-    {
-      "id": "writeFile:scripts/heartbeat-triage.sh:helper-wrapper",
-      "kind": "writeFile",
-      "status": "planned",
-      "path": "scripts/heartbeat-triage.sh",
       "ifMissing": true
     },
     {

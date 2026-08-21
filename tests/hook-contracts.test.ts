@@ -94,7 +94,7 @@ describe("Hook contracts", () => {
     const script = read("assets/hooks/prompt-guard.sh");
     expect(script).toContain("emit_forge_route_hint");
     expect(script).toContain("[ForgeRoute]");
-    expect(script).toContain("Forge /review");
+    expect(script).toContain("/review");
     expect(script).toContain("Forge /debug");
     expect(script).toContain("/plan for plan-only work");
     expect(script).toContain("emit_agentic_packaging_hint");
@@ -115,12 +115,12 @@ describe("Hook contracts", () => {
     expect(script).toContain("HarnessMaintenance");
     expect(script).toContain("has_changes_glob");
     expect(script).toContain("emit_cross_review_hint");
-    expect(script).toContain("emit_external_acceptance_prompt");
-    expect(script).toContain("[ExternalAcceptance]");
-    expect(script).toContain("## External Acceptance Advice");
     expect(script).toContain("[CrossReview]");
     expect(script).toContain("codex-review");
     expect(script).toContain("claude-review");
+    expect(script).toContain("[Review] Before declaring completion");
+    expect(script).not.toContain("[ExternalAcceptance]");
+    expect(script).not.toContain("## External Acceptance Advice");
     expect(script).not.toContain("📋");
     expect(script).not.toContain("🧠");
     expect(script).not.toContain("📎");

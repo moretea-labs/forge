@@ -456,8 +456,7 @@ finish_worktree() {
     exit 1
   fi
 
-  local current_branch slug active_plan contract_file review_file target_worktree artifact_stem
-  local external_status external_state external_reviewer external_source external_message
+  local current_branch slug active_plan contract_file target_worktree artifact_stem
   current_branch="$(git branch --show-current)"
   [[ -n "$current_branch" ]] || { echo "contract-worktree: detached HEAD is not supported" >&2; exit 1; }
   [[ "$current_branch" != "$target_branch" ]] || { echo "contract-worktree: already on target branch $target_branch" >&2; exit 1; }
@@ -470,7 +469,6 @@ finish_worktree() {
     active_plan="$(get_active_plan || true)"
     if [[ -n "$active_plan" ]]; then
       contract_file="$(workflow_active_contract || true)"
-      review_file="$(workflow_active_review || true)"
     fi
   fi
 
@@ -483,27 +481,9 @@ finish_worktree() {
       contract_file="tasks/contracts/${artifact_stem}.contract.md"
     fi
   fi
-  if [[ -n "${active_plan:-}" && -z "${review_file:-}" ]]; then
-    artifact_stem="${artifact_stem:-$(derive_artifact_stem_from_plan "$active_plan")}"
-    if [[ -f "tasks/reviews/${artifact_stem}.review.md" ]] || [[ ! -f "tasks/reviews/${slug}.review.md" ]]; then
-      review_file="tasks/reviews/${artifact_stem}.review.md"
-    fi
-  fi
   contract_file="${contract_file:-tasks/contracts/${slug}.contract.md}"
-  review_file="${review_file:-tasks/reviews/${slug}.review.md}"
 
   [[ -n "$contract_file" && -f "$contract_file" ]] || { echo "contract-worktree: no active sprint contract found" >&2; exit 1; }
-  [[ -n "$review_file" && -f "$review_file" ]] || { echo "contract-worktree: no active sprint review found" >&2; exit 1; }
-
-  if declare -F workflow_external_acceptance_status >/dev/null 2>&1; then
-    external_status="$(workflow_external_acceptance_status "$review_file")"
-    IFS=$'\t' read -r external_state external_reviewer external_source external_message <<< "$external_status"
-    if [[ "$external_state" != "pass" && "$external_state" != "manual_override" ]]; then
-      echo "contract-worktree: external acceptance gate failed: ${external_message:-missing external acceptance}" >&2
-      echo "contract-worktree: record ## External Acceptance Advice in $review_file via $(workflow_external_acceptance_expected_source) before finish" >&2
-      exit 1
-    fi
-  fi
 
   check_architecture_freshness "$target_branch"
   bash "scripts/verify-sprint.sh"

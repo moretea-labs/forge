@@ -28,7 +28,7 @@ PLAN_LOOP:
   LESSONS_FILE: tasks/lessons.md
   CONTEXT_MAP: .ai/context/context-map.json
   ANNOTATION_GUARD: do not implement until plan Status is "Approved"
-  CONTRACT_GUARD: do not mark done until contract exit criteria pass and review recommends pass
+  CONTRACT_GUARD: do not mark done until contract exit criteria pass; then perform a fresh semantic impact review
   EXECUTION_CONTEXT: contract-level work starts in a linked codex/<slug> worktree when policy enables it; primary worktree warning by default; enforce via .claude/.require-worktree
   CONTRACT_WORKTREE_FINISH: run Forge /review, fill the review artifact from that verdict, then .ai/harness/scripts/contract-worktree.sh finish
   COMMIT_POLICY: explicit commits after green checks; no automatic checkpoint hook

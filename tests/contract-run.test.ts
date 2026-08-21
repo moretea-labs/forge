@@ -87,11 +87,6 @@ function writePilotContract(repo: string, toolCalls: string | number | null = 2)
       "  files_contain:",
       "    - path: src/pilot.txt",
       "      pattern: worker-output",
-      "  qa_scores:",
-      "    - dimension: functionality",
-      "      min: 7",
-      "  manual_checks:",
-      '    - "Evaluator review file recommends pass"',
       "```",
       "",
     ].join("\n"),
@@ -161,7 +156,7 @@ describe("contract-run helper", () => {
     }
   });
 
-  test("run executes worker then verifier and leaves a contract-verifiable review", () => {
+  test("run executes worker then verifier and leaves direct contract evidence", () => {
     const repo = makeRepo();
     try {
       writePilotContract(repo, 2);
@@ -193,17 +188,9 @@ describe("contract-run helper", () => {
           "cat > \"$CONTRACT_RUN_REVIEW\" <<'REVIEW_EOF'",
           "# Contract Review: pilot",
           "",
-          "> **Recommendation**: pass",
+          "## Semantic Impact Review",
           "",
-          "## Scorecard",
-          "",
-          "| Dimension | Score | Notes |",
-          "| --- | --- | --- |",
-          "| Functionality | 8/10 | Worker artifact and verifier review satisfy exit criteria. |",
-          "",
-          "## External Acceptance Advice",
-          "",
-          "- pass: pilot contract is verifiable",
+          "- The worker artifact satisfies the declared exit criteria.",
           "REVIEW_EOF",
           "",
         ].join("\n"),

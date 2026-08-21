@@ -19,73 +19,6 @@ target_branch=""
 changed_files_file=""
 format="text"
 
-required_current_docs=(
-  "docs/README.md"
-  "docs/ROADMAP.md"
-  "docs/architecture/CURRENT.md"
-  "docs/architecture/EVOLUTION.md"
-  "docs/architecture/versions/1.6.md"
-  "CHANGELOG.md"
-)
-
-historical_runtime_docs=(
-  "docs/architecture/history.md"
-  "docs/architecture/current/README.md"
-)
-
-runtime_architecture_gate_enabled() {
-  [[ -f "docs/architecture/CURRENT.md" ]] && return 0
-  local file
-  for file in "${historical_runtime_docs[@]}"; do
-    [[ -f "$file" ]] && return 0
-  done
-  [[ -f "docs/architecture/index.md" ]] && grep -Fq -- "Runtime Authority" "docs/architecture/index.md"
-}
-
-architecture_baseline_fail() {
-  echo "[ArchitectureSync] current Controller Runtime architecture baseline failed: $1" >&2
-  return 1
-}
-
-require_architecture_file() {
-  local file="$1"
-  [[ -f "$file" ]] || architecture_baseline_fail "missing required file $file"
-}
-
-require_architecture_text() {
-  local file="$1"
-  local text="$2"
-  if ! require_architecture_file "$file"; then
-    return 1
-  fi
-  grep -Fq -- "$text" "$file" || architecture_baseline_fail "$file must contain: $text"
-}
-
-check_runtime_architecture_baseline() {
-  local file
-  local failed=0
-
-  for file in "${required_current_docs[@]}"; do
-    require_architecture_file "$file" || failed=1
-  done
-
-  require_architecture_text "docs/README.md" "architecture/CURRENT.md" || failed=1
-  require_architecture_text "docs/architecture/index.md" "Runtime Authority" || failed=1
-  require_architecture_text "docs/architecture/index.md" "CURRENT.md" || failed=1
-  require_architecture_text "docs/architecture/CURRENT.md" "Runtime Authority" || failed=1
-  require_architecture_text "docs/architecture/CURRENT.md" "Work is a continuity/orchestration mechanism" || failed=1
-  require_architecture_text "docs/architecture/CURRENT.md" "stable **19-tool** surface" || failed=1
-  require_architecture_text "docs/architecture/EVOLUTION.md" "Historical Design" || failed=1
-  require_architecture_text "docs/architecture/EVOLUTION.md" "Not Runtime Authority" || failed=1
-  require_architecture_text "docs/architecture/versions/1.6.md" "Version Snapshot — Not Runtime Authority" || failed=1
-
-  for file in "${historical_runtime_docs[@]}"; do
-    require_architecture_text "$file" "Not Runtime Authority" || failed=1
-  done
-
-  return "$failed"
-}
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode)
@@ -264,13 +197,6 @@ case "$mode" in
     exit 1
     ;;
 esac
-
-# Structural authority checks are invariant and must run even when freshness gating is disabled.
-if runtime_architecture_gate_enabled; then
-  if ! check_runtime_architecture_baseline; then
-    exit 1
-  fi
-fi
 
 if [[ ! -x "scripts/architecture-queue.sh" ]]; then
   if [[ "$mode" == "strict" ]]; then

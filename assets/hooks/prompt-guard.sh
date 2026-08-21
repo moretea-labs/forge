@@ -139,7 +139,7 @@ plan_evidence_contract_error() {
   fi
 
   local label line value
-  for label in "State/progress path" "Verification evidence" "Evaluator rubric" "Stop condition" "Rollback surface"; do
+  for label in "State/progress path" "Verification evidence" "Impact review|Evaluator rubric" "Stop condition" "Rollback surface"; do
     line="$(printf '%s\n' "$section" | grep -Ei "^[[:space:]]*-[[:space:]]*(\\*\\*)?${label}(\\*\\*)?[[:space:]]*:" | head -1 || true)"
     if [[ -z "$line" ]]; then
       echo "missing field: ${label}"
@@ -656,7 +656,6 @@ emit_forge_route_hint() {
 
   if pg_fact REVIEW_RELEASE; then
     echo "[ForgeRoute] Review/release intent detected. Use /review first; use /release only after review evidence is clear."
-    emit_external_acceptance_prompt review
     emit_cross_review_hint merge
   fi
 }
@@ -682,50 +681,6 @@ emit_cross_review_hint() {
       echo "[CrossReview] Hard bug — ${skill} can give an independent ${peer} root-cause diagnosis. Agreeing diagnoses raise confidence; divergence shows where to dig."
       ;;
   esac
-}
-
-emit_external_acceptance_prompt() {
-  local mode="${1:-review}"
-  local expected_reviewer expected_source command active_plan_local contract_file_local review_file checks_file
-
-  expected_reviewer="$(workflow_external_acceptance_expected_reviewer)"
-  expected_source="$(workflow_external_acceptance_expected_source "$expected_reviewer")"
-  if [ "$expected_source" = "claude-review" ]; then
-    command="/claude-review"
-  else
-    command="codex-review"
-  fi
-
-  active_plan_local="$(get_active_plan || true)"
-  contract_file_local="$(workflow_active_contract || true)"
-  review_file="$(workflow_active_review || true)"
-  checks_file="$(workflow_checks_file)"
-
-  echo "[ExternalAcceptance] Review/release intent detected. Start peer acceptance in parallel with local /review and focused checks."
-  echo "[ExternalAcceptance] Mode: $mode"
-  echo "[ExternalAcceptance] Current active plan: ${active_plan_local:-"(none)"}"
-  echo "[ExternalAcceptance] Current contract: ${contract_file_local:-"(none)"}"
-  echo "[ExternalAcceptance] Current review: ${review_file:-tasks/reviews/<slug>.review.md}"
-  echo "[ExternalAcceptance] Current checks: $checks_file"
-  echo "[ExternalAcceptance] Peer reviewer: $expected_reviewer via $command"
-  echo "[ExternalAcceptance] Diff scope for peer: branch diff against target, staged diff, unstaged diff, and untracked files."
-  cat <<EOF_EXTERNAL_ACCEPTANCE
-[ExternalAcceptance] Prompt to send with $command:
-Review the current sprint for acceptance only. Do not run Forge /review or local checks. Do not edit files. Do not write files. Inspect the diff scope, contract, review evidence, and checks evidence, then return only a Markdown block that can be pasted into ${review_file:-tasks/reviews/<slug>.review.md}.
-
-## External Acceptance Advice
-> **External Acceptance**: pass
-> **External Reviewer**: $expected_reviewer
-> **External Source**: $expected_source
-> **External Started**: YYYY-MM-DDTHH:MM:SS+0800
-> **External Completed**: YYYY-MM-DDTHH:MM:SS+0800
-
-- P1 blockers: none
-- P2 advisories:
-- Acceptance checklist: pass
-
-If the peer CLI is unavailable, record **External Acceptance**: unavailable and include the failure reason. That does not satisfy the completion gate unless a Manual Override: line with a concrete reason is also recorded.
-EOF_EXTERNAL_ACCEPTANCE
 }
 
 # --- Action rendering ---
@@ -786,7 +741,7 @@ render_prompt_guard_action() {
     evidence_contract_block)
       echo "[EvidenceContractGuard] Advisory: plan Evidence Contract is incomplete in $active_plan:"
       printf '%s\n' "$evidence_error"
-      echo "[EvidenceContractGuard] Fill ## Evidence Contract with state/progress path, verification evidence, evaluator rubric, stop condition, and rollback surface before implementation."
+      echo "[EvidenceContractGuard] Fill ## Evidence Contract with state/progress path, verification evidence, impact review, stop condition, and rollback surface before implementation."
       exit 0
       ;;
     plan_execution_scaffold_advice)
@@ -833,7 +788,7 @@ render_prompt_guard_action() {
       hook_structured_error \
         "EvidenceContractGuard" \
         "Done intent detected without a complete plan Evidence Contract." \
-        "Fill ## Evidence Contract with state/progress path, verification evidence, evaluator rubric, stop condition, and rollback surface before marking work done." \
+        "Fill ## Evidence Contract with state/progress path, verification evidence, impact review, stop condition, and rollback surface before marking work done." \
         "quality_gate"
       exit 2
       ;;
@@ -962,38 +917,7 @@ if [ "$done_intent" -eq 1 ]; then
     echo "[ContractGuard] verify-contract.sh not found at scripts/verify-contract.sh (degraded mode: skipping strict verification)."
   fi
 
-  review_file="$(workflow_active_review || true)"
-  if [ -z "$review_file" ] || [ ! -f "$review_file" ]; then
-    echo "[ReviewGuard] Missing sprint review: ${review_file:-tasks/reviews/<slug>.review.md}"
-    hook_structured_error \
-      "ReviewGuard" \
-      "Done intent detected without a sprint review artifact." \
-      "Run Forge /review after verification and record the evaluator recommendation in tasks/reviews/<slug>.review.md before marking work done." \
-      "quality_gate"
-    exit 2
-  fi
-
-  if ! workflow_review_recommends_pass "$review_file"; then
-    echo "[ReviewGuard] Sprint review does not recommend pass: $review_file"
-    hook_structured_error \
-      "ReviewGuard" \
-      "Sprint review is missing a passing recommendation." \
-      "Run Forge /review with fresh verification evidence and record a pass recommendation before marking work done." \
-      "quality_gate"
-    exit 2
-  fi
-
-  external_status="$(workflow_external_acceptance_status "$review_file")"
-  IFS=$'\t' read -r external_state external_reviewer external_source external_message <<< "$external_status"
-  if [ "$external_state" != "pass" ] && [ "$external_state" != "manual_override" ]; then
-    echo "[ExternalAcceptanceGuard] ${external_message:-External acceptance is missing.}"
-    hook_structured_error \
-      "ExternalAcceptanceGuard" \
-      "${external_message:-External acceptance is missing from $review_file.}" \
-      "Run peer acceptance via $(workflow_external_acceptance_expected_source) and record ## External Acceptance Advice in $review_file before marking work done." \
-      "quality_gate"
-    exit 2
-  fi
+  echo "[Review] Before declaring completion, freshly re-evaluate user intent, affected domains, downstream consumers, and missing state transitions."
 
   checks_file="$(workflow_checks_file)"
   if [ ! -f "$checks_file" ]; then
@@ -1006,7 +930,7 @@ if [ "$done_intent" -eq 1 ]; then
     exit 2
   fi
 
-  if ! checks_error="$(workflow_checks_pass "$checks_file" "$contract_file" "$review_file")"; then
+  if ! checks_error="$(workflow_checks_pass "$checks_file" "$contract_file")"; then
     echo "[EvidenceGuard] $checks_error"
     hook_structured_error \
       "EvidenceGuard" \

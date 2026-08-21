@@ -60,13 +60,13 @@ Complete this inventory before implementation. If any line is unknown, keep the 
 ## Handoff
 
 - Checks file: `.ai/harness/checks/latest.json`
-- Session handoff: `.ai/harness/handoff/current.md`
+- Session continuation: `.ai/harness/session/continuation.md`
 
 ## Evidence Contract
 
 - **State/progress path**:
 - **Verification evidence**:
-- **Evaluator rubric**:
+- **Impact review**:
 - **Stop condition**:
 - **Rollback surface**:
 

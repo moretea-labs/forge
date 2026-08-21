@@ -65,7 +65,6 @@ describe("workflow contract manifest", () => {
     expect(contract.helpers.scripts).toContain("contract-worktree.sh");
     expect(contract.helpers.scripts).toContain("contract-run.ts");
     expect(contract.helpers.scripts).toContain("ship-worktrees.sh");
-    expect(contract.helpers.scripts).toContain("heartbeat-triage.sh");
     expect(contract.helpers.scripts).toContain("capture-plan.sh");
     expect(contract.helpers.scripts).toContain("switch-plan.sh");
     expect(contract.helpers.scripts).not.toContain("context-budget.ts");
@@ -114,7 +113,6 @@ describe("workflow contract manifest", () => {
     expect(contract.artifacts.requiredFiles).toContain("scripts/contract-worktree.sh");
     expect(contract.artifacts.requiredFiles).toContain("scripts/contract-run.ts");
     expect(contract.artifacts.requiredFiles).toContain("scripts/ship-worktrees.sh");
-    expect(contract.artifacts.requiredFiles).toContain("scripts/heartbeat-triage.sh");
     expect(contract.artifacts.requiredFiles).toContain("scripts/capture-plan.sh");
     expect(contract.artifacts.requiredFiles).toContain("scripts/refresh-current-status.sh");
     expect(contract.artifacts.requiredFiles).toContain("scripts/sync-brain-docs.sh");
@@ -129,7 +127,6 @@ describe("workflow contract manifest", () => {
     expect(contract.artifacts.requiredDirectories).toContain("docs/architecture/domains");
     expect(contract.artifacts.requiredDirectories).toContain("docs/architecture/modules");
     expect(contract.artifacts.requiredDirectories).toContain(".ai/harness/worktrees");
-    expect(contract.artifacts.requiredDirectories).toContain(".ai/harness/triage");
     expect(contract.artifacts.requiredDirectories).toContain(".ai/harness/planning");
     expect(contract.artifacts.requiredDirectories).not.toContain(".ai/harness/scripts");
     expect(contract.artifacts.requiredDirectories).toContain("scripts");
@@ -139,7 +136,6 @@ describe("workflow contract manifest", () => {
     expect(contract.artifacts.requiredFiles).toContain("deploy/README.md");
     expect(contract.artifacts.requiredFiles).toContain("docs/reference-configs/agentic-development-flow.md");
     expect(contract.artifacts.requiredFiles).toContain("docs/reference-configs/global-working-rules.md");
-    expect(contract.artifacts.requiredFiles).toContain("docs/reference-configs/heartbeat-triage.md");
     expect(contract.artifacts.requiredFiles).not.toContain(".ai/harness/session/resume.md");
     expect(contract.artifacts.requiredFiles).not.toContain(".ai/harness/context-budget/latest.json");
     expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/session/resume.md");
@@ -151,7 +147,6 @@ describe("workflow contract manifest", () => {
     expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/active-plan");
     expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/active-worktree");
     expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/worktrees/");
-    expect(contract.artifacts.runtimeFiles).toContain(".ai/harness/triage/inbox.md");
     expect(contract.artifacts.runtimeFiles).not.toContain(".ai/harness/workstreams/events.jsonl");
     expect(contract.migrations.upgrade?.strategyVersion).toBe(1);
     expect(contract.migrations.upgrade?.actionClasses).toContain("reconfigure");
@@ -167,6 +162,7 @@ describe("workflow contract manifest", () => {
     expect(legacyRootHelpers?.cleanupMode).toBe("generated_helper");
     expect(legacyRootHelpers?.paths).toContain("scripts/architecture-drift.sh");
     expect(legacyRootHelpers?.paths).toContain("scripts/check-task-workflow.sh");
+    expect(legacyRootHelpers?.paths).toContain("scripts/heartbeat-triage.sh");
   });
 
   test("upstream skill root resolver prefers the canonical env var without retired alias surfaces", () => {
@@ -234,7 +230,6 @@ describe("workflow contract manifest", () => {
     const placeholderBackedRuntime = new Set([
       ".ai/harness/runs/.gitkeep",
       ".ai/harness/security/.gitkeep",
-      ".ai/harness/triage/.gitkeep",
       ".ai/harness/worktrees/",
       ".ai/harness/planning/",
     ]);
@@ -263,8 +258,6 @@ describe("workflow contract manifest", () => {
     expect(gitignore).toContain(".ai/harness/chatgpt/bridge-extension/");
     expect(gitignore).toContain(".forge/chatgpt-browser.local.json");
     expect(gitignore).toContain(".forge/interactions/");
-    expect(gitignore).toContain(".ai/harness/triage/*");
-    expect(gitignore).toContain("!.ai/harness/triage/.gitkeep");
   });
 });
 

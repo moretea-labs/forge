@@ -6,19 +6,15 @@
 > **Notes File**: {{NOTES_FILE}}
 > **Checks File**: {{CHECKS_FILE}}
 > **Last Updated**: {{TIMESTAMP}}
-> **Recommendation**: fail
+> **Summary**:
 
-## Human Review Card
+## Semantic Impact Review
 
-- Verdict: pending
-- Change type: code-change | docs-only | ledger-closeout | migration | eval-only | delegated-run
-- Intended files changed:
-- Actual files changed:
-- Commands passed:
-- External acceptance: unavailable
-- Residual risks:
-- Reviewer action required: inspect diff and card
-- Rollback:
+- User intent:
+- Affected domains and downstream consumers:
+- State transitions and persistence/restart impact:
+- Missing impact areas or uncertainty:
+- Residual risks and recovery:
 
 ## Mode Evidence
 
@@ -28,41 +24,20 @@
 
 ## Verification Evidence
 
-- Waza `/check` run:
+- Focused/full checks:
 - Commands run:
 - Manual checks:
 - Supporting artifacts:
 - Implementation notes reviewed:
 - Run snapshot:
 
-## External Acceptance Advice
-
-> **External Acceptance**: unavailable
-> **External Reviewer**:
-> **External Source**:
-> **External Started**:
-> **External Completed**:
-
-- P1 blockers:
-- P2 advisories:
-- Acceptance checklist:
-
-## Behavior Diff Notes
+## Scenario Evidence
 
 - ...
 
 ## Residual Risks / Follow-ups
 
 - ...
-
-## Scorecard
-
-| Dimension | Score | Notes |
-|-----------|-------|-------|
-| Functionality | 0/10 | |
-| Product depth | 0/10 | |
-| Design quality | 0/10 | |
-| Code quality | 0/10 | |
 
 ## Failing Items
 

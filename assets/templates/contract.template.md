@@ -27,7 +27,7 @@ Describe the exact outcome this task must deliver.
 - Checks file: `.ai/harness/checks/latest.json`
 - Run snapshots: `.ai/harness/runs/`
 - Scope gate: edit only paths listed under `allowed_paths`; update this contract before widening scope.
-- Completion gate: `scripts/verify-sprint.sh` must see this contract pass, the review recommend pass, and `## External Acceptance Advice` pass or record a manual override.
+- Completion evidence: `scripts/verify-sprint.sh` reports this contract's direct checks and declared scope. Then perform a fresh semantic impact review.
 
 ## Allowed Paths
 
@@ -84,12 +84,7 @@ exit_criteria:
   tests_pass:
     - path: tests/unit/{{TASK_SLUG}}.test.ts
   commands_succeed:
-    - bun run typecheck
-  qa_scores:
-    - dimension: functionality
-      min: 7
-  manual_checks:
-    - "Evaluator review file recommends pass"
+    - bun run check:type
 ```
 
 ## Acceptance Notes (Human Review)

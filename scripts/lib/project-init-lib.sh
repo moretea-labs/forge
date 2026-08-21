@@ -64,8 +64,6 @@ tasks/.current.md.tmp.*
 .ai/harness/chatgpt/bridge-extension/
 .ai/harness/chatgpt/tmp/
 .ai/harness/chatgpt/sessions/
-.ai/harness/triage/*
-!.ai/harness/triage/.gitkeep
 .forge/chatgpt-browser.local.json
 .forge/chatgpt-browser.tokens.json
 .forge/interactions/
@@ -208,7 +206,7 @@ Complete this inventory before implementation. If any line is unknown, keep the 
 
 - **State/progress path**:
 - **Verification evidence**:
-- **Evaluator rubric**:
+- **Impact review**:
 - **Stop condition**:
 - **Rollback surface**:
 
@@ -249,7 +247,7 @@ Describe the exact outcome this task must deliver.
 - Checks file: `.ai/harness/checks/latest.json`
 - Run snapshots: `.ai/harness/runs/`
 - Scope gate: edit only paths listed under `allowed_paths`; update this contract before widening scope.
-- Completion gate: `scripts/verify-sprint.sh` must see this contract pass, the review recommend pass, and `## External Acceptance Advice` pass or record a manual override.
+- Completion evidence: `scripts/verify-sprint.sh` reports the direct checks and declared scope. Then perform a fresh semantic impact review.
 
 ## Allowed Paths
 
@@ -302,7 +300,7 @@ exit_criteria:
   tests_pass:
     - path: tests/unit/{{TASK_SLUG}}.test.ts
   commands_succeed:
-    - bun run typecheck
+    - bun run check:type
   files_contain:
     - path: src/modules/{{TASK_SLUG}}/index.ts
       pattern: "export"
@@ -329,55 +327,30 @@ PI_TEMPLATE_REVIEW=$(cat <<'EOF_TEMPLATE_REVIEW'
 > **Notes File**: {{NOTES_FILE}}
 > **Checks File**: {{CHECKS_FILE}}
 > **Last Updated**: {{TIMESTAMP}}
-> **Recommendation**: fail
+> **Summary**:
 
-## Human Review Card
+## Semantic Impact Review
 
-- Verdict: pending
-- Change type: code-change | docs-only | ledger-closeout | migration | eval-only | delegated-run
-- Intended files changed:
-- Actual files changed:
-- Commands passed:
-- External acceptance: unavailable
-- Residual risks:
-- Reviewer action required: inspect diff and card
-- Rollback:
+- User intent:
+- Affected domains and downstream consumers:
+- State transitions and persistence/restart impact:
+- Missing impact areas or uncertainty:
+- Residual risks and recovery:
 
 ## Verification Evidence
 
-- Forge /review run:
+- Focused/full checks:
 - Commands run:
 - Manual checks:
 - Supporting artifacts:
 
-## External Acceptance Advice
-
-> **External Acceptance**: unavailable
-> **External Reviewer**:
-> **External Source**:
-> **External Started**:
-> **External Completed**:
-
-- P1 blockers:
-- P2 advisories:
-- Acceptance checklist:
-
-## Behavior Diff Notes
+## Scenario Evidence
 
 - ...
 
 ## Residual Risks / Follow-ups
 
 - ...
-
-## Scorecard
-
-| Dimension | Score | Notes |
-|-----------|-------|-------|
-| Functionality | 0/10 | |
-| Product depth | 0/10 | |
-| Design quality | 0/10 | |
-| Code quality | 0/10 | |
 
 ## Failing Items
 
@@ -441,8 +414,8 @@ PI_EVALUATION_PROFILE_DEFAULT="browser-qa"
 PI_HANDOFF_PROFILE_DEFAULT="artifact-aware"
 PI_DOCUMENTATION_PROFILE_DEFAULT="minimal-agentic"
 PI_DEFAULT_LSP_PROFILE="typescript-lsp"
-PI_MINIMAL_REFERENCE_CONFIGS="harness-overview.md agentic-development-flow.md external-tooling.md sprint-contracts.md heartbeat-triage.md handoff-protocol.md document-generation.md global-working-rules.md"
-PI_FULL_REFERENCE_CONFIGS="agentic-development-flow.md ai-workflows.md changelog-versioning.md coding-standards.md development-protocol.md document-generation.md evaluator-rubric.md external-tooling.md git-strategy.md global-working-rules.md heartbeat-triage.md handoff-protocol.md harness-overview.md hook-operations.md release-deploy.md spa-day-protocol.md sprint-contracts.md workflow-orchestration.md"
+PI_MINIMAL_REFERENCE_CONFIGS="harness-overview.md agentic-development-flow.md external-tooling.md sprint-contracts.md handoff-protocol.md document-generation.md global-working-rules.md"
+PI_FULL_REFERENCE_CONFIGS="agentic-development-flow.md ai-workflows.md changelog-versioning.md coding-standards.md development-protocol.md document-generation.md evaluator-rubric.md external-tooling.md git-strategy.md global-working-rules.md handoff-protocol.md harness-overview.md hook-operations.md release-deploy.md spa-day-protocol.md sprint-contracts.md workflow-orchestration.md"
 PI_REFERENCE_CONFIG_STUB_MARKER="<!-- forge: reference-config-stub v1 -->"
 
 pi_write_file_if_apply() {
@@ -1066,7 +1039,7 @@ pi_install_helpers() {
   local target_dir="$1"
   local helpers_dir="$2"
   local mode="${3:-apply}"
-  local helper_names="${4:-new-spec.sh new-sprint.sh new-plan.sh capture-plan.sh plan-to-todo.sh contract-run.ts contract-worktree.sh ship-worktrees.sh archive-workflow.sh refresh-current-status.sh prepare-handoff.sh verify-contract.sh summarize-failures.sh verify-sprint.sh harness-trace-grade.sh sprint-backlog.sh check-task-sync.sh check-deploy-sql-order.sh check-architecture-sync.sh check-agent-tooling.sh check-context-files.sh check-brain-manifest.sh sync-brain-docs.sh check-skill-version.ts select-agent-context-blocks.sh ensure-task-workflow.sh check-task-workflow.sh maintenance-triage.sh heartbeat-triage.sh switch-plan.sh workflow-contract.ts inspect-project-state.ts migrate-workflow-docs.ts migrate-project-template.sh capability-resolver.ts architecture-event.ts capability-config.ts architecture-queue.sh archive-architecture-request.sh context-contract-sync.sh workstream-sync.sh prepare-codex-handoff.sh codex-handoff-resume.sh}"
+  local helper_names="${4:-new-spec.sh new-sprint.sh new-plan.sh capture-plan.sh plan-to-todo.sh contract-run.ts contract-worktree.sh ship-worktrees.sh archive-workflow.sh refresh-current-status.sh prepare-handoff.sh verify-contract.sh summarize-failures.sh verify-sprint.sh sprint-backlog.sh check-task-sync.sh check-deploy-sql-order.sh check-architecture-sync.sh check-agent-tooling.sh check-context-files.sh check-brain-manifest.sh sync-brain-docs.sh check-skill-version.ts select-agent-context-blocks.sh ensure-task-workflow.sh check-task-workflow.sh switch-plan.sh workflow-contract.ts inspect-project-state.ts migrate-workflow-docs.ts migrate-project-template.sh capability-resolver.ts architecture-event.ts capability-config.ts architecture-queue.sh archive-architecture-request.sh context-contract-sync.sh workstream-sync.sh prepare-codex-handoff.sh codex-handoff-resume.sh}"
   local scripts_dir="$target_dir/scripts"
   local runtime_dir="$target_dir/.ai/harness/scripts"
   local helper_name
@@ -2411,7 +2384,6 @@ pi_ensure_harness_state_surface() {
     "$target_dir/.ai/harness/worktrees" \
     "$target_dir/.ai/harness/controller" \
     "$target_dir/.ai/harness/local-jobs" \
-    "$target_dir/.ai/harness/triage" \
     "$target_dir/docs/researches" \
     "$target_dir/docs/architecture/domains" \
     "$target_dir/docs/architecture/modules" \
@@ -2433,7 +2405,6 @@ pi_ensure_harness_state_surface() {
   [[ -f "$target_dir/.ai/harness/planning/.gitkeep" ]] || : > "$target_dir/.ai/harness/planning/.gitkeep"
   [[ -f "$target_dir/.ai/harness/worktrees/.gitkeep" ]] || : > "$target_dir/.ai/harness/worktrees/.gitkeep"
   [[ -f "$target_dir/.ai/harness/runs/.gitkeep" ]] || : > "$target_dir/.ai/harness/runs/.gitkeep"
-  [[ -f "$target_dir/.ai/harness/triage/.gitkeep" ]] || : > "$target_dir/.ai/harness/triage/.gitkeep"
   [[ -f "$target_dir/tasks/workstreams/.gitkeep" ]] || : > "$target_dir/tasks/workstreams/.gitkeep"
   if [[ ! -f "$target_dir/docs/researches/README.md" ]]; then
     cat > "$target_dir/docs/researches/README.md" <<'RESEARCH_README_EOF'

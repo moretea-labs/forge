@@ -185,11 +185,7 @@ export function getHelperScripts(contract: WorkflowContract): string[] {
 }
 
 export function getHelperRuntimeDir(contract: WorkflowContract): string {
-  return (
-    contract.helpers.runtimeDirectory ??
-    contract.helpers.compatibilityDirectory ??
-    "scripts"
-  );
+  return contract.helpers.runtimeDirectory ?? contract.helpers.compatibilityDirectory ?? "scripts";
 }
 
 export function getRequiredDirectories(contract: WorkflowContract): string[] {

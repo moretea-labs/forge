@@ -348,7 +348,7 @@ Complete this inventory before implementation. If any line is unknown, keep the 
 
 - **State/progress path**:
 - **Verification evidence**:
-- **Evaluator rubric**:
+- **Impact review**:
 - **Stop condition**:
 - **Rollback surface**:
 
@@ -391,7 +391,7 @@ Describe the exact outcome this task must deliver.
 - Checks file: `.ai/harness/checks/latest.json`
 - Run snapshots: `.ai/harness/runs/`
 - Scope gate: edit only paths listed under `allowed_paths`; update this contract before widening scope.
-- Completion gate: `scripts/verify-sprint.sh` must see this contract pass, the review recommend pass, and `## External Acceptance Advice` pass or record a manual override.
+- Completion evidence: `scripts/verify-sprint.sh` reports this contract's direct checks and declared scope. Then perform a fresh semantic impact review.
 
 ## Allowed Paths
 
@@ -473,47 +473,22 @@ CONTRACT_TEMPLATE_EOF
 > **Notes File**: {{NOTES_FILE}}
 > **Checks File**: {{CHECKS_FILE}}
 > **Last Updated**: {{TIMESTAMP}}
-> **Recommendation**: fail
+> **Summary**:
 
-## Human Review Card
+## Semantic Impact Review
 
-- Verdict: pending
-- Change type: code-change | docs-only | ledger-closeout | migration | eval-only | delegated-run
-- Intended files changed:
-- Actual files changed:
-- Commands passed:
-- External acceptance: unavailable
-- Residual risks:
-- Reviewer action required: inspect diff and card
-- Rollback:
+- User intent:
+- Affected domains and downstream consumers:
+- State transitions and persistence/restart impact:
+- Missing impact areas or uncertainty:
+- Residual risks and recovery:
 
 ## Verification Evidence
 
-- Forge /review run:
+- Focused/full checks:
 - Commands run:
 - Manual checks:
 - Supporting artifacts:
-
-## External Acceptance Advice
-
-> **External Acceptance**: unavailable
-> **External Reviewer**:
-> **External Source**:
-> **External Started**:
-> **External Completed**:
-
-- P1 blockers:
-- P2 advisories:
-- Acceptance checklist:
-
-## Scorecard
-
-| Dimension | Score | Notes |
-|-----------|-------|-------|
-| Functionality | 0/10 | |
-| Product depth | 0/10 | |
-| Design quality | 0/10 | |
-| Code quality | 0/10 | |
 
 ## Failing Items
 
@@ -908,7 +883,7 @@ ARCHITECTURE_INDEX_EOF
   "plan_capture": {
     "script": "scripts/capture-plan.sh",
     "sources": ["host-plan-mode", "forge-plan"],
-    "rule": "Forge /plan or host planning mode may capture decision-complete source plans into plans/plan-*.md; migrated lifecycle execution remains owned by Runtime Plan/Work state"
+    "rule": "Codex Plan mode and Waza think planning should capture decision-complete plans into plans/plan-*.md; implementation approval then projects the active approved plan through scripts/plan-to-todo.sh"
   },
   "planning": {
     "pending_orchestration_file": ".ai/harness/planning/pending.json",
@@ -916,8 +891,8 @@ ARCHITECTURE_INDEX_EOF
   },
   "guards": {
     "edit_plan_gate": "advice",
-    "edit_plan_gate_modes": ["enforce", "advice", "off"],
-    "rule": "pre-edit-guard advises when implementation lacks an active plan; execution remains available unless a real safety boundary blocks it"
+    "edit_plan_gate_modes": ["advice", "off"],
+    "rule": "pre-edit-guard may expose Plan/spec context, but Plan lifecycle never authorizes implementation; only real safety/resource boundaries block execution"
   },
   "sidecar_research": {
     "default": true,
@@ -998,16 +973,16 @@ ARCHITECTURE_INDEX_EOF
     "routing": {
       "primary": "forge",
       "optional_complex_helper": "gstack",
-      "optional_small_helper": "waza",
+      "optional_daily_helper": "waza",
       "optional_knowledge_helper": "gbrain"
     },
     "hosts": [
       "claude-code",
       "codex"
     ],
-    "mode": "optional-enhancement",
+    "mode": "optional-enhancements",
     "detection": "init-migrate",
-    "readiness_gate": "scripts/check-agent-tooling.sh --host codex",
+    "readiness_report": "scripts/check-agent-tooling.sh --host codex",
     "waza": {
       "source_repo": "tw93/Waza",
       "source_url": "https://github.com/tw93/Waza.git",
@@ -1021,12 +996,12 @@ ARCHITECTURE_INDEX_EOF
     "codex_automation_profile": {
       "required_skills": [],
       "optional_skills": ["health", "check", "mermaid"],
-      "mode": "codex-runtime-reference",
+      "mode": "optional-codex-runtime-reference",
       "source": "~/.codex/skills",
       "routes": {
-        "workflow_health": "forge:/debug",
-        "review_gate": "forge:/review",
-        "architecture_diagram": "mermaid-if-installed"
+        "workflow_health_optional": "waza:health",
+        "review_helper_optional": "waza:check",
+        "architecture_diagram_optional": "mermaid"
       },
       "vendoring_policy": "do-not-vendor-skill-body"
     },
@@ -1047,7 +1022,7 @@ ARCHITECTURE_INDEX_EOF
       "codex_config_path": "~/.codex/config.toml",
       "claude_config_path": "~/.claude.json",
       "index_dir": ".codegraph",
-      "readiness": "optional-global-cli-mcp; bundled-rh-context-backend-is-runtime-owned",
+      "readiness": "forge-bundled-backend; host-mcp-optional",
       "hook_policy": "do-not-block-hooks",
       "install_command": "bun add -g @colbymchenry/codegraph && forge tools configure codegraph --target codex --location global",
       "project_init_command": "codegraph init -i .",
@@ -1057,14 +1032,6 @@ ARCHITECTURE_INDEX_EOF
   },
   "agentic_development": {
     "routing": {
-      "small_bounded_change": "forge:/direct",
-      "planning": "forge:/plan",
-      "bug_or_regression": "forge:/debug",
-      "post_implementation_review": "forge:/review",
-      "release": "forge:/release",
-      "scale": "forge:/scale"
-    },
-    "optional_enhancements": {
       "direct": "forge:/direct",
       "plan": "forge:/plan",
       "debug": "forge:/debug",
@@ -1074,7 +1041,7 @@ ARCHITECTURE_INDEX_EOF
     },
     "due_diligence": {
       "levels": ["P1_GLOBAL_ARCHITECTURE", "P2_DATA_FLOW_TRACE", "P3_DESIGN_DECISION"],
-      "explicit_report_required_for": ["forge:/plan", "forge:/debug", "risky_refactor", "deployment", "auth_payment_data", "shared_contract"]
+      "explicit_report_required_for": ["architecture", "debug", "risky_refactor", "deployment", "auth_payment_data", "shared_contract"]
     }
   },
   "enforcement": {

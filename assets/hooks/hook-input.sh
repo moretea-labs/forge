@@ -26,10 +26,12 @@ hook_read_stdin_once() {
 
   if [[ -t 0 ]]; then
     HOOK_STDIN_JSON=""
+    export HOOK_STDIN_JSON
     return
   fi
 
   HOOK_STDIN_JSON="$(cat 2>/dev/null || true)"
+  export HOOK_STDIN_JSON
 }
 
 hook_json_extract_with_bun() {
@@ -275,11 +277,6 @@ hook_get_session_id() {
   local arg="${1:-}"
   local parsed=""
 
-  if [[ -n "${HOOK_SESSION_ID:-}" ]]; then
-    printf '%s' "$HOOK_SESSION_ID"
-    return
-  fi
-
   parsed="$(hook_json_get '.session_id' '')"
   if [[ -n "$parsed" ]]; then
     HOOK_SESSION_ID="$parsed"
@@ -296,10 +293,16 @@ hook_get_session_id() {
     return
   fi
 
-  if [[ -n "${CLAUDE_SESSION_ID:-${CODEX_SESSION_ID:-}}" ]]; then
-    HOOK_SESSION_ID="${CLAUDE_SESSION_ID:-${CODEX_SESSION_ID:-}}"
-    export HOOK_SESSION_ID
+  if [[ -n "${HOOK_SESSION_ID:-}" ]]; then
     printf '%s' "$HOOK_SESSION_ID"
+    return
+  fi
+
+  parsed="${CLAUDE_SESSION_ID:-${CODEX_SESSION_ID:-${SESSION_KEY:-}}}"
+  if [[ -n "$parsed" ]]; then
+    HOOK_SESSION_ID="$parsed"
+    export HOOK_SESSION_ID
+    printf '%s' "$parsed"
     return
   fi
 

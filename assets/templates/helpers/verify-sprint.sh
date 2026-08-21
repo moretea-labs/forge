@@ -20,54 +20,6 @@ json_escape() {
   printf '%s' "$value"
 }
 
-review_card_field() {
-  local file="$1"
-  local label="$2"
-  [[ -n "$file" && -f "$file" ]] || return 1
-  awk -v wanted="$label" '
-    function trim(s) {
-      gsub(/^[[:space:]]+/, "", s)
-      gsub(/[[:space:]]+$/, "", s)
-      return s
-    }
-    BEGIN { wanted = tolower(wanted) }
-    /^##[[:space:]]+Human Review Card[[:space:]]*$/ { in_section = 1; next }
-    in_section && /^##[[:space:]]+/ { exit }
-    !in_section { next }
-    /^[[:space:]]*-[[:space:]]*/ {
-      line = $0
-      sub(/^[[:space:]]*-[[:space:]]*/, "", line)
-      key = line
-      sub(/:.*/, "", key)
-      key = tolower(trim(key))
-      if (key == wanted) {
-        sub(/^[^:]*:[[:space:]]*/, "", line)
-        print trim(line)
-        exit
-      }
-    }
-  ' "$file"
-}
-
-normalize_status_token() {
-  local value="$1"
-  value="$(printf '%s' "$value" | sed -E 's/[;,].*$//; s/[[:space:]].*$//; s/^[[:space:]]+//; s/[[:space:]]+$//' | tr '[:upper:]' '[:lower:]')"
-  printf '%s' "$value"
-}
-
-field_has_concrete_value() {
-  local value="$1"
-  local token
-  token="$(normalize_status_token "$value")"
-  [[ -n "$token" ]] || return 1
-  case "$token" in
-    tbd|todo|n/a|na|none|unknown|unavailable|pending|...)
-      return 1
-      ;;
-  esac
-  return 0
-}
-
 read_contract_task_profile() {
   local file="$1"
   awk '/^> \*\*Task Profile\*\*:/ {sub(/^.*> \*\*Task Profile\*\*:[[:space:]]*/, ""); gsub(/\r/, ""); print; exit}' "$file" | xargs
@@ -304,25 +256,14 @@ if [[ -f ".ai/hooks/lib/workflow-state.sh" ]]; then
   # shellcheck source=/dev/null
   . ".ai/hooks/lib/workflow-state.sh"
   contract_file="$(workflow_active_contract || true)"
-  review_file="$(workflow_active_review || true)"
   checks_file="$(workflow_checks_file)"
 else
   contract_file="$(find tasks/contracts -maxdepth 1 -name '*.contract.md' -type f 2>/dev/null | sort | head -n 1)"
-  if [[ -n "$contract_file" ]]; then
-    contract_slug="$(basename "$contract_file" | sed -E 's/\.contract\.md$//')"
-    review_file="tasks/reviews/${contract_slug}.review.md"
-  else
-    review_file=""
-  fi
   checks_file=".ai/harness/checks/latest.json"
 fi
 if [[ -z "$contract_file" || ! -f "$contract_file" ]]; then
   contract_file="$(active_plan_declared_path "Task Contract" || active_plan_declared_path "Sprint Contract" || true)"
 fi
-if [[ -z "$review_file" || ! -f "$review_file" ]]; then
-  review_file="$(active_plan_declared_path "Task Review" || active_plan_declared_path "Sprint Review" || true)"
-fi
-
 [[ -n "$contract_file" && -f "$contract_file" ]] || { echo "No active sprint contract found" >&2; exit 1; }
 
 generated_at="$(date '+%Y-%m-%dT%H:%M:%S%z')"
@@ -378,74 +319,9 @@ if [[ -n "$contract_output" ]]; then
   printf '%s\n' "$contract_output"
 fi
 
-review_status="fail"
-review_message="Task review recommends pass and Human Review Card verdict is pass."
-review_card_verdict=""
-review_card_external=""
-review_card_change_type=""
-review_card_rollback=""
-if [[ -z "$review_file" || ! -f "$review_file" ]]; then
-  review_message="Missing task review file."
-  echo "Missing task review file" >&2
-else
-  review_card_verdict="$(normalize_status_token "$(review_card_field "$review_file" "Verdict" || true)")"
-  review_card_external="$(review_card_field "$review_file" "External acceptance" || true)"
-  review_card_change_type="$(normalize_status_token "$(review_card_field "$review_file" "Change type" || true)")"
-  review_card_rollback="$(review_card_field "$review_file" "Rollback" || true)"
-fi
-
-if [[ -n "$review_file" && -f "$review_file" ]]; then
-  if ! grep -Eq '^> \*\*Recommendation\*\*:[[:space:]]*pass([[:space:]]*)$' "$review_file"; then
-    review_message="Task review does not recommend pass."
-    echo "Task review does not recommend pass" >&2
-  elif [[ -z "$review_card_verdict" ]]; then
-    review_message="Task review is missing Human Review Card verdict."
-    echo "Task review is missing Human Review Card verdict" >&2
-  elif [[ "$review_card_verdict" != "pass" ]]; then
-    review_message="Human Review Card verdict is not pass: $review_card_verdict"
-    echo "Human Review Card verdict is not pass: $review_card_verdict" >&2
-  elif [[ -n "$task_profile" && "$review_card_change_type" != "$task_profile" ]]; then
-    review_message="Human Review Card change type does not match task_profile: ${review_card_change_type:-missing} != $task_profile"
-    echo "$review_message" >&2
-  elif ! field_has_concrete_value "$review_card_rollback"; then
-    review_message="Human Review Card rollback is missing or not concrete."
-    echo "$review_message" >&2
-  else
-    review_status="pass"
-  fi
-fi
-
-external_status="missing"
-external_reviewer=""
-external_source=""
-external_message="External acceptance status is unavailable."
-if declare -F workflow_external_acceptance_status >/dev/null 2>&1; then
-  external_row="$(workflow_external_acceptance_status "$review_file")"
-  IFS=$'\t' read -r external_status external_reviewer external_source external_message <<< "$external_row"
-fi
-card_external_status="$(normalize_status_token "$review_card_external")"
-case "$external_status" in
-  missing|unavailable|"")
-    case "$card_external_status" in
-      pass|manual_override|not_required)
-        external_status="$card_external_status"
-        external_message="Human Review Card external acceptance: $review_card_external"
-        ;;
-    esac
-    ;;
-esac
-
 status="fail"
 exit_code=1
-case "$external_status" in
-  pass|manual_override|not_required)
-    external_gate="pass"
-    ;;
-  *)
-    external_gate="fail"
-    ;;
-esac
-if [[ "$contract_exit" -eq 0 && "$review_status" == "pass" && "$external_gate" == "pass" && "$allowed_paths_status" == "pass" ]]; then
+if [[ "$contract_exit" -eq 0 && "$allowed_paths_status" == "pass" ]]; then
   status="pass"
   exit_code=0
 fi
@@ -456,10 +332,6 @@ fi
 if [[ -z "$failure_class" && "$status" != "pass" ]]; then
   if [[ "$contract_exit" -ne 0 ]]; then
     failure_class="contract"
-  elif [[ "$review_status" != "pass" ]]; then
-    failure_class="review"
-  elif [[ "$external_gate" != "pass" ]]; then
-    failure_class="external_acceptance"
   elif [[ "$allowed_paths_status" != "pass" ]]; then
     failure_class="allowed_paths"
   else
@@ -467,9 +339,9 @@ if [[ -z "$failure_class" && "$status" != "pass" ]]; then
   fi
 fi
 if [[ "$status" == "pass" ]]; then
-  next_step="finish contract worktree or archive completed task"
+  next_step="perform a fresh semantic impact review, then finish contract worktree or archive completed task"
 else
-  next_step="resolve failing contract, review, external acceptance, or allowed_paths gate"
+  next_step="resolve failing contract or allowed_paths evidence"
 fi
 handoff_current_exists=false
 handoff_resume_exists=false
@@ -492,17 +364,6 @@ if command -v jq >/dev/null 2>&1 && jq -e . "$contract_report" >/dev/null 2>&1; 
     --arg contract_status "$([[ "$contract_exit" -eq 0 ]] && printf pass || printf fail)" \
     --arg contract_command "$contract_command" \
     --argjson contract_exit "$contract_exit" \
-    --arg review_file "${review_file:-}" \
-    --arg review_status "$review_status" \
-    --arg review_message "$review_message" \
-    --arg review_card_verdict "$review_card_verdict" \
-    --arg review_card_change_type "$review_card_change_type" \
-    --arg review_card_external "$review_card_external" \
-    --arg review_card_rollback "$review_card_rollback" \
-    --arg external_status "$external_status" \
-    --arg external_reviewer "$external_reviewer" \
-    --arg external_source "$external_source" \
-    --arg external_message "$external_message" \
     --arg worktree "$worktree_path" \
     --arg branch "$branch_name" \
     --arg diff_base_ref "$diff_base_ref" \
@@ -538,8 +399,6 @@ if command -v jq >/dev/null 2>&1 && jq -e . "$contract_report" >/dev/null 2>&1; 
       ],
       guards: [
         {name: "contract", status: $contract_status},
-        {name: "review", status: $review_status},
-        {name: "external_acceptance", status: $external_status},
         {name: "allowed_paths", status: ($allowed_paths_check.status // "unavailable")}
       ],
       handoffs: [
@@ -563,23 +422,6 @@ if command -v jq >/dev/null 2>&1 && jq -e . "$contract_report" >/dev/null 2>&1; 
         report: ($contract_report[0] // {}),
         task_profile: $task_profile,
         allowed_paths: $allowed_paths
-      },
-      review: {
-        file: $review_file,
-        status: $review_status,
-        message: $review_message,
-        card: {
-          verdict: $review_card_verdict,
-          change_type: $review_card_change_type,
-          external_acceptance: $review_card_external,
-          rollback: $review_card_rollback
-        }
-      },
-      external_acceptance: {
-        status: $external_status,
-        reviewer: $external_reviewer,
-        source: $external_source,
-        message: $external_message
       }
     }' > "$checks_report"
 else
@@ -617,8 +459,6 @@ else
   ],
   "guards": [
     {"name": "contract", "status": "$([[ "$contract_exit" -eq 0 ]] && printf pass || printf fail)"},
-    {"name": "review", "status": "$(json_escape "$review_status")"},
-    {"name": "external_acceptance", "status": "$(json_escape "$external_status")"},
     {"name": "allowed_paths", "status": "$(json_escape "$allowed_paths_status")"}
   ],
   "handoffs": [
@@ -644,23 +484,6 @@ else
     "exit_code": $contract_exit,
     "task_profile": "$(json_escape "$task_profile")",
     "allowed_paths": []
-  },
-  "review": {
-    "file": "$(json_escape "${review_file:-}")",
-    "status": "$(json_escape "$review_status")",
-    "message": "$(json_escape "$review_message")",
-    "card": {
-      "verdict": "$(json_escape "$review_card_verdict")",
-      "change_type": "$(json_escape "$review_card_change_type")",
-      "external_acceptance": "$(json_escape "$review_card_external")",
-      "rollback": "$(json_escape "$review_card_rollback")"
-    }
-  },
-  "external_acceptance": {
-    "status": "$(json_escape "$external_status")",
-    "reviewer": "$(json_escape "$external_reviewer")",
-    "source": "$(json_escape "$external_source")",
-    "message": "$(json_escape "$external_message")"
   }
 }
 EOF_CHECKS

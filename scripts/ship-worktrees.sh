@@ -224,19 +224,8 @@ active_slug_or_empty() {
   plan_slug_from_path "$active_plan"
 }
 
-review_recommends_pass_fallback() {
-  local review_file="$1"
-  grep -Eq '^> \*\*Recommendation\*\*:[[:space:]]*pass([[:space:]]*)$' "$review_file"
-}
-
-external_acceptance_pass_fallback() {
-  local review_file="$1"
-  grep -Eq '^> \*\*External Acceptance\*\*:[[:space:]]*(pass|manual_override)([[:space:]]*)$' "$review_file" \
-    && grep -Eq '^-?[[:space:]]*P1 blockers:[[:space:]]*none([[:space:]]*)$' "$review_file"
-}
-
 require_finish_ready() {
-  local contract_file="" review_file="" checks_file=".ai/harness/checks/latest.json" checks_error=""
+  local contract_file="" checks_file=".ai/harness/checks/latest.json" checks_error=""
 
   [[ -x "scripts/contract-worktree.sh" ]] || fail "scripts/contract-worktree.sh is missing or not executable"
   [[ -x "scripts/verify-sprint.sh" ]] || fail "scripts/verify-sprint.sh is missing or not executable"
@@ -245,27 +234,11 @@ require_finish_ready() {
   if declare -F workflow_active_contract >/dev/null 2>&1; then
     contract_file="$(workflow_active_contract 2>/dev/null || true)"
   fi
-  if declare -F workflow_active_review >/dev/null 2>&1; then
-    review_file="$(workflow_active_review 2>/dev/null || true)"
-  fi
   if declare -F workflow_checks_file >/dev/null 2>&1; then
     checks_file="$(workflow_checks_file)"
   fi
 
   [[ -n "$contract_file" && -f "$contract_file" ]] || fail "active sprint contract is missing"
-  [[ -n "$review_file" && -f "$review_file" ]] || fail "active sprint review is missing"
-
-  if declare -F workflow_review_recommends_pass >/dev/null 2>&1; then
-    workflow_review_recommends_pass "$review_file" || fail "$review_file does not recommend pass"
-  else
-    review_recommends_pass_fallback "$review_file" || fail "$review_file does not recommend pass"
-  fi
-
-  if declare -F workflow_external_acceptance_pass >/dev/null 2>&1; then
-    workflow_external_acceptance_pass "$review_file" || fail "$review_file has no passing external acceptance"
-  else
-    external_acceptance_pass_fallback "$review_file" || fail "$review_file has no passing external acceptance"
-  fi
 
   run_cmd bash "scripts/verify-sprint.sh"
   if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -273,7 +246,7 @@ require_finish_ready() {
   fi
 
   if declare -F workflow_checks_pass >/dev/null 2>&1; then
-    if ! checks_error="$(workflow_checks_pass "$checks_file" "$contract_file" "$review_file")"; then
+    if ! checks_error="$(workflow_checks_pass "$checks_file" "$contract_file")"; then
       fail "$checks_error"
     fi
   elif ! grep -Eq '"status"[[:space:]]*:[[:space:]]*"pass"' "$checks_file"; then

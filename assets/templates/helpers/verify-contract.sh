@@ -69,24 +69,6 @@ read_contract_status() {
   awk '/^> \*\*Status\*\*:/ {sub(/^.*> \*\*Status\*\*: */, ""); gsub(/\r/, ""); print; exit}' "$file" | xargs
 }
 
-read_contract_review_file() {
-  local file="$1"
-  local line=""
-  local value=""
-
-  line="$(grep -m 1 -E '^> \*\*Review File\*\*:' "$file" || true)"
-  [[ -n "$line" ]] || return 0
-
-  if [[ "$line" == *\`* ]]; then
-    value="${line#*\`}"
-    value="${value%%\`*}"
-  else
-    value="${line#*> **Review File**:}"
-  fi
-
-  printf '%s' "$value" | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'
-}
-
 read_contract_task_profile() {
   local file="$1"
   awk '/^> \*\*Task Profile\*\*:/ {sub(/^.*> \*\*Task Profile\*\*:[[:space:]]*/, ""); gsub(/\r/, ""); print; exit}' "$file" | xargs
@@ -128,36 +110,6 @@ contract_allowed_paths() {
       print trim(line)
     }
   '
-}
-
-review_recommends_pass() {
-  local review_file="$1"
-  [[ -n "$review_file" && -f "$review_file" ]] || return 1
-  grep -Eq '^> \*\*Recommendation\*\*:[[:space:]]*pass[[:space:]]*$' "$review_file"
-}
-
-review_score() {
-  local review_file="$1"
-  local dimension="$2"
-
-  [[ -n "$review_file" && -f "$review_file" ]] || return 1
-
-  awk -F'|' -v wanted="$dimension" '
-    function trim(s) {
-      gsub(/^[[:space:]]+/, "", s)
-      gsub(/[[:space:]]+$/, "", s)
-      return s
-    }
-    BEGIN { wanted = tolower(wanted) }
-    /^\|/ {
-      dim = tolower(trim($2))
-      score = trim($3)
-      if (dim == wanted && match(score, /[0-9]+/)) {
-        print substr(score, RSTART, RLENGTH)
-        exit
-      }
-    }
-  ' "$review_file"
 }
 
 update_contract_status() {
@@ -385,14 +337,9 @@ declare -a contain_patterns=()
 declare -a files_not_exist=()
 declare -a not_contain_paths=()
 declare -a not_contain_patterns=()
-declare -a qa_dimensions=()
-declare -a qa_mins=()
-declare -a manual_checks=()
 
 section=""
 pending_path=""
-pending_dimension=""
-review_file="$(read_contract_review_file "$contract_file" || true)"
 task_profile="$(read_contract_task_profile "$contract_file" || true)"
 declare -a allowed_paths=()
 while IFS= read -r allowed_path; do
@@ -443,21 +390,10 @@ while IFS= read -r raw_line; do
       pending_path=""
       continue
       ;;
-    qa_scores:)
-      section="qa_scores"
-      pending_path=""
-      pending_dimension=""
-      continue
-      ;;
-    manual_checks:)
-      section="manual_checks"
-      pending_path=""
-      continue
-      ;;
   esac
 
   case "$section" in
-    files_exist|commands_succeed|files_not_exist|artifacts_exist|manual_checks)
+    files_exist|commands_succeed|files_not_exist|artifacts_exist)
       if [[ "$trimmed" =~ ^-[[:space:]]*(.+)$ ]]; then
         item="$(strip_quotes "${BASH_REMATCH[1]}")"
         [[ -n "$item" ]] || continue
@@ -467,8 +403,6 @@ while IFS= read -r raw_line; do
           commands_succeed+=("$item")
         elif [[ "$section" == "artifacts_exist" ]]; then
           artifacts_exist+=("$item")
-        elif [[ "$section" == "manual_checks" ]]; then
-          manual_checks+=("$item")
         else
           files_not_exist+=("$item")
         fi
@@ -494,19 +428,6 @@ while IFS= read -r raw_line; do
             not_contain_patterns+=("$pattern")
           fi
           pending_path=""
-        fi
-      fi
-      ;;
-    qa_scores)
-      if [[ "$trimmed" =~ ^-[[:space:]]*dimension:[[:space:]]*(.+)$ ]]; then
-        pending_dimension="$(strip_quotes "${BASH_REMATCH[1]}")"
-      elif [[ "$trimmed" =~ ^dimension:[[:space:]]*(.+)$ ]]; then
-        pending_dimension="$(strip_quotes "${BASH_REMATCH[1]}")"
-      elif [[ "$trimmed" =~ ^min:[[:space:]]*([0-9]+)$ ]]; then
-        if [[ -n "$pending_dimension" ]]; then
-          qa_dimensions+=("$pending_dimension")
-          qa_mins+=("${BASH_REMATCH[1]}")
-          pending_dimension=""
         fi
       fi
       ;;
@@ -599,37 +520,6 @@ if ((${#commands_succeed[@]})); then
     else
       fail "commands_succeed" "$cmd" "commands_succeed: $cmd"
     fi
-  done
-fi
-
-if ((${#qa_dimensions[@]})); then
-  for idx in "${!qa_dimensions[@]}"; do
-    dimension="${qa_dimensions[$idx]}"
-    min_score="${qa_mins[$idx]}"
-    score="$(review_score "$review_file" "$dimension" || true)"
-
-    if [[ "$score" =~ ^[0-9]+$ && "$score" -ge "$min_score" ]]; then
-      pass "qa_scores" "$dimension" "qa_scores: $dimension ${score}/${min_score}"
-    else
-      fail "qa_scores" "$dimension" "qa_scores: $dimension score ${score:-missing} < $min_score"
-    fi
-  done
-fi
-
-if ((${#manual_checks[@]})); then
-  for check in "${manual_checks[@]}"; do
-    case "$check" in
-      "Evaluator review file recommends pass")
-        if review_recommends_pass "$review_file"; then
-          pass "manual_checks" "$check" "manual_checks: $check"
-        else
-          fail "manual_checks" "$check" "manual_checks: $check"
-        fi
-        ;;
-      *)
-        fail "manual_checks" "$check" "manual_checks unsupported: $check"
-        ;;
-    esac
   done
 fi
 

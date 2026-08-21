@@ -34,7 +34,7 @@
 ### 6b. Contract Verification
 - Use task contracts in `tasks/contracts/` as completion gates.
 - Use implementation notes in `tasks/notes/` for task-local decisions that should not automatically become memory.
-- Validate exit criteria and the Forge `/review` review recommendation before any done/completed response.
+- Validate direct exit criteria, then use Forge `/review` to reassess intent, downstream impact, and missing state transitions before any done/completed response.
 
 ### 7. Balanced Elegance
 - Redesign hacky non-trivial fixes before shipping.
