@@ -41,6 +41,7 @@ import {
 import { refreshSchedulerRepositoryProjections } from './projection-refresh';
 import { createSchedulerWorkerStderrCapture } from './worker-stderr';
 import { persistSchedulerWorkerAttachment } from './worker-attachment';
+import { wireSchedulerWorkerProcess } from './worker-process';
 import { reconcileSchedulerWorkerExit } from './worker-exit-reconciler';
 import { persistSchedulerSpawnedWorkerLifecycle } from './worker-lifecycle-store';
 import {
@@ -369,17 +370,26 @@ export class GlobalScheduler {
       void this.recordWorkerExit(repoId, jobId, current.attempt, undefined, lifecycle, null, null, '', false, message);
       return false;
     }
-    child.stderr?.on('data', (chunk: Buffer | string) => stderrCapture.append(chunk));
-    let finalized = false;
-    const finalize = (exitCode: number | null, signal: string | null, startupError?: string) => {
-      if (finalized) return;
-      finalized = true;
-      if (this.children.get(jobId) === child) this.children.delete(jobId);
-      const { stderr, stderrTruncated } = stderrCapture.snapshot();
-      void this.recordWorkerExit(repoId, jobId, current.attempt, child, lifecycle, exitCode, signal, stderr, stderrTruncated, startupError);
-    };
-    child.once('error', (error) => finalize(null, null, error.message));
-    child.once('close', (code, signal) => finalize(code, signal));
+    wireSchedulerWorkerProcess({
+      jobId,
+      child,
+      children: this.children,
+      stderrCapture,
+      onExit: ({ exitCode, signal, stderr, stderrTruncated, startupError }) => {
+        void this.recordWorkerExit(
+          repoId,
+          jobId,
+          current.attempt,
+          child,
+          lifecycle,
+          exitCode,
+          signal,
+          stderr,
+          stderrTruncated,
+          startupError,
+        );
+      },
+    });
     if (!child.pid) {
       child.unref();
       return false;

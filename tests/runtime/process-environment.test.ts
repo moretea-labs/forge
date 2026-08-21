@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { EventEmitter } from 'events';
+import type { ChildProcess } from 'child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -18,6 +20,7 @@ import {
 } from '../../src/runtime/control-plane/global-scheduler/worker-lifecycle';
 import { createSchedulerWorkerStderrCapture } from '../../src/runtime/control-plane/global-scheduler/worker-stderr';
 import { persistSchedulerWorkerAttachment } from '../../src/runtime/control-plane/global-scheduler/worker-attachment';
+import { wireSchedulerWorkerProcess } from '../../src/runtime/control-plane/global-scheduler/worker-process';
 import {
   persistSchedulerSpawnedWorkerLifecycle,
   persistSchedulerTerminalWorkerLifecycle,
@@ -315,6 +318,49 @@ describe('repository child process environment', () => {
       attachWorker: () => undefined,
       updateJob: () => { throw new Error('must not update'); },
     })).toBe(false);
+  });
+
+  test('wires Scheduler worker process events with one-shot finalization and tracked-child cleanup', () => {
+    const childEvents = new EventEmitter();
+    const stderrEvents = new EventEmitter();
+    const child = childEvents as EventEmitter & { pid: number; stderr: EventEmitter };
+    child.pid = 88;
+    child.stderr = stderrEvents;
+    const childProcess = child as unknown as ChildProcess;
+    const children = new Map<string, ChildProcess>([['job-a', childProcess]]);
+    let stderr = '';
+    const exits: Array<{
+      exitCode: number | null;
+      signal: string | null;
+      stderr: string;
+      stderrTruncated: boolean;
+      startupError?: string;
+    }> = [];
+
+    wireSchedulerWorkerProcess({
+      jobId: 'job-a',
+      child: childProcess,
+      children,
+      stderrCapture: {
+        path: '/tmp/worker-stderr.log',
+        append: (chunk) => { stderr += typeof chunk === 'string' ? chunk : chunk.toString('utf8'); },
+        snapshot: () => ({ stderr, stderrTruncated: true }),
+      },
+      onExit: (exit) => exits.push(exit),
+    });
+
+    stderrEvents.emit('data', Buffer.from('boom'));
+    childEvents.emit('error', new Error('startup failed'));
+    childEvents.emit('close', 1, null);
+
+    expect(children.has('job-a')).toBe(false);
+    expect(exits).toEqual([{
+      exitCode: null,
+      signal: null,
+      stderr: 'boom',
+      stderrTruncated: true,
+      startupError: 'startup failed',
+    }]);
   });
 
   test('captures Scheduler worker stderr with a bounded persisted diagnostic', () => {

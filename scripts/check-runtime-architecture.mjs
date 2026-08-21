@@ -67,6 +67,7 @@ const required = [
   'src/runtime/control-plane/global-scheduler/worker-lifecycle-store.ts',
   'src/runtime/control-plane/global-scheduler/worker-exit-decision.ts',
   'src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts',
+  'src/runtime/control-plane/global-scheduler/worker-process.ts',
   'src/runtime/control-plane/repo-actor/actor.ts',
   'src/runtime/execution/jobs/store.ts',
   'src/runtime/execution/jobs/timeouts.ts',
@@ -507,6 +508,8 @@ requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.t
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-decision.ts', 'TERMINAL_JOB_STATUSES');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'reconcileSchedulerWorkerExit');
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'releaseExecutionLeases');
+requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'wireSchedulerWorkerProcess');
+requireText('src/runtime/control-plane/global-scheduler/worker-process.ts', "child.once('close'");
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'writeAgentExecutableReadinessSnapshot');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'sampleRepositoryGitStatusForRepositories');
 requireText('src/cli/agent-jobs/executable-resolver.ts', 'revalidateAgentExecutable');
