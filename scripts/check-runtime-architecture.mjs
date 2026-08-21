@@ -56,6 +56,10 @@ const required = [
   'src/runtime/gateway/mcp/router.ts',
   'src/cli/agent-jobs/executable-resolver.ts',
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
+  'src/runtime/control-plane/global-scheduler/config.ts',
+  'src/runtime/control-plane/global-scheduler/state.ts',
+  'src/runtime/control-plane/global-scheduler/worker-launch.ts',
+  'src/runtime/control-plane/global-scheduler/dispatch-capacity.ts',
   'src/runtime/control-plane/repo-actor/actor.ts',
   'src/runtime/execution/jobs/store.ts',
   'src/runtime/execution/jobs/timeouts.ts',
@@ -473,8 +477,15 @@ requireText('src/runtime/resources/leases/store.ts', 'expectedLeaseMap');
 requireText('src/runtime/resources/claims/conflicts.ts', "'repo-content:*'");
 requireText('src/runtime/control-plane/repo-actor/actor.ts', 'repo-actor-mailbox');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'maxConcurrentRepositories');
-requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'maxHeavyChecks');
-requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'maxAgentProcesses');
+requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'createSchedulerDispatchCapacity');
+requireText('src/runtime/control-plane/global-scheduler/dispatch-capacity.ts', 'maxHeavyChecks');
+requireText('src/runtime/control-plane/global-scheduler/dispatch-capacity.ts', 'maxAgentProcesses');
+requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'normalizeSchedulerConfig');
+requireText('src/runtime/control-plane/global-scheduler/config.ts', 'normalizeSchedulerConfig');
+requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'writeSchedulerHealthSnapshot');
+requireText('src/runtime/control-plane/global-scheduler/state.ts', 'writeSchedulerHealthSnapshot');
+requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'buildSchedulerWorkerLaunchDescriptor');
+requireText('src/runtime/control-plane/global-scheduler/worker-launch.ts', 'buildSchedulerWorkerLaunchDescriptor');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'writeAgentExecutableReadinessSnapshot');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'sampleRepositoryGitStatusForRepositories');
 requireText('src/cli/agent-jobs/executable-resolver.ts', 'revalidateAgentExecutable');

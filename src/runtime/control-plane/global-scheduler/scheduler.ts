@@ -3,7 +3,6 @@ import { appendFileSync, mkdirSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { cpus, freemem, loadavg } from 'os';
 import { listRepositories } from '../../../cli/repositories/registry';
-import { resolveControllerHome } from '../../../cli/repositories/controller-home';
 import { writeAgentExecutableReadinessSnapshot } from '../../../cli/agent-jobs/executable-resolver';
 import { withControllerLock } from '../../../cli/repositories/locks';
 import {
@@ -30,7 +29,6 @@ import { releaseExecutionLeases } from '../../resources/leases/store';
 import { RepoActorRegistry } from '../repo-actor/registry';
 import { reconcileExecutionJobsAsync } from './reconciliation';
 import { tickSchedules } from '../../workflow/schedules/engine';
-import { readJsonFile, writeJsonAtomic } from '../../shared/json-files';
 import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree';
 import { readSchedulerWakeSignal, waitForSchedulerWakeSignal } from './wake-signal';
 import { cleanupControllerRuntimeState } from '../runtime-cleanup';
@@ -52,6 +50,24 @@ import {
   createSchedulerDispatchCapacity,
   schedulerDispatchCapacityAllows,
 } from './dispatch-capacity';
+import { normalizeSchedulerConfig, type SchedulerConfig } from './config';
+import {
+  readSchedulerHealthSnapshot,
+  restoreSchedulerState,
+  writeSchedulerHealthSnapshot,
+} from './state';
+export { normalizeSchedulerConfig } from './config';
+export type { SchedulerConfig } from './config';
+export {
+  buildSchedulerHealthSnapshot,
+  readSchedulerHealthSnapshot,
+  restoreSchedulerState,
+} from './state';
+export type {
+  SchedulerHealthSnapshot,
+  SchedulerRestoredState,
+  SchedulerStateSnapshotInput,
+} from './state';
 export {
   buildSchedulerWorkerLaunchDescriptor,
   resolveSchedulerWorkerCommand,
@@ -144,134 +160,12 @@ export function sampleDarwinAvailableMemoryMb(
   });
 }
 
-function schedulerStatePath(controllerHome: string): string {
-  return join(resolveControllerHome(controllerHome), 'scheduler', 'state.json');
-}
-
-export interface SchedulerHealthSnapshot {
-  schemaVersion: 1;
-  updatedAt: string;
-  loopStartedAt?: string;
-  lastHeartbeatAt?: string;
-  heartbeatTimeoutMs?: number;
-  lastTickAt?: string;
-  lastDispatchAt?: string;
-  lastReconcileAt?: string;
-  lastSourceScanAt?: string;
-  lastSourceScanRepoCount?: number;
-  sourceScansAvoided?: number;
-  lastRepoDispatch: Record<string, number>;
-}
-
-export function readSchedulerHealthSnapshot(controllerHome: string): SchedulerHealthSnapshot {
-  return readJsonFile<SchedulerHealthSnapshot>(schedulerStatePath(controllerHome), {
-    schemaVersion: 1,
-    updatedAt: new Date().toISOString(),
-    lastRepoDispatch: {},
-  });
-}
-
-export interface SchedulerRestoredState {
-  lastSourceScanAt: number;
-  lastSourceScanRepoCount: number;
-  sourceScansAvoided: number;
-  lastRepoDispatch: Array<[string, number]>;
-}
-
-export function restoreSchedulerState(state: SchedulerHealthSnapshot): SchedulerRestoredState {
-  return {
-    lastSourceScanAt: state.lastSourceScanAt ? Date.parse(state.lastSourceScanAt) || 0 : 0,
-    lastSourceScanRepoCount: state.lastSourceScanRepoCount ?? 0,
-    sourceScansAvoided: state.sourceScansAvoided ?? 0,
-    lastRepoDispatch: Object.entries(state.lastRepoDispatch)
-      .filter(([, timestamp]) => Number.isFinite(timestamp)),
-  };
-}
-
-export interface SchedulerStateSnapshotInput {
-  loopStartedAt: string;
-  lastHeartbeatAt: string;
-  heartbeatTimeoutMs: number;
-  lastTickAt: string;
-  lastDispatchAt?: string;
-  lastReconcileAt?: string;
-  lastSourceScanAt: number;
-  lastSourceScanRepoCount: number;
-  sourceScansAvoided: number;
-  lastRepoDispatch: ReadonlyMap<string, number>;
-}
-
-export function buildSchedulerHealthSnapshot(
-  input: SchedulerStateSnapshotInput,
-  nowMs = Date.now(),
-): SchedulerHealthSnapshot {
-  return {
-    schemaVersion: 1,
-    updatedAt: new Date(nowMs).toISOString(),
-    loopStartedAt: input.loopStartedAt,
-    lastHeartbeatAt: input.lastHeartbeatAt,
-    heartbeatTimeoutMs: input.heartbeatTimeoutMs,
-    lastTickAt: input.lastTickAt,
-    lastDispatchAt: input.lastDispatchAt,
-    lastReconcileAt: input.lastReconcileAt,
-    lastSourceScanAt: input.lastSourceScanAt ? new Date(input.lastSourceScanAt).toISOString() : undefined,
-    lastSourceScanRepoCount: input.lastSourceScanRepoCount,
-    sourceScansAvoided: input.sourceScansAvoided,
-    lastRepoDispatch: Object.fromEntries(input.lastRepoDispatch),
-  };
-}
-
-export interface SchedulerConfig {
-  maxWorkers: number;
-  maxConcurrentRepositories: number;
-  pollIntervalMs: number;
-  idleBackoffMaxMs: number;
-  heartbeatIntervalMs: number;
-  heartbeatTimeoutMs: number;
-  maxHeavyChecks: number;
-  maxAgentProcesses: number;
-  maxCodexProcesses: number;
-  maxClaudeProcesses: number;
-  maxGitHubProcesses: number;
-  minFreeMemoryMb: number;
-  maxLoadPerCpu: number;
-}
-
 export interface SchedulerRuntimeBinding {
   controllerPid?: number;
   runtimeSourceRoot?: string;
   workerEntrypoint?: string;
   /** Canonical Runtime treats a tick failure as a whole-Runtime failure. */
   fatalOnTickError?: boolean;
-}
-
-export function normalizeSchedulerConfig(
-  config: Partial<SchedulerConfig> = {},
-  env: NodeJS.ProcessEnv = process.env,
-): SchedulerConfig {
-  const pollIntervalMs = Math.max(50, config.pollIntervalMs ?? 250);
-  const idleBackoffMaxMs = Math.max(250, config.idleBackoffMaxMs ?? Number(env.FORGE_IDLE_BACKOFF_MAX_MS ?? 2_000));
-  const heartbeatIntervalMs = Math.max(25, config.heartbeatIntervalMs ?? Number(env.FORGE_SCHEDULER_HEARTBEAT_INTERVAL_MS ?? 1_000));
-  const heartbeatTimeoutMs = Math.max(
-    heartbeatIntervalMs * 4,
-    idleBackoffMaxMs * 4,
-    config.heartbeatTimeoutMs ?? Number(env.FORGE_SCHEDULER_HEARTBEAT_TIMEOUT_MS ?? 60_000),
-  );
-  return {
-    maxWorkers: Math.max(1, config.maxWorkers ?? Number(env.FORGE_MAX_WORKERS ?? 4)),
-    maxConcurrentRepositories: Math.max(1, config.maxConcurrentRepositories ?? Number(env.FORGE_MAX_ACTIVE_REPOS ?? 4)),
-    pollIntervalMs,
-    idleBackoffMaxMs,
-    heartbeatIntervalMs,
-    heartbeatTimeoutMs,
-    maxHeavyChecks: Math.max(1, config.maxHeavyChecks ?? Number(env.FORGE_MAX_HEAVY_CHECKS ?? 2)),
-    maxAgentProcesses: Math.max(1, config.maxAgentProcesses ?? Number(env.FORGE_MAX_AGENT_PROCESSES ?? 4)),
-    maxCodexProcesses: Math.max(1, config.maxCodexProcesses ?? Number(env.FORGE_MAX_CODEX_PROCESSES ?? 3)),
-    maxClaudeProcesses: Math.max(1, config.maxClaudeProcesses ?? Number(env.FORGE_MAX_CLAUDE_PROCESSES ?? 2)),
-    maxGitHubProcesses: Math.max(1, config.maxGitHubProcesses ?? Number(env.FORGE_MAX_GITHUB_PROCESSES ?? 2)),
-    minFreeMemoryMb: Math.max(64, config.minFreeMemoryMb ?? Number(env.FORGE_MIN_FREE_MEMORY_MB ?? 512)),
-    maxLoadPerCpu: Math.max(0.25, config.maxLoadPerCpu ?? Number(env.FORGE_MAX_LOAD_PER_CPU ?? 1.5)),
-  };
 }
 
 export class GlobalScheduler {
@@ -330,7 +224,7 @@ export class GlobalScheduler {
     const now = Date.now();
     if (!force && now - this.lastPersistedAt < 1_000) return;
     this.lastPersistedAt = now;
-    writeJsonAtomic(schedulerStatePath(this.controllerHome), buildSchedulerHealthSnapshot({
+    writeSchedulerHealthSnapshot(this.controllerHome, {
       loopStartedAt: this.loopStartedAt,
       lastHeartbeatAt: this.lastHeartbeatAt,
       heartbeatTimeoutMs: this.config.heartbeatTimeoutMs,
@@ -341,7 +235,7 @@ export class GlobalScheduler {
       lastSourceScanRepoCount: this.lastSourceScanRepoCount,
       sourceScansAvoided: this.sourceScansAvoided,
       lastRepoDispatch: this.lastRepoDispatch,
-    }, now));
+    }, now);
   }
 
   private pidAlive(pid: number | undefined): boolean {
