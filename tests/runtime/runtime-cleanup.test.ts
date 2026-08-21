@@ -6,6 +6,7 @@ import {
   GlobalScheduler,
   selectSchedulerSourceScanRepositories,
 } from '../../src/runtime/control-plane/global-scheduler/scheduler';
+import { planSchedulerSourceSampling } from '../../src/runtime/control-plane/global-scheduler/source-scan';
 import {
   cleanupControllerRuntimeState,
   runtimeCleanupLogPath,
@@ -401,6 +402,18 @@ describe('runtime cleanup', () => {
       now,
       now - 60_000,
     )).toHaveLength(1);
+
+    expect(planSchedulerSourceSampling({
+      repositories,
+      activeRepoIds: new Set(['repo-a']),
+      nowMs: now,
+      lastSourceScanAt: now,
+      lastGitStatusSampleAt: now - 5_000,
+    })).toMatchObject({
+      sourceScanRepositories: [{ repoId: 'repo-a' }],
+      shouldSample: true,
+      avoidedRepositoryCount: 2,
+    });
   });
 
   test('periodic scheduler cleanup runs Process GC for only one enabled repository', async () => {

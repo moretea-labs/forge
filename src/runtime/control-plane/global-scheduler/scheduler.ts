@@ -30,6 +30,7 @@ import {
   runSchedulerPeriodicCleanup,
   runSchedulerValidationReconciliation,
 } from './maintenance';
+import { planSchedulerSourceSampling } from './source-scan';
 import { sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
 import { selectExecutionJobDispatchRepositories } from '../dispatch-priority';
 import {
@@ -83,30 +84,10 @@ export {
   selectSchedulerWorkerEnvironment,
 } from './worker-launch';
 export type { SchedulerWorkerCommand, SchedulerWorkerLaunchDescriptor } from './worker-launch';
+export { selectSchedulerSourceScanRepositories } from './source-scan';
 
 const DARWIN_MEMORY_SAMPLE_TTL_MS = 5_000;
 const RUNTIME_CLEANUP_INTERVAL_MS = Math.max(30_000, Number(process.env.FORGE_RUNTIME_CLEANUP_INTERVAL_MS ?? 60_000));
-const GIT_STATUS_SAMPLE_INTERVAL_MS = Math.max(1_000, Number(process.env.FORGE_GIT_STATUS_SAMPLE_INTERVAL_MS ?? 5_000));
-const IDLE_REPOSITORY_SCAN_INTERVAL_MS = Math.max(
-  GIT_STATUS_SAMPLE_INTERVAL_MS,
-  Number(process.env.FORGE_IDLE_REPOSITORY_SCAN_INTERVAL_MS ?? 60_000),
-);
-
-export function selectSchedulerSourceScanRepositories<T extends { repoId: string }>(
-  repositories: readonly T[],
-  activeRepoIds: ReadonlySet<string>,
-  nowMs: number,
-  lastSourceScanAt: number,
-): T[] {
-  const active = repositories.filter((repository) => activeRepoIds.has(repository.repoId));
-  if (active.length > 0) return active;
-  if (repositories.length === 0 || nowMs - lastSourceScanAt < IDLE_REPOSITORY_SCAN_INTERVAL_MS) return [];
-  // fs.watch/dirty markers drive prompt refresh for active mutations. The idle
-  // scan is only a safety net, so spread it across minutes instead of blocking
-  // the Runtime event loop on every registered repository at once.
-  const slot = Math.floor(nowMs / IDLE_REPOSITORY_SCAN_INTERVAL_MS) % repositories.length;
-  return [repositories[slot]!];
-}
 const DARWIN_RECLAIMABLE_PAGE_LABELS = new Set([
   'Pages free',
   'Pages inactive',
@@ -485,24 +466,23 @@ export class GlobalScheduler {
     }
     const activeJobSnapshot = listActiveExecutionJobs(this.controllerHome);
     const activeSourceRepoIds = new Set(activeJobSnapshot.map((job) => job.repoId));
-    const sourceScanRepositories = selectSchedulerSourceScanRepositories(
+    const sourceSampling = planSchedulerSourceSampling({
       repositories,
-      activeSourceRepoIds,
-      now,
-      this.lastSourceScanAt,
-    );
-    const sourceScanDue = sourceScanRepositories.length > 0;
-    if (sourceScanDue && now - this.lastGitStatusSampleAt >= GIT_STATUS_SAMPLE_INTERVAL_MS) {
+      activeRepoIds: activeSourceRepoIds,
+      nowMs: now,
+      lastSourceScanAt: this.lastSourceScanAt,
+      lastGitStatusSampleAt: this.lastGitStatusSampleAt,
+    });
+    const sourceScanRepositories = sourceSampling.sourceScanRepositories;
+    if (sourceSampling.shouldSample) {
+      // Advance source-sampling state before the filesystem probe so a failing
+      // sample cannot create a tight retry loop on every scheduler tick.
       this.lastGitStatusSampleAt = now;
       this.lastSourceScanAt = now;
       this.lastSourceScanRepoCount = sourceScanRepositories.length;
       sampleRepositoryGitStatusForRepositories(this.controllerHome, sourceScanRepositories);
-      this.sourceScansAvoided += Math.max(0, repositories.length - sourceScanRepositories.length);
-    } else if (!sourceScanDue) {
-      // fs.watch wakeups cover active mutations; a bounded safety rescan keeps
-      // idle repositories fresh without re-running a full source scan per tick.
-      this.sourceScansAvoided += repositories.length;
     }
+    this.sourceScansAvoided += sourceSampling.avoidedRepositoryCount;
     // Phase 0 reuses one durable Work admission policy. Cleanup, stale-state
     // reconciliation, and read-only source sampling above remain available, but
     // ordinary schedule/workflow advancement and Worker dispatch stop here.

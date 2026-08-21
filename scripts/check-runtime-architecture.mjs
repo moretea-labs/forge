@@ -66,6 +66,7 @@ const required = [
   'src/runtime/control-plane/global-scheduler/worker-attachment.ts',
   'src/runtime/control-plane/global-scheduler/worker-lifecycle-store.ts',
   'src/runtime/control-plane/global-scheduler/maintenance.ts',
+  'src/runtime/control-plane/global-scheduler/source-scan.ts',
   'src/runtime/control-plane/global-scheduler/worker-exit-decision.ts',
   'src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts',
   'src/runtime/control-plane/global-scheduler/worker-process.ts',
@@ -505,6 +506,8 @@ requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'persistS
 requireText('src/runtime/control-plane/global-scheduler/worker-attachment.ts', 'attachExecutionWorker');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'runSchedulerPeriodicCleanup');
 requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', 'runSchedulerValidationReconciliation');
+requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'planSchedulerSourceSampling');
+requireText('src/runtime/control-plane/global-scheduler/source-scan.ts', 'selectSchedulerSourceScanRepositories');
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'persistSchedulerTerminalWorkerLifecycle');
 requireText('src/runtime/control-plane/global-scheduler/worker-lifecycle-store.ts', 'TERMINAL_JOB_STATUSES');
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'evaluateSchedulerWorkerExitCandidate');
