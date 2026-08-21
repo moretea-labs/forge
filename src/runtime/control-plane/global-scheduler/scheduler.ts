@@ -288,6 +288,89 @@ export function resolveSchedulerWorkerExecutable(
   return isBun ? resolveBunExecutable(execPath, env) : execPath;
 }
 
+export interface SchedulerWorkerCommand {
+  entry: string;
+  loader: string;
+  cwd: string;
+}
+
+export function resolveSchedulerWorkerCommand(input: {
+  runtimeSourceRoot?: string;
+  workerEntrypoint?: string;
+  isBun?: boolean;
+  cwd?: string;
+  pathExists?: (path: string) => boolean;
+} = {}): SchedulerWorkerCommand {
+  const runtimeSourceRoot = input.runtimeSourceRoot ? resolve(input.runtimeSourceRoot) : undefined;
+  const sourceEntry = runtimeSourceRoot
+    ? join(runtimeSourceRoot, 'src', 'runtime', 'execution', 'workers', 'worker-entry.ts')
+    : fileURLToPath(new URL('../../execution/workers/worker-entry.ts', import.meta.url));
+  const loader = runtimeSourceRoot
+    ? join(runtimeSourceRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs')
+    : fileURLToPath(new URL('../../shared/node-ts-loader.mjs', import.meta.url));
+  const entry = input.workerEntrypoint ? resolve(input.workerEntrypoint) : sourceEntry;
+  const cwd = runtimeSourceRoot ?? input.cwd ?? process.cwd();
+  const pathExists = input.pathExists ?? existsSync;
+  const isBun = input.isBun ?? Boolean(process.versions.bun);
+  if (!pathExists(entry)) throw new Error(`WORKER_ENTRYPOINT_MISSING: ${entry}`);
+  if (!isBun && !pathExists(loader)) throw new Error(`WORKER_LOADER_MISSING: ${loader}`);
+  return { entry, loader, cwd };
+}
+
+export function selectSchedulerWorkerEnvironment(
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string | undefined> {
+  return Object.fromEntries(WORKER_ENVIRONMENT_KEYS.map((key) => [key, env[key]]));
+}
+
+export interface SchedulerWorkerLaunchDescriptor {
+  executable: string;
+  args: string[];
+  cwd: string;
+  environment: NodeJS.ProcessEnv;
+  lifecycleEnvironment: Record<string, string | undefined>;
+}
+
+export function buildSchedulerWorkerLaunchDescriptor(input: {
+  command: SchedulerWorkerCommand;
+  controllerHome: string;
+  repoId: string;
+  jobId: string;
+  controllerPid: number;
+  runtimeSourceRoot?: string;
+  isBun?: boolean;
+  execPath?: string;
+  environment?: NodeJS.ProcessEnv;
+  writeClaimEnvironment?: NodeJS.ProcessEnv;
+}): SchedulerWorkerLaunchDescriptor {
+  const isBun = input.isBun ?? Boolean(process.versions.bun);
+  const environmentSource = input.environment ?? process.env;
+  const executable = resolveSchedulerWorkerExecutable(isBun, input.execPath ?? process.execPath, environmentSource);
+  const workerArgs = [
+    '--controller-home', input.controllerHome,
+    '--repo-id', input.repoId,
+    '--job-id', input.jobId,
+    '--controller-pid', String(input.controllerPid),
+  ];
+  const args = isBun
+    ? [input.command.entry, ...workerArgs]
+    : ['--loader', input.command.loader, input.command.entry, ...workerArgs];
+  const environment: NodeJS.ProcessEnv = {
+    ...environmentSource,
+    FORGE_EXECUTION_WORKER: '1',
+    FORGE_CONTROLLER_HOME: input.controllerHome,
+    ...(input.runtimeSourceRoot ? { FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: input.runtimeSourceRoot } : {}),
+    ...(input.writeClaimEnvironment ?? {}),
+  };
+  return {
+    executable,
+    args,
+    cwd: input.command.cwd,
+    environment,
+    lifecycleEnvironment: selectSchedulerWorkerEnvironment(environment),
+  };
+}
+
 export class GlobalScheduler {
   private readonly controllerHome: string;
   private readonly actors: RepoActorRegistry;
@@ -366,24 +449,6 @@ export class GlobalScheduler {
     const workers = [...this.children.values()];
     this.children.clear();
     await Promise.all(workers.map((child) => terminateProcessTree(child.pid)));
-  }
-
-  private workerCommand(): { entry: string; loader: string; cwd: string } {
-    const sourceEntry = this.runtimeSourceRoot
-      ? join(this.runtimeSourceRoot, 'src', 'runtime', 'execution', 'workers', 'worker-entry.ts')
-      : fileURLToPath(new URL('../../execution/workers/worker-entry.ts', import.meta.url));
-    const loader = this.runtimeSourceRoot
-      ? join(this.runtimeSourceRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs')
-      : fileURLToPath(new URL('../../shared/node-ts-loader.mjs', import.meta.url));
-    const entry = this.workerEntrypoint ?? sourceEntry;
-    const cwd = this.runtimeSourceRoot ?? process.cwd();
-    if (!existsSync(entry)) throw new Error(`WORKER_ENTRYPOINT_MISSING: ${entry}`);
-    if (!process.versions.bun && !existsSync(loader)) throw new Error(`WORKER_LOADER_MISSING: ${loader}`);
-    return { entry, loader, cwd };
-  }
-
-  private workerEnvironment(): Record<string, string | undefined> {
-    return Object.fromEntries(WORKER_ENVIRONMENT_KEYS.map((key) => [key, process.env[key]]));
   }
 
   private persistSpawnedWorker(repoId: string, jobId: string, lifecycle: ExecutionWorkerLifecycle): void {
@@ -499,13 +564,18 @@ export class GlobalScheduler {
     if (!['dispatched', 'running'].includes(current.status)) return false;
     if (current.workerPid && this.pidAlive(current.workerPid)) return false;
     const command = (() => {
-      try { return this.workerCommand(); } catch (error) {
+      try {
+        return resolveSchedulerWorkerCommand({
+          runtimeSourceRoot: this.runtimeSourceRoot,
+          workerEntrypoint: this.workerEntrypoint,
+        });
+      } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const lifecycle: ExecutionWorkerLifecycle = {
           executable: process.execPath,
           args: [],
           cwd: this.runtimeSourceRoot ?? process.cwd(),
-          environment: this.workerEnvironment(),
+          environment: selectSchedulerWorkerEnvironment(process.env),
           ownerPid: this.controllerPid,
           attempt: current.attempt,
           maxAttempts: current.maxAttempts,
@@ -518,36 +588,26 @@ export class GlobalScheduler {
       }
     })();
     if (!command) return false;
-    const bun = Boolean(process.versions.bun);
-    const workerExecutable = resolveSchedulerWorkerExecutable(bun);
     // Pass the parent's captured Runtime owner and whole-release claim. A Worker
     // never re-adopts current authority after spawn; owner/release rotation fences it.
     const writeClaim = getRuntimeWriteClaim();
-    const writeClaimEnvironment = writeClaim ? runtimeWriteClaimEnvironment(writeClaim) : {};
-    const workerArgs = [
-      '--controller-home', this.controllerHome,
-      '--repo-id', repoId,
-      '--job-id', jobId,
-      '--controller-pid', String(this.controllerPid),
-    ];
-    const args = bun
-      ? [command.entry, ...workerArgs]
-      : ['--loader', command.loader, command.entry, ...workerArgs];
-    const environment: Record<string, string | undefined> = {
-      ...process.env,
-      FORGE_EXECUTION_WORKER: '1',
-      FORGE_CONTROLLER_HOME: this.controllerHome,
-      ...(this.runtimeSourceRoot ? { FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: this.runtimeSourceRoot } : {}),
-      ...writeClaimEnvironment,
-    };
+    const launch = buildSchedulerWorkerLaunchDescriptor({
+      command,
+      controllerHome: this.controllerHome,
+      repoId,
+      jobId,
+      controllerPid: this.controllerPid,
+      runtimeSourceRoot: this.runtimeSourceRoot,
+      writeClaimEnvironment: writeClaim ? runtimeWriteClaimEnvironment(writeClaim) : {},
+    });
     const stderrPath = join(executionJobRoot(this.controllerHome, repoId), 'worker-stderr', `${jobId}-attempt-${current.attempt}.log`);
     mkdirSync(dirname(stderrPath), { recursive: true });
     writeFileSync(stderrPath, '', 'utf8');
     const lifecycle: ExecutionWorkerLifecycle = {
-      executable: workerExecutable,
-      args,
-      cwd: command.cwd,
-      environment: Object.fromEntries(WORKER_ENVIRONMENT_KEYS.map((key) => [key, environment[key]])),
+      executable: launch.executable,
+      args: launch.args,
+      cwd: launch.cwd,
+      environment: launch.lifecycleEnvironment,
       ownerPid: this.controllerPid,
       ...(writeClaim ? {
         runtimeInstanceId: writeClaim.runtimeInstanceId,
@@ -565,11 +625,11 @@ export class GlobalScheduler {
     this.persistSpawnedWorker(repoId, jobId, lifecycle);
     let child: ChildProcess;
     try {
-      child = spawn(workerExecutable, args, {
-        cwd: command.cwd,
+      child = spawn(launch.executable, launch.args, {
+        cwd: launch.cwd,
         stdio: ['ignore', 'ignore', 'pipe'],
         detached: process.platform !== 'win32',
-        env: environment,
+        env: launch.environment,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
