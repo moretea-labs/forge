@@ -32,6 +32,7 @@ import {
 } from '../../src/runtime/control-plane/global-scheduler/dispatch-capacity';
 import { selectExecutionJobDispatchRepositories } from '../../src/runtime/control-plane/dispatch-priority';
 import { selectSchedulerProjectionRefreshTargets } from '../../src/runtime/control-plane/global-scheduler/projection-refresh';
+import { evaluateSchedulerWorkerExitCandidate } from '../../src/runtime/control-plane/global-scheduler/worker-exit-decision';
 
 const roots: string[] = [];
 
@@ -243,6 +244,80 @@ describe('control-plane hardening', () => {
 
     expect(targets.repositories.map((entry) => entry.repoId)).toEqual(['repo-b', 'repo-a']);
     expect(targets.rebuildRepoIds).toEqual(['repo-missing']);
+  });
+
+  test('isolates Scheduler worker-exit candidate fencing and terminal classification from exit side effects', () => {
+    const lifecycle = {
+      executable: '/runtime/worker',
+      args: [],
+      cwd: '/repo',
+      environment: {},
+      ownerPid: 10,
+      workerPid: 20,
+      attempt: 2,
+      maxAttempts: 3,
+      spawnedAt: '2026-08-21T00:00:00.000Z',
+      startupState: 'registered' as const,
+    };
+    const diagnosticLifecycle = {
+      ...lifecycle,
+      exitedAt: '2026-08-21T00:00:01.000Z',
+      exitCode: 1,
+      signal: null,
+      stderr: 'boom',
+      stderrTruncated: false,
+      startupState: 'exited' as const,
+    };
+    const activeJob = {
+      repoId: 'repo-a',
+      jobId: 'job-a',
+      attempt: 2,
+      maxAttempts: 3,
+      workerPid: 20,
+      status: 'running',
+      workerLifecycle: lifecycle,
+      leaseRefs: [],
+    } as unknown as ExecutionJob;
+
+    expect(evaluateSchedulerWorkerExitCandidate({
+      job: activeJob,
+      attempt: 1,
+      childPid: 20,
+      lifecycle,
+      diagnosticLifecycle,
+    })).toEqual({ kind: 'ignore', reason: 'attempt_mismatch' });
+    expect(evaluateSchedulerWorkerExitCandidate({
+      job: activeJob,
+      attempt: 2,
+      childPid: 21,
+      lifecycle,
+      diagnosticLifecycle,
+    })).toEqual({ kind: 'ignore', reason: 'pid_mismatch' });
+
+    const active = evaluateSchedulerWorkerExitCandidate({
+      job: activeJob,
+      attempt: 2,
+      childPid: 20,
+      lifecycle,
+      diagnosticLifecycle,
+    });
+    expect(active.kind).toBe('active');
+    if (active.kind === 'active') {
+      expect(active.lifecycle).toMatchObject({ startupState: 'exited', stderr: 'boom', workerPid: 20 });
+    }
+
+    const terminal = evaluateSchedulerWorkerExitCandidate({
+      job: { ...activeJob, status: 'succeeded' } as ExecutionJob,
+      attempt: 2,
+      childPid: 20,
+      lifecycle,
+      diagnosticLifecycle,
+    });
+    expect(terminal.kind).toBe('terminal');
+    if (terminal.kind === 'terminal') {
+      expect(terminal.job.status).toBe('succeeded');
+      expect(terminal.lifecycle).toMatchObject({ startupState: 'exited', stderr: 'boom' });
+    }
   });
 
   test('projects canonical Runtime ownership through the transitional daemon status shape', () => {

@@ -46,6 +46,7 @@ import {
 import { refreshSchedulerRepositoryProjections } from './projection-refresh';
 import { createSchedulerWorkerStderrCapture } from './worker-stderr';
 import { persistSchedulerWorkerAttachment } from './worker-attachment';
+import { evaluateSchedulerWorkerExitCandidate } from './worker-exit-decision';
 import {
   persistSchedulerSpawnedWorkerLifecycle,
   persistSchedulerTerminalWorkerLifecycle,
@@ -275,56 +276,69 @@ export class GlobalScheduler {
       startupError,
     });
     try {
-      const current = getExecutionJob(this.controllerHome, repoId, jobId);
-      if (current.attempt !== attempt) return;
-      if (child?.pid && current.workerPid !== undefined && current.workerPid !== child.pid) return;
-      const currentLifecycle = current.workerLifecycle ?? lifecycle;
-      const mergedLifecycle = { ...currentLifecycle, ...diagnosticLifecycle };
-      if (persistSchedulerTerminalWorkerLifecycle({
-        controllerHome: this.controllerHome,
-        repoId,
-        jobId,
-        status: current.status,
-        lifecycle: mergedLifecycle,
-      })) return;
+      const current = evaluateSchedulerWorkerExitCandidate({
+        job: getExecutionJob(this.controllerHome, repoId, jobId),
+        attempt,
+        childPid: child?.pid,
+        lifecycle,
+        diagnosticLifecycle,
+      });
+      if (current.kind === 'ignore') return;
+      if (current.kind === 'terminal') {
+        persistSchedulerTerminalWorkerLifecycle({
+          controllerHome: this.controllerHome,
+          repoId,
+          jobId,
+          status: current.job.status,
+          lifecycle: current.lifecycle,
+        });
+        return;
+      }
 
       // Prefer durable receipt recovery over sleep-based grace. When the Worker
       // already wrote a completed/delegated receipt for this attempt/PID/epoch/
       // lease ownership, finalize from that receipt and never emit WORKER_EXITED.
-      const recovered = tryRecoverJobFromWorkerReceipt(this.controllerHome, current);
+      const recovered = tryRecoverJobFromWorkerReceipt(this.controllerHome, current.job);
       if (recovered) {
-        updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({ ...latest, workerLifecycle: mergedLifecycle }));
+        updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({ ...latest, workerLifecycle: current.lifecycle }));
         try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
         return;
       }
-      const rechecked = getExecutionJob(this.controllerHome, repoId, jobId);
-      if (rechecked.attempt !== attempt) return;
-      const recheckedLifecycle = rechecked.workerLifecycle ?? lifecycle;
-      const recheckedMerged = { ...recheckedLifecycle, ...diagnosticLifecycle };
-      if (persistSchedulerTerminalWorkerLifecycle({
-        controllerHome: this.controllerHome,
-        repoId,
-        jobId,
-        status: rechecked.status,
-        lifecycle: recheckedMerged,
-      })) return;
+      const rechecked = evaluateSchedulerWorkerExitCandidate({
+        job: getExecutionJob(this.controllerHome, repoId, jobId),
+        attempt,
+        childPid: child?.pid,
+        lifecycle,
+        diagnosticLifecycle,
+      });
+      if (rechecked.kind === 'ignore') return;
+      if (rechecked.kind === 'terminal') {
+        persistSchedulerTerminalWorkerLifecycle({
+          controllerHome: this.controllerHome,
+          repoId,
+          jobId,
+          status: rechecked.job.status,
+          lifecycle: rechecked.lifecycle,
+        });
+        return;
+      }
 
       const failure = buildSchedulerWorkerExitFailure({
-        lifecycle: recheckedMerged,
-        attempt: rechecked.attempt,
-        maxAttempts: rechecked.maxAttempts,
+        lifecycle: rechecked.lifecycle,
+        attempt: rechecked.job.attempt,
+        maxAttempts: rechecked.job.maxAttempts,
         exitCode,
         signal,
         stderr,
         stderrTruncated,
         startupError,
       });
-      releaseExecutionLeases(this.controllerHome, repoId, jobId, rechecked.leaseRefs);
+      releaseExecutionLeases(this.controllerHome, repoId, jobId, rechecked.job.leaseRefs);
       transitionExecutionJob(this.controllerHome, repoId, jobId, failure.retryable ? 'queued' : 'failed', {
         workerPid: undefined,
         heartbeatAt: undefined,
         leaseRefs: [],
-        workerLifecycle: recheckedMerged,
+        workerLifecycle: rechecked.lifecycle,
         error: failure.error,
       });
       try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
