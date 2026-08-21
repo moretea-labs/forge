@@ -33,6 +33,7 @@ import {
 import { selectExecutionJobDispatchRepositories } from '../../src/runtime/control-plane/dispatch-priority';
 import { selectSchedulerProjectionRefreshTargets } from '../../src/runtime/control-plane/global-scheduler/projection-refresh';
 import { evaluateSchedulerWorkerExitCandidate } from '../../src/runtime/control-plane/global-scheduler/worker-exit-decision';
+import { reconcileSchedulerWorkerExit } from '../../src/runtime/control-plane/global-scheduler/worker-exit-reconciler';
 
 const roots: string[] = [];
 
@@ -318,6 +319,106 @@ describe('control-plane hardening', () => {
       expect(terminal.job.status).toBe('succeeded');
       expect(terminal.lifecycle).toMatchObject({ startupState: 'exited', stderr: 'boom' });
     }
+  });
+
+  test('preserves Scheduler worker-exit side-effect ordering outside GlobalScheduler', () => {
+    const lifecycle = {
+      executable: '/runtime/worker',
+      args: [],
+      cwd: '/repo',
+      environment: {},
+      ownerPid: 10,
+      workerPid: 20,
+      attempt: 2,
+      maxAttempts: 3,
+      spawnedAt: '2026-08-21T00:00:00.000Z',
+      startupState: 'registered' as const,
+    };
+    const diagnosticLifecycle = {
+      ...lifecycle,
+      exitedAt: '2026-08-21T00:00:01.000Z',
+      exitCode: 1,
+      signal: null,
+      stderr: 'boom',
+      stderrTruncated: false,
+      startupState: 'exited' as const,
+    };
+    const activeJob = {
+      repoId: 'repo-a',
+      jobId: 'job-a',
+      attempt: 2,
+      maxAttempts: 3,
+      workerPid: 20,
+      status: 'running',
+      workerLifecycle: lifecycle,
+      leaseRefs: ['lease-a'],
+    } as unknown as ExecutionJob;
+    const input = {
+      controllerHome: '/controller',
+      repoId: 'repo-a',
+      jobId: 'job-a',
+      attempt: 2,
+      childPid: 20,
+      lifecycle,
+      diagnosticLifecycle,
+      exitCode: 1,
+      signal: null,
+      stderr: 'boom',
+      stderrTruncated: false,
+    };
+
+    const terminalCalls: string[] = [];
+    reconcileSchedulerWorkerExit(input, {
+      getJob: () => ({ ...activeJob, status: 'succeeded' } as ExecutionJob),
+      recoverReceipt: () => { throw new Error('must not recover terminal job'); },
+      persistTerminalLifecycle: () => { terminalCalls.push('terminal'); return true; },
+      updateJob: () => { throw new Error('must not update terminal job directly'); },
+      releaseLeases: () => { throw new Error('must not release terminal job leases'); },
+      transitionJob: () => { throw new Error('must not transition terminal job'); },
+      rebuildProjection: () => { throw new Error('must not rebuild outside terminal persistence'); },
+    });
+    expect(terminalCalls).toEqual(['terminal']);
+
+    const recoveredCalls: string[] = [];
+    reconcileSchedulerWorkerExit(input, {
+      getJob: () => activeJob,
+      recoverReceipt: () => {
+        recoveredCalls.push('recover');
+        return { ...activeJob, status: 'succeeded' } as ExecutionJob;
+      },
+      persistTerminalLifecycle: () => false,
+      updateJob: (_home, _repoId, _jobId, updater) => {
+        recoveredCalls.push('update');
+        return updater({ ...activeJob, status: 'succeeded' } as ExecutionJob);
+      },
+      releaseLeases: () => { throw new Error('must not release recovered job leases'); },
+      transitionJob: () => { throw new Error('must not transition recovered job'); },
+      rebuildProjection: () => { recoveredCalls.push('projection'); },
+    });
+    expect(recoveredCalls).toEqual(['recover', 'update', 'projection']);
+
+    const failureCalls: string[] = [];
+    let reads = 0;
+    let transitionedStatus: string | undefined;
+    reconcileSchedulerWorkerExit(input, {
+      getJob: () => {
+        reads += 1;
+        failureCalls.push(`read-${reads}`);
+        return activeJob;
+      },
+      recoverReceipt: () => { failureCalls.push('recover'); return undefined; },
+      persistTerminalLifecycle: () => false,
+      updateJob: () => { throw new Error('must not update abnormal exit directly'); },
+      releaseLeases: () => { failureCalls.push('release'); },
+      transitionJob: (_home, _repoId, _jobId, status) => {
+        transitionedStatus = status;
+        failureCalls.push('transition');
+        return activeJob;
+      },
+      rebuildProjection: () => { failureCalls.push('projection'); },
+    });
+    expect(failureCalls).toEqual(['read-1', 'recover', 'read-2', 'release', 'transition', 'projection']);
+    expect(transitionedStatus).toBe('queued');
   });
 
   test('projects canonical Runtime ownership through the transitional daemon status shape', () => {

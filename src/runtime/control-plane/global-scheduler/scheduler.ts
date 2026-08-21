@@ -13,12 +13,8 @@ import {
   getExecutionJob,
   listActiveExecutionJobs,
   markExecutionJobSchedulerObserved,
-  transitionExecutionJob,
-  updateExecutionJob,
 } from '../../execution/jobs/store';
 import { type ExecutionWorkerLifecycle } from '../../execution/jobs/types';
-import { tryRecoverJobFromWorkerReceipt } from '../../execution/jobs/receipt-recovery';
-import { releaseExecutionLeases } from '../../resources/leases/store';
 import { RepoActorRegistry } from '../repo-actor/registry';
 import { reconcileExecutionJobsAsync } from './reconciliation';
 import { tickSchedules } from '../../workflow/schedules/engine';
@@ -30,7 +26,6 @@ import { gcTerminalProcesses } from '../../execution/process-runtime/gc';
 import { reconcilePendingWorkValidations } from '../execution/work-validation-reconciler';
 import { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
 import { schedulerDispatchAllowed } from '../facade/work-admission-policy';
-import { rebuildRepositoryProjection } from '../../projections/materialized-view';
 import { sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
 import { selectExecutionJobDispatchRepositories } from '../dispatch-priority';
 import {
@@ -46,13 +41,9 @@ import {
 import { refreshSchedulerRepositoryProjections } from './projection-refresh';
 import { createSchedulerWorkerStderrCapture } from './worker-stderr';
 import { persistSchedulerWorkerAttachment } from './worker-attachment';
-import { evaluateSchedulerWorkerExitCandidate } from './worker-exit-decision';
+import { reconcileSchedulerWorkerExit } from './worker-exit-reconciler';
+import { persistSchedulerSpawnedWorkerLifecycle } from './worker-lifecycle-store';
 import {
-  persistSchedulerSpawnedWorkerLifecycle,
-  persistSchedulerTerminalWorkerLifecycle,
-} from './worker-lifecycle-store';
-import {
-  buildSchedulerWorkerExitFailure,
   buildSchedulerWorkerExitedLifecycle,
   buildSchedulerWorkerSpawnFailureLifecycle,
   buildSchedulerWorkerSpawnedLifecycle,
@@ -275,74 +266,20 @@ export class GlobalScheduler {
       stderrTruncated,
       startupError,
     });
-    try {
-      const current = evaluateSchedulerWorkerExitCandidate({
-        job: getExecutionJob(this.controllerHome, repoId, jobId),
-        attempt,
-        childPid: child?.pid,
-        lifecycle,
-        diagnosticLifecycle,
-      });
-      if (current.kind === 'ignore') return;
-      if (current.kind === 'terminal') {
-        persistSchedulerTerminalWorkerLifecycle({
-          controllerHome: this.controllerHome,
-          repoId,
-          jobId,
-          status: current.job.status,
-          lifecycle: current.lifecycle,
-        });
-        return;
-      }
-
-      // Prefer durable receipt recovery over sleep-based grace. When the Worker
-      // already wrote a completed/delegated receipt for this attempt/PID/epoch/
-      // lease ownership, finalize from that receipt and never emit WORKER_EXITED.
-      const recovered = tryRecoverJobFromWorkerReceipt(this.controllerHome, current.job);
-      if (recovered) {
-        updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({ ...latest, workerLifecycle: current.lifecycle }));
-        try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
-        return;
-      }
-      const rechecked = evaluateSchedulerWorkerExitCandidate({
-        job: getExecutionJob(this.controllerHome, repoId, jobId),
-        attempt,
-        childPid: child?.pid,
-        lifecycle,
-        diagnosticLifecycle,
-      });
-      if (rechecked.kind === 'ignore') return;
-      if (rechecked.kind === 'terminal') {
-        persistSchedulerTerminalWorkerLifecycle({
-          controllerHome: this.controllerHome,
-          repoId,
-          jobId,
-          status: rechecked.job.status,
-          lifecycle: rechecked.lifecycle,
-        });
-        return;
-      }
-
-      const failure = buildSchedulerWorkerExitFailure({
-        lifecycle: rechecked.lifecycle,
-        attempt: rechecked.job.attempt,
-        maxAttempts: rechecked.job.maxAttempts,
-        exitCode,
-        signal,
-        stderr,
-        stderrTruncated,
-        startupError,
-      });
-      releaseExecutionLeases(this.controllerHome, repoId, jobId, rechecked.job.leaseRefs);
-      transitionExecutionJob(this.controllerHome, repoId, jobId, failure.retryable ? 'queued' : 'failed', {
-        workerPid: undefined,
-        heartbeatAt: undefined,
-        leaseRefs: [],
-        workerLifecycle: rechecked.lifecycle,
-        error: failure.error,
-      });
-      try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
-    } catch { /* the Job may have been finalized by the Worker or reconciliation */ }
+    reconcileSchedulerWorkerExit({
+      controllerHome: this.controllerHome,
+      repoId,
+      jobId,
+      attempt,
+      childPid: child?.pid,
+      lifecycle,
+      diagnosticLifecycle,
+      exitCode,
+      signal,
+      stderr,
+      stderrTruncated,
+      startupError,
+    });
   }
 
   private spawnWorker(repoId: string, jobId: string): boolean {
