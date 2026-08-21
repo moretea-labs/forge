@@ -26,6 +26,10 @@ import { gcTerminalProcesses } from '../../execution/process-runtime/gc';
 import { reconcilePendingWorkValidations } from '../execution/work-validation-reconciler';
 import { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
 import { schedulerDispatchAllowed } from '../facade/work-admission-policy';
+import {
+  runSchedulerPeriodicCleanup,
+  runSchedulerValidationReconciliation,
+} from './maintenance';
 import { sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
 import { selectExecutionJobDispatchRepositories } from '../dispatch-priority';
 import {
@@ -457,43 +461,25 @@ export class GlobalScheduler {
       // Advance the interval before cleanup so a failing pass cannot create a
       // tight retry loop on every scheduler tick.
       this.lastCleanupAt = now;
-      try {
-        this.runtimeCleanup(this.controllerHome, {
-          reason: 'periodic',
-          nowMs: now,
-          protectedControllerPid: this.controllerPid,
-        });
-      } catch (error) {
-        console.error('[forge cleanup] periodic cleanup failed:', error);
-      }
-      try {
-        await this.terminalWorkCleanup(this.controllerHome, { nowMs: now });
-      } catch (error) {
-        console.error('[forge cleanup] terminal Work cleanup failed:', error);
-      }
-      if (repositories.length > 0) {
-        const slot = Math.floor(now / RUNTIME_CLEANUP_INTERVAL_MS) % repositories.length;
-        const repo = repositories[slot]!;
-        const result = this.processGc({ controllerHome: this.controllerHome, repoId: repo.repoId });
-        if (!result.ok) console.error('[forge cleanup] Process GC failed:', result.error ?? 'unknown error');
-      }
+      await runSchedulerPeriodicCleanup({
+        controllerHome: this.controllerHome,
+        controllerPid: this.controllerPid,
+        nowMs: now,
+        cleanupIntervalMs: RUNTIME_CLEANUP_INTERVAL_MS,
+        repositories,
+        runtimeCleanup: this.runtimeCleanup,
+        terminalWorkCleanup: this.terminalWorkCleanup,
+        processGc: this.processGc,
+      });
     }
     if (now - this.lastReconcile >= 5_000) {
       await reconcileExecutionJobsAsync(this.controllerHome);
-      for (const repository of repositories) {
-        const validation = this.workValidationReconcile(this.controllerHome, repository.repoId, 500);
-        if (validation.errors.length > 0) {
-          console.error(
-            `[forge validation] background Work reconciliation reported ${validation.errors.length} error(s) for ${repository.repoId}`,
-          );
-        }
-        const editValidation = await this.editValidationReconcile(this.controllerHome, repository, 200);
-        if (editValidation.errors.length > 0) {
-          console.error(
-            `[forge validation] background EditSession reconciliation reported ${editValidation.errors.length} error(s) for ${repository.repoId}`,
-          );
-        }
-      }
+      await runSchedulerValidationReconciliation({
+        controllerHome: this.controllerHome,
+        repositories,
+        workValidationReconcile: this.workValidationReconcile,
+        editValidationReconcile: this.editValidationReconcile,
+      });
       this.lastReconcile = now;
       this.lastReconcileAt = new Date(now).toISOString();
     }
