@@ -18,6 +18,7 @@ import { getControllerSession } from '../../src/runtime/control-plane/facade/con
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
 import { createSchedule, recordScheduleOccurrenceHandoff, saveOccurrence } from '../../src/runtime/workflow/schedules/store';
+import { normalizeSchedulerConfig } from '../../src/runtime/control-plane/global-scheduler/scheduler';
 
 const roots: string[] = [];
 
@@ -41,6 +42,38 @@ function passingDiagnostics() {
 }
 
 describe('control-plane hardening', () => {
+  test('normalizes Scheduler configuration outside the runtime lifecycle constructor', () => {
+    expect(normalizeSchedulerConfig({
+      maxWorkers: 0,
+      pollIntervalMs: 1,
+      idleBackoffMaxMs: 100,
+      heartbeatIntervalMs: 10,
+      heartbeatTimeoutMs: 500,
+      minFreeMemoryMb: 1,
+      maxLoadPerCpu: 0,
+    }, {})).toMatchObject({
+      maxWorkers: 1,
+      pollIntervalMs: 50,
+      idleBackoffMaxMs: 250,
+      heartbeatIntervalMs: 25,
+      heartbeatTimeoutMs: 1_000,
+      minFreeMemoryMb: 64,
+      maxLoadPerCpu: 0.25,
+    });
+
+    expect(normalizeSchedulerConfig({}, {
+      FORGE_MAX_WORKERS: '7',
+      FORGE_IDLE_BACKOFF_MAX_MS: '3000',
+      FORGE_SCHEDULER_HEARTBEAT_INTERVAL_MS: '2000',
+      FORGE_SCHEDULER_HEARTBEAT_TIMEOUT_MS: '4000',
+    })).toMatchObject({
+      maxWorkers: 7,
+      idleBackoffMaxMs: 3_000,
+      heartbeatIntervalMs: 2_000,
+      heartbeatTimeoutMs: 12_000,
+    });
+  });
+
   test('projects canonical Runtime ownership through the transitional daemon status shape', () => {
     const controllerHome = temp('forge-runtime-status-');
     const ownership = acquireRuntimeOwnership(controllerHome, 'runtime-test');
