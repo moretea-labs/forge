@@ -4095,7 +4095,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             const work = getWorkContract(store, workId);
             if (work && !['cancelled', 'completed', 'failed'].includes(work.status)) {
               const identity = authenticatedFacadeControllerIdentity(ctx, args);
-              const currentOwner = getControllerSession(store, workId);
               resumedControllerSession = resumeControllerSession(store, {
                 workId,
                 controllerId: identity.controllerId,
@@ -4105,6 +4104,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 controllerInstanceId: identity.controllerInstanceId,
                 leaseMs: 3_600_000,
               });
+              const existingHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
+              if (existingHandle && (existingHandle.principalId !== identity.principalId || existingHandle.sessionId !== identity.sessionId)) {
+                writeWorkHandle(ctx.controllerHome, {
+                  ...existingHandle,
+                  principalId: identity.principalId,
+                  sessionId: identity.sessionId,
+                });
+              }
             }
             if (workId) {
               const reconciled = reconcileTerminalFacadeWorkVerifications(ctx, repository, workId);
