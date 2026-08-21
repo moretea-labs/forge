@@ -508,9 +508,11 @@ requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.t
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-decision.ts', 'TERMINAL_JOB_STATUSES');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'reconcileSchedulerWorkerExit');
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'releaseExecutionLeases');
+requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'registerSchedulerWorkerProcess');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'spawnSchedulerWorkerProcess');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'wireSchedulerWorkerProcess');
 requireText('src/runtime/control-plane/global-scheduler/worker-process.ts', 'dependencies.spawnProcess');
+requireText('src/runtime/control-plane/global-scheduler/worker-process.ts', 'terminateProcessTree');
 requireText('src/runtime/control-plane/global-scheduler/worker-process.ts', "child.once('close'");
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'writeAgentExecutableReadinessSnapshot');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'sampleRepositoryGitStatusForRepositories');

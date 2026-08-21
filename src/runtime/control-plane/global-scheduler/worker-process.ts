@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
+import { terminateProcessTree } from '../../shared/process-tree';
 import type { SchedulerWorkerLaunchDescriptor } from './worker-launch';
 import type { SchedulerWorkerStderrCapture } from './worker-stderr';
 
@@ -37,6 +38,38 @@ export function spawnSchedulerWorkerProcess(
       startupError: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+export interface SchedulerWorkerRegistrationDependencies {
+  terminateWorker(pid: number): Promise<unknown>;
+}
+
+const DEFAULT_REGISTRATION_DEPENDENCIES: SchedulerWorkerRegistrationDependencies = {
+  terminateWorker: terminateProcessTree,
+};
+
+export function registerSchedulerWorkerProcess(input: {
+  jobId: string;
+  child: ChildProcess;
+  children: Map<string, ChildProcess>;
+  attach(workerPid: number): boolean;
+}, dependencies: SchedulerWorkerRegistrationDependencies = DEFAULT_REGISTRATION_DEPENDENCIES): boolean {
+  const { child } = input;
+  if (!child.pid) {
+    child.unref();
+    return false;
+  }
+
+  input.children.set(input.jobId, child);
+  if (!input.attach(child.pid)) {
+    input.children.delete(input.jobId);
+    void dependencies.terminateWorker(child.pid);
+    child.unref();
+    return false;
+  }
+
+  child.unref();
+  return true;
 }
 
 export interface SchedulerWorkerProcessExit {

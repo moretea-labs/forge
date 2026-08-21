@@ -21,6 +21,7 @@ import {
 import { createSchedulerWorkerStderrCapture } from '../../src/runtime/control-plane/global-scheduler/worker-stderr';
 import { persistSchedulerWorkerAttachment } from '../../src/runtime/control-plane/global-scheduler/worker-attachment';
 import {
+  registerSchedulerWorkerProcess,
   spawnSchedulerWorkerProcess,
   wireSchedulerWorkerProcess,
 } from '../../src/runtime/control-plane/global-scheduler/worker-process';
@@ -356,6 +357,45 @@ describe('repository child process environment', () => {
       platform: 'win32',
       spawnProcess: (() => { throw new Error('spawn denied'); }) as typeof import('child_process').spawn,
     })).toEqual({ ok: false, startupError: 'spawn denied' });
+  });
+
+  test('registers Scheduler worker processes and preserves attach failure cleanup ordering', async () => {
+    const events: string[] = [];
+    const children = new Map<string, ChildProcess>();
+    const child = {
+      pid: 88,
+      unref: () => { events.push('unref'); },
+    } as unknown as ChildProcess;
+
+    expect(registerSchedulerWorkerProcess({
+      jobId: 'job-a',
+      child,
+      children,
+      attach: (pid) => {
+        events.push(`attach:${pid}`);
+        return false;
+      },
+    }, {
+      terminateWorker: async (pid) => { events.push(`terminate:${pid}`); },
+    })).toBe(false);
+    await Promise.resolve();
+    expect(children.has('job-a')).toBe(false);
+    expect(events).toEqual(['attach:88', 'terminate:88', 'unref']);
+
+    events.length = 0;
+    expect(registerSchedulerWorkerProcess({
+      jobId: 'job-a',
+      child,
+      children,
+      attach: (pid) => {
+        events.push(`attach:${pid}`);
+        return true;
+      },
+    }, {
+      terminateWorker: async (pid) => { events.push(`terminate:${pid}`); },
+    })).toBe(true);
+    expect(children.get('job-a')).toBe(child);
+    expect(events).toEqual(['attach:88', 'unref']);
   });
 
   test('wires Scheduler worker process events with one-shot finalization and tracked-child cleanup', () => {

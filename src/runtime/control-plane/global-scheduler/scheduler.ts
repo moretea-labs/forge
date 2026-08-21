@@ -41,7 +41,11 @@ import {
 import { refreshSchedulerRepositoryProjections } from './projection-refresh';
 import { createSchedulerWorkerStderrCapture } from './worker-stderr';
 import { persistSchedulerWorkerAttachment } from './worker-attachment';
-import { spawnSchedulerWorkerProcess, wireSchedulerWorkerProcess } from './worker-process';
+import {
+  registerSchedulerWorkerProcess,
+  spawnSchedulerWorkerProcess,
+  wireSchedulerWorkerProcess,
+} from './worker-process';
 import { reconcileSchedulerWorkerExit } from './worker-exit-reconciler';
 import { persistSchedulerSpawnedWorkerLifecycle } from './worker-lifecycle-store';
 import {
@@ -394,26 +398,18 @@ export class GlobalScheduler {
         );
       },
     });
-    if (!child.pid) {
-      child.unref();
-      return false;
-    }
-    this.children.set(jobId, child);
-    const attached = persistSchedulerWorkerAttachment({
-      controllerHome: this.controllerHome,
-      repoId,
+    return registerSchedulerWorkerProcess({
       jobId,
-      workerPid: child.pid,
-      lifecycle,
+      child,
+      children: this.children,
+      attach: (workerPid) => persistSchedulerWorkerAttachment({
+        controllerHome: this.controllerHome,
+        repoId,
+        jobId,
+        workerPid,
+        lifecycle,
+      }),
     });
-    if (!attached) {
-      this.children.delete(jobId);
-      void terminateProcessTree(child.pid);
-      child.unref();
-      return false;
-    }
-    child.unref();
-    return true;
   }
 
   private refreshDarwinAvailableMemoryMb(fallback: number): void {
