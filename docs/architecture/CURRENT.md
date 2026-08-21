@@ -21,6 +21,7 @@ Quality is prioritized over interactive performance; performance is prioritized 
 ## Context engine
 
 - `rh_context` is the primary discovery/read path and may be called repeatedly.
+- For exact or selected source paths, `rh_context` resolves applicable repository guidance by walking only that path's bounded directory ancestry from repository root to the nearest directory and returning present `AGENTS.md` / `CLAUDE.md` files in `instructionContext`. These files are guidance-only evidence: they do not consume the source `max_files` budget, define semantic scope, or become lifecycle/architecture authority. Missing optional guidance files are normal; policy denial, read failure, or bounded truncation stays visible as a coverage gap.
 - The first request may perform one broad parallel discovery fan-in; natural-language lexical terms are heuristic hints, not completeness obligations. Broad lexical discovery stops after sufficient distinct candidate evidence across multiple hints and reports the remaining coverage gap instead of scanning toward a quota for every guessed term; exact known-file and compiler-semantic retrieval remain strict.
 - Once credible paths or symbols are discovered, the semantic controller derives the next retrieval from returned source and prefers exact known paths, compiler-backed symbol navigation, or structural relationships over repeating the same broad lexical scan. Follow-up requests reuse in-process/session caches.
 - Exact known paths reserve retrieval budget and current raw source is authoritative.

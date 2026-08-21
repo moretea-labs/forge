@@ -45,6 +45,7 @@ import {
 import { issueTaskFocus, ledgerTask } from './context/focus';
 import { addReason, coveredByGlob, expandKnownPath, looksLikeGlob, readableFile } from './context/known-paths';
 import { structuralResult } from './context/structural';
+import { buildRepositoryInstructionContext } from './context/instruction-context';
 
 export { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from './context/types';
 export type {
@@ -542,6 +543,12 @@ export function buildControllerContextPack(
     },
   };
   const inspectedFiles = files.map((file) => file.path);
+  const instructionContext = buildRepositoryInstructionContext(
+    repoRoot,
+    policy,
+    [...exactKnownFiles, ...inspectedFiles],
+    { maxCharsPerContract: Math.min(maxCharsPerSnippet, 12_000) },
+  );
   const inspectedSet = new Set(inspectedFiles);
   const likelyRelatedNotInspected = Array.from(new Set([
     ...rankedCandidates.map((entry) => entry.path),
@@ -585,6 +592,7 @@ export function buildControllerContextPack(
       truncated: searchTruncated,
       cacheHit: lexicalCacheHit,
     },
+    instructionContext,
     structuralContext,
     impactContext,
     files,
@@ -649,6 +657,9 @@ export function buildControllerContextPack(
           ? "The pack contains policy-approved current raw source with file SHA identities, but returned snippets are bounded evidence rather than proof of semantic completeness. After reading this evidence, derive new exact paths, symbols, tests, or relationships from the source itself. A guessed lexical term with no result is not by itself a reason to keep scanning or repeat the same broad query."
           : "Investigation modes may intentionally expand exact ranges, structural relationships, tests, and neighboring modules before any implementation decision.",
         "Search/CodeGraph ranking is discovery evidence, not a business-semantics authority. impactContext makes the bounded evidence surface and coverage gaps explicit; ChatGPT still decides semantic sufficiency.",
+        instructionContext.contracts.length > 0
+          ? `Applicable repository guidance was resolved hierarchically for selected source paths: ${instructionContext.contracts.map((entry) => entry.path).join(", ")}. These AGENTS.md/CLAUDE.md files are guidance-only evidence and do not define semantic scope.`
+          : "No applicable AGENTS.md/CLAUDE.md guidance file was found for the selected source paths.",
         impactDomains.length > 0 ? `Impact domains were selected by ChatGPT and expanded mechanically in this same retrieval call: ${impactDomains.join(", ")}. Missing or omitted domain evidence is an ambiguity signal, not proof that the domain is irrelevant.` : "No explicit cross-cutting impact domains were requested; ChatGPT may add them when state, scheduling, notifications, events, caching, API, or concurrency could materially change the implementation.",
         "CodeGraph structural evidence is discovery evidence. Raw source access still passes through Forge repository policy and current-file reads.",
         structuralContext.status === "stale" ? "CodeGraph reports stale structural evidence. Treat graph relationships as hints and prefer the returned current raw source for changed files." : structuralContext.status === "unavailable" || structuralContext.status === "degraded" ? "Structural context was unavailable or degraded; bounded text search remains the fallback." : structuralContext.status === "ready" ? "CodeGraph structural context was queried read-only with index sync disabled." : "Structural context was not requested.",

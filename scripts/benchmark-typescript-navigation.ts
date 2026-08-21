@@ -139,6 +139,7 @@ for (const case_ of benchmarkCases) {
       references: warmReferences.locations.length,
       definitions: definitions.locations.length,
       implementations: implementations.locations.length,
+      crossFileReferences: warmReferences.locations.filter((location) => location.path !== case_.path).length,
       sampleReferences: warmReferences.locations.slice(0, 8),
     },
     lexical: {
@@ -165,7 +166,7 @@ const assertions = {
   allDefinitionsResolved: results.every((entry) => entry.semantic.definitions >= 1),
   allReferencesResolved: results.every((entry) => entry.semantic.references >= 1),
   allImplementationsResolved: results.every((entry) => entry.semantic.implementations >= 1),
-  semanticFindsNonLexicalReferences: results.some((entry) => entry.semantic.references > entry.lexical.exactMatches),
+  crossFileSemanticReferencesResolved: results.every((entry) => entry.semantic.crossFileReferences >= 1),
   preparedReferenceLatencyBounded: percentile(preparedReferenceDurations, 0.95) <= thresholds.firstReferencesOnPreparedProjectP95MaxMs,
   warmReferenceLatencyBounded: percentile(warmReferenceDurations, 0.95) <= thresholds.warmReferencesP95MaxMs,
 };
