@@ -7,6 +7,7 @@ import { join } from 'path';
 import { performance } from 'perf_hooks';
 import { buildControllerContextPackAsync } from '../src/cli/controller/context-pack';
 import { getMcpPolicy } from '../src/cli/mcp/policy';
+import { closeCodeGraphReadProviderSessions } from '../src/runtime/context/codegraph-read-provider';
 import { clearAllSessionCachesForTest } from '../src/cli/repository/session-cache';
 import { startLightweightRepositoryCommand } from '../src/runtime/execution/process-runtime/lightweight-managed';
 import { registerRepository } from '../src/cli/repositories/registry';
@@ -26,6 +27,8 @@ async function rawGitStatus(root: string): Promise<number> {
 
 const iterationsIndex = process.argv.indexOf('--iterations');
 const iterations = Math.max(2, Number(iterationsIndex >= 0 ? process.argv[iterationsIndex + 1] : 7) || 7);
+const structuralIndex = process.argv.indexOf('--structural');
+const structuralContext = process.argv[structuralIndex + 1] === 'off' ? 'off' as const : 'auto' as const;
 const sandboxRoot = mkdtempSync(join(tmpdir(), 'forge-quality-harness-benchmark-'));
 const root = join(sandboxRoot, 'repo');
 const controllerHome = join(sandboxRoot, 'controller');
@@ -45,6 +48,9 @@ try {
 
   const contextCold: number[] = [];
   const contextHot: number[] = [];
+  const structuralProcess: number[] = [];
+  const structuralOpen: number[] = [];
+  const structuralQuery: number[] = [];
   let hotCacheEvidence: unknown;
   let contextAccuracyEvidence: { selected: string[]; required: string[]; recall: number; precision: number } | undefined;
   const requiredContextPaths = ['src/target.ts', 'src/consumer.ts'];
@@ -52,10 +58,14 @@ try {
     clearAllSessionCachesForTest();
     const session = { sessionId: `benchmark-${index}`, repoId: repository.repoId, checkoutId: repository.activeCheckoutId };
     let started = performance.now();
-    await buildControllerContextPackAsync(root, getMcpPolicy('controller'), { description: 'benchmarkTarget implementation and impact', searchTerms: ['benchmarkTarget'], knownPaths: ['src/target.ts'], structuralContext: 'auto', session });
+    const cold = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), { description: 'benchmarkTarget implementation and impact', searchTerms: ['benchmarkTarget'], knownPaths: ['src/target.ts'], structuralContext, session });
     contextCold.push(performance.now() - started);
+    const structuralTimings = cold.structuralContext?.timingsMs;
+    if (typeof structuralTimings?.process === 'number') structuralProcess.push(structuralTimings.process);
+    if (typeof structuralTimings?.open === 'number') structuralOpen.push(structuralTimings.open);
+    if (typeof structuralTimings?.query === 'number') structuralQuery.push(structuralTimings.query);
     started = performance.now();
-    const hot = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), { description: 'benchmarkTarget implementation and impact', searchTerms: ['benchmarkTarget'], knownPaths: ['src/target.ts'], structuralContext: 'auto', session });
+    const hot = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), { description: 'benchmarkTarget implementation and impact', searchTerms: ['benchmarkTarget'], knownPaths: ['src/target.ts'], structuralContext, session });
     contextHot.push(performance.now() - started);
     hotCacheEvidence = hot.cache;
     const selected = [...new Set(hot.files.map((file) => file.path))].sort();
@@ -89,7 +99,13 @@ try {
     schemaVersion: 1,
     iterations,
     context: {
+      structuralContext,
       coldP50Ms: percentile(contextCold, 0.5), coldP95Ms: percentile(contextCold, 0.95),
+      coldSamplesMs: contextCold.map((value) => Math.round(value * 100) / 100),
+      structuralProcessP50Ms: percentile(structuralProcess, 0.5),
+      structuralProcessP95Ms: percentile(structuralProcess, 0.95),
+      structuralOpenP50Ms: percentile(structuralOpen, 0.5),
+      structuralQueryP50Ms: percentile(structuralQuery, 0.5),
       hotP50Ms: percentile(contextHot, 0.5), hotP95Ms: percentile(contextHot, 0.95),
       hotToColdRatio: Math.round((percentile(contextHot, 0.5) / Math.max(0.01, percentile(contextCold, 0.5))) * 1_000) / 1_000,
       cacheEvidence: hotCacheEvidence,
@@ -121,5 +137,6 @@ try {
   process.stdout.write(`${JSON.stringify({ ...output, assertions, passed: Object.values(assertions).every(Boolean) }, null, 2)}\n`);
   if (!Object.values(assertions).every(Boolean)) process.exitCode = 1;
 } finally {
+  await closeCodeGraphReadProviderSessions();
   rmSync(sandboxRoot, { recursive: true, force: true });
 }

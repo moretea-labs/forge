@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const readline = require('readline');
 const { performance } = require('perf_hooks');
 
 const SCHEMA_VERSION = 1;
@@ -12,14 +13,18 @@ function clamp(value, fallback, min, max) {
   return Math.min(Math.max(Math.trunc(value), min), max);
 }
 
-function fail(operation, code, message) {
-  process.stdout.write(JSON.stringify({
+function failure(operation, code, message) {
+  return {
     schemaVersion: SCHEMA_VERSION,
     ok: false,
     operation,
     error: { code, message: String(message).slice(0, 1000) },
-  }));
-  process.exitCode = 1;
+  };
+}
+
+function writeResponse(response, options = {}) {
+  process.stdout.write(`${JSON.stringify(response)}${options.newline ? '\n' : ''}`);
+  if (options.failExit && response.ok === false) process.exitCode = 1;
 }
 
 function nodeSummary(node) {
@@ -91,40 +96,37 @@ function metadata(graph) {
   };
 }
 
-async function main() {
-  let request;
-  try {
-    request = JSON.parse(fs.readFileSync(0, 'utf8'));
-  } catch (error) {
-    fail(undefined, 'CODEGRAPH_REQUEST_INVALID', error instanceof Error ? error.message : error);
-    return;
-  }
-  const operation = request && request.operation;
-  if (!request || request.schemaVersion !== SCHEMA_VERSION || !ALLOWED_OPERATIONS.has(operation)) {
-    fail(operation, 'CODEGRAPH_OPERATION_NOT_ALLOWED', `Unsupported read operation: ${String(operation)}`);
-    return;
-  }
-  if (typeof request.projectRoot !== 'string' || !path.isAbsolute(request.projectRoot)) {
-    fail(operation, 'CODEGRAPH_PROJECT_ROOT_INVALID', 'projectRoot must be an absolute path selected by Forge.');
-    return;
-  }
+let CodeGraph;
 
-  let library;
+function loadCodeGraph(operation) {
+  if (CodeGraph) return { ok: true, CodeGraph };
   try {
     const configuredLibrary = process.env.FORGE_CODEGRAPH_LIBRARY_PATH;
-    library = require(configuredLibrary || '@colbymchenry/codegraph');
+    const library = require(configuredLibrary || '@colbymchenry/codegraph');
     if (typeof library.setLogger === 'function' && library.silentLogger) library.setLogger(library.silentLogger);
+    CodeGraph = library.CodeGraph || library.default;
   } catch (error) {
-    fail(operation, 'CODEGRAPH_LIBRARY_UNAVAILABLE', error instanceof Error ? error.message : error);
-    return;
+    return { ok: false, response: failure(operation, 'CODEGRAPH_LIBRARY_UNAVAILABLE', error instanceof Error ? error.message : error) };
   }
-  const CodeGraph = library.CodeGraph || library.default;
   if (!CodeGraph || typeof CodeGraph.open !== 'function') {
-    fail(operation, 'CODEGRAPH_LIBRARY_UNAVAILABLE', 'CodeGraph SDK entry point is unavailable.');
-    return;
+    return { ok: false, response: failure(operation, 'CODEGRAPH_LIBRARY_UNAVAILABLE', 'CodeGraph SDK entry point is unavailable.') };
   }
-  if (!CodeGraph.isInitialized(request.projectRoot)) {
-    process.stdout.write(JSON.stringify({
+  return { ok: true, CodeGraph };
+}
+
+async function handleRequest(request) {
+  const operation = request && request.operation;
+  if (!request || request.schemaVersion !== SCHEMA_VERSION || !ALLOWED_OPERATIONS.has(operation)) {
+    return failure(operation, 'CODEGRAPH_OPERATION_NOT_ALLOWED', `Unsupported read operation: ${String(operation)}`);
+  }
+  if (typeof request.projectRoot !== 'string' || !path.isAbsolute(request.projectRoot)) {
+    return failure(operation, 'CODEGRAPH_PROJECT_ROOT_INVALID', 'projectRoot must be an absolute path selected by Forge.');
+  }
+
+  const loaded = loadCodeGraph(operation);
+  if (!loaded.ok) return loaded.response;
+  if (!loaded.CodeGraph.isInitialized(request.projectRoot)) {
+    return {
       schemaVersion: SCHEMA_VERSION,
       ok: true,
       operation,
@@ -138,17 +140,15 @@ async function main() {
       },
       result: {},
       timingsMs: { open: 0, query: 0 },
-    }));
-    return;
+    };
   }
 
   let graph;
   const openStartedAt = performance.now();
   try {
-    graph = await CodeGraph.open(request.projectRoot, { sync: false, readOnly: true });
+    graph = await loaded.CodeGraph.open(request.projectRoot, { sync: false, readOnly: true });
   } catch (error) {
-    fail(operation, 'CODEGRAPH_OPEN_FAILED', error instanceof Error ? error.message : error);
-    return;
+    return failure(operation, 'CODEGRAPH_OPEN_FAILED', error instanceof Error ? error.message : error);
   }
   const openMs = Math.round((performance.now() - openStartedAt) * 100) / 100;
 
@@ -185,23 +185,57 @@ async function main() {
         dependencies: graph.getFileDependencies(request.filePath.trim()).slice(0, 100),
         dependents: graph.getFileDependents(request.filePath.trim()).slice(0, 100),
       };
-    } else if (operation === 'status') {
-      result = {};
     }
     const queryMs = Math.round((performance.now() - queryStartedAt) * 100) / 100;
-    process.stdout.write(JSON.stringify({
+    return {
       schemaVersion: SCHEMA_VERSION,
       ok: true,
       operation,
       metadata: metadata(graph),
       result,
       timingsMs: { open: openMs, query: queryMs },
-    }));
+    };
   } catch (error) {
-    fail(operation, 'CODEGRAPH_QUERY_FAILED', error instanceof Error ? error.message : error);
+    return failure(operation, 'CODEGRAPH_QUERY_FAILED', error instanceof Error ? error.message : error);
   } finally {
     try { graph.close(); } catch (_) { /* no-op */ }
   }
 }
 
-main().catch((error) => fail(undefined, 'CODEGRAPH_SIDECAR_UNHANDLED', error instanceof Error ? error.message : error));
+async function runOneShot() {
+  let request;
+  try {
+    request = JSON.parse(fs.readFileSync(0, 'utf8'));
+  } catch (error) {
+    writeResponse(failure(undefined, 'CODEGRAPH_REQUEST_INVALID', error instanceof Error ? error.message : error), { failExit: true });
+    return;
+  }
+  writeResponse(await handleRequest(request), { failExit: true });
+}
+
+async function runPersistent() {
+  const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+  for await (const line of lines) {
+    if (!line.trim()) continue;
+    let request;
+    try {
+      request = JSON.parse(line);
+    } catch (error) {
+      writeResponse(failure(undefined, 'CODEGRAPH_REQUEST_INVALID', error instanceof Error ? error.message : error), { newline: true });
+      continue;
+    }
+    try {
+      writeResponse(await handleRequest(request), { newline: true });
+    } catch (error) {
+      writeResponse(failure(request?.operation, 'CODEGRAPH_SIDECAR_UNHANDLED', error instanceof Error ? error.message : error), { newline: true });
+    }
+  }
+}
+
+const run = process.env.FORGE_CODEGRAPH_PERSISTENT === '1' ? runPersistent : runOneShot;
+run().catch((error) => {
+  writeResponse(failure(undefined, 'CODEGRAPH_SIDECAR_UNHANDLED', error instanceof Error ? error.message : error), {
+    newline: process.env.FORGE_CODEGRAPH_PERSISTENT === '1',
+    failExit: process.env.FORGE_CODEGRAPH_PERSISTENT !== '1',
+  });
+});

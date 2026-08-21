@@ -8,12 +8,21 @@ import { structuralIntentQuery } from '../../src/cli/controller/context/query-pl
 import { clearSourceSymbolIndexCacheForTest, materializeSource, sourceSymbolIndexCacheSnapshotForTest } from '../../src/cli/controller/context/source-materializer';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { clearAllSessionCachesForTest } from '../../src/cli/repository/session-cache';
-import { filterGitIgnoredCodeGraphChanges, queryCodeGraphReadProvider, resolveCodeGraphBundledRuntime, type CodeGraphReadProviderResponse } from '../../src/runtime/context/codegraph-read-provider';
+import {
+  clearCodeGraphReadProviderSessionsForTest,
+  codeGraphReadProviderSessionSnapshotForTest,
+  filterGitIgnoredCodeGraphChanges,
+  queryCodeGraphReadProvider,
+  queryCodeGraphReadProviderAsync,
+  resolveCodeGraphBundledRuntime,
+  type CodeGraphReadProviderResponse,
+} from '../../src/runtime/context/codegraph-read-provider';
 
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
   clearAllSessionCachesForTest();
   clearSourceSymbolIndexCacheForTest();
+  await clearCodeGraphReadProviderSessionsForTest();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -88,6 +97,20 @@ describe('CodeGraph read provider', () => {
     roots.push(root);
     const response = queryCodeGraphReadProvider(root, { operation: 'sync' as never });
     expect(response).toMatchObject({ ok: false, status: 'degraded', error: { code: 'CODEGRAPH_OPERATION_NOT_ALLOWED' } });
+  });
+
+  test('reuses one Runtime-owned async sidecar without caching structural results', async () => {
+    const root = contextRepo();
+    const first = await queryCodeGraphReadProviderAsync(root, { operation: 'status' });
+    const second = await queryCodeGraphReadProviderAsync(root, { operation: 'status' });
+    expect(first).toMatchObject({ provider: 'codegraph', operation: 'status', status: 'unavailable' });
+    expect(second).toMatchObject({ provider: 'codegraph', operation: 'status', status: 'unavailable' });
+    expect(codeGraphReadProviderSessionSnapshotForTest()).toEqual({
+      active: 1,
+      spawns: 1,
+      reuses: 1,
+      requests: 2,
+    });
   });
 
   test('does not make a structural index stale for Git-ignored operational paths', () => {

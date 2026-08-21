@@ -718,10 +718,15 @@ describe('canonical single Runtime', () => {
         close: async () => { stopped.push('transport'); },
       }),
       runMcpProbe: async () => undefined,
+      stopLightweightProcesses: async () => {
+        stopped.push('lightweight');
+        return 0;
+      },
+      stopContextReadHelpers: async () => { stopped.push('context-read-helpers'); },
     });
     await runtime.start();
     await runtime.stop('TEST_SHUTDOWN');
-    expect(stopped).toEqual(['transport', 'scheduler']);
+    expect(stopped).toEqual(['transport', 'lightweight', 'context-read-helpers', 'scheduler']);
     expect(runtime.readiness().ready).toBe(false);
     const replacement = acquireRuntimeOwnership(fixture.controllerHome, 'replacement-runtime');
     replacement.release();

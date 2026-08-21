@@ -6,6 +6,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { ControlPlaneDatabaseInspection } from '../control-plane/persistence/sqlite-store';
 import { inspectControlPlaneDatabase } from '../control-plane/persistence/sqlite-store';
 import { activateExclusiveWorkAdmission } from '../control-plane/facade/work-admission-policy';
+import { closeCodeGraphReadProviderSessions } from '../context/codegraph-read-provider';
 import { cancelAllLightweightProcesses } from '../execution/process-runtime/lightweight-managed';
 import {
   collectRuntimeSourceIdentity,
@@ -42,6 +43,7 @@ export interface CanonicalRuntimeDependencies {
   collectRuntimeSourceIdentity: typeof collectRuntimeSourceIdentity;
   rotateRuntimeGeneration: typeof rotateRuntimeGeneration;
   stopLightweightProcesses(controllerHome: string): Promise<number>;
+  stopContextReadHelpers(): Promise<void>;
 }
 
 async function defaultMcpProbe(endpoint: string, authToken: string): Promise<void> {
@@ -80,6 +82,7 @@ const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   collectRuntimeSourceIdentity,
   rotateRuntimeGeneration,
   stopLightweightProcesses: cancelAllLightweightProcesses,
+  stopContextReadHelpers: closeCodeGraphReadProviderSessions,
 };
 
 export class CanonicalForgeRuntime {
@@ -302,6 +305,7 @@ export class CanonicalForgeRuntime {
       // release the Controller Home claim only after all in-process services stop.
       await this.transport?.close().catch(() => undefined);
       await this.dependencies.stopLightweightProcesses(this.config.controllerHome).catch(() => undefined);
+      await this.dependencies.stopContextReadHelpers().catch(() => undefined);
       await this.localBridge?.close().catch(() => undefined);
       await this.scheduler?.stop().catch(() => undefined);
       const ownerPid = this.ownership?.record.pid;
