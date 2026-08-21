@@ -65,3 +65,31 @@ export function compareExecutionJobDispatchRanks(
     || left.queuedAtMs - right.queuedAtMs
     || left.jobId.localeCompare(right.jobId);
 }
+
+export function selectExecutionJobDispatchRepositories(
+  activeJobs: readonly ExecutionJob[],
+  scheduleNow: number,
+  lastRepoDispatch: ReadonlyMap<string, number>,
+): string[] {
+  const waiting = activeJobs.filter(isExecutionJobDispatchCandidate);
+  const rankByJobId = new Map(
+    waiting.map((job) => [job.jobId, rankExecutionJobForDispatch(job, scheduleNow)] as const),
+  );
+  const compareWaiting = (left: ExecutionJob, right: ExecutionJob): number =>
+    compareExecutionJobDispatchRanks(rankByJobId.get(left.jobId)!, rankByJobId.get(right.jobId)!);
+  const topByRepo = new Map<string, ExecutionJob>();
+  for (const job of waiting.slice().sort(compareWaiting)) {
+    if (!topByRepo.has(job.repoId)) topByRepo.set(job.repoId, job);
+  }
+  return [...topByRepo.keys()].sort((left, right) => {
+    const leftRank = rankByJobId.get(topByRepo.get(left)!.jobId)!;
+    const rightRank = rankByJobId.get(topByRepo.get(right)!.jobId)!;
+    const priority = leftRank.effectivePriority - rightRank.effectivePriority;
+    if (priority !== 0) return priority;
+    const fairness = (lastRepoDispatch.get(left) ?? 0) - (lastRepoDispatch.get(right) ?? 0);
+    return fairness
+      || leftRank.queuedAtMs - rightRank.queuedAtMs
+      || leftRank.jobId.localeCompare(rightRank.jobId)
+      || left.localeCompare(right);
+  });
+}

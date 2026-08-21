@@ -29,6 +29,7 @@ import {
   schedulerAgentProvider,
   schedulerDispatchCapacityAllows,
 } from '../../src/runtime/control-plane/global-scheduler/dispatch-capacity';
+import { selectExecutionJobDispatchRepositories } from '../../src/runtime/control-plane/dispatch-priority';
 
 const roots: string[] = [];
 
@@ -177,6 +178,38 @@ describe('control-plane hardening', () => {
     expect(pressured.heavyChecks).toBe(1);
     expect(pressured.agents).toBe(0);
     expect([...pressured.providers.values()]).toEqual([0, 0, 0]);
+  });
+
+  test('isolates per-repository Scheduler priority and fairness ordering from the dispatch lock', () => {
+    const now = Date.parse('2026-08-21T00:00:00.000Z');
+    const job = (input: {
+      repoId: string;
+      jobId: string;
+      priority: ExecutionJob['priority'];
+      queuedAt: string;
+      status?: ExecutionJob['status'];
+    }) => ({
+      repoId: input.repoId,
+      jobId: input.jobId,
+      priority: input.priority,
+      queuedAt: input.queuedAt,
+      createdAt: input.queuedAt,
+      status: input.status ?? 'queued',
+      type: 'repository-command',
+      payload: { operation: 'test' },
+    }) as ExecutionJob;
+    const active = [
+      job({ repoId: 'repo-a', jobId: 'a-newer', priority: 'P1', queuedAt: '2026-08-20T23:59:00.000Z' }),
+      job({ repoId: 'repo-a', jobId: 'a-older', priority: 'P1', queuedAt: '2026-08-20T23:58:00.000Z' }),
+      job({ repoId: 'repo-b', jobId: 'b-top', priority: 'P0', queuedAt: '2026-08-20T23:59:30.000Z' }),
+      job({ repoId: 'repo-c', jobId: 'c-top', priority: 'P1', queuedAt: '2026-08-20T23:57:00.000Z' }),
+      job({ repoId: 'repo-terminal', jobId: 'done', priority: 'P0', queuedAt: '2026-08-20T20:00:00.000Z', status: 'succeeded' }),
+    ];
+
+    expect(selectExecutionJobDispatchRepositories(active, now, new Map([
+      ['repo-a', 100],
+      ['repo-c', 50],
+    ]))).toEqual(['repo-b', 'repo-c', 'repo-a']);
   });
 
   test('projects canonical Runtime ownership through the transitional daemon status shape', () => {

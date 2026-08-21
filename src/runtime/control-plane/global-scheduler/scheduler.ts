@@ -41,11 +41,7 @@ import { reconcilePendingEditValidations } from '../execution/edit-validation-co
 import { schedulerDispatchAllowed } from '../facade/work-admission-policy';
 import { rebuildRepositoryProjection, refreshRepositoryProjectionForRepository } from '../../projections/materialized-view';
 import { readRepositoryGitStatusSample, sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
-import {
-  compareExecutionJobDispatchRanks,
-  isExecutionJobDispatchCandidate,
-  rankExecutionJobForDispatch,
-} from '../dispatch-priority';
+import { selectExecutionJobDispatchRepositories } from '../dispatch-priority';
 import {
   buildSchedulerWorkerLaunchDescriptor,
   resolveSchedulerWorkerCommand,
@@ -743,29 +739,7 @@ export class GlobalScheduler {
           if (capacity.workers <= 0) return active.length;
 
           const scheduleNow = Date.now();
-          const waiting = active.filter(isExecutionJobDispatchCandidate);
-          const rankByJobId = new Map(
-            waiting.map((job) => [job.jobId, rankExecutionJobForDispatch(job, scheduleNow)] as const),
-          );
-          const compareWaiting = (left: (typeof active)[number], right: (typeof active)[number]): number =>
-            compareExecutionJobDispatchRanks(rankByJobId.get(left.jobId)!, rankByJobId.get(right.jobId)!);
-          const topByRepo = new Map<string, (typeof active)[number]>();
-          for (const job of waiting.slice().sort(compareWaiting)) {
-            if (!topByRepo.has(job.repoId)) topByRepo.set(job.repoId, job);
-          }
-          const repoIds = [...topByRepo.keys()].sort((left, right) => {
-            const leftTop = topByRepo.get(left)!;
-            const rightTop = topByRepo.get(right)!;
-            const leftRank = rankByJobId.get(leftTop.jobId)!;
-            const rightRank = rankByJobId.get(rightTop.jobId)!;
-            const priority = leftRank.effectivePriority - rightRank.effectivePriority;
-            if (priority !== 0) return priority;
-            const fairness = (this.lastRepoDispatch.get(left) ?? 0) - (this.lastRepoDispatch.get(right) ?? 0);
-            return fairness
-              || leftRank.queuedAtMs - rightRank.queuedAtMs
-              || leftRank.jobId.localeCompare(rightRank.jobId)
-              || left.localeCompare(right);
-          });
+          const repoIds = selectExecutionJobDispatchRepositories(active, scheduleNow, this.lastRepoDispatch);
           const reservedRepos = new Set(capacity.reservedJobs.map((job) => job.repoId));
           let dispatchStateChanged = false;
           const canDispatch = (job: (typeof active)[number]): boolean => schedulerDispatchCapacityAllows(capacity, job);
