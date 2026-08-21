@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { resolveBunExecutable } from '../../src/runtime/shared/process-environment';
@@ -16,6 +16,7 @@ import {
   buildSchedulerWorkerSpawnFailureLifecycle,
   buildSchedulerWorkerSpawnedLifecycle,
 } from '../../src/runtime/control-plane/global-scheduler/worker-lifecycle';
+import { createSchedulerWorkerStderrCapture } from '../../src/runtime/control-plane/global-scheduler/worker-stderr';
 
 const homes: string[] = [];
 afterEach(() => {
@@ -212,6 +213,25 @@ describe('repository child process environment', () => {
       maxAttempts: 3,
       spawnedAt: '2026-08-21T00:00:00.000Z',
     })).toMatchObject({ startupState: 'spawn_failed', attempt: 3, maxAttempts: 3 });
+  });
+
+  test('captures Scheduler worker stderr with a bounded persisted diagnostic', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-worker-stderr-'));
+    homes.push(home);
+    const capture = createSchedulerWorkerStderrCapture({
+      controllerHome: home,
+      repoId: 'repo-a',
+      jobId: 'job-a',
+      attempt: 2,
+      maxBytes: 5,
+    });
+
+    capture.append('abc');
+    capture.append(Buffer.from('def'));
+
+    expect(capture.path.endsWith('worker-stderr/job-a-attempt-2.log')).toBe(true);
+    expect(capture.snapshot()).toEqual({ stderr: 'abcde', stderrTruncated: true });
+    expect(readFileSync(capture.path, 'utf8')).toBe('abcde');
   });
 
   test.skipIf(process.platform === 'win32')('resolves ~/.bun/bin/bun from the OS account home when env -i removes HOME', () => {

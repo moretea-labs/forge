@@ -1,6 +1,5 @@
 import { execFile, spawn, type ChildProcess } from 'child_process';
-import { appendFileSync, mkdirSync, writeFileSync } from 'fs';
-import { dirname, join, resolve } from 'path';
+import { resolve } from 'path';
 import { cpus, freemem, loadavg } from 'os';
 import { listRepositories } from '../../../cli/repositories/registry';
 import { writeAgentExecutableReadinessSnapshot } from '../../../cli/agent-jobs/executable-resolver';
@@ -12,7 +11,6 @@ import {
 } from '../../root/write-fence';
 import {
   attachExecutionWorker,
-  executionJobRoot,
   getExecutionJob,
   listActiveExecutionJobs,
   markExecutionJobSchedulerObserved,
@@ -51,6 +49,7 @@ import {
   schedulerDispatchCapacityAllows,
 } from './dispatch-capacity';
 import { refreshSchedulerRepositoryProjections } from './projection-refresh';
+import { createSchedulerWorkerStderrCapture } from './worker-stderr';
 import {
   buildSchedulerWorkerExitFailure,
   buildSchedulerWorkerExitedLifecycle,
@@ -85,7 +84,6 @@ export {
 export type { SchedulerWorkerCommand, SchedulerWorkerLaunchDescriptor } from './worker-launch';
 
 const DARWIN_MEMORY_SAMPLE_TTL_MS = 5_000;
-const MAX_WORKER_STDERR_BYTES = 16 * 1024;
 const RUNTIME_CLEANUP_INTERVAL_MS = Math.max(30_000, Number(process.env.FORGE_RUNTIME_CLEANUP_INTERVAL_MS ?? 60_000));
 const GIT_STATUS_SAMPLE_INTERVAL_MS = Math.max(1_000, Number(process.env.FORGE_GIT_STATUS_SAMPLE_INTERVAL_MS ?? 5_000));
 const IDLE_REPOSITORY_SCAN_INTERVAL_MS = Math.max(
@@ -386,9 +384,12 @@ export class GlobalScheduler {
       runtimeSourceRoot: this.runtimeSourceRoot,
       writeClaimEnvironment: writeClaim ? runtimeWriteClaimEnvironment(writeClaim) : {},
     });
-    const stderrPath = join(executionJobRoot(this.controllerHome, repoId), 'worker-stderr', `${jobId}-attempt-${current.attempt}.log`);
-    mkdirSync(dirname(stderrPath), { recursive: true });
-    writeFileSync(stderrPath, '', 'utf8');
+    const stderrCapture = createSchedulerWorkerStderrCapture({
+      controllerHome: this.controllerHome,
+      repoId,
+      jobId,
+      attempt: current.attempt,
+    });
     const lifecycle = buildSchedulerWorkerSpawnedLifecycle({
       launch,
       ownerPid: this.controllerPid,
@@ -401,7 +402,7 @@ export class GlobalScheduler {
       } : undefined,
       attempt: current.attempt,
       maxAttempts: current.maxAttempts,
-      stderrPath,
+      stderrPath: stderrCapture.path,
     });
     this.persistSpawnedWorker(repoId, jobId, lifecycle);
     let child: ChildProcess;
@@ -417,26 +418,13 @@ export class GlobalScheduler {
       void this.recordWorkerExit(repoId, jobId, current.attempt, undefined, lifecycle, null, null, '', false, message);
       return false;
     }
-    let stderr = '';
-    let stderrBytes = 0;
-    let stderrTruncated = false;
-    child.stderr?.on('data', (chunk: Buffer | string) => {
-      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-      const bytes = Buffer.byteLength(text);
-      const remaining = MAX_WORKER_STDERR_BYTES - stderrBytes;
-      const accepted = remaining > 0 ? Buffer.from(text).subarray(0, remaining).toString('utf8') : '';
-      if (accepted) {
-        stderr += accepted;
-        stderrBytes += Buffer.byteLength(accepted);
-        try { appendFileSync(stderrPath, accepted, 'utf8'); } catch { stderrTruncated = true; }
-      }
-      if (bytes > Math.max(0, remaining)) stderrTruncated = true;
-    });
+    child.stderr?.on('data', (chunk: Buffer | string) => stderrCapture.append(chunk));
     let finalized = false;
     const finalize = (exitCode: number | null, signal: string | null, startupError?: string) => {
       if (finalized) return;
       finalized = true;
       if (this.children.get(jobId) === child) this.children.delete(jobId);
+      const { stderr, stderrTruncated } = stderrCapture.snapshot();
       void this.recordWorkerExit(repoId, jobId, current.attempt, child, lifecycle, exitCode, signal, stderr, stderrTruncated, startupError);
     };
     child.once('error', (error) => finalize(null, null, error.message));
