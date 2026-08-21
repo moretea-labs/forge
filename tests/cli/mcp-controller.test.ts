@@ -77,6 +77,7 @@ test("keeps source-stable facade schema aligned with the controller workflow con
     const rhWork = tools.find((tool) => tool.name === "rh_work");
     const rhWorkProperties = rhWork?.inputSchema.properties as Record<string, any>;
     expect(rhWorkProperties.operation.enum).toContain("plan_accept_step");
+    expect(rhWorkProperties.mode.enum).toEqual(["scale"]);
     expect(rhWorkProperties.initial_likely_paths).toBeDefined();
     expect(rhWorkProperties.additional_likely_paths).toBeDefined();
     expect(rhWorkProperties.inspected_paths).toBeDefined();

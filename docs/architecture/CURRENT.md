@@ -55,6 +55,8 @@ Work is a continuity/orchestration mechanism, not a coding-quality mechanism. Fi
 
 Plan is optional intent/coordination state. Initial likely paths are evidence, not a frozen semantic scope. The controller may discover and edit additional policy-allowed files without creating a second lifecycle solely because understanding improved.
 
+Explicit **Scale** is the opt-in coordination form of this existing model, not a separate runtime tier. `rh_work mode=scale` requires a bound approved Plan step, routes through durable bounded Work with an isolated checkout, and lets the semantic controller decompose independent deliverables across multiple Plan steps. Independent Scale Work may proceed concurrently when existing Process/resource claims permit; conflicting claims still serialize or reject through the same Lease authority. Generic `requires_parallelism` alone does not imply Scale, Plan, Work, or isolation. Scale does not introduce an agent swarm, second scheduler, or second project lifecycle.
+
 ## State ownership
 
 - Git/worktree owns repository source truth.

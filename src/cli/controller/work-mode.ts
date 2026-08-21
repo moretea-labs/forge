@@ -84,8 +84,8 @@ function behaviorFor(mode: EffectiveTaskMode): WorkModeAssessment['modeBehavior'
       workflow: ['verify checks and changelog', 'build immutable complete release', 'run integration and deployment gates', 'activate through Recovery', 'verify rollback evidence'],
     };
     case 'scale': return {
-      structuralContext: 'off', mutationPhase: 'benchmark', issueRequired: false, planRequired: false, worktreeRequired: true,
-      workflow: ['model concurrency and scheduling', 'run isolated large-load execution', 'measure queue, lease, and worker phases', 'publish benchmark evidence'],
+      structuralContext: 'off', mutationPhase: 'coordinate', issueRequired: false, planRequired: true, worktreeRequired: true,
+      workflow: ['decompose independent deliverables in an approved Plan', 'start bounded isolated Work per Plan step', 'run independent units concurrently when resource claims permit', 'verify deterministic conflict handling and publish coordination evidence'],
     };
     default: return {
       structuralContext: 'off', mutationPhase: 'execute', issueRequired: false, planRequired: false, worktreeRequired: false,

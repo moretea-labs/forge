@@ -683,6 +683,94 @@ describe('rh_work managed lifecycle closure', () => {
     expect(claimedB).toMatchObject({ status: 'executing', sourceRevision: deliveredRevision, steps: [{ id: 'step-a', status: 'completed' }, { id: 'step-b', status: 'executing', workId: 'work-rolling-b' }] });
   });
 
+  test('explicit Scale requires a Plan and admits independent Plan steps as concurrent isolated Work', async () => {
+    const fx = fixture('scale-plan-coordination');
+    writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({ scripts: { 'check:type': 'node -e "process.exit(0)"' } }, null, 2));
+    git(fx.repoRoot, ['add', 'package.json']);
+    git(fx.repoRoot, ['commit', '-m', 'register scale coordination check']);
+    const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const activeBefore = listWorkContracts({ ...store, status: 'active', limit: 100 }).length;
+
+    const missingPlan = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      mode: 'scale',
+      objective: 'Coordinate independent Scale work without a Plan',
+      scope_clear: true,
+      requires_parallelism: true,
+      allowed_paths: ['scale-a.txt'],
+      check_ids: ['package:check:type'],
+    });
+    expect(missingPlan?.isError).toBe(true);
+    expect(missingPlan?.structuredContent).toMatchObject({
+      status: 'blocked',
+      data: { executionStarted: false, workContractCreated: false, planRequired: true, explicitMode: 'scale' },
+    });
+    expect(String((missingPlan?.structuredContent as { summary?: string }).summary)).toContain('SCALE_PLAN_REQUIRED');
+    expect(listWorkContracts({ ...store, status: 'active', limit: 100 })).toHaveLength(activeBefore);
+
+    const created = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'PLAN-scale-coordination',
+      scope_key: 'scale-coordination',
+      source_revision: sourceRevision,
+      objective: 'Coordinate two independent Scale slices',
+      plan_steps: [
+        { id: 'step-a', objective: 'Deliver Scale A', dependencies: [], authoritative_files: [], allowed_paths: ['scale-a.txt'], forbidden_paths: [], check_ids: ['package:check:type'], acceptance_criteria: ['Scale A is independently delivered.'] },
+        { id: 'step-b', objective: 'Deliver Scale B', dependencies: [], authoritative_files: [], allowed_paths: ['scale-b.txt'], forbidden_paths: [], check_ids: ['package:check:type'], acceptance_criteria: ['Scale B is independently delivered.'] },
+      ],
+    });
+    expect(created?.isError, JSON.stringify(created?.structuredContent)).not.toBe(true);
+    const approved = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_approve', plan_id: 'PLAN-scale-coordination' });
+    expect(approved?.isError, JSON.stringify(approved?.structuredContent)).not.toBe(true);
+
+    const startScale = async (stepId: string, path: string) => callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      mode: 'scale',
+      plan_id: 'PLAN-scale-coordination',
+      plan_step_id: stepId,
+      objective: `Execute ${stepId} as one independent Scale unit`,
+      scope_clear: true,
+      requires_parallelism: true,
+      allowed_paths: [path],
+      check_ids: ['package:check:type'],
+    });
+    const first = await startScale('step-a', 'scale-a.txt');
+    const second = await startScale('step-b', 'scale-b.txt');
+    expect(first?.isError, JSON.stringify(first?.structuredContent)).not.toBe(true);
+    expect(second?.isError, JSON.stringify(second?.structuredContent)).not.toBe(true);
+    const firstData = (first?.structuredContent as { data?: { work?: { workId?: string }; executionHandle?: { checkoutId?: string }; mode?: { routeDecision?: { reasons?: Array<{ code?: string }> } } } })?.data;
+    const secondData = (second?.structuredContent as { data?: { work?: { workId?: string }; executionHandle?: { checkoutId?: string }; mode?: { routeDecision?: { reasons?: Array<{ code?: string }> } } } })?.data;
+    const firstWorkId = String(firstData?.work?.workId ?? '');
+    const secondWorkId = String(secondData?.work?.workId ?? '');
+    expect(firstWorkId).toBeTruthy();
+    expect(secondWorkId).toBeTruthy();
+    expect(secondWorkId).not.toBe(firstWorkId);
+    expect(firstData?.executionHandle?.checkoutId).toBeTruthy();
+    expect(secondData?.executionHandle?.checkoutId).toBeTruthy();
+    expect(secondData?.executionHandle?.checkoutId).not.toBe(firstData?.executionHandle?.checkoutId);
+    expect(firstData?.mode?.routeDecision?.reasons).toContainEqual(expect.objectContaining({ code: 'explicit_scale' }));
+    expect(firstData?.mode?.routeDecision?.reasons).toContainEqual(expect.objectContaining({ code: 'independent_deliverables' }));
+    expect(getPlanContract(store, 'PLAN-scale-coordination')).toMatchObject({
+      status: 'executing',
+      steps: [
+        { id: 'step-a', status: 'executing', workId: firstWorkId },
+        { id: 'step-b', status: 'executing', workId: secondWorkId },
+      ],
+    });
+
+    const stoppedFirst = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'stop', work_id: firstWorkId, reason: 'Scale coordination regression cleanup' });
+    const stoppedSecond = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'stop', work_id: secondWorkId, reason: 'Scale coordination regression cleanup' });
+    expect(stoppedFirst?.isError, JSON.stringify(stoppedFirst?.structuredContent)).not.toBe(true);
+    expect(stoppedSecond?.isError, JSON.stringify(stoppedSecond?.structuredContent)).not.toBe(true);
+    const afterStop = getPlanContract(store, 'PLAN-scale-coordination')!;
+    expect(afterStop.steps.map((step) => step.status)).not.toContain('executing');
+    expect(afterStop.status).toBe('replanning');
+  });
+
   test('stopping a Plan-bound Work moves its Plan out of ghost executing state', async () => { const fx = fixture('plan-stop-reconcile'); writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({ scripts: { 'check:type': 'node -e "process.exit(0)"' } }, null, 2)); git(fx.repoRoot, ['add', 'package.json']); git(fx.repoRoot, ['commit', '-m', 'register plan lifecycle check']); const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim(); const created = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-stop-reconcile', scope_key: 'plan-stop-reconcile', source_revision: sourceRevision, objective: 'Run one stoppable planned slice', plan_steps: [{ id: 'step-a', objective: 'Execute stoppable work', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [], check_ids: ['package:check:type'], acceptance_criteria: ['finish or explicitly replan'], }], }); expect(created?.isError).not.toBe(true); const approved = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_approve', plan_id: 'PLAN-stop-reconcile' }); expect(approved?.isError).not.toBe(true); const started = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'start', plan_id: 'PLAN-stop-reconcile', plan_step_id: 'step-a', objective: 'Execute stoppable work', scope_clear: true, expected_files: 4, expected_changed_lines: 200, requires_recovery: true, }); expect(started?.isError).not.toBe(true); const workId = (started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId; expect(workId).toBeTruthy(); const stopped = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, reason: 'user intentionally stopped this planned slice', }); expect(stopped?.isError).not.toBe(true); expect(stopped?.structuredContent).toMatchObject({ status: 'ok', data: { finalStatus: 'cancelled', plan: { planId: 'PLAN-stop-reconcile', status: 'replanning', steps: [{ id: 'step-a', status: 'ready', workId }] }, }, }); const fetched = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_get', plan_id: 'PLAN-stop-reconcile', detail_level: 'detail' }); expect(fetched?.structuredContent).toMatchObject({ data: { plan: { status: 'replanning', steps: [{ id: 'step-a', status: 'ready', workId }] } } }); });
 
   test('rh_work finalize closes an explicitly reviewed historical Direct Edit delivery', async () => {

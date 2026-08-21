@@ -143,6 +143,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     superseded_by: { type: 'string' },
     expected_files: { type: 'number' },
     expected_changed_lines: { type: 'number' },
+    mode: { type: 'string', enum: ['scale'], description: 'Explicit Scale coordination mode for start. Scale requires a bound approved PlanContract step and uses existing Work/Process/resource-claim authorities; it does not create an agent-swarm lifecycle.' },
     scope_clear: { type: 'boolean' },
     requires_investigation: { type: 'boolean' },
     requires_long_running_checks: { type: 'boolean' },

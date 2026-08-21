@@ -1,7 +1,7 @@
 import type { ProcessCheckReceiptEvidence } from '../../evidence/process-check-receipt';
 import type { CompletionReceipt as RepositoryCompletionReceipt } from '../../../cli/controller/types';
 import type { AccessMode } from '../governance/access-policy';
-import { decideRoute, type RouteDecision, type RoutePolicyInput } from '../routing/route-policy';
+import { decideRoute, type ExplicitTaskMode, type RouteDecision, type RoutePolicyInput } from '../routing/route-policy';
 
 export const EXECUTION_MODES = ['direct_control', 'goal_workloop', 'handoff_only'] as const;
 export type ExecutionMode = (typeof EXECUTION_MODES)[number];
@@ -680,6 +680,7 @@ export interface ExecutionModeSelectionInput {
   requiresInvestigation?: boolean;
   requiresLongRunningChecks?: boolean;
   requiresParallelism?: boolean;
+  explicitMode?: ExplicitTaskMode;
   needsDependencies?: boolean;
   requiresRecovery?: boolean;
   /** True only when the user explicitly requested an agent/worker executor. Complexity alone must not enable workers. */
@@ -730,6 +731,7 @@ export function selectExecutionMode(input: ExecutionModeSelectionInput): Executi
       requiresInvestigation: input.requiresInvestigation,
       requiresLongRunningChecks: input.requiresLongRunningChecks,
       requiresParallelism: input.requiresParallelism,
+      explicitMode: input.explicitMode,
       needsDependencies: input.needsDependencies,
       agentRequested: input.requiresWorker,
     },

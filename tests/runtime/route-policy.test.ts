@@ -170,7 +170,7 @@ describe('single Route Policy authority', () => {
       debug: { workMode: 'direct_edit', executionPath: 'fast', mutationPhase: 'diagnose_first', structuralContext: 'required' },
       review: { workMode: 'direct_edit', executionPath: 'fast', mutationPhase: 'read_only', structuralContext: 'off' },
       release: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'release_gate', structuralContext: 'off' },
-      scale: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'benchmark', structuralContext: 'off' },
+      scale: { workMode: 'bounded_work', executionPath: 'durable', mutationPhase: 'coordinate', structuralContext: 'off' },
     } as const;
     for (const mode of Object.keys(expected) as Array<keyof typeof expected>) {
       const contract = expected[mode];
@@ -188,6 +188,10 @@ describe('single Route Policy authority', () => {
       expect(assessment.executionPath).toBe(contract.executionPath);
       expect(assessment.modeBehavior.mutationPhase).toBe(contract.mutationPhase);
       expect(assessment.modeBehavior.structuralContext).toBe(contract.structuralContext);
+      if (mode === 'scale') {
+        expect(assessment.modeBehavior.planRequired).toBe(true);
+        expect(assessment.modeBehavior.worktreeRequired).toBe(true);
+      }
       expect(assessment.modeBehavior.workflow.length).toBeGreaterThan(2);
       expect(assessment.routeDecision.reasons.some((reason) => reason.code === `explicit_${mode}`)).toBe(true);
     }

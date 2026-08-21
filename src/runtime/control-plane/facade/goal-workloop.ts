@@ -300,6 +300,13 @@ export function routeWorkStart(
       ? false
       : input.modeInput.requiresUserApproval === true || strategyConflictRequiresApproval,
   };
+  if (effectiveModeInput.explicitMode === 'scale' && (!input.planId || !input.planStepId || !ctx.planStore)) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: 'SCALE_PLAN_REQUIRED: explicit Scale execution requires a bound approved PlanContract step.',
+      data: { executionStarted: false, workContractCreated: false, planRequired: true, explicitMode: 'scale' },
+    });
+  }
   const applyForcedMode = (selected: ReturnType<typeof selectExecutionMode>) => input.forceMode
     ? {
         ...selected,
@@ -1520,6 +1527,7 @@ export function runGoalWorkloop(
           requiresInvestigation: args.requires_investigation === true,
           requiresLongRunningChecks: args.requires_long_running_checks === true,
           requiresParallelism: args.requires_parallelism === true,
+          explicitMode: args.mode === 'scale' ? 'scale' : undefined,
           needsDependencies: args.needs_dependencies === true,
           requiresRecovery: args.requires_recovery === true,
           requiresWorker: args.requires_worker === true,
