@@ -9,7 +9,7 @@ import { addRepositoryCheckout, registerRepository, resolveRepositorySelection, 
 import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool, classifyTerminalCheckEvidence, RH_WORK_VERIFY_LEASE_WAIT_MS } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { getProcessRecord, waitForProcess } from '../../src/runtime/execution/process-runtime';
-import { getWorkContract, listWorkContracts, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, listWorkContracts, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { continueGoalWorkloop, finalizeGoalWorkloop, verifyGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { listHandoffItems, resolveHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { acceptPlanStepEvidence, approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
@@ -580,6 +580,123 @@ describe('rh_work managed lifecycle closure', () => {
     expect((blocked?.structuredContent as { error?: { code?: string } }).error?.code).toBe('WORK_DELIVERY_REQUIRES_FINALIZE');
   });
   test('reuses exact Plan scope but resolves distinct slices under the same Requirement before creation', async () => { const fx = fixture('plan-admission'); const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim(); const step = (id: string) => [{ id, objective: 'Implement it', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [], check_ids: [], acceptance_criteria: ['done'] }]; const first = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-primary', requirement_id: 'REQ-primary', scope_key: 'primary-scope', source_revision: sourceRevision, objective: 'Implement the primary requirement', plan_steps: step('step-a'), }); expect(first?.isError).not.toBe(true); expect(first?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new' } }); const exactDuplicate = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-duplicate', requirement_id: 'REQ-primary', scope_key: 'primary-scope', source_revision: sourceRevision, objective: 'Duplicate exact scope', plan_steps: step('step-dup'), }); expect(exactDuplicate?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: false, admissionDecision: 'reuse_existing', plan: { planId: 'PLAN-primary' } } }); const ambiguousSlice = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-slice-b', requirement_id: 'REQ-primary', scope_key: 'parallel-scope', source_revision: sourceRevision, objective: 'A distinct slice under the same broad requirement', plan_steps: step('step-b'), }); expect(ambiguousSlice?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: false, admissionDecision: 'resolution_required', resolutionRequired: true, allowedPlanRelations: ['extend', 'parallel'] }, }); const parallelSlice = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-slice-b', requirement_id: 'REQ-primary', scope_key: 'parallel-scope', plan_relation: 'parallel', source_revision: sourceRevision, objective: 'A distinct explicitly parallel slice', plan_steps: step('step-b'), }); expect(parallelSlice?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new', plan: { planId: 'PLAN-slice-b', requirementId: 'REQ-primary' } } }); });
+
+  test('atomically admits exactly one primary Work for concurrent starts of one Plan step', async () => {
+    const fx = fixture('work-admission-plan-step-race');
+    const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    createPlanContract(store, {
+      planId: 'PLAN-work-admission-race',
+      repoId: fx.repository.repoId,
+      requirementId: 'REQ-work-admission-race',
+      scopeKey: 'work-admission-race',
+      sourceRevision,
+      goal: 'Bind one primary Work under concurrent Controllers',
+      steps: [{ id: 'step-a', objective: 'Implement the slice', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['Only one primary Work owns this step.'] }],
+    });
+    approvePlanContract(store, 'PLAN-work-admission-race');
+
+    const startArgs = {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      plan_id: 'PLAN-work-admission-race',
+      plan_step_id: 'step-a',
+      objective: 'Implement the slice',
+      requires_recovery: true,
+    };
+    const results = await Promise.all([
+      callRuntimeTool(fx.ctx, 'rh_work', { ...startArgs, request_id: 'work-admission-race-a' }),
+      callRuntimeTool(fx.ctx, 'rh_work', { ...startArgs, request_id: 'work-admission-race-b' }),
+    ]);
+    expect(results.every((entry) => entry?.isError !== true)).toBe(true);
+    const payloads = results.map((entry) => entry?.structuredContent as { data?: { workContractCreated?: boolean; admissionDecision?: string; work?: { workId?: string } } });
+    expect(payloads.filter((entry) => entry.data?.workContractCreated === true)).toHaveLength(1);
+    expect(payloads.filter((entry) => entry.data?.admissionDecision === 'reuse_existing')).toHaveLength(1);
+
+    const active = listWorkContracts({ ...store, status: 'active', limit: 100 })
+      .filter((work) => work.planId === 'PLAN-work-admission-race' && work.planStepId === 'step-a' && (work.lifecycleRole ?? 'primary') === 'primary');
+    expect(active).toHaveLength(1);
+    expect(active[0]?.requirementId).toBe('REQ-work-admission-race');
+    const plan = getPlanContract(store, 'PLAN-work-admission-race');
+    expect(plan?.steps.find((step) => step.id === 'step-a')?.workId).toBe(active[0]?.workId);
+    expect(payloads.every((entry) => entry.data?.work?.workId === active[0]?.workId)).toBe(true);
+  });
+
+  test('serializes Requirement-bound admission while preserving explicit parallel Work placement', async () => {
+    const fx = fixture('work-admission-requirement-race');
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const baseArgs = {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      requirement_id: 'REQ-shared-work-admission',
+      requires_recovery: true,
+    };
+    const results = await Promise.all([
+      callRuntimeTool(fx.ctx, 'rh_work', { ...baseArgs, objective: 'Implement shared requirement slice A', request_id: 'requirement-race-a' }),
+      callRuntimeTool(fx.ctx, 'rh_work', { ...baseArgs, objective: 'Implement shared requirement slice B', request_id: 'requirement-race-b' }),
+    ]);
+    expect(results.every((entry) => entry?.isError !== true)).toBe(true);
+    const payloads = results.map((entry) => entry?.structuredContent as { data?: { workContractCreated?: boolean; admissionDecision?: string; resolutionRequired?: boolean; work?: { workId?: string } } });
+    expect(payloads.filter((entry) => entry.data?.workContractCreated === true)).toHaveLength(1);
+    expect(payloads.filter((entry) => entry.data?.admissionDecision === 'resolution_required' && entry.data?.resolutionRequired === true)).toHaveLength(1);
+    const beforeParallel = listWorkContracts({ ...store, status: 'active', limit: 100 })
+      .filter((work) => work.requirementId === 'REQ-shared-work-admission' && (work.lifecycleRole ?? 'primary') === 'primary');
+    expect(beforeParallel).toHaveLength(1);
+
+    const parallel = await callRuntimeTool(fx.ctx, 'rh_work', {
+      ...baseArgs,
+      objective: 'Implement an explicitly independent requirement slice',
+      work_relation: 'parallel',
+      request_id: 'requirement-parallel-explicit',
+    });
+    expect(parallel?.isError, JSON.stringify(parallel?.structuredContent)).not.toBe(true);
+    expect(parallel?.structuredContent).toMatchObject({ status: 'ok', data: { workContractCreated: true } });
+    const afterParallel = listWorkContracts({ ...store, status: 'active', limit: 100 })
+      .filter((work) => work.requirementId === 'REQ-shared-work-admission' && (work.lifecycleRole ?? 'primary') === 'primary');
+    expect(afterParallel).toHaveLength(2);
+    const isolated = afterParallel.find((work) => work.workId !== beforeParallel[0]?.workId);
+    expect(isolated?.worktreePolicy.required).toBe(true);
+    expect(isolated?.checkoutId).toBeTruthy();
+    expect(isolated?.worktreeRef).toBeTruthy();
+  });
+
+  test('continues the same pre-admitted Work when placement is still missing', async () => {
+    const fx = fixture('work-admission-placement-retry');
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim();
+    createWorkContract(store, {
+      workId: 'work-placement-retry',
+      repoId: fx.repository.repoId,
+      baseRevision: sourceRevision,
+      mode: 'goal_workloop',
+      objective: 'Resume canonical Work placement',
+      acceptanceCriteria: ['The same Work receives placement.'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      workKind: 'repository_change',
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      worktreePolicy: { required: true, reason: 'Admission completed before placement.' },
+    });
+    expect(getWorkContract(store, 'work-placement-retry')).toMatchObject({ workId: 'work-placement-retry', worktreePolicy: { required: true } });
+    expect(getWorkContract(store, 'work-placement-retry')?.worktreeRef).toBeUndefined();
+
+    const continued = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'continue',
+      work_id: 'work-placement-retry',
+      request_id: 'placement-retry-same-work',
+    });
+    expect(continued?.isError).toBe(true);
+    expect(continued?.structuredContent).toMatchObject({ status: 'blocked', data: { ownershipResumed: true } });
+    expect(JSON.stringify(continued?.structuredContent)).toContain('Continue requires meaningful completion evidence');
+    const repaired = getWorkContract(store, 'work-placement-retry');
+    expect(repaired?.workId).toBe('work-placement-retry');
+    expect(repaired?.checkoutId).toBeTruthy();
+    expect(repaired?.worktreeRef).toBeTruthy();
+    expect(listWorkContracts({ ...store, status: 'active', limit: 100 }).filter((work) => work.objective === 'Resume canonical Work placement')).toHaveLength(1);
+  });
   test('exposes explicit Controller semantic acceptance for a delivered validating Plan step', async () => {
     const fx = fixture('plan-semantic-accept');
     const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim();

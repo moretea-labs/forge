@@ -23,6 +23,7 @@ import {
   getPlanContract,
   type PlanContractStoreOptions,
 } from './plan-contract-store';
+import { withPrimaryWorkAdmissionLock } from './semantic-admission';
 import {
   classifyVerificationOutcome,
   normalizeCheckIds,
@@ -61,6 +62,8 @@ export interface GoalWorkloopContext {
   controllerInstanceId?: string;
   workspaceFingerprint?: string;
   now?: () => string;
+  /** True only while a Gateway caller holds the cross-process primary Work admission lock. */
+  semanticAdmissionLocked?: boolean;
   materializeIsolatedWorkspace?: (input: { workId: string; title: string; baseRef?: string; needsDependencies?: boolean }) => { checkoutId: string; root: string; baseRevision?: string | null; managed: true };
 }
 
@@ -527,6 +530,16 @@ export function startGoalWorkloop(
   executionMode: 'direct_control' | 'goal_workloop' = 'goal_workloop',
   routeDecision = selectExecutionMode({ ...input.modeInput, objective: input.objective, knownPaths: input.allowedPaths }).routeDecision,
 ): FacadeResult {
+  const hasStrongAdmissionBinding = Boolean(input.planId || input.planStepId || input.requirementId || input.relatedWorkId || input.workRelation);
+  if (hasStrongAdmissionBinding && !ctx.semanticAdmissionLocked) {
+    return withPrimaryWorkAdmissionLock(ctx.workStore, () => startGoalWorkloop(
+      { ...ctx, semanticAdmissionLocked: true },
+      input,
+      policy,
+      executionMode,
+      routeDecision,
+    ));
+  }
   const at = nowIso(ctx);
   const available = ctx.availableChecks ?? [];
   const workspaceMode = input.constraints?.workspaceMode ?? 'auto';
@@ -542,6 +555,15 @@ export function startGoalWorkloop(
     : undefined;
   const plan = input.planId && ctx.planStore ? getPlanContract(ctx.planStore, input.planId) : undefined;
   const planStep = plan && input.planStepId ? plan.steps.find((step) => step.id === input.planStepId) : undefined;
+  const requestedRequirementId = input.requirementId?.trim() || undefined;
+  if (plan && requestedRequirementId && requestedRequirementId !== plan.requirementId) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `PLAN_REQUIREMENT_MISMATCH: ${plan.planId} is bound to ${plan.requirementId ?? 'no Requirement'}, not ${requestedRequirementId}. Use the Plan relationship authority or replan explicitly.`,
+      data: { executionStarted: false, workContractCreated: false, planId: plan.planId, planRequirementId: plan.requirementId, requestedRequirementId },
+    });
+  }
+  const effectiveRequirementId = requestedRequirementId || plan?.requirementId;
   const sameStringSet = (provided: string[] | undefined, frozen: string[]): boolean => {
     if (provided === undefined) return true;
     const actual = [...new Set(provided)].sort();
@@ -568,17 +590,23 @@ export function startGoalWorkloop(
   const effectiveForbiddenPaths = planStep?.forbiddenPaths ?? input.forbiddenPaths ?? [];
   const effectiveChecks = planStep?.checks ?? input.checks ?? [];
   const normalized = normalizeCheckIds(effectiveChecks, available);
-  const planStepWork = planStep?.workId ? activeWorks.find((candidate) => candidate.workId === planStep.workId) : undefined;
-  const requirementWorks = input.requirementId
-    ? activeWorks.filter((candidate) => candidate.requirementId === input.requirementId)
+  const boundPlanStepWorks = input.planId && input.planStepId
+    ? activeWorks.filter((candidate) => candidate.planId === input.planId && candidate.planStepId === input.planStepId)
     : [];
-  const deterministicTarget = explicitRelatedWork ?? planStepWork ?? (requirementWorks.length === 1 ? requirementWorks[0] : undefined);
+  const explicitPlanStepWork = planStep?.workId ? activeWorks.find((candidate) => candidate.workId === planStep.workId) : undefined;
+  const planStepWork = explicitPlanStepWork ?? (boundPlanStepWorks.length === 1 ? boundPlanStepWorks[0] : undefined);
+  const requirementWorks = effectiveRequirementId
+    ? activeWorks.filter((candidate) => candidate.requirementId === effectiveRequirementId)
+    : [];
+  const deterministicTarget = input.relatedWorkId
+    ? explicitRelatedWork
+    : planStepWork ?? (requirementWorks.length === 1 ? requirementWorks[0] : undefined);
   const requestedRelation = input.workRelation ?? (input.modeInput.requiresParallelism === true ? 'parallel' : undefined);
   // Only strong semantic bindings participate in ownership resolution. An
   // unrelated active Work or a checkout writer is a placement fact, not a
   // semantic candidate for continue/extend/parallel/new_goal.
   const candidateWorks = [...new Map(
-    [explicitRelatedWork, planStepWork, ...requirementWorks]
+    [explicitRelatedWork, planStepWork, ...boundPlanStepWorks, ...requirementWorks]
       .filter((candidate): candidate is WorkContract => Boolean(candidate))
       .map((candidate) => [candidate.workId, candidate]),
   ).values()].slice(0, 8);
@@ -610,6 +638,18 @@ export function startGoalWorkloop(
       : [],
     rawAvailable: false,
   });
+
+  if (boundPlanStepWorks.length > 1) {
+    return resolutionRequired(`PLAN_STEP_MULTIPLE_PRIMARY_WORKS: ${input.planId}/${input.planStepId} has ${boundPlanStepWorks.length} active primary Work records and requires repair before execution.`);
+  }
+  if (planStep?.workId && !explicitPlanStepWork) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `PLAN_STEP_BOUND_WORK_MISSING: ${input.planId}/${input.planStepId} is bound to ${planStep.workId}, but that Work is not active. Repair the exact binding; do not create a replacement Work.`,
+      data: { executionStarted: false, workContractCreated: false, planId: input.planId, planStepId: input.planStepId, boundWorkId: planStep.workId, repairRequired: true },
+      rawAvailable: false,
+    });
+  }
 
   if ((input.requestedBy ?? 'chatgpt') === 'scheduler') {
     return resolutionRequired(
@@ -707,60 +747,42 @@ export function startGoalWorkloop(
     });
   }
   const generatedWorkId = workIdFor(input.objective);
-  let isolatedWorkspace: ReturnType<NonNullable<GoalWorkloopContext['materializeIsolatedWorkspace']>> | undefined;
-  if (needsWorktree) {
-    if (!ctx.materializeIsolatedWorkspace) {
-      return buildFacadeResult({ status: 'blocked', summary: 'ISOLATED_WORKSPACE_MATERIALIZER_REQUIRED: isolated Work cannot enter running state without a concrete managed checkout.', data: { executionStarted: false, workContractCreated: false, worktreeRequired: true } });
-    }
-    try {
-      isolatedWorkspace = ctx.materializeIsolatedWorkspace({
-        workId: generatedWorkId,
-        title: input.objective,
-        baseRef: ctx.sourceRevision,
-        needsDependencies: input.modeInput.needsDependencies === true,
-      });
-      if (!isolatedWorkspace.checkoutId || !isolatedWorkspace.root || isolatedWorkspace.checkoutId === ctx.checkoutId) {
-        throw new Error('ISOLATED_WORKSPACE_NOT_DISTINCT');
-      }
-    } catch (error) {
-      return buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? `ISOLATED_WORKSPACE_MATERIALIZATION_FAILED: ${error.message}` : 'ISOLATED_WORKSPACE_MATERIALIZATION_FAILED', data: { executionStarted: false, workContractCreated: false, worktreeRequired: true } });
-    }
-  }
   if (input.planId || input.planStepId) {
-    if (!input.planId || !input.planStepId || !ctx.planStore || !ctx.sourceRevision) {
-      return buildFacadeResult({ status: 'blocked', summary: 'PLAN_CONTEXT_REQUIRED: plan_id, plan_step_id and a current source revision are required.', data: { executionStarted: false } });
+    if (!input.planId || !input.planStepId || !ctx.planStore || !ctx.sourceRevision || !plan || !planStep) {
+      return buildFacadeResult({ status: 'blocked', summary: 'PLAN_CONTEXT_REQUIRED: plan_id, plan_step_id, an executable Plan step and a current source revision are required.', data: { executionStarted: false } });
     }
-    let claimed: PlanContract;
-    try {
-      claimed = claimPlanStepForWork(ctx.planStore, {
+    if (plan.status !== 'approved' && plan.status !== 'executing') {
+      return buildFacadeResult({ status: 'blocked', summary: `PLAN_NOT_EXECUTABLE: ${plan.planId} is ${plan.status}`, data: { executionStarted: false, planId: plan.planId } });
+    }
+    if (plan.sourceRevision !== ctx.sourceRevision) {
+      const invalidated = claimPlanStepForWork(ctx.planStore, {
         planId: input.planId,
         stepId: input.planStepId,
         workId: generatedWorkId,
         sourceRevision: ctx.sourceRevision,
       });
-    } catch (error) {
       return buildFacadeResult({
         status: 'blocked',
-        summary: error instanceof Error ? error.message : 'PLAN_STEP_CLAIM_FAILED',
-        data: { planId: input.planId, planStepId: input.planStepId, executionStarted: false },
+        summary: `PLAN_SOURCE_DRIFT: ${invalidated.planId} was invalidated because its source revision no longer matches. Replan before execution.`,
+        data: { planId: invalidated.planId, executionStarted: false, workContractCreated: false, replanRequired: true },
       });
     }
-    if (claimed.status === 'invalidated_by_drift') {
-      return buildFacadeResult({
-        status: 'blocked',
-        summary: `PLAN_SOURCE_DRIFT: ${claimed.planId} was invalidated because its source revision no longer matches. Replan before execution.`,
-        data: { planId: claimed.planId, executionStarted: false, replanRequired: true },
-      });
+    const unresolved = planStep.dependencies.filter((dependency) => plan.steps.find((candidate) => candidate.id === dependency)?.status !== 'completed');
+    if (unresolved.length > 0) {
+      return buildFacadeResult({ status: 'blocked', summary: `PLAN_STEP_DEPENDENCIES_PENDING: ${unresolved.join(', ')}`, data: { executionStarted: false, workContractCreated: false, planId: plan.planId, planStepId: planStep.id } });
+    }
+    if (planStep.status === 'completed') {
+      return buildFacadeResult({ status: 'blocked', summary: `PLAN_STEP_ALREADY_COMPLETED: ${planStep.id}`, data: { executionStarted: false, workContractCreated: false, planId: plan.planId, planStepId: planStep.id } });
     }
   }
   const work = createWorkContract(ctx.workStore, {
     workId: generatedWorkId,
     repoId: ctx.repoId,
-    checkoutId: isolatedWorkspace?.checkoutId ?? ctx.checkoutId,
+    checkoutId: needsWorktree ? undefined : ctx.checkoutId,
     principalId: ctx.principalId,
     controllerInstanceId: ctx.controllerInstanceId,
-    baseRevision: isolatedWorkspace?.baseRevision ?? ctx.sourceRevision,
-    workspaceFingerprint: isolatedWorkspace ? undefined : ctx.workspaceFingerprint,
+    baseRevision: ctx.sourceRevision,
+    workspaceFingerprint: needsWorktree ? undefined : ctx.workspaceFingerprint,
     routeDecisionFingerprint: routeDecision.inputFingerprint,
     routeDecision,
     mode: executionMode,
@@ -775,7 +797,7 @@ export function startGoalWorkloop(
     phase: 'implementation',
     issueId: input.issueId,
     taskId: input.taskId,
-    requirementId: input.requirementId,
+    requirementId: effectiveRequirementId,
     planId: input.planId,
     planStepId: input.planStepId,
     planSourceRevision: input.planId ? ctx.sourceRevision : undefined,
@@ -802,7 +824,7 @@ export function startGoalWorkloop(
         ? 'Isolation was explicitly requested or required for parallel execution.'
         : 'Current workspace is the stability-first default; isolation remains opt-in.',
     },
-    worktreeRef: isolatedWorkspace?.root,
+    worktreeRef: undefined,
     evidencePolicy: {
       defaultDetailLevel: 'summary',
       allowRawOptIn: true,
@@ -824,6 +846,30 @@ export function startGoalWorkloop(
     suggestedNextActions: [],
     continuationPrompt: `Continue work ${ctx.repoId}: ${input.objective.slice(0, 200)}`,
   });
+
+  if (input.planId && input.planStepId && ctx.planStore && ctx.sourceRevision) {
+    try {
+      const claimed = claimPlanStepForWork(ctx.planStore, {
+        planId: input.planId,
+        stepId: input.planStepId,
+        workId: work.workId,
+        sourceRevision: ctx.sourceRevision,
+      });
+      if (claimed.status === 'invalidated_by_drift') {
+        return buildFacadeResult({
+          status: 'blocked',
+          summary: `PLAN_SOURCE_DRIFT: ${claimed.planId} was invalidated because its source revision no longer matches. Repair or replan before execution.`,
+          data: { executionStarted: false, workContractCreated: true, work: summarizeWorkContract(work), planId: claimed.planId, canonicalWorkRetained: true, replanRequired: true },
+        });
+      }
+    } catch (error) {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: error instanceof Error ? error.message : 'PLAN_STEP_CLAIM_FAILED',
+        data: { planId: input.planId, planStepId: input.planStepId, executionStarted: false, workContractCreated: true, work: summarizeWorkContract(work), canonicalWorkRetained: true },
+      });
+    }
+  }
 
   const suggested = suggestedForWork(work, normalized.suggestedNextActions);
   const updated = updateWorkContract(ctx.workStore, work.workId, {
@@ -1547,6 +1593,11 @@ export function runGoalWorkloop(
         forceMode: args.force_mode === 'direct_control' || args.force_mode === 'goal_workloop' || args.force_mode === 'handoff_only'
           ? args.force_mode
           : undefined,
+        relatedWorkId: typeof args.related_work_id === 'string' ? args.related_work_id : undefined,
+        workRelation: args.work_relation === 'continue' || args.work_relation === 'extend' || args.work_relation === 'parallel' || args.work_relation === 'new_goal'
+          ? args.work_relation
+          : undefined,
+        requirementId: typeof args.requirement_id === 'string' ? args.requirement_id : undefined,
         planId: typeof args.plan_id === 'string' ? args.plan_id : undefined,
         planStepId: typeof args.plan_step_id === 'string' ? args.plan_step_id : undefined,
       });

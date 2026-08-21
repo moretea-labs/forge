@@ -146,3 +146,44 @@ export async function withPlanAdmissionLockAsync<T>(
     500,
   );
 }
+
+const primaryWorkAdmissionLockKey = (repoId: string) => ({
+  scope: 'task' as const,
+  repoId,
+  taskId: 'semantic-primary-work-admission',
+});
+
+/**
+ * Primary Work admission protects only canonical ownership resolution and
+ * persistence. It must never span workspace materialization, dependency prep,
+ * checks, worker launch, or the Work execution lifetime.
+ */
+export function withPrimaryWorkAdmissionLock<T>(
+  options: { controllerHome?: string; repoId?: string },
+  operation: () => T,
+): T {
+  if (!options.controllerHome?.trim() || !options.repoId?.trim()) return operation();
+  return withControllerLock(
+    options.controllerHome,
+    primaryWorkAdmissionLockKey(options.repoId),
+    'semantic-primary-work-admission',
+    operation,
+  );
+}
+
+/** Gateway callers wait briefly for a competing admission, then re-read the
+ * canonical Plan/Work state while holding the same short critical section. */
+export async function withPrimaryWorkAdmissionLockAsync<T>(
+  options: { controllerHome?: string; repoId?: string },
+  operation: () => T | Promise<T>,
+): Promise<T> {
+  if (!options.controllerHome?.trim() || !options.repoId?.trim()) return await operation();
+  return await withControllerLockAsync(
+    options.controllerHome,
+    primaryWorkAdmissionLockKey(options.repoId),
+    'semantic-primary-work-admission',
+    async () => await operation(),
+    undefined,
+    500,
+  );
+}

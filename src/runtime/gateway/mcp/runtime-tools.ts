@@ -171,6 +171,7 @@ import {
   listWorkContracts,
   getWorkContract,
   getWorkContractByRequestId,
+  updateWorkContract,
   buildWorkContinuationSnapshot,
   acceptPlanStepEvidence,
   admitPlanContractAsync,
@@ -178,6 +179,7 @@ import {
   getPlanContract,
   listPlanContracts,
   resolvePlanAdmission,
+  withPrimaryWorkAdmissionLockAsync,
   summarizePlanContract,
   supersedePlanContract,
   verifyGoalWorkloop,
@@ -1139,6 +1141,32 @@ function ensureFacadeWorkHandle(
     updatedAt: at,
     finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
     cleanupResponsibility: { owner: 'work_finalizer', registeredAt: at },
+  });
+}
+
+function materializeFacadeWorkPlacement(
+  ctx: MultiRepositoryMcpToolContext,
+  repository: ReturnType<typeof selected>,
+  workId: string,
+  args: Record<string, unknown>,
+) {
+  const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
+  const contract = getWorkContract(store, workId);
+  if (!contract || contract.worktreePolicy.required !== true || contract.worktreeRef) return contract;
+  const workspace = ensureManagedWorkspace(ctx.controllerHome, repository, {
+    requestId: workId,
+    title: contract.objective,
+    baseRef: contract.baseRevision,
+    prepareDependencies: args.needs_dependencies === true,
+  });
+  if (!workspace.managed || !workspace.checkoutId || !workspace.root || workspace.checkoutId === repository.activeCheckoutId) {
+    throw new Error('MANAGED_WORKSPACE_NOT_MATERIALIZED');
+  }
+  return updateWorkContract(store, workId, {
+    checkoutId: workspace.checkoutId,
+    baseRevision: workspace.baseRevision ?? contract.baseRevision,
+    worktreeRef: workspace.root,
+    driver: { ...contract.driver, preferred: 'isolated_worktree', allowDirectEdit: false },
   });
 }
 
@@ -4141,6 +4169,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   sessionId: identity.sessionId,
                 });
               }
+              if (work.worktreePolicy.required === true && !work.worktreeRef) {
+                materializeFacadeWorkPlacement(ctx, repository, workId, args);
+              }
             }
             if (workId) {
               const reconciled = reconcileTerminalFacadeWorkVerifications(ctx, repository, workId);
@@ -4152,11 +4183,24 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           }
         }
 
-        const facade = runGoalWorkloop({ ...workloopCtx, sourceRevision: continuationSourceRevision ?? undefined }, operation as 'start' | 'continue', args);
+        const semanticAdmissionRequired = operation === 'start' && Boolean(
+          (typeof args.plan_id === 'string' && args.plan_id.trim())
+          || (typeof args.plan_step_id === 'string' && args.plan_step_id.trim())
+          || (typeof args.requirement_id === 'string' && args.requirement_id.trim())
+          || (typeof args.related_work_id === 'string' && args.related_work_id.trim())
+          || (typeof args.work_relation === 'string' && args.work_relation.trim()),
+        );
+        const startContext = { ...workloopCtx, sourceRevision: continuationSourceRevision ?? undefined, semanticAdmissionLocked: semanticAdmissionRequired };
+        const facade = semanticAdmissionRequired
+          ? await withPrimaryWorkAdmissionLockAsync(store, () => runGoalWorkloop(startContext, 'start', args))
+          : runGoalWorkloop(startContext, operation as 'start' | 'continue', args);
         const facadeData = facade.data && typeof facade.data === 'object' ? facade.data as Record<string, unknown> : {};
         const facadeWorkId = contextText(contextRecord(facadeData.work).workId, 200);
         if (facade.status === 'ok' && facadeWorkId) {
           try {
+            if (facadeData.workContractCreated === true) {
+              materializeFacadeWorkPlacement(ctx, repository, facadeWorkId, args);
+            }
             const handle = ensureFacadeWorkHandle(ctx, repository, facadeWorkId, args);
             if (handle) facadeData.executionHandle = { workId: handle.workId, checkoutId: handle.checkoutId, managedWorktree: handle.managedWorktree, state: handle.state };
             if (facadeData.workContractCreated === true) {
@@ -4165,7 +4209,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               facadeData.ownershipClaimed = true;
             }
           } catch (error) {
-            const blocked = buildFacadeResult({ status: 'blocked', summary: `WORK_HANDLE_MATERIALIZATION_FAILED: ${error instanceof Error ? error.message : String(error)}`, data: { ...facadeData, workId: facadeWorkId, executionStarted: false } });
+            const blocked = buildFacadeResult({ status: 'blocked', summary: `WORK_HANDLE_MATERIALIZATION_FAILED: ${error instanceof Error ? error.message : String(error)}`, data: { ...facadeData, workId: facadeWorkId, executionStarted: false, canonicalWorkRetained: true } });
             return result(blocked as unknown as Record<string, unknown>, true);
           }
         }
