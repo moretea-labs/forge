@@ -27,8 +27,6 @@ import { releaseExecutionLeases } from '../../resources/leases/store';
 import { RepoActorRegistry } from '../repo-actor/registry';
 import { reconcileExecutionJobsAsync } from './reconciliation';
 import { tickSchedules } from '../../workflow/schedules/engine';
-import { tickPortfolioWorkflows } from '../../workflow/portfolio/engine';
-import { tickGoalLoopsForController } from '../goal-loop';
 import { readJsonFile, writeJsonAtomic } from '../../shared/json-files';
 import { resolveBunExecutable } from '../../shared/process-environment';
 import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree';
@@ -232,8 +230,6 @@ export class GlobalScheduler {
   private readonly workerEntrypoint?: string;
   private readonly fatalOnTickError: boolean;
   private lastScheduleTick = 0;
-  private lastPortfolioTick = 0;
-  private lastGoalLoopTick = 0;
   private lastReconcile = 0;
   private lastPersistedAt = 0;
   private readonly lastRepoDispatch = new Map<string, number>();
@@ -721,10 +717,6 @@ export class GlobalScheduler {
       await tickSchedules(this.controllerHome, repositories.map((repo) => repo.repoId));
       this.lastScheduleTick = now;
     }
-    if (now - this.lastPortfolioTick >= 1_000) {
-      tickPortfolioWorkflows(this.controllerHome);
-      this.lastPortfolioTick = now;
-    }
     let activeJobs = 0;
     const pendingSpawns: Array<{ repoId: string; jobId: string }> = [];
     const projectionRefreshRepos = new Set<string>();
@@ -889,21 +881,6 @@ export class GlobalScheduler {
     // dispatched state is the capacity reservation while spawn proceeds.
     for (const pending of pendingSpawns) {
       this.spawnWorker(pending.repoId, pending.jobId);
-    }
-    // Dispatch is latency-sensitive. Run repository workflow maintenance only
-    // after queued Jobs have had a chance to claim capacity. Goal
-    // state transitions still wake the scheduler immediately when they enqueue work.
-
-    if (now - this.lastGoalLoopTick >= 5_000) {
-      try {
-        tickGoalLoopsForController(
-          this.controllerHome,
-          repositories.map((repo) => repo.repoId),
-        );
-      } catch (error) {
-        console.error('[forge goal-loop] tick failed:', error);
-      }
-      this.lastGoalLoopTick = now;
     }
     this.lastHeartbeatAt = new Date().toISOString();
     this.persistState();

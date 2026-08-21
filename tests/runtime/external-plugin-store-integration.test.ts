@@ -10,7 +10,6 @@ import { getWorkContract } from '../../src/runtime/control-plane/facade/work-con
 import { finalizeGoalWorkloop, startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
 import { createFirstPartyPluginAdapterMap } from '../../src/runtime/plugins/first-party-registry';
-import { DEFAULT_REPORT_SINKS } from '../../src/runtime/personal-assistant/reporting-runtime';
 import { getPluginActionCapabilitySchema } from '../../src/runtime/control-plane/facade/capability-registry';
 import { buildPluginManagementManifest } from '../../src/runtime/plugins/plugin-management-adapter';
 import {
@@ -473,7 +472,6 @@ describe('Resend first-party plugin', () => {
     const send = manifest.actions.find((candidate) => candidate.actionId === 'send_email');
     expect(send?.confirmation).toBe('strong_confirmation');
     expect(send?.requiredConfirmationText).toBe('send-resend-email');
-    expect(DEFAULT_REPORT_SINKS.find((sink) => sink.kind === 'resend_email')?.enabled).toBe(false);
   });
 
   test('persists only non-secret defaults and derives SMTP readiness from domain verification', async () => {

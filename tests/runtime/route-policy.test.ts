@@ -10,7 +10,6 @@ import { routeWorkStart } from '../../src/runtime/control-plane/facade/goal-work
 import { approvePlanContract, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { createWorkContract, getWorkContract, recordWorkScopeEvidence } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { selectExecutionMode } from '../../src/runtime/control-plane/facade/types';
-import { routeExecutor } from '../../src/runtime/control-plane/goal-loop/executor-router';
 import { decideRoute, type RoutePolicyInput } from '../../src/runtime/control-plane/routing/route-policy';
 const roots: string[] = [];
 afterEach(() => {
@@ -37,34 +36,12 @@ function sharedInput(overrides: Partial<RoutePolicyInput> = {}): RoutePolicyInpu
     ...overrides,
   };
 }
-function executorInput(routePolicyInput: RoutePolicyInput) {
-  return {
-    routePolicyInput,
-    goal: {
-      goalId: 'goal-a',
-      repoId: 'repo-a',
-      mode: 'supervised' as const,
-      status: 'ready' as const,
-      objective: routePolicyInput.intent.objective,
-      constraints: {},
-      allowedExecutors: [],
-      forbiddenExecutors: [],
-      repairAttempts: 0,
-      retryBudget: 1,
-    },
-    taskIntent: 'code_implementation' as const,
-    risk: 'local_repo_write' as const,
-    providers: [],
-  };
-}
 describe('single Route Policy authority', () => {
-  test('returns the identical replayable RouteDecision through all three legacy adapters', () => {
+  test('returns the identical replayable RouteDecision through the remaining adapters', () => {
     const input = sharedInput();
     const cli = assessWorkMode({ description: input.intent.objective, routePolicyInput: input }).routeDecision;
     const facade = selectExecutionMode({ scopeClear: true, routePolicyInput: input }).routeDecision;
-    const goal = routeExecutor(executorInput(input)).routeDecision;
     expect(cli).toEqual(facade);
-    expect(goal).toEqual(facade);
     expect(cli.inputFingerprint).toHaveLength(64);
     expect(JSON.parse(JSON.stringify(cli))).toEqual(cli);
   });

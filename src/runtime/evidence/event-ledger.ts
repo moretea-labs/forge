@@ -18,7 +18,7 @@ export interface RuntimeEntityEvent {
   eventId: string;
   eventType: string;
   repoId: string;
-  entityType: 'job' | 'plugin' | 'schedule' | 'occurrence' | 'portfolio' | 'candidate-finding' | 'release' | 'lease' | 'schedule-decision' | 'assistant-action-proposal' | 'assistant-standing-grant';
+  entityType: 'job' | 'plugin' | 'schedule' | 'occurrence' | 'portfolio' | 'release' | 'lease' | 'schedule-decision';
   entityId: string;
   correlationId?: string;
   causationId?: string;

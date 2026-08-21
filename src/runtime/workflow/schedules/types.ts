@@ -10,10 +10,8 @@ export type ScheduleTriggerType =
   | 'manual';
 
 export interface ScheduleCondition {
-  kind: 'repository_clean' | 'job_succeeded' | 'job_terminal' | 'candidate_observation_threshold';
+  kind: 'repository_clean' | 'job_succeeded' | 'job_terminal';
   jobId?: string;
-  semanticKey?: string;
-  observationThreshold?: number;
 }
 
 export interface ScheduleTrigger {

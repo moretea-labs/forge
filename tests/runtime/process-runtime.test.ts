@@ -58,7 +58,6 @@ import {
 } from '../../src/runtime/execution/process-runtime/lightweight-managed';
 import { classifyGatewayExecutionPath } from '../../src/runtime/gateway/mcp/router';
 import { persistedCheckSemanticScopeKey, runPersistedCheckViaProcessRuntime } from '../../src/runtime/gateway/mcp/persisted-check-process';
-import { claimsForMcpOperation } from '../../src/runtime/gateway/mcp/resource-policy';
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { routeExecution } from '../../src/runtime/execution/thin-harness';
@@ -1499,15 +1498,6 @@ APPLESCRIPT`;
     expect(claims.some((c) => c.resourceKey === 'heavy-check:repo1' && c.mode === 'exclusive')).toBe(true);
   });
 
-  test('MCP run_check policy uses fine-grained claims for typecheck', () => {
-    const claims = claimsForMcpOperation('run_check', { check_id: 'package:check:type' }, 'repo1', 'co1');
-    expect(claims.some((c) => c.resourceKey === 'heavy-check:repo1')).toBe(false);
-  });
-
-  test('MCP run_check policy keeps heavy exclusive for release', () => {
-    const claims = claimsForMcpOperation('run_check', { check_id: 'check:release' }, 'repo1', 'co1');
-    expect(claims.some((c) => c.resourceKey === 'heavy-check:repo1')).toBe(true);
-  });
 });
 
 describe('getProcessHandle after completion', () => {

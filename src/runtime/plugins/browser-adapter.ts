@@ -3190,7 +3190,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             provider: 'playwright-runtime-managed-handoff',
             handoff,
             session: managedSession,
-            nextAction: 'Complete the manual step, call resolve_handoff with resolution=resume, then poll get_handoff_status.',
+            nextAction: 'Complete the manual step, then call resolve_handoff with resolution=resume. Its response contains the updated handoff state; call get_handoff_status only when a later decision needs an observation, not as periodic polling.',
           };
         }
         const nativeSession = target.existingSession;
@@ -3234,7 +3234,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           provider: nativeBrowser ? 'macos-apple-events-handoff-host' : 'playwright-handoff-host',
           handoff,
           session: target.existingSession,
-          nextAction: 'Complete the manual step, call resolve_handoff with resolution=resume, then poll get_handoff_status.',
+          nextAction: 'Complete the manual step, then call resolve_handoff with resolution=resume. Its response contains the updated handoff state; call get_handoff_status only when a later decision needs an observation, not as periodic polling.',
         };
       }
       case 'get_handoff_status': {

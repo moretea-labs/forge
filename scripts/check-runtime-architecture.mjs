@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, lstatSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const root = resolve(new URL('..', import.meta.url).pathname);
@@ -15,8 +15,16 @@ function text(path) {
 function requireText(path, needle) {
   if (!text(path).includes(needle)) failures.push(`${path} must contain ${JSON.stringify(needle)}`);
 }
+function hasFilesystemContent(path) {
+  const absolute = resolve(root, path);
+  if (!existsSync(absolute)) return false;
+  if (!lstatSync(absolute).isDirectory()) return true;
+  return readdirSync(absolute, { withFileTypes: true }).some((entry) =>
+    entry.isDirectory() ? hasFilesystemContent(`${path}/${entry.name}`) : true,
+  );
+}
 function requireMissing(path) {
-  if (existsSync(resolve(root, path))) failures.push(`${path} must be deleted`);
+  if (hasFilesystemContent(path)) failures.push(`${path} must be deleted`);
 }
 function requireMatch(path, expression, description) {
   if (!expression.test(text(path))) failures.push(`${path} must ${description}`);
@@ -69,8 +77,6 @@ const required = [
   'src/runtime/workflow/schedules/work-continuation.ts',
   'scripts/smoke-runtime-recovery.ts',
   'scripts/smoke-schedule-engine.ts',
-  'src/runtime/workflow/portfolio/engine.ts',
-  'src/runtime/workflow/findings/store.ts',
   'src/runtime/release/release-gate.ts',
   'src/runtime/root/runtime.ts',
   'src/runtime/root/readiness.ts',
@@ -103,7 +109,6 @@ forbidBetween(
 for (const adapter of [
   'src/cli/controller/work-mode.ts',
   'src/runtime/control-plane/facade/types.ts',
-  'src/runtime/control-plane/goal-loop/executor-router.ts',
 ]) {
   requireText(adapter, '@deprecated Compatibility adapter');
   requireText(adapter, 'decideRoute(');
@@ -119,6 +124,16 @@ requireMissing('src/runtime/control-plane/daemon-entry.ts');
 requireMissing('scripts/smoke-runtime-control-plane.ts');
 requireMissing('src/cli/controller/lifecycle.ts');
 requireMissing('src/cli/commands/supervisor.ts');
+requireMissing('src/runtime/control-plane/goal-loop');
+requireMissing('src/cli/repositories/goal-registry.ts');
+requireMissing('src/runtime/assistant');
+requireMissing('src/runtime/personal-assistant');
+requireMissing('src/runtime/workflow/findings');
+forbid(
+  'src/runtime/control-plane/global-scheduler/scheduler.ts',
+  /tickGoalLoopsForController|lastGoalLoopTick/,
+  'Scheduler must not restore autonomous Goal Loop polling',
+);
 requireMissing('src/cli/controller/restart-coordinator-entry.ts');
 requireMissing('scripts/controller-runtime.sh');
 requireMissing('scripts/activate-source-baseline.command');
@@ -149,6 +164,7 @@ requireMissing('bin/repo-harness-hook.mjs');
 requireMissing('bin/repo-harness-runtime.mjs');
 requireMissing('src/runtime/control-plane/daemon-client.ts');
 requireMissing('src/runtime/control-plane/daemon-ownership.ts');
+requireMissing('src/runtime/workflow/portfolio');
 for (const path of sourceFiles('src')) {
   const source = text(path);
   for (const retiredAuthority of [
@@ -340,19 +356,9 @@ forbid(
   'Runtime MCP tools must not retain dormant ExecutionJob creation paths',
 );
 forbid(
-  'src/runtime/assistant/intent.ts',
-  /\bcreateExecutionJob\b/,
-  'Assistant intent and routine triggers must use direct plugin actions or external-Controller handoffs',
-);
-forbid(
   'src/runtime/execution/jobs/legacy-adapter.ts',
   /\bcreateExecutionJob\b|\bdispatchLegacyLocalJob\b/,
   'Legacy Local Bridge compatibility must be read-only and must not dispatch new ExecutionJobs',
-);
-forbid(
-  'src/runtime/workflow/portfolio/engine.ts',
-  /\bcreateExecutionJob\b|\bfindExecutionJob\b/,
-  'Portfolio definitions are planning records; Kernel-owned Portfolio execution is retired',
 );
 forbid(
   'src/cli/local-bridge/server.ts',
@@ -409,16 +415,6 @@ forbid(
   'src/cli/mcp/legacy-tool-service.ts',
   /\bretryAgentJob\b/,
   'Legacy MCP must not call Agent Run retry',
-);
-forbid(
-  'src/runtime/workflow/portfolio/engine.ts',
-  /\bacceptTaskJob\b|\bstartTaskJob\b|\bretryAgentJob\b/,
-  'Portfolio Engine must not start or retry Kernel-managed Agent Runs',
-);
-forbid(
-  'src/runtime/control-plane/goal-loop/goal-loop-engine.ts',
-  /\bcreateExecutionJob\b|\bsubmitLocalBridgeJob\b|\bacceptTaskJob\b|\bstartTaskJob\b|\bdispatchProvider\b/,
-  'Goal Loop must not create Jobs, Agent Runs, or invoke Kernel Provider dispatch',
 );
 forbid('src/runtime/gateway/mcp/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
 requireMatch(
@@ -525,9 +521,6 @@ requireText('src/runtime/workflow/schedules/types.ts', "'repository-event'");
 requireText('src/runtime/workflow/schedules/types.ts', "'dependency-checkpoint'");
 requireText('src/runtime/workflow/schedules/store.ts', 'saveScheduleDecision');
 requireText('src/runtime/workflow/schedules/settlement.ts', 'backoffMinutes');
-requireText('src/runtime/workflow/portfolio/store.ts', "'workflows.json'");
-requireText('src/runtime/workflow/portfolio/store.ts', 'PORTFOLIO_DEPENDENCY_CYCLE');
-requireText('src/runtime/workflow/findings/store.ts', 'observationCount');
 requireText('src/runtime/release/release-gate.ts', 'releaseReady');
 requireText('src/cli/mcp/transports/http.ts', "'/ready'");
 requireText('src/cli/mcp/transports/http.ts', "'/repos/:repoId/health'");

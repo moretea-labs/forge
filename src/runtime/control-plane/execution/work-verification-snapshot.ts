@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  rmdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -91,11 +92,28 @@ function cloneHead(sourceRoot: string, targetRoot: string, head: string): void {
   git(targetRoot, ['checkout', '--detach', '--quiet', head]);
 }
 
+function pruneEmptySnapshotParents(targetRoot: string, targetPath: string): void {
+  const boundary = resolve(targetRoot);
+  let current = dirname(resolve(targetPath));
+  while (current !== boundary) {
+    try {
+      if (readdirSync(current).length > 0) return;
+      rmdirSync(current);
+    } catch {
+      return;
+    }
+    current = dirname(current);
+  }
+}
+
 function overlayPath(sourceRoot: string, targetRoot: string, relativePath: string): void {
   const source = resolve(sourceRoot, relativePath);
   const target = resolve(targetRoot, relativePath);
   rmSync(target, { recursive: true, force: true });
-  if (!existsSync(source)) return;
+  if (!existsSync(source)) {
+    pruneEmptySnapshotParents(targetRoot, target);
+    return;
+  }
   mkdirSync(dirname(target), { recursive: true });
   const stat = lstatSync(source);
   if (stat.isSymbolicLink()) {

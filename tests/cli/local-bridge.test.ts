@@ -601,38 +601,11 @@ describe("Local Execution Bridge", () => {
   });
 
 
-  test("serves ChatGPT-first assistant intent, routine, inbox, and memory APIs", async () => {
+  test("projects repository schedules without personal-assistant routines", async () => {
     const root = repo();
     const handle = await startLocalBridgeServer({ repoRoot: root, port: 0, openBrowser: false });
     servers.push(handle);
     const headers = { "x-forge-local-token": handle.token, "content-type": "application/json" };
-
-    const plannedRoutine = await fetch(new URL("/api/assistant/intent", handle.url), {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        utterance: "以后每天早上 9 点帮我整理过去 24 小时的重要邮件，重点是工作、API、BA、Jira、PR",
-        mode: "plan_only",
-      }),
-    }).then((response) => response.json());
-    expect(plannedRoutine.understoodIntent).toBe("create_routine");
-    expect(plannedRoutine.requiresConfirmation).toBe(true);
-    expect(plannedRoutine.routineDraft.allowedActions).toContain("gmail.list_messages");
-    expect(plannedRoutine.routineDraft.forbiddenActions).toContain("gmail.send_message");
-    const createdRoutine = await fetch(new URL("/api/assistant/intent", handle.url), {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        utterance: "以后每天早上 9 点帮我整理过去 24 小时的重要邮件，重点是工作、API、BA、Jira、PR",
-        confirmRoutine: true,
-      }),
-    }).then((response) => response.json());
-    expect(createdRoutine.routine.name).toBe("每日邮件整理");
-    expect(createdRoutine.inboxItem.title).toContain("Routine");
-    const routines = await fetch(new URL("/api/assistant/routines", handle.url), { headers }).then((response) => response.json());
-    expect(routines.routines.map((routine: { routineId: string }) => routine.routineId)).toContain(createdRoutine.routine.routineId);
-    const consoleAutomations = await fetch(new URL("/api/console/automations", handle.url), { headers }).then((response) => response.json()), projectedRoutine = consoleAutomations.automations.filter((automation: { name: string }) => automation.name === "每日邮件整理");
-    expect(projectedRoutine).toHaveLength(1); expect(projectedRoutine[0].source).toBe("routine"); expect(consoleAutomations.automations.some((automation: { name: string }) => automation.name === "Assistant Routine: 每日邮件整理")).toBe(false);
 
     const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
     const registeredRepository = loadRepositoryRegistry(controllerHome).repositories.find((repository) => realpathSync(repository.canonicalRoot) === realpathSync(root));
@@ -697,41 +670,12 @@ describe("Local Execution Bridge", () => {
     expect(projectedCompletedWorkflow).toMatchObject({ status: "completed", pausedReason: "关联工作已经完成，这个自动任务不会再触发。", actions: [] });
     expect(consoleStateSemantics.summary.completed).toBeGreaterThanOrEqual(1);
 
-    const memory = await fetch(new URL("/api/assistant/memory", handle.url), {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ key: "work.communication_style", value: "中文总结，英文回复保持客观、不 push。" }),
-    }).then((response) => response.json());
-    expect(memory.entry.key).toBe("work.communication_style");
-    const gmailPlan = await fetch(new URL("/api/assistant/intent", handle.url), {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ utterance: "测试读取最近一周 Gmail", mode: "plan_only" }),
-    }).then((response) => response.json());
-    expect(gmailPlan.understoodIntent).toBe("read_gmail");
-    expect(gmailPlan.plan[0].pluginId).toBe("gmail");
-    expect(gmailPlan.plan[0].actionId).toBe("list_messages");
-    const readiness = await fetch(new URL("/api/assistant/readiness", handle.url), { headers }).then((response) => response.json());
-    expect(readiness.capabilities.map((capability: { capabilityId: string }) => capability.capabilityId)).toContain("gmail_read");
-    expect(readiness.assistantState.memoryEntries).toBe(1);
-    const cleanupPreview = await fetch(new URL("/api/assistant/maintenance/cleanup-preview", handle.url), {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ includeTempDirs: false, includeTerminalLocalJobs: false, includeHistoricalAttention: false }),
-    }).then((response) => response.json());
-    expect(cleanupPreview.mode).toBe("preview");
-    expect(cleanupPreview.summary.total).toBe(0);
-
-    const openapi = await fetch(new URL("/api/assistant/openapi.json", handle.url), { headers }).then((response) => response.json());
-    expect(openapi.paths["/api/assistant/intent"].post.operationId).toBe("submitAssistantIntent");
-    expect(openapi.paths["/api/assistant/readiness"].get.operationId).toBe("getAssistantReadiness");
-    expect(openapi.paths["/api/assistant/maintenance/cleanup-preview"].post.operationId).toBe("previewRuntimeCleanup");
-
-    const inbox = await fetch(new URL("/api/assistant/inbox", handle.url), { headers }).then((response) => response.json());
-    expect(inbox.items.length).toBeGreaterThan(0);
+    for (const path of ["/api/assistant/intent", "/api/assistant/routines", "/api/assistant/readiness", "/api/assistant/maintenance/cleanup-preview"]) {
+      const response = await fetch(new URL(path, handle.url), { headers });
+      expect(response.status).toBe(404);
+    }
     const snapshot = await fetch(new URL("/api/snapshot", handle.url), { headers }).then((response) => response.json());
-    expect(snapshot.assistant.routines.length).toBeGreaterThan(0);
-    expect(snapshot.assistant.inbox.length).toBeGreaterThan(0);
+    expect(snapshot.assistant).toBeUndefined();
   });
 
 
@@ -1046,8 +990,12 @@ describe("Local Execution Bridge", () => {
     expect(dashboard).not.toContain("?token=");
     for (const text of ["Forge · Utility Console", "正在读取 Forge 配置", "/console-assets/app.js"]) expect(dashboard).toContain(text); expect(dashboard).not.toContain("你想让它完成什么");
     const uiScriptResponse = await fetch(new URL("/console-assets/app.js", handle.url)); expect(uiScriptResponse.status).toBe(200); expect(uiScriptResponse.headers.get("content-type")).toContain("javascript"); const uiScript = await uiScriptResponse.text();
-    for (const text of ["Overview", "Needs attention", "Workspace", "Work", "Automations", "Capabilities", "Repositories", "Settings", "System", "/api/console/command-center", "/api/console/requirements", "/api/console/work-portfolio", "/api/console/automations"]) expect(uiScript).toContain(text);
+    for (const text of ["Overview", "Needs attention", "Workspace", "Work", "Automations", "Capabilities", "Repositories", "System", "/api/console/command-center", "/api/console/requirements", "/api/console/work-portfolio", "/api/console/automations"]) expect(uiScript).toContain(text);
+    for (const retiredSurface of ["Settings", "/api/console/automation-settings", "/api/console/provider-config", "/api/console/local-tools", "/api/console/executor-routing"]) expect(uiScript).not.toContain(retiredSurface);
     const auth = { "x-forge-local-token": handle.token };
+    for (const path of ["/api/console/automation-settings", "/api/console/provider-config", "/api/console/local-tools", "/api/console/executor-routing"]) {
+      expect((await fetch(new URL(path, handle.url), { headers: auth })).status).toBe(404);
+    }
     const trackedWork = await fetch(new URL("/api/console/requirements", handle.url), { headers: auth }).then((response) => response.json()); expect(Array.isArray(trackedWork.requirements)).toBe(true); expect(typeof trackedWork.requirementCount).toBe("number");
     const executionWork = await fetch(new URL("/api/console/work", handle.url), { headers: auth }).then((response) => response.json()); expect(Array.isArray(executionWork.items)).toBe(true);
     const workPortfolio = await fetch(new URL("/api/console/work-portfolio", handle.url), { headers: auth }).then((response) => response.json()); expect(Array.isArray(workPortfolio.items)).toBe(true); expect(Array.isArray(workPortfolio.repositories)).toBe(true); expect(typeof workPortfolio.summary.total).toBe("number");

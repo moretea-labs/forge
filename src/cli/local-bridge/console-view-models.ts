@@ -264,38 +264,6 @@ export interface AccessStateViewModel {
   toolGroups: string[];
 }
 
-/** Compact autonomous goal-loop status for console / local-bridge (no raw internal dumps). */
-export interface GoalLoopStatusViewModel {
-  activeCount: number;
-  goals: Array<{
-    title: string;
-    stage: string;
-    currentStep: string;
-    providerSelected?: string;
-    waitingReason?: string;
-    nextSafeAction?: string;
-    handoffPacketAvailable: boolean;
-    approvalRequired: boolean;
-    whyThisProvider?: string;
-    whatHappensNext?: string;
-    whatIsBlocked?: string;
-  }>;
-  invokableProviders: string[];
-  handoffOnlyProviders: string[];
-  providerHealth: Array<{
-    providerId: string;
-    status: string;
-    directDispatchAllowed: boolean;
-    handoffOnly: boolean;
-    summary: string;
-  }>;
-  /** Plain-language automation overview snippet. */
-  automationSummary?: string;
-  liveModelProvidersEffective?: boolean;
-  settingsPathHint?: string;
-  nextTickHint?: string;
-}
-
 export interface CommandCenterViewModel {
   schemaVersion: 1;
   generatedAt: string;
@@ -309,8 +277,6 @@ export interface CommandCenterViewModel {
   currentWork?: WorkSummaryViewModel;
   recentWork: WorkSummaryViewModel[];
   handoffs: HandoffCardViewModel[];
-  /** Autonomous goal loop surface (daemon-owned, above Issue/Task). */
-  goalLoop?: GoalLoopStatusViewModel;
   /** Assistant/plugin capabilities available to the controller (not the primary workflow). */
   pluginSummary: PluginSummaryViewModel;
   plugins: PluginCardViewModel[];

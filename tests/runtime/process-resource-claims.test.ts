@@ -4,7 +4,6 @@ import {
   claimsForRepositoryCommand,
   scopeResourceClaims,
 } from '../../src/runtime/execution/process-runtime/resource-claims';
-import { claimsForMcpOperation } from '../../src/runtime/gateway/mcp/resource-policy';
 import { claimsConflict } from '../../src/runtime/resources/claims/conflicts';
 import type { ExecutionLease } from '../../src/runtime/resources/leases/types';
 import { claimsForAssistantPluginAction } from '../../src/runtime/plugins/store';
@@ -143,16 +142,6 @@ describe('Process Runtime fine-grained resource claims', () => {
   test('release checks retain heavy-check exclusivity', () => {
     const claims = claimsForCheck('check:release', undefined, 'repo1', 'co1');
     expect(claims).toContainEqual({ resourceKey: 'heavy-check:repo1', mode: 'exclusive' });
-  });
-
-  test('Gateway run_check preclassification matches static and heavy check boundaries', () => {
-    const typeClaims = claimsForMcpOperation('run_check', { check_id: 'package:check:type' }, 'repo1', 'co1');
-    expect(typeClaims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'read' });
-    expect(typeClaims).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
-    expect(typeClaims.some((claim) => claim.resourceKey === 'workspace:co1' && claim.mode !== 'read')).toBe(false);
-
-    const releaseClaims = claimsForMcpOperation('run_check', { check_id: 'check:release' }, 'repo1', 'co1');
-    expect(releaseClaims).toContainEqual({ resourceKey: 'heavy-check:repo1', mode: 'exclusive' });
   });
 
   test('trusted provider state serializes only the same provider, never repository workspace state', () => {

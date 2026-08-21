@@ -83,30 +83,7 @@ import {
   buildCommandCenter,
   buildPluginSummary,
   buildSystemReadiness,
-  consoleGoalLoopPolicyGet,
-  consoleGoalLoopPolicyUpdate,
-  consoleLocalToolConfigGet,
-  consoleLocalToolConfigUpdate,
-  consoleLocalToolDisable,
-  consoleLocalToolEnable,
-  consoleLocalToolHealth,
-  consoleLocalToolList,
-  consoleProviderApiSettingsGet,
-  consoleProviderApiSettingsUpdate,
-  consoleProviderConfigGet,
-  consoleProviderConfigUpdate,
-  consoleProviderCredentials,
-  consoleProviderDisable,
-  consoleProviderEnable,
-  consoleProviderHealth,
-  consoleProviderPriority,
-  consoleProviderReset,
-  consoleRoutePreview,
-  consoleRoutingGet,
-  consoleRoutingReset,
-  consoleRoutingUpdate,
   evaluateConsoleConnectorFreshness,
-  getAutomationSettings,
   getConsoleAccessPolicy,
   getConsolePlugin,
   listConsolePlugins,
@@ -162,26 +139,12 @@ import {
 } from "./mobile-intents";
 import { buildMobileMonitorSnapshot } from "./mobile-monitor";
 import { controllerExposureSnapshot } from "../mcp/toolset";
-import { submitAssistantIntent, runAssistantRoutineNow } from "../../runtime/assistant/intent";
-import { updateAssistantRoutineLifecycle } from "../../runtime/assistant/schedule-binding";
-import { assistantOpenApiSchema } from "../../runtime/assistant/openapi";
 import { completeGoogleOAuthLogin } from "../../runtime/safe-tooling/google-oauth-broker";
 import { completeResendOAuthLogin } from "../../runtime/safe-tooling/resend-oauth";
-import { approveAssistantActionProposal, listAssistantActionProposals, rejectAssistantActionProposal } from "../../runtime/assistant/action-proposals";
-import { assistantModelReadiness } from "../../runtime/assistant/model-provider";
-import { createAssistantStandingGrant, listAssistantStandingGrants, revokeAssistantStandingGrant } from "../../runtime/assistant/standing-grants";
-import { buildAssistantReadinessReport } from "../../runtime/assistant/readiness";
 import { summarizePluginForLowInterception } from "../../runtime/safe-tooling";
 import { buildModelClientSummary, buildModelControlPlaneSummary, deepSeekControllerManifest, deepSeekFunctionToolManifest, prepareDeepSeekControllerHandoff, prepareDeepSeekControllerRequest, prepareDeepSeekToolCall } from "../../runtime/model-clients";
 import { applyRuntimeCleanup, previewRuntimeCleanup } from "../../runtime/maintenance/cleanup";
 import { assertRecoveryAuthorized, buildCapabilityRecoverySnapshot, buildRecoveryAuditRecord, recoveryActionById, writeRecoveryAuditRecord } from "../../runtime/recovery";
-import {
-  listAssistantInbox,
-  listAssistantMemory,
-  listAssistantRoutines,
-  updateAssistantInboxStatus,
-  upsertAssistantMemory,
-} from "../../runtime/assistant/store";
 
 export interface LocalBridgeServerOptions {
   /**
@@ -422,9 +385,6 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     })),
   }));
   const mobileIntents = listMobileIntentDevices(repoRoot);
-  const assistantInbox = listAssistantInbox(repoRoot, 20);
-  const assistantRoutines = listAssistantRoutines(repoRoot);
-  const assistantMemory = listAssistantMemory(repoRoot);
   const boardIssues = board.issues as Array<{
     id: string;
     tasks?: Array<{ id: string; title: string; effectiveStatus: string }>;
@@ -517,11 +477,6 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     ],
     localJobs: localJobs.map((job) => ({ status: job.status, error: job.error, updatedAt: job.updatedAt })),
     executionJobs: executionJobs.map((job) => ({ status: job.status, error: job.error, updatedAt: job.updatedAt, operation: job.payload.operation })),
-    assistant: {
-      inboxCount: assistantInbox.items.length,
-      routineCount: assistantRoutines.routines.length,
-      memoryCount: assistantMemory.entries.length,
-    },
   });
   return {
     generatedAt: new Date().toISOString(),
@@ -585,11 +540,6 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     timeline: getControllerTimeline(repoRoot, { limit: 40 }),
     githubPlugin: getGitHubPluginStatus(repoRoot),
     assistantPlugins,
-    assistant: {
-      inbox: assistantInbox.items,
-      routines: assistantRoutines.routines,
-      memory: assistantMemory.entries,
-    },
     mobileIntents,
     runs,
     runCounts: runs.reduce<Record<string, number>>((counts, run) => {
@@ -1347,210 +1297,6 @@ export async function startLocalBridgeServer(
     }
   });
 
-  /** Automation / Model & Tool Providers configuration center. */
-  app.get("/api/console/automation-settings", (request, response) => {
-    try {
-      response.json(getAutomationSettings(consoleCtx(request)));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.get("/api/console/provider-config", (request, response) => {
-    try {
-      response.json({ config: consoleProviderConfigGet(consoleCtx(request)), redacted: true });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/console/provider-config", (request, response) => {
-    try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      response.json({ config: consoleProviderConfigUpdate(consoleCtx(request), body), redacted: true });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/console/providers/:providerId/enable", (request, response) => {
-    try {
-      response.json({ config: consoleProviderEnable(consoleCtx(request), String(request.params.providerId ?? "")), redacted: true });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/console/providers/:providerId/disable", (request, response) => {
-    try {
-      response.json({ config: consoleProviderDisable(consoleCtx(request), String(request.params.providerId ?? "")), redacted: true });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/console/providers/:providerId/priority", (request, response) => {
-    try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      const direction = body.direction === "up" || body.direction === "down"
-        ? body.direction
-        : typeof body.priority === "number"
-          ? body.priority
-          : "up";
-      response.json({
-        config: consoleProviderPriority(consoleCtx(request), String(request.params.providerId ?? ""), direction as "up" | "down" | number),
-        redacted: true,
-      });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/console/providers/health", (request, response) => {
-    try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      const providerId = typeof body.providerId === "string" ? body.providerId : typeof body.provider_id === "string" ? body.provider_id : undefined;
-      response.json(consoleProviderHealth(consoleCtx(request), providerId));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.get("/api/console/providers/credentials", (request, response) => {
-    try {
-      response.json({ credentials: consoleProviderCredentials(consoleCtx(request)), redacted: true });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/console/providers/reset", (request, response) => {
-    try {
-      response.json({ config: consoleProviderReset(consoleCtx(request)), redacted: true });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.get("/api/console/providers/:providerId/api-settings", (request, response) => {
-    try {
-      response.json(consoleProviderApiSettingsGet(consoleCtx(request), String(request.params.providerId ?? "")));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/console/providers/:providerId/api-settings", (request, response) => {
-    try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      response.json(consoleProviderApiSettingsUpdate(
-        consoleCtx(request),
-        String(request.params.providerId ?? ""),
-        body,
-      ));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.get("/api/console/local-tools", (request, response) => {
-    try {
-      response.json({ tools: consoleLocalToolList(consoleCtx(request)), redacted: true });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/console/local-tools/:toolId/enable", (request, response) => {
-    try {
-      response.json({ config: consoleLocalToolEnable(consoleCtx(request), String(request.params.toolId ?? "")), redacted: true });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/console/local-tools/:toolId/disable", (request, response) => {
-    try {
-      response.json({ config: consoleLocalToolDisable(consoleCtx(request), String(request.params.toolId ?? "")), redacted: true });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/console/local-tools/health", (request, response) => {
-    try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      const toolId = typeof body.toolId === "string" ? body.toolId : typeof body.tool_id === "string" ? body.tool_id : undefined;
-      response.json(consoleLocalToolHealth(consoleCtx(request), toolId));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.get("/api/console/local-tool-config", (request, response) => {
-    try {
-      response.json({ config: consoleLocalToolConfigGet(consoleCtx(request)), redacted: true });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/console/local-tool-config", (request, response) => {
-    try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      response.json({ config: consoleLocalToolConfigUpdate(consoleCtx(request), body), redacted: true });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.get("/api/console/executor-routing", (request, response) => {
-    try {
-      response.json({ config: consoleRoutingGet(consoleCtx(request)), redacted: true });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/console/executor-routing/reset", (request, response) => {
-    try {
-      response.json({ config: consoleRoutingReset(consoleCtx(request)), redacted: true });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/console/executor-routing", (request, response) => {
-    try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      response.json({ ...consoleRoutingUpdate(consoleCtx(request), body), redacted: true });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/console/executor-route-preview", (request, response) => {
-    try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      response.json(consoleRoutePreview(consoleCtx(request), body));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.get("/api/console/goal-loop-policy", (request, response) => {
-    try {
-      response.json({ policy: consoleGoalLoopPolicyGet(consoleCtx(request)), redacted: true });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post("/api/console/goal-loop-policy", (request, response) => {
-    try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      response.json({ policy: consoleGoalLoopPolicyUpdate(consoleCtx(request), body), redacted: true });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
   /** User-facing plugin/capability catalog for the console. */
   app.get("/api/console/plugins", (request, response) => {
     try {
@@ -2169,33 +1915,6 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.get("/api/assistant/openapi.json", (request, response) => {
-    response.json(assistantOpenApiSchema(`${request.protocol}://${request.get("host") ?? "127.0.0.1:8766"}`));
-  });
-
-  app.post("/api/assistant/intent", async (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(await submitAssistantIntent(controllerHome, repository, {
-        ...(request.body && typeof request.body === "object" && !Array.isArray(request.body) ? request.body as Record<string, unknown> : {}),
-        source: request.body?.source === "mcp" || request.body?.source === "local-ui" || request.body?.source === "mobile" || request.body?.source === "system"
-          ? request.body.source
-          : "chatgpt",
-      }));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.get("/api/assistant/readiness", (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(buildAssistantReadinessReport(controllerHome, repository));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
   app.get("/api/recovery/probe", (request, response) => {
     try {
       response.json(cachedLocalControllerSnapshot(requestRepositoryRoot(request, options, controllerHome)).recovery);
@@ -2253,238 +1972,6 @@ export async function startLocalBridgeServer(
       }));
       localSnapshotCache.delete(repoRoot);
       response.json({ action, audit, result });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.post("/api/assistant/self-test/gmail-read", async (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      const query = queryString(request.body?.query) ?? "newer_than:1d";
-      const maxResults = typeof request.body?.maxResults === "number" ? Math.max(1, Math.min(Math.trunc(request.body.maxResults), 10)) : 3;
-      response.status(202).json(await submitAssistantIntent(controllerHome, repository, {
-        utterance: `测试读取 Gmail：${query}`,
-        source: "local-ui",
-        mode: "execute",
-        requestId: queryString(request.body?.requestId),
-        context: { query, max_results: maxResults },
-      }));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.get("/api/assistant/inbox", (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      const limit = Number(request.query.limit);
-      response.json(listAssistantInbox(repoRoot, Number.isFinite(limit) ? limit : 50));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.patch("/api/assistant/inbox/:itemId", (request, response) => {
-    try {
-      const status = request.body?.status;
-      if (!["unread", "read", "archived"].includes(status)) throw new Error("ASSISTANT_INBOX_STATUS_INVALID: status must be unread, read, or archived");
-      response.json({ item: updateAssistantInboxStatus(requestRepositoryRoot(request, options, controllerHome), request.params.itemId, status) });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.get("/api/assistant/model", (_request, response) => {
-    response.json(assistantModelReadiness());
-  });
-
-  app.get("/api/assistant/standing-grants", (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(listAssistantStandingGrants(controllerHome, repository, {
-        status: typeof request.query.status === "string" ? request.query.status as any : undefined,
-        limit: Number(request.query.limit) || undefined,
-      }));
-    } catch (error) { response.status(400).json({ error: errorMessage(error) }); }
-  });
-
-  app.post("/api/assistant/standing-grants", (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      response.status(201).json({ grant: createAssistantStandingGrant(controllerHome, repository, {
-        name: queryString(request.body?.name),
-        pluginId: queryString(request.body?.pluginId) ?? "",
-        actionId: queryString(request.body?.actionId) ?? "",
-        routineIds: Array.isArray(request.body?.routineIds) ? request.body.routineIds : undefined,
-        senderAllowlist: Array.isArray(request.body?.senderAllowlist) ? request.body.senderAllowlist : undefined,
-        subjectContains: Array.isArray(request.body?.subjectContains) ? request.body.subjectContains : undefined,
-        minConfidence: typeof request.body?.minConfidence === "number" ? request.body.minConfidence : undefined,
-        maxPerRun: typeof request.body?.maxPerRun === "number" ? request.body.maxPerRun : undefined,
-        expiresInDays: typeof request.body?.expiresInDays === "number" ? request.body.expiresInDays : undefined,
-        confirmAuthorization: request.body?.confirmAuthorization === true,
-        origin: { surface: "local-ui", actor: "assistant-standing-grant-api" },
-      }) });
-    } catch (error) { response.status(400).json({ error: errorMessage(error) }); }
-  });
-
-  app.post("/api/assistant/standing-grants/:grantId/revoke", (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json({ grant: revokeAssistantStandingGrant(controllerHome, repository, {
-        grantId: request.params.grantId,
-        reason: queryString(request.body?.reason),
-        confirmAuthorization: request.body?.confirmAuthorization === true,
-        origin: { surface: "local-ui", actor: "assistant-standing-grant-api" },
-      }) });
-    } catch (error) { response.status(400).json({ error: errorMessage(error) }); }
-  });
-
-  app.get("/api/assistant/proposals", (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(listAssistantActionProposals(controllerHome, repository, {
-        status: typeof request.query.status === "string" ? request.query.status as any : undefined,
-        limit: Number(request.query.limit) || undefined,
-      }));
-    } catch (error) { response.status(400).json({ error: errorMessage(error) }); }
-  });
-
-  app.post("/api/assistant/proposals/:proposalId/approve", async (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      response.status(202).json({ proposal: await approveAssistantActionProposal(controllerHome, repository, {
-        proposalId: request.params.proposalId,
-        requestId: queryString(request.body?.requestId) ?? `proposal-approval-${request.params.proposalId}`,
-        confirmationText: queryString(request.body?.confirmationText),
-        origin: { surface: 'local-ui', actor: 'assistant-proposal-api' },
-      }) });
-    } catch (error) { response.status(400).json({ error: errorMessage(error) }); }
-  });
-
-  app.post("/api/assistant/proposals/:proposalId/reject", (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json({ proposal: rejectAssistantActionProposal(controllerHome, repository, request.params.proposalId, queryString(request.body?.reason)) });
-    } catch (error) { response.status(400).json({ error: errorMessage(error) }); }
-  });
-
-  app.get("/api/assistant/routines", (request, response) => {
-    try {
-      response.json(listAssistantRoutines(requestRepositoryRoot(request, options, controllerHome)));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.post("/api/assistant/routines", async (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      const result = await submitAssistantIntent(controllerHome, repository, {
-        utterance: queryString(request.body?.naturalLanguageGoal) ?? queryString(request.body?.utterance) ?? queryString(request.body?.name) ?? "create routine",
-        source: "chatgpt",
-        mode: "plan_then_execute",
-        confirmRoutine: request.body?.confirmRoutine === true,
-        timezone: queryString(request.body?.timezone),
-        routine: {
-          name: queryString(request.body?.name),
-          naturalLanguageGoal: queryString(request.body?.naturalLanguageGoal),
-          scheduleText: queryString(request.body?.scheduleText),
-          timezone: queryString(request.body?.timezone),
-          dataSources: Array.isArray(request.body?.dataSources) ? request.body.dataSources : undefined,
-          output: request.body?.output,
-          allowedActions: Array.isArray(request.body?.allowedActions) ? request.body.allowedActions : undefined,
-          forbiddenActions: Array.isArray(request.body?.forbiddenActions) ? request.body.forbiddenActions : undefined,
-        },
-      });
-      response.status(result.routine ? 201 : 200).json(result);
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.post("/api/assistant/routines/:routineId/run", (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      response.status(202).json(runAssistantRoutineNow(controllerHome, repository, request.params.routineId));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.post("/api/assistant/routines/:routineId/pause", (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(updateAssistantRoutineLifecycle(controllerHome, repository, request.params.routineId, "paused"));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.post("/api/assistant/routines/:routineId/resume", (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(updateAssistantRoutineLifecycle(controllerHome, repository, request.params.routineId, "enabled"));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.post("/api/assistant/routines/:routineId/delete", (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(updateAssistantRoutineLifecycle(controllerHome, repository, request.params.routineId, "deleted"));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.post("/api/assistant/maintenance/cleanup-preview", (request, response) => {
-    try {
-      response.json(previewRuntimeCleanup(requestRepositoryRoot(request, options, controllerHome), {
-        minAgeMinutes: typeof request.body?.minAgeMinutes === "number" ? request.body.minAgeMinutes : undefined,
-        includeTempDirs: request.body?.includeTempDirs !== false,
-        includeTerminalLocalJobs: request.body?.includeTerminalLocalJobs === true,
-        includeLegacyRuns: request.body?.includeLegacyRuns === true,
-        includeHistoricalAttention: request.body?.includeHistoricalAttention === true,
-        maxCandidates: typeof request.body?.maxCandidates === "number" ? request.body.maxCandidates : undefined,
-      }));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.post("/api/assistant/maintenance/cleanup-apply", (request, response) => {
-    try {
-      response.json(applyRuntimeCleanup(requestRepositoryRoot(request, options, controllerHome), {
-        minAgeMinutes: typeof request.body?.minAgeMinutes === "number" ? request.body.minAgeMinutes : undefined,
-        includeTempDirs: request.body?.includeTempDirs !== false,
-        includeTerminalLocalJobs: request.body?.includeTerminalLocalJobs === true,
-        includeLegacyRuns: request.body?.includeLegacyRuns === true,
-        includeHistoricalAttention: request.body?.includeHistoricalAttention === true,
-        maxCandidates: typeof request.body?.maxCandidates === "number" ? request.body.maxCandidates : undefined,
-        confirmCleanup: request.body?.confirmCleanup === true,
-      }));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.get("/api/assistant/memory", (request, response) => {
-    try {
-      response.json(listAssistantMemory(requestRepositoryRoot(request, options, controllerHome)));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.post("/api/assistant/memory", (request, response) => {
-    try {
-      response.json({ entry: upsertAssistantMemory(requestRepositoryRoot(request, options, controllerHome), {
-        key: queryString(request.body?.key) ?? "",
-        value: queryString(request.body?.value) ?? "",
-        source: queryString(request.body?.source) ?? "chatgpt",
-      }) });
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }

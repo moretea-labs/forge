@@ -9,11 +9,10 @@ import {
   previewAutomaticRuntimeMaintenance,
   type RuntimeMaintenanceActionId,
 } from '../../recovery/maintenance-executor';
-import { listCandidateFindings } from '../findings/store';
 import { getControllerSession, getWorkContract, isTerminalWorkContractStatus, listHandoffItems } from '../../control-plane/facade';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
 import { getExternalControllerLaunchReservation } from '../../control-plane/launcher/launch-reservation-store';
-import { runScheduledChatgptPrompt, runWorkChatgptContinuation } from '../../control-plane/launcher/chatgpt-work-continuation';
+import { runWorkChatgptContinuation } from '../../control-plane/launcher/chatgpt-work-continuation';
 import {
   getOccurrence,
   getSchedule,
@@ -38,18 +37,24 @@ import type {
 const execFileAsync = promisify(execFile);
 const LIVE_MAINTENANCE_OPERATION = 'runtime_maintenance_apply';
 const EXTERNAL_CONTROLLER_WAKE_OPERATION = 'external_controller_wake';
-const CHATGPT_BROWSER_PROMPT_OPERATION = 'chatgpt_browser_prompt';
 const BROWSER_PROBE_OPERATION = 'browser_probe';
 const GITHUB_ISSUE_WATCH_OPERATION = 'github_issue_watch';
 
 function isDeterministicSchedule(schedule: RepositorySchedule): boolean {
-  // Kernel may execute only allowlisted, deterministic dispatch operations.
-  // ChatGPT owns semantic work; the Scheduler only dispatches the configured prompt.
+  // Kernel executes only typed, bounded dispatch operations.
   return schedule.action.operation === LIVE_MAINTENANCE_OPERATION
     || schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION
-    || schedule.action.operation === CHATGPT_BROWSER_PROMPT_OPERATION
     || schedule.action.operation === BROWSER_PROBE_OPERATION
     || schedule.action.operation === GITHUB_ISSUE_WATCH_OPERATION;
+}
+
+function retiredScheduleReason(schedule: RepositorySchedule): string | undefined {
+  if (schedule.action.operation === 'chatgpt_browser_prompt') return 'RETIRED_WORK_FREE_PROMPT_SCHEDULE';
+  if (schedule.action.operation === 'assistant_routine_execute') return 'RETIRED_PERSONAL_ASSISTANT_SCHEDULE';
+  if ((schedule.trigger.condition as { kind?: string } | undefined)?.kind === 'candidate_observation_threshold') {
+    return 'RETIRED_CANDIDATE_FINDING_SCHEDULE';
+  }
+  return undefined;
 }
 
 function normalizedWindow(minutes: number, at = Date.now()): string {
@@ -232,11 +237,6 @@ async function triggerDue(
         const due = condition.kind === 'job_succeeded' ? job?.status === 'succeeded' : terminal;
         return { due, reason: due ? undefined : `Condition ${condition.kind} is not met.`, evidence: { jobId: condition.jobId, status: job?.status ?? 'missing' } };
       }
-      const threshold = Math.max(1, condition.observationThreshold ?? 2);
-      const finding = listCandidateFindings(controllerHome, schedule.repoId, { includeTerminal: true, limit: 1000 })
-        .find((entry) => entry.semanticKey === condition.semanticKey);
-      const due = Boolean(finding && finding.observationCount >= threshold);
-      return { due, reason: due ? undefined : 'Candidate observation threshold is not met.', evidence: { semanticKey: condition.semanticKey, observations: finding?.observationCount ?? 0, threshold } };
     }
     default:
       return { due: false, reason: 'Unsupported Schedule trigger.' };
@@ -366,90 +366,6 @@ function externalControllerLaunchArgs(args: Record<string, unknown>, controllerT
   add('--reasoning', args.reasoning);
   add('--tab-policy', args.tab_policy);
   return launchArgs;
-}
-
-async function executeChatgptBrowserPrompt(
-  controllerHome: string,
-  schedule: RepositorySchedule,
-  occurrence: ScheduleOccurrence,
-  timestamp: string,
-  args: Record<string, unknown>,
-): Promise<ScheduleOccurrence> {
-  const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : '';
-  if (!prompt) {
-    return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', 'CHATGPT_BROWSER_PROMPT_REQUIRED');
-  }
-  const model = typeof args.model === 'string' ? args.model : 'gpt-5.6';
-  const reasoning = args.reasoning === 'medium' || args.reasoning === 'xhigh' ? args.reasoning : 'high';
-  const tabPolicy = args.tab_policy === 'reuse' || args.tab_policy === 'new' ? args.tab_policy : 'auto';
-  const dispatching = decideOccurrence(
-    controllerHome,
-    schedule,
-    occurrence,
-    'execute',
-    'running',
-    'Forge Scheduler is dispatching the configured prompt through the controller-owned ChatGPT browser session.',
-    occurrenceDecisionEvidence({ operation: CHATGPT_BROWSER_PROMPT_OPERATION, model, reasoning, tabPolicy }),
-  );
-  const result = await runScheduledChatgptPrompt({
-    controllerHome,
-    repoId: schedule.repoId,
-    automationId: schedule.scheduleId,
-    prompt,
-    title: schedule.name,
-    browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
-    conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
-    model,
-    reasoning,
-    tabPolicy,
-    timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-  });
-  if (result.status === 'failed') {
-    const reason = result.error?.message ?? 'ChatGPT browser prompt dispatch failed.';
-    const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
-      outcome: 'failed',
-      decision: 'execute',
-      reason,
-      handoff: {
-        title: `ChatGPT scheduled prompt ${occurrence.occurrenceId} failed`,
-        summary: 'Forge recorded the trigger but could not dispatch the configured ChatGPT prompt.',
-        reason,
-        creationReason: 'repeated_infrastructure_failure',
-        blockingDecision: 'Repair ChatGPT/browser readiness before unattended prompt dispatch resumes.',
-        recommendedDecision: 'Inspect browser attachment and ChatGPT execution preference verification, then retrigger this automation.',
-        recommendedPrompt: `Inspect failed ChatGPT prompt occurrence ${occurrence.occurrenceId} for schedule ${schedule.scheduleId}.`,
-        statusSummary: 'Scheduled ChatGPT prompt dispatch failed.',
-        blockedBy: ['chatgpt_browser_prompt_failed'],
-        attemptedActions: [`schedule:${schedule.scheduleId}`, `browser-session:${result.browserSessionId}`],
-      },
-    });
-    const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
-    saveSchedule(controllerHome, { ...latest, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
-    return failed.occurrence ?? saveOccurrence(controllerHome, { ...dispatching, status: 'failed', reason });
-  }
-  const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
-  const durableConversationUrl = result.conversationUrl && /\/c\/[^/?#]+/.test(result.conversationUrl)
-    ? result.conversationUrl
-    : undefined;
-  saveSchedule(controllerHome, {
-    ...latest,
-    action: durableConversationUrl && tabPolicy !== 'new'
-      ? {
-          ...latest.action,
-          arguments: { ...latest.action.arguments, conversation_url: durableConversationUrl },
-        }
-      : latest.action,
-    lastTriggeredAt: timestamp,
-    lastOccurrenceId: occurrence.occurrenceId,
-    consecutiveFailures: 0,
-    nextEligibleAt: undefined,
-    pausedReason: undefined,
-  });
-  return saveOccurrence(controllerHome, {
-    ...dispatching,
-    status: 'succeeded',
-    reason: `ChatGPT prompt dispatched via ${result.browserSessionId}${result.reusedSession ? ' (reused)' : ' (new session)'}; execution preference ${result.executionPreferenceVerified ? 'verified' : 'not verified'}.`,
-  });
 }
 
 async function executeExternalControllerWake(
@@ -621,6 +537,9 @@ export async function evaluateSchedule(
   force = false,
   triggerContext?: ScheduleTriggerContext,
 ): Promise<ScheduleOccurrence | undefined> {
+  // Preserve retired schedule records as evidence, but do not create a new
+  // occurrence or resume a controller/external action from their old payload.
+  if (retiredScheduleReason(schedule)) return undefined;
   if (!schedule.enabled && !force) return undefined;
   const due = await triggerDue(controllerHome, schedule, force, triggerContext);
   if (!due.due) return undefined;
@@ -822,10 +741,6 @@ export async function evaluateSchedule(
     return executeExternalControllerWake(controllerHome, schedule, occurrence, timestamp, args);
   }
 
-  if (schedule.action.operation === CHATGPT_BROWSER_PROMPT_OPERATION) {
-    return executeChatgptBrowserPrompt(controllerHome, schedule, occurrence, timestamp, args);
-  }
-
   if (schedule.action.operation === GITHUB_ISSUE_WATCH_OPERATION) {
     try {
       const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
@@ -937,25 +852,16 @@ export async function evaluateSchedule(
           nextEligibleAt: undefined,
           pausedReason: undefined,
         });
-        if (args.wake_on_auth_required !== false) {
+        if (args.wake_on_auth_required !== false && workId) {
           const authPrompt = typeof args.auth_required_prompt === 'string'
             ? args.auth_required_prompt
             : typeof args.continuation_prompt === 'string'
               ? args.continuation_prompt
               : `Scheduled browser watcher ${schedule.scheduleId} detected that authentication is required (${probe.authReason ?? 'login marker'}). Inspect the external dependency and request user login only if it cannot be restored safely.`;
-          if (!workId) {
-            return executeChatgptBrowserPrompt(controllerHome, observedSchedule, occurrence, timestamp, {
-              prompt: authPrompt,
-              ...(typeof args.browser_session_id === 'string' ? { browser_session_id: args.browser_session_id } : {}),
-              ...(typeof args.model === 'string' ? { model: args.model } : {}),
-              ...(typeof args.reasoning === 'string' ? { reasoning: args.reasoning } : {}),
-              ...(typeof args.tab_policy === 'string' ? { tab_policy: args.tab_policy } : {}),
-            });
-          }
           const wakeArgs = { ...args, continuation_prompt: authPrompt };
           return executeExternalControllerWake(controllerHome, observedSchedule, occurrence, timestamp, wakeArgs, { ...observationEvidence, authReason: probe.authReason });
         }
-        return decideOccurrence(controllerHome, observedSchedule, occurrence, 'operation_blocked', 'skipped', `Browser watcher requires authentication: ${probe.authReason ?? 'login marker matched'}`, observationEvidence);
+        return decideOccurrence(controllerHome, observedSchedule, occurrence, 'operation_blocked', 'skipped', `Browser ${workId ? 'watcher' : 'keepalive'} requires authentication: ${probe.authReason ?? 'login marker matched'}`, observationEvidence);
       }
 
       if (probe.status === 'keepalive') {

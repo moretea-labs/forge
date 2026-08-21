@@ -55,6 +55,12 @@
       ]
     },
     {
+      "prefix": "src/cli/repositories/",
+      "modules": [
+        "repository"
+      ]
+    },
+    {
       "prefix": "src/cli/repository",
       "modules": [
         "repository"
@@ -351,10 +357,6 @@
       "module": "controller",
       "resource": "controller-home-isolated"
     },
-    "tests/runtime/candidate-findings-store.test.ts": {
-      "module": "workflow",
-      "resource": "controller-home-isolated"
-    },
     "tests/runtime/control-plane-hardening.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
@@ -386,10 +388,6 @@
     "tests/runtime/git-executable-and-workspace.test.ts": {
       "module": "repository",
       "resource": "git-worktree"
-    },
-    "tests/runtime/gmail-assistant-routine.test.ts": {
-      "module": "controller",
-      "resource": "pure"
     },
     "tests/runtime/interactive-sync-router.test.ts": {
       "module": "routing",
@@ -446,10 +444,6 @@
     "tests/runtime/process-tree-reclamation.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"
-    },
-    "tests/runtime/provider-config.test.ts": {
-      "module": "process-runtime",
-      "resource": "pure"
     },
     "tests/runtime/route-policy.test.ts": {
       "module": "routing",

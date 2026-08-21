@@ -26,7 +26,6 @@ import { buildControllerWorkbench } from '../repositories/workbench';
 import { applySafePatch, buildSafePatchPlan } from '../repositories/safe-patch';
 import { getEditSessionDiff, type EditSessionBinding } from '../editing/edit-session';
 import { buildSyncOperationDigest, classifyUserFacingError } from '../../runtime/control-plane/facade/operation-digest';
-import { diagnoseRepositoryStuckState, listRepositoryGoalRuns, readRepositoryGoalRegistry, runRepositoryGoal, upsertRepositoryGoal } from '../repositories/goal-registry';
 import {
   repositoryGitCommit,
   repositoryGitCreateBranch,
@@ -146,7 +145,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
   }, ['repo_id']),
   definition('repository_remove', 'Soft-remove a repository while retaining audit history.', {
     repo_id: repoId,
-  }, ['repo_id'], true),
+  }, ['repo_id']),
   definition('repository_workbench', 'Return Workbench state or invoke one bounded Thin Harness operation without adding top-level MCP tools. Prefer batch_execute for multi-step status→search→read→diff or read→patch→check flows so ChatGPT pays one routing/receipt ownership cycle.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repository-scoped operations.' },
@@ -162,38 +161,6 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
       additionalProperties: true,
     },
   }),
-
-
-
-  definition('repository_goal_list', 'List durable repository goals stored inside the checkout.', {
-    repo_id: repoId,
-    checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
-  }, [], true),
-  definition('repository_goal_upsert', 'Create or update one durable repository goal for repeated assistant workflows.', {
-    repo_id: repoId,
-    checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
-    id: { type: 'string' },
-    title: { type: 'string' },
-    status: { type: 'string', enum: ['active', 'paused', 'done'] },
-    checks: { type: 'array', items: { type: 'string' } },
-    notes: { type: 'string' },
-  }, []),
-  definition('repository_stuck_diagnose', 'Diagnose likely repository workflow blockers from Git state and registered goals.', {
-    repo_id: repoId,
-    checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
-  }, [], true),
-  definition('repository_goal_run', 'Run one durable repository goal iteration, optionally executing its configured checks and recording a goal-run artifact.', {
-    repo_id: repoId,
-    checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
-    goal_id: { type: 'string', description: 'Goal id. Defaults to the first active goal.' },
-    run_checks: { type: 'boolean', description: 'When true, execute configured checks. Defaults to diagnosis-only.' },
-  }, []),
-  definition('repository_goal_runs', 'List recent repository goal-run artifacts.', {
-    repo_id: repoId,
-    checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
-    limit: { type: 'number' },
-  }, [], true),
-
   definition('repository_git_status', 'Return a structured Git status snapshot for the selected repository checkout.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
@@ -613,6 +580,9 @@ function compactProcessCommandPayload(input: {
       ...(input.workspace ? { workspace: input.workspace } : {}),
       ...(input.processId ? { processId: input.processId } : {}),
       ...(completed ? { exitCode: input.exitCode ?? (ok ? 0 : 1) } : {}),
+      // A running default response otherwise loses its only dependency-bound
+      // continuation advice when the detailed Process record is omitted.
+      ...(!completed ? { next: input.next } : {}),
       stdout: output.stdout ?? '',
       stderr: output.stderr ?? '',
       ...(output.stdoutTruncated ? { stdoutTruncated: true, stdoutBytes: output.stdoutBytes } : {}),
@@ -890,38 +860,6 @@ export async function callRepositoryTool(
           checkout_id: typeof args.checkout_id === 'string' ? args.checkout_id : payload.checkout_id,
         });
       }
-
-
-
-      case 'repository_goal_list': {
-        const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
-        return result({ repoId: repository.repoId, checkoutId: repository.activeCheckoutId, registry: readRepositoryGoalRegistry(repository) });
-      }
-      case 'repository_goal_upsert': {
-        const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
-        return result({ repoId: repository.repoId, checkoutId: repository.activeCheckoutId, ...upsertRepositoryGoal(repository, { id: args.id, title: args.title, status: args.status, checks: args.checks, notes: args.notes }) as unknown as Record<string, unknown> });
-      }
-      case 'repository_stuck_diagnose': {
-        const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
-        return result({ diagnosis: diagnoseRepositoryStuckState(repository) });
-      }
-
-      case 'repository_goal_run': {
-        const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
-        const ran = withControllerLock(
-          controllerHome,
-          { scope: 'repository', repoId: repository.repoId },
-          'mcp:repository_goal_run',
-          () => runRepositoryGoal(repository, { goalId: args.goal_id, runChecks: args.run_checks }),
-          60_000,
-        );
-        return result({ repoId: repository.repoId, checkoutId: repository.activeCheckoutId, ...ran as unknown as Record<string, unknown> });
-      }
-      case 'repository_goal_runs': {
-        const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
-        const limit = typeof args.limit === 'number' ? args.limit : typeof args.limit === 'string' ? Number(args.limit) : undefined;
-        return result({ repoId: repository.repoId, checkoutId: repository.activeCheckoutId, runs: listRepositoryGoalRuns(repository, limit) });
-      }
       case 'repository_git_status': {
         const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
         const status = args.refresh === true
@@ -1132,6 +1070,37 @@ export async function callRepositoryTool(
           approvalContinuation: typeof args.approval_request_id === 'string'
             || typeof args.approval_token === 'string',
         });
+        // The thin-router reject is an execution boundary, not just a routing
+        // hint. In particular, an unconfirmed destructive command must never
+        // fall through to the local Process Runtime path.
+        if (routingDecision.mode === 'reject') {
+          const confirmationRequired = routingDecision.risk === 'destructive';
+          const authorization = confirmationRequired
+            ? {
+                decision: 'user_confirmation_required',
+                source: 'execution_router',
+                reason: 'Explicit destructive commands require user confirmation before execution.',
+              }
+            : {
+                decision: 'deny',
+                source: 'execution_router',
+                reason: 'Command rejected by the execution safety boundary.',
+              };
+          return result({
+            accepted: false,
+            mode: 'reject',
+            path: 'execution_policy_rejected',
+            route: 'reject',
+            status: confirmationRequired ? 'approval_required' : 'rejected',
+            policyDecision: confirmationRequired ? 'approval_required' : 'rejected',
+            authorization,
+            repoId: repository.repoId,
+            checkoutId: repository.activeCheckoutId,
+            workspace: target.workspace,
+            message: authorization.reason,
+            suggestedOperation: routingDecision.suggestedOperation,
+          });
+        }
         // Unified Process Runtime for local commands (Direct/Managed) when not forced durable.
         // Ephemeral workspaces cannot persist a recoverable async Process handle,
         // so their async requests remain promotion-required below.
@@ -1236,7 +1205,7 @@ export async function callRepositoryTool(
                       : 'Bounded ephemeral workspace execution completed without Process record / Lease / Local Job / ExecutionJob / Worker.'
                     : processResult.route === 'process_direct' || completed
                       ? 'Process Runtime completed without Local Job / ExecutionJob / Worker.'
-                      : `Process Runtime is managing ${handle?.processId}; poll process_get/process_wait instead of creating a Local Job.`,
+                      : `Process Runtime is managing ${handle?.processId}. Continue independent work; use process_get only if an observation can change the next decision, then join with process_wait when this result becomes a dependency. Do not re-run or periodically poll.`,
                   detailLevel,
                 });
                 payload.status = status;

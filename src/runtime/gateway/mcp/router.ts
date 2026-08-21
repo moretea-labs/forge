@@ -11,12 +11,8 @@ import { processToolDefinitions } from './process-tools';
 import { resolveRepositorySelection } from '../../../cli/repositories/registry';
 import { executionIdentityForRepository } from '../../control-plane/execution/execution-identity';
 import { startOrJoinEditValidation } from '../../control-plane/execution/edit-validation-coordinator';
-import type {
-  ExecutionOperationMetadata,
-  ExecutionTimeoutPolicy,
-} from '../../execution/jobs/types';
-import { claimsForMcpOperation } from './resource-policy';
-import { classifyRepositoryCommand, classifyRepositoryCommandReplay } from '../../../cli/repositories/command-classifier';
+import type { ExecutionTimeoutPolicy } from '../../execution/jobs/types';
+import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
 import {
   isFastEligibleTool,
   routeExecution,
@@ -153,7 +149,6 @@ const EXPLICIT_EXTERNAL_CONTROLLER_TOOLS = new Set([
   'publish_issue_to_github',
   'close_github_issue',
   'request_release_gate',
-  'promote_candidate_finding',
 ]);
 
 const GATEWAY_ROUTE_BEHAVIOR_PROBES: ReadonlyArray<{
@@ -587,68 +582,6 @@ export function validateMcpToolArguments(name: string, definition: McpToolDefini
   }
 }
 
-export function operationMetadataForTool(
-  name: string,
-  definition: McpToolDefinition,
-  claims: ReturnType<typeof claimsForMcpOperation>,
-  timeoutMs: number,
-  args: Record<string, unknown> = {},
-  defaultBranch?: string,
-  timeoutPolicy?: ExecutionTimeoutPolicy,
-): ExecutionOperationMetadata {
-  if (name === 'repository_command_execute' && args.command !== undefined) {
-    const classification = classifyRepositoryCommand(args.command as string | string[], defaultBranch);
-    const replay = classifyRepositoryCommandReplay(args.command as string | string[], defaultBranch);
-    const mode = classification.risk === 'readonly'
-      ? 'readonly'
-      : classification.risk === 'remote_write'
-        ? 'remote_write'
-        : classification.risk === 'destructive'
-          ? 'destructive'
-          : 'mutating';
-    return {
-      mode,
-      idempotent: replay.idempotent,
-      replayable: replay.replayable,
-      timeoutMs,
-      admissionTimeoutMs: timeoutPolicy?.admissionTimeoutMs,
-      queueTimeoutMs: timeoutPolicy?.queueTimeoutMs,
-      executionTimeoutMs: timeoutPolicy?.executionTimeoutMs,
-      interactiveWaitMs: timeoutPolicy?.interactiveWaitMs,
-      retryPolicy: replay.retryPolicy,
-      approvalPolicy: classification.risk === 'readonly'
-        ? 'none'
-        : classification.risk === 'destructive' ? 'required' : 'request',
-      lockScope: claims.map((claim) => claim.resourceKey),
-      resourceClaims: claims,
-    };
-  }
-  const destructive = definition.annotations?.destructiveHint === true;
-  const remoteWrite = claims.some((claim) => claim.resourceKey.startsWith('remote:'));
-  const readOnly = definition.annotations?.readOnlyHint === true || claims.length === 0;
-  const mode = destructive
-    ? 'destructive'
-    : remoteWrite
-      ? 'remote_write'
-      : readOnly
-        ? 'readonly'
-        : 'mutating';
-  return {
-    mode,
-    idempotent: readOnly,
-    replayable: readOnly,
-    timeoutMs,
-    admissionTimeoutMs: timeoutPolicy?.admissionTimeoutMs,
-    queueTimeoutMs: timeoutPolicy?.queueTimeoutMs,
-    executionTimeoutMs: timeoutPolicy?.executionTimeoutMs,
-    interactiveWaitMs: timeoutPolicy?.interactiveWaitMs,
-    retryPolicy: readOnly ? 'safe_retry' : 'idempotent_request',
-    approvalPolicy: destructive ? 'required' : remoteWrite || !readOnly ? 'request' : 'none',
-    lockScope: claims.map((claim) => claim.resourceKey),
-    resourceClaims: claims,
-  };
-}
-
 export function injectDurableCommandFields(tool: McpToolDefinition): McpToolDefinition {
   const schema = tool.inputSchema as { type?: unknown; properties?: Record<string, unknown>; [key: string]: unknown };
   if (schema.type !== 'object') return tool;
@@ -1025,7 +958,7 @@ export async function routeDurableMcpCall(
       durableSideEffects: facade.durableSideEffects,
       next: handle?.completed
         ? 'Check finished on Process Runtime without ExecutionJob / LocalBridgeJob / Worker.'
-        : `Check still running as managed process ${handle?.processId}. Continue independent work; use process_wait once when this result becomes a real dependency. Do not re-run or repeatedly poll the same check.`,
+        : `Check still running as managed process ${handle?.processId}. Continue independent work; attach with process_wait only when this exact result becomes a real dependency. An attach may return a running handle because transport time is bounded; continue useful work and attach again only at a later dependency boundary. Do not re-run or periodically poll the same check.`,
     });
   }
 

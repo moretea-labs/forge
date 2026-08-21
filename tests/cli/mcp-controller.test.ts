@@ -13,6 +13,7 @@ import { createServer as createHttpServer } from "http";
 import { join } from "path";
 import { writeJsonAtomic } from "../../src/runtime/shared/json-files";
 import { appendControllerWorklogEvent } from "../../src/cli/controller/worklog";
+import { compositeRunning } from "../../src/cli/controller/composite-result";
 import { readForgeRuntimeStatus } from "../../src/runtime/control-plane/runtime-status-client";
 import { readWorkHandle, writeWorkHandle } from "../../src/runtime/control-plane/execution/work-handle-store";
 import { claimControllerSession, getControllerSession, releaseControllerSession } from "../../src/runtime/control-plane/facade/controller-session-store";
@@ -23,6 +24,7 @@ import { waitForProcess } from "../../src/runtime/execution/process-runtime/runt
 import { callExecutionTool } from "../../src/runtime/gateway/mcp/execution-tools";
 import { routeDurableMcpCall } from "../../src/runtime/gateway/mcp/router";
 import { boundedPluginArtifactImageContent, callRuntimeTool, controllerReadiness, controllerReadinessEvidence, repositoryExecutionReadiness } from "../../src/runtime/gateway/mcp/runtime-tools";
+import { runtimeToolDefinitions } from "../../src/runtime/gateway/mcp/runtime-tool-definitions";
 import { getMcpPolicy } from "../../src/cli/mcp/policy";
 import { createMcpToolContext as createMultiRepositoryContext, parseMcpToolset } from "../../src/cli/mcp/multi-repository";
 import { callRepositoryTool } from "../../src/cli/mcp/repository-tools";
@@ -41,7 +43,14 @@ import {
 import { writeMcpServiceLocalConfig, writeMcpServiceRuntimeState } from "../../src/cli/mcp/auth";
 import { persistControllerAccessMode } from "../../src/cli/mcp/access-mode";
 import { clearAllSessionCachesForTest } from "../../src/cli/repository/session-cache";
-import { searchRepositoryMany, searchRepositoryManyAsync } from "../../src/cli/repository/inspector";
+import {
+  clearGitIdentityCacheForTest,
+  clearGitSnapshotCacheForTest,
+  gitIdentityPerformanceSnapshot,
+  gitSnapshotPerformanceSnapshot,
+  searchRepositoryMany,
+  searchRepositoryManyAsync,
+} from "../../src/cli/repository/inspector";
 import { runInspectorSearchManyInWorker } from "../../src/runtime/execution/thin-harness/search-worker";
 import { classifySwiftCompilerArguments } from "../../src/runtime/context/swift-navigation";
 import {
@@ -75,10 +84,32 @@ test("keeps source-stable facade schema aligned with the controller workflow con
     const safePatchProperties = safePatch?.inputSchema.properties as Record<string, any>;
     expect(safePatchProperties.work_id).toBeDefined();
     expect(repository.repoId).toBeTruthy();
+    const runtimeToolNames = runtimeToolDefinitions.map((tool) => tool.name);
+    for (const retired of [
+      'assistant_model_readiness',
+      'assistant_standing_grants',
+      'assistant_standing_grant_create',
+      'assistant_standing_grant_revoke',
+      'assistant_action_proposals',
+      'assistant_action_proposal_resolve',
+      'assistant_readiness',
+      'gmail_triage_rules',
+      'gmail_triage_rule_upsert',
+      'gmail_triage_plan',
+      'record_candidate_finding',
+      'list_candidate_findings',
+      'promote_candidate_finding',
+    ]) expect(runtimeToolNames).not.toContain(retired);
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
     rmSync(controllerHome, { recursive: true, force: true });
   }
+});
+
+test("running composite advice preserves independent work instead of periodic polling", () => {
+  const running = compositeRunning({ phase: "verification", summary: "Focused check is running." });
+  expect(running.nextAction).toContain("Continue independent work");
+  expect(running.nextAction).toContain("Do not resubmit or periodically poll");
 });
 
 test("reports checkout dependency readiness before tests and provides a lockfile-safe bootstrap", () => {
@@ -257,50 +288,6 @@ test("broad rh_context discovery stops on candidate sufficiency without requirin
     expect(sync.scannedFiles).toBe(3);
     expect(sync.truncationReason).toBe("discovery_budget");
     expect(sync.results.some((result) => result.query === "rareGuessedTerm")).toBe(false);
-
-    const requiredOptions = {
-      ...options,
-      requiredQueries: ["rareGuessedTerm"],
-      cacheKey: `required-discovery-${Date.now()}`,
-    };
-    const requiredSync = searchRepositoryMany(repoRoot, policy, requiredOptions);
-    const requiredAsync = await searchRepositoryManyAsync(repoRoot, policy, requiredOptions);
-    expect(requiredAsync).toEqual(requiredSync);
-    expect(requiredSync.scannedFiles).toBe(4);
-    expect(requiredSync.results.some((result) => result.query === "rareGuessedTerm")).toBe(true);
-  });
-});
-
-test("rh_context discovery preserves an explicit code symbol embedded in a natural-language query", async () => {
-  await withController(async (repoRoot) => {
-    for (let index = 0; index < 12; index += 1) {
-      writeFileSync(join(repoRoot, `anchor-decoy-${String(index).padStart(2, "0")}.ts`), "export const review = 'behavior rare';\n");
-    }
-    writeFileSync(join(repoRoot, "z-required-anchor.ts"), "export const rareGuessedTerm = 'review behavior rare';\n");
-    const controllerHome = String(process.env.FORGE_CONTROLLER_HOME);
-    const repository = registerRepository({ path: repoRoot, controllerHome });
-    const ctx = createMultiRepositoryContext({ repo: repoRoot, controllerHome, profile: "controller", toolset: "advanced" });
-    const response = await callRuntimeTool(ctx, "rh_context", {
-      repo_id: repository.repoId,
-      operation: "search",
-      query: "review rareGuessedTerm behavior",
-      structural_context: "off",
-      max_files: 4,
-    });
-    const value = JSON.parse(response!.content[0]!.text);
-    expect(value.status).toBe("ok");
-    expect(value.data.files.some((file: { path: string }) => file.path === "z-required-anchor.ts")).toBe(true);
-
-    const longResponse = await callRuntimeTool(ctx, "rh_context", {
-      repo_id: repository.repoId,
-      operation: "search",
-      query: `${"review behavior discovery context ".repeat(8)}rareGuessedTerm`,
-      structural_context: "off",
-      max_files: 4,
-    });
-    const longValue = JSON.parse(longResponse!.content[0]!.text);
-    expect(longValue.status).toBe("ok");
-    expect(longValue.data.files.some((file: { path: string }) => file.path === "z-required-anchor.ts")).toBe(true);
   });
 });
 
@@ -464,7 +451,7 @@ test("returns bounded policy-checked TypeScript semantic navigation through rh_c
   });
 });
 
-test("returns execution readiness and registered checks in one rh_context search", async () => {
+test("keeps source retrieval separate from requested-check execution readiness", async () => {
   await withController(async (repoRoot) => {
     const controllerHome = String(process.env.FORGE_CONTROLLER_HOME);
     writeFileSync(join(repoRoot, "package.json"), JSON.stringify({ scripts: { "check:type": "echo ok" } }));
@@ -476,18 +463,17 @@ test("returns execution readiness and registered checks in one rh_context search
     spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" });
     const repository = registerRepository({ path: repoRoot, controllerHome });
     const ctx = createMultiRepositoryContext({ repo: repoRoot, controllerHome, profile: "controller", toolset: "advanced" });
-
-    const sourceOnlyResponse = await callRuntimeTool(ctx, "rh_context", {
+    const sourceResponse = await callRuntimeTool(ctx, "rh_context", {
       repo_id: repository.repoId,
       operation: "search",
-      query: "marker execution readiness",
+      query: "marker source retrieval",
       structural_context: "off",
     });
-    const sourceOnly = JSON.parse(sourceOnlyResponse!.content[0]!.text);
-    expect(sourceOnly.status).toBe("ok");
-    expect(sourceOnly.data.executionReadiness).toBeUndefined();
-    expect(sourceOnly.data.registeredChecks).toBeUndefined();
-    expect(sourceOnly.data.retrievalPolicy.executionReadiness).toBe("requested_check_ids_only");
+    const source = JSON.parse(sourceResponse!.content[0]!.text);
+    expect(source.status).toBe("ok");
+    expect(source.data.executionReadiness).toBeUndefined();
+    expect(source.data.registeredChecks).toBeUndefined();
+    expect(source.data.retrievalPolicy.executionReadiness).toBe("requested_check_ids_only");
 
     const response = await callRuntimeTool(ctx, "rh_context", {
       repo_id: repository.repoId,
@@ -533,7 +519,10 @@ test("rejects unregistered Plan checks before persistence", async () => {
     const createdValue = JSON.parse(created!.content[0]!.text);
     expect(createdValue.status).toBe("failed");
     expect(createdValue.summary).toContain("PLAN_CHECKS_INVALID");
+    expect(createdValue.summary).toContain("registeredCheckIds");
     expect(createdValue.data.planContractCreated).toBe(false);
+    expect(createdValue.data.registeredCheckIds.length).toBeGreaterThan(0);
+    expect(createdValue.suggestedNextActions).toEqual([]);
     const readBack = await callRuntimeTool(ctx, "rh_work", {
       repo_id: repository.repoId,
       operation: "plan_get",
@@ -541,6 +530,48 @@ test("rejects unregistered Plan checks before persistence", async () => {
     });
     const readValue = JSON.parse(readBack!.content[0]!.text);
     expect(readValue.status).toBe("not_found");
+  });
+});
+
+test("historical Job reads keep inspection dependency-bound", async () => {
+  await withController(async (repoRoot) => {
+    const controllerHome = String(process.env.FORGE_CONTROLLER_HOME);
+    const repository = registerRepository({ path: repoRoot, controllerHome });
+    const records = join(repositoryControllerRoot(controllerHome, repository.repoId), "execution-jobs", "records");
+    const now = new Date().toISOString();
+    mkdirSync(records, { recursive: true });
+    writeFileSync(join(records, "JOB-historical-running.json"), JSON.stringify({
+      schemaVersion: 1,
+      revision: 1,
+      jobId: "JOB-historical-running",
+      repoId: repository.repoId,
+      type: "check",
+      status: "running",
+      priority: "P2",
+      requestId: "historical-running",
+      semanticKey: "historical-running",
+      payload: { operation: "run_check", target: "mcp-tool" },
+      origin: { surface: "system" },
+      resourceClaims: [],
+      dependencies: [],
+      leaseRefs: [],
+      createdAt: now,
+      updatedAt: now,
+      queuedAt: now,
+      attempt: 1,
+      maxAttempts: 1,
+      evidenceIds: [],
+    }));
+
+    const full = createMultiRepositoryContext({ repo: repoRoot, controllerHome, profile: "controller", toolset: "full" });
+    const response = await callRuntimeTool(full, "get_job", {
+      repo_id: repository.repoId,
+      job_id: "JOB-historical-running",
+    });
+    const payload = JSON.parse(response!.content[0]!.text);
+    expect(payload.job.jobId).toBe("JOB-historical-running");
+    expect(payload.next).toContain("Continue independent work");
+    expect(payload.next).toContain("Do not periodically poll");
   });
 });
 
@@ -593,7 +624,6 @@ test("keeps Core and Advanced on the same bounded default ChatGPT surface", () =
   for (const compatibilityOnly of [
     "toolchain_plugin_summary",
     "workspace_auth_login_prepare",
-    "assistant_readiness",
   ]) {
     expect(STABLE_CONTROLLER_TOOL_NAMES).not.toContain(compatibilityOnly as never);
   }
@@ -1507,22 +1537,48 @@ describe("MCP controller profile", () => {
       expect(fullNames).toContain("repository_git_status");
       expect(fullNames).toContain("git_commit_paths");
       expect(fullNames).toContain("verify_edit_session");
+      expect(fullNames).not.toContain("work_submit");
+      for (const retiredGoalLoopTool of [
+        "goal_create",
+        "goal_start",
+        "goal_continue",
+        "goal_tick_once",
+        "executor_dispatch",
+        "repair_continue",
+        "goal_list",
+        "goal_get",
+        "goal_stop",
+        "goal_finalize",
+        "goal_status",
+        "goal_handoff_packet_create",
+        "goal_handoff_packet_get",
+        "provider_list",
+        "provider_health",
+        "provider_config_status",
+        "executor_route_preview",
+        "repair_plan",
+      ]) {
+        expect(fullNames).not.toContain(retiredGoalLoopTool);
+      }
+      for (const retiredPortfolioTool of [
+        "create_portfolio_workflow",
+        "list_portfolio_workflows",
+        "get_portfolio_workflow",
+      ]) {
+        expect(fullNames).not.toContain(retiredPortfolioTool);
+      }
+      for (const retiredGenericScheduleTool of [
+        "create_schedule",
+        "list_schedules",
+        "pause_schedule",
+        "trigger_schedule",
+      ]) {
+        expect(fullNames).not.toContain(retiredGenericScheduleTool);
+      }
       expect(fullNames.length).toBeGreaterThan(coreNames.length);
 
       let runtimePid: number | undefined;
       try {
-        const retiredSubmit = await callRuntimeTool(full, "work_submit", {
-          repo_id: repository.repoId,
-          request_id: "work-submit-retired",
-          operation: "process_cancel",
-          arguments: { process_id: "proc-schema-aware-fixture" }});
-        const retiredSubmitValue = JSON.parse(retiredSubmit!.content[0].text);
-        expect(retiredSubmit!.isError).toBe(true);
-        expect(retiredSubmitValue.error.code).toBe("WORK_SUBMIT_RETIRED");
-        expect(retiredSubmitValue.suggestedNextActions.map((entry: { tool: string }) => entry.tool)).toEqual(
-          expect.arrayContaining(["rh_work", "run_check", "repository_command_execute", "plugin_action_execute"]),
-        );
-
         const now = new Date().toISOString();
         writeWorkHandle(controllerHome, {
           schemaVersion: 1,
@@ -2345,10 +2401,16 @@ describe("MCP controller profile", () => {
 
   test("keeps rh_status summary on the canonical Runtime snapshot without broad governance inventories", async () => {
     await withController(async (repoRoot, _ctx) => {
+      clearGitIdentityCacheForTest();
+      clearGitSnapshotCacheForTest();
       const multi = createMultiRepositoryContext({ repo: repoRoot, profile: "controller" });
-      const raw = await callRuntimeTool(multi, "rh_status", { detail_level: "summary" });
-      expect(raw).toBeTruthy();
-      const payload = JSON.parse(raw!.content[0].text);
+      writeFileSync(join(repoRoot, "summary-fast-path-dirty.txt"), "dirty\n");
+      const first = await callRuntimeTool(multi, "rh_status", { detail_level: "summary" });
+      const second = await callRuntimeTool(multi, "rh_status", { detail_level: "summary" });
+      expect(first).toBeTruthy();
+      expect(second).toBeTruthy();
+      const payload = JSON.parse(first!.content[0].text);
+      const repeatedPayload = JSON.parse(second!.content[0].text);
       expect(payload.data.readiness).toBeTruthy();
       expect(payload.data.repositoryState).toBeTruthy();
       expect(payload.data.toolSurfaceStatus).toBeTruthy();
@@ -2361,7 +2423,20 @@ describe("MCP controller profile", () => {
       expect(payload.data.access).toBeUndefined();
       expect(payload.data.repositoryState.status).toBeUndefined();
       expect(payload.data.repositoryState.diffStat).toBeUndefined();
+      expect(payload.data.repositoryState.dirty).toBe(true);
+      expect(repeatedPayload.data.repositoryState).toMatchObject({
+        branch: payload.data.repositoryState.branch,
+        head: payload.data.repositoryState.head,
+        dirty: true,
+      });
+      // Summary samples only compact branch/HEAD/dirty identity. It must not
+      // invoke the full Git status + diff-stat projection used by diagnostics.
+      expect(gitIdentityPerformanceSnapshot()).toMatchObject({ samples: 1, subprocesses: 1 });
+      expect(gitIdentityPerformanceSnapshot().cacheHits).toBeGreaterThanOrEqual(1);
+      expect(gitSnapshotPerformanceSnapshot()).toMatchObject({ refreshes: 0, subprocesses: 0 });
       expect(payload.responseMeta.structuredPayloadBytes).toBeLessThan(8_000);
+      clearGitIdentityCacheForTest();
+      clearGitSnapshotCacheForTest();
     });
   });
 

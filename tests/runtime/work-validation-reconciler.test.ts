@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
@@ -128,6 +128,29 @@ describe('Work validation receipt convergence', () => {
     expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'delivery', evidenceState: 'valid' });
   });
   test('verification snapshot metadata does not change Check content identity', () => { const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-controller-')); const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-repo-')); roots.push(controllerHome, repoRoot); writeFileSync(join(repoRoot, 'source.ts'), 'export const value = 1;\n'); execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot }); execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot }); execFileSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot }); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot }); const sourceIdentity = currentControllerCheckRevision(repoRoot); const snapshot = materializeWorkVerificationSnapshot({ controllerHome, repoId: 'repo-validation-snapshot', sourceRoot: repoRoot, scope: { workId: 'work-validation-snapshot', allowedPaths: ['**'], forbiddenPaths: [] } }); expect(existsSync(join(snapshot.root, '.ai/harness/controller/work-verification-snapshot.json'))).toBe(true); expect(currentControllerCheckRevision(snapshot.root)).toBe(sourceIdentity); });
+  test('verification snapshot removes empty parent directories for tracked deletions', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-delete-controller-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-delete-repo-'));
+    roots.push(controllerHome, repoRoot);
+    const retiredRoot = join(repoRoot, 'retired', 'authority');
+    mkdirSync(retiredRoot, { recursive: true });
+    writeFileSync(join(retiredRoot, 'store.ts'), 'export const retired = true;\n');
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot });
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    rmSync(join(repoRoot, 'retired'), { recursive: true, force: true });
+
+    const snapshot = materializeWorkVerificationSnapshot({
+      controllerHome,
+      repoId: 'repo-validation-delete-snapshot',
+      sourceRoot: repoRoot,
+      scope: { workId: 'work-validation-delete-snapshot', allowedPaths: ['**'], forbiddenPaths: [] },
+    });
+
+    expect(existsSync(join(snapshot.root, 'retired'))).toBe(false);
+  });
   test('background reconciliation settles completed long-check receipts without a polling tool call', () => {
     const fx = fixture('succeeded');
     const summary = reconcilePendingWorkValidations(fx.controllerHome, fx.repoId);

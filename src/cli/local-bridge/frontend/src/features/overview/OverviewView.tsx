@@ -88,7 +88,7 @@ export function OverviewView({ data, busy, onRefresh }: { data: ConsoleData; bus
       key: 'automations',
       source: 'Automations',
       title: `${automations.needsAttention} automation${automations.needsAttention === 1 ? '' : 's'} need attention`,
-      summary: 'Inspect configured routines and schedules.',
+      summary: 'Inspect configured schedules.',
       statusLabel: 'Inspect',
       tone: 'warning',
       href: '#/automations',

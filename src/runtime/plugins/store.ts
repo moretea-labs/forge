@@ -418,21 +418,8 @@ function initialAuthorizationEvidence(
   return { source: 'host_permission_model', reusable: false, capabilityId };
 }
 
-const STANDING_GRANT_SAFE_ACTIONS = new Set([
-  'gmail/create_draft',
-  'gmail/archive_message',
-  'gmail/mark_message_read',
-  'gmail/mark_message_unread',
-  'google_tasks/create_task',
-]);
-
 function denyAutomatedWrite(manifest: AssistantPluginManifest, action: AssistantPluginActionDescriptor, origin: AssistantPluginActionExecutionInput['origin']): void {
-  if (origin.surface === 'standing-grant') {
-    const key = `${manifest.pluginId}/${action.actionId}`;
-    if (STANDING_GRANT_SAFE_ACTIONS.has(key) && action.confirmation !== 'strong_confirmation') return;
-    throw new Error(`STANDING_GRANT_ACTION_NOT_ALLOWED: ${key}`);
-  }
-  if (!['schedule', 'reconciliation', 'system', 'assistant-routine'].includes(origin.surface)) return;
+  if (!['schedule', 'reconciliation', 'system'].includes(origin.surface)) return;
   if (action.readOnly) return;
   throw new Error(`EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED: ${manifest.pluginId}/${action.actionId} cannot run from ${origin.surface}`);
 }

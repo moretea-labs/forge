@@ -7,52 +7,8 @@ import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { redactMcpText } from '../../src/cli/mcp/redaction';
 import { globMatches, normalizeMcpRelativePath, resolveMcpPath } from '../../src/cli/mcp/paths';
 import { buildMcpToolDefinitions } from '../../src/cli/mcp/tools';
-import { claimsForMcpOperation } from '../../src/runtime/gateway/mcp/resource-policy';
 
 describe('mcp policy and paths', () => {
-  test('classifies read-only controller operations without write claims', () => {
-    expect(claimsForMcpOperation('controller_capabilities', {}, 'repo-a')).toEqual([]);
-    expect(claimsForMcpOperation('search_repository', { query: 'needle' }, 'repo-a')).toEqual([]);
-    expect(claimsForMcpOperation('read_repository_file', { path: 'package.json' }, 'repo-a')).toEqual([]);
-    expect(claimsForMcpOperation('repository_command_preview', { command: 'git status --short' }, 'repo-a', 'checkout-a')).toEqual([]);
-  });
-
-  test('keeps write claims for mutating repository commands', () => {
-    expect(claimsForMcpOperation('repository_command_execute', { command: 'git add README.md' }, 'repo-a', 'checkout-a')).toEqual([
-      { resourceKey: 'workspace:checkout-a', mode: 'write' },
-    ]);
-  });
-
-  test('scopes ephemeral workspace command claims by canonical root instead of the selected repository', () => {
-    const first = mkdtempSync(join(tmpdir(), 'forge-ephemeral-claim-a-'));
-    const second = mkdtempSync(join(tmpdir(), 'forge-ephemeral-claim-b-'));
-    try {
-      const firstClaims = claimsForMcpOperation('repository_command_execute', {
-        workspace_root: first,
-        command: ['touch', 'file.txt'],
-      }, 'repo-selected', 'checkout-selected');
-      const repeatedClaims = claimsForMcpOperation('repository_command_execute', {
-        workspace_root: first,
-        command: ['touch', 'other.txt'],
-      }, 'repo-other', 'checkout-other');
-      const secondClaims = claimsForMcpOperation('repository_command_execute', {
-        workspace_root: second,
-        command: ['touch', 'file.txt'],
-      }, 'repo-selected', 'checkout-selected');
-
-      const firstWorkspace = firstClaims.find((claim) => claim.resourceKey.startsWith('workspace:'))?.resourceKey;
-      const repeatedWorkspace = repeatedClaims.find((claim) => claim.resourceKey.startsWith('workspace:'))?.resourceKey;
-      const secondWorkspace = secondClaims.find((claim) => claim.resourceKey.startsWith('workspace:'))?.resourceKey;
-      expect(firstWorkspace).toMatch(/^workspace:workspace_checkout_[a-f0-9]{24}$/);
-      expect(repeatedWorkspace).toBe(firstWorkspace);
-      expect(secondWorkspace).not.toBe(firstWorkspace);
-      expect(firstWorkspace).not.toContain('checkout-selected');
-    } finally {
-      rmSync(first, { recursive: true, force: true });
-      rmSync(second, { recursive: true, force: true });
-    }
-  });
-
   test('matches forge workflow globs without matching sibling paths', () => {
     expect(globMatches('plans/**', 'plans/prds/example.prd.md')).toBe(true);
     expect(globMatches('plans/plan-*.md', 'plans/plan-test.md')).toBe(true);

@@ -1,4 +1,4 @@
-import type { AutomationSettingsView, AutomationsResponse, CommandCenterView, Dict, WorkPortfolioResponse, WorkResponse } from '../types';
+import type { AutomationsResponse, CommandCenterView, Dict, WorkPortfolioResponse, WorkResponse } from '../types';
 export class ApiError extends Error { constructor(message:string, readonly status:number, readonly payload:unknown){super(message);} }
 const CONSOLE_REQUEST_TIMEOUT_MS=15_000;
 export async function requestJson<T>(path:string,init:RequestInit={}):Promise<T>{
@@ -22,14 +22,9 @@ export const api={
   work:()=>requestJson<WorkResponse>('/api/console/requirements'),
   workPortfolio:()=>requestJson<WorkPortfolioResponse>('/api/console/work-portfolio'),
   automations:()=>requestJson<AutomationsResponse>('/api/console/automations'),
-  automationSettings:()=>requestJson<AutomationSettingsView>('/api/console/automation-settings'),
   connector:()=>requestJson<Dict>('/api/console/connector/status'),
   advanced:()=>requestJson<Dict>('/api/console/advanced'),
   automationAction:(source:string,repoId:string,id:string,action:string)=>requestJson<Dict>(`/api/console/automations/${encodeURIComponent(source)}/${encodeURIComponent(repoId)}/${encodeURIComponent(id)}/${encodeURIComponent(action)}`,{method:'POST',body:'{}'}),
-  providerAction:(id:string,action:'enable'|'disable')=>requestJson<Dict>(`/api/console/providers/${encodeURIComponent(id)}/${action}`,{method:'POST',body:'{}'}),
-  providerHealth:(id:string)=>requestJson<Dict>('/api/console/providers/health',{method:'POST',body:JSON.stringify({providerId:id})}),
-  localToolAction:(id:string,action:'enable'|'disable')=>requestJson<Dict>(`/api/console/local-tools/${encodeURIComponent(id)}/${action}`,{method:'POST',body:'{}'}),
-  localToolHealth:(id:string)=>requestJson<Dict>('/api/console/local-tools/health',{method:'POST',body:JSON.stringify({toolId:id})}),
   registerRepository:(path:string,displayName?:string)=>requestJson<Dict>('/api/repositories/register',{method:'POST',body:JSON.stringify({path,displayName})}),
   removeRepository:(id:string)=>requestJson<Dict>(`/api/repositories/${encodeURIComponent(id)}/remove`,{method:'POST',body:'{}'}),
 };

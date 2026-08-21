@@ -25,8 +25,6 @@ import {
 } from '../src/runtime/execution/process-runtime';
 import { executionIdentityForRepository } from '../src/runtime/control-plane/execution/execution-identity';
 import { createSchedule } from '../src/runtime/workflow/schedules/store';
-import { createPortfolioWorkflow } from '../src/runtime/workflow/portfolio/store';
-import { recordCandidateFinding } from '../src/runtime/workflow/findings/store';
 import { assertAutomatedOperationAllowed } from '../src/runtime/control-plane/governance/external-effects';
 
 const root = mkdtempSync(join(tmpdir(), 'forge-recovery-smoke-'));
@@ -169,38 +167,9 @@ try {
   const scheduleB = createSchedule(controllerHome, scheduleInput);
   assert(scheduleA.scheduleId === scheduleB.scheduleId, 'Schedule requestId was not idempotent');
 
-  const portfolioInput = {
-    name: 'portfolio-idempotency', requestId: 'portfolio-idempotency', failurePolicy: 'stop' as const,
-    steps: [{ stepId: 'one', repoId: repository.repoId, operation: 'controller_context', dependsOn: [], priority: 'P2' as const, resourceClaims: [], status: 'pending' as const }],
-  };
-  const portfolioA = createPortfolioWorkflow(controllerHome, portfolioInput);
-  const portfolioB = createPortfolioWorkflow(controllerHome, portfolioInput);
-  assert(portfolioA.workflowId === portfolioB.workflowId, 'Portfolio requestId was not idempotent');
-
-  const candidateA = recordCandidateFinding(controllerHome, {
-    repoId: repository.repoId, requestId: 'candidate-observation-1', semanticKey: 'frequent-502:mcp-timeout',
-    title: 'Frequent MCP 502', summary: 'Observed during bounded triage.', evidence: { source: 'schedule', reference: 'OCC-1' },
-  });
-  const candidateB = recordCandidateFinding(controllerHome, {
-    repoId: repository.repoId, requestId: 'candidate-observation-2', semanticKey: 'frequent-502:mcp-timeout',
-    title: 'Frequent MCP 502', summary: 'Observed again.', evidence: { source: 'schedule', reference: 'OCC-2' },
-  });
-  assert(candidateA.findingId === candidateB.findingId && candidateB.observationCount === 2, 'candidate finding was not deduplicated');
   let automaticIssueBlocked = false;
   try { assertAutomatedOperationAllowed('create_issue'); } catch { automaticIssueBlocked = true; }
-  assert(automaticIssueBlocked, 'Schedule/Portfolio could create an Issue without candidate promotion');
-
-  let cycleRejected = false;
-  try {
-    createPortfolioWorkflow(controllerHome, {
-      name: 'cycle', requestId: 'portfolio-cycle', failurePolicy: 'stop',
-      steps: [
-        { stepId: 'a', repoId: repository.repoId, operation: 'controller_context', dependsOn: ['b'], priority: 'P2', resourceClaims: [], status: 'pending' },
-        { stepId: 'b', repoId: repository.repoId, operation: 'controller_context', dependsOn: ['a'], priority: 'P2', resourceClaims: [], status: 'pending' },
-      ],
-    });
-  } catch { cycleRejected = true; }
-  assert(cycleRejected, 'Portfolio dependency cycle was accepted');
+  assert(automaticIssueBlocked, 'Kernel automation could create an Issue without an explicit external-effect path');
 
   console.log(JSON.stringify({
     status: 'ok',
@@ -208,10 +177,7 @@ try {
     processRecovered,
     replacementController: replacement.controllerId,
     scheduleId: scheduleA.scheduleId,
-    portfolioWorkflowId: portfolioA.workflowId,
-    candidateFindingDeduplicated: candidateB.observationCount,
     automaticIssueBlocked,
-    portfolioCycleRejected: cycleRejected,
     executionJobCount: listExecutionJobs(controllerHome, repository.repoId, 20).length,
   }, null, 2));
 } finally {

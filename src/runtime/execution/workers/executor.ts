@@ -21,7 +21,6 @@ import {
 } from '../jobs/child-reference';
 import { markOperationDelegated } from '../jobs/receipt-store';
 import { assertAutomatedOperationAllowed } from '../../control-plane/governance/external-effects';
-import { recordCandidateFinding, updateCandidateFinding } from '../../workflow/findings/store';
 import { triggerWorkspaceAgent } from '../workspace-agent';
 import { executeAssistantPluginAction } from '../../plugins/store';
 import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
@@ -29,7 +28,6 @@ import { writeExecutionArtifact } from '../../evidence/artifact-store';
 import { existsSync } from 'fs';
 import { isAbsolute, relative, resolve, sep } from 'path';
 import { isAssistantPluginError } from '../../plugins/errors';
-import { executeAssistantRoutineRuntime } from '../../assistant/routine-runtime';
 
 
 function childReferenceFromLocalJob(
@@ -445,20 +443,6 @@ export async function executeExecutionJob(controllerHome: string, job: Execution
     }
     bindRepositoryEntities(repository);
 
-    if (job.payload.target === 'runtime' && job.payload.operation === 'assistant_routine_execute') {
-      const routineId = String(job.payload.arguments?.routineId ?? job.payload.arguments?.routine_id ?? '').trim();
-      if (!routineId) throw new Error('ASSISTANT_ROUTINE_ID_REQUIRED');
-      const routineResult = await executeAssistantRoutineRuntime({
-        controllerHome,
-        repository,
-        routineId,
-        requestId: job.requestId,
-        origin: job.origin,
-        occurrenceId: typeof job.payload.occurrenceId === 'string' ? job.payload.occurrenceId : undefined,
-      });
-      return { ok: true, result: { assistantRoutine: routineResult }, repoRoot };
-    }
-
     if (job.payload.target === 'runtime' && job.payload.operation === 'legacy-local-job') {
       const localJobId = String(job.payload.arguments?.localJobId ?? '').trim();
       if (!localJobId) throw new Error('LEGACY_JOB_ID_REQUIRED');
@@ -509,26 +493,6 @@ export async function executeExecutionJob(controllerHome: string, job: Execution
       return gate.releaseReady
         ? { ok: true, result: { releaseReady: true, gate }, repoRoot }
         : { ok: false, error: { code: 'RELEASE_GATE_BLOCKED', message: 'Release gate has blockers.', retryable: false, details: { gate } }, repoRoot };
-    }
-
-    if (job.payload.operation === 'record_candidate_finding') {
-      const args = job.payload.arguments ?? {};
-      const finding = recordCandidateFinding(controllerHome, {
-        repoId: job.repoId,
-        requestId: job.requestId,
-        semanticKey: String(args.semantic_key ?? args.semanticKey ?? '').trim(),
-        title: String(args.title ?? '').trim(),
-        summary: typeof args.summary === 'string' ? args.summary : undefined,
-        severity: ['low', 'medium', 'high', 'critical'].includes(String(args.severity))
-          ? String(args.severity) as 'low' | 'medium' | 'high' | 'critical'
-          : 'medium',
-        evidence: {
-          source: job.origin.surface,
-          reference: typeof args.reference === 'string' ? args.reference : job.origin.correlationId,
-          details: args.evidence && typeof args.evidence === 'object' ? args.evidence as Record<string, unknown> : undefined,
-        },
-      });
-      return { ok: true, result: { finding }, repoRoot };
     }
 
     const allowedAgents = Array.isArray(job.payload.allowedAgents)
@@ -649,18 +613,6 @@ export async function executeExecutionJob(controllerHome: string, job: Execution
         result.isError ? 'failed' : 'succeeded',
         result.isError ? 'Scheduled operation failed.' : 'Scheduled operation completed.',
       );
-    }
-
-    if (job.origin.actor === 'promote_candidate_finding' && job.origin.correlationId) {
-      try {
-        updateCandidateFinding(controllerHome, job.repoId, job.origin.correlationId, (current) => ({
-          ...current,
-          status: result.isError ? 'candidate' : 'promoted',
-          promotedJobId: job.jobId,
-        }), job.requestId, result.isError ? 'candidate_promotion_failed' : 'candidate_finding_promoted');
-      } catch {
-        // The Issue result remains authoritative even if the candidate projection needs reconciliation.
-      }
     }
 
     if (result.isError) {

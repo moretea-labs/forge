@@ -80,7 +80,6 @@ import type {
   CommandCenterViewModel,
   ConnectorFreshnessViewModel,
   ConsoleErrorViewModel,
-  GoalLoopStatusViewModel,
   HandoffCardViewModel,
   ModePreviewViewModel,
   PlainStatusTone,
@@ -94,34 +93,6 @@ import type {
   VerificationViewModel,
   WorkSummaryViewModel,
 } from './console-view-models';
-import {
-  buildAutomationSettingsView,
-  executorRoutePreviewWithConfig,
-  executorRoutingConfigGet,
-  executorRoutingConfigReset,
-  executorRoutingConfigUpdate,
-  goalLoopPolicyGet,
-  goalLoopPolicyUpdate,
-  goalStatus as goalLoopStatusSnapshot,
-  localToolDisable,
-  localToolEnable,
-  localToolHealthCheck,
-  localToolList,
-  localToolConfigGet,
-  localToolConfigUpdate,
-  providerApiSettingsGet,
-  providerApiSettingsUpdate,
-  providerConfigGet,
-  providerConfigUpdate,
-  providerCredentialsStatus,
-  providerDisable,
-  providerEnable,
-  providerHealthCheck,
-  providerPriorityUpdate,
-  providerResetDefaults,
-  type ConfigFacadeContext,
-  type GoalLoopContext,
-} from '../../runtime/control-plane/goal-loop';
 import { listActiveOccurrences, listSchedules } from '../../runtime/workflow/schedules/store';
 
 export type ConsoleFacadeContext = {
@@ -995,7 +966,6 @@ export async function buildCommandCenter(
   const handoffs = listHandoffItems({ ...store(ctx), status: 'pending', limit: 20 }).map(mapHandoffCard);
   const plugins = listConsolePlugins(ctx);
   const pluginSummary = buildPluginSummary(plugins);
-  const goalLoop = buildGoalLoopStatusView(ctx);
   const access = controllerAccessStateView(ctx);
   const banner = readiness.connectorFreshness?.severity === 'warning' || readiness.connectorFreshness?.severity === 'error'
     ? readiness.connectorFreshness.summary
@@ -1014,7 +984,6 @@ export async function buildCommandCenter(
     currentWork: activeWork[0],
     recentWork: allRecent,
     handoffs,
-    goalLoop,
     pluginSummary,
     plugins,
     modePreviewDefault: plainMode('direct_control'),
@@ -1029,192 +998,6 @@ export async function buildCommandCenter(
       }
       : { needed: false, title: '', body: '', actionLabel: '' },
   };
-}
-
-function configCtx(ctx: ConsoleFacadeContext): ConfigFacadeContext {
-  return { controllerHome: ctx.controllerHome };
-}
-
-export function buildGoalLoopStatusView(ctx: ConsoleFacadeContext): GoalLoopStatusViewModel {
-  const goalCtx: GoalLoopContext = {
-    goalStore: store(ctx),
-    packetStore: store(ctx),
-    repoId: ctx.repository.repoId,
-    configLocation: { controllerHome: ctx.controllerHome },
-    providerEnv: { configLocation: { controllerHome: ctx.controllerHome } },
-  };
-  const snapshot = goalLoopStatusSnapshot(goalCtx) as {
-    activeGoals?: Array<Record<string, unknown>>;
-    activeCount?: number;
-    invokableProviders?: string[];
-    handoffOnlyProviders?: string[];
-    providers?: Array<Record<string, unknown>>;
-  };
-  let automationSummary: string | undefined;
-  let liveEffective: boolean | undefined;
-  try {
-    const settings = buildAutomationSettingsView(configCtx(ctx));
-    automationSummary = settings.overview.plainLanguageSummary;
-    liveEffective = settings.overview.liveModelProvidersEffective;
-  } catch {
-    automationSummary = undefined;
-  }
-
-  const goals = (snapshot.activeGoals ?? []).map((goal) => {
-    const stage = String(goal.stage ?? '');
-    const providerSelected = typeof goal.providerSelected === 'string' ? goal.providerSelected : undefined;
-    const waitingReason = typeof goal.waitingReason === 'string' ? goal.waitingReason : undefined;
-    const nextSafeAction = typeof goal.nextSafeAction === 'string' ? goal.nextSafeAction : undefined;
-    const handoffPacketAvailable = goal.handoffPacketAvailable === true;
-    return {
-      title: String(goal.title ?? ''),
-      stage,
-      currentStep: String(goal.currentStep ?? ''),
-      providerSelected,
-      waitingReason,
-      nextSafeAction,
-      handoffPacketAvailable,
-      approvalRequired: Boolean(waitingReason) || stage === 'waiting_for_user',
-      whyThisProvider: providerSelected
-        ? `Last selected provider: ${providerSelected}`
-        : 'No provider selected yet',
-      whatHappensNext: nextSafeAction
-        ?? (handoffPacketAvailable
-          ? 'Open handoff packet or configure a direct provider'
-          : 'Wait for next daemon tick or open Automation Settings'),
-      whatIsBlocked: waitingReason
-        ?? (stage === 'handoff_ready'
-          ? 'Waiting for handoff supervisor (ChatGPT is not auto-invokable)'
-          : undefined),
-    };
-  });
-  return {
-    activeCount: snapshot.activeCount ?? goals.length,
-    goals,
-    invokableProviders: snapshot.invokableProviders ?? [],
-    handoffOnlyProviders: snapshot.handoffOnlyProviders ?? [],
-    providerHealth: (snapshot.providers ?? []).map((provider) => ({
-      providerId: String(provider.providerId ?? ''),
-      status: String(provider.status ?? ''),
-      directDispatchAllowed: provider.directDispatchAllowed === true,
-      handoffOnly: provider.handoffOnly === true,
-      summary: String(provider.summary ?? ''),
-    })),
-    automationSummary,
-    liveModelProvidersEffective: liveEffective,
-    settingsPathHint: 'Model & Tool Providers',
-    nextTickHint: 'Daemon ticks active goals about every 5 seconds when the controller is running.',
-  };
-}
-
-export function getAutomationSettings(ctx: ConsoleFacadeContext) {
-  return buildAutomationSettingsView(configCtx(ctx));
-}
-
-export function consoleProviderConfigGet(ctx: ConsoleFacadeContext) {
-  return providerConfigGet(configCtx(ctx));
-}
-
-export function consoleProviderConfigUpdate(ctx: ConsoleFacadeContext, body: Record<string, unknown>) {
-  return providerConfigUpdate(configCtx(ctx), body as unknown as Parameters<typeof providerConfigUpdate>[1]);
-}
-
-export function consoleProviderEnable(ctx: ConsoleFacadeContext, providerId: string) {
-  return providerEnable(configCtx(ctx), providerId);
-}
-
-export function consoleProviderDisable(ctx: ConsoleFacadeContext, providerId: string) {
-  return providerDisable(configCtx(ctx), providerId);
-}
-
-export function consoleProviderPriority(ctx: ConsoleFacadeContext, providerId: string, direction: 'up' | 'down' | number) {
-  return providerPriorityUpdate(configCtx(ctx), providerId, direction);
-}
-
-export function consoleProviderHealth(ctx: ConsoleFacadeContext, providerId?: string) {
-  return providerHealthCheck(configCtx(ctx), providerId);
-}
-
-export function consoleProviderCredentials(ctx: ConsoleFacadeContext) {
-  return providerCredentialsStatus(configCtx(ctx));
-}
-
-export function consoleProviderReset(ctx: ConsoleFacadeContext) {
-  return providerResetDefaults(configCtx(ctx));
-}
-
-export function consoleProviderApiSettingsGet(ctx: ConsoleFacadeContext, providerId: string) {
-  return providerApiSettingsGet(configCtx(ctx), providerId);
-}
-
-export function consoleProviderApiSettingsUpdate(
-  ctx: ConsoleFacadeContext,
-  providerId: string,
-  body: Record<string, unknown>,
-) {
-  return providerApiSettingsUpdate(configCtx(ctx), providerId, {
-    baseUrl: typeof body.baseUrl === 'string' ? body.baseUrl : typeof body.base_url === 'string' ? body.base_url : undefined,
-    model: typeof body.model === 'string' ? body.model : undefined,
-    apiKey: typeof body.apiKey === 'string'
-      ? body.apiKey
-      : typeof body.api_key === 'string'
-        ? body.api_key
-        : undefined,
-    clearApiKey: body.clearApiKey === true || body.clear_api_key === true,
-  });
-}
-
-export function consoleLocalToolList(ctx: ConsoleFacadeContext) {
-  return localToolList(configCtx(ctx));
-}
-
-export function consoleLocalToolEnable(ctx: ConsoleFacadeContext, toolId: string) {
-  return localToolEnable(configCtx(ctx), toolId);
-}
-
-export function consoleLocalToolDisable(ctx: ConsoleFacadeContext, toolId: string) {
-  return localToolDisable(configCtx(ctx), toolId);
-}
-
-export function consoleLocalToolHealth(ctx: ConsoleFacadeContext, toolId?: string) {
-  return localToolHealthCheck(configCtx(ctx), toolId);
-}
-
-export function consoleLocalToolConfigGet(ctx: ConsoleFacadeContext) {
-  return localToolConfigGet(configCtx(ctx));
-}
-
-export function consoleLocalToolConfigUpdate(ctx: ConsoleFacadeContext, body: Record<string, unknown>) {
-  return localToolConfigUpdate(configCtx(ctx), body as unknown as Parameters<typeof localToolConfigUpdate>[1]);
-}
-
-export function consoleRoutingGet(ctx: ConsoleFacadeContext) {
-  return executorRoutingConfigGet(configCtx(ctx));
-}
-
-export function consoleRoutingUpdate(ctx: ConsoleFacadeContext, body: Record<string, unknown>) {
-  return executorRoutingConfigUpdate(configCtx(ctx), body as unknown as Parameters<typeof executorRoutingConfigUpdate>[1]);
-}
-
-export function consoleRoutingReset(ctx: ConsoleFacadeContext) {
-  return executorRoutingConfigReset(configCtx(ctx));
-}
-
-export function consoleRoutePreview(ctx: ConsoleFacadeContext, body: Record<string, unknown> = {}) {
-  return executorRoutePreviewWithConfig(configCtx(ctx), {
-    taskIntent: typeof body.taskIntent === 'string' ? body.taskIntent as never : typeof body.task_intent === 'string' ? body.task_intent as never : undefined,
-    risk: typeof body.risk === 'string' ? body.risk as never : undefined,
-    objective: typeof body.objective === 'string' ? body.objective : undefined,
-    externalWrite: body.externalWrite === true || body.external_write === true,
-  });
-}
-
-export function consoleGoalLoopPolicyGet(ctx: ConsoleFacadeContext) {
-  return goalLoopPolicyGet(configCtx(ctx));
-}
-
-export function consoleGoalLoopPolicyUpdate(ctx: ConsoleFacadeContext, body: Record<string, unknown>) {
-  return goalLoopPolicyUpdate(configCtx(ctx), body as unknown as Parameters<typeof goalLoopPolicyUpdate>[1]);
 }
 
 export function getConsoleAccessPolicy(ctx: ConsoleFacadeContext) {

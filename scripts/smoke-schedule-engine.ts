@@ -6,7 +6,6 @@ import { registerRepository } from '../src/cli/repositories/registry';
 import { listHandoffItems } from '../src/runtime/control-plane/facade/handoff-inbox-store';
 import { listExecutionJobs } from '../src/runtime/execution/jobs/store';
 import { evaluateSchedule } from '../src/runtime/workflow/schedules/engine';
-import { recordCandidateFinding } from '../src/runtime/workflow/findings/store';
 import { createSchedule, getSchedule, getScheduleDecision } from '../src/runtime/workflow/schedules/store';
 
 const root = mkdtempSync(join(tmpdir(), 'forge-schedule-smoke-'));
@@ -119,20 +118,6 @@ try {
     'missing historical dependency checkpoint fired',
   );
 
-  recordCandidateFinding(controllerHome, {
-    repoId: repository.repoId,
-    requestId: 'schedule-candidate-1',
-    semanticKey: 'schedule:condition',
-    title: 'Condition finding',
-    evidence: { source: 'smoke' },
-  });
-  recordCandidateFinding(controllerHome, {
-    repoId: repository.repoId,
-    requestId: 'schedule-candidate-2',
-    semanticKey: 'schedule:condition',
-    title: 'Condition finding',
-    evidence: { source: 'smoke' },
-  });
   const conditionSchedule = createSchedule(controllerHome, {
     ...semanticBase,
     requestId: 'schedule-condition',
@@ -140,11 +125,7 @@ try {
     trigger: {
       type: 'condition',
       everyMinutes: 1,
-      condition: {
-        kind: 'candidate_observation_threshold',
-        semanticKey: 'schedule:condition',
-        observationThreshold: 2,
-      },
+      condition: { kind: 'repository_clean' },
     },
   });
   const conditionOccurrence = await evaluateSchedule(controllerHome, conditionSchedule);

@@ -15,7 +15,8 @@ import { listHandoffItems, resolveHandoffItem } from '../../src/runtime/control-
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
-import { getSchedule, listOccurrences, saveOccurrence, saveSchedule } from '../../src/runtime/workflow/schedules/store';
+import { createSchedule, getSchedule, listOccurrences, saveOccurrence, saveSchedule } from '../../src/runtime/workflow/schedules/store';
+import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
 import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
@@ -1076,15 +1077,89 @@ describe('rh_work managed lifecycle closure', () => {
     expect(branchExists(fx.repoRoot, work.branch)).toBe(false);
   });
 
-  test('rh_work creates a Work-free workflow schedule with one finite shadow occurrence', async () => { const fx = fixture('schedule-workflow'); expect(listWorkContracts({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId })).toHaveLength(0); const created = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'schedule_create', schedule_mode: 'workflow', objective: 'Review current Forge issues and repair only a clear reproducible defect; otherwise do nothing.', schedule_name: 'Forge issue workflow', trigger_type: 'manual', shadow_mode: true, schedule_request_id: 'generic-workflow-schedule-stable' }); expect(created?.isError).not.toBe(true); const schedule = (created?.structuredContent as { data?: { schedule?: { scheduleId?: string; action?: { operation?: string; arguments?: Record<string, unknown> } } } })?.data?.schedule; const scheduleId = schedule?.scheduleId ?? ''; expect(scheduleId).toBeTruthy(); expect(schedule?.action?.operation).toBe('chatgpt_browser_prompt'); expect(schedule?.action?.arguments?.prompt).toContain('repair only a clear reproducible defect'); expect(schedule?.action?.arguments?.work_id).toBeUndefined(); expect(listWorkContracts({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId })).toHaveLength(0); const triggered = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'schedule_trigger', schedule_id: scheduleId }); expect(triggered?.isError).not.toBe(true); const occurrence = (triggered?.structuredContent as { data?: { occurrence?: { status?: string; decision?: string; occurrenceId?: string } } })?.data?.occurrence; expect(occurrence).toMatchObject({ status: 'shadowed', decision: 'would_execute' }); expect(occurrence?.occurrenceId).toBeTruthy(); expect(listWorkContracts({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId })).toHaveLength(0); const fetched = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'schedule_get', schedule_id: scheduleId, include_occurrences: true }); expect((fetched?.structuredContent as { data?: { occurrences?: Array<{ occurrenceId?: string }> } })?.data?.occurrences?.map((entry) => entry.occurrenceId)).toContain(occurrence?.occurrenceId); });
+  test('rh_work rejects a Work-free generic workflow schedule', async () => {
+    const fx = fixture('schedule-workflow-retired');
+    const created = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_create',
+      schedule_mode: 'workflow',
+      objective: 'Review current Forge issues and repair only a clear reproducible defect.',
+      trigger_type: 'manual',
+    });
+    expect(created?.isError).toBe(true);
+    expect(JSON.stringify(created?.structuredContent)).toContain('SCHEDULE_MODE_REQUIRES_WORK_OR_EXPLICIT_BROWSER_KEEPALIVE');
+    expect(listWorkContracts({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId })).toHaveLength(0);
+  });
+
+  test('retired generic prompt and personal-assistant schedules stay inert and outside rh_work', async () => {
+    const fx = fixture('legacy-workflow-schedule');
+    const schedule = createSchedule(fx.controllerHome, {
+      requestId: 'legacy-workflow-prompt',
+      repoId: fx.repository.repoId,
+      name: 'Legacy generic prompt',
+      enabled: true,
+      trigger: { type: 'manual' },
+      policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 1, dailyBudgetMinutes: 30, shadowMode: false },
+      action: { operation: 'chatgpt_browser_prompt', arguments: { prompt: 'Do generic work.', work_id: 'WORK-legacy' } },
+      stopConditions: [],
+    });
+    expect(await evaluateSchedule(fx.controllerHome, schedule, true, { source: 'manual' })).toBeUndefined();
+    expect(listOccurrences(fx.controllerHome, fx.repository.repoId, schedule.scheduleId)).toEqual([]);
+
+    const listed = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_list',
+      include_occurrences: true,
+    });
+    const schedules = (listed?.structuredContent as { data?: { schedules?: Array<{ scheduleId?: string }> } })?.data?.schedules ?? [];
+    expect(schedules.map((entry) => entry.scheduleId)).not.toContain(schedule.scheduleId);
+
+    const fetched = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'schedule_get',
+      schedule_id: schedule.scheduleId,
+    });
+    expect(fetched?.isError).toBe(true);
+    expect(JSON.stringify(fetched?.structuredContent)).toContain('SCHEDULE_NOT_WORK_CONTINUATION');
+
+    const assistantSchedule = createSchedule(fx.controllerHome, {
+      requestId: 'legacy-personal-assistant-routine',
+      repoId: fx.repository.repoId,
+      name: 'Legacy personal assistant routine',
+      enabled: true,
+      trigger: { type: 'manual' },
+      policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 1, dailyBudgetMinutes: 30, shadowMode: false },
+      action: { operation: 'assistant_routine_execute', arguments: { routineId: 'routine-legacy' } },
+      stopConditions: [],
+    });
+    expect(await evaluateSchedule(fx.controllerHome, assistantSchedule, true, { source: 'manual' })).toBeUndefined();
+    expect(listOccurrences(fx.controllerHome, fx.repository.repoId, assistantSchedule.scheduleId)).toEqual([]);
+
+    const findingSchedule = createSchedule(fx.controllerHome, {
+      requestId: 'legacy-candidate-finding-threshold',
+      repoId: fx.repository.repoId,
+      name: 'Legacy candidate-finding threshold',
+      enabled: true,
+      trigger: {
+        type: 'condition',
+        condition: { kind: 'candidate_observation_threshold' } as never,
+      },
+      policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 1, dailyBudgetMinutes: 30, shadowMode: false },
+      action: { operation: 'external_controller_wake', arguments: { work_id: 'WORK-legacy' } },
+      stopConditions: [],
+    });
+    expect(await evaluateSchedule(fx.controllerHome, findingSchedule, true, { source: 'manual' })).toBeUndefined();
+    expect(listOccurrences(fx.controllerHome, fx.repository.repoId, findingSchedule.scheduleId)).toEqual([]);
+  });
 
   test('rh_work deletes only paused idle schedules and releases the request id while retaining history', async () => {
     const fx = fixture('schedule-delete');
     const createArgs = {
       repo_id: fx.repository.repoId,
       operation: 'schedule_create',
-      schedule_mode: 'workflow',
-      objective: 'Run a bounded workflow only when explicitly triggered.',
+      schedule_mode: 'browser_keepalive',
+      controller_type: 'chatgpt',
+      probe_browser_session_id: 'browser-session-keepalive-delete',
       trigger_type: 'manual',
       shadow_mode: true,
       schedule_request_id: 'schedule-delete-stable',

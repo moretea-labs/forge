@@ -93,16 +93,6 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     summary: 'Delegate bounded implementation work to Codex or Claude with context packs; workers return evidence and proposals but do not own final acceptance.',
   },
   {
-    capabilityId: 'controller.autonomous_goal_loop',
-    domain: 'controller',
-    group: 'controller',
-    operationClass: 'execute',
-    risk: 'workspace_write',
-    exposedVia: 'rh_work',
-    schemaExposure: 'stable_static',
-    summary: 'Advance daemon-owned goal contracts through deterministic policy, executor routing, verification, repair, and handoff.',
-  },
-  {
     capabilityId: 'controller.work_contract',
     domain: 'controller',
     group: 'controller',

@@ -46,21 +46,23 @@ import {
   type RuntimeOperationalView,
   type GradedObservation,
 } from '../../health';
-import { applyScheduleDedupe, buildScheduleDedupeReport, createSchedule, deleteSchedule, getSchedule, getScheduleDecision, listOccurrences, listSchedules, saveSchedule } from '../../workflow/schedules/store';
-import { evaluateSchedule } from '../../workflow/schedules/engine';
+import { applyScheduleDedupe, buildScheduleDedupeReport, deleteSchedule } from '../../workflow/schedules/store';
 import {
   createWorkContinuationSchedule,
+  getWorkContinuationSchedule,
+  listWorkContinuationSchedules,
+  pauseWorkContinuationSchedule,
+  resumeWorkContinuationSchedule,
+  triggerWorkContinuationSchedule,
   type ContinuationControllerType,
 } from '../../workflow/schedules/work-continuation';
-import { createPortfolioWorkflow, getPortfolioWorkflow, listPortfolioWorkflows } from '../../workflow/portfolio/store';
-import { claimsForMcpOperation } from './resource-policy';
 import {
   gatewayRouteBehaviorSnapshot,
+  getMcpToolDefinition,
   RETIRED_AGENT_OPERATIONS,
   routeDurableMcpCall,
 } from './router';
 import { assertAutomatedOperationAllowed } from '../../control-plane/governance/external-effects';
-import { getCandidateFinding, listCandidateFindings, recordCandidateFinding } from '../../workflow/findings/store';
 import { ensureRepositoryRuntimeStorage } from '../../../cli/repositories/runtime-storage';
 import { assessWorkMode, parseExplicitTaskMode } from '../../../cli/controller/work-mode';
 import { projectBoard } from '../../../cli/controller/issue-store';
@@ -69,7 +71,6 @@ import {
   writeControllerTaskLedgerArtifacts,
 } from '../../../cli/controller/task-ledger';
 import { buildControllerContextPack, buildControllerContextPackAsync, CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from '../../../cli/controller/context-pack';
-import { codeShapedAnchors } from '../../../cli/controller/context/query-planning';
 import { legacyIssueAuthorityRetired } from '../../../cli/controller/legacy-issue-cutover';
 import { buildControllerOperationalPlan } from '../../../cli/controller/operational-plan';
 import { listControllerChecks, readLatestControllerCheckEvidence } from '../../../cli/controller/check-runner';
@@ -123,11 +124,6 @@ import {
   prepareIosReviewPacket,
 } from '../../safe-tooling';
 import { buildModelClientSummary, buildModelControlPlaneSummary, deepSeekControllerManifest, deepSeekFunctionToolManifest, prepareDeepSeekControllerHandoff, prepareDeepSeekControllerRequest, prepareDeepSeekToolCall } from '../../model-clients';
-import { buildAssistantReadinessReport } from '../../assistant/readiness';
-import { approveAssistantActionProposal, getAssistantActionProposal, listAssistantActionProposals, rejectAssistantActionProposal } from '../../assistant/action-proposals';
-import { assistantModelReadiness } from '../../assistant/model-provider';
-import { createAssistantStandingGrant, listAssistantStandingGrants, revokeAssistantStandingGrant } from '../../assistant/standing-grants';
-import { buildGmailTriagePlan, readGmailTriageRules, upsertGmailTriageRule } from '../../personal-assistant/gmail-triage-manager';
 import { sessionCacheGlobalDiagnostics } from '../../../cli/repository/session-cache';
 import { cachedGitIdentity, gitIdentityPerformanceSnapshot, gitSnapshot, gitSnapshotPerformanceSnapshot } from '../../../cli/repository/inspector';
 import { buildWorkflowWatchdogReport } from '../../watchdog/workflow-watchdog';
@@ -197,36 +193,6 @@ import { observeRuntimeStatus } from '../../root/status';
 import { reconcileWorkValidation } from './work-validation-reconciler';
 import { callExecutionTool } from './execution-tools';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
-import {
-  executorDispatch,
-  executorRoutePreview,
-  goalContinue,
-  goalCreate,
-  goalFinalize,
-  goalGet,
-  goalHandoffPacketCreate,
-  goalHandoffPacketGet,
-  goalList,
-  goalStart,
-  goalStatus,
-  goalStop,
-  goalTickOnce,
-  providerConfigStatusAction,
-  providerHealthAction,
-  providerListAction,
-  repairContinue,
-  repairPlan,
-  summarizeGoalContract,
-  tickActiveGoals,
-  type GoalContract,
-  type GoalLoopContext,
-  type GoalStatus,
-  type TaskIntent,
-} from '../../control-plane/goal-loop';
-
-function summarizeGoalPublic(goal: GoalContract) {
-  return summarizeGoalContract(goal);
-}
 
 export {
   connectorExposedTools,
@@ -3230,9 +3196,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             // semantic prompts are already tokenized from description; adding the
             // whole prompt as an exact needle prevents batch-search early exit and
             // forces a full bounded repository scan for a phrase that will not match.
-            searchTerms: retrievalQuery.length <= 160
-              ? [retrievalQuery]
-              : codeShapedAnchors(retrievalQuery),
+            searchTerms: retrievalQuery.length <= 160 ? [retrievalQuery] : undefined,
             knownPaths: list(args.known_paths),
             includeGlobs: list(args.include_globs),
             excludeGlobs: list(args.exclude_globs),
@@ -3620,56 +3584,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               const triggerType = ['interval', 'cron', 'calendar', 'condition', 'repository-event', 'dependency-checkpoint', 'manual'].includes(triggerTypeRaw)
                 ? triggerTypeRaw as 'interval' | 'cron' | 'calendar' | 'condition' | 'repository-event' | 'dependency-checkpoint' | 'manual'
                 : undefined;
-              const scheduleModeRaw = String(args.schedule_mode ?? (workId ? 'continuation' : 'workflow')).trim();
-              if (!['workflow', 'continuation', 'browser_watch', 'browser_keepalive'].includes(scheduleModeRaw)) throw new Error('SCHEDULE_MODE_INVALID');
-              if (scheduleModeRaw === 'workflow') {
-                if (controllerType !== 'chatgpt') throw new Error('WORKFLOW_SCHEDULE_CONTROLLER_TYPE_UNSUPPORTED');
-                const prompt = (typeof args.objective === 'string' ? args.objective : typeof args.continuation_prompt === 'string' ? args.continuation_prompt : '').trim();
-                if (!prompt) throw new Error('WORKFLOW_SCHEDULE_PROMPT_REQUIRED');
-                const trigger = {
-                  type: triggerType ?? (typeof args.every_minutes === 'number' ? 'interval' : 'manual'),
-                  everyMinutes: typeof args.every_minutes === 'number' ? Math.max(1, Math.trunc(args.every_minutes)) : undefined,
-                  cronExpression: typeof args.cron_expression === 'string' ? args.cron_expression : undefined,
-                  timezone: typeof args.schedule_timezone === 'string' ? args.schedule_timezone : undefined,
-                  catchUpMinutes: typeof args.catch_up_minutes === 'number' ? Math.max(0, Math.trunc(args.catch_up_minutes)) : undefined,
-                  calendarAt: typeof args.calendar_at === 'string' ? args.calendar_at : undefined,
-                  condition: args.condition && typeof args.condition === 'object' && !Array.isArray(args.condition) ? args.condition as never : undefined,
-                  eventName: typeof args.event_name === 'string' ? args.event_name : undefined,
-                  dependencyJobIds: Array.isArray(args.dependency_job_ids) ? args.dependency_job_ids.map(String) : undefined,
-                };
-                const policy = {
-                  maxActiveOccurrences: 1,
-                  maxFailures: typeof args.max_failures === 'number' ? Math.max(1, Math.trunc(args.max_failures)) : 3,
-                  cooldownMinutes: typeof args.cooldown_minutes === 'number' ? Math.max(0, Math.trunc(args.cooldown_minutes)) : 120,
-                  dailyBudgetMinutes: typeof args.daily_budget_minutes === 'number' ? Math.max(1, Math.trunc(args.daily_budget_minutes)) : 180,
-                  shadowMode: args.shadow_mode !== false,
-                  backoffBaseMinutes: typeof args.backoff_base_minutes === 'number' ? Math.max(1, Math.trunc(args.backoff_base_minutes)) : 5,
-                  backoffMaxMinutes: typeof args.backoff_max_minutes === 'number' ? Math.max(1, Math.trunc(args.backoff_max_minutes)) : 24 * 60,
-                };
-                const actionArguments = {
-                  prompt,
-                  ...(typeof args.browser_session_id === 'string' && args.browser_session_id.trim() ? { browser_session_id: args.browser_session_id.trim() } : {}),
-                  ...(typeof args.conversation_url === 'string' && args.conversation_url.trim() ? { conversation_url: args.conversation_url.trim() } : {}),
-                };
-                assertAutomatedOperationAllowed('chatgpt_browser_prompt', actionArguments);
-                const name = typeof args.schedule_name === 'string' && args.schedule_name.trim() ? args.schedule_name.trim() : `Workflow: ${prompt.slice(0, 80)}`;
-                const stopConditions = Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : [];
-                const semantic = JSON.stringify({ repoId: repository.repoId, name, trigger, policy, actionArguments, stopConditions });
-                const requestId = typeof args.schedule_request_id === 'string' && args.schedule_request_id.trim()
-                  ? args.schedule_request_id.trim()
-                  : `workflow-schedule:${repository.repoId}:${createHash('sha256').update(semantic).digest('hex').slice(0, 20)}`;
-                const schedule = createSchedule(ctx.controllerHome, {
-                  requestId,
-                  repoId: repository.repoId,
-                  name,
-                  enabled: true,
-                  trigger,
-                  policy,
-                  action: { operation: 'chatgpt_browser_prompt', target: 'runtime', arguments: actionArguments, resourceClaims: [] },
-                  stopConditions,
-                });
-                return result(buildFacadeResult({ summary: `Workflow schedule ${schedule.scheduleId} is configured without a durable Work.`, data: { schedule } }) as unknown as Record<string, unknown>);
-              }
+              const scheduleModeRaw = String(args.schedule_mode ?? (workId ? 'continuation' : '')).trim();
+              if (!['continuation', 'browser_watch', 'browser_keepalive'].includes(scheduleModeRaw)) throw new Error('SCHEDULE_MODE_REQUIRES_WORK_OR_EXPLICIT_BROWSER_KEEPALIVE');
               const created = createWorkContinuationSchedule(ctx.controllerHome, repository.repoId, {
                 workId,
                 scheduleMode: scheduleModeRaw as 'continuation' | 'browser_watch' | 'browser_keepalive',
@@ -3723,39 +3639,36 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               }) as unknown as Record<string, unknown>);
             }
             if (operation === 'schedule_list') {
-              const schedules = listSchedules(ctx.controllerHome, repository.repoId)
-                .filter((entry) => !workId || entry.action.arguments?.work_id === workId);
-              const data = args.include_occurrences === true
-                ? { schedules, occurrences: listOccurrences(ctx.controllerHome, repository.repoId, undefined, 100).filter((entry) => schedules.some((schedule) => schedule.scheduleId === entry.scheduleId)) }
-                : { schedules };
-              return result(buildFacadeResult({ summary: `Found ${schedules.length} schedule(s).`, data }) as unknown as Record<string, unknown>);
+              const schedules = listWorkContinuationSchedules(ctx.controllerHome, repository.repoId, {
+                workId: workId || undefined,
+                includeOccurrences: args.include_occurrences === true,
+              });
+              const data = args.include_occurrences === true ? schedules : { schedules: schedules.schedules };
+              return result(buildFacadeResult({ summary: `Found ${schedules.schedules.length} schedule(s).`, data }) as unknown as Record<string, unknown>);
             }
             if (!scheduleId) throw new Error('SCHEDULE_ID_REQUIRED');
             if (operation === 'schedule_get') {
-              const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
-              const data = args.include_occurrences === true ? { schedule, occurrences: listOccurrences(ctx.controllerHome, repository.repoId, scheduleId, 50) } : { schedule };
+              const data = getWorkContinuationSchedule(ctx.controllerHome, repository.repoId, scheduleId, args.include_occurrences === true);
               return result(buildFacadeResult({ summary: `Schedule ${scheduleId}.`, data }) as unknown as Record<string, unknown>);
             }
             if (operation === 'schedule_pause') {
-              const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
-              const saved = saveSchedule(ctx.controllerHome, { ...schedule, enabled: false, pausedReason: typeof args.reason === 'string' && args.reason.trim() ? args.reason.trim() : 'Paused by ChatGPT.' });
+              const saved = pauseWorkContinuationSchedule(ctx.controllerHome, repository.repoId, scheduleId, typeof args.reason === 'string' ? args.reason : undefined);
               return result(buildFacadeResult({ summary: `Schedule ${scheduleId} is paused.`, data: { schedule: saved } }) as unknown as Record<string, unknown>);
             }
             if (operation === 'schedule_resume') {
-              const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
-              const saved = saveSchedule(ctx.controllerHome, { ...schedule, enabled: true, pausedReason: undefined, consecutiveFailures: 0, nextEligibleAt: undefined });
+              const saved = resumeWorkContinuationSchedule(ctx.controllerHome, repository.repoId, scheduleId);
               return result(buildFacadeResult({ summary: `Schedule ${scheduleId} is resumed.`, data: { schedule: saved } }) as unknown as Record<string, unknown>);
             }
             if (operation === 'schedule_delete') {
-              const schedule = deleteSchedule(ctx.controllerHome, repository.repoId, scheduleId);
+              const schedule = getWorkContinuationSchedule(ctx.controllerHome, repository.repoId, scheduleId).schedule;
+              deleteSchedule(ctx.controllerHome, repository.repoId, scheduleId);
               return result(buildFacadeResult({
                 summary: `Schedule ${scheduleId} is deleted; historical occurrences and evidence are retained.`,
                 data: { scheduleId, deleted: true, requestId: schedule.requestId },
               }) as unknown as Record<string, unknown>);
             }
             if (operation === 'schedule_trigger') {
-              const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
-              const occurrence = await evaluateSchedule(ctx.controllerHome, schedule, true, {
+              const occurrence = await triggerWorkContinuationSchedule(ctx.controllerHome, repository.repoId, scheduleId, {
                 source: typeof args.event_name === 'string' && args.event_name.trim() ? 'repository-event' : 'manual',
                 eventName: typeof args.event_name === 'string' ? args.event_name : undefined,
                 eventId: typeof args.event_id === 'string' ? args.event_id : undefined,
@@ -3942,7 +3855,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               if (normalizedPlanChecks.invalidCheckIds.length > 0) {
                 const facade = buildFacadeResult({
                   status: 'failed',
-                  summary: `PLAN_CHECKS_INVALID: ${normalizedPlanChecks.invalidCheckIds.join(', ')}. Plan was not persisted; use registered checks from rh_context executionReadiness.`,
+                  summary: `PLAN_CHECKS_INVALID: ${normalizedPlanChecks.invalidCheckIds.join(', ')}. Plan was not persisted; select replacement IDs from registeredCheckIds in this response, then request readiness only for the checks you choose.`,
                   data: {
                     executionStarted: false,
                     planContractCreated: false,
@@ -3950,7 +3863,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                     normalizedChecks: normalizedPlanChecks,
                     registeredCheckIds: checks.map((check) => check.id).slice(0, 80),
                   },
-                  suggestedNextActions: [{ label: 'Read execution readiness', tool: 'rh_context', operation: 'search', payload: { repo_id: repository.repoId, query: 'execution readiness and registered checks', structural_context: 'off' }, risk: 'readonly', confidence: 'high' }],
+                  suggestedNextActions: [],
                 });
                 return result(facade as unknown as Record<string, unknown>, true);
               }
@@ -4232,22 +4145,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             }
           : facade;
         return result(response as unknown as Record<string, unknown>, response.status === 'blocked' || response.status === 'failed' || response.status === 'not_found');
-      }
-      case 'work_submit': {
-        return result({
-          error: {
-            code: 'WORK_SUBMIT_RETIRED',
-            errorClass: 'retired',
-            message: 'work_submit no longer accepts arbitrary durable operations. Use rh_work for objective continuity and the typed repository/check/plugin executors for execution.',
-            summary: 'work_submit compatibility authority is retired.',
-          },
-          suggestedNextActions: [
-            { tool: 'rh_work', operation: 'start', reason: 'Create or continue one objective-level Work lane.' },
-            { tool: 'run_check', reason: 'Run a focused repository check through Process Runtime.' },
-            { tool: 'repository_command_execute', reason: 'Run a repository-scoped command through the current execution authority.' },
-            { tool: 'plugin_action_execute', reason: 'Run a typed plugin action through its declared execution mode.' },
-          ],
-        }, true);
       }
       case 'work_get': {
         const repository = selected(ctx, args);
@@ -5073,7 +4970,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             ? 'Raw job state is intentionally not returned through MCP. Use the bounded job summary, events, and get_artifact with artifactId (ART-...), not evidenceId (EVD-...).'
             : jobSummary.terminal
               ? String(jobSummary.summary ?? '')
-              : 'Job is still active. Poll get_job without waiting, or use work_wait only when blocking is explicitly required.',
+              : 'Historical Job is still active. Continue independent work; read it only if an observation can change the next decision, and use work_wait only when this exact result becomes a dependency. Do not periodically poll.',
         }, jobSummary.phase === 'failed' || jobSummary.phase === 'timed_out');
       }
       case 'repository_change_verify': {
@@ -5321,154 +5218,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           cancelPendingApprovals: args.cancel_pending_approvals === true,
         }) as unknown as Record<string, unknown>);
       }
-      case 'goal_create':
-      case 'goal_list':
-      case 'goal_get':
-      case 'goal_start':
-      case 'goal_continue':
-      case 'goal_stop':
-      case 'goal_finalize':
-      case 'goal_status':
-      case 'goal_tick_once':
-      case 'goal_handoff_packet_create':
-      case 'goal_handoff_packet_get':
-      case 'provider_list':
-      case 'provider_health':
-      case 'provider_config_status':
-      case 'executor_route_preview':
-      case 'executor_dispatch':
-      case 'repair_plan':
-      case 'repair_continue': {
-        const repository = selected(ctx, args);
-        if (['goal_create', 'goal_start', 'goal_continue', 'goal_tick_once', 'executor_dispatch', 'repair_continue'].includes(name)) {
-          return result({
-            error: {
-              code: 'GOAL_LOOP_DEPRECATED',
-              message: 'Goal provider dispatch is retired. Use rh_work.plan_create/plan_approve, rh_work.controller_claim, rh_work.launcher_start, and rh_inbox for continuation.',
-            },
-            deprecated: true,
-            migration: ['rh_work.plan_create', 'rh_work.controller_claim', 'rh_work.launcher_start', 'rh_inbox.create'],
-          }, true);
-        }
-        const goalCtx: GoalLoopContext = {
-          goalStore: { controllerHome: ctx.controllerHome, repoId: repository.repoId },
-          packetStore: { controllerHome: ctx.controllerHome, repoId: repository.repoId },
-          repoId: repository.repoId,
-        };
-        const goalId = typeof args.goal_id === 'string' ? args.goal_id : '';
-        const taskIntent = typeof args.task_intent === 'string' ? args.task_intent as TaskIntent : undefined;
-        switch (name) {
-          case 'goal_create': {
-            const goal = goalCreate(goalCtx, {
-              title: String(args.title ?? ''),
-              objective: String(args.objective ?? ''),
-              mode: args.mode === 'manual' || args.mode === 'supervised' || args.mode === 'autonomous' ? args.mode : 'autonomous',
-              issueId: typeof args.issue_id === 'string' ? args.issue_id : undefined,
-              taskIds: Array.isArray(args.task_ids) ? args.task_ids.map(String) : undefined,
-              acceptanceCriteria: Array.isArray(args.acceptance_criteria) ? args.acceptance_criteria.map(String) : undefined,
-              checkIds: Array.isArray(args.check_ids) ? args.check_ids.map(String) : undefined,
-              allowedExecutors: Array.isArray(args.allowed_executors) ? args.allowed_executors.map(String) : undefined,
-              forbiddenExecutors: Array.isArray(args.forbidden_executors) ? args.forbidden_executors.map(String) : undefined,
-              retryBudget: typeof args.retry_budget === 'number' ? args.retry_budget : undefined,
-            });
-            return result({ goal, summary: summarizeGoalPublic(goal) });
-          }
-          case 'goal_list': {
-            const status = typeof args.status === 'string' ? args.status as GoalStatus | 'active' | 'all' : 'active';
-            const goals = goalList(goalCtx, status, typeof args.limit === 'number' ? args.limit : 50);
-            return result({ goals: goals.map(summarizeGoalPublic), count: goals.length });
-          }
-          case 'goal_get': {
-            const goal = goalGet(goalCtx, goalId);
-            if (!goal) return result({ error: { code: 'GOAL_NOT_FOUND', message: `Goal not found: ${goalId}` } }, true);
-            return result({ goal, summary: summarizeGoalPublic(goal) });
-          }
-          case 'goal_start':
-            return result({ tick: goalStart(goalCtx, goalId) });
-          case 'goal_continue':
-            return result({ tick: goalContinue(goalCtx, goalId) });
-          case 'goal_stop':
-            return result({ goal: summarizeGoalPublic(goalStop(goalCtx, goalId, typeof args.reason === 'string' ? args.reason : undefined)) });
-          case 'goal_finalize': {
-            const finalized = goalFinalize(goalCtx, goalId, { force: args.force === true });
-            return result({ ok: finalized.ok, reason: finalized.reason, goal: summarizeGoalPublic(finalized.goal) }, !finalized.ok);
-          }
-          case 'goal_status':
-            return result(goalStatus(goalCtx, goalId || undefined));
-          case 'goal_tick_once': {
-            if (goalId) {
-              return result({
-                tick: goalTickOnce(goalCtx, goalId, {
-                  taskIntent,
-                  providerFailure: args.provider_failure === true,
-                  externalWrite: args.external_write === true,
-                  approvalConfirmed: args.approval_confirmed === true,
-                  verificationResult: typeof args.verification_check_id === 'string'
-                    ? {
-                        checkId: args.verification_check_id,
-                        ok: args.verification_ok === true,
-                      }
-                    : undefined,
-                }),
-              });
-            }
-            return result({ ticks: tickActiveGoals(goalCtx) });
-          }
-          case 'goal_handoff_packet_create':
-            return result({
-              packet: goalHandoffPacketCreate(goalCtx, goalId, {
-                blockers: Array.isArray(args.blockers) ? args.blockers.map(String) : undefined,
-                requiredUserDecision: typeof args.required_user_decision === 'string' ? args.required_user_decision : undefined,
-                recommendedProvider: typeof args.recommended_provider === 'string' ? args.recommended_provider : undefined,
-              }),
-            });
-          case 'goal_handoff_packet_get': {
-            const packet = goalHandoffPacketGet(goalCtx, String(args.packet_id ?? ''));
-            if (!packet) return result({ error: { code: 'PACKET_NOT_FOUND', message: 'Handoff packet not found.' } }, true);
-            return result({ packet });
-          }
-          case 'provider_list':
-            return result({ providers: providerListAction(goalCtx), policyOwner: 'forge' });
-          case 'provider_health':
-            return result({
-              health: providerHealthAction(goalCtx, typeof args.provider_id === 'string' ? args.provider_id : undefined),
-              redacted: true,
-            });
-          case 'provider_config_status':
-            return result(providerConfigStatusAction(goalCtx));
-          case 'executor_route_preview':
-            return result({
-              route: executorRoutePreview(goalCtx, {
-                goalId: goalId || undefined,
-                taskIntent,
-                risk: typeof args.risk === 'string' ? args.risk as 'readonly' | 'local_repo_write' | 'workspace_write' | 'remote_write' | 'destructive' | 'raw_secret_config' : undefined,
-                objective: typeof args.objective === 'string' ? args.objective : undefined,
-              }),
-            });
-          case 'executor_dispatch':
-            return result(executorDispatch(goalCtx, {
-              goalId,
-              providerId: typeof args.provider_id === 'string' ? args.provider_id : undefined,
-              taskIntent,
-              risk: typeof args.risk === 'string' ? args.risk as 'readonly' | 'local_repo_write' | 'workspace_write' | 'remote_write' | 'destructive' | 'raw_secret_config' : undefined,
-              approvalConfirmed: args.approval_confirmed === true,
-              externalWrite: args.external_write === true,
-              strongConfirmationText: typeof args.strong_confirmation_text === 'string' ? args.strong_confirmation_text : undefined,
-            }));
-          case 'repair_plan':
-            return result(repairPlan(goalCtx, goalId));
-          case 'repair_continue':
-            return result({
-              tick: repairContinue(goalCtx, goalId, {
-                forceFailureClass: typeof args.force_failure_class === 'string'
-                  ? args.force_failure_class as import('../../control-plane/goal-loop').FailureClass
-                  : undefined,
-              }),
-            });
-          default:
-            return result({ error: { code: 'GOAL_LOOP_UNKNOWN', message: name } }, true);
-        }
-      }
       case 'workspace_auth_status': {
         const repository = selected(ctx, args);
         return result(buildWorkspaceAuthStatus(listAssistantPluginManifests(ctx.controllerHome, repository)));
@@ -5480,66 +5229,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           scopes: Array.isArray(args.scopes) ? args.scopes.map(String) : undefined,
           redirectUri: typeof args.redirect_uri === 'string' ? args.redirect_uri : undefined,
         }));
-      }
-      case 'assistant_model_readiness': {
-        return result(assistantModelReadiness());
-      }
-      case 'assistant_standing_grants': {
-        const repository = selected(ctx, args);
-        return result(listAssistantStandingGrants(ctx.controllerHome, repository, {
-          status: typeof args.status === 'string' ? args.status as any : undefined,
-          limit: typeof args.limit === 'number' ? args.limit : undefined,
-        }));
-      }
-      case 'assistant_standing_grant_create': {
-        const repository = selected(ctx, args);
-        return result({ grant: createAssistantStandingGrant(ctx.controllerHome, repository, {
-          name: typeof args.name === 'string' ? args.name : undefined,
-          pluginId: String(args.plugin_id ?? '').trim(),
-          actionId: String(args.action_id ?? '').trim(),
-          routineIds: Array.isArray(args.routine_ids) ? args.routine_ids.map(String) : undefined,
-          senderAllowlist: Array.isArray(args.sender_allowlist) ? args.sender_allowlist.map(String) : undefined,
-          subjectContains: Array.isArray(args.subject_contains) ? args.subject_contains.map(String) : undefined,
-          minConfidence: typeof args.min_confidence === 'number' ? args.min_confidence : undefined,
-          maxPerRun: typeof args.max_per_run === 'number' ? args.max_per_run : undefined,
-          expiresInDays: typeof args.expires_in_days === 'number' ? args.expires_in_days : undefined,
-          confirmAuthorization: args.confirm_authorization === true,
-          origin: { surface: 'mcp', actor: 'assistant_standing_grant_create' },
-        }) });
-      }
-      case 'assistant_standing_grant_revoke': {
-        const repository = selected(ctx, args);
-        return result({ grant: revokeAssistantStandingGrant(ctx.controllerHome, repository, {
-          grantId: String(args.grant_id ?? '').trim(),
-          reason: typeof args.reason === 'string' ? args.reason : undefined,
-          confirmAuthorization: args.confirm_authorization === true,
-          origin: { surface: 'mcp', actor: 'assistant_standing_grant_revoke' },
-        }) });
-      }
-      case 'assistant_action_proposals': {
-        const repository = selected(ctx, args);
-        const proposalId = typeof args.proposal_id === 'string' ? args.proposal_id.trim() : '';
-        return result(proposalId
-          ? { proposal: getAssistantActionProposal(ctx.controllerHome, repository, proposalId) }
-          : listAssistantActionProposals(ctx.controllerHome, repository, {
-              status: typeof args.status === 'string' ? args.status as any : undefined,
-              limit: typeof args.limit === 'number' ? args.limit : undefined,
-            }));
-      }
-      case 'assistant_action_proposal_resolve': {
-        const repository = selected(ctx, args);
-        const proposalId = String(args.proposal_id ?? '').trim();
-        if (args.decision === 'reject') {
-          return result({ proposal: rejectAssistantActionProposal(ctx.controllerHome, repository, proposalId, typeof args.reason === 'string' ? args.reason : undefined) });
-        }
-        if (args.confirm_authorization !== true) throw new Error('ASSISTANT_ACTION_APPROVAL_REQUIRED: confirm_authorization=true');
-        const requestId = String(args.request_id ?? `assistant-proposal:${proposalId}`).trim();
-        return result({ proposal: await approveAssistantActionProposal(ctx.controllerHome, repository, {
-          proposalId,
-          requestId,
-          confirmationText: typeof args.confirmation_text === 'string' ? args.confirmation_text : undefined,
-          origin: { surface: 'mcp', actor: 'assistant_action_proposal_resolve' },
-        }) });
       }
       case 'external_filesystem_targets_list': {
         const repository = selected(ctx, args);
@@ -5742,27 +5431,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           scope: repository.repoId === '__controller__' ? 'controller' : 'repository',
           plugin: summarizePlugin(getAssistantPluginManifest(ctx.controllerHome, repository, pluginId)),
         });
-      }
-      case 'assistant_readiness': {
-        const repository = selected(ctx, args);
-        const readiness = buildAssistantReadinessReport(ctx.controllerHome, repository);
-        return result({ ...readiness });
-      }
-
-      case 'gmail_triage_rules': {
-        const repository = selected(ctx, args);
-        return result({ repoId: repository.repoId, checkoutId: repository.activeCheckoutId, path: '.forge/assistant/gmail-triage-rules.json', ...readGmailTriageRules(repository) });
-      }
-      case 'gmail_triage_rule_upsert': {
-        const repository = selected(ctx, args);
-        const upserted = upsertGmailTriageRule(repository, args);
-        return result({ repoId: repository.repoId, checkoutId: repository.activeCheckoutId, ...upserted });
-      }
-      case 'gmail_triage_plan': {
-        const repository = selected(ctx, args);
-        let manifest;
-        try { manifest = getAssistantPluginManifest(ctx.controllerHome, repository, 'gmail'); } catch (_error) { manifest = undefined; }
-        return result(buildGmailTriagePlan(repository, { manifest, items: args.items, query: args.query }) as unknown as Record<string, unknown>);
       }
       case 'review_artifacts_prepare': {
         const repository = selected(ctx, args);
@@ -6059,7 +5727,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           taskLedgerStatus: taskLedger.status,
           next: process.completed === true
             ? 'Managed process is terminal; inspect the bounded digest above.'
-            : `Poll process_get or process_wait with process_id=${workRef}; do not re-run the original operation.`,
+            : `Continue independent work. Use process_get only if an observation can change the next decision; join once with process_wait when this exact result becomes a dependency. Do not re-run the original operation.`,
         }, digest.phase === 'failed' || digest.phase === 'timed_out');
       }
       case 'model_clients_summary': {
@@ -6104,70 +5772,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           model: typeof args.model === 'string' ? args.model : undefined,
         }) });
       }
-      case 'create_schedule': {
-        const repository = selected(ctx, args);
-        const operation = String(args.operation ?? '').trim();
-        const operationArgs = args.arguments && typeof args.arguments === 'object' ? args.arguments as Record<string, unknown> : {};
-        assertAutomatedOperationAllowed(operation, operationArgs);
-        const scheduleRequestId = typeof args.request_id === 'string' && args.request_id.trim()
-          ? args.request_id.trim()
-          : `schedule:auto:${repository.repoId}:${createHash('sha256').update(JSON.stringify({ name: args.name, operation, arguments: operationArgs, everyMinutes: args.every_minutes })).digest('hex').slice(0, 20)}:${Math.floor(Date.now() / (5 * 60_000))}`;
-        const schedule = createSchedule(ctx.controllerHome, {
-          requestId: scheduleRequestId,
-          repoId: repository.repoId,
-          name: String(args.name ?? '').trim(),
-          enabled: true,
-          trigger: {
-            type: ['interval', 'cron', 'calendar', 'condition', 'repository-event', 'dependency-checkpoint', 'manual'].includes(String(args.trigger_type))
-              ? String(args.trigger_type) as 'interval' | 'cron' | 'calendar' | 'condition' | 'repository-event' | 'dependency-checkpoint' | 'manual'
-              : typeof args.every_minutes === 'number' ? 'interval' : 'manual',
-            everyMinutes: typeof args.every_minutes === 'number' ? Math.max(1, args.every_minutes) : undefined,
-            cronExpression: typeof args.cron_expression === 'string' ? args.cron_expression : undefined,
-            calendarAt: typeof args.calendar_at === 'string' ? args.calendar_at : undefined,
-            condition: args.condition && typeof args.condition === 'object' ? args.condition as never : undefined,
-            eventName: typeof args.event_name === 'string' ? args.event_name : undefined,
-            dependencyJobIds: Array.isArray(args.dependency_job_ids) ? args.dependency_job_ids.map(String) : undefined,
-          },
-          policy: {
-            maxActiveOccurrences: 1,
-            maxFailures: typeof args.max_failures === 'number' ? Math.max(1, args.max_failures) : 3,
-            cooldownMinutes: typeof args.cooldown_minutes === 'number' ? Math.max(0, args.cooldown_minutes) : 120,
-            dailyBudgetMinutes: typeof args.daily_budget_minutes === 'number' ? Math.max(1, args.daily_budget_minutes) : 180,
-            shadowMode: args.shadow_mode !== false,
-            backoffBaseMinutes: typeof args.backoff_base_minutes === 'number' ? Math.max(1, args.backoff_base_minutes) : 5,
-            backoffMaxMinutes: typeof args.backoff_max_minutes === 'number' ? Math.max(1, args.backoff_max_minutes) : 24 * 60,
-          },
-          action: { operation, arguments: operationArgs, resourceClaims: claimsForMcpOperation(operation, operationArgs, repository.repoId, repository.activeCheckoutId) },
-          stopConditions: Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : ['release_ready', 'external_blocker', 'human_review_required'],
-        });
-        return result({ schedule });
-      }
-      case 'list_schedules': {
-        const repository = selected(ctx, args);
-        const schedules = listSchedules(ctx.controllerHome, repository.repoId);
-        if (args.include_occurrences !== true) return result({ schedules });
-        const occurrences = listOccurrences(ctx.controllerHome, repository.repoId, undefined, 100);
-        const decisions = occurrences.flatMap((occurrence) => occurrence.decisionId
-          ? [getScheduleDecision(ctx.controllerHome, repository.repoId, occurrence.decisionId)].filter(Boolean)
-          : []);
-        return result({ schedules, occurrences, decisions });
-      }
-      case 'pause_schedule': {
-        const repository = selected(ctx, args);
-        const schedule = getSchedule(ctx.controllerHome, repository.repoId, String(args.schedule_id ?? ''));
-        return result({ schedule: saveSchedule(ctx.controllerHome, { ...schedule, enabled: false, pausedReason: typeof args.reason === 'string' ? args.reason : 'Paused by user.' }) });
-      }
-      case 'trigger_schedule': {
-        const repository = selected(ctx, args);
-        const schedule = getSchedule(ctx.controllerHome, repository.repoId, String(args.schedule_id ?? ''));
-        const occurrence = await evaluateSchedule(ctx.controllerHome, schedule, true, {
-          source: typeof args.event_name === 'string' ? 'repository-event' : 'manual',
-          eventName: typeof args.event_name === 'string' ? args.event_name : undefined,
-          eventId: typeof args.event_id === 'string' ? args.event_id : undefined,
-          data: args.event_data && typeof args.event_data === 'object' ? args.event_data as Record<string, unknown> : undefined,
-        });
-        return result({ occurrence });
-      }
       case 'request_release_gate': {
         const repository = selected(ctx, args);
         const requestId = typeof args.request_id === 'string' && args.request_id.trim()
@@ -6181,93 +5785,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           rejectCode: 'EXECUTION_JOB_RETIRED',
           message: 'Release Gate no longer creates an ExecutionJob. An external Controller must claim the related Work and execute release evidence explicitly.',
           suggestedOperation: 'rh_work.controller_claim followed by Process Runtime checks and explicit release authorization.',
-        });
-      }
-      case 'create_portfolio_workflow': {
-        const rawSteps = Array.isArray(args.steps) ? args.steps : [];
-        const workflow = createPortfolioWorkflow(ctx.controllerHome, {
-          name: String(args.name ?? '').trim(),
-          requestId: String(args.request_id ?? '').trim(),
-          failurePolicy: args.failure_policy === 'compensate' ? 'compensate' : 'stop',
-          steps: rawSteps.map((raw, index) => {
-            if (!raw || typeof raw !== 'object') throw new Error(`PORTFOLIO_STEP_INVALID: step ${index + 1}`);
-            const step = raw as Record<string, unknown>;
-            const stepRepoId = String(step.repo_id ?? '').trim();
-            const operation = String(step.operation ?? '').trim();
-            const operationArgs = step.arguments && typeof step.arguments === 'object' ? step.arguments as Record<string, unknown> : {};
-            if (!stepRepoId || !operation) throw new Error(`PORTFOLIO_STEP_INVALID: step ${index + 1} requires repo_id and operation`);
-            assertAutomatedOperationAllowed(operation, operationArgs);
-            const checkoutId = resolveRepositorySelection({ repoId: stepRepoId, controllerHome: ctx.controllerHome, allowSoleRepository: false }).activeCheckoutId;
-            const compensation = step.compensation && typeof step.compensation === 'object'
-              ? step.compensation as Record<string, unknown>
-              : undefined;
-            if (compensation) {
-              const compensationOperation = String(compensation.operation ?? '').trim();
-              const compensationArguments = compensation.arguments && typeof compensation.arguments === 'object'
-                ? compensation.arguments as Record<string, unknown>
-                : {};
-              assertAutomatedOperationAllowed(compensationOperation, compensationArguments);
-            }
-            return {
-              stepId: String(step.step_id ?? `step-${index + 1}`),
-              repoId: stepRepoId,
-              operation,
-              arguments: operationArgs,
-              dependsOn: Array.isArray(step.depends_on) ? step.depends_on.map(String) : [],
-              priority: ['P0', 'P1', 'P2', 'P3', 'P4'].includes(String(step.priority)) ? String(step.priority) as 'P0' | 'P1' | 'P2' | 'P3' | 'P4' : 'P2',
-              resourceClaims: claimsForMcpOperation(operation, operationArgs, stepRepoId, checkoutId),
-              compensation: compensation ? { operation: String(compensation.operation ?? ''), arguments: compensation.arguments && typeof compensation.arguments === 'object' ? compensation.arguments as Record<string, unknown> : undefined } : undefined,
-              status: 'pending' as const,
-            };
-          }),
-        });
-        return result({ workflow });
-      }
-      case 'list_portfolio_workflows':
-        return result({ workflows: listPortfolioWorkflows(ctx.controllerHome, typeof args.limit === 'number' ? args.limit : 100) });
-      case 'get_portfolio_workflow':
-        return result({ workflow: getPortfolioWorkflow(ctx.controllerHome, String(args.workflow_id ?? '')) });
-      case 'record_candidate_finding': {
-        const repository = selected(ctx, args);
-        const semanticKey = String(args.semantic_key ?? '').trim();
-        const requestId = typeof args.request_id === 'string' && args.request_id.trim()
-          ? args.request_id.trim()
-          : `candidate:${repository.repoId}:${createHash('sha256').update(semanticKey).digest('hex').slice(0, 20)}:${Math.floor(Date.now() / (5 * 60_000))}`;
-        const finding = recordCandidateFinding(ctx.controllerHome, {
-          repoId: repository.repoId,
-          requestId,
-          semanticKey,
-          title: String(args.title ?? '').trim(),
-          summary: typeof args.summary === 'string' ? args.summary : undefined,
-          severity: ['low', 'medium', 'high', 'critical'].includes(String(args.severity))
-            ? String(args.severity) as 'low' | 'medium' | 'high' | 'critical'
-            : 'medium',
-          evidence: {
-            source: 'mcp',
-            reference: typeof args.reference === 'string' ? args.reference : undefined,
-            details: args.evidence && typeof args.evidence === 'object' ? args.evidence as Record<string, unknown> : undefined,
-          },
-        });
-        return result({ finding });
-      }
-      case 'list_candidate_findings': {
-        const repository = selected(ctx, args);
-        return result({ findings: listCandidateFindings(ctx.controllerHome, repository.repoId, {
-          includeTerminal: args.include_terminal === true,
-          limit: typeof args.limit === 'number' ? args.limit : 100,
-        }) });
-      }
-      case 'promote_candidate_finding': {
-        const repository = selected(ctx, args);
-        const finding = getCandidateFinding(ctx.controllerHome, repository.repoId, String(args.finding_id ?? ''));
-        return result({
-          accepted: false,
-          mode: 'external_controller_required',
-          repoId: repository.repoId,
-          finding,
-          rejectCode: 'EXECUTION_JOB_RETIRED',
-          message: 'Candidate promotion no longer creates an ExecutionJob. An external Controller must create the Issue after claiming the related Work.',
-          suggestedOperation: 'Create or claim WorkContract, then use the explicit issue-creation tool from the external Controller session.',
         });
       }
       default: return undefined;
