@@ -180,6 +180,8 @@ import {
   listPlanContracts,
   resolvePlanAdmission,
   withPrimaryWorkAdmissionLockAsync,
+  repairDanglingPlanStepWorkBinding,
+  completePlanStepForWork,
   summarizePlanContract,
   supersedePlanContract,
   verifyGoalWorkloop,
@@ -2084,6 +2086,90 @@ async function runFacadeRepair(
     : 'diagnose';
   const dryRun = args.dry_run === undefined ? true : args.dry_run === true;
   const elevatedRepair = args.destructive === true || args.remote_write === true || args.remote_effect === true;
+  const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
+  const planStepId = typeof args.plan_step_id === 'string' ? args.plan_step_id.trim() : '';
+
+  if (planId || planStepId) {
+    if (!planId || !planStepId) {
+      const facade = buildFacadeResult({ status: 'blocked', summary: 'PLAN_STEP_REPAIR_CONTEXT_REQUIRED: plan_id and plan_step_id are both required.', data: { operation: repairOperation, dryRun, repaired: false } });
+      return result(facade as unknown as Record<string, unknown>, true);
+    }
+    const plan = getPlanContract(store, planId);
+    const step = plan?.steps.find((candidate) => candidate.id === planStepId);
+    if (!plan || !step) {
+      const facade = buildFacadeResult({ status: 'not_found', summary: !plan ? `PlanContract ${planId} not found.` : `PLAN_STEP_NOT_FOUND: ${planStepId}`, data: { operation: repairOperation, dryRun, planId, planStepId, repaired: false } });
+      return result(facade as unknown as Record<string, unknown>, true);
+    }
+    if (!step.workId) {
+      const facade = buildFacadeResult({ summary: `Plan step ${planId}/${planStepId} has no Work binding to repair.`, data: { operation: repairOperation, dryRun, planId, planStepId, repaired: false, repairRequired: false } });
+      return result(facade as unknown as Record<string, unknown>);
+    }
+    const boundWork = getWorkContract(store, step.workId);
+    if (boundWork) {
+      if (['completed', 'failed', 'cancelled'].includes(boundWork.status)) {
+        if (repairOperation !== 'repair' || dryRun) {
+          const facade = buildFacadeResult({
+            summary: `PLAN_STEP_TERMINAL_WORK_RECONCILIABLE: ${planId}/${planStepId} is bound to existing terminal Work ${boundWork.workId}. Explicit repair can project that exact Work without creating a replacement.`,
+            data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: boundWork.workId, repaired: false, repairRequired: true, reusedExistingWork: true },
+            suggestedNextActions: [{ label: 'Project existing terminal Work', tool: 'rh_work', operation: 'repair', payload: { plan_id: planId, plan_step_id: planStepId, repair_operation: 'repair', dry_run: false }, risk: 'workspace_write', confidence: 'high' }],
+          });
+          return result(facade as unknown as Record<string, unknown>);
+        }
+        try {
+          const reconciledPlan = completePlanStepForWork(store, { planId, stepId: planStepId, work: boundWork });
+          const facade = buildFacadeResult({
+            summary: `Reconciled Plan step ${planId}/${planStepId} from its existing terminal Work ${boundWork.workId}; no replacement Work was created.`,
+            data: { operation: repairOperation, dryRun: false, plan: summarizePlanContract(reconciledPlan), boundWorkId: boundWork.workId, repaired: true, reusedExistingWork: true },
+          });
+          return result(facade as unknown as Record<string, unknown>);
+        } catch (error) {
+          const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'PLAN_STEP_TERMINAL_WORK_RECONCILIATION_FAILED', data: { operation: repairOperation, dryRun: false, planId, planStepId, boundWorkId: boundWork.workId, repaired: false } });
+          return result(facade as unknown as Record<string, unknown>, true);
+        }
+      }
+      const facade = buildFacadeResult({
+        status: 'blocked',
+        summary: `PLAN_STEP_BOUND_WORK_STILL_EXISTS: ${planId}/${planStepId} is bound to active Work ${boundWork.workId}; continue that exact Work instead of repairing or replacing it.`,
+        data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: boundWork.workId, repaired: false, repairRequired: false },
+        suggestedNextActions: [{ label: 'Continue existing Work', tool: 'rh_work', operation: 'continue', payload: { work_id: boundWork.workId }, risk: 'readonly', confidence: 'high' }],
+      });
+      return result(facade as unknown as Record<string, unknown>, true);
+    }
+    const conflicting = listWorkContracts({ ...store, status: 'active', limit: 200 })
+      .filter((candidate) => candidate.planId === planId && candidate.planStepId === planStepId && candidate.workId !== step.workId);
+    if (conflicting.length > 0) {
+      const facade = buildFacadeResult({
+        status: 'blocked',
+        summary: `PLAN_STEP_REPAIR_CONFLICT: ${planId}/${planStepId} is bound to missing Work ${step.workId}, but ${conflicting.length} other active Work record(s) claim the same step. Resolve the conflicting authority before changing the Plan binding.`,
+        data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: step.workId, conflictingWorkIds: conflicting.map((candidate) => candidate.workId), repaired: false },
+      });
+      return result(facade as unknown as Record<string, unknown>, true);
+    }
+    if (repairOperation !== 'repair' || dryRun) {
+      const facade = buildFacadeResult({
+        summary: `PLAN_STEP_DANGLING_WORK_BINDING: ${planId}/${planStepId} points to missing Work ${step.workId}. Exact repair is available and will clear only this unchanged ghost binding.`,
+        data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: step.workId, repaired: false, repairRequired: true },
+        suggestedNextActions: [{ label: 'Repair exact dangling binding', tool: 'rh_work', operation: 'repair', payload: { plan_id: planId, plan_step_id: planStepId, repair_operation: 'repair', dry_run: false }, risk: 'workspace_write', confidence: 'high' }],
+      });
+      return result(facade as unknown as Record<string, unknown>);
+    }
+    try {
+      const repairedPlan = repairDanglingPlanStepWorkBinding(store, {
+        planId,
+        stepId: planStepId,
+        expectedWorkId: step.workId,
+        reason: 'Explicit Controller repair confirmed that the exact bound Work record is absent and no other active primary Work claims this Plan step.',
+      });
+      const facade = buildFacadeResult({
+        summary: `Repaired dangling Plan step binding ${planId}/${planStepId}; ${step.workId} was cleared without creating a replacement Work.`,
+        data: { operation: repairOperation, dryRun: false, plan: summarizePlanContract(repairedPlan), boundWorkId: step.workId, repaired: true, replacementWorkCreated: false },
+      });
+      return result(facade as unknown as Record<string, unknown>);
+    } catch (error) {
+      const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'PLAN_STEP_DANGLING_WORK_REPAIR_FAILED', data: { operation: repairOperation, dryRun: false, planId, planStepId, boundWorkId: step.workId, repaired: false } });
+      return result(facade as unknown as Record<string, unknown>, true);
+    }
+  }
 
   // The self-healing facade is a policy/planning surface; the authoritative
   // maintenance executor owns mutations. Execute it here only for an explicit,

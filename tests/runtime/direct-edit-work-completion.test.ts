@@ -13,7 +13,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture() {
+function fixture(requirementId?: string) {
   const repoRoot = mkdtempSync(join(tmpdir(), 'forge-direct-edit-work-repo-'));
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-direct-edit-work-home-'));
   roots.push(repoRoot, controllerHome);
@@ -41,6 +41,7 @@ function fixture() {
     checks: [],
     constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
+    ...(requirementId ? { requirementId } : {}),
     status: 'running',
   });
   const session = beginEditSession(repoRoot, {
@@ -98,8 +99,8 @@ describe('standalone Direct Edit Work completion', () => {
     });
   });
 
-  test('closes historically delivered Work through explicit reviewed revision and path proof', () => {
-    const fx = fixture();
+  test('closes historically delivered Work even when Requirement completion projection is unavailable', () => {
+    const fx = fixture('REQ-direct-edit-missing-record');
     commitExample(fx.repoRoot);
     const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
 
@@ -119,7 +120,9 @@ describe('standalone Direct Edit Work completion', () => {
 
     expect(result.reconciliation).toMatchObject({ method: 'owned_path_tree', outcome: 'accepted_equivalence', comparedPaths: ['src/example.ts'] });
     expect(result.receipt).toMatchObject({ source: 'direct_edit_work', reconciliationId: result.reconciliation.reconciliationId, targetRevision });
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)).toMatchObject({ status: 'completed', completionOutcome: 'completed_changed' });
+    const completed = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId);
+    expect(completed).toMatchObject({ status: 'completed', completionOutcome: 'completed_changed' });
+    expect(completed?.evidenceRefs.some((evidence) => evidence.title === 'requirement completion projection pending' && (evidence.summary ?? '').includes('REQUIREMENT_NOT_FOUND'))).toBe(true);
   });
 
   test('rejects reviewed reconciliation unless the supplied path set is exact', () => {

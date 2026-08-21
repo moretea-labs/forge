@@ -28,7 +28,7 @@ function git(repoRoot: string, args: string[]): string {
   return result.stdout.trim();
 }
 
-function fixture(options: { changed?: boolean; equivalentHistoricalWork?: boolean } = {}) {
+function fixture(options: { changed?: boolean; equivalentHistoricalWork?: boolean; requirementId?: string } = {}) {
   const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-receipt-'));
   roots.push(repoRoot);
   git(repoRoot, ['init', '-b', 'main']);
@@ -82,6 +82,7 @@ function fixture(options: { changed?: boolean; equivalentHistoricalWork?: boolea
     forbiddenPaths: [],
     checks: [],
     requestedBy: 'chatgpt',
+    ...(options.requirementId ? { requirementId: options.requirementId } : {}),
     status: options.equivalentHistoricalWork ? 'failed' : 'running',
     phase: 'cleanup',
   });
@@ -170,8 +171,8 @@ describe('controller Work Task completion receipt', () => {
     })).toThrow(/WORK_COMPLETION_REQUIRES_RECORD_API/);
   });
 
-  test('binds a completed cleaned Work to the exact verified Task and accepts it', () => {
-    const fx = fixture();
+  test('binds a completed cleaned Work to the exact verified Task even when Requirement projection is unavailable', () => {
+    const fx = fixture({ requirementId: 'REQ-task-receipt-missing-record' });
     const result = acceptVerifiedTaskFromControllerWork({
       controllerHome: fx.controllerHome,
       repoId: fx.repoId,
@@ -203,7 +204,9 @@ describe('controller Work Task completion receipt', () => {
       workId: fx.workId,
     });
     expect(retried.receipt.receiptId).toBe(result.receipt.receiptId);
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.completionReceipt).toMatchObject({ workId: fx.workId, targetRevision: fx.expectedHead });
+    const completed = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId);
+    expect(completed?.completionReceipt).toMatchObject({ workId: fx.workId, targetRevision: fx.expectedHead });
+    expect(completed?.evidenceRefs.some((evidence) => evidence.title === 'requirement completion projection pending' && (evidence.summary ?? '').includes('REQUIREMENT_NOT_FOUND'))).toBe(true);
   });
 
   test('treats a Work-bound Task status and contract fields as a derived compatibility projection', () => {
@@ -423,8 +426,8 @@ describe('controller Work Task completion receipt', () => {
     }).receipt.receiptId).toBe(result.receipt.receiptId);
   });
 
-  test('accepts a reviewed equivalent integration without inventing failed Work stages', () => {
-    const fx = fixture({ equivalentHistoricalWork: true });
+  test('accepts a reviewed equivalent integration without letting missing Requirement projection invent failed Work stages', () => {
+    const fx = fixture({ equivalentHistoricalWork: true, requirementId: 'REQ-reviewed-task-missing-record' });
     writeWorkHandle(fx.controllerHome, {
       ...fx.handle,
       state: 'failed',
@@ -453,6 +456,9 @@ describe('controller Work Task completion receipt', () => {
       delivery: { strategy: 'already_integrated', reachable: true },
     });
     expect(result.issue.tasks[0]!.status).toBe('done');
+    const completed = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId);
+    expect(completed?.status).toBe('completed');
+    expect(completed?.evidenceRefs.some((evidence) => evidence.title === 'requirement completion projection pending' && (evidence.summary ?? '').includes('REQUIREMENT_NOT_FOUND'))).toBe(true);
     const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
     expect(contract.status).toBe('completed');
     expect(contract.completionReceipt?.receiptId).toBe(result.receipt.receiptId);

@@ -3,7 +3,7 @@ import { getEditSession, listEditSessions, type EditSession } from '../../../cli
 import { globMatches } from '../../../cli/mcp/paths';
 import { runProcess } from '../../../effects/process-runner';
 import { completeRequirementFromWork } from '../persistence/requirement-store';
-import { getWorkContract, recordWorkCompletionReceipt, updateWorkContract } from '../facade/work-contract-store';
+import { appendWorkEvidence, getWorkContract, recordWorkCompletionReceipt, updateWorkContract } from '../facade/work-contract-store';
 import { isDirectEditWorkCompletionReceipt, isTerminalWorkContractStatus, type DirectEditWorkCompletionReceipt, type WorkReconciliationRecord } from '../facade/types';
 import { effectiveVerificationEvidence } from './verification-evidence';
 
@@ -301,6 +301,21 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
     'completed_changed',
     'repository_change',
   );
-  if (recorded.requirementId) completeRequirementFromWork({ controllerHome: input.controllerHome }, { requirementId: recorded.requirementId, work: recorded });
+  if (recorded.requirementId) {
+    try {
+      completeRequirementFromWork({ controllerHome: input.controllerHome }, { requirementId: recorded.requirementId, work: recorded });
+    } catch (error) {
+      try {
+        appendWorkEvidence({ controllerHome: input.controllerHome, repoId: input.repoId }, input.workId, {
+          title: 'requirement completion projection pending',
+          summary: `Work completion remains authoritative; Requirement projection could not be applied: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2_000),
+          detailLevel: 'summary',
+        });
+      } catch {
+        // Reconciliation already recorded the terminal receipt. A diagnostic
+        // write failure cannot make that completed Work non-terminal again.
+      }
+    }
+  }
   return { workId: input.workId, reconciliation, receipt };
 }

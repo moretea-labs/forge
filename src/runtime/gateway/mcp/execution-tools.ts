@@ -2164,10 +2164,32 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
         requestedOutcome === 'completed_no_change' ? 'completed_no_change' : 'repository_change',
       );
       if (recorded.requirementId) {
-        completeRequirementFromWork(
-          { controllerHome: ctx.controllerHome },
-          { requirementId: recorded.requirementId, work: recorded },
-        );
+        try {
+          completeRequirementFromWork(
+            { controllerHome: ctx.controllerHome },
+            { requirementId: recorded.requirementId, work: recorded },
+          );
+        } catch (error) {
+          // Work completion + its receipt are the canonical machine-delivery facts.
+          // Requirement completion is a downstream projection and may legitimately
+          // be absent for callers that use requirement_id only as a semantic
+          // identity. Never turn an already integrated/cleaned Work back into a
+          // failed finalize because this projection is missing or stale.
+          try {
+            appendWorkEvidence(
+              { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
+              workId,
+              {
+                title: 'requirement completion projection pending',
+                summary: `Work completion remains authoritative; Requirement projection could not be applied: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2_000),
+                detailLevel: 'summary',
+              },
+            );
+          } catch {
+            // Diagnostic persistence is also downstream of the completion
+            // receipt and therefore cannot invalidate the terminal Work fact.
+          }
+        }
       }
     }
     // Successful WorkContract completion always ends controller ownership.

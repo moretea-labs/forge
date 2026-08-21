@@ -9,7 +9,7 @@ import { addRepositoryCheckout, registerRepository, resolveRepositorySelection, 
 import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool, classifyTerminalCheckEvidence, RH_WORK_VERIFY_LEASE_WAIT_MS } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { getProcessRecord, waitForProcess } from '../../src/runtime/execution/process-runtime';
-import { createWorkContract, getWorkContract, listWorkContracts, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { continueGoalWorkloop, finalizeGoalWorkloop, verifyGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { listHandoffItems, resolveHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { acceptPlanStepEvidence, approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
@@ -697,6 +697,153 @@ describe('rh_work managed lifecycle closure', () => {
     expect(repaired?.worktreeRef).toBeTruthy();
     expect(listWorkContracts({ ...store, status: 'active', limit: 100 }).filter((work) => work.objective === 'Resume canonical Work placement')).toHaveLength(1);
   });
+
+  test('repairs only an exact dangling Plan step Work binding and never creates a replacement Work', async () => {
+    const fx = fixture('plan-dangling-work-repair');
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim();
+    createPlanContract(store, {
+      planId: 'PLAN-dangling-work-repair',
+      repoId: fx.repository.repoId,
+      scopeKey: 'plan-dangling-work-repair',
+      sourceRevision,
+      goal: 'Repair one exact ghost Work binding',
+      steps: [{ id: 'step-a', objective: 'Recover exact stage ownership', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['No duplicate Work is created.'] }],
+    });
+    approvePlanContract(store, 'PLAN-dangling-work-repair');
+    claimPlanStepForWork(store, { planId: 'PLAN-dangling-work-repair', stepId: 'step-a', workId: 'work-missing-exact', sourceRevision });
+
+    const blockedStart = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      plan_id: 'PLAN-dangling-work-repair',
+      plan_step_id: 'step-a',
+      objective: 'Recover exact stage ownership',
+      scope_clear: true,
+      requires_recovery: true,
+    });
+    expect(blockedStart?.isError).toBe(true);
+    expect(JSON.stringify(blockedStart?.structuredContent)).toContain('PLAN_STEP_BOUND_WORK_MISSING');
+    expect(JSON.stringify(blockedStart?.structuredContent)).toContain('Diagnose exact Plan step binding');
+    expect(listWorkContracts({ ...store, status: 'active', limit: 100 }).filter((work) => work.planId === 'PLAN-dangling-work-repair')).toHaveLength(0);
+
+    const diagnosed = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'repair',
+      plan_id: 'PLAN-dangling-work-repair',
+      plan_step_id: 'step-a',
+      repair_operation: 'diagnose',
+      dry_run: true,
+    });
+    expect(diagnosed?.isError, JSON.stringify(diagnosed?.structuredContent)).not.toBe(true);
+    expect(diagnosed?.structuredContent).toMatchObject({ status: 'ok', data: { repaired: false, repairRequired: true, boundWorkId: 'work-missing-exact' } });
+    expect(getPlanContract(store, 'PLAN-dangling-work-repair')).toMatchObject({ status: 'executing', steps: [{ id: 'step-a', status: 'executing', workId: 'work-missing-exact' }] });
+
+    const repaired = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'repair',
+      plan_id: 'PLAN-dangling-work-repair',
+      plan_step_id: 'step-a',
+      repair_operation: 'repair',
+      dry_run: false,
+    });
+    expect(repaired?.isError, JSON.stringify(repaired?.structuredContent)).not.toBe(true);
+    expect(repaired?.structuredContent).toMatchObject({ status: 'ok', data: { repaired: true, replacementWorkCreated: false, boundWorkId: 'work-missing-exact' } });
+    const plan = getPlanContract(store, 'PLAN-dangling-work-repair');
+    expect(plan?.status).toBe('executing');
+    expect(plan?.steps[0]?.status).toBe('ready');
+    expect(plan?.steps[0]?.workId).toBeUndefined();
+    expect(listWorkContracts({ ...store, status: 'active', limit: 100 }).filter((work) => work.planId === 'PLAN-dangling-work-repair')).toHaveLength(0);
+
+    const restarted = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      plan_id: 'PLAN-dangling-work-repair',
+      plan_step_id: 'step-a',
+      objective: 'Recover exact stage ownership',
+      scope_clear: true,
+      requires_recovery: true,
+    });
+    expect(restarted?.isError, JSON.stringify(restarted?.structuredContent)).not.toBe(true);
+    const replacementId = String((restarted?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    expect(replacementId).toBeTruthy();
+    expect(replacementId).not.toBe('work-missing-exact');
+    expect(getPlanContract(store, 'PLAN-dangling-work-repair')).toMatchObject({ status: 'executing', steps: [{ id: 'step-a', status: 'executing', workId: replacementId }] });
+    expect(listWorkContracts({ ...store, status: 'active', limit: 100 }).filter((work) => work.planId === 'PLAN-dangling-work-repair')).toHaveLength(1);
+  });
+
+  test('projects an existing terminal Work during Plan step repair instead of clearing its authority', async () => {
+    const fx = fixture('plan-terminal-work-repair');
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim();
+    createPlanContract(store, {
+      planId: 'PLAN-terminal-work-repair',
+      repoId: fx.repository.repoId,
+      scopeKey: 'plan-terminal-work-repair',
+      sourceRevision,
+      goal: 'Project an existing terminal Work',
+      steps: [{ id: 'step-a', objective: 'Deliver terminal work', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['Reuse the exact terminal Work.'] }],
+    });
+    approvePlanContract(store, 'PLAN-terminal-work-repair');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      plan_id: 'PLAN-terminal-work-repair',
+      plan_step_id: 'step-a',
+      objective: 'Deliver terminal work',
+      scope_clear: true,
+      requires_recovery: true,
+    });
+    expect(started?.isError, JSON.stringify(started?.structuredContent)).not.toBe(true);
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    expect(workId).toBeTruthy();
+    const recordedAt = '2026-08-22T00:00:00.000Z';
+    recordWorkCompletionReceipt(store, workId, {
+      schemaVersion: 1,
+      receiptId: 'REC-terminal-work-repair',
+      source: 'controller_work',
+      issueId: 'work',
+      taskId: 'terminal-repair',
+      workId,
+      targetBranch: 'main',
+      targetRevision: sourceRevision,
+      sourceRevision,
+      baseRevision: sourceRevision,
+      changedPaths: [],
+      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
+      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
+      verifiedAt: recordedAt,
+      recordedAt,
+    }, 'completed_no_change', 'completed_no_change');
+    expect(getPlanContract(store, 'PLAN-terminal-work-repair')).toMatchObject({ status: 'executing', steps: [{ id: 'step-a', status: 'executing', workId }] });
+
+    const diagnosed = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'repair',
+      plan_id: 'PLAN-terminal-work-repair',
+      plan_step_id: 'step-a',
+      repair_operation: 'diagnose',
+      dry_run: true,
+    });
+    expect(diagnosed?.isError, JSON.stringify(diagnosed?.structuredContent)).not.toBe(true);
+    expect(diagnosed?.structuredContent).toMatchObject({ status: 'ok', data: { repaired: false, repairRequired: true, reusedExistingWork: true, boundWorkId: workId } });
+    expect(getPlanContract(store, 'PLAN-terminal-work-repair')).toMatchObject({ status: 'executing', steps: [{ id: 'step-a', status: 'executing', workId }] });
+
+    const repaired = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'repair',
+      plan_id: 'PLAN-terminal-work-repair',
+      plan_step_id: 'step-a',
+      repair_operation: 'repair',
+      dry_run: false,
+    });
+    expect(repaired?.isError, JSON.stringify(repaired?.structuredContent)).not.toBe(true);
+    expect(repaired?.structuredContent).toMatchObject({ status: 'ok', data: { repaired: true, reusedExistingWork: true, boundWorkId: workId } });
+    expect(getPlanContract(store, 'PLAN-terminal-work-repair')).toMatchObject({ status: 'verifying', steps: [{ id: 'step-a', status: 'validating', workId }] });
+    expect(getWorkContract(store, workId)).toMatchObject({ workId, planId: 'PLAN-terminal-work-repair', status: 'completed' });
+    expect(listWorkContracts({ ...store, status: 'all', limit: 100 }).filter((work) => work.planId === 'PLAN-terminal-work-repair')).toHaveLength(1);
+  });
+
   test('exposes explicit Controller semantic acceptance for a delivered validating Plan step', async () => {
     const fx = fixture('plan-semantic-accept');
     const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim();
@@ -888,7 +1035,7 @@ describe('rh_work managed lifecycle closure', () => {
     expect(afterStop.status).toBe('replanning');
   });
 
-  test('stopping a Plan-bound Work moves its Plan out of ghost executing state', async () => { const fx = fixture('plan-stop-reconcile'); writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({ scripts: { 'check:type': 'node -e "process.exit(0)"' } }, null, 2)); git(fx.repoRoot, ['add', 'package.json']); git(fx.repoRoot, ['commit', '-m', 'register plan lifecycle check']); const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim(); const created = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-stop-reconcile', scope_key: 'plan-stop-reconcile', source_revision: sourceRevision, objective: 'Run one stoppable planned slice', plan_steps: [{ id: 'step-a', objective: 'Execute stoppable work', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [], check_ids: ['package:check:type'], acceptance_criteria: ['finish or explicitly replan'], }], }); expect(created?.isError).not.toBe(true); const approved = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_approve', plan_id: 'PLAN-stop-reconcile' }); expect(approved?.isError).not.toBe(true); const started = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'start', plan_id: 'PLAN-stop-reconcile', plan_step_id: 'step-a', objective: 'Execute stoppable work', scope_clear: true, expected_files: 4, expected_changed_lines: 200, requires_recovery: true, }); expect(started?.isError).not.toBe(true); const workId = (started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId; expect(workId).toBeTruthy(); const stopped = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, reason: 'user intentionally stopped this planned slice', }); expect(stopped?.isError).not.toBe(true); expect(stopped?.structuredContent).toMatchObject({ status: 'ok', data: { finalStatus: 'cancelled', plan: { planId: 'PLAN-stop-reconcile', status: 'replanning', steps: [{ id: 'step-a', status: 'ready', workId }] }, }, }); const fetched = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_get', plan_id: 'PLAN-stop-reconcile', detail_level: 'detail' }); expect(fetched?.structuredContent).toMatchObject({ data: { plan: { status: 'replanning', steps: [{ id: 'step-a', status: 'ready', workId }] } } }); });
+  test('stopping a Plan-bound Work moves its Plan out of ghost executing state', async () => { const fx = fixture('plan-stop-reconcile'); writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({ scripts: { 'check:type': 'node -e "process.exit(0)"' } }, null, 2)); git(fx.repoRoot, ['add', 'package.json']); git(fx.repoRoot, ['commit', '-m', 'register plan lifecycle check']); const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim(); const created = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-stop-reconcile', scope_key: 'plan-stop-reconcile', source_revision: sourceRevision, objective: 'Run one stoppable planned slice', plan_steps: [{ id: 'step-a', objective: 'Execute stoppable work', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [], check_ids: ['package:check:type'], acceptance_criteria: ['finish or explicitly replan'], }], }); expect(created?.isError).not.toBe(true); const approved = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_approve', plan_id: 'PLAN-stop-reconcile' }); expect(approved?.isError).not.toBe(true); const started = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'start', plan_id: 'PLAN-stop-reconcile', plan_step_id: 'step-a', objective: 'Execute stoppable work', scope_clear: true, expected_files: 4, expected_changed_lines: 200, requires_recovery: true, }); expect(started?.isError).not.toBe(true); const workId = (started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId; expect(workId).toBeTruthy(); const stopped = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, reason: 'user intentionally stopped this planned slice', }); expect(stopped?.isError).not.toBe(true); expect(stopped?.structuredContent).toMatchObject({ status: 'ok', data: { finalStatus: 'cancelled', plan: { planId: 'PLAN-stop-reconcile', status: 'replanning', steps: [{ id: 'step-a', status: 'ready' }] }, }, }); const fetched = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_get', plan_id: 'PLAN-stop-reconcile', detail_level: 'detail' }); expect(fetched?.structuredContent).toMatchObject({ data: { plan: { status: 'replanning', steps: [{ id: 'step-a', status: 'ready' }] } } }); expect(getPlanContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, 'PLAN-stop-reconcile')?.steps[0]?.workId).toBeUndefined(); });
 
   test('rh_work finalize closes an explicitly reviewed historical Direct Edit delivery', async () => {
     const fx = fixture('historical-direct-edit');
@@ -1283,6 +1430,7 @@ describe('rh_work managed lifecycle closure', () => {
       repo_id: fx.repository.repoId,
       operation: 'plan_create',
       plan_id: 'PLAN-finalize-semantic-accept',
+      requirement_id: 'REQ-finalize-semantic-accept-without-record',
       scope_key: 'plan-finalize-semantic-accept',
       source_revision: sourceRevision,
       objective: 'Deliver and semantically accept one no-change Plan slice',
@@ -1362,6 +1510,10 @@ describe('rh_work managed lifecycle closure', () => {
       status: 'finalized',
       steps: [{ id: 'step-a', status: 'completed', workId }],
     });
+    const completedWork = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId);
+    expect(completedWork?.status).toBe('completed');
+    expect(completedWork?.completionReceipt).toBeTruthy();
+    expect(completedWork?.evidenceRefs.some((evidence) => evidence.title === 'requirement completion projection pending' && (evidence.summary ?? '').includes('REQUIREMENT_NOT_FOUND'))).toBe(true);
   });
 
   test('stop can close a legacy Work after its source checkout registry entry was removed', async () => {

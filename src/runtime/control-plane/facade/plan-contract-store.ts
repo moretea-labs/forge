@@ -423,6 +423,45 @@ export function claimPlanStepForWork(
   });
 }
 
+export function repairDanglingPlanStepWorkBinding(
+  options: PlanContractStoreOptions,
+  input: { planId: string; stepId: string; expectedWorkId: string; reason: string },
+): PlanContract {
+  const expectedWorkId = input.expectedWorkId.trim();
+  const reason = input.reason.trim();
+  if (!expectedWorkId) throw new Error('PLAN_STEP_REPAIR_EXPECTED_WORK_REQUIRED');
+  if (!reason) throw new Error('PLAN_STEP_REPAIR_REASON_REQUIRED');
+  return updatePlanContract(options, input.planId, (current) => {
+    if (isTerminalPlanContractStatus(current.status)) throw new Error(`PLAN_STEP_REPAIR_PLAN_TERMINAL: ${current.planId} is ${current.status}`);
+    const stepIndex = current.steps.findIndex((step) => step.id === sanitizeFileComponent(input.stepId));
+    if (stepIndex < 0) throw new Error(`PLAN_STEP_NOT_FOUND: ${input.stepId}`);
+    const step = current.steps[stepIndex];
+    if (step.workId !== expectedWorkId) {
+      throw new Error(`PLAN_STEP_REPAIR_BINDING_CHANGED: ${step.id} is bound to ${step.workId ?? 'no Work'}, expected ${expectedWorkId}`);
+    }
+    if (step.status !== 'executing') {
+      throw new Error(`PLAN_STEP_REPAIR_STATUS_INVALID: ${step.id} is ${step.status}`);
+    }
+    const at = nowIso(options);
+    const steps = [...current.steps];
+    steps[stepIndex] = {
+      ...step,
+      status: 'ready',
+      workId: undefined,
+      evidenceRefs: [{
+        title: 'dangling Work binding repaired',
+        summary: `${expectedWorkId}: ${reason}`.slice(0, 2_000),
+        detailLevel: 'summary' as const,
+      }, ...step.evidenceRefs].slice(0, 20),
+    };
+    // This is admission-state repair, not semantic replanning: the Plan and its
+    // acceptance criteria remain authoritative. Return the exact step to ready
+    // so a later start can atomically admit one replacement for the missing
+    // record without forcing a second Plan authority.
+    return { ...current, status: 'executing', steps, updatedAt: at };
+  });
+}
+
 export function completePlanStepForWork(
   options: PlanContractStoreOptions,
   input: {
@@ -452,6 +491,10 @@ export function completePlanStepForWork(
       // semantic validation until an explicit Controller acceptance records it.
       // Failed/cancelled Work returns the slice to ready for replanning.
       status: delivered ? 'validating' : 'ready',
+      // Successful delivery keeps the exact Work identity through semantic
+      // validation. Failed/cancelled Work releases the step authority so the
+      // replanning path cannot retain a ghost binding to a terminal Work.
+      workId: delivered ? step.workId : undefined,
       evidenceRefs: input.work.evidenceRefs.length > 0 ? input.work.evidenceRefs.slice(0, 20) : step.evidenceRefs,
     };
     return { ...current, status: delivered ? 'verifying' : 'replanning', steps, updatedAt: at };

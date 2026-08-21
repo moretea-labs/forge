@@ -647,6 +647,15 @@ export function startGoalWorkloop(
       status: 'blocked',
       summary: `PLAN_STEP_BOUND_WORK_MISSING: ${input.planId}/${input.planStepId} is bound to ${planStep.workId}, but that Work is not active. Repair the exact binding; do not create a replacement Work.`,
       data: { executionStarted: false, workContractCreated: false, planId: input.planId, planStepId: input.planStepId, boundWorkId: planStep.workId, repairRequired: true },
+      suggestedNextActions: [{
+        label: 'Diagnose exact Plan step binding',
+        tool: 'rh_work',
+        operation: 'repair',
+        payload: { plan_id: input.planId, plan_step_id: input.planStepId, repair_operation: 'diagnose', dry_run: true },
+        risk: 'readonly',
+        confidence: 'high',
+        reason: 'The Plan step has an exact Work identity but the active Work view cannot resolve it. Diagnose that binding before any replacement Work can be admitted.',
+      }],
       rawAvailable: false,
     });
   }

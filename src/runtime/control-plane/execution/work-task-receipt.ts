@@ -4,7 +4,7 @@ import { getIssue, listIssues, recordTaskVerification, acceptVerifiedTask, proje
 import { resolveCompletionTargetBranch } from '../../../cli/controller/completion-target';
 import type { CompletionReceipt, ControllerIssue } from '../../../cli/controller/types';
 import { completeRequirementFromWork } from '../persistence/requirement-store';
-import { getWorkContract, recordWorkCompletionReceipt, updateWorkContract } from '../facade/work-contract-store';
+import { appendWorkEvidence, getWorkContract, recordWorkCompletionReceipt, updateWorkContract } from '../facade/work-contract-store';
 import { isRepositoryCompletionReceipt, WORK_RECONCILIATION_METHODS, WORK_RECONCILIATION_OUTCOMES } from '../facade/types';
 import type {
   WorkReconciliationMethod,
@@ -281,10 +281,23 @@ export function acceptVerifiedTaskFromReviewedWorkReconciliation(input: Controll
     contract.workKind,
   );
   if (recorded.requirementId) {
-    completeRequirementFromWork(
-      { controllerHome: input.controllerHome },
-      { requirementId: recorded.requirementId, work: recorded },
-    );
+    try {
+      completeRequirementFromWork(
+        { controllerHome: input.controllerHome },
+        { requirementId: recorded.requirementId, work: recorded },
+      );
+    } catch (error) {
+      try {
+        appendWorkEvidence({ controllerHome: input.controllerHome, repoId: input.repoId }, input.workId, {
+          title: 'requirement completion projection pending',
+          summary: `Work completion remains authoritative; Requirement projection could not be applied: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2_000),
+          detailLevel: 'summary',
+        });
+      } catch {
+        // The completion receipt was already persisted; legacy Task projection
+        // remains retryable even if this diagnostic cannot be stored.
+      }
+    }
   }
   const recordedReceipt = recorded.completionReceipt;
   const projectedReceipt = recordedReceipt && isRepositoryCompletionReceipt(recordedReceipt) ? recordedReceipt : receipt;
@@ -416,10 +429,24 @@ export function acceptVerifiedTaskFromControllerWork(input: ControllerWorkTaskRe
     completionOutcome,
   );
   if (recorded.requirementId) {
-    completeRequirementFromWork(
-      { controllerHome: input.controllerHome },
-      { requirementId: recorded.requirementId, work: recorded },
-    );
+    try {
+      completeRequirementFromWork(
+        { controllerHome: input.controllerHome },
+        { requirementId: recorded.requirementId, work: recorded },
+      );
+    } catch (error) {
+      try {
+        appendWorkEvidence({ controllerHome: input.controllerHome, repoId: input.repoId }, input.workId, {
+          title: 'requirement completion projection pending',
+          summary: `Work completion remains authoritative; Requirement projection could not be applied: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2_000),
+          detailLevel: 'summary',
+        });
+      } catch {
+        // The Work receipt is canonical and already durable. Keep historical
+        // reconciliation/task projection retryable instead of surfacing a false
+        // completion failure from this downstream diagnostic path.
+      }
+    }
   }
   const recordedReceipt = recorded.completionReceipt;
   const projectedReceipt = recordedReceipt && isRepositoryCompletionReceipt(recordedReceipt) ? recordedReceipt : receipt;
