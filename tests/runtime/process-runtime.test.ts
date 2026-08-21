@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawn, spawnSync } from 'child_process';
@@ -200,41 +200,6 @@ describe('Unified Process Runtime', () => {
       });
       expect(ordinary.ok).toBe(true);
       expect(ordinary.stdout).toContain('ordinary-eval-ok');
-    } finally {
-      runtime.owner.release();
-      clearRuntimeWriteClaimForTests();
-    }
-  });
-
-  test('non-destructive GitHub remote writes execute once through durable Process request binding', async () => {
-    const fx = fixture();
-    const runtime = bindCanonicalRuntime(fx.controllerHome);
-    const fakeGh = join(fx.root, 'gh');
-    const counter = join(fx.root, 'remote-write-counter.txt');
-    writeFileSync(fakeGh, `#!/bin/sh\nprintf x >> ${JSON.stringify(counter)}\nexit 0\n`);
-    chmodSync(fakeGh, 0o755);
-    const command = [fakeGh, 'issue', 'comment', '92', '--repo', 'tscircuit/autorouting', '--body', '/attempt #92'];
-    const execute = () => executeRepositoryCommandViaProcessRuntime({
-      controllerHome: fx.controllerHome,
-      repository: fx.repository,
-      command,
-      executionIdentity: executionIdentityForRepository(fx.repository),
-      requestId: 'remote-write-once',
-      timeoutMs: 10_000,
-      interactiveWaitMs: 5_000,
-    });
-    try {
-      expect(classifyRepositoryCommandRoute(command)).toMatchObject({ route: 'durable', reason: 'explicit_external_remote_write' });
-      const first = await execute();
-      expect(['process_direct', 'process_managed']).toContain(first.route);
-      const firstHandle = first.process!;
-      const completed = firstHandle.completed
-        ? firstHandle
-        : await waitRepositoryCommandProcess(fx.controllerHome, fx.repository.repoId, firstHandle.processId, { timeoutMs: 5_000 });
-      expect(completed).toMatchObject({ completed: true, ok: true });
-      const retry = await execute();
-      expect(retry.process?.processId).toBe(firstHandle.processId);
-      expect(readFileSync(counter, 'utf8')).toBe('x');
     } finally {
       runtime.owner.release();
       clearRuntimeWriteClaimForTests();

@@ -48,6 +48,7 @@ Persistent Work/Process state is reserved for actual continuity requirements: sc
 ### External effects
 
 Remote or non-idempotent effects are explicit boundaries. Ambiguous outcomes are reported as `outcome_unknown`; Forge must not silently replay a non-idempotent remote operation.
+The low-level repository command facade classifies these operations as `durable` but does not dispatch them: it returns `not_started` with `never_auto_retry`. A typed provider action or explicitly owned Durable Workflow must perform the effect and reconcile remote state before any retry after an ambiguous result.
 
 ## Work and Plan
 
