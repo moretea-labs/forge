@@ -51,6 +51,13 @@ import {
   schedulerDispatchCapacityAllows,
 } from './dispatch-capacity';
 import { refreshSchedulerRepositoryProjections } from './projection-refresh';
+import {
+  buildSchedulerWorkerExitFailure,
+  buildSchedulerWorkerExitedLifecycle,
+  buildSchedulerWorkerRegisteredLifecycle,
+  buildSchedulerWorkerSpawnFailureLifecycle,
+  buildSchedulerWorkerSpawnedLifecycle,
+} from './worker-lifecycle';
 import { normalizeSchedulerConfig, type SchedulerConfig } from './config';
 import {
   readSchedulerHealthSnapshot,
@@ -282,17 +289,15 @@ export class GlobalScheduler {
     stderrTruncated: boolean,
     startupError?: string,
   ): Promise<void> {
-    const diagnosticLifecycle: ExecutionWorkerLifecycle = {
-      ...lifecycle,
-      exitedAt: new Date().toISOString(),
+    const diagnosticLifecycle = buildSchedulerWorkerExitedLifecycle({
+      lifecycle,
+      childPid: child?.pid,
       exitCode,
       signal,
-      workerPid: child?.pid ?? lifecycle.workerPid,
-      processGroupId: lifecycle.processGroupId ?? (process.platform !== 'win32' ? child?.pid : undefined),
       stderr,
       stderrTruncated,
-      startupState: startupError ? 'spawn_failed' : 'exited',
-    };
+      startupError,
+    });
     try {
       const current = getExecutionJob(this.controllerHome, repoId, jobId);
       if (current.attempt !== attempt) return;
@@ -316,37 +321,23 @@ export class GlobalScheduler {
       const recheckedMerged = { ...recheckedLifecycle, ...diagnosticLifecycle };
       if (this.persistTerminalWorkerLifecycle(repoId, jobId, rechecked.status, recheckedMerged)) return;
 
-      const details: Record<string, unknown> = {
-        workerLostReason: startupError ? 'spawn_failed' : 'process_exit',
-        executable: recheckedMerged.executable,
-        cwd: recheckedMerged.cwd,
+      const failure = buildSchedulerWorkerExitFailure({
+        lifecycle: recheckedMerged,
+        attempt: rechecked.attempt,
+        maxAttempts: rechecked.maxAttempts,
         exitCode,
         signal,
         stderr,
         stderrTruncated,
-        stderrPath: recheckedMerged.stderrPath,
-        processGroupId: recheckedMerged.processGroupId,
-        ownerPid: recheckedMerged.ownerPid,
-        runtimeInstanceId: recheckedMerged.runtimeInstanceId,
-        releaseAuthorityRevision: recheckedMerged.releaseAuthorityRevision,
-        releaseId: recheckedMerged.releaseId,
-        artifactIdentity: recheckedMerged.artifactIdentity,
-        workerProtocolVersion: recheckedMerged.workerProtocolVersion,
-        attempt: rechecked.attempt,
-        maxAttempts: rechecked.maxAttempts,
-        ...(startupError ? { startupError } : {}),
-      };
-      const stderrSummary = stderr.trim() ? ` Worker stderr: ${stderr.trim()}` : '';
-      const startupSummary = startupError ? ` Startup error: ${startupError}.` : '';
-      const message = `Execution Worker ${recheckedMerged.executable} exited before completion (cwd ${recheckedMerged.cwd}, exit code ${exitCode ?? 'unknown'}${signal ? `, signal ${signal}` : ''}).${startupSummary}${stderrSummary}`;
+        startupError,
+      });
       releaseExecutionLeases(this.controllerHome, repoId, jobId, rechecked.leaseRefs);
-      const retryable = rechecked.attempt < rechecked.maxAttempts;
-      transitionExecutionJob(this.controllerHome, repoId, jobId, retryable ? 'queued' : 'failed', {
+      transitionExecutionJob(this.controllerHome, repoId, jobId, failure.retryable ? 'queued' : 'failed', {
         workerPid: undefined,
         heartbeatAt: undefined,
         leaseRefs: [],
         workerLifecycle: recheckedMerged,
-        error: { code: startupError ? 'WORKER_START_FAILED' : 'WORKER_EXITED', message, retryable, details },
+        error: failure.error,
       });
       try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
     } catch { /* the Job may have been finalized by the Worker or reconciliation */ }
@@ -369,17 +360,14 @@ export class GlobalScheduler {
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        const lifecycle: ExecutionWorkerLifecycle = {
+        const lifecycle = buildSchedulerWorkerSpawnFailureLifecycle({
           executable: process.execPath,
-          args: [],
           cwd: this.runtimeSourceRoot ?? process.cwd(),
           environment: selectSchedulerWorkerEnvironment(process.env),
           ownerPid: this.controllerPid,
           attempt: current.attempt,
           maxAttempts: current.maxAttempts,
-          spawnedAt: new Date().toISOString(),
-          startupState: 'spawn_failed',
-        };
+        });
         this.persistSpawnedWorker(repoId, jobId, lifecycle);
         void this.recordWorkerExit(repoId, jobId, current.attempt, undefined, lifecycle, null, null, '', false, message);
         return undefined;
@@ -401,25 +389,20 @@ export class GlobalScheduler {
     const stderrPath = join(executionJobRoot(this.controllerHome, repoId), 'worker-stderr', `${jobId}-attempt-${current.attempt}.log`);
     mkdirSync(dirname(stderrPath), { recursive: true });
     writeFileSync(stderrPath, '', 'utf8');
-    const lifecycle: ExecutionWorkerLifecycle = {
-      executable: launch.executable,
-      args: launch.args,
-      cwd: launch.cwd,
-      environment: launch.lifecycleEnvironment,
+    const lifecycle = buildSchedulerWorkerSpawnedLifecycle({
+      launch,
       ownerPid: this.controllerPid,
-      ...(writeClaim ? {
+      releaseIdentity: writeClaim ? {
         runtimeInstanceId: writeClaim.runtimeInstanceId,
         releaseAuthorityRevision: writeClaim.releaseAuthorityRevision,
         releaseId: writeClaim.releaseId,
         artifactIdentity: writeClaim.artifactIdentity,
         workerProtocolVersion: writeClaim.workerProtocolVersion,
-      } : {}),
+      } : undefined,
       attempt: current.attempt,
       maxAttempts: current.maxAttempts,
-      spawnedAt: new Date().toISOString(),
       stderrPath,
-      startupState: 'spawned',
-    };
+    });
     this.persistSpawnedWorker(repoId, jobId, lifecycle);
     let child: ChildProcess;
     try {
@@ -473,9 +456,11 @@ export class GlobalScheduler {
     try {
       updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({
         ...latest,
-        workerLifecycle: latest.workerLifecycle
-          ? { ...latest.workerLifecycle, attachedAt: new Date().toISOString(), processGroupId: process.platform !== 'win32' ? child.pid : undefined, workerPid: child.pid, startupState: 'registered' }
-          : { ...lifecycle, attachedAt: new Date().toISOString(), processGroupId: process.platform !== 'win32' ? child.pid : undefined, workerPid: child.pid, startupState: 'registered' },
+        workerLifecycle: buildSchedulerWorkerRegisteredLifecycle({
+          lifecycle,
+          currentLifecycle: latest.workerLifecycle,
+          workerPid: child.pid!,
+        }),
       }));
     } catch { /* close/reconciliation may have finalized the Job */ }
     child.unref();

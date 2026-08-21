@@ -9,6 +9,13 @@ import {
   resolveSchedulerWorkerExecutable,
   selectSchedulerWorkerEnvironment,
 } from '../../src/runtime/control-plane/global-scheduler/scheduler';
+import {
+  buildSchedulerWorkerExitFailure,
+  buildSchedulerWorkerExitedLifecycle,
+  buildSchedulerWorkerRegisteredLifecycle,
+  buildSchedulerWorkerSpawnFailureLifecycle,
+  buildSchedulerWorkerSpawnedLifecycle,
+} from '../../src/runtime/control-plane/global-scheduler/worker-lifecycle';
 
 const homes: string[] = [];
 afterEach(() => {
@@ -110,6 +117,101 @@ describe('repository child process environment', () => {
     });
     expect(launch.lifecycleEnvironment).not.toHaveProperty('SECRET_FOR_TEST');
     expect(selectSchedulerWorkerEnvironment({ PATH: '/bin', EXTRA: 'hidden' })).toMatchObject({ PATH: '/bin' });
+  });
+
+  test('models Scheduler worker lifecycle diagnostics outside GlobalScheduler', () => {
+    const launch = {
+      executable: '/usr/bin/node',
+      args: ['/runtime/worker-entry.ts'],
+      cwd: '/runtime',
+      environment: { PATH: '/usr/bin' },
+      lifecycleEnvironment: { PATH: '/usr/bin' },
+    };
+    const spawned = buildSchedulerWorkerSpawnedLifecycle({
+      launch,
+      ownerPid: 42,
+      releaseIdentity: {
+        runtimeInstanceId: 'runtime-a',
+        releaseAuthorityRevision: 7,
+        releaseId: 'release-a',
+        artifactIdentity: 'artifact-a',
+        workerProtocolVersion: 3,
+      },
+      attempt: 2,
+      maxAttempts: 3,
+      stderrPath: '/tmp/stderr.log',
+      spawnedAt: '2026-08-21T00:00:00.000Z',
+    });
+    expect(spawned).toMatchObject({
+      executable: '/usr/bin/node',
+      startupState: 'spawned',
+      runtimeInstanceId: 'runtime-a',
+      attempt: 2,
+      maxAttempts: 3,
+    });
+
+    const exited = buildSchedulerWorkerExitedLifecycle({
+      lifecycle: spawned,
+      childPid: 99,
+      platform: 'linux',
+      exitCode: 1,
+      signal: null,
+      stderr: 'boom',
+      stderrTruncated: false,
+      exitedAt: '2026-08-21T00:01:00.000Z',
+    });
+    expect(exited).toMatchObject({
+      workerPid: 99,
+      processGroupId: 99,
+      startupState: 'exited',
+      stderr: 'boom',
+    });
+
+    const registered = buildSchedulerWorkerRegisteredLifecycle({
+      lifecycle: spawned,
+      currentLifecycle: exited,
+      workerPid: 99,
+      platform: 'linux',
+      attachedAt: '2026-08-21T00:00:01.000Z',
+    });
+    expect(registered).toMatchObject({
+      workerPid: 99,
+      processGroupId: 99,
+      startupState: 'registered',
+      attachedAt: '2026-08-21T00:00:01.000Z',
+    });
+
+    const failure = buildSchedulerWorkerExitFailure({
+      lifecycle: exited,
+      attempt: 2,
+      maxAttempts: 3,
+      exitCode: 1,
+      signal: null,
+      stderr: 'boom',
+      stderrTruncated: false,
+    });
+    expect(failure.retryable).toBe(true);
+    expect(failure.error).toMatchObject({
+      code: 'WORKER_EXITED',
+      retryable: true,
+      details: {
+        executable: '/usr/bin/node',
+        runtimeInstanceId: 'runtime-a',
+        attempt: 2,
+        maxAttempts: 3,
+      },
+    });
+    expect(failure.error.message).toContain('Worker stderr: boom');
+
+    expect(buildSchedulerWorkerSpawnFailureLifecycle({
+      executable: '/bad/runtime',
+      cwd: '/runtime',
+      environment: {},
+      ownerPid: 42,
+      attempt: 3,
+      maxAttempts: 3,
+      spawnedAt: '2026-08-21T00:00:00.000Z',
+    })).toMatchObject({ startupState: 'spawn_failed', attempt: 3, maxAttempts: 3 });
   });
 
   test.skipIf(process.platform === 'win32')('resolves ~/.bun/bin/bun from the OS account home when env -i removes HOME', () => {
