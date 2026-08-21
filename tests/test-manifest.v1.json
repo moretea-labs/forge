@@ -189,10 +189,6 @@
       "module": "controller",
       "resource": "temp-isolated"
     },
-    "tests/cli/legacy-control-plane-cutover.test.ts": {
-      "module": "controller",
-      "resource": "controller-home-isolated"
-    },
     "tests/cli/init.test.ts": {
       "module": "core",
       "resource": "temp-isolated"
@@ -200,6 +196,10 @@
     "tests/cli/install.test.ts": {
       "module": "workflow",
       "resource": "git-worktree"
+    },
+    "tests/cli/legacy-control-plane-cutover.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
     },
     "tests/cli/local-bridge.test.ts": {
       "module": "controller",
@@ -213,21 +213,29 @@
       "module": "controller",
       "resource": "fixed-port"
     },
-    "tests/cli/readiness-projection.test.ts": {
-      "module": "controller",
-      "resource": "pure"
-    },
     "tests/cli/mcp-policy.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"
+    },
+    "tests/cli/mcp-runtime-proxy-routing.test.ts": {
+      "module": "controller",
+      "resource": "pure"
     },
     "tests/cli/plugin-command.test.ts": {
       "module": "core",
       "resource": "pure"
     },
+    "tests/cli/readiness-projection.test.ts": {
+      "module": "controller",
+      "resource": "pure"
+    },
     "tests/cli/repository-command-entry.test.ts": {
       "module": "repository",
       "resource": "git-worktree"
+    },
+    "tests/cli/repository-command-scope.test.ts": {
+      "module": "repository",
+      "resource": "pure"
     },
     "tests/cli/repository-lock-routing-v81.test.ts": {
       "module": "repository",
@@ -237,9 +245,9 @@
       "module": "repository",
       "resource": "git-worktree"
     },
-    "tests/cli/repository-command-scope.test.ts": {
+    "tests/cli/repository-readonly-command.test.ts": {
       "module": "repository",
-      "resource": "pure"
+      "resource": "temp-isolated"
     },
     "tests/cli/repository-runtime-storage-v81.test.ts": {
       "module": "repository",
@@ -253,25 +261,13 @@
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
-    "tests/cli/v81-entry.test.ts": {
-      "module": "controller",
-      "resource": "pure"
-    },
-    "tests/runtime/git-status-sampler.test.ts": {
-      "module": "process-runtime",
-      "resource": "temp-isolated"
-    },
-    "tests/runtime/runtime-release-store.test.ts": {
-      "module": "release",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/runtime-write-fence.test.ts": {
-      "module": "process-runtime",
-      "resource": "controller-home-isolated"
-    },
     "tests/cli/security.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"
+    },
+    "tests/cli/setup-session.test.ts": {
+      "module": "core",
+      "resource": "pure"
     },
     "tests/cli/status.test.ts": {
       "module": "controller",
@@ -280,6 +276,10 @@
     "tests/cli/tool-capability-cache.test.ts": {
       "module": "workflow",
       "resource": "temp-isolated"
+    },
+    "tests/cli/v81-entry.test.ts": {
+      "module": "controller",
+      "resource": "pure"
     },
     "tests/cli/worktree-storage.test.ts": {
       "module": "repository",
@@ -329,21 +329,29 @@
       "module": "release",
       "resource": "temp-isolated"
     },
-    "tests/cli/setup-session.test.ts": {
-      "module": "core",
-      "resource": "pure"
+    "tests/runtime/app-store-connect-plugin.test.ts": {
+      "module": "ios",
+      "resource": "temp-isolated"
     },
     "tests/runtime/browser-plugin.test.ts": {
       "module": "browser",
       "resource": "fixed-port"
     },
-    "tests/runtime/xiaohongshu-publish.test.ts": {
-      "module": "browser",
+    "tests/runtime/browser-schedule-probe.test.ts": {
+      "module": "workflow",
       "resource": "pure"
+    },
+    "tests/runtime/canonical-single-runtime.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
     },
     "tests/runtime/capability-recovery.test.ts": {
       "module": "workflow",
       "resource": "process-tree"
+    },
+    "tests/runtime/chatgpt-work-continuation.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
     },
     "tests/runtime/check-runner-provenance.test.ts": {
       "module": "process-runtime",
@@ -353,45 +361,89 @@
       "module": "process-runtime",
       "resource": "pure"
     },
-    "tests/runtime/diagnostic-process-invocation.test.ts": {
-      "module": "process-runtime",
-      "resource": "temp-isolated"
-    },
-    "tests/runtime/canonical-single-runtime.test.ts": {
+    "tests/runtime/codegraph-context-provider.test.ts": {
       "module": "controller",
+      "resource": "git-worktree"
+    },
+    "tests/runtime/control-plane-final-cutover.test.ts": {
+      "module": "workflow",
       "resource": "controller-home-isolated"
     },
     "tests/runtime/control-plane-hardening.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
-    "tests/runtime/control-plane-final-cutover.test.ts": {
-      "module": "workflow",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/forge-runtime-service.test.ts": {
-      "module": "release",
-      "resource": "temp-isolated"
-    },
-    "tests/runtime/forge-runtime-ownership.test.ts": {
-      "module": "process-runtime",
-      "resource": "runtime-singleton"
-    },
     "tests/runtime/controller-session-store.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"
+    },
+    "tests/runtime/desktop-operator-registration.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/diagnostic-process-invocation.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/direct-edit-work-completion.test.ts": {
+      "module": "workflow",
+      "resource": "git-worktree"
     },
     "tests/runtime/execution-identity-guard.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
+    "tests/runtime/execution-job-reconciliation.test.ts": {
+      "module": "process-runtime",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/external-controller-launch-reservation.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/external-plugin-adapter.test.ts": {
+      "module": "controller",
+      "resource": "pure"
+    },
+    "tests/runtime/external-plugin-registration.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/external-plugin-store-integration.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/external-unix-socket.test.ts": {
+      "module": "controller",
+      "resource": "process-tree"
+    },
     "tests/runtime/facade-contracts.test.ts": {
       "module": "workflow",
       "resource": "pure"
     },
+    "tests/runtime/forge-runtime-ownership.test.ts": {
+      "module": "process-runtime",
+      "resource": "runtime-singleton"
+    },
+    "tests/runtime/forge-runtime-service.test.ts": {
+      "module": "release",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/git-executable-and-workspace.test.ts": {
       "module": "repository",
       "resource": "git-worktree"
+    },
+    "tests/runtime/git-status-sampler.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/github-issue-watch.test.ts": {
+      "module": "workflow",
+      "resource": "pure"
+    },
+    "tests/runtime/handoff-inbox-authority.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
     },
     "tests/runtime/interactive-sync-router.test.ts": {
       "module": "routing",
@@ -413,10 +465,6 @@
       "module": "ios",
       "resource": "pure"
     },
-    "tests/runtime/github-issue-watch.test.ts": {
-      "module": "workflow",
-      "resource": "pure"
-    },
     "tests/runtime/local-system-target-grant.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"
@@ -425,21 +473,33 @@
       "module": "controller",
       "resource": "process-tree"
     },
+    "tests/runtime/pending-continuation-activation.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/plan-contract-store.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/plugin-execution-origin.test.ts": {
       "module": "controller",
+      "resource": "pure"
+    },
+    "tests/runtime/process-admission.test.ts": {
+      "module": "process-runtime",
       "resource": "pure"
     },
     "tests/runtime/process-check-receipt.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"
     },
+    "tests/runtime/process-environment.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/process-resource-claims.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"
-    },
-    "tests/runtime/process-admission.test.ts": {
-      "module": "process-runtime",
-      "resource": "pure"
     },
     "tests/runtime/process-runtime.test.ts": {
       "module": "process-runtime",
@@ -449,31 +509,19 @@
       "module": "process-runtime",
       "resource": "process-tree"
     },
-    "tests/runtime/route-policy.test.ts": {
-      "module": "routing",
-      "resource": "pure"
-    },
-    "tests/runtime/repository-command-lifecycle.test.ts": {
-      "module": "repository",
-      "resource": "git-worktree"
-    },
-    "tests/runtime/handoff-inbox-authority.test.ts": {
+    "tests/runtime/provider-mcp-bootstrap.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
-    },
-    "tests/runtime/runtime-cleanup.test.ts": {
-      "module": "process-runtime",
-      "resource": "process-tree"
     },
     "tests/runtime/release-retention.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
-    "tests/runtime/runtime-observability.test.ts": {
-      "module": "process-runtime",
-      "resource": "temp-isolated"
+    "tests/runtime/repository-command-lifecycle.test.ts": {
+      "module": "repository",
+      "resource": "git-worktree"
     },
-    "tests/runtime/plan-contract-store.test.ts": {
+    "tests/runtime/requirement-portfolio-migration.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
@@ -481,21 +529,49 @@
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
-    "tests/runtime/requirement-portfolio-migration.test.ts": {
+    "tests/runtime/rh-work-lifecycle.test.ts": {
       "module": "workflow",
-      "resource": "controller-home-isolated"
+      "resource": "git-worktree"
+    },
+    "tests/runtime/route-policy.test.ts": {
+      "module": "routing",
+      "resource": "pure"
     },
     "tests/runtime/route-session-concurrency.test.ts": {
       "module": "routing",
       "resource": "temp-isolated"
     },
+    "tests/runtime/runtime-cleanup.test.ts": {
+      "module": "process-runtime",
+      "resource": "process-tree"
+    },
+    "tests/runtime/runtime-observability.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/runtime-release-store.test.ts": {
+      "module": "release",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/runtime-root-release.test.ts": {
+      "module": "release",
+      "resource": "git-worktree"
+    },
     "tests/runtime/runtime-source-isolation.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"
     },
+    "tests/runtime/runtime-write-fence.test.ts": {
+      "module": "process-runtime",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/standalone-recovery.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"
+    },
+    "tests/runtime/test-governance-speed.test.ts": {
+      "module": "runner",
+      "resource": "temp-isolated"
     },
     "tests/runtime/thin-harness-gateway-routing.test.ts": {
       "module": "routing",
@@ -509,6 +585,10 @@
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
+    "tests/runtime/work-task-receipt.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/work-terminal-cleanup.test.ts": {
       "module": "workflow",
       "resource": "git-worktree"
@@ -517,9 +597,9 @@
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
-    "tests/runtime/work-task-receipt.test.ts": {
-      "module": "workflow",
-      "resource": "temp-isolated"
+    "tests/runtime/xiaohongshu-publish.test.ts": {
+      "module": "browser",
+      "resource": "pure"
     },
     "tests/skill-version.test.ts": {
       "module": "workflow",
@@ -557,82 +637,6 @@
     "tests/workflow-state-lock.test.ts": {
       "module": "workflow",
       "resource": "temp-isolated"
-    },
-    "tests/runtime/test-governance-speed.test.ts": {
-      "module": "runner",
-      "resource": "temp-isolated"
-    },
-    "tests/cli/mcp-runtime-proxy-routing.test.ts": {
-      "module": "controller",
-      "resource": "pure"
-    },
-    "tests/runtime/app-store-connect-plugin.test.ts": {
-      "module": "ios",
-      "resource": "temp-isolated"
-    },
-    "tests/runtime/codegraph-context-provider.test.ts": {
-      "module": "controller",
-      "resource": "git-worktree"
-    },
-    "tests/runtime/desktop-operator-registration.test.ts": {
-      "module": "controller",
-      "resource": "temp-isolated"
-    },
-    "tests/runtime/direct-edit-work-completion.test.ts": {
-      "module": "workflow",
-      "resource": "git-worktree"
-    },
-    "tests/runtime/execution-job-reconciliation.test.ts": {
-      "module": "process-runtime",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/external-plugin-adapter.test.ts": {
-      "module": "controller",
-      "resource": "pure"
-    },
-    "tests/runtime/external-plugin-registration.test.ts": {
-      "module": "controller",
-      "resource": "temp-isolated"
-    },
-    "tests/runtime/external-plugin-store-integration.test.ts": {
-      "module": "controller",
-      "resource": "temp-isolated"
-    },
-    "tests/runtime/external-unix-socket.test.ts": {
-      "module": "controller",
-      "resource": "process-tree"
-    },
-    "tests/runtime/process-environment.test.ts": {
-      "module": "process-runtime",
-      "resource": "temp-isolated"
-    },
-    "tests/runtime/rh-work-lifecycle.test.ts": {
-      "module": "workflow",
-      "resource": "git-worktree"
-    },
-    "tests/runtime/runtime-root-release.test.ts": {
-      "module": "release",
-      "resource": "git-worktree"
-    },
-    "tests/runtime/browser-schedule-probe.test.ts": {
-      "module": "workflow",
-      "resource": "pure"
-    },
-    "tests/runtime/chatgpt-work-continuation.test.ts": {
-      "module": "controller",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/external-controller-launch-reservation.test.ts": {
-      "module": "controller",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/pending-continuation-activation.test.ts": {
-      "module": "workflow",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/provider-mcp-bootstrap.test.ts": {
-      "module": "controller",
-      "resource": "controller-home-isolated"
     }
   }
 }

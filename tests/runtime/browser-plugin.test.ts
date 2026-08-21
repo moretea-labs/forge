@@ -2420,6 +2420,8 @@ describe('browser plugin', () => {
     expect(runtime.events.launches).toBe(1);
     expect(runtime.events.broughtToFront).toEqual(['page-1']);
     expect((requested.handoff as Record<string, unknown>).status).toBe('waiting_for_user');
+    expect(requested.nextAction).toContain('resolve_handoff');
+    expect(requested.nextAction).toContain('not as periodic polling');
     await expect(executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
       requestId: 'managed-handoff-fenced', args: { session_id: sessionId }, origin: { surface: 'local-ui', actor: 'test' },
@@ -2466,6 +2468,8 @@ describe('browser plugin', () => {
     });
     const interactionId = String((requested.handoff as Record<string, unknown>).interactionId);
     expect(existsSync(specs[0]!)).toBe(true);
+    expect(requested.nextAction).toContain('resolve_handoff');
+    expect(requested.nextAction).toContain('not as periodic polling');
     await expect(executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
       requestId: 'handoff-conflict', args: { session_id: sessionId }, origin: { surface: 'local-ui', actor: 'test' },

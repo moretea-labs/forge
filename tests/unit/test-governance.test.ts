@@ -41,6 +41,13 @@ describe('test governance', () => {
     expect(selection.files.length).toBeLessThan(Object.keys(manifest.tests).length / 2);
   });
 
+  test('maps repository implementation paths to repository regressions', () => {
+    const manifest = loadTestManifest(ROOT);
+    const selection = selectTests(manifest, 'affected', ['src/cli/repositories/repository-snapshot.ts']);
+    expect(selection.modules).toEqual(['repository']);
+    expect(selection.files).toContain('tests/cli/repository-command-scope.test.ts');
+  });
+
   test('parses explicit files without mistaking option values for focus', () => {
     expect(parseTestGovernanceArgs(['affected', '--base', 'origin/main', 'tests/access-policy.test.ts'])).toMatchObject({
       gate: 'affected',
