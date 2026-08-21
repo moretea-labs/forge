@@ -20,7 +20,10 @@ import {
 } from '../../src/runtime/control-plane/global-scheduler/worker-lifecycle';
 import { createSchedulerWorkerStderrCapture } from '../../src/runtime/control-plane/global-scheduler/worker-stderr';
 import { persistSchedulerWorkerAttachment } from '../../src/runtime/control-plane/global-scheduler/worker-attachment';
-import { wireSchedulerWorkerProcess } from '../../src/runtime/control-plane/global-scheduler/worker-process';
+import {
+  spawnSchedulerWorkerProcess,
+  wireSchedulerWorkerProcess,
+} from '../../src/runtime/control-plane/global-scheduler/worker-process';
 import {
   persistSchedulerSpawnedWorkerLifecycle,
   persistSchedulerTerminalWorkerLifecycle,
@@ -318,6 +321,41 @@ describe('repository child process environment', () => {
       attachWorker: () => undefined,
       updateJob: () => { throw new Error('must not update'); },
     })).toBe(false);
+  });
+
+  test('spawns Scheduler worker processes through a normalized process adapter', () => {
+    const child = new EventEmitter() as unknown as ChildProcess;
+    let invocation: { executable: string; args: readonly string[]; options: Record<string, unknown> } | undefined;
+    const launch = {
+      executable: '/usr/bin/node',
+      args: ['/runtime/worker-entry.ts', '--job-id', 'job-a'],
+      cwd: '/runtime',
+      environment: { PATH: '/usr/bin' },
+      lifecycleEnvironment: { PATH: '/usr/bin' },
+    };
+    const result = spawnSchedulerWorkerProcess(launch, {
+      platform: 'linux',
+      spawnProcess: ((executable: string, args: readonly string[], options: Record<string, unknown>) => {
+        invocation = { executable, args, options };
+        return child;
+      }) as typeof import('child_process').spawn,
+    });
+
+    expect(result).toEqual({ ok: true, child });
+    expect(invocation).toMatchObject({
+      executable: '/usr/bin/node',
+      args: ['/runtime/worker-entry.ts', '--job-id', 'job-a'],
+      options: {
+        cwd: '/runtime',
+        stdio: ['ignore', 'ignore', 'pipe'],
+        detached: true,
+        env: { PATH: '/usr/bin' },
+      },
+    });
+    expect(spawnSchedulerWorkerProcess(launch, {
+      platform: 'win32',
+      spawnProcess: (() => { throw new Error('spawn denied'); }) as typeof import('child_process').spawn,
+    })).toEqual({ ok: false, startupError: 'spawn denied' });
   });
 
   test('wires Scheduler worker process events with one-shot finalization and tracked-child cleanup', () => {

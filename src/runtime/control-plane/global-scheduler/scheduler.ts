@@ -1,4 +1,4 @@
-import { execFile, spawn, type ChildProcess } from 'child_process';
+import { execFile, type ChildProcess } from 'child_process';
 import { resolve } from 'path';
 import { cpus, freemem, loadavg } from 'os';
 import { listRepositories } from '../../../cli/repositories/registry';
@@ -41,7 +41,7 @@ import {
 import { refreshSchedulerRepositoryProjections } from './projection-refresh';
 import { createSchedulerWorkerStderrCapture } from './worker-stderr';
 import { persistSchedulerWorkerAttachment } from './worker-attachment';
-import { wireSchedulerWorkerProcess } from './worker-process';
+import { spawnSchedulerWorkerProcess, wireSchedulerWorkerProcess } from './worker-process';
 import { reconcileSchedulerWorkerExit } from './worker-exit-reconciler';
 import { persistSchedulerSpawnedWorkerLifecycle } from './worker-lifecycle-store';
 import {
@@ -357,19 +357,23 @@ export class GlobalScheduler {
       jobId,
       lifecycle,
     });
-    let child: ChildProcess;
-    try {
-      child = spawn(launch.executable, launch.args, {
-        cwd: launch.cwd,
-        stdio: ['ignore', 'ignore', 'pipe'],
-        detached: process.platform !== 'win32',
-        env: launch.environment,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      void this.recordWorkerExit(repoId, jobId, current.attempt, undefined, lifecycle, null, null, '', false, message);
+    const spawned = spawnSchedulerWorkerProcess(launch);
+    if (!spawned.ok) {
+      void this.recordWorkerExit(
+        repoId,
+        jobId,
+        current.attempt,
+        undefined,
+        lifecycle,
+        null,
+        null,
+        '',
+        false,
+        spawned.startupError,
+      );
       return false;
     }
+    const child = spawned.child;
     wireSchedulerWorkerProcess({
       jobId,
       child,

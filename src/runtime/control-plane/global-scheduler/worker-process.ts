@@ -1,5 +1,43 @@
-import type { ChildProcess } from 'child_process';
+import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
+import type { SchedulerWorkerLaunchDescriptor } from './worker-launch';
 import type { SchedulerWorkerStderrCapture } from './worker-stderr';
+
+export interface SchedulerWorkerSpawnDependencies {
+  spawnProcess: typeof spawn;
+  platform: NodeJS.Platform;
+}
+
+const DEFAULT_SPAWN_DEPENDENCIES: SchedulerWorkerSpawnDependencies = {
+  spawnProcess: spawn,
+  platform: process.platform,
+};
+
+export type SchedulerWorkerSpawnResult =
+  | { ok: true; child: ChildProcess }
+  | { ok: false; startupError: string };
+
+export function spawnSchedulerWorkerProcess(
+  launch: SchedulerWorkerLaunchDescriptor,
+  dependencies: SchedulerWorkerSpawnDependencies = DEFAULT_SPAWN_DEPENDENCIES,
+): SchedulerWorkerSpawnResult {
+  const options: SpawnOptions = {
+    cwd: launch.cwd,
+    stdio: ['ignore', 'ignore', 'pipe'],
+    detached: dependencies.platform !== 'win32',
+    env: launch.environment,
+  };
+  try {
+    return {
+      ok: true,
+      child: dependencies.spawnProcess(launch.executable, launch.args, options),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      startupError: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
 
 export interface SchedulerWorkerProcessExit {
   exitCode: number | null;
