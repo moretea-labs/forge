@@ -4,6 +4,14 @@ import { repositoryControllerRoot } from '../../../cli/repositories/controller-h
 import { withControllerLock } from '../../../cli/repositories/locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import {
+  normalizePlanScopeKey,
+  resolvePlanAdmission,
+  withPlanAdmissionLock,
+  withPlanAdmissionLockAsync,
+  type PlanAdmissionRelation,
+  type PlanAdmissionResolution,
+} from './semantic-admission';
+import {
   listControlPlaneRecords,
   readControlPlaneRecordWithinTransaction,
   withControlPlaneTransaction,
@@ -46,6 +54,13 @@ export interface CreatePlanContractInput {
   evidenceRefs?: EvidenceRef[];
 }
 
+export interface AdmitPlanContractInput extends CreatePlanContractInput {
+  planRelation?: PlanAdmissionRelation;
+  relatedPlanId?: string;
+}
+
+export type AdmitPlanContractResult = PlanAdmissionResolution;
+
 export interface PlanContractSummary {
   planId: string;
   repoId: string;
@@ -68,7 +83,7 @@ function bounded(values: readonly string[] | undefined, limit: number, maxLength
 }
 
 function normalizeScopeKey(value: string): string {
-  return sanitizeFileComponent(value).toLowerCase().slice(0, 160);
+  return normalizePlanScopeKey(value) || 'unknown';
 }
 
 function normalizeStep(step: CreatePlanContractInput['steps'][number]): PlanStep {
@@ -205,7 +220,7 @@ function writePlanContractStore(options: PlanContractStoreOptions, store: PlanCo
   return store;
 }
 
-export function createPlanContract(options: PlanContractStoreOptions, input: CreatePlanContractInput): PlanContract {
+function createPlanContractUnlocked(options: PlanContractStoreOptions, input: CreatePlanContractInput): PlanContract {
   const at = nowIso(options);
   const planId = sanitizeFileComponent(input.planId);
   if (!String(input.planId ?? '').trim() || planId === 'unknown') throw new Error('plan_id is required');
@@ -235,6 +250,43 @@ export function createPlanContract(options: PlanContractStoreOptions, input: Cre
   }
   writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts: [plan, ...store.contracts] });
   return plan;
+}
+
+export function createPlanContract(options: PlanContractStoreOptions, input: CreatePlanContractInput): PlanContract {
+  return withPlanAdmissionLock(options, () => {
+    const store = readPlanContractStore(options);
+    const planId = sanitizeFileComponent(input.planId);
+    if (store.contracts.some((existing) => existing.planId === planId)) {
+      throw new Error(`plan contract already exists: ${planId}`);
+    }
+    const scopeKey = normalizeScopeKey(input.scopeKey);
+    const existingScopeAuthority = scopeKey === 'unknown' ? undefined : store.contracts.find((existing) =>
+      !isTerminalPlanContractStatus(existing.status) && existing.scopeKey === scopeKey);
+    if (existingScopeAuthority) {
+      throw new Error(`PLAN_SCOPE_ALREADY_OWNED: ${scopeKey}:${existingScopeAuthority.planId}`);
+    }
+    return createPlanContractUnlocked(options, input);
+  });
+}
+
+function admitPlanContractUnlocked(options: PlanContractStoreOptions, input: AdmitPlanContractInput): AdmitPlanContractResult {
+  const activePlans = listPlanContracts({ ...options, status: 'active', limit: 100 });
+  const resolution = resolvePlanAdmission(activePlans, {
+    requirementId: input.requirementId,
+    scopeKey: input.scopeKey,
+    planRelation: input.planRelation,
+    relatedPlanId: input.relatedPlanId,
+  });
+  if (resolution.admissionDecision !== 'create_new') return resolution;
+  return { ...resolution, plan: createPlanContractUnlocked(options, input) };
+}
+
+export function admitPlanContract(options: PlanContractStoreOptions, input: AdmitPlanContractInput): AdmitPlanContractResult {
+  return withPlanAdmissionLock(options, () => admitPlanContractUnlocked(options, input));
+}
+
+export async function admitPlanContractAsync(options: PlanContractStoreOptions, input: AdmitPlanContractInput): Promise<AdmitPlanContractResult> {
+  return await withPlanAdmissionLockAsync(options, () => admitPlanContractUnlocked(options, input));
 }
 
 export function getPlanContract(options: PlanContractStoreOptions, planId: string): PlanContract | undefined {
@@ -301,7 +353,7 @@ function approvalErrors(plan: PlanContract, allPlans: readonly PlanContract[]): 
   return [...new Set(errors)];
 }
 
-export function approvePlanContract(options: PlanContractStoreOptions, planId: string): PlanContract {
+function approvePlanContractUnlocked(options: PlanContractStoreOptions, planId: string): PlanContract {
   const store = readPlanContractStore(options);
   const index = store.contracts.findIndex((contract) => contract.planId === sanitizeFileComponent(planId));
   if (index < 0) throw new Error(`plan contract not found: ${sanitizeFileComponent(planId)}`);
@@ -315,6 +367,14 @@ export function approvePlanContract(options: PlanContractStoreOptions, planId: s
   contracts[index] = next;
   writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts });
   return next;
+}
+
+export function approvePlanContract(options: PlanContractStoreOptions, planId: string): PlanContract {
+  return withPlanAdmissionLock(options, () => approvePlanContractUnlocked(options, planId));
+}
+
+export async function approvePlanContractAsync(options: PlanContractStoreOptions, planId: string): Promise<PlanContract> {
+  return await withPlanAdmissionLockAsync(options, () => approvePlanContractUnlocked(options, planId));
 }
 
 export function supersedePlanContract(options: PlanContractStoreOptions, planId: string, supersededBy: string): PlanContract {

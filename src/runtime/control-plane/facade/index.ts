@@ -5,6 +5,7 @@ export * from './work-task-projection';
 export * from './work-continuation';
 export * from './controller-session-store';
 export * from './plan-contract-store';
+export * from './semantic-admission';
 export * from './facade-result';
 export * from './suggested-actions';
 export * from './capability-registry';

@@ -173,10 +173,11 @@ import {
   getWorkContractByRequestId,
   buildWorkContinuationSnapshot,
   acceptPlanStepEvidence,
-  approvePlanContract,
-  createPlanContract,
+  admitPlanContractAsync,
+  approvePlanContractAsync,
   getPlanContract,
   listPlanContracts,
+  resolvePlanAdmission,
   summarizePlanContract,
   supersedePlanContract,
   verifyGoalWorkloop,
@@ -3789,65 +3790,68 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             if (operation === 'plan_create') {
               const rawSteps = Array.isArray(args.plan_steps) ? args.plan_steps : [];
               const requestedRequirementId = typeof args.requirement_id === 'string' && args.requirement_id.trim() ? args.requirement_id.trim() : undefined;
-              const requestedScopeKey = String(args.scope_key ?? '').trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 160);
-              const activePlans = listPlanContracts({ ...store, status: 'active', limit: 100 });
-              const exactScopeAuthority = requestedScopeKey
-                ? activePlans.find((candidate) => candidate.scopeKey === requestedScopeKey)
-                : undefined;
-              if (exactScopeAuthority) {
-                const facade = buildFacadeResult({
-                  summary: `PLAN_AUTHORITY_REUSED: active Plan ${exactScopeAuthority.planId} already owns scope ${requestedScopeKey}; no duplicate draft was created.`,
-                  data: {
-                    plan: summarizePlanContract(exactScopeAuthority),
-                    executionStarted: false,
-                    planContractCreated: false,
-                    admissionDecision: 'reuse_existing',
-                    resolutionRequired: false,
-                  },
-                  suggestedNextActions: [{ label: 'Read active Plan', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: exactScopeAuthority.planId }, risk: 'readonly', confidence: 'high' }],
-                });
-                return result(facade as unknown as Record<string, unknown>);
-              }
-              const requirementPlans = requestedRequirementId
-                ? activePlans.filter((candidate) => candidate.requirementId === requestedRequirementId)
-                : [];
-              const requestedPlanRelation = args.plan_relation === 'extend' || args.plan_relation === 'parallel'
+              const requestedPlanRelation: 'extend' | 'parallel' | undefined = args.plan_relation === 'extend' || args.plan_relation === 'parallel'
                 ? args.plan_relation
                 : undefined;
               const relatedPlanId = typeof args.related_plan_id === 'string' && args.related_plan_id.trim() ? args.related_plan_id.trim() : undefined;
-              const relatedPlan = relatedPlanId
-                ? requirementPlans.find((candidate) => candidate.planId === relatedPlanId)
-                : requirementPlans.length === 1 ? requirementPlans[0] : undefined;
-              if (requirementPlans.length > 0 && !requestedPlanRelation) {
-                const facade = buildFacadeResult({
-                  summary: `PLAN_RELATION_RESOLUTION_REQUIRED: Requirement ${requestedRequirementId} already has ${requirementPlans.length} active Plan slice(s). Decide whether this scope extends one of them or is an intentional parallel slice before creating a draft.`,
-                  data: {
-                    executionStarted: false,
-                    planContractCreated: false,
-                    admissionDecision: 'resolution_required',
-                    resolutionRequired: true,
-                    candidates: requirementPlans.slice(0, 8).map(summarizePlanContract),
-                    allowedPlanRelations: ['extend', 'parallel'],
-                  },
-                  suggestedNextActions: requirementPlans.slice(0, 3).map((candidate) => ({ label: `Read ${candidate.planId}`, tool: 'rh_work', operation: 'plan_get', payload: { plan_id: candidate.planId }, risk: 'readonly' as const, confidence: 'high' as const })),
-                });
-                return result(facade as unknown as Record<string, unknown>);
-              }
-              if (requirementPlans.length > 0 && requestedPlanRelation === 'extend') {
-                if (!relatedPlan) {
+              const admissionInput = {
+                requirementId: requestedRequirementId,
+                scopeKey: String(args.scope_key ?? ''),
+                planRelation: requestedPlanRelation,
+                relatedPlanId,
+              };
+              const renderPlanAdmission = (admission: ReturnType<typeof resolvePlanAdmission>): CallToolResult | undefined => {
+                if (admission.admissionDecision === 'create_new') return undefined;
+                if (admission.reason === 'exact_scope_authority' && admission.plan) {
                   const facade = buildFacadeResult({
-                    summary: `PLAN_EXTENSION_TARGET_REQUIRED: select related_plan_id from the active Plan slices for Requirement ${requestedRequirementId}.`,
-                    data: { executionStarted: false, planContractCreated: false, admissionDecision: 'resolution_required', resolutionRequired: true, candidates: requirementPlans.slice(0, 8).map(summarizePlanContract) },
+                    summary: `PLAN_AUTHORITY_REUSED: active Plan ${admission.plan.planId} already owns scope ${admission.normalizedScopeKey}; no duplicate draft was created.`,
+                    data: {
+                      plan: summarizePlanContract(admission.plan),
+                      executionStarted: false,
+                      planContractCreated: false,
+                      admissionDecision: 'reuse_existing',
+                      resolutionRequired: false,
+                    },
+                    suggestedNextActions: [{ label: 'Read active Plan', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: admission.plan.planId }, risk: 'readonly', confidence: 'high' }],
                   });
                   return result(facade as unknown as Record<string, unknown>);
                 }
-                const facade = buildFacadeResult({
-                  summary: `PLAN_EXTENSION_REQUIRES_REPLAN: ${relatedPlan.planId} remains the serial authority. Extend/replan and supersede that authority rather than creating a second active Plan draft.`,
-                  data: { plan: summarizePlanContract(relatedPlan), executionStarted: false, planContractCreated: false, admissionDecision: 'extend_existing', resolutionRequired: false },
-                  suggestedNextActions: [{ label: 'Read active Plan', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: relatedPlan.planId }, risk: 'readonly', confidence: 'high' }],
-                });
-                return result(facade as unknown as Record<string, unknown>);
-              }
+                if (admission.reason === 'requirement_relation_required') {
+                  const facade = buildFacadeResult({
+                    summary: `PLAN_RELATION_RESOLUTION_REQUIRED: Requirement ${requestedRequirementId} already has ${admission.candidates.length} active Plan slice(s). Decide whether this scope extends one of them or is an intentional parallel slice before creating a draft.`,
+                    data: {
+                      executionStarted: false,
+                      planContractCreated: false,
+                      admissionDecision: 'resolution_required',
+                      resolutionRequired: true,
+                      candidates: admission.candidates.map(summarizePlanContract),
+                      allowedPlanRelations: admission.allowedPlanRelations ?? ['extend', 'parallel'],
+                    },
+                    suggestedNextActions: admission.candidates.slice(0, 3).map((candidate) => ({ label: `Read ${candidate.planId}`, tool: 'rh_work', operation: 'plan_get', payload: { plan_id: candidate.planId }, risk: 'readonly' as const, confidence: 'high' as const })),
+                  });
+                  return result(facade as unknown as Record<string, unknown>);
+                }
+                if (admission.reason === 'extension_target_required') {
+                  const facade = buildFacadeResult({
+                    summary: `PLAN_EXTENSION_TARGET_REQUIRED: select related_plan_id from the active Plan slices for Requirement ${requestedRequirementId}.`,
+                    data: { executionStarted: false, planContractCreated: false, admissionDecision: 'resolution_required', resolutionRequired: true, candidates: admission.candidates.map(summarizePlanContract) },
+                  });
+                  return result(facade as unknown as Record<string, unknown>);
+                }
+                if (admission.reason === 'extend_existing' && admission.plan) {
+                  const facade = buildFacadeResult({
+                    summary: `PLAN_EXTENSION_REQUIRES_REPLAN: ${admission.plan.planId} remains the serial authority. Extend/replan and supersede that authority rather than creating a second active Plan draft.`,
+                    data: { plan: summarizePlanContract(admission.plan), executionStarted: false, planContractCreated: false, admissionDecision: 'extend_existing', resolutionRequired: false },
+                    suggestedNextActions: [{ label: 'Read active Plan', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: admission.plan.planId }, risk: 'readonly', confidence: 'high' }],
+                  });
+                  return result(facade as unknown as Record<string, unknown>);
+                }
+                throw new Error(`PLAN_ADMISSION_RESULT_INVALID: ${admission.admissionDecision}:${admission.reason}`);
+              };
+              const activePlans = listPlanContracts({ ...store, status: 'active', limit: 100 });
+              const preflightAdmission = resolvePlanAdmission(activePlans, admissionInput);
+              const preflightResult = renderPlanAdmission(preflightAdmission);
+              if (preflightResult) return preflightResult;
               const requestedPlanCheckIds = rawSteps
                 .filter((step): step is Record<string, unknown> => Boolean(step) && typeof step === 'object' && !Array.isArray(step))
                 .flatMap((step) => Array.isArray(step.check_ids) ? step.check_ids.map(String) : []);
@@ -3867,11 +3871,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 });
                 return result(facade as unknown as Record<string, unknown>, true);
               }
-              const plan = createPlanContract(store, {
+              const admitted = await admitPlanContractAsync(store, {
                 planId: String(args.plan_id ?? ''),
                 repoId: repository.repoId,
                 requirementId: requestedRequirementId,
                 scopeKey: String(args.scope_key ?? ''),
+                planRelation: requestedPlanRelation,
+                relatedPlanId,
                 sourceRevision: String(args.source_revision ?? ''),
                 goal: String(args.objective ?? ''),
                 nonGoals: Array.isArray(args.non_goals) ? args.non_goals.map(String) : undefined,
@@ -3891,8 +3897,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   acceptanceCriteria: Array.isArray(step.acceptance_criteria) ? step.acceptance_criteria.map(String) : [],
                 })),
               });
+              const racedAdmissionResult = renderPlanAdmission(admitted);
+              if (racedAdmissionResult) return racedAdmissionResult;
+              if (!admitted.plan) throw new Error('PLAN_ADMISSION_CREATE_MISSING_PLAN');
+              const plan = admitted.plan;
               const facade = buildFacadeResult({
-                summary: `PlanContract ${plan.planId} created as draft after authority preflight; no execution was started.`,
+                summary: `PlanContract ${plan.planId} created as draft after atomic authority admission; no execution was started.`,
                 data: { plan: summarizePlanContract(plan), executionStarted: false, planContractCreated: true, admissionDecision: 'create_new' },
                 suggestedNextActions: [{ label: 'Approve reviewed plan', tool: 'rh_work', operation: 'plan_approve', payload: { plan_id: plan.planId }, risk: 'workspace_write', confidence: 'medium' }],
               });
@@ -3914,7 +3924,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               return result(facade as unknown as Record<string, unknown>, !plan);
             }
             if (operation === 'plan_approve') {
-              const plan = approvePlanContract(store, String(args.plan_id ?? ''));
+              const plan = await approvePlanContractAsync(store, String(args.plan_id ?? ''));
               const facade = buildFacadeResult({
                 summary: `PlanContract ${plan.planId} approved at source revision ${plan.sourceRevision}; execution remains explicit.`,
                 data: { plan: summarizePlanContract(plan), executionStarted: false },

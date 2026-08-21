@@ -1,7 +1,9 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { spawn } from 'child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import {
+  admitPlanContract,
   approvePlanContract,
   claimPlanStepForWork,
   acceptPlanStepEvidence,
@@ -22,6 +24,83 @@ const homes: string[] = [];
 afterEach(() => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
+
+interface ChildResult {
+  ok: boolean;
+  value?: Record<string, unknown>;
+  error?: string;
+}
+
+async function runPlanStoreChildren(input: {
+  controllerHome: string;
+  repoId: string;
+  operation: 'admit' | 'approve';
+  planIds: [string, string];
+  scopeKey: string;
+  requirementId?: string;
+}): Promise<ChildResult[]> {
+  const startFile = join(input.controllerHome, `start-${input.operation}`);
+  const moduleUrl = new URL('../../src/runtime/control-plane/facade/plan-contract-store.ts', import.meta.url).href;
+  const script = `
+    import { existsSync } from 'fs';
+    while (!existsSync(process.env.START_FILE)) await Bun.sleep(1);
+    const store = await import(process.env.PLAN_STORE_MODULE);
+    try {
+      const options = { controllerHome: process.env.CONTROLLER_HOME, repoId: process.env.REPO_ID };
+      const value = process.env.OPERATION === 'admit'
+        ? await store.admitPlanContractAsync(options, {
+            planId: process.env.PLAN_ID,
+            repoId: process.env.REPO_ID,
+            requirementId: process.env.REQUIREMENT_ID || undefined,
+            scopeKey: process.env.SCOPE_KEY,
+            sourceRevision: 'revision-race',
+            goal: 'Race one semantic Plan authority',
+            steps: [{ id: 'step-a', objective: 'race', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['one authority'] }],
+          })
+        : await store.approvePlanContractAsync(options, process.env.PLAN_ID);
+      console.log(JSON.stringify({ ok: true, value }));
+    } catch (error) {
+      console.log(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    }
+  `;
+  const children = input.planIds.map((planId) => spawn(process.execPath, ['-e', script], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      START_FILE: startFile,
+      PLAN_STORE_MODULE: moduleUrl,
+      CONTROLLER_HOME: input.controllerHome,
+      REPO_ID: input.repoId,
+      OPERATION: input.operation,
+      PLAN_ID: planId,
+      SCOPE_KEY: input.scopeKey,
+      REQUIREMENT_ID: input.requirementId ?? '',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }));
+  writeFileSync(startFile, 'go\n');
+  return await Promise.all(children.map((child) => new Promise<ChildResult>((resolve, reject) => {
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk) => { stdout += chunk; });
+    child.stderr?.on('data', (chunk) => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Plan-store child exited ${code}: ${stderr || stdout}`));
+        return;
+      }
+      const line = stdout.trim().split('\n').filter(Boolean).at(-1);
+      if (!line) {
+        reject(new Error(`Plan-store child produced no result: ${stderr}`));
+        return;
+      }
+      resolve(JSON.parse(line) as ChildResult);
+    });
+  })));
+}
 
 test('persists facade Plan contracts as independently revisioned SQLite records', () => {
   const home = mkdtempSync(join('/tmp', 'forge-plan-store-'));
@@ -55,6 +134,87 @@ test('rejects a second create and stale writer without changing the authoritativ
   expect(() => writeControlPlaneRecord(home, { namespace: 'plan_contract', scope: 'repo-1', key: 'plan-1', schemaVersion: 1, value, expectedRevision: null, action: 'duplicate' })).toThrow(ControlPlaneConflictError);
   expect(() => writeControlPlaneRecord(home, { namespace: 'plan_contract', scope: 'repo-1', key: 'plan-1', schemaVersion: 1, value, expectedRevision: 99, action: 'stale' })).toThrow(ControlPlaneConflictError);
   expect(readControlPlaneRecord(home, 'plan_contract', 'repo-1', 'plan-1')?.revision).toBe(1);
+});
+
+test('atomically admits one canonical Plan for concurrent same-scope callers', async () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-admission-race-'));
+  homes.push(home);
+  const results = await runPlanStoreChildren({
+    controllerHome: home,
+    repoId: 'repo-race',
+    operation: 'admit',
+    planIds: ['plan-race-a', 'plan-race-b'],
+    scopeKey: 'shared-scope',
+    requirementId: 'REQ-race',
+  });
+  expect(results.every((entry) => entry.ok)).toBe(true);
+  expect(results.map((entry) => (entry.value as { admissionDecision?: string })?.admissionDecision).sort()).toEqual(['create_new', 'reuse_existing']);
+  const persisted = listPlanContracts({ controllerHome: home, repoId: 'repo-race', status: 'all' });
+  expect(persisted).toHaveLength(1);
+  expect(persisted[0]?.scopeKey).toBe('shared-scope');
+});
+
+test('requires explicit Requirement relation and permits only distinct-scope parallel Plan slices', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-relation-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-relation' };
+  const base = {
+    repoId: 'repo-relation',
+    requirementId: 'REQ-relation',
+    sourceRevision: 'revision-a',
+    goal: 'Deliver a Requirement slice',
+    steps: [{ id: 'step-a', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['done'] }],
+  };
+  expect(admitPlanContract(options, { ...base, planId: 'plan-primary', scopeKey: 'primary-scope' }).admissionDecision).toBe('create_new');
+  const unresolved = admitPlanContract(options, { ...base, planId: 'plan-second', scopeKey: 'second-scope' });
+  expect(unresolved).toMatchObject({ admissionDecision: 'resolution_required', reason: 'requirement_relation_required' });
+  const extended = admitPlanContract(options, { ...base, planId: 'plan-extended', scopeKey: 'extended-scope', planRelation: 'extend', relatedPlanId: 'plan-primary' });
+  expect(extended).toMatchObject({ admissionDecision: 'extend_existing', plan: { planId: 'plan-primary' } });
+  const parallel = admitPlanContract(options, { ...base, planId: 'plan-parallel', scopeKey: 'parallel-scope', planRelation: 'parallel' });
+  expect(parallel).toMatchObject({ admissionDecision: 'create_new', plan: { planId: 'plan-parallel' } });
+  const duplicateParallel = admitPlanContract(options, { ...base, planId: 'plan-parallel-duplicate', scopeKey: 'parallel-scope', planRelation: 'parallel' });
+  expect(duplicateParallel).toMatchObject({ admissionDecision: 'reuse_existing', plan: { planId: 'plan-parallel' } });
+});
+
+test('serializes concurrent approval so only one same-scope draft becomes committed', async () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-approval-race-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-approval-race' };
+  const create = (planId: string, scopeKey: string) => createPlanContract(options, {
+    planId,
+    repoId: options.repoId,
+    scopeKey,
+    sourceRevision: 'revision-approval',
+    goal: 'Approve one authority',
+    steps: [{ id: 'step-a', objective: 'approve', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['one approval'] }],
+  });
+  create('plan-approve-a', 'shared-approval-scope');
+  const second = create('plan-approve-b', 'temporary-second-scope');
+  const secondRecord = readControlPlaneRecord<typeof second>(home, 'plan_contract', options.repoId, second.planId);
+  expect(secondRecord).toBeTruthy();
+  writeControlPlaneRecord(home, {
+    namespace: 'plan_contract',
+    scope: options.repoId,
+    key: second.planId,
+    schemaVersion: 1,
+    value: { ...second, scopeKey: 'shared-approval-scope' },
+    expectedRevision: secondRecord!.revision,
+    action: 'test_same_scope_draft_seed',
+  });
+
+  const results = await runPlanStoreChildren({
+    controllerHome: home,
+    repoId: options.repoId,
+    operation: 'approve',
+    planIds: ['plan-approve-a', 'plan-approve-b'],
+    scopeKey: 'shared-approval-scope',
+  });
+  expect(results.filter((entry) => entry.ok)).toHaveLength(1);
+  const rejected = results.find((entry) => !entry.ok);
+  expect(rejected?.error).toContain('active plan already owns scope_key shared-approval-scope');
+  const sameScope = listPlanContracts({ ...options, status: 'all' }).filter((plan) => plan.scopeKey === 'shared-approval-scope');
+  expect(sameScope.filter((plan) => plan.status === 'approved')).toHaveLength(1);
+  expect(sameScope.filter((plan) => plan.status === 'draft')).toHaveLength(1);
 });
 
 test('keeps PlanStep materialization as a Work reference', () => {
