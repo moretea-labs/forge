@@ -12,7 +12,7 @@ import { getProcessRecord, waitForProcess } from '../../src/runtime/execution/pr
 import { getWorkContract, listWorkContracts, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { continueGoalWorkloop, finalizeGoalWorkloop, verifyGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { listHandoffItems, resolveHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { acceptPlanStepEvidence, approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { createSchedule, getSchedule, listOccurrences, saveOccurrence, saveSchedule } from '../../src/runtime/workflow/schedules/store';
@@ -637,6 +637,50 @@ describe('rh_work managed lifecycle closure', () => {
         plan: { planId: 'PLAN-semantic-accept', status: 'finalized', completedSteps: 1 },
       },
     });
+  });
+
+  test('semantic acceptance rolls the Plan source fence to the delivered revision for the next step', () => {
+    const fx = fixture('plan-rolling-source-fence');
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const initialRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim();
+    createPlanContract(store, {
+      planId: 'PLAN-rolling-source-fence',
+      repoId: fx.repository.repoId,
+      scopeKey: 'plan-rolling-source-fence',
+      sourceRevision: initialRevision,
+      goal: 'Deliver two dependent slices without invalidating the Plan on its own first delivery',
+      steps: [
+        { id: 'step-a', objective: 'Deliver A', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['A is delivered and reviewed.'] },
+        { id: 'step-b', objective: 'Deliver B', dependencies: ['step-a'], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['B starts from the reviewed A delivery.'] },
+      ],
+    });
+    approvePlanContract(store, 'PLAN-rolling-source-fence');
+    claimPlanStepForWork(store, { planId: 'PLAN-rolling-source-fence', stepId: 'step-a', workId: 'work-rolling-a', sourceRevision: initialRevision });
+    writeFileSync(join(fx.repoRoot, 'step-a.txt'), 'delivered\n');
+    git(fx.repoRoot, ['add', 'step-a.txt']);
+    git(fx.repoRoot, ['commit', '-m', 'deliver step a']);
+    const deliveredRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim();
+    completePlanStepForWork(store, {
+      planId: 'PLAN-rolling-source-fence',
+      stepId: 'step-a',
+      work: {
+        workId: 'work-rolling-a', status: 'completed', phase: 'cleanup', evidenceState: 'valid', completionOutcome: 'completed_changed',
+        completionReceipt: {
+          schemaVersion: 1, receiptId: 'receipt-rolling-a', source: 'controller_work', issueId: 'work', taskId: 'work-rolling-a', workId: 'work-rolling-a',
+          targetBranch: 'main', targetRevision: deliveredRevision, sourceRevision: initialRevision, baseRevision: initialRevision, changedPaths: ['step-a.txt'],
+          delivery: { kind: 'commit', status: 'integrated', strategy: 'edit_session_commit', reachable: true, recordedAt: '2026-08-21T00:00:00.000Z' },
+          cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt: '2026-08-21T00:00:00.000Z' },
+          verifiedAt: '2026-08-21T00:00:00.000Z', recordedAt: '2026-08-21T00:00:00.000Z',
+        },
+        evidenceRefs: [{ title: 'Step A delivery', summary: 'Delivered at the new revision.' }],
+      },
+    });
+    const accepted = acceptPlanStepEvidence(store, {
+      planId: 'PLAN-rolling-source-fence', stepId: 'step-a', reviewer: 'semantic-controller', rationale: 'Reviewed A at its delivered revision.', acceptedSourceRevision: deliveredRevision,
+    });
+    expect(accepted).toMatchObject({ status: 'executing', sourceRevision: deliveredRevision, steps: [{ id: 'step-a', status: 'completed' }, { id: 'step-b', status: 'pending' }] });
+    const claimedB = claimPlanStepForWork(store, { planId: 'PLAN-rolling-source-fence', stepId: 'step-b', workId: 'work-rolling-b', sourceRevision: deliveredRevision });
+    expect(claimedB).toMatchObject({ status: 'executing', sourceRevision: deliveredRevision, steps: [{ id: 'step-a', status: 'completed' }, { id: 'step-b', status: 'executing', workId: 'work-rolling-b' }] });
   });
 
   test('stopping a Plan-bound Work moves its Plan out of ghost executing state', async () => { const fx = fixture('plan-stop-reconcile'); writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({ scripts: { 'check:type': 'node -e "process.exit(0)"' } }, null, 2)); git(fx.repoRoot, ['add', 'package.json']); git(fx.repoRoot, ['commit', '-m', 'register plan lifecycle check']); const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim(); const created = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-stop-reconcile', scope_key: 'plan-stop-reconcile', source_revision: sourceRevision, objective: 'Run one stoppable planned slice', plan_steps: [{ id: 'step-a', objective: 'Execute stoppable work', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [], check_ids: ['package:check:type'], acceptance_criteria: ['finish or explicitly replan'], }], }); expect(created?.isError).not.toBe(true); const approved = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_approve', plan_id: 'PLAN-stop-reconcile' }); expect(approved?.isError).not.toBe(true); const started = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'start', plan_id: 'PLAN-stop-reconcile', plan_step_id: 'step-a', objective: 'Execute stoppable work', scope_clear: true, expected_files: 4, expected_changed_lines: 200, requires_recovery: true, }); expect(started?.isError).not.toBe(true); const workId = (started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId; expect(workId).toBeTruthy(); const stopped = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, reason: 'user intentionally stopped this planned slice', }); expect(stopped?.isError).not.toBe(true); expect(stopped?.structuredContent).toMatchObject({ status: 'ok', data: { finalStatus: 'cancelled', plan: { planId: 'PLAN-stop-reconcile', status: 'replanning', steps: [{ id: 'step-a', status: 'ready', workId }] }, }, }); const fetched = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_get', plan_id: 'PLAN-stop-reconcile', detail_level: 'detail' }); expect(fetched?.structuredContent).toMatchObject({ data: { plan: { status: 'replanning', steps: [{ id: 'step-a', status: 'ready', workId }] } } }); });

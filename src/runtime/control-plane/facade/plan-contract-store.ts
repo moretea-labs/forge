@@ -400,7 +400,7 @@ export function completePlanStepForWork(
 
 export function acceptPlanStepEvidence(
   options: PlanContractStoreOptions,
-  input: { planId: string; stepId: string; reviewer: string; rationale: string },
+  input: { planId: string; stepId: string; reviewer: string; rationale: string; acceptedSourceRevision?: string },
 ): PlanContract {
   const reviewer = input.reviewer.trim();
   const rationale = input.rationale.trim();
@@ -418,6 +418,13 @@ export function acceptPlanStepEvidence(
       evidenceRefs: [{ title: 'semantic acceptance', summary: `${reviewer}: ${rationale}`, detailLevel: 'summary' as const }, ...step.evidenceRefs].slice(0, 20),
     };
     const allCompleted = steps.every((candidate) => candidate.status === 'completed');
-    return { ...current, status: allCompleted ? 'finalized' : 'executing', steps, updatedAt: nowIso(options) };
+    const acceptedSourceRevision = input.acceptedSourceRevision?.trim();
+    return {
+      ...current,
+      ...(acceptedSourceRevision ? { sourceRevision: acceptedSourceRevision } : {}),
+      status: allCompleted ? 'finalized' : 'executing',
+      steps,
+      updatedAt: nowIso(options),
+    };
   });
 }

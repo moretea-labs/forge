@@ -3931,6 +3931,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 stepId,
                 reviewer: identity.principalId,
                 rationale,
+                acceptedSourceRevision: workloopCtx.sourceRevision,
               });
               const facade = buildFacadeResult({
                 summary: `Plan step ${stepId} semantically accepted by the current Controller.`,
@@ -4085,6 +4086,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 stepId: completed.planStepId,
                 reviewer,
                 rationale: `Authenticated semantic controller finalized Work ${workId} after reviewing its completion evidence against the Plan step acceptance criteria.`,
+                acceptedSourceRevision: completed.completionReceipt && 'targetRevision' in completed.completionReceipt
+                  ? completed.completionReceipt.targetRevision
+                  : undefined,
               });
             }
           }
