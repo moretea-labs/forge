@@ -177,6 +177,81 @@ describe('CodeGraph read provider', () => {
     expect(pack.search.scannedFiles).toBe(2); // one known-path expansion + one targeted lexical read
   });
 
+  test('resolves root-to-nearest AGENTS.md and CLAUDE.md guidance without consuming exact source budget', () => {
+    const root = contextRepo();
+    mkdirSync(join(root, 'src/feature'), { recursive: true });
+    mkdirSync(join(root, 'sibling'), { recursive: true });
+    writeFileSync(join(root, 'src/feature/deep.ts'), 'export const deepTarget = true;\n');
+    writeFileSync(join(root, 'AGENTS.md'), 'root agent guidance\n');
+    writeFileSync(join(root, 'src/CLAUDE.md'), 'src claude guidance\n');
+    writeFileSync(join(root, 'src/feature/AGENTS.md'), 'feature agent guidance\n');
+    writeFileSync(join(root, 'sibling/AGENTS.md'), 'sibling guidance must not apply\n');
+
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      knownPaths: ['src/feature/deep.ts'],
+      structuralContext: 'off',
+      maxFiles: 1,
+      maxSnippets: 1,
+    });
+
+    expect(pack.files.map((file) => file.path)).toEqual(['src/feature/deep.ts']);
+    expect(pack.limits).toMatchObject({ requestedMaxFiles: 1, maxFiles: 1 });
+    expect(pack.instructionContext).toMatchObject({
+      status: 'ready',
+      authority: 'guidance_only',
+      targetPaths: ['src/feature/deep.ts'],
+      truncated: false,
+    });
+    expect(pack.instructionContext.contracts.map((entry) => entry.path)).toEqual([
+      'AGENTS.md',
+      'src/CLAUDE.md',
+      'src/feature/AGENTS.md',
+    ]);
+    expect(pack.instructionContext.contracts.map((entry) => entry.content)).toEqual([
+      'root agent guidance\n',
+      'src claude guidance\n',
+      'feature agent guidance\n',
+    ]);
+    expect(pack.instructionContext.contracts.some((entry) => entry.path === 'sibling/AGENTS.md')).toBe(false);
+    expect(pack.contextContract.semanticSufficiencyAuthority).toBe('chatgpt');
+    expect(pack.contextContract.notes.some((note) => note.includes('guidance-only evidence'))).toBe(true);
+    expect(pack.instructionContext.contracts.reduce((sum, entry) => sum + entry.content.length, 0)).toBeLessThanOrEqual(48_000);
+  });
+
+  test('resolves guidance for a structurally selected source path without widening to sibling contracts', () => {
+    const root = contextRepo();
+    mkdirSync(join(root, 'src/feature'), { recursive: true });
+    mkdirSync(join(root, 'src/other'), { recursive: true });
+    writeFileSync(join(root, 'src/feature/deep.ts'), 'export function deepRun() { return 1; }\n');
+    writeFileSync(join(root, 'AGENTS.md'), 'root guidance\n');
+    writeFileSync(join(root, 'src/feature/CLAUDE.md'), 'feature guidance\n');
+    writeFileSync(join(root, 'src/other/AGENTS.md'), 'other guidance\n');
+    execFileSync('git', ['add', '.'], { cwd: root });
+    execFileSync('git', ['commit', '-qm', 'nested guidance'], { cwd: root });
+
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      description: 'deepRun implementation',
+      structuralContext: 'auto',
+      maxFiles: 2,
+    }, {
+      queryCodeGraph: (_repoRoot, request) => request.operation === 'file_dependencies'
+        ? structuralResponse({ operation: 'file_dependencies', result: { filePath: 'src/feature/deep.ts', dependencies: [], dependents: [] } })
+        : structuralResponse({
+            result: {
+              nodes: [{ id: 'node-deep', kind: 'function', name: 'deepRun', qualifiedName: 'src/feature/deep.ts::deepRun', filePath: 'src/feature/deep.ts', language: 'typescript', startLine: 1, endLine: 1 }],
+              entryPoints: [{ id: 'node-deep', kind: 'function', name: 'deepRun', qualifiedName: 'src/feature/deep.ts::deepRun', filePath: 'src/feature/deep.ts', language: 'typescript', startLine: 1, endLine: 1 }],
+              relatedFiles: ['src/feature/deep.ts'],
+              truncated: false,
+            },
+          }),
+    });
+
+    expect(pack.files.some((file) => file.path === 'src/feature/deep.ts')).toBe(true);
+    expect(pack.instructionContext.targetPaths).toContain('src/feature/deep.ts');
+    expect(pack.instructionContext.contracts.map((entry) => entry.path)).toEqual(['AGENTS.md', 'src/feature/CLAUDE.md']);
+    expect(pack.instructionContext.contracts.some((entry) => entry.path === 'src/other/AGENTS.md')).toBe(false);
+  });
+
   test('reserves file and snippet budget for every exact known file', () => {
     const root = contextRepo();
     writeFileSync(join(root, 'src/alpha.ts'), 'export const alpha = true;\n');

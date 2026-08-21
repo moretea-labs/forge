@@ -3,7 +3,7 @@ import type { CodeGraphIndexMetadata, CodeGraphNodeSummary, CodeGraphReadProvide
 import type { queryCodeGraphReadProvider } from '../../../runtime/context/codegraph-read-provider';
 import type { MaterializedSourceSnippet } from './source-materializer';
 
-export const CONTEXT_PACK_SCHEMA_VERSION = 7;
+export const CONTEXT_PACK_SCHEMA_VERSION = 8;
 export type StructuralContextMode = 'off' | 'auto' | 'required';
 export type ControllerContextRetrievalMode = 'implementation' | 'plan' | 'debug' | 'review';
 export const CONTROLLER_CONTEXT_IMPACT_DOMAINS = [
@@ -69,6 +69,19 @@ export interface ControllerContextPackProjection {
     skippedBinaryFiles: number;
     truncated: boolean;
     cacheHit: boolean;
+  };
+  instructionContext: {
+    status: 'none' | 'ready' | 'degraded';
+    authority: 'guidance_only';
+    targetPaths: string[];
+    contracts: Array<{
+      path: string;
+      appliesTo: string[];
+      content: string;
+      truncated: boolean;
+    }>;
+    coverageGaps: string[];
+    truncated: boolean;
   };
   structuralContext: {
     provider: 'codegraph';
