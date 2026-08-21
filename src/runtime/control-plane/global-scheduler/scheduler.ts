@@ -12,12 +12,10 @@ import {
 import {
   getExecutionJob,
   listActiveExecutionJobs,
-  markExecutionJobSchedulerObserved,
 } from '../../execution/jobs/store';
 import { type ExecutionWorkerLifecycle } from '../../execution/jobs/types';
 import { RepoActorRegistry } from '../repo-actor/registry';
 import { reconcileExecutionJobsAsync } from './reconciliation';
-import { tickSchedules } from '../../workflow/schedules/engine';
 import { isProcessAlive } from '../../shared/process-tree';
 import { readSchedulerWakeSignal, waitForSchedulerWakeSignal } from './wake-signal';
 import { cleanupControllerRuntimeState } from '../runtime-cleanup';
@@ -31,6 +29,7 @@ import {
   runSchedulerValidationReconciliation,
 } from './maintenance';
 import { planSchedulerSourceSampling } from './source-scan';
+import { runSchedulerDurableAdmission } from './durable-admission';
 import { sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
 import { selectExecutionJobDispatchRepositories } from '../dispatch-priority';
 import {
@@ -491,21 +490,13 @@ export class GlobalScheduler {
       this.persistState(true);
       return { activeJobs: activeJobSnapshot.length };
     }
-    // Scheduler observation ends admission and starts the independent queue
-    // budget. This runs outside the global dispatch lock because each Job owns
-    // its own atomic state transition.
-    for (const job of listActiveExecutionJobs(this.controllerHome)) {
-      if (job.status === 'running' || job.timings?.schedulerObservedAt) continue;
-      try {
-        markExecutionJobSchedulerObserved(this.controllerHome, job.repoId, job.jobId);
-      } catch {
-        // Another scheduler or a terminal transition won the Job-local race.
-      }
-    }
-    if (now - this.lastScheduleTick >= 30_000) {
-      await tickSchedules(this.controllerHome, repositories.map((repo) => repo.repoId));
-      this.lastScheduleTick = now;
-    }
+    const durableAdmission = await runSchedulerDurableAdmission({
+      controllerHome: this.controllerHome,
+      repositoryIds: repositories.map((repo) => repo.repoId),
+      nowMs: now,
+      lastScheduleTickAt: this.lastScheduleTick,
+    });
+    if (durableAdmission.scheduleTicked) this.lastScheduleTick = now;
     let activeJobs = 0;
     const pendingSpawns: Array<{ repoId: string; jobId: string }> = [];
     const projectionRefreshRepos = new Set<string>();

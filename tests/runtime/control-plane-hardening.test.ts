@@ -34,6 +34,7 @@ import { selectExecutionJobDispatchRepositories } from '../../src/runtime/contro
 import { selectSchedulerProjectionRefreshTargets } from '../../src/runtime/control-plane/global-scheduler/projection-refresh';
 import { evaluateSchedulerWorkerExitCandidate } from '../../src/runtime/control-plane/global-scheduler/worker-exit-decision';
 import { reconcileSchedulerWorkerExit } from '../../src/runtime/control-plane/global-scheduler/worker-exit-reconciler';
+import { runSchedulerDurableAdmission } from '../../src/runtime/control-plane/global-scheduler/durable-admission';
 
 const roots: string[] = [];
 
@@ -182,6 +183,46 @@ describe('control-plane hardening', () => {
     expect(pressured.heavyChecks).toBe(1);
     expect(pressured.agents).toBe(0);
     expect([...pressured.providers.values()]).toEqual([0, 0, 0]);
+  });
+
+  test('keeps durable admission observation and schedule advancement outside the dispatch lock', async () => {
+    const calls: string[] = [];
+    const jobs = [
+      { repoId: 'repo-a', jobId: 'queued', status: 'queued', type: 'repository-command', payload: { operation: 'test' } },
+      { repoId: 'repo-a', jobId: 'running', status: 'running', type: 'repository-command', payload: { operation: 'test' } },
+      { repoId: 'repo-b', jobId: 'observed', status: 'queued', type: 'repository-command', payload: { operation: 'test' }, timings: { schedulerObservedAt: '2026-08-21T00:00:00.000Z' } },
+    ] as ExecutionJob[];
+    const dependencies = {
+      listActiveJobs: () => jobs,
+      markSchedulerObserved: (_controllerHome: string, repoId: string, jobId: string) => {
+        calls.push(`observe:${repoId}:${jobId}`);
+        return jobs.find((job) => job.jobId === jobId)!;
+      },
+      tickSchedules: async (_controllerHome: string, repoIds: string[]) => {
+        calls.push(`schedule:${repoIds.join(',')}`);
+        return [];
+      },
+    };
+
+    expect(await runSchedulerDurableAdmission({
+      controllerHome: '/tmp/controller',
+      repositoryIds: ['repo-a', 'repo-b'],
+      nowMs: 60_000,
+      lastScheduleTickAt: 0,
+    }, dependencies)).toEqual({ scheduleTicked: true });
+    expect(calls).toEqual([
+      'observe:repo-a:queued',
+      'schedule:repo-a,repo-b',
+    ]);
+
+    calls.length = 0;
+    expect(await runSchedulerDurableAdmission({
+      controllerHome: '/tmp/controller',
+      repositoryIds: ['repo-a', 'repo-b'],
+      nowMs: 70_000,
+      lastScheduleTickAt: 60_000,
+    }, dependencies)).toEqual({ scheduleTicked: false });
+    expect(calls).toEqual(['observe:repo-a:queued']);
   });
 
   test('isolates per-repository Scheduler priority and fairness ordering from the dispatch lock', () => {
