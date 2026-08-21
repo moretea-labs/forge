@@ -17,6 +17,8 @@ import {
   buildSchedulerWorkerSpawnedLifecycle,
 } from '../../src/runtime/control-plane/global-scheduler/worker-lifecycle';
 import { createSchedulerWorkerStderrCapture } from '../../src/runtime/control-plane/global-scheduler/worker-stderr';
+import { persistSchedulerWorkerAttachment } from '../../src/runtime/control-plane/global-scheduler/worker-attachment';
+import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
 
 const homes: string[] = [];
 afterEach(() => {
@@ -213,6 +215,53 @@ describe('repository child process environment', () => {
       maxAttempts: 3,
       spawnedAt: '2026-08-21T00:00:00.000Z',
     })).toMatchObject({ startupState: 'spawn_failed', attempt: 3, maxAttempts: 3 });
+  });
+
+  test('persists Scheduler worker attachment and registered lifecycle outside GlobalScheduler', () => {
+    const lifecycle = buildSchedulerWorkerSpawnFailureLifecycle({
+      executable: '/runtime/worker',
+      cwd: '/runtime',
+      environment: {},
+      ownerPid: 42,
+      attempt: 1,
+      maxAttempts: 2,
+      spawnedAt: '2026-08-21T00:00:00.000Z',
+    });
+    const current = {
+      repoId: 'repo-a',
+      jobId: 'job-a',
+      workerLifecycle: lifecycle,
+    } as ExecutionJob;
+    let updated: ExecutionJob | undefined;
+    const attached = persistSchedulerWorkerAttachment({
+      controllerHome: '/controller',
+      repoId: 'repo-a',
+      jobId: 'job-a',
+      workerPid: 88,
+      lifecycle,
+    }, {
+      attachWorker: () => current,
+      updateJob: (_controllerHome, _repoId, _jobId, updater) => {
+        updated = updater(current);
+        return updated;
+      },
+    });
+
+    expect(attached).toBe(true);
+    expect(updated?.workerLifecycle).toMatchObject({
+      workerPid: 88,
+      startupState: 'registered',
+    });
+    expect(persistSchedulerWorkerAttachment({
+      controllerHome: '/controller',
+      repoId: 'repo-a',
+      jobId: 'job-a',
+      workerPid: 99,
+      lifecycle,
+    }, {
+      attachWorker: () => undefined,
+      updateJob: () => { throw new Error('must not update'); },
+    })).toBe(false);
   });
 
   test('captures Scheduler worker stderr with a bounded persisted diagnostic', () => {

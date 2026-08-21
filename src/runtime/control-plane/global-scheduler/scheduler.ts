@@ -10,7 +10,6 @@ import {
   runtimeWriteClaimEnvironment,
 } from '../../root/write-fence';
 import {
-  attachExecutionWorker,
   getExecutionJob,
   listActiveExecutionJobs,
   markExecutionJobSchedulerObserved,
@@ -50,10 +49,10 @@ import {
 } from './dispatch-capacity';
 import { refreshSchedulerRepositoryProjections } from './projection-refresh';
 import { createSchedulerWorkerStderrCapture } from './worker-stderr';
+import { persistSchedulerWorkerAttachment } from './worker-attachment';
 import {
   buildSchedulerWorkerExitFailure,
   buildSchedulerWorkerExitedLifecycle,
-  buildSchedulerWorkerRegisteredLifecycle,
   buildSchedulerWorkerSpawnFailureLifecycle,
   buildSchedulerWorkerSpawnedLifecycle,
 } from './worker-lifecycle';
@@ -434,23 +433,19 @@ export class GlobalScheduler {
       return false;
     }
     this.children.set(jobId, child);
-    const attached = attachExecutionWorker(this.controllerHome, repoId, jobId, child.pid);
+    const attached = persistSchedulerWorkerAttachment({
+      controllerHome: this.controllerHome,
+      repoId,
+      jobId,
+      workerPid: child.pid,
+      lifecycle,
+    });
     if (!attached) {
       this.children.delete(jobId);
       void terminateProcessTree(child.pid);
       child.unref();
       return false;
     }
-    try {
-      updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({
-        ...latest,
-        workerLifecycle: buildSchedulerWorkerRegisteredLifecycle({
-          lifecycle,
-          currentLifecycle: latest.workerLifecycle,
-          workerPid: child.pid!,
-        }),
-      }));
-    } catch { /* close/reconciliation may have finalized the Job */ }
     child.unref();
     return true;
   }
