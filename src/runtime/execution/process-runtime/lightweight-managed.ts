@@ -23,7 +23,7 @@ import { repositoryControllerRoot } from '../../../cli/repositories/controller-h
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import { runBoundedProcess } from '../thin-harness/async-process';
-import type { ProcessHandle, ProcessLogSlice, WaitProcessOptions } from './types';
+import { PROCESS_LOG_TAIL_BYTES, type ProcessHandle, type ProcessLogSlice, type WaitProcessOptions } from './types';
 
 const EMPTY_EFFECTS = {
   executionJobCount: 0,
@@ -62,6 +62,8 @@ interface LightweightEntry {
   spawnedAtMs?: number;
   stdout: string;
   stderr: string;
+  stdoutTail: string;
+  stderrTail: string;
   abort: AbortController;
   promise: Promise<LightweightExecutionResult>;
   result?: LightweightExecutionResult;
@@ -92,15 +94,36 @@ function boundedAppend(current: string, chunk: string, maxBytes: number): string
   return capProcessOutput(`${current}${chunk}`, maxBytes);
 }
 
+function boundedTailAppend(current: string, chunk: string): string {
+  const combined = Buffer.from(`${current}${chunk}`, 'utf8');
+  return combined.length <= PROCESS_LOG_TAIL_BYTES
+    ? combined.toString('utf8')
+    : combined.subarray(combined.length - PROCESS_LOG_TAIL_BYTES).toString('utf8');
+}
+
 function visibleOutput(value: string, maxBytes: number): string {
   return capProcessOutput(redactProcessOutput(value), maxBytes);
+}
+
+function visibleOutputTail(value: string): string {
+  const safe = redactProcessOutput(value);
+  const buffer = Buffer.from(safe, 'utf8');
+  return buffer.length <= PROCESS_LOG_TAIL_BYTES
+    ? safe
+    : buffer.subarray(buffer.length - PROCESS_LOG_TAIL_BYTES).toString('utf8');
 }
 
 function terminalHandle(entry: LightweightEntry): ProcessHandle {
   const handle = entryHandle(entry);
   const stdout = capProcessOutput(redactProcessOutput(handle.stdout ?? ''), entry.maxOutputBytes);
   const stderr = capProcessOutput(redactProcessOutput(handle.stderr ?? ''), entry.maxOutputBytes);
-  return { ...handle, stdout, stderr, stdoutTail: stdout, stderrTail: stderr };
+  return {
+    ...handle,
+    stdout,
+    stderr,
+    stdoutTail: visibleOutputTail(handle.stdoutTail ?? stdout),
+    stderrTail: visibleOutputTail(handle.stderrTail ?? stderr),
+  };
 }
 
 function pruneTerminalReceipts(root: string, keepPath: string): void {
@@ -197,6 +220,8 @@ function entryHandle(entry: LightweightEntry): ProcessHandle {
           : 'failed';
   const stdout = completed ? execution.stdout ?? '' : visibleOutput(entry.stdout, entry.maxOutputBytes);
   const stderr = completed ? execution.stderr ?? '' : visibleOutput(entry.stderr, entry.maxOutputBytes);
+  const stdoutTail = entry.stdoutTail || visibleOutputTail(stdout);
+  const stderrTail = entry.stderrTail || visibleOutputTail(stderr);
   return {
     processId: entry.processId,
     workId: entry.workId,
@@ -221,8 +246,8 @@ function entryHandle(entry: LightweightEntry): ProcessHandle {
     cancelled: execution?.cancelled,
     stdout: completed ? stdout : undefined,
     stderr: completed ? stderr : undefined,
-    stdoutTail: stdout,
-    stderrTail: stderr,
+    stdoutTail: visibleOutputTail(stdoutTail),
+    stderrTail: visibleOutputTail(stderrTail),
     durableSideEffects: EMPTY_EFFECTS,
   };
 }
@@ -349,6 +374,8 @@ export async function startLightweightRepositoryCommand(
     maxOutputBytes,
     stdout: '',
     stderr: '',
+    stdoutTail: '',
+    stderrTail: '',
     abort,
     promise: undefined as never,
   };
@@ -361,8 +388,14 @@ export async function startLightweightRepositoryCommand(
     {
       signal: abort.signal,
       onSpawn: (pid) => { entry.pid = pid; entry.spawnedAtMs = Date.now(); },
-      onStdout: (chunk) => { entry.stdout = boundedAppend(entry.stdout, chunk, maxOutputBytes); },
-      onStderr: (chunk) => { entry.stderr = boundedAppend(entry.stderr, chunk, maxOutputBytes); },
+      onStdout: (chunk) => {
+        entry.stdout = boundedAppend(entry.stdout, chunk, maxOutputBytes);
+        entry.stdoutTail = boundedTailAppend(entry.stdoutTail, chunk);
+      },
+      onStderr: (chunk) => {
+        entry.stderr = boundedAppend(entry.stderr, chunk, maxOutputBytes);
+        entry.stderrTail = boundedTailAppend(entry.stderrTail, chunk);
+      },
     },
   ).then((result) => {
     entry.result = result;
@@ -458,6 +491,8 @@ export async function startLightweightInternalProcess(
     maxOutputBytes,
     stdout: '',
     stderr: '',
+    stdoutTail: '',
+    stderrTail: '',
     abort,
     promise: undefined as never,
   };
@@ -470,8 +505,14 @@ export async function startLightweightInternalProcess(
     maxOutputBytes,
     signal: abort.signal,
     onSpawn: (pid) => { entry.pid = pid; entry.spawnedAtMs = Date.now(); },
-    onStdout: (chunk) => { entry.stdout = boundedAppend(entry.stdout, chunk, maxOutputBytes); },
-    onStderr: (chunk) => { entry.stderr = boundedAppend(entry.stderr, chunk, maxOutputBytes); },
+    onStdout: (chunk) => {
+      entry.stdout = boundedAppend(entry.stdout, chunk, maxOutputBytes);
+      entry.stdoutTail = boundedTailAppend(entry.stdoutTail, chunk);
+    },
+    onStderr: (chunk) => {
+      entry.stderr = boundedAppend(entry.stderr, chunk, maxOutputBytes);
+      entry.stderrTail = boundedTailAppend(entry.stderrTail, chunk);
+    },
   }).then((result) => {
     entry.result = result;
     entry.finishedAtMs = Date.now();
@@ -557,6 +598,8 @@ export async function startLightweightControllerCheck(
     maxOutputBytes: DEFAULT_MAX_OUTPUT_BYTES,
     stdout: '',
     stderr: '',
+    stdoutTail: '',
+    stderrTail: '',
     abort,
     promise: undefined as never,
   };

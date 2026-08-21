@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process';
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { buildControllerContextPack } from '../../src/cli/controller/context-pack';
+import { buildControllerContextPack, buildControllerContextPackAsync } from '../../src/cli/controller/context-pack';
 import { structuralIntentQuery } from '../../src/cli/controller/context/query-planning';
 import { clearSourceSymbolIndexCacheForTest, materializeSource, sourceSymbolIndexCacheSnapshotForTest } from '../../src/cli/controller/context/source-materializer';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
@@ -348,7 +348,7 @@ describe('CodeGraph read provider', () => {
     expect(pack.contextContract.expansionSignals).toContain('impact_domain_without_evidence:concurrency');
   });
 
-  test('ranks an exact code query before saturated broad-token decoys', () => {
+  test('ranks an exact code query before saturated broad-token decoys', async () => {
     const root = contextRepo();
     for (let index = 0; index < 40; index += 1) {
       writeFileSync(join(root, `src/a-decoy-${String(index).padStart(2, '0')}.ts`), `export const classifyCommandRoute${index} = true;\n`);
@@ -365,6 +365,39 @@ describe('CodeGraph read provider', () => {
     expect(pack.search.terms[0]).toBe(query);
     expect(pack.files[0]?.path).toBe('src/z-target.ts');
     expect(pack.files[0]?.reasons).toContain(`search:${query}`);
+    const asyncPack = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), {
+      description: query,
+      searchTerms: [query],
+      includeGlobs: ['src/**/*.ts'],
+      maxFiles: 1,
+      maxSnippets: 2,
+      session: { sessionId: 'exact-code-query', repoId: 'repo-a', checkoutId: 'checkout-a' },
+    });
+    expect(asyncPack.files[0]?.path).toBe('src/z-target.ts');
+
+    const pascalRoot = contextRepo();
+    for (let index = 0; index < 40; index += 1) {
+      writeFileSync(join(pascalRoot, `src/b-client-decoy-${String(index).padStart(2, '0')}.ts`), `export const ClientDecoy${index} = true;\n`);
+    }
+    writeFileSync(join(pascalRoot, 'src/z-client-target.ts'), 'export class Client { readonly connected = true; }\n');
+    const pascalQuery = 'Client';
+    const pascalPack = buildControllerContextPack(pascalRoot, getMcpPolicy('controller'), {
+      description: pascalQuery,
+      searchTerms: [pascalQuery],
+      includeGlobs: ['src/**/*.ts'],
+      maxFiles: 1,
+      maxSnippets: 2,
+    });
+    expect(pascalPack.files[0]?.path).toBe('src/z-client-target.ts');
+    const asyncPascalPack = await buildControllerContextPackAsync(pascalRoot, getMcpPolicy('controller'), {
+      description: pascalQuery,
+      searchTerms: [pascalQuery],
+      includeGlobs: ['src/**/*.ts'],
+      maxFiles: 1,
+      maxSnippets: 2,
+      session: { sessionId: 'exact-pascal-query', repoId: 'repo-a', checkoutId: 'checkout-a' },
+    });
+    expect(asyncPascalPack.files[0]?.path).toBe('src/z-client-target.ts');
   });
 
   test('builds bounded impact context from ready structural entry points and file dependents', () => { const root = contextRepo(); writeFileSync(join(root, 'src/helper.ts'), 'export const helper = true;\n'); mkdirSync(join(root, 'tests'), { recursive: true }); writeFileSync(join(root, 'tests/service.test.ts'), "import { runService } from '../src/service';\nvoid runService();\n"); const pack = buildControllerContextPack(root, getMcpPolicy('controller'), { description: 'How does runService work?', structuralContext: 'auto', maxFiles: 6 }, { queryCodeGraph: (_repoRoot, request) => request.operation === 'file_dependencies' ? structuralResponse({ operation: 'file_dependencies', result: { filePath: 'src/service.ts', dependencies: ['src/helper.ts'], dependents: ['tests/service.test.ts'] } }) : structuralResponse() }); expect(pack.structuralContext).toMatchObject({ requestedMode: 'auto', status: 'ready', requiredSatisfied: true }); expect(pack.impactContext).toMatchObject({ status: 'ready', confidence: 'high', primaryTargets: ['src/service.ts'], relevantTests: ['tests/service.test.ts'], freshness: { structuralStatus: 'ready', changedFileCount: 0 } }); expect(pack.impactContext.mustInspect).toEqual(expect.arrayContaining(['src/service.ts', 'src/helper.ts', 'tests/service.test.ts'])); expect(pack.impactContext.relationSources).toEqual(expect.arrayContaining(['codegraph', 'lexical'])); expect(pack.files.find((file) => file.path === 'src/helper.ts')?.reasons).toContain('codegraph:dependency:src/service.ts'); expect(pack.files.find((file) => file.path === 'tests/service.test.ts')?.reasons).toContain('codegraph:dependent:src/service.ts'); const service = pack.files.find((file) => file.path === 'src/service.ts'); expect(service?.reasons.some((reason) => reason.startsWith('codegraph:'))).toBe(true); expect(service?.snippets[0]?.content).toContain('return 42'); });

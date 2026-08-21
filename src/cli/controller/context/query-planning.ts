@@ -54,8 +54,17 @@ export function textTokens(value: string): string[] {
     .filter((entry) => !/^\d+$/.test(entry)))).slice(0, 12);
 }
 
-/** Extract exact caller-supplied symbol/path needles from broader prompt text. */
-export function codeShapedAnchors(value: string): string[] {
+/** A caller-supplied symbol or path is an exact retrieval needle, not a broad hint. */
+export function isCodeShapedTerm(value: string): boolean {
+  const term = value.trim();
+  return term.includes('/')
+    || term.includes('_')
+    || /[a-z0-9][A-Z]/.test(term)
+    || /^[A-Z][A-Za-z0-9]*$/.test(term)
+    || /\.[A-Za-z0-9]+$/.test(term);
+}
+
+function codeShapedAnchors(value: string): string[] {
   const raw = value.split(/[^\p{L}\p{N}_./:-]+/u)
     .map((entry) => entry.replace(/^[\'"`]+|[\'"`]+$/g, '').trim())
     .filter((entry) => entry.length >= 3)

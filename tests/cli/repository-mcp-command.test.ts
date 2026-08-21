@@ -56,6 +56,9 @@ describe("repository MCP command tools", () => {
     expect(rhContext?.description).toContain("fallback-only");
     expect(rhWork?.description).toContain("Do not create a Plan merely because work is complex");
     expect(command?.description).toContain("Use rh_context for routine code discovery/reading");
+    for (const retired of ["repository_goal_list", "repository_goal_upsert", "repository_stuck_diagnose", "repository_goal_run", "repository_goal_runs"]) {
+      expect(repositoryToolDefinitions.some((tool) => tool.name === retired)).toBe(false);
+    }
   });
 
   test("guides chained shell code browsing back to one rh_context search", async () => {
@@ -719,6 +722,8 @@ describe("repository MCP command tools", () => {
       expect(executedValue.error).toBeUndefined();
       expect(executedValue.jobId).toBeUndefined();
       expect(executedValue.localJob).toBeUndefined();
+      expect(executedValue.next).toContain("Continue independent work");
+      expect(executedValue.next).toContain("Do not re-run or periodically poll");
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });
@@ -920,55 +925,6 @@ describe("repository MCP command tools", () => {
   });
 
   test("finish workflow transactionally rebases tracked target edits and rolls back on overlap", async () => { const workspace = mkdtempSync(join(tmpdir(), "forge-structured-git-dirty-target-")); const controllerHome = join(workspace, "controller-home"); const repoRoot = join(workspace, "sample-repo"); try { mkdirSync(controllerHome, { recursive: true }); mkdirSync(repoRoot, { recursive: true }); git(repoRoot, ["init", "-b", "main"]); git(repoRoot, ["config", "user.name", "Forge Test"]); git(repoRoot, ["config", "user.email", "forge-test@example.com"]); writeFileSync(join(repoRoot, "README.md"), "one\ntwo\nthree\n"); writeFileSync(join(repoRoot, "local.txt"), "base\n"); git(repoRoot, ["add", "."]); git(repoRoot, ["commit", "-m", "init"]); const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" }); git(repoRoot, ["switch", "-c", "feature/dirty-switch"]); writeFileSync(join(repoRoot, "local.txt"), "dirty-before-switch\n"); const switchBlocked = await json(callRepositoryTool(controllerHome, "repository_git_finish_workflow", { repo_id: repository.repoId, feature_branch: "feature/dirty-switch", target_branch: "main" })); expect(switchBlocked.finish.error.code).toBe("GIT_WORKTREE_NOT_CLEAN"); expect(spawnSync("git", ["-C", repoRoot, "branch", "--show-current"], { encoding: "utf8" }).stdout.trim()).toBe("feature/dirty-switch"); git(repoRoot, ["restore", "local.txt"]); git(repoRoot, ["switch", "main"]); git(repoRoot, ["branch", "-D", "feature/dirty-switch"]); git(repoRoot, ["switch", "-c", "feature/dirty-target"]); writeFileSync(join(repoRoot, "README.md"), "ONE\ntwo\nthree\n"); git(repoRoot, ["add", "README.md"]); git(repoRoot, ["commit", "-m", "feature"]); git(repoRoot, ["switch", "main"]); writeFileSync(join(repoRoot, "README.md"), "one\ntwo\nTHREE\n"); writeFileSync(join(repoRoot, "local.txt"), "local-dirty\n"); writeFileSync(join(repoRoot, "untracked.txt"), "keep\n"); git(repoRoot, ["add", "local.txt"]); const finish = await json(callRepositoryTool(controllerHome, "repository_git_finish_workflow", { repo_id: repository.repoId, feature_branch: "feature/dirty-target", target_branch: "main" })); expect(finish.finish.completed).toBe(true); expect(readFileSync(join(repoRoot, "README.md"), "utf8")).toBe("ONE\ntwo\nTHREE\n"); expect(readFileSync(join(repoRoot, "local.txt"), "utf8")).toBe("local-dirty\n"); expect(readFileSync(join(repoRoot, "untracked.txt"), "utf8")).toBe("keep\n"); expect(spawnSync("git", ["-C", repoRoot, "diff", "--cached", "--name-only"], { encoding: "utf8" }).stdout.trim()).toBe("local.txt"); git(repoRoot, ["commit", "-m", "preserve local change for overlap setup"]); git(repoRoot, ["switch", "-c", "feature/overlap"]); writeFileSync(join(repoRoot, "README.md"), "feature-overlap\n"); git(repoRoot, ["add", "README.md"]); git(repoRoot, ["commit", "-m", "overlap feature"]); git(repoRoot, ["switch", "main"]); const oldHead = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim(); writeFileSync(join(repoRoot, "README.md"), "local-overlap\n"); const blocked = await json(callRepositoryTool(controllerHome, "repository_git_finish_workflow", { repo_id: repository.repoId, feature_branch: "feature/overlap", target_branch: "main" })); expect(blocked.finish.completed).toBe(false); expect(blocked.finish.error.code).toBe("GIT_LOCAL_CHANGES_REAPPLY_CONFLICT"); expect(spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()).toBe(oldHead); expect(readFileSync(join(repoRoot, "README.md"), "utf8")).toBe("local-overlap\n"); expect(spawnSync("git", ["-C", repoRoot, "show-ref", "--verify", "--quiet", "refs/heads/feature/overlap"]).status).toBe(0); expect(readFileSync(join(repoRoot, "untracked.txt"), "utf8")).toBe("keep\n"); } finally { await cleanupWorkspace([workspace, controllerHome, repoRoot]); rmSync(workspace, { recursive: true, force: true }); } });
-  test("repository goals run checks, persist run artifacts, and feed stuck diagnosis", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "forge-goal-run-complete-"));
-    const controllerHome = join(workspace, "controller-home");
-    const repoRoot = join(workspace, "sample-repo");
-    try {
-      mkdirSync(controllerHome, { recursive: true });
-      mkdirSync(repoRoot, { recursive: true });
-      mkdirSync(join(repoRoot, ".forge"), { recursive: true });
-      git(repoRoot, ["init", "-b", "main"]);
-      git(repoRoot, ["config", "user.name", "Forge Test"]);
-      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
-      writeFileSync(join(repoRoot, "README.md"), "hello\n");
-      writeFileSync(join(repoRoot, ".forge/checks.json"), JSON.stringify({
-        version: 1,
-        checks: {
-          "git-clean": { description: "Git status is readable", command: ["git", "status", "--short"], cwd: ".", timeoutMs: 5000 },
-        },
-      }, null, 2));
-      git(repoRoot, ["add", "."]);
-      git(repoRoot, ["commit", "-m", "init"]);
-      const repository = registerRepository({ path: repoRoot, controllerHome });
-
-      const goal = await json(callRepositoryTool(controllerHome, "repository_goal_upsert", {
-        repo_id: repository.repoId,
-        id: "reliability",
-        title: "Improve Forge reliability",
-        checks: ["git-clean"],
-      }));
-      expect(goal.goal.id).toBe("reliability");
-
-      const run = await json(callRepositoryTool(controllerHome, "repository_goal_run", {
-        repo_id: repository.repoId,
-        goal_id: "reliability",
-        run_checks: true,
-      }));
-      expect(run.run.status).toBe("succeeded");
-      expect(run.run.checks[0].status).toBe("passed");
-      expect(existsSync(join(repoRoot, run.path))).toBe(true);
-
-      const runs = await json(callRepositoryTool(controllerHome, "repository_goal_runs", {
-        repo_id: repository.repoId,
-      }));
-      expect(runs.runs[0].runId).toBe(run.run.runId);
-    } finally {
-      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
-      rmSync(workspace, { recursive: true, force: true });
-    }
-  });
-
 });
 
 describe("repository_register repeat fast path", () => {

@@ -50,7 +50,7 @@ const processIdProp = {
 export const processToolDefinitions: McpToolDefinition[] = [
   definition(
     'run_check',
-    'Run one named focused repository check through Process Runtime. Ordinary checks stay ephemeral/lightweight; release or multi-phase checks require an explicit durable workflow.',
+    'Run one named focused repository check through Process Runtime. Long ordinary checks return a managed handle and continue in the background; use the returned continuation contract to keep doing independent work, then join once when this exact result becomes a dependency. Release or multi-phase checks require an explicit durable workflow.',
     {
       repo_id: repoIdProp,
       checkout_id: { type: 'string' },
@@ -68,7 +68,7 @@ export const processToolDefinitions: McpToolDefinition[] = [
   ),
   definition(
     'process_get',
-    'Get the current status of a lightweight or durable process without re-executing the command. Readonly.',
+    'Non-blocking observation of a lightweight or durable process; never re-executes. Use only when the observation can change the next decision. It is not a synchronization join.',
     {
       repo_id: repoIdProp,
       process_id: processIdProp,
@@ -78,7 +78,7 @@ export const processToolDefinitions: McpToolDefinition[] = [
   ),
   definition(
     'process_wait',
-    'Wait for a lightweight or durable process to complete or until timeout_ms. Does not re-execute the command. Readonly attach/poll.',
+    'Explicit dependency synchronization for one lightweight or durable process. Call only when the next decision or acceptance boundary is blocked on this exact result; do not use as periodic polling. Waits never re-execute the command.',
     {
       repo_id: repoIdProp,
       process_id: processIdProp,
@@ -118,6 +118,30 @@ const processAttachmentToolNames = new Set(['process_get', 'process_wait', 'proc
 // short and return a normal running snapshot; the Process continues unchanged
 // and callers can attach again only when the result is a real dependency.
 export const DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS = 5_000;
+
+/**
+ * Stable controller-facing continuation semantics for a returned Process.
+ * This is deliberately response-only: Process Runtime remains the sole owner
+ * of execution and no polling scheduler or second state authority is created.
+ */
+export function managedProcessContinuation(handle: { completed?: boolean }): Record<string, string> {
+  if (handle.completed === true) {
+    return {
+      state: 'terminal',
+      nextAction: 'consume_terminal_result',
+      join: 'complete',
+      reexecution: 'forbidden',
+    };
+  }
+  return {
+    state: 'background',
+    nextAction: 'continue_independent_work',
+    join: 'required_at_dependency_boundary',
+    observation: 'process_get_if_it_can_change_the_next_decision',
+    repeatedWait: 'not_recommended',
+    reexecution: 'forbidden',
+  };
+}
 
 function result(value: Record<string, unknown>, isError = false): CallToolResult {
   const safe = redactSensitiveValue(value).value;
@@ -173,8 +197,13 @@ function handleToPayload(handle: NonNullable<ReturnType<typeof getRepositoryComm
     cancelled: handle.cancelled,
     stdout: handle.stdout,
     stderr: handle.stderr,
+    // Keep the bounded tail available after completion for callers that use it
+    // as their compact log view. Lightweight terminal receipts bound this tail
+    // separately, so retaining the established field does not restore the
+    // previous full-output duplication in persisted state.
     stdoutTail: handle.stdoutTail,
     stderrTail: handle.stderrTail,
+    continuation: managedProcessContinuation(handle),
     durableSideEffects: handle.durableSideEffects,
   };
 }
@@ -214,6 +243,7 @@ export async function callProcessTool(
         return result({
           repoId,
           process: handleToPayload(handle),
+          synchronization: handle.completed === true ? 'terminal_result_available' : 'continue_independent_work',
           waitedMs: Date.now() - startedAt,
           requestedWaitMs,
           attachBudgetMs,

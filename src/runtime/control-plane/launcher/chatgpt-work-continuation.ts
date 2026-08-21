@@ -42,33 +42,6 @@ export interface WorkChatgptContinuationInput {
   timeoutMs?: number;
 }
 
-export interface ScheduledChatgptPromptInput {
-  controllerHome: string;
-  repoId: string;
-  automationId: string;
-  prompt: string;
-  title?: string;
-  browserSessionId?: string;
-  conversationUrl?: string;
-  model?: string;
-  reasoning?: ChatgptAutomationReasoning;
-  tabPolicy?: ChatgptAutomationTabPolicy;
-  timeoutMs?: number;
-}
-
-export interface ScheduledChatgptPromptResult {
-  status: 'dispatched' | 'failed';
-  provider: 'controller-browser';
-  browserSessionId: string;
-  conversationUrl?: string;
-  model: string;
-  reasoning: ChatgptAutomationReasoning;
-  tabPolicy: ChatgptAutomationTabPolicy;
-  executionPreferenceVerified: boolean;
-  reusedSession: boolean;
-  error?: { code: string; message: string };
-}
-
 export interface WorkChatgptContinuationResult {
   status: 'dispatched' | 'failed';
   provider: 'controller-browser';
@@ -153,11 +126,6 @@ function normalizeTabPolicy(value?: ChatgptAutomationTabPolicy): ChatgptAutomati
 export function stableChatgptWorkBrowserSessionId(repoId: string, workId: string): string {
   const digest = createHash('sha256').update(`${repoId}\n${workId}`).digest('hex').slice(0, 20);
   return `forge-chatgpt-work-${digest}`;
-}
-
-export function stableChatgptAutomationBrowserSessionId(repoId: string, automationId: string): string {
-  const digest = createHash('sha256').update(`${repoId}\nautomation\n${automationId}`).digest('hex').slice(0, 20);
-  return `forge-chatgpt-automation-${digest}`;
 }
 
 export function resolveChatgptWorkBrowserSessionId(input: {
@@ -496,81 +464,6 @@ export function withForgePluginMention(prompt: string): string {
   if (!value) throw new Error('CHATGPT_AUTOMATION_PROMPT_REQUIRED');
   if (/^@forge(?:\s|$)/i.test(value)) return value;
   return `${DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION} ${value}`;
-}
-
-export async function runScheduledChatgptPrompt(input: ScheduledChatgptPromptInput): Promise<ScheduledChatgptPromptResult> {
-  const model = normalizeModel(input.model);
-  const reasoning = normalizeReasoning(input.reasoning);
-  const tabPolicy = normalizeTabPolicy(input.tabPolicy);
-  const stableSessionId = stableChatgptAutomationBrowserSessionId(input.repoId, input.automationId);
-  const explicitSessionId = input.browserSessionId?.trim();
-  const sessionId = tabPolicy === 'new'
-    ? `${stableSessionId}-${randomUUID().slice(0, 8)}`
-    : explicitSessionId || stableSessionId;
-  const targetUrl = tabPolicy === 'new'
-    ? 'https://chatgpt.com/'
-    : input.conversationUrl?.trim() || 'https://chatgpt.com/';
-  let reusedSession = false;
-  try {
-    await ensureControllerChatgptBrowser(input.controllerHome, input.automationId);
-    if (tabPolicy !== 'new') {
-      try {
-        await controllerBrowserAction(input.controllerHome, input.automationId, 'get_text', {
-          session_id: sessionId,
-          selector: 'body',
-          max_chars: 1,
-          timeout_ms: Math.min(input.timeoutMs ?? 60_000, 3_000),
-        }, input.timeoutMs);
-        reusedSession = true;
-      } catch {
-        reusedSession = false;
-      }
-    }
-    if (!reusedSession) {
-      await controllerBrowserAction(input.controllerHome, input.automationId, 'open_page', {
-        session_id: sessionId,
-        url: targetUrl,
-        wait_until: 'domcontentloaded',
-        timeout_ms: input.timeoutMs ?? 60_000,
-        retries: 1,
-      }, input.timeoutMs);
-    }
-    const executionPreferenceVerified = await ensureChatgptExecutionPreference(
-      input.controllerHome,
-      input.automationId,
-      sessionId,
-      model,
-      reasoning,
-      input.timeoutMs,
-    );
-    const observedUrl = await submitChatgptPrompt(input.controllerHome, input.automationId, sessionId, input.prompt, targetUrl, input.timeoutMs);
-    return {
-      status: 'dispatched',
-      provider: 'controller-browser',
-      browserSessionId: sessionId,
-      conversationUrl: observedUrl,
-      model,
-      reasoning,
-      tabPolicy,
-      executionPreferenceVerified,
-      reusedSession,
-    };
-  } catch (error) {
-    return {
-      status: 'failed',
-      provider: 'controller-browser',
-      browserSessionId: sessionId,
-      model,
-      reasoning,
-      tabPolicy,
-      executionPreferenceVerified: false,
-      reusedSession,
-      error: {
-        code: error instanceof Error && error.message.includes(':') ? error.message.split(':', 1)[0] : 'CHATGPT_SCHEDULED_PROMPT_FAILED',
-        message: error instanceof Error ? error.message : String(error),
-      },
-    };
-  }
 }
 
 /**

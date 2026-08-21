@@ -574,7 +574,7 @@ function searchManyComplete(state: SearchManyMatchState): boolean {
 }
 
 function exactCodeNeedleMatches(haystack: string, needle: string): boolean {
-  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, (match) => `\\${match}`);
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(?:^|[^\\p{L}\\p{N}_$])${escaped}(?=$|[^\\p{L}\\p{N}_$])`, 'u').test(haystack);
 }
 
@@ -794,6 +794,7 @@ export async function searchRepositoryManyAsync(
     completionMode,
     discoveryTargetFiles,
     discoveryMinQueryCoverage,
+    requiredQueries,
     includeKey,
     batchQueryKey,
   } = searchRepositoryManyCacheIdentity(opts);
@@ -817,7 +818,7 @@ export async function searchRepositoryManyAsync(
     completionMode,
     discoveryTargetFiles,
     discoveryMinQueryCoverage,
-    opts.requiredQueries ?? [],
+    requiredQueries,
     opts.caseSensitive === true,
   );
   let scannedFiles = 0;

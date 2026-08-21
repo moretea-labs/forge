@@ -37,7 +37,7 @@ import {
   clamp,
   cleanList,
   gitStatusChangedPaths,
-  codeShapedAnchors,
+  isCodeShapedTerm,
   pathNoisePenalty,
   structuralIntentQuery,
   textTokens,
@@ -115,18 +115,16 @@ export function buildControllerContextPack(
       impactTermDomains.set(term, existing);
     }
   }
-  // Preserve explicit caller-supplied code symbols/paths as real lexical
-  // queries. Discovery may stop early on broad terms, but it must not satisfy
-  // itself before these exact needles are observed.
-  const requiredSearchQueries = cleanList(options.searchTerms)
-    .flatMap(codeShapedAnchors)
-    .slice(0, 2);
   const searchQueries = cleanList([
     ...(terms[0] ? [terms[0]] : []),
-    ...requiredSearchQueries,
     ...impactDomains.flatMap((domain) => IMPACT_DOMAIN_TERMS[domain]),
     ...terms.slice(1),
   ]).slice(0, 32);
+  // Preserve the guarantee for explicit code symbols while broad natural-
+  // language terms remain eligible for early discovery completion.
+  const requiredSearchQueries = cleanList(options.searchTerms)
+    .filter(isCodeShapedTerm)
+    .slice(0, 2);
   const impactCandidatePaths = new Map<ControllerContextImpactDomain, Set<string>>(impactDomains.map((domain) => [domain, new Set<string>()]));
   const candidates = new Map<string, { reasons: Set<string>; lines: Set<number> }>();
   const deniedPaths: Array<{ path: string; reason: string }> = [];
@@ -362,7 +360,6 @@ export function buildControllerContextPack(
 
   timingsMs.lexical = Math.round((performance.now() - lexicalStartedAt) * 100) / 100;
   const primarySearchReason = terms.length > 0 ? `search:${terms[0]}` : undefined;
-  const requiredSearchReasons = new Set(requiredSearchQueries.map((query) => `search:${query}`));
   const rankedCandidates = Array.from(candidates.entries())
     .map(([path, entry]) => ({ path, reasons: Array.from(entry.reasons), lines: Array.from(entry.lines) }))
     .sort((left, right) => {
@@ -373,9 +370,6 @@ export function buildControllerContextPack(
         ? 2
         : right.reasons.some((reason) => reason.startsWith("explicit-known-directory:")) ? 1 : 0;
       if (leftExplicit !== rightExplicit) return rightExplicit - leftExplicit;
-      const leftRequired = left.reasons.some((reason) => requiredSearchReasons.has(reason)) ? 1 : 0;
-      const rightRequired = right.reasons.some((reason) => requiredSearchReasons.has(reason)) ? 1 : 0;
-      if (leftRequired !== rightRequired) return rightRequired - leftRequired;
       const leftPrimary = primarySearchReason && left.reasons.includes(primarySearchReason) ? 1 : 0;
       const rightPrimary = primarySearchReason && right.reasons.includes(primarySearchReason) ? 1 : 0;
       if (leftPrimary !== rightPrimary) return rightPrimary - leftPrimary;
@@ -704,15 +698,14 @@ export async function buildControllerContextPackAsync(
   const impactDomains = cleanList(options.impactDomains)
     .filter((domain): domain is ControllerContextImpactDomain => CONTROLLER_CONTEXT_IMPACT_DOMAINS.includes(domain as ControllerContextImpactDomain))
     .slice(0, 6);
-  const requiredSearchQueries = cleanList(options.searchTerms)
-    .flatMap(codeShapedAnchors)
-    .slice(0, 2);
   const searchQueries = cleanList([
     ...(terms[0] ? [terms[0]] : []),
-    ...requiredSearchQueries,
     ...impactDomains.flatMap((domain) => IMPACT_DOMAIN_TERMS[domain]),
     ...terms.slice(1),
   ]).slice(0, 32);
+  const requiredSearchQueries = cleanList(options.searchTerms)
+    .filter(isCodeShapedTerm)
+    .slice(0, 2);
   const structuralQuery = structuralMode === 'off'
     ? ''
     : structuralIntentQuery(options.description ?? '', terms, impactDomains);

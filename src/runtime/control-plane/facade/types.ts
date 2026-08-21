@@ -508,13 +508,12 @@ export interface WorkContract {
   continuationPrompt?: string;
   worktreeRef?: string;
   workerRef?: string;
-  /** Stable idempotency key when this Work was accepted via work_submit. */
   requestId?: string;
-  /** Accepted Kernel operation envelope. Does not imply ExecutionJob creation. */
+  /** Typed execution metadata; it does not imply ExecutionJob creation. */
   submittedOperation?: SubmittedWorkOperation;
 }
 
-/** Operation metadata retained on WorkContracts accepted through work_submit. */
+/** Typed execution metadata retained on execution-child WorkContracts. */
 export interface SubmittedWorkOperation {
   name: string;
   semanticKey: string;

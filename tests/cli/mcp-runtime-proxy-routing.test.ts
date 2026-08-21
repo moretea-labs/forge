@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { forgeToolSurfaceFingerprint } from '../../src/cli/controller/runtime-config';
 import {
   CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS,
@@ -14,10 +16,12 @@ import {
   canonicalRuntimeForwardingIdentity,
   canonicalRuntimeProxyLaneLimit,
   canonicalRuntimeReleaseHandoffInProgress,
+  createCanonicalRuntimeProxy,
   createCanonicalRuntimeLaneScheduler,
   createForgeMcpServerFromContext,
   createMcpToolContext,
   deriveCanonicalForwardingTiming,
+  readCanonicalRuntimeToolSchema,
   retryCanonicalRuntimeConnectDuringHandoff,
   sameCanonicalRuntimeProxyIdentity,
   waitForCanonicalRuntimeReleaseHandoff,
@@ -28,7 +32,8 @@ import {
   mcpSessionToolSurfaceFingerprintIsCurrent,
   resolveMcpSessionCurrentFingerprint,
 } from '../../src/cli/mcp/transports/http';
-import { closeRuntimeMcpTransportResources } from '../../src/runtime/root/mcp-transport';
+import { closeRuntimeMcpTransportResources, startRuntimeMcpTransport } from '../../src/runtime/root/mcp-transport';
+import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 
 describe('MCP canonical Runtime proxy routing', () => {
   test('bounds inner Runtime proxy lanes and leases them exclusively under concurrency', async () => {
@@ -138,6 +143,104 @@ describe('MCP canonical Runtime proxy routing', () => {
       rmSync(controllerHome, { recursive: true, force: true });
     }
     expect(closeCalls).toBe(1);
+  });
+
+  test('keeps the real inner Runtime connection hot from schema discovery through separate outer sessions', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-runtime-proxy-real-reuse-'));
+    const runtimeToken = 'fixture-runtime-token';
+    const runtimeSchema: CanonicalRuntimeToolSchema = {
+      definitions: [{ name: 'rh_status', description: 'fixture', inputSchema: { type: 'object' } }],
+      toolNames: ['rh_status'],
+      fingerprint: 'fixture-runtime-schema',
+    };
+    let initializedRuntimeSessions = 0;
+    const runtimeTransport = await startRuntimeMcpTransport({
+      host: '127.0.0.1',
+      port: 0,
+      authToken: runtimeToken,
+      readiness: () => ({
+        ready: true,
+        reasonCodes: [],
+        observedAt: new Date().toISOString(),
+        diagnostics: {
+          database: { outcome: 'pass' },
+          scheduler: { outcome: 'pass' },
+          releaseCoherence: { outcome: 'pass' },
+          mcpEndToEnd: { outcome: 'pass' },
+        },
+      }),
+      createServer: () => {
+        initializedRuntimeSessions += 1;
+        const server = new Server(
+          { name: 'fixture-runtime', version: '1.0.0' },
+          { capabilities: { tools: { listChanged: false } } },
+        );
+        server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: runtimeSchema.definitions }));
+        server.setRequestHandler(CallToolRequestSchema, async () => ({
+          content: [{ type: 'text', text: '{"ok":true}' }],
+          structuredContent: { ok: true },
+        }));
+        return server;
+      },
+    });
+    const observedAt = new Date().toISOString();
+    mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
+    writeFileSync(join(controllerHome, 'mcp', 'runtime-token'), runtimeToken, 'utf8');
+    writeRuntimeStatusSnapshot(controllerHome, {
+      schemaVersion: 1,
+      runtimeInstanceId: 'runtime-proxy-reuse-fixture',
+      pid: process.pid,
+      releaseId: 'release-proxy-reuse-fixture',
+      artifactIdentity: 'artifact-proxy-reuse-fixture',
+      endpoint: runtimeTransport.endpoint,
+      readiness: {
+        ready: true,
+        reasonCodes: [],
+        observedAt,
+        diagnostics: {
+          database: { outcome: 'pass' },
+          scheduler: { outcome: 'pass' },
+          releaseCoherence: { outcome: 'pass' },
+          mcpEndToEnd: { outcome: 'pass' },
+        },
+      },
+      startedAt: observedAt,
+      updatedAt: observedAt,
+    });
+    const baseContext = createMcpToolContext({ controllerHome, profile: 'controller' });
+    const proxy = createCanonicalRuntimeProxy(baseContext);
+    const invokeOuterSession = async (sessionId: string, schema: CanonicalRuntimeToolSchema): Promise<void> => {
+      const server = createForgeMcpServerFromContext({
+        ...baseContext,
+        principalId: 'oauth-client:fixture',
+        sessionId,
+        controllerType: 'chatgpt',
+      }, schema, proxy);
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client({ name: `real-proxy-client-${sessionId}`, version: '1.0.0' }, { capabilities: {} });
+      await client.connect(clientTransport);
+      try {
+        await client.callTool({ name: 'rh_status', arguments: { request_id: `req-${sessionId}` } });
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    };
+    try {
+      const schema = await readCanonicalRuntimeToolSchema(baseContext, proxy);
+      await invokeOuterSession('outer-session-a', schema);
+      await invokeOuterSession('outer-session-b', schema);
+
+      // `startRuntimeMcpTransport` creates a Server only for an MCP initialize.
+      // One initialize therefore proves schema discovery and both outer sessions
+      // shared the same real inner Client instead of reconnecting per request.
+      expect(initializedRuntimeSessions).toBe(1);
+    } finally {
+      await proxy.close();
+      await runtimeTransport.close();
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
   });
 
   test('accepts only bounded internal Runtime forwarding identity metadata', () => {

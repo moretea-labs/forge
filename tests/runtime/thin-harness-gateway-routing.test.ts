@@ -29,6 +29,7 @@ import { runPersistedCheckViaProcessRuntime } from '../../src/runtime/execution/
 import { readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
+import { MCP_SERVER_INSTRUCTIONS } from '../../src/cli/mcp/instructions';
 import {
   applyEditOperations,
   beginEditSession,
@@ -511,6 +512,73 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(artifact.revision).toBe(artifact.completedRevision);
     expect(artifact.validatedRevision).toBe(artifact.revision);
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
+  });
+
+  test('managed checks return a background handle and need one dependency join after useful work', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const marker = join(fx.root, 'physical-execution-count.txt');
+    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
+      version: 1,
+      checks: {
+        overlap: {
+          description: 'managed check overlap fixture',
+          command: [process.execPath, '-e', `require('fs').appendFileSync(${JSON.stringify(marker)}, '1'); setTimeout(() => process.exit(0), 450);`],
+          timeoutMs: 10_000,
+        },
+      },
+    }, null, 2));
+
+    const started = await routeDurableMcpCall(fx.ctx, 'run_check', {
+      repo_id: fx.repository.repoId,
+      check_id: 'overlap',
+      interactive_wait_ms: 0,
+    });
+    const payload = started?.structuredContent as Record<string, unknown>;
+    const processId = String(payload.processId ?? '');
+    expect(payload).toMatchObject({
+      path: 'process_managed',
+      status: 'running',
+      completed: false,
+    });
+    expect(String(payload.next ?? '')).toContain('Continue independent work');
+    expect(String(payload.next ?? '')).toContain('process_wait only when this exact result becomes a real dependency');
+    expect(String(payload.next ?? '')).toContain('Do not re-run or periodically poll the same check');
+    expect(processId).toBeTruthy();
+
+    // A useful Context operation completes before any synchronization attempt.
+    const independent = await callRuntimeTool(fx.ctx, 'rh_context', {
+      repo_id: fx.repository.repoId,
+      operation: 'search',
+      query: 'gateway routing fixture',
+      known_paths: ['README.md'],
+      structural_context: 'off',
+    });
+    expect(independent?.isError).not.toBe(true);
+
+    const joined = await callProcessTool(fx.ctx, 'process_wait', {
+      repo_id: fx.repository.repoId,
+      process_id: processId,
+      timeout_ms: 10_000,
+    });
+    expect(joined?.isError).not.toBe(true);
+    expect(joined?.structuredContent).toMatchObject({
+      synchronization: 'terminal_result_available',
+      process: {
+        processId,
+        completed: true,
+        ok: true,
+        continuation: { state: 'terminal', join: 'complete', reexecution: 'forbidden' },
+      },
+    });
+    expect(readFileSync(marker, 'utf8')).toBe('1');
+  });
+
+  test('controller instructions make bounded dependency attachment explicit instead of normal polling', () => {
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('Do not call process_wait while useful independent work remains.');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('attach with process_wait');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('transport-bounded');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('never as periodic polling');
   });
 
 
