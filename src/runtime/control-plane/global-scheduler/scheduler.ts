@@ -16,11 +16,7 @@ import {
   transitionExecutionJob,
   updateExecutionJob,
 } from '../../execution/jobs/store';
-import {
-  TERMINAL_JOB_STATUSES,
-  type ExecutionJobStatus,
-  type ExecutionWorkerLifecycle,
-} from '../../execution/jobs/types';
+import { type ExecutionWorkerLifecycle } from '../../execution/jobs/types';
 import { tryRecoverJobFromWorkerReceipt } from '../../execution/jobs/receipt-recovery';
 import { releaseExecutionLeases } from '../../resources/leases/store';
 import { RepoActorRegistry } from '../repo-actor/registry';
@@ -50,6 +46,10 @@ import {
 import { refreshSchedulerRepositoryProjections } from './projection-refresh';
 import { createSchedulerWorkerStderrCapture } from './worker-stderr';
 import { persistSchedulerWorkerAttachment } from './worker-attachment';
+import {
+  persistSchedulerSpawnedWorkerLifecycle,
+  persistSchedulerTerminalWorkerLifecycle,
+} from './worker-lifecycle-store';
 import {
   buildSchedulerWorkerExitFailure,
   buildSchedulerWorkerExitedLifecycle,
@@ -253,27 +253,6 @@ export class GlobalScheduler {
     await Promise.all(workers.map((child) => terminateProcessTree(child.pid)));
   }
 
-  private persistSpawnedWorker(repoId: string, jobId: string, lifecycle: ExecutionWorkerLifecycle): void {
-    try {
-      updateExecutionJob(this.controllerHome, repoId, jobId, (current) => {
-        if (!['dispatched', 'running'].includes(current.status) || current.workerPid !== undefined) return current;
-        return { ...current, workerLifecycle: lifecycle };
-      });
-    } catch { /* the Job may have been superseded or made terminal */ }
-  }
-
-  private persistTerminalWorkerLifecycle(
-    repoId: string,
-    jobId: string,
-    status: ExecutionJobStatus,
-    lifecycle: ExecutionWorkerLifecycle,
-  ): boolean {
-    if (!TERMINAL_JOB_STATUSES.has(status)) return false;
-    updateExecutionJob(this.controllerHome, repoId, jobId, (latest) => ({ ...latest, workerLifecycle: lifecycle }));
-    try { rebuildRepositoryProjection(this.controllerHome, repoId); } catch { /* the next scheduler/status read can retry */ }
-    return true;
-  }
-
   private async recordWorkerExit(
     repoId: string,
     jobId: string,
@@ -301,7 +280,13 @@ export class GlobalScheduler {
       if (child?.pid && current.workerPid !== undefined && current.workerPid !== child.pid) return;
       const currentLifecycle = current.workerLifecycle ?? lifecycle;
       const mergedLifecycle = { ...currentLifecycle, ...diagnosticLifecycle };
-      if (this.persistTerminalWorkerLifecycle(repoId, jobId, current.status, mergedLifecycle)) return;
+      if (persistSchedulerTerminalWorkerLifecycle({
+        controllerHome: this.controllerHome,
+        repoId,
+        jobId,
+        status: current.status,
+        lifecycle: mergedLifecycle,
+      })) return;
 
       // Prefer durable receipt recovery over sleep-based grace. When the Worker
       // already wrote a completed/delegated receipt for this attempt/PID/epoch/
@@ -316,7 +301,13 @@ export class GlobalScheduler {
       if (rechecked.attempt !== attempt) return;
       const recheckedLifecycle = rechecked.workerLifecycle ?? lifecycle;
       const recheckedMerged = { ...recheckedLifecycle, ...diagnosticLifecycle };
-      if (this.persistTerminalWorkerLifecycle(repoId, jobId, rechecked.status, recheckedMerged)) return;
+      if (persistSchedulerTerminalWorkerLifecycle({
+        controllerHome: this.controllerHome,
+        repoId,
+        jobId,
+        status: rechecked.status,
+        lifecycle: recheckedMerged,
+      })) return;
 
       const failure = buildSchedulerWorkerExitFailure({
         lifecycle: recheckedMerged,
@@ -365,7 +356,12 @@ export class GlobalScheduler {
           attempt: current.attempt,
           maxAttempts: current.maxAttempts,
         });
-        this.persistSpawnedWorker(repoId, jobId, lifecycle);
+        persistSchedulerSpawnedWorkerLifecycle({
+          controllerHome: this.controllerHome,
+          repoId,
+          jobId,
+          lifecycle,
+        });
         void this.recordWorkerExit(repoId, jobId, current.attempt, undefined, lifecycle, null, null, '', false, message);
         return undefined;
       }
@@ -403,7 +399,12 @@ export class GlobalScheduler {
       maxAttempts: current.maxAttempts,
       stderrPath: stderrCapture.path,
     });
-    this.persistSpawnedWorker(repoId, jobId, lifecycle);
+    persistSchedulerSpawnedWorkerLifecycle({
+      controllerHome: this.controllerHome,
+      repoId,
+      jobId,
+      lifecycle,
+    });
     let child: ChildProcess;
     try {
       child = spawn(launch.executable, launch.args, {

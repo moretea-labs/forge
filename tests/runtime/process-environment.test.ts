@@ -18,6 +18,10 @@ import {
 } from '../../src/runtime/control-plane/global-scheduler/worker-lifecycle';
 import { createSchedulerWorkerStderrCapture } from '../../src/runtime/control-plane/global-scheduler/worker-stderr';
 import { persistSchedulerWorkerAttachment } from '../../src/runtime/control-plane/global-scheduler/worker-attachment';
+import {
+  persistSchedulerSpawnedWorkerLifecycle,
+  persistSchedulerTerminalWorkerLifecycle,
+} from '../../src/runtime/control-plane/global-scheduler/worker-lifecycle-store';
 import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
 
 const homes: string[] = [];
@@ -215,6 +219,55 @@ describe('repository child process environment', () => {
       maxAttempts: 3,
       spawnedAt: '2026-08-21T00:00:00.000Z',
     })).toMatchObject({ startupState: 'spawn_failed', attempt: 3, maxAttempts: 3 });
+  });
+
+  test('persists Scheduler worker lifecycle state outside GlobalScheduler', () => {
+    const lifecycle = buildSchedulerWorkerSpawnFailureLifecycle({
+      executable: '/runtime/worker',
+      cwd: '/runtime',
+      environment: {},
+      ownerPid: 42,
+      attempt: 1,
+      maxAttempts: 2,
+      spawnedAt: '2026-08-21T00:00:00.000Z',
+    });
+    const dispatched = {
+      repoId: 'repo-a',
+      jobId: 'job-a',
+      status: 'dispatched',
+    } as ExecutionJob;
+    let updated: ExecutionJob | undefined;
+    let rebuilds = 0;
+    const dependencies = {
+      updateJob: (_controllerHome: string, _repoId: string, _jobId: string, updater: (current: ExecutionJob) => ExecutionJob) => {
+        updated = updater(updated ?? dispatched);
+        return updated;
+      },
+      rebuildProjection: () => { rebuilds += 1; },
+    };
+
+    persistSchedulerSpawnedWorkerLifecycle({
+      controllerHome: '/controller',
+      repoId: 'repo-a',
+      jobId: 'job-a',
+      lifecycle,
+    }, dependencies);
+    expect(updated?.workerLifecycle).toEqual(lifecycle);
+    expect(persistSchedulerTerminalWorkerLifecycle({
+      controllerHome: '/controller',
+      repoId: 'repo-a',
+      jobId: 'job-a',
+      status: 'succeeded',
+      lifecycle: { ...lifecycle, startupState: 'exited' },
+    }, dependencies)).toBe(true);
+    expect(rebuilds).toBe(1);
+    expect(persistSchedulerTerminalWorkerLifecycle({
+      controllerHome: '/controller',
+      repoId: 'repo-a',
+      jobId: 'job-a',
+      status: 'running',
+      lifecycle,
+    }, dependencies)).toBe(false);
   });
 
   test('persists Scheduler worker attachment and registered lifecycle outside GlobalScheduler', () => {

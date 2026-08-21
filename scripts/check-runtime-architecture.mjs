@@ -64,6 +64,7 @@ const required = [
   'src/runtime/control-plane/global-scheduler/worker-lifecycle.ts',
   'src/runtime/control-plane/global-scheduler/worker-stderr.ts',
   'src/runtime/control-plane/global-scheduler/worker-attachment.ts',
+  'src/runtime/control-plane/global-scheduler/worker-lifecycle-store.ts',
   'src/runtime/control-plane/repo-actor/actor.ts',
   'src/runtime/execution/jobs/store.ts',
   'src/runtime/execution/jobs/timeouts.ts',
@@ -498,6 +499,8 @@ requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'createSc
 requireText('src/runtime/control-plane/global-scheduler/worker-stderr.ts', 'MAX_SCHEDULER_WORKER_STDERR_BYTES');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'persistSchedulerWorkerAttachment');
 requireText('src/runtime/control-plane/global-scheduler/worker-attachment.ts', 'attachExecutionWorker');
+requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'persistSchedulerTerminalWorkerLifecycle');
+requireText('src/runtime/control-plane/global-scheduler/worker-lifecycle-store.ts', 'TERMINAL_JOB_STATUSES');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'writeAgentExecutableReadinessSnapshot');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'sampleRepositoryGitStatusForRepositories');
 requireText('src/cli/agent-jobs/executable-resolver.ts', 'revalidateAgentExecutable');
