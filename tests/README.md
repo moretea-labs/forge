@@ -1,56 +1,31 @@
 # Test Directory Structure
 
-Tests are a small, risk-focused safety net for a repository tool. They are not
-an alternative implementation or a reason to preserve every historical path.
+Tests are risk-focused verification evidence for Forge. They protect observable behavior and architecture invariants; they are not a second implementation or an alternate architecture authority.
 
-## Asset Hierarchy
+## Governance
 
-## Growth budget
+`tests/test-manifest.v1.json` registers every test exactly once with a module and resource class. `scripts/test-governance.ts` uses that metadata to select affected tests and to keep conflicting resource classes from running unsafely in parallel.
 
-- The manifest budget is 80 test files and 40,000 test lines.
-- A new test normally extends an existing file; adding a file requires deleting
-  or merging an equivalent test and staying inside the manifest budget.
-- Test one observable risk or contract per case. Do not test private helpers,
-  source formatting, or historical version snapshots unless they protect a
-  current compatibility boundary.
-- Keep process termination, PID ownership, worktree fencing, Controller
-  lifecycle, and package-install smoke coverage. These are the repository's
-  highest-cost failure modes.
-- `test:full` is an occasional manual diagnostic, never a merge requirement.
-  Ordinary checks must remain affected and bounded.
+Prefer extending an existing test when it protects the same obligation. Add a new file when it represents a distinct risk boundary. Retired implementation or compatibility behavior should not be preserved solely because an old test exists.
 
-## Rules
+High-value coverage includes process ownership/termination, repository and worktree fencing, Runtime lifecycle/recovery, authorization and external effects, context-routing semantics, test/check scheduling, package/install behavior, and essential integration/E2E paths.
 
-- Test code quantity ≥ Implementation code quantity
-- Test failure = Delete module and rewrite
-- Never modify tests to make buggy code pass
-
-## Running Tests
+## Running tests
 
 ```bash
-bun run test                         # affected: smoke + changed modules' pure tests
-bun run test:core                    # core smoke and pure state-machine tests
-bun run test:integration             # explicit changed-module integration diagnostic
-bun run test:infrastructure          # process/port/worktree/singleton lanes
-bun run test:fault                   # destructive/adversarial lane only
-bun run test:full                    # every non-destructive test
-bun run test:coverage                # explicit exhaustive coverage
-bun run check:task                   # type + architecture + affected
-bun run check:main                   # focused candidate receipt; never full
-bun run check:release                # main receipt + one packaged tarball smoke
+bun run test                 # affected tests selected from current changes
+bun run test:core            # core smoke/pure coverage
+bun run test:integration     # explicit integration diagnostic
+bun run test:infrastructure  # process/port/worktree/singleton lanes
+bun run test:fault           # destructive/adversarial lane
+bun run test:full            # explicit broad non-destructive diagnostic
+bun run test:coverage        # explicit exhaustive coverage
+bun run check:task           # task candidate gate
+bun run check:main           # main candidate gate
+bun run check:release        # release candidate gate
+bun run check:test-governance
 ```
 
-`test:full` is a manual diagnostic. Task, main, CI, and release gates never
-invoke it implicitly.
+Full testing is explicit rather than the default completion ritual. During development, run the smallest checks that can expose the current risk; at candidate boundaries, run the authoritative gate required by the changed surface.
 
-`tests/test-manifest.v1.json` assigns every test exactly one module and one
-resource class. Safe `pure` tests run eight-wide, `temp-isolated` tests run
-four-wide, and risky resources stay serial with one Bun process per file.
-The selector reports changed paths, mapped modules, and the selected count;
-unknown paths map conservatively and never trigger an implicit full suite.
-
-Each file writes a content/toolchain/capability checkpoint. Only
-infrastructure failures retry once in a fresh process. Source assertions and
-fixture/flaky markers do not retry. The runner also rejects wall timeout,
-residual process, non-convergence, and tracked-tree mutation as distinct
-infrastructure failures.
+Checkpoint reuse must be content/toolchain/capability-addressed and auditable. Infrastructure failures may retry only under the governed runner's policy; source assertion failures are not hidden by retries.

@@ -3,86 +3,38 @@
 > **Status**: Approved
 > **Owner**: Forge maintainers
 
-## Product Outcome
+## Product outcome
 
-Forge makes long-running AI engineering work reviewable and resumable
-inside the repository. A maintainer should be able to hand Claude, Codex, or a
-future agent an approved plan or sprint, let it work in an isolated branch or
-worktree, and review completion from files: plan, contract, notes, checks,
-trace, review, and handoff.
+Forge is an executable local engineering harness for a semantic controller. It should make repository understanding, implementation, verification, and external tool use faster and more reliable without turning ordinary coding into a durable workflow system.
 
-## Primary Users
+The controller owns semantic judgement: what the user means, whether more context is needed, what to change, and whether the result is correct. Forge owns deterministic repository mechanics, bounded context retrieval, execution, provider actions, verification evidence, and durable continuity only when continuity is actually required.
 
-- Maintainers adopting an existing repository that already has product code.
-- Engineers running Claude/Codex sessions across multiple days, hosts, or
-  worktrees.
-- Reviewers who need a concise human review card plus machine evidence before
-  accepting agent-authored changes.
+## Product principles
 
-## Non-Goals
+- **Direct-first**: ordinary investigation, edits, local commands, builds, and focused checks should use the shortest safe local path.
+- **Current source is truth**: Git/worktree source is authoritative for code. `rh_context` and CodeGraph help retrieve evidence; they do not define semantic scope.
+- **Durability is selective**: Work and durable Process state exist for real multi-session continuity, independent deliverables, scheduling, release/recovery, or external coordination—not because a task is large or difficult.
+- **One authority per concern**: diagnostics, compatibility projections, tests, plans, reviews, and historical records must not become competing runtime or product authorities.
+- **External effects are explicit**: remote, destructive, or non-idempotent actions remain permission- and evidence-bounded and are never silently replayed after ambiguous outcomes.
+- **Verification follows risk**: use focused checks while developing and authoritative gates at candidate/release boundaries. Tests are evidence, not a second implementation.
 
-- Forge is not a hosted agent platform, product runtime, or database service. Its local MCP controller is a bounded control surface over repository-backed state, not an unrestricted remote shell.
-- It does not replace the target repository's build, test, deploy, or release
-  authority.
-- It does not treat chat history, SQLite state, or hosted agent threads as the
-  durable source of truth.
+## Core user outcomes
 
-## Core Invariants
+1. Understand a repository through bounded raw-source retrieval with optional structural and compiler-semantic navigation.
+2. Execute ordinary local work through Ephemeral Direct with minimal fixed overhead.
+3. Attach to longer current-Runtime commands through Lightweight Managed handles without promoting them to durable recovery state.
+4. Use durable Work/Process only when the task actually needs continuity or orchestration.
+5. Use typed plugins/providers for browser, device, account, and other external capabilities while retaining Forge policy and evidence boundaries.
+6. Review completion from the actual diff, relevant checks, runtime evidence, and a fresh semantic impact review.
 
-- Durable truth lives in repo files: `plans/`, `tasks/issues/`, `tasks/contracts/`,
-  `tasks/reviews/`, `tasks/notes/`, `.ai/harness/checks/latest.json`,
-  `.ai/harness/runs/*.json`, `.ai/harness/session/`, `.ai/harness/controller/packets/`, `.ai/harness/projections/`, and `.ai/harness/transfers/`.
-- `tasks/current.md` is a generated orientation snapshot, not a kanban board,
-  live lock, or implementation gate.
-- Agents may only widen scope by editing the active contract and leaving
-  reviewable evidence.
-- Contract verification, review recommendation, external acceptance or manual
-  override, and latest trace evidence are required before closeout.
-- Worktree isolation protects unrelated dirty state; agents must not absorb
-  unrelated changes from the target tree.
+## Non-goals
 
-## Workflow Surfaces
+Forge is not a hosted autonomous-agent platform, personal-assistant runtime, goal/portfolio manager, project-management methodology, or replacement for a repository's own build/test/deploy/release authority. Chat history, generated status files, plans, reviews, and tests are not substitutes for current source and observed runtime facts.
 
-| Surface | Owner | Purpose |
-|---|---|---|
-| `docs/spec.md` | Maintainers | Stable product intent and safety boundary |
-| `plans/prds/`, `plans/sprints/`, `plans/plan-*.md` | Controller / Planner | Decision-complete work packages |
-| `tasks/issues/*.issue.json`, `tasks/issues/*.issue.md` | Controller | Durable Issue intent, dependency-aware Tasks, and lifecycle state |
-| `tasks/contracts/*.contract.md` | Implementer | Allowed paths, delegation, and exit criteria |
-| `tasks/reviews/*.review.md` | Evaluator | Human Review Card, evidence, risk, acceptance |
-| `.ai/harness/checks/latest.json` | Verifier | Current structured gate result |
-| `.ai/harness/runs/*.json` | Verifier | Immutable workflow run/trace snapshots |
-| `.ai/harness/jobs/` | Controller | Local agent Task Run metadata, prompts, logs, and result evidence |
-| `.ai/harness/local-jobs/` | Local Controller | Approval-aware local Job Tickets that bridge ChatGPT, the visual UI, and agent Runs |
-| `.ai/harness/edit-sessions/` | Controller | Bounded direct-edit metadata, hashes, backups, and rollback evidence |
-| `.ai/harness/session/` | Session adapter | Rebuildable continuation and resume cache |
-| `.ai/harness/controller/packets/` | External-controller adapter | Bounded Codex/ChatGPT continuation packets |
-| `.ai/harness/projections/` | Runtime projection layer | Read-only compatibility/status projections |
-| `.ai/harness/transfers/` | Recovery/selected-path layer | Bounded patch transfer artifacts |
+## Architecture contract
 
-## Safety Boundaries
+[`architecture/CURRENT.md`](architecture/CURRENT.md) is the sole maintained current-runtime architecture authority. This spec defines stable product intent; implementation details and current ownership rules belong there.
 
-- Hook logic is a guardrail and context accelerator; it must not silently make
-  product decisions, merge work, publish releases, or bypass review.
-- External knowledge and memory are advisory. Current repo files and live check
-  output override summaries.
-- Delegated work remains parent-owned: explorer and verifier are read-only;
-  worker edits are constrained to contract `allowed_paths`.
+## Acceptance
 
-## Human Review Expectations
-
-Human reviewers should start with the task review's `## Human Review Card`,
-then inspect the active contract, changed files, latest trace, and failed or
-skipped checks. A pass means the reviewer can see what changed, why it is in
-scope, what verified it, what risk remains, and how to roll it back.
-
-## Acceptance Scenarios
-
-- An existing repo can adopt the harness, generate workflow files, and pass
-  `scripts/check-task-workflow.sh --strict`.
-- A sprint row can expand into a plan, contract, notes, review, latest trace,
-  and handoff without relying on previous chat.
-- A fresh agent session can read source artifacts first and resume from the
-  exact next step.
-- A maintainer can reject or accept an agent change from the Human Review Card
-  plus machine evidence.
+A healthy Forge should keep the default MCP surface small and stable, preserve one canonical Runtime/release authority, make ordinary local work avoid unnecessary persistence/lease/recovery tax, keep Work/Plan optional and purpose-specific, expose coverage gaps rather than fabricate semantic completeness, and prove important behavior with bounded reproducible checks.

@@ -11,7 +11,7 @@
 | Install Forge | [Install and start](tutorials/01-install-and-start.md) | [Platform support](operations/platform-support.md) |
 | Connect ChatGPT | [Connect ChatGPT](tutorials/02-connect-chatgpt.md) | [MCP setup](forge-chatgpt-mcp-setup.md) |
 | Complete a first task | [First repository task](tutorials/03-first-repository-task.md) | [Public usage guide](public-usage-guide.md) |
-| Install an official provider | [Plugin management](forge-plugin-management.md) | [Provider configuration](operations/provider-configuration.md) |
+| Install an official provider | [Plugin management](forge-plugin-management.md) | [Plugin management](forge-plugin-management.md) |
 | Understand Forge | [Current architecture](architecture/CURRENT.md) | [Roadmap](ROADMAP.md) |
 | Operate or recover | [Operations](wiki/Operations.md) | [Troubleshooting](operations/troubleshooting.md) |
 | Contribute or release | [Contributing](../CONTRIBUTING.md) | [Release process](operations/releasing.md) |
@@ -39,7 +39,6 @@ Forge is Direct-first: investigation does not create durable Work by itself, and
 
 ### Integrate
 - [Plugin management](forge-plugin-management.md)
-- [Provider configuration](operations/provider-configuration.md)
 - [Browser provider](operations/controller-browser-plugin.md)
 - [Desktop provider](operations/controller-desktop-plugin.md)
 - [Local system assistant](operations/local-system-assistant.md)

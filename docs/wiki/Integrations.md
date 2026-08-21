@@ -18,9 +18,9 @@ GitHub operations cover issues, pull requests, checks, repository settings, Wiki
 
 Browser and local-system plugins are optional controller capabilities. They use separate grants and do not turn repository access into unrestricted machine access.
 
-## Google Workspace and personal workflows
+## Google Workspace
 
-Gmail, Calendar, Contacts, and related assistant routines remain connector-specific. Credentials and personal data are not stored in repository source.
+Gmail, Calendar, Contacts, and other Workspace integrations remain connector-specific. Credentials and personal data are not stored in repository source.
 
 ## Apple tooling
 

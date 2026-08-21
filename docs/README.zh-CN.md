@@ -11,7 +11,7 @@
 | 安装 Forge | [安装并启动](tutorials/01-install-and-start.zh-CN.md) | [平台支持](operations/platform-support.zh-CN.md) |
 | 连接 ChatGPT | [连接 ChatGPT](tutorials/02-connect-chatgpt.zh-CN.md) | [MCP 配置](forge-chatgpt-mcp-setup.md) |
 | 完成第一个任务 | [第一个仓库任务](tutorials/03-first-repository-task.zh-CN.md) | [公开使用指南](public-usage-guide.zh-CN.md) |
-| 安装官方 Provider | [插件管理](forge-plugin-management.md) | [Provider 配置](operations/provider-configuration.md) |
+| 安装官方 Provider | [插件管理](forge-plugin-management.md) | [插件管理](forge-plugin-management.md) |
 | 理解 Forge | [核心概念](wiki/Core-Concepts.md) | [架构](wiki/Architecture.md) |
 | 运维与恢复 | [Operations](wiki/Operations.md) | [故障排查](operations/troubleshooting.zh-CN.md) |
 | 贡献与发布 | [贡献指南](../CONTRIBUTING.md) | [发布流程](operations/releasing.zh-CN.md) |
@@ -39,7 +39,6 @@ Forge 默认 Direct-first：仅调查不会创建 durable Work；只有真正需
 
 ### 集成能力
 - [插件管理](forge-plugin-management.md)
-- [Provider 配置](operations/provider-configuration.md)
 - [桌面 Provider](operations/controller-desktop-plugin.md)
 - [本地系统助手](operations/local-system-assistant.zh-CN.md)
 - [iOS 开发助手](forge-ios-development-assistant.md)

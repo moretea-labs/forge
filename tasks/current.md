@@ -1,98 +1,36 @@
 # Current Status Snapshot
 
-<!-- updated_at: 2026-08-18 -->
+<!-- updated_at: 2026-08-21 -->
 <!-- stale_after: 24h -->
 
-> **Status**: The quality-first executable harness refactor is complete on local branch `codex/quality-first-executable-harness`: progressive `rh_context`, symbol-aware source materialization, session reuse, thin Ephemeral/Lightweight execution, continuity-based Work routing, scope evidence separation, authority reduction, and responsibility-based module splits all pass focused, governed, architecture, task, and performance gates. No Runtime activation, push, release, or publication was performed; the prior deployed immutable Runtime state remains unchanged.
-> **Updated At**: 2026-08-18
-> **Source**: Current-HEAD architecture/authority audits, changed-source review, 220 focused tests, 24-file governed affected gate, task receipt, and 5-iteration quality-harness benchmark.
-> **Target**: Keep one canonical Forge Runtime release aligned with `main`, one Recovery service family, and the renamed `/Users/greyson/DevProjects/forge` paths.
+> **Status**: Architecture convergence source changes integrated on `main`; documentation synchronization is the final local convergence slice.
+> **Updated At**: 2026-08-21
+> **Source Branch**: main
+> **Target Branch**: main
+> **Derived From**: Git history, `docs/architecture/CURRENT.md`, focused checks, and current working-tree state
 > **Stale After**: 24h
 
-This snapshot is a read model, not an execution gate.
+This file is an orientation snapshot, not an execution gate or lifecycle authority.
 
-## Current Focus
-- ✅ `rh_context.search` is the sole public progressive source-context contract. Exact known paths reserve file/snippet capacity, complete functions/types are materialized when bounded, coverage and freshness are explicit, and repeated calls reuse Git/lexical/range/structural evidence.
-- ✅ Ordinary local writes/builds/tests use Ephemeral execution and can return an in-memory `lightweight:` handle after the interaction budget. The benchmark recorded zero durable Process writes and zero Lease operations; Work/Edit-bound verification still retains durable receipts.
-- ✅ Work routing is based on real continuity/orchestration needs, not predicted file or line counts. Initial likely, inspected, and actual changed paths are separate evidence from `allowedPaths` policy fences.
-- ✅ Public `controller_context_pack` compatibility was retired. Runtime MCP definitions, command process/snapshot mechanics, context planning/materialization, and lightweight handles were extracted into cohesive modules.
-- ✅ Final benchmark: context cold p50 `57.84 ms`, hot p50 `0.46 ms` (ratio `0.008`); command pre-spawn harness p95 `12 ms`; no durable writes or leases. Largest changed files: runtime tools `6621 -> 5900`, legacy MCP `5520 -> 5481`, command executor `1066 -> 575`, context pack `908 -> 725`.
-- ✅ Default ChatGPT MCP surface converged from 123 tools to 20 (`rh_*` facades, repository selection, `repository_command_execute`, search/read, safe patch, `run_check`, process lifecycle, result retrieval, approval). Atomic Git / issue-task / edit-session / plugin / maintenance handlers remain available through the compatibility surface where still supported; retired project-level orchestration handlers have been removed.
-- ✅ Route Policy no longer treats `requiresInvestigation` as durable: readonly investigation and small mutation + investigation route `direct_control`/`fast`; investigation + recovery or large mutation still routes bounded durable. `requiresParallelism` no longer implies isolation or worktree; `requiresIndependentDeliverables`/count routes durable `bounded_work` through Goal Workloop + PlanContract/Work coordination without a separate lifecycle.
-- ✅ `verify_edit_session` submits checks concurrently and Process Runtime arbitrates via existing Resource Claims/Leases; lease conflict gained a bounded opt-in wait (5s default for edit verification) instead of Gateway serialization. Evidence: independent checks overlap in wall-clock; conflicting workspace-write checks serialize without overlap; heavy/release exclusivity retained.
-- ✅ Repeat `repository_register` with identical path/repo/checkout/registration identity returns the existing registration with `fastPath=true`, `scanned=0`, no historical migration scan (benchmark: first 105ms/300 files vs repeat 9-11ms). Legacy entity bind moved to fresh registration / explicit repair; ordinary reads no longer rescan history.
-- ✅ Readiness split into `executionReady` / `maintenanceHealthy` / `releaseReady` on `rh_status` (detail evaluates maintenance). Ordinary read/search/command/patch/focused check depend only on `executionReady`; maintenance debt no longer promotes ordinary work into watchdog/repair flows, while real daemon/projection/local-bridge failures still block execution.
+## Integrated convergence blocks
 
-- ✅ Explicit `-direct`, `-plan`, `-debug`, `-review`, `-release`, and `-scale` modes now change Route Policy topology and publish executable workflow contracts; explicit topology never bypasses authorization, dirty-workspace, or remote/destructive gates.
-- ✅ `controller_context` always returns a non-null stable recommendation. Plan and Debug automatically acquire a bounded CodeGraph-backed `modeContextPack`; task-specific recommendations replace cached projection guidance so one request cannot inherit another task's mode.
-- ✅ The final full rebuild and sync contains 1,064 files / 22,895 nodes / 93,284 edges with zero Git-visible drift. Forge filters 50 Git-ignored operational entries from freshness only; graph-selected paths still pass the normal read policy before source is returned.
-- ✅ The route/session benchmark now performs real Process writes across two temporary repositories and a real second checkout created by `git worktree`; seven iterations proved independent repo/checkout identities and bounded same-checkout Lease rejection.
-- ✅ The same benchmark now exercises content-derived Check coalescing, completed cross-checkout reuse, and dirty-workspace invalidation across different execution session ids, with physical/logical/cache counters and queue/Lease wait percentiles persisted in the operations baseline.
-- ✅ Local System source now closes the temporary-grant lifecycle: an authenticated owner can revoke its active grant immediately, and a strongly confirmed structured action can delete one regular file inside a read-write target without exposing recursive deletion or arbitrary `rm`. Both paths retain plugin receipt and local-effect Work lineage.
-- ✅ Project scripts use a separate high-risk Local System action instead of weakening ordinary command classification: a fixed interpreter resolved from closed canonical system paths, root-contained script, exact SHA-256 pin, strong confirmation, target mutation lock, and destructive authorization evidence on the Work contract.
-- ✅ An enabled implicit/embedded Local Bridge is now owned by the Canonical Runtime as an in-process HTTP UI/API module. Runtime startup publishes current PID/endpoint/generation evidence; ordered shutdown closes the listener and marks the compatibility projection stopped. Explicit standalone/remote modes remain externally owned.
-- ✅ Local Bridge surface identity now matches the canonical runtime generation and does not expose a repository absolute path from its unauthenticated localhost health endpoint.
-- ✅ Terminal Process lease cleanup now persists a redacted structured failure diagnostic while retaining the canonical `pending` retry phase; exact-set/scope/fencing failures stay fail-closed, restart recovery retries them, and success clears the diagnostic without adding a second recovery owner.
-- ✅ Explicit full maintenance has zero remaining safe stale Work/Edit candidates. Four WorkContracts were cancelled with evidence retained; ten Work-bound sessions were finalized, superseded, or rolled back through existing cleanup semantics.
-- ⚠️ The full local inventory contains 1,318 retained nonterminal legacy Edit Sessions (`dirty` 1,179 / `open` 130 / `checked` 2 / `check_failed` 7). Every record lacks `workId`, so ownership cannot be proven and automatic cleanup correctly fails closed; all session IDs and the closeout rule are recorded in `docs/researches/20260809-stale-edit-session-inventory.md`.
-- ✅ Code-bearing acceptance release `1786280892083-68df28b833316ef9a977df7ebee2d058fec071d6` passed database, scheduler, release coherence, MCP, and embedded Local Bridge diagnostics; `controller_ready` had no warning or reason codes.
-- ✅ The immutable release now carries a matching CodeGraph Node executable, read-only sidecar, and complete library tree. Authenticated live MCP default/small/large/Plan/Debug calls returned the expected topology; Plan and Debug both reported CodeGraph `ready`, `requiredSatisfied=true`, 8 entry points, and 8/10 related files.
-- ✅ First-party `resend` plugin source now exposes non-secret configuration, auth/domain/SMTP status, domain verification, strongly confirmed sending, and sent-message receipt lookup; the personal-assistant reporting model includes a disabled-by-default `resend_email` sink.
-- ⚠️ `FORGE_RESEND_API_KEY` / `RESEND_API_KEY` and `.forge/plugins/resend.json` are absent in the current checkout, so no live email can be sent or claimed as accepted yet.
-- ✅ `ce6834e5b` fixes compiled `forge-runtime` Worker launch recursion by resolving the real Bun executable and preserves structured Runtime core-failure stderr.
-- ✅ Canonical `controller_ready` now compares the startup source snapshot with `ctx.runtimeSourceRoot`, eliminating false `RUNTIME_SOURCE_SNAPSHOT_STALE` diagnostics caused by the Gateway process cwd.
-- ✅ Startup and periodic ExecutionJob reconciliation isolate a malformed historical Job, continue healthy Job cleanup, remove timed-out Jobs from the active index, and release their Leases; `WRITER_FENCED` still fails the complete Runtime.
-- ✅ Authenticated live `controller_context` calls complete against the active Runtime; the explicit-mode/CodeGraph slice is no longer source-only.
-- ⚠️ Source `rh_work` supports `controller_claim` and `launcher_start`; the current ChatGPT connector snapshot exposes `rh_work` but its operation enum stops at `delegate`. `quick_agent_session` remains a compatibility tool with an intentional retirement response.
+- `7f699b0d` — retired duplicate Kernel authorities including assistant, autonomous goal-loop, personal-assistant, findings/portfolio/goal-registry, and MCP resource-policy ownership.
+- `61ea8971` — converged the thin execution and context hot paths: Ephemeral Direct, Lightweight Managed, and Durable boundaries; process attach does not replay commands.
+- `029e0e91` — added the isolated evaluation framework for measurable architecture/behavior regressions without creating a second Runtime.
+- `3840435e` — retired legacy harness workflow authority and removed more than four thousand lines of obsolete triage/trace/ceremony code while preserving migration cleanup compatibility.
+- `7848f5f1` — aligned test governance and added readonly fast-path coverage for very dirty worktrees.
 
-### Prior deployed baseline (2026-08-07)
+## Verified evidence
 
-- ✅ Unified `forge-runtime` is `ready: true` on port 8765 under one launchd service owner; the legacy Supervisor/daemon/slots architecture is deleted in source and not running.
-- ✅ `controller_ready` (read-only Repo Harness tool) succeeds locally and through the public tunnel; `/ready` returns HTTP 200 locally and publicly.
-- ✅ Recovery Gateway (8787), Watchdog, and dedicated cloudflared tunnel run on the renamed Controller Home and pass `forge recovery verify` and `verify-connector`; the Recovery MCP surface now exposes `activate_runtime_release`.
-- ✅ Repository registry migrated to `displayName: Forge`, `canonicalRoot/localRoot: /Users/greyson/DevProjects/forge` with the original `repo_123b7cf58b6b17b5cbe46a56` id preserved.
-- ✅ CLI fix: `forge mcp setup chatgpt` no longer suggests the nonexistent `forge mcp keepalive`; the official `forge runtime service install --stage-only` and `forge recovery restart-runtime|recover|rollback|restart|activate-runtime` surfaces are implemented and documented.
-- ✅ `/usr/bin/true` executes through the Repo Harness Process Runtime with exit 0 (`process_direct`); no `PROCESS_LEASE_CONFLICT: runtime-authority@runtime-fence` remains.
-- ✅ MCP tool fingerprint refreshed: gateway `toolSurfaceFingerprint=6319a970d884e711`, `mcp.runtime.json` generation points at the new Runtime release.
+- Runtime architecture: 37/37 contract checks passed during Kernel convergence.
+- TypeScript typecheck passed after runtime/controller and evaluation integration.
+- Harness bootstrap: 16/16 passed.
+- Workflow strict check passed; stale local resume packets were correctly classified as generated-runtime remediation, not source failure.
+- Harness/workflow focused regressions: 147/147 passed.
+- Evaluation framework: 3/3 passed.
+- Test governance manifest: 122 registered test files valid; focused residual regressions 7/7 passed.
+- Public documentation check passed again after the final documentation correction.
 
-## Validation Completed
+## Current architecture direction
 
-- Standalone Recovery staged and activated release `1786280892083-68df28b833316ef9a977df7ebee2d058fec071d6`; whole-Runtime verification passed at authority revision 58 with 123 tools and fingerprint `5c9b35942d343362e752a3e41bf249c7d8e1c1c0e1bedea44e193c3cb3cb50be`.
-- Authenticated live MCP mode matrix passed: default/small `direct`, large `bounded`, Plan `plan_only`, Debug `diagnose_first`; Plan/Debug required structural context was `ready` and satisfied with non-empty entry-point and related-file evidence.
-- `bun test tests/runtime/codegraph-context-provider.test.ts tests/cli/mcp-controller.test.ts`: 46/46 passed after Git-ignore-aware freshness filtering; `bun run check:task` passed.
-- `bun test tests/runtime/route-policy.test.ts tests/cli/mcp-controller.test.ts tests/runtime/thin-harness-gateway-routing.test.ts`: 77/77 passed for all explicit mode contracts, override priority, policy fencing, non-null context recommendations, and automatic Plan CodeGraph context.
-- CodeGraph acceptance: main incremental sync completed with zero pending files; the four required structural queries resolved production edges, and a detached `7dea3716` worktree produced an independent 640-file / 14,776-node / 62,307-edge index that correctly did not contain the main checkout's new `ExplicitTaskMode` symbol.
-- Live Local System acceptance on an unregistered non-Git temporary directory passed authorize, list/read, directory create, two concurrent writes, readonly commands, ordinary project-command denial, digest-pinned canonical-interpreter script execution, strongly confirmed file deletion, revoke, and post-revoke denial. The Repository Registry hash before and after an isolated authorize→revoke cycle remained exactly `7d17a58b011c26a2434658a35bd0e99dbc7582d7dd334d69e5edfa3e5b53832f`.
-- `bun run benchmark:route-session-concurrency --iterations 7`: all physical concurrency/cache scenarios met their expected outcome. Totals: 28 Check subscribers / 14 physical executions / 7 coalesces / 7 cache hits / 7 cross-checkout reuses / 7 invalidations; same-checkout Lease admission p50/p95 was 39.02/43.84 ms.
-- `bun test tests/runtime/local-system-target-grant.test.ts`: 29/29 passed, including owner-isolated revoke/fail-closed behavior, strong-confirmation single-file deletion, digest-pinned project-script execution, non-directory deletion refusal, symlink escape rejection, restart-stable identity, store contention, and same-root mutation serialization.
-- Live audit before the fix proved the warning was real: service runtime state claimed embedded PID 60290 at `127.0.0.1:8766`, but the PID and listener were absent. Runtime tool discovery contained exactly 123 tools, expected/actual counts matched with no missing/unexpected/duplicate entries, and neither retired `self_healing_monitor_tick` nor `self_healing_loop_plan` was advertised.
-- `bun test tests/runtime/canonical-single-runtime.test.ts`: 18/18 passed, including same-process Local Bridge start/health/projection/close evidence and ordered complete-Runtime shutdown.
-- Local Bridge/canonical Runtime/runtime-command focused matrix: 52/52 passed; `bun run check:task` passed with typecheck, architecture validation, and 10 governed affected test files.
-- `bun test tests/runtime/process-runtime.test.ts`: 51/51 passed, including normal exactly-once release, exit-receipt conflict recovery, terminal records missing from active index, whole-release change recovery, fencing mismatch fail-closed, visible transient failure plus successful retry, and read/write contention.
-- Live Process `proc_mslrbu8k_bdf30891` completed `package:check:type` with workspace-read/build-cache-write leases, terminal status `succeeded`, `leaseReleaseState=released`, and no active lease files. Historical failure `proc_mslcn0gt_9c86a2f5` is also terminal with all three recorded leases released. A typed `/usr/bin/true` readonly command used `readonly_fast_path` with no Process record or execution lease.
-- Live `runtime_maintenance_status` after the final explicit pass reported zero safe candidates, zero stale WorkContracts, and 437 protected unknown-owned Edit Sessions inside its bounded 500-candidate window; an unbounded local metadata scan accounted for all 1,318 retained IDs.
-- `EDIT-1786271171326-396c4572` received exact-revision Process Check receipt `check_receipt_c55cb76569e2b352cd867080` for `package:check:type`, then maintenance finalized it without source rollback.
-- `bun test tests/runtime/capability-recovery.test.ts`: 29/29 passed, including terminal committed/superseded/unique-dirty, active/missing ownership, empty-session, explicit-full-only, summary, and legacy maintenance coverage for stale Edit Sessions.
-- `bun test tests/runtime/process-environment.test.ts`: 5/5 passed.
-- `bun test tests/runtime/canonical-single-runtime.test.ts`: 16/16 passed (previously 15/16).
-- `bun test tests/runtime/execution-job-reconciliation.test.ts`: 3/3 passed.
-- `bun test tests/runtime/runtime-source-isolation.test.ts`: 11/11 passed.
-- `bun test tests/cli/mcp-controller.test.ts`: 36/36 passed.
-- `bun scripts/verify-forge-runtime.sh` (6 selected runtime suites + typecheck): 0 failures.
-- Focused runtime/CLI suites (runtime command surface, canonical single Runtime, MCP setup hint, release store, service contract, lifecycle authority): 33/33 passed.
-- `bun run check:task` gate passed; `bun scripts/check-runtime-architecture.mjs` passed (44 required modules/documents).
-- Runtime restart via `launchctl kickstart` recovered to ready in seconds; Recovery Gateway/Watchdog kickstart recovered on the new release path.
-- Public `https://mcp.moretea-lab.tech/mcp` returns an authenticated MCP response (no 502); `controller_ready` succeeded through the public endpoint.
-
-## Remaining Before Delivery
-
-- Continue Desktop Operator, macOS permission/TCC, normal Chrome, plugin lifecycle/health, UI Design, App Store Connect, delivery, branding/UI/iOS, and open-source acceptance slices.
-- Keep the compatibility symlink `repo-harness-controller-runtime -> forge` until Runtime, registry, Recovery, and tunnel all use the renamed path and reboot recovery is verified.
-- Preserve `scripts/TM17Runner.app/` and `scripts/tm17-ui-step.command` (untracked, must not be committed).
-
-
-## Authority T2 Progress
-
-- `9b3e2ae7f` is merged locally: Requirement, Plan, and Work runtime records use Controller-home SQLite per-record transactions with revision/CAS fencing; legacy JSON/index data is imported only when the new namespace is absent.
-- Requirement lifecycle and active-plan binding, Plan per-record persistence, Work per-record persistence, WAL-safe backup/restore, and focused regression tests are implemented.
-- `check:type`, `check:runtime-architecture`, `check:test-governance`, `check:public-docs`, affected tests, and `check:controller-v8` pass. The Controller V8 repair also propagates immutable release `executionMode` into candidate/rollback canary checks and aligns MCP assertions with the shipped bounded stable schema. No runtime activation or rollout was performed.
+Current source should preserve one canonical Runtime/release authority, Direct-first ordinary execution, bounded progressive context retrieval, optional Work/Plan for real continuity, typed external-effect boundaries, and tests/reviews as evidence rather than parallel authorities. See `docs/architecture/CURRENT.md` for the maintained contract.

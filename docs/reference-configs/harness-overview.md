@@ -9,8 +9,7 @@ or refreshes a repo. The harness gives agents three durable surfaces:
 
 - **Shared standards**: `docs/spec.md`, `docs/reference-configs/`, root
   `AGENTS.md`, and root `CLAUDE.md` explain stable product intent, coding
-  rules, local workflow boundaries, and assistant philosophy such as
-  `docs/forge-autonomous-assistant-philosophy.md`.
+  rules, and local workflow boundaries.
 - **Task contracts**: `plans/`, `tasks/contracts/`, `tasks/reviews/`, and
   `.ai/harness/checks/` turn a request into scoped implementation work with
   evidence-backed completion.
@@ -54,7 +53,7 @@ with the project.
 - Exploration and planning are allowed before a contract exists.
 - Before implementation, the plan and contract should both expose a concrete workflow inventory so the agent does not rediscover or guess active artifacts.
 - Implementation should prefer `docs/spec.md`, an approved plan, and an active sprint contract.
-- Claiming completion should include contract verification evidence, a run snapshot, implementation notes, and a passing Forge `/review` review artifact.
+- Claiming completion should include contract verification evidence, a run snapshot, implementation notes, and a passing Forge `/review` artifact.
 - Stopping a session should refresh `.ai/harness/session/continuation.md` for easier resume; while pending planning orchestration is open, Stop may block once to force a plan completeness self-review before execution.
 - Refresh `tasks/current.md` with `.ai/harness/scripts/refresh-current-status.sh --write --reason <reason>` only at explicit lifecycle boundaries or as a deliberate maintainer action; ordinary hooks should not dirty tracked files.
 - In non-target worktrees, read the target branch snapshot with `git show <target>:tasks/current.md` and verify stale or surprising state against the source artifacts before acting.
@@ -93,7 +92,7 @@ Required v1 fields:
 - `commands`, `guards`, `handoffs`, `files_changed`, and `allowed_paths_check`
 - `external_acceptance`, `failure_class`, and `next_step`
 
-`scripts/check-task-workflow.sh --strict` validates the latest trace shape when a non-empty latest checks file exists. `scripts/harness-trace-grade.sh --run <trace> --strict` applies the local graders used for workflow regression checks: active plan resolves, contract profile is valid, Human Review Card passes, command evidence exists, and changed files stay inside allowed paths.
+`scripts/check-task-workflow.sh --strict` validates the latest trace shape when a non-empty latest checks file exists. Behavioral evidence comes from the selected checks and fresh controller review, not a score of plan or review metadata.
 
 ## Capability Context
 
@@ -119,7 +118,7 @@ Maintainer-facing detail on how the initializer and runtime defaults are wired.
 - Question-pack source of truth: `assets/initializer-question-pack.v4.json`.
 - Generated repos default to the repo-local harness flow: `docs/spec.md -> plans/ -> tasks/contracts/ -> tasks/reviews/ -> .ai/context/context-map.json -> .ai/harness/*`.
 - Generated and self-hosted repos install `.ai/harness/workflow-contract.json` and `.ai/harness/policy.json`.
-- Generated and migrated repos route through Forge by default. gstack, Waza, and gbrain are optional host enhancements used only when already installed or explicitly requested.
+- Generated and migrated repos route primarily through Forge modes; gstack, Waza, gbrain, and Mermaid are optional host enhancements only.
 - `forge install` bootstraps Forge-owned CLI/runtime and global Codex/Claude hook adapters. Third-party Waza/Mermaid/cross-review skills require explicit `--with-external-skills`; host CodeGraph MCP configuration is optional because Forge structural retrieval uses its bundled backend. `forge setup open/next/close` is the preferred guided first-run workflow.
 - Other external tooling stays advisory-only: `bash scripts/check-agent-tooling.sh --host both --check-updates`; Waza update checks compare upstream `tw93/Waza` `SKILL.md` hashes without running `npx skills check`; no automatic gstack, gbrain MCP, CodeGraph daemon, or provider setup.
 - Manual distillation stays repo-local: repeated corrections -> `tasks/lessons.md`; deep findings and hidden contracts -> topic-scoped `docs/researches/*.md`; sprint verification evidence -> `tasks/reviews/*.review.md`; durable capability progress -> `tasks/workstreams/`; release history -> `docs/CHANGELOG.md`.

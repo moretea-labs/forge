@@ -126,7 +126,8 @@ Forge packages a CodeGraph runtime for its own structural context provider and c
 
 ### Runtime Ownership Boundary
 
-`forge setup open --target <host>` starts or resumes one persistent setup session. Each `forge setup next` reruns the readiness model and exposes one next action; `forge setup close` succeeds only after the session is verified ready. `forge setup check --target <host> --check-updates --json` remains the stateless read-only report. All of these report the execution base as separate `runtime.*` checks. Keep the boundary explicit:
+`forge setup check --target <host> --check-updates --json` reports the
+execution base as separate `runtime.*` checks. Keep the boundary explicit:
 
 | Capability | Owner | Required for |
 |---|---|---|

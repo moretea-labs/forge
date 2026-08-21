@@ -26,8 +26,8 @@ These features are part of the default local setup:
 | Tailscale / Cloudflare | Stable HTTPS endpoint for ChatGPT MCP | Tunnel client and appropriate account/domain configuration. |
 | Browser | Playwright navigation, screenshots, and bounded browser evidence | Browser binaries and HTTP(S) URL scheme validation. |
 | CodeGraph | Additional code relationships and impact navigation | CodeGraph CLI; native Windows automatic setup is not yet enabled. |
-| Google Workspace | Gmail and Calendar assistant actions | Explicit OAuth setup and plugin permission. |
-| Schedules and findings | Supervised recurring checks and candidate findings | Canonical Forge Runtime running; live actions remain policy-gated. |
+| Google Workspace | Gmail and Calendar plugin actions | Explicit OAuth setup and plugin permission. |
+| Schedules | Supervised recurring checks | Canonical Forge Runtime running; live actions remain policy-gated. |
 
 ## Tool exposure
 
