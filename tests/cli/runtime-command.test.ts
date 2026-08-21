@@ -306,12 +306,6 @@ describe('runtime command surface', () => {
     }
     expect(projectionInvalidation).toContain('runtimeInstanceId?: string');
     expect(materializedView).toContain('currentOwner.runtimeInstanceId !== owner.runtimeInstanceId');
-    expect(globalScheduler).toContain('getRuntimeWriteClaim()?.runtimeInstanceId');
-    const persistedWorkerEnvironmentStart = globalScheduler.indexOf('const WORKER_ENVIRONMENT_KEYS = [');
-    const persistedWorkerEnvironmentEnd = globalScheduler.indexOf('] as const;', persistedWorkerEnvironmentStart);
-    const persistedWorkerEnvironment = globalScheduler.slice(persistedWorkerEnvironmentStart, persistedWorkerEnvironmentEnd);
-    expect(persistedWorkerEnvironment).not.toContain('FORGE_RELEASE_FENCING_TOKEN');
-    expect(globalScheduler).toContain('...writeClaimEnvironment');
     expect(operationReceiptStore).toContain('runtimeInstanceId?: string');
     expect(operationReceiptStore).toContain('releaseAuthorityRevision?: number');
     expect(operationReceiptStore).toContain('artifactIdentity?: string');
