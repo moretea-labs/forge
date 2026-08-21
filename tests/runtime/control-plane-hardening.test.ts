@@ -12,6 +12,7 @@ import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
+import type { RepositoryRecord } from '../../src/cli/repositories/types';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { createHandoffItem, getHandoffItem, listHandoffItems } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { getControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
@@ -30,6 +31,7 @@ import {
   schedulerDispatchCapacityAllows,
 } from '../../src/runtime/control-plane/global-scheduler/dispatch-capacity';
 import { selectExecutionJobDispatchRepositories } from '../../src/runtime/control-plane/dispatch-priority';
+import { selectSchedulerProjectionRefreshTargets } from '../../src/runtime/control-plane/global-scheduler/projection-refresh';
 
 const roots: string[] = [];
 
@@ -210,6 +212,37 @@ describe('control-plane hardening', () => {
       ['repo-a', 100],
       ['repo-c', 50],
     ]))).toEqual(['repo-b', 'repo-c', 'repo-a']);
+  });
+
+  test('isolates Scheduler projection refresh target selection from tick side effects', () => {
+    const repository = (repoId: string): RepositoryRecord => ({
+      schemaVersion: 1,
+      repoId,
+      displayName: repoId,
+      localRoot: `/tmp/${repoId}`,
+      canonicalRoot: `/tmp/${repoId}`,
+      activeCheckoutId: 'checkout-main',
+      checkouts: [],
+      repositoryType: 'git',
+      enabled: true,
+      createdAt: '2026-08-21T00:00:00.000Z',
+      updatedAt: '2026-08-21T00:00:00.000Z',
+      lastSeenAt: '2026-08-21T00:00:00.000Z',
+      configurationPath: `/tmp/${repoId}/.ai/harness/repository.json`,
+      stateStorageStrategy: 'controller-home',
+    });
+    const repoA = repository('repo-a');
+    const repoB = repository('repo-b');
+    const repoC = repository('repo-c');
+
+    const targets = selectSchedulerProjectionRefreshTargets(
+      [repoA, repoB, repoC],
+      [repoB],
+      ['repo-a', 'repo-missing', 'repo-b', 'repo-missing'],
+    );
+
+    expect(targets.repositories.map((entry) => entry.repoId)).toEqual(['repo-b', 'repo-a']);
+    expect(targets.rebuildRepoIds).toEqual(['repo-missing']);
   });
 
   test('projects canonical Runtime ownership through the transitional daemon status shape', () => {

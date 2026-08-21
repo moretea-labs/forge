@@ -37,8 +37,8 @@ import { gcTerminalProcesses } from '../../execution/process-runtime/gc';
 import { reconcilePendingWorkValidations } from '../execution/work-validation-reconciler';
 import { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
 import { schedulerDispatchAllowed } from '../facade/work-admission-policy';
-import { rebuildRepositoryProjection, refreshRepositoryProjectionForRepository } from '../../projections/materialized-view';
-import { readRepositoryGitStatusSample, sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
+import { rebuildRepositoryProjection } from '../../projections/materialized-view';
+import { sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
 import { selectExecutionJobDispatchRepositories } from '../dispatch-priority';
 import {
   buildSchedulerWorkerLaunchDescriptor,
@@ -50,6 +50,7 @@ import {
   createSchedulerDispatchCapacity,
   schedulerDispatchCapacityAllows,
 } from './dispatch-capacity';
+import { refreshSchedulerRepositoryProjections } from './projection-refresh';
 import { normalizeSchedulerConfig, type SchedulerConfig } from './config';
 import {
   readSchedulerHealthSnapshot,
@@ -681,41 +682,13 @@ export class GlobalScheduler {
     // Repo Actor mutations leave projection dirty markers. Refresh those repos
     // immediately; the independent source safety scan contributes only its bounded
     // active/round-robin candidates after the dispatch reservation lock is free.
-    const projectionRefreshCandidates = new Map(
-      sourceScanRepositories.map((repository) => [repository.repoId, repository]),
-    );
-    for (const repoId of projectionRefreshRepos) {
-      const repository = repositories.find((entry) => entry.repoId === repoId);
-      if (repository) projectionRefreshCandidates.set(repoId, repository);
-    }
-    for (const repoId of projectionRefreshRepos) {
-      if (projectionRefreshCandidates.has(repoId)) continue;
-      try {
-        rebuildRepositoryProjection(this.controllerHome, repoId);
-      } catch (error) {
-        console.error('[forge scheduler] projection refresh failed:', error);
-      }
-    }
-    for (const repository of projectionRefreshCandidates.values()) {
-      try {
-        const sample = readRepositoryGitStatusSample(
-          this.controllerHome,
-          repository.repoId,
-          repository.activeCheckoutId,
-        );
-        const runtimeInstanceId = getRuntimeWriteClaim()?.runtimeInstanceId;
-        refreshRepositoryProjectionForRepository(this.controllerHome, repository, {
-          sourceRevision: sample?.head ?? undefined,
-          reason: 'scheduler-source-scan',
-          owner: {
-            pid: this.controllerPid,
-            ...(runtimeInstanceId ? { runtimeInstanceId } : {}),
-          },
-        });
-      } catch (error) {
-        console.error('[forge scheduler] projection refresh failed:', error);
-      }
-    }
+    refreshSchedulerRepositoryProjections({
+      controllerHome: this.controllerHome,
+      repositories,
+      sourceScanRepositories,
+      projectionRefreshRepoIds: projectionRefreshRepos,
+      controllerPid: this.controllerPid,
+    });
     // Process creation, lifecycle file writes, and Worker attachment are all
     // deliberately outside the global dispatch reservation lock. The durable
     // dispatched state is the capacity reservation while spawn proceeds.

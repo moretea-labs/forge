@@ -60,6 +60,7 @@ const required = [
   'src/runtime/control-plane/global-scheduler/state.ts',
   'src/runtime/control-plane/global-scheduler/worker-launch.ts',
   'src/runtime/control-plane/global-scheduler/dispatch-capacity.ts',
+  'src/runtime/control-plane/global-scheduler/projection-refresh.ts',
   'src/runtime/control-plane/repo-actor/actor.ts',
   'src/runtime/execution/jobs/store.ts',
   'src/runtime/execution/jobs/timeouts.ts',
@@ -222,7 +223,7 @@ for (const projectionPath of [
 }
 requireText('src/runtime/projections/invalidation.ts', 'runtimeInstanceId?: string');
 requireText('src/runtime/projections/materialized-view.ts', 'currentOwner.runtimeInstanceId !== owner.runtimeInstanceId');
-requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'getRuntimeWriteClaim()?.runtimeInstanceId');
+requireText('src/runtime/control-plane/global-scheduler/projection-refresh.ts', 'getRuntimeWriteClaim()?.runtimeInstanceId');
 forbid(
   'src/runtime/execution/jobs/receipt-store.ts',
   /ownerEpoch|releaseFencingToken/,
@@ -486,6 +487,8 @@ requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'writeSch
 requireText('src/runtime/control-plane/global-scheduler/state.ts', 'writeSchedulerHealthSnapshot');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'buildSchedulerWorkerLaunchDescriptor');
 requireText('src/runtime/control-plane/global-scheduler/worker-launch.ts', 'buildSchedulerWorkerLaunchDescriptor');
+requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'refreshSchedulerRepositoryProjections');
+requireText('src/runtime/control-plane/global-scheduler/projection-refresh.ts', 'refreshRepositoryProjectionForRepository');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'writeAgentExecutableReadinessSnapshot');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'sampleRepositoryGitStatusForRepositories');
 requireText('src/cli/agent-jobs/executable-resolver.ts', 'revalidateAgentExecutable');
