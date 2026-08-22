@@ -2501,6 +2501,38 @@ async function extractText(scope: BrowserEvaluationScope, selector: string | und
   return truncateText(raw, maxChars);
 }
 
+function verifyStateObservationScript(selector: string | undefined, textContains: string | undefined, maxChars: number): string {
+  const payload = JSON.stringify({ selector: selector ?? null, textContains: textContains ?? null, maxChars });
+  return `(() => {
+    const args = ${payload};
+    const element = args.selector ? document.querySelector(args.selector) : null;
+    const textTarget = element || document.body || document.documentElement;
+    const rawText = String(textTarget?.innerText || textTarget?.textContent || '');
+    let visible;
+    if (args.selector) {
+      if (!element) visible = false;
+      else {
+        const rect = element.getBoundingClientRect();
+        const style = typeof getComputedStyle === 'function' ? getComputedStyle(element) : undefined;
+        visible = Number(rect.width || 0) > 0
+          && Number(rect.height || 0) > 0
+          && style?.display !== 'none'
+          && style?.visibility !== 'hidden'
+          && Number(style?.opacity ?? 1) !== 0;
+      }
+    }
+    return {
+      verificationVersion: 1,
+      selectorExists: args.selector ? Boolean(element) : undefined,
+      visible,
+      textContains: args.textContains === null ? undefined : rawText.includes(args.textContains),
+      textSample: rawText.slice(0, args.maxChars),
+      textLength: rawText.length,
+      truncated: rawText.length > args.maxChars,
+    };
+  })()`;
+}
+
 async function readPageIdentity(page: PageLike, connection?: BrowserConnectionSummary): Promise<{ url: string; title: string }> {
   if (connection?.provider === 'macos-apple-events' && typeof page.identity === 'function') {
     const identity = await page.identity();
@@ -2595,7 +2627,7 @@ function capabilities(): AssistantPluginCapability[] {
       scopes: ['browser.read', 'browser.profile'],
       actions: [
         'open_page', 'navigate', 'reload', 'go_back', 'wait_for_load_state',
-        'get_text', 'get_html', 'query_selector', 'query_all', 'get_attribute', 'list_frames',
+        'get_text', 'get_html', 'query_selector', 'query_all', 'get_attribute', 'list_frames', 'verify_state',
         'screenshot', 'extract_links', 'extract_tables', 'extract_forms', 'snapshot_interactive',
         'get_console_errors', 'get_failed_requests',
       ],
@@ -2864,6 +2896,22 @@ function actions(): AssistantPluginActionDescriptor[] {
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
       scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
       argumentsSchema: sessionTargetSchema({ limit: { type: 'number', minimum: 1, maximum: 100 } }),
+    },
+    {
+      actionId: 'verify_state',
+      title: 'Verify browser state',
+      description: 'Observe URL, selector existence/visibility, and bounded text criteria in one read-only call for post-action verification.',
+      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
+      scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
+      argumentsSchema: sessionTargetSchema({
+        expected_url: { type: 'string' },
+        url_contains: { type: 'string' },
+        selector: { type: 'string' },
+        require_visible: { type: 'boolean' },
+        text_contains: { type: 'string', maxLength: 10000 },
+        max_chars: { type: 'number', minimum: 1, maximum: 100000 },
+        ...frameScopeProperties,
+      }, ['session_id']),
     },
     {
       actionId: 'screenshot',
@@ -3768,6 +3816,59 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             browserConnection: connection,
           };
         }, { persistSession: true });
+      }
+      case 'verify_state': {
+        requiredString(input.args.session_id, 'session_id');
+        const target = resolveActionTarget(input.repoRoot, input.args);
+        const expectedUrlRaw = stringValue(input.args.expected_url);
+        const expectedUrl = expectedUrlRaw ? normalizedUrl(expectedUrlRaw) : undefined;
+        const urlContains = stringValue(input.args.url_contains);
+        const selector = stringValue(input.args.selector);
+        const requireVisible = input.args.require_visible === true;
+        const textContains = stringValue(input.args.text_contains);
+        if (!expectedUrl && !urlContains && !selector && !textContains) {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'verify_state requires at least one of expected_url, url_contains, selector, or text_contains.', { retryable: false });
+        }
+        if (requireVisible && !selector) {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'require_visible requires selector.', { retryable: false });
+        }
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+          const selection = resolveBrowserEvaluationScope(page, input.args, connection);
+          const observedUrl = selection.frame?.url ?? page.url();
+          const checks: Array<Record<string, unknown>> = [];
+          if (expectedUrl) checks.push({ criterion: 'url_exact', expected: expectedUrl, observed: observedUrl, matched: observedUrl === expectedUrl });
+          if (urlContains) checks.push({ criterion: 'url_contains', expected: urlContains, observed: observedUrl, matched: observedUrl.includes(urlContains) });
+          let observation: { verificationVersion?: unknown; selectorExists?: unknown; visible?: unknown; textContains?: unknown; textSample?: unknown; textLength?: unknown; truncated?: unknown } | undefined;
+          if (selector || textContains) {
+            observation = await selection.scope.evaluate(verifyStateObservationScript(selector, textContains, Math.min(positiveNumber(input.args.max_chars, 2_000), 100_000)));
+            if (observation?.verificationVersion !== 1) {
+              throw new AssistantPluginError('PLUGIN_BROWSER_VERIFY_STATE_UNAVAILABLE', 'Browser state observation returned an unsupported result.', { retryable: true });
+            }
+          }
+          if (selector) {
+            checks.push({ criterion: 'selector_exists', expected: true, observed: observation?.selectorExists === true, matched: observation?.selectorExists === true, selector });
+            if (requireVisible) {
+              checks.push({ criterion: 'selector_visible', expected: true, observed: observation?.visible === true, matched: observation?.visible === true, selector });
+            }
+          }
+          if (textContains) {
+            checks.push({
+              criterion: 'text_contains', expected: textContains, observed: observation?.textSample,
+              matched: observation?.textContains === true, textLength: observation?.textLength, truncated: observation?.truncated,
+              ...(selector ? { selector } : {}),
+            });
+          }
+          return {
+            provider: 'playwright',
+            sessionId: target.sessionId,
+            url: target.url,
+            observedUrl,
+            ...(selection.frame ? { frame: selection.frame } : {}),
+            matched: checks.every((check) => check.matched === true),
+            checks,
+            browserConnection: connection,
+          };
+        }, { requireExistingResource: true });
       }
       case 'screenshot': {
         const target = resolveActionTarget(input.repoRoot, input.args);
