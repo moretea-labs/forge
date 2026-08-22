@@ -541,7 +541,7 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
   if (input.status === 'completed' || input.completionReceipt || input.completionOutcome) {
     throw new Error('WORK_COMPLETION_REQUIRES_RECORD_API');
   }
-  return withWorkContractStoreWrite(options, () => {
+  const create = (): WorkContract => {
     const at = input.createdAt ?? input.updatedAt ?? nowIso(options);
     const workId = sanitizeFileComponent(input.workId);
     const contract: WorkContract = validateWorkSemantics({
@@ -624,6 +624,23 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       submittedOperation: input.submittedOperation,
     });
 
+    if (sqliteBacked(options)) {
+      withControlPlaneTransaction(options.controllerHome, (database) => {
+        if (readControlPlaneRecordWithinTransaction<WorkContract>(database, 'work_contract', options.repoId, contract.workId)) {
+          throw new Error(`work contract already exists: ${contract.workId}`);
+        }
+        writeControlPlaneRecordWithinTransaction(database, {
+          namespace: 'work_contract',
+          scope: options.repoId,
+          key: contract.workId,
+          schemaVersion: 2,
+          value: contract,
+          action: 'work_contract_created',
+          expectedRevision: null,
+        });
+      });
+      return contract;
+    }
     const store = readWorkContractStore(options);
     if (store.contracts.some((existing) => existing.workId === contract.workId)) {
       throw new Error(`work contract already exists: ${contract.workId}`);
@@ -635,7 +652,8 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
     };
     writeWorkContractStore(options, nextStore);
     return contract;
-  });
+  };
+  return create();
 }
 
 interface WorkRequestIndexRecord {

@@ -12,6 +12,7 @@ import { createMcpToolContext } from '../src/cli/mcp/server';
 import { callMultiRepositoryTool } from '../src/cli/mcp/multi-repository';
 import { callRuntimeTool } from '../src/runtime/gateway/mcp/runtime-tools';
 import { createWorkContract } from '../src/runtime/control-plane/facade/work-contract-store';
+import { createRequirement } from '../src/runtime/control-plane/persistence/requirement-store';
 import { startGoalWorkloop } from '../src/runtime/control-plane/facade/goal-workloop';
 import { withPrimaryWorkAdmissionLockAsync } from '../src/runtime/control-plane/facade/semantic-admission';
 import { executionIdentityForRepository } from '../src/runtime/control-plane/execution/execution-identity';
@@ -229,7 +230,7 @@ async function semanticAdmissionWorker(): Promise<void> {
     const entered = performance.now();
     const cpuEntered = process.cpuUsage();
     const value = startGoalWorkloop({
-      workStore: { root: join(storeRoot, 'work') },
+      workStore: { controllerHome, repoId },
       handoffStore: { root: join(storeRoot, 'handoff') },
       repoId,
       checkoutId: `semantic-${mode}-${index}`,
@@ -348,6 +349,18 @@ async function main(): Promise<void> {
     const first = repositoryFixture(root, controllerHome, 'repository-a');
     const second = repositoryFixture(root, controllerHome, 'repository-b');
     const firstIsolated = worktreeFixture(root, controllerHome, first);
+    createRequirement({ controllerHome }, {
+      requirementId: 'REQ-semantic-admission-benchmark-shared',
+      title: 'Semantic admission benchmark shared authority',
+      outcomeStatement: 'Measure deterministic concurrent admission for one shared Requirement authority.',
+    });
+    for (let index = 0; index < 32; index += 1) {
+      createRequirement({ controllerHome }, {
+        requirementId: `REQ-semantic-admission-benchmark-${index}`,
+        title: `Semantic admission benchmark independent authority ${index}`,
+        outcomeStatement: 'Measure deterministic concurrent admission for an independent Requirement authority.',
+      });
+    }
     const sameAuthorityAdmission = await runSemanticAdmissionBurst({ controllerHome, repoId: first.repository.repoId, storeRoot: join(root, 'semantic-same-authority'), mode: 'same' });
     const independentRequirementAdmission = await runSemanticAdmissionBurst({ controllerHome, repoId: first.repository.repoId, storeRoot: join(root, 'semantic-independent-requirements'), mode: 'independent' });
     const semanticAdmissionCriticalP95Ms = Math.max(sameAuthorityAdmission.criticalSectionP95Ms, independentRequirementAdmission.criticalSectionP95Ms);
