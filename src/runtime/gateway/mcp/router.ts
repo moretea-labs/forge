@@ -4,14 +4,22 @@ import {
   buildMultiRepositoryToolDefinitions,
   type MultiRepositoryMcpToolContext,
 } from '../../../cli/mcp/multi-repository';
-import { callRepositoryTool, repositoryToolDefinitions } from '../../../cli/mcp/repository-tools';
+import {
+  callRepositoryTool,
+  claimedSessionEditBinding,
+  repositoryToolDefinitions,
+} from '../../../cli/mcp/repository-tools';
 import { runtimeToolDefinitions } from './runtime-tools';
 import { executionToolDefinitions } from './execution-tools';
 import { processToolDefinitions } from './process-tools';
 import { resolveRepositorySelection } from '../../../cli/repositories/registry';
 import { listControllerChecks } from '../../../cli/controller/check-runner';
 import { executionIdentityForRepository } from '../../control-plane/execution/execution-identity';
-import { startOrJoinEditValidation } from '../../control-plane/execution/edit-validation-coordinator';
+import {
+  resolveEditValidationRepository,
+  startOrJoinEditValidation,
+} from '../../control-plane/execution/edit-validation-coordinator';
+import { assertEditSessionDurableBinding } from '../../../cli/editing/edit-session';
 import type { ExecutionTimeoutPolicy } from '../../execution/jobs/types';
 import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
 import {
@@ -643,7 +651,14 @@ async function runEditSessionValidationViaProcessRuntime(
   editSessionId: string,
   args: Record<string, unknown>,
 ): Promise<CallToolResult> {
-  const validation = await startOrJoinEditValidation(ctx.controllerHome, repository, {
+  const resolved = resolveEditValidationRepository(repository, editSessionId);
+  const binding = claimedSessionEditBinding(ctx.controllerHome, resolved.repository, {
+    sessionId: ctx.sessionId,
+    principalId: ctx.principalId,
+    controllerInstanceId: ctx.controllerInstanceId,
+  }, args.work_id);
+  assertEditSessionDurableBinding(resolved.session, binding, { requireBoundIdentity: true });
+  const validation = await startOrJoinEditValidation(ctx.controllerHome, resolved.repository, {
     editSessionId,
     checkIds: Array.isArray(args.check_ids) ? args.check_ids.map(String) : undefined,
     requestId: typeof args.request_id === 'string' ? args.request_id : undefined,

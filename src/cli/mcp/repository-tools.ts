@@ -333,7 +333,7 @@ function claimedSessionWorkId(
   return undefined;
 }
 
-function claimedSessionEditBinding(
+export function claimedSessionEditBinding(
   controllerHome: string,
   repository: ReturnType<typeof resolveRepositorySelection>,
   caller?: RepositoryToolCallerContext,

@@ -9,6 +9,7 @@ import {
   listControllerChecks,
 } from '../../../cli/controller/check-runner';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
+import { selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { executionIdentityForRepository } from './execution-identity';
 import {
   claimsForCheck,
@@ -266,6 +267,57 @@ function failedRun(
   return coordinatorResult(controllerHome, failed);
 }
 
+export function resolveEditValidationRepository(
+  repository: RepositoryRecord,
+  editSessionId: string,
+): { repository: RepositoryRecord; session: EditSession } {
+  const checkoutIds = [...new Set([
+    repository.activeCheckoutId,
+    ...repository.checkouts.map((checkout) => checkout.checkoutId),
+  ].filter(Boolean))];
+  for (const checkoutId of checkoutIds) {
+    let candidate: RepositoryRecord;
+    try {
+      candidate = selectRepositoryCheckout(repository, checkoutId);
+    } catch {
+      continue;
+    }
+    let session: EditSession;
+    try {
+      session = getEditSession(candidate.canonicalRoot, editSessionId);
+    } catch (error) {
+      if (error instanceof Error && error.message === `edit session not found: ${editSessionId}`) continue;
+      throw error;
+    }
+    if (session.repoId && session.repoId !== candidate.repoId) {
+      throw new Error(`EDIT_VALIDATION_SESSION_IDENTITY_MISMATCH: repoId ${session.repoId} != ${candidate.repoId}`);
+    }
+    if (session.checkoutId && session.checkoutId !== candidate.activeCheckoutId) {
+      throw new Error(`EDIT_VALIDATION_SESSION_IDENTITY_MISMATCH: checkoutId ${session.checkoutId} != ${candidate.activeCheckoutId}`);
+    }
+    return { repository: candidate, session };
+  }
+  throw new Error(`edit session not found: ${editSessionId}`);
+}
+
+function validationRunRepository(
+  repository: RepositoryRecord,
+  run: EditValidationRunState,
+): RepositoryRecord {
+  if (run.repositoryId !== repository.repoId) {
+    throw new Error(`EDIT_VALIDATION_REPOSITORY_MISMATCH: ${run.repositoryId} != ${repository.repoId}`);
+  }
+  const candidate = selectRepositoryCheckout(repository, run.checkoutId);
+  const session = getEditSession(candidate.canonicalRoot, run.editSessionId);
+  if (session.repoId && session.repoId !== run.repositoryId) {
+    throw new Error(`EDIT_VALIDATION_SESSION_IDENTITY_MISMATCH: repoId ${session.repoId} != ${run.repositoryId}`);
+  }
+  if (session.checkoutId && session.checkoutId !== run.checkoutId) {
+    throw new Error(`EDIT_VALIDATION_SESSION_IDENTITY_MISMATCH: checkoutId ${session.checkoutId} != ${run.checkoutId}`);
+  }
+  return candidate;
+}
+
 function receiptFor(
   controllerHome: string,
   repository: RepositoryRecord,
@@ -312,10 +364,18 @@ export async function reconcileEditValidationRun(
 ): Promise<EditValidationCoordinatorResult> {
   let run = readRun(controllerHome, repository.repoId, runInput.validationId) ?? runInput;
   if (run.status !== 'running') return coordinatorResult(controllerHome, run);
-  if (run.checkoutId !== repository.activeCheckoutId) {
-    return failedRun(controllerHome, run, 'EDIT_VALIDATION_CHECKOUT_CHANGED', `Validation checkout ${run.checkoutId} no longer matches ${repository.activeCheckoutId}.`);
+  let validationRepository: RepositoryRecord;
+  try {
+    validationRepository = validationRunRepository(repository, run);
+  } catch (error) {
+    return failedRun(
+      controllerHome,
+      run,
+      'EDIT_VALIDATION_CHECKOUT_UNAVAILABLE',
+      error instanceof Error ? error.message : String(error),
+    );
   }
-  const session = getEditSession(repository.canonicalRoot, run.editSessionId);
+  const session = getEditSession(validationRepository.canonicalRoot, run.editSessionId);
   if (session.currentRevision !== run.editRevision) {
     return failedRun(controllerHome, run, 'EDIT_VALIDATION_STALE_REVISION', `Validation targets revision ${run.editRevision}, current edit revision is ${session.currentRevision}.`);
   }
@@ -334,10 +394,10 @@ export async function reconcileEditValidationRun(
       const checkRequestId = `${run.requestId}:check:${index + 1}:${createHash('sha256').update(checkId).digest('hex').slice(0, 12)}`;
       const facade = await runPersistedCheckViaProcessRuntime({
         controllerHome,
-        repoId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
-        repoRoot: repository.canonicalRoot,
-        executionIdentity: executionIdentityForRepository(repository),
+        repoId: validationRepository.repoId,
+        checkoutId: validationRepository.activeCheckoutId,
+        repoRoot: validationRepository.canonicalRoot,
+        executionIdentity: executionIdentityForRepository(validationRepository),
         checkId,
         timeoutMs: run.timeoutMs,
         interactiveWaitMs: 0,
@@ -384,10 +444,10 @@ export async function reconcileEditValidationRun(
   }
 
   try {
-    const receipts = run.checkIds.map((checkId) => receiptFor(controllerHome, repository, run, checkId));
-    const checked = recordEditSessionProcessCheckReceipts(repository.canonicalRoot, run.editSessionId, {
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
+    const receipts = run.checkIds.map((checkId) => receiptFor(controllerHome, validationRepository, run, checkId));
+    const checked = recordEditSessionProcessCheckReceipts(validationRepository.canonicalRoot, run.editSessionId, {
+      repoId: validationRepository.repoId,
+      checkoutId: validationRepository.activeCheckoutId,
       receipts,
       reviewer: run.reviewer,
       note: run.note,
@@ -415,7 +475,9 @@ export async function startOrJoinEditValidation(
   repository: RepositoryRecord,
   input: EditValidationStartInput,
 ): Promise<EditValidationCoordinatorResult> {
-  const session = getEditSession(repository.canonicalRoot, input.editSessionId);
+  const resolved = resolveEditValidationRepository(repository, input.editSessionId);
+  const validationRepository = resolved.repository;
+  const session = resolved.session;
   const checkIds = normalized(input.checkIds ?? session.requestedChecks);
   const requestId = input.validationRequestId?.trim()
     || input.requestId?.trim()
@@ -426,14 +488,14 @@ export async function startOrJoinEditValidation(
     if (existing.checkIds.join('\n') !== checkIds.join('\n')) {
       return failedRun(controllerHome, existing, 'EDIT_VALIDATION_REQUEST_CONFLICT', 'The validation request id is already bound to a different check set.');
     }
-    return reconcileEditValidationRun(controllerHome, repository, existing);
+    return reconcileEditValidationRun(controllerHome, validationRepository, existing);
   }
 
   if (checkIds.length === 0) {
     try {
-      const checked = recordEditSessionProcessCheckReceipts(repository.canonicalRoot, session.sessionId, {
-        repoId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
+      const checked = recordEditSessionProcessCheckReceipts(validationRepository.canonicalRoot, session.sessionId, {
+        repoId: validationRepository.repoId,
+        checkoutId: validationRepository.activeCheckoutId,
         receipts: [],
         reviewer: input.reviewer,
         note: input.note,
@@ -441,8 +503,8 @@ export async function startOrJoinEditValidation(
       const completed = saveRun(controllerHome, {
         schemaVersion: 1,
         validationId: id,
-        repositoryId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
+        repositoryId: validationRepository.repoId,
+        checkoutId: validationRepository.activeCheckoutId,
         editSessionId: session.sessionId,
         editRevision: session.currentRevision,
         requestId,
@@ -464,8 +526,8 @@ export async function startOrJoinEditValidation(
       const run: EditValidationRunState = {
         schemaVersion: 1,
         validationId: id,
-        repositoryId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
+        repositoryId: validationRepository.repoId,
+        checkoutId: validationRepository.activeCheckoutId,
         editSessionId: session.sessionId,
         editRevision: session.currentRevision,
         requestId,
@@ -487,13 +549,13 @@ export async function startOrJoinEditValidation(
   const run = saveRun(controllerHome, {
     schemaVersion: 1,
     validationId: id,
-    repositoryId: repository.repoId,
-    checkoutId: repository.activeCheckoutId,
+    repositoryId: validationRepository.repoId,
+    checkoutId: validationRepository.activeCheckoutId,
     editSessionId: session.sessionId,
     editRevision: session.currentRevision,
     requestId,
     checkIds,
-    lanes: checkLanes(repository, checkIds),
+    lanes: checkLanes(validationRepository, checkIds),
     processes: {},
     reviewer: input.reviewer,
     note: input.note,
@@ -505,7 +567,7 @@ export async function startOrJoinEditValidation(
     createdAt: now(),
     updatedAt: now(),
   });
-  return reconcileEditValidationRun(controllerHome, repository, run);
+  return reconcileEditValidationRun(controllerHome, validationRepository, run);
 }
 
 export interface PendingEditValidationSummary {

@@ -257,7 +257,21 @@ function calculateAssurance(session: EditSession, at: string): EditSessionAssura
   };
 }
 
-function assertDurableSessionIdentity(session: EditSession, binding: EditSessionBinding | undefined): void {
+export function assertEditSessionDurableBinding(
+  session: EditSession,
+  binding: EditSessionBinding | undefined,
+  options: { requireBoundIdentity?: boolean } = {},
+): void {
+  const hasDurableIdentity = Boolean(
+    session.workId
+    || session.repoId
+    || session.checkoutId
+    || session.principalId
+    || session.routeDecisionFingerprint,
+  );
+  if (options.requireBoundIdentity === true && hasDurableIdentity && !binding) {
+    throw new Error('EDIT_SESSION_IDENTITY_MISMATCH: binding');
+  }
   if (!binding) return;
   const pairs: Array<[keyof EditSessionBinding, string | undefined, string | undefined]> = [
     ['workId', session.workId, binding.workId],
@@ -272,7 +286,7 @@ function assertDurableSessionIdentity(session: EditSession, binding: EditSession
 }
 
 function bindSessionControllerInstance(repoRoot: string, session: EditSession, binding: EditSessionBinding | undefined): EditSession {
-  assertDurableSessionIdentity(session, binding);
+  assertEditSessionDurableBinding(session, binding);
   const nextInstanceId = binding?.controllerInstanceId?.trim();
   if (!nextInstanceId || session.controllerInstanceId === nextInstanceId) return session;
   const durableIdentity = [
