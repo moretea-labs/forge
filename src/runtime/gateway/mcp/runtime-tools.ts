@@ -192,6 +192,7 @@ import {
   resumeControllerSession,
 } from '../../control-plane/facade';
 import { currentControllerInstanceId, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../control-plane/execution/session-store';
+import { changedPaths as workChangedPaths } from '../../control-plane/execution/work-task-receipt';
 import { readRequirement } from '../../control-plane/persistence/requirement-store';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { currentPermissionSnapshotVersion } from '../../control-plane/execution/validation';
@@ -2283,7 +2284,7 @@ function reconcileTerminalFacadeWorkVerifications(
   ctx: MultiRepositoryMcpToolContext,
   repository: ReturnType<typeof selected>,
   workId: string,
-): { sourceRevision?: string; workspaceFingerprint?: string; reconciledProcessIds: string[] } {
+): { sourceRevision?: string; workspaceFingerprint?: string; workspaceChangedPaths?: string[]; reconciledProcessIds: string[] } {
   const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
   const workContract = getWorkContract(store, workId);
   if (!workContract || workContract.completionReceipt) return { reconciledProcessIds: [] };
@@ -2299,6 +2300,15 @@ function reconcileTerminalFacadeWorkVerifications(
   const verificationStatus = repositoryGitStatus(verificationRepository);
   const sourceRevision = verificationStatus.head ?? undefined;
   if (!sourceRevision) return { reconciledProcessIds: [] };
+  const committedPaths = workContract.baseRevision
+    ? workChangedPaths(verificationRepository.canonicalRoot, workContract.baseRevision, sourceRevision)
+    : [];
+  const workspaceChangedPaths = [...new Set([
+    ...committedPaths,
+    ...verificationStatus.staged,
+    ...verificationStatus.unstaged,
+    ...verificationStatus.untracked,
+  ])].sort();
   const workspaceFingerprint = workspaceValidationFingerprint(verificationRepository.canonicalRoot, verificationStatus);
   const availableChecks = listControllerChecks(repository.canonicalRoot);
   const workloopCtx = {
@@ -2401,7 +2411,7 @@ function reconcileTerminalFacadeWorkVerifications(
     }
   }
 
-  return { sourceRevision, workspaceFingerprint, reconciledProcessIds };
+  return { sourceRevision, workspaceFingerprint, workspaceChangedPaths, reconciledProcessIds };
 }
 
 async function runFacadeVerify(
@@ -4304,6 +4314,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         let resumedControllerSession: ReturnType<typeof resumeControllerSession> | undefined;
         let continuationSourceRevision = workloopCtx.sourceRevision;
         let continuationWorkspaceFingerprint: string | undefined;
+        let continuationWorkspaceChangedPaths: string[] | undefined;
         if (operation === 'continue') {
           try {
             const workId = String(args.work_id ?? '').trim();
@@ -4335,6 +4346,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               const reconciled = reconcileTerminalFacadeWorkVerifications(ctx, repository, workId);
               continuationSourceRevision = reconciled.sourceRevision ?? continuationSourceRevision;
               continuationWorkspaceFingerprint = reconciled.workspaceFingerprint ?? continuationWorkspaceFingerprint;
+              continuationWorkspaceChangedPaths = reconciled.workspaceChangedPaths ?? continuationWorkspaceChangedPaths;
             }
           } catch (error) {
             const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller resume failed.', data: { operation, executionStarted: false, ownershipResumed: false } });
@@ -4353,6 +4365,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           ...workloopCtx,
           sourceRevision: continuationSourceRevision ?? undefined,
           workspaceFingerprint: continuationWorkspaceFingerprint,
+          workspaceChangedPaths: continuationWorkspaceChangedPaths,
           semanticAdmissionLocked: semanticAdmissionRequired,
         };
         const facade = semanticAdmissionRequired

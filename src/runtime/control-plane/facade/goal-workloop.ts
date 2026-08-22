@@ -62,6 +62,8 @@ export interface GoalWorkloopContext {
   principalId?: string;
   controllerInstanceId?: string;
   workspaceFingerprint?: string;
+  /** Current net repository paths changed from the Work base plus dirty checkout paths. */
+  workspaceChangedPaths?: readonly string[];
   now?: () => string;
   /** True only while a Gateway caller holds the cross-process primary Work admission lock. */
   semanticAdmissionLocked?: boolean;
@@ -250,6 +252,32 @@ function isAuthoritativeCurrentWorkVerification(
     && receipt.timedOut === false
     && receipt.cancelled === false,
   );
+}
+
+interface WorkImplementationEvidenceEvaluation {
+  status: 'complete' | 'incomplete';
+  changedPaths: string[];
+  reasons: string[];
+}
+
+function evaluateWorkImplementationEvidence(
+  work: WorkContract,
+  currentWorkspaceChangedPaths: readonly string[] = [],
+): WorkImplementationEvidenceEvaluation {
+  if (work.workKind !== 'repository_change') {
+    return { status: 'complete', changedPaths: [], reasons: [] };
+  }
+
+  const changedPaths = [...new Set(currentWorkspaceChangedPaths.map((path) => path.trim()).filter(Boolean))].sort();
+  if (changedPaths.length > 0) {
+    return { status: 'complete', changedPaths, reasons: [] };
+  }
+
+  return {
+    status: 'incomplete',
+    changedPaths: [],
+    reasons: ['Repository-change Work has no current net source changes relative to its base revision. Verification evidence cannot substitute for implementation evidence.'],
+  };
 }
 
 function evaluateWorkCompletionEvidence(
@@ -1172,6 +1200,47 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
       },
       warnings: ['infrastructure_failure ≠ acceptance_failure'],
       suggestedNextActions: updated.suggestedNextActions,
+    });
+  }
+
+  const implementationEvidence = evaluateWorkImplementationEvidence(work, ctx.workspaceChangedPaths);
+  if (implementationEvidence.status !== 'complete') {
+    const suggested = validateSuggestedNextActions([
+      {
+        label: 'Implement the repository change before verification',
+        tool: 'rh_context',
+        operation: 'get',
+        payload: { work_id: work.workId },
+        risk: 'readonly',
+        confidence: 'high',
+        reason: 'Verification proves behavior only after the repository-change Work has current source changes.',
+      },
+    ]).actions;
+    transitionWorkContractPhase(ctx.workStore, work.workId, {
+      status: 'running',
+      phase: 'implementation',
+      state: 'active',
+      summary: implementationEvidence.reasons.join(' '),
+      evidenceRefs: work.evidenceRefs,
+    });
+    const updated = updateWorkContract(ctx.workStore, work.workId, { suggestedNextActions: suggested });
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `Continue requires implementation before verification. ${implementationEvidence.reasons.join(' ')}`,
+      data: {
+        work: summarizeWorkContract(updated),
+        backgroundCompleted: false,
+        nextStep: 'execute',
+        implementationEvidencePresent: false,
+        workspaceChangedPaths: implementationEvidence.changedPaths,
+      },
+      suggestedNextActions: suggested,
+    });
+  }
+
+  if (implementationEvidence.changedPaths.length > 0) {
+    recordWorkScopeEvidence(ctx.workStore, work.workId, {
+      actualChangedPaths: implementationEvidence.changedPaths,
     });
   }
 

@@ -27,7 +27,7 @@ function commitRevision(repoRoot: string, revision: string | undefined, label: s
   return gitText(repoRoot, ['rev-parse', `${revision.trim()}^{commit}`]);
 }
 
-function changedPaths(repoRoot: string, baseRevision: string, targetRevision: string): string[] {
+export function changedPaths(repoRoot: string, baseRevision: string, targetRevision: string): string[] {
   const result = spawnSync('git', ['diff', '--name-only', '-z', baseRevision, targetRevision], {
     cwd: repoRoot,
     encoding: 'utf-8',

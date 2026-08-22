@@ -593,7 +593,10 @@ describe('rh_work managed lifecycle closure', () => {
     expect(persisted?.workspaceFingerprint).toBeTruthy();
 
     const ready = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'continue', work_id: workId });
-    expect(ready?.structuredContent).toMatchObject({ status: 'ok', data: { nextStep: 'finalize' } });
+    expect(ready?.structuredContent).toMatchObject({
+      status: 'blocked',
+      data: { nextStep: 'execute', implementationEvidencePresent: false, workspaceChangedPaths: [] },
+    });
 
     writeFileSync(join(initial.worktreeRef!, 'workspace-drift.txt'), 'uncommitted drift\n');
     expect(git(initial.worktreeRef!, ['rev-parse', 'HEAD'])).toBe(verifiedRevision);
