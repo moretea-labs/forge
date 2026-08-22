@@ -5,6 +5,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmdirSync,
   rmSync,
@@ -123,11 +124,63 @@ function overlayPath(sourceRoot: string, targetRoot: string, relativePath: strin
   cpSync(source, target, { recursive: stat.isDirectory(), dereference: false, force: true, preserveTimestamps: true });
 }
 
-function linkIgnoredNodeModules(sourceRoot: string, targetRoot: string): void {
-  const source = join(sourceRoot, 'node_modules');
+const DEPENDENCY_LOCK_FILES = ['bun.lock', 'bun.lockb', 'pnpm-lock.yaml', 'package-lock.json', 'yarn.lock'] as const;
+const DEPENDENCY_CONFIG_FILES = ['pnpm-workspace.yaml', 'bunfig.toml', '.npmrc', '.yarnrc.yml'] as const;
+const DEPENDENCY_METADATA_NAMES = ['package.json', ...DEPENDENCY_LOCK_FILES, ...DEPENDENCY_CONFIG_FILES] as const;
+
+function isDependencyMetadataPath(path: string): boolean {
+  const name = path.split('/').pop() ?? path;
+  return DEPENDENCY_METADATA_NAMES.some((candidate) => candidate === name);
+}
+
+function hasUntrackedDependencyMetadata(root: string): boolean {
+  return nulPaths(git(root, ['ls-files', '--others', '--exclude-standard', '-z'])).some(isDependencyMetadataPath);
+}
+
+function dependencyMetadataDigest(root: string): string | undefined {
+  if (!existsSync(join(root, 'package.json'))) return undefined;
+  const rootLock = DEPENDENCY_LOCK_FILES.find((name) => existsSync(join(root, name)));
+  if (!rootLock) return undefined;
+  const pathspecs = DEPENDENCY_METADATA_NAMES.flatMap((name) => [name, `:(glob)**/${name}`]);
+  const tracked = nulPaths(git(root, ['ls-files', '-z', '--', ...pathspecs]));
+  const files = [...new Set(tracked)].sort();
+  if (!files.includes('package.json') || !files.includes(rootLock)) return undefined;
+  const hash = createHash('sha256');
+  for (const path of files) {
+    hash.update(path);
+    hash.update('\0');
+    hash.update(readFileSync(join(root, path)));
+    hash.update('\0');
+  }
+  return hash.digest('hex');
+}
+
+function primaryWorktreeRoot(sourceRoot: string): string | undefined {
+  const commonDirValue = git(sourceRoot, ['rev-parse', '--git-common-dir']).toString('utf8').trim();
+  if (!commonDirValue) return undefined;
+  const commonDir = resolve(sourceRoot, commonDirValue);
+  const candidate = dirname(commonDir);
+  if (resolve(candidate) === resolve(sourceRoot)) return undefined;
+  if (!existsSync(join(candidate, '.git'))) return undefined;
+  return candidate;
+}
+
+function linkIgnoredNodeModules(sourceRoot: string, targetRoot: string, dirtyPaths: readonly string[]): void {
+  let source = join(sourceRoot, 'node_modules');
   const target = join(targetRoot, 'node_modules');
-  if (!existsSync(source) || existsSync(target)) return;
-  const ignored = spawnSync('git', ['-C', sourceRoot, 'check-ignore', '--quiet', '--', 'node_modules'], { stdio: 'ignore', timeout: 10_000 });
+  if (existsSync(target)) return;
+  if (!existsSync(source)) {
+    if (dirtyPaths.some(isDependencyMetadataPath)) return;
+    const primaryRoot = primaryWorktreeRoot(sourceRoot);
+    if (!primaryRoot) return;
+    const primaryNodeModules = join(primaryRoot, 'node_modules');
+    if (!existsSync(primaryNodeModules) || hasUntrackedDependencyMetadata(primaryRoot)) return;
+    const sourceDigest = dependencyMetadataDigest(sourceRoot);
+    const primaryDigest = dependencyMetadataDigest(primaryRoot);
+    if (!sourceDigest || sourceDigest !== primaryDigest) return;
+    source = primaryNodeModules;
+  }
+  const ignored = spawnSync('git', ['-C', sourceRoot, 'check-ignore', '--quiet', '--', 'node_modules/.forge-verification-probe'], { stdio: 'ignore', timeout: 10_000 });
   if (ignored.status !== 0) return;
   try {
     symlinkSync(source, target, process.platform === 'win32' ? 'junction' : 'dir');
@@ -165,7 +218,7 @@ export function materializeWorkVerificationSnapshot(input: {
   try {
     cloneHead(input.sourceRoot, root, sourceHead);
     for (const path of includedPaths) overlayPath(input.sourceRoot, root, path);
-    linkIgnoredNodeModules(input.sourceRoot, root);
+    linkIgnoredNodeModules(input.sourceRoot, root, dirtyPaths);
     const ownershipDigest = createHash('sha256').update(JSON.stringify({
       sourceHead,
       workId: input.scope.workId,

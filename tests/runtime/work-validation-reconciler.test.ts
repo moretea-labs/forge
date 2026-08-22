@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
@@ -128,6 +128,44 @@ describe('Work validation receipt convergence', () => {
     expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'delivery', evidenceState: 'valid' });
   });
   test('verification snapshot metadata does not change Check content identity', () => { const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-controller-')); const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-repo-')); roots.push(controllerHome, repoRoot); writeFileSync(join(repoRoot, 'source.ts'), 'export const value = 1;\n'); execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot }); execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot }); execFileSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot }); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot }); const sourceIdentity = currentControllerCheckRevision(repoRoot); const snapshot = materializeWorkVerificationSnapshot({ controllerHome, repoId: 'repo-validation-snapshot', sourceRoot: repoRoot, scope: { workId: 'work-validation-snapshot', allowedPaths: ['**'], forbiddenPaths: [] } }); expect(existsSync(join(snapshot.root, '.ai/harness/controller/work-verification-snapshot.json'))).toBe(true); expect(currentControllerCheckRevision(snapshot.root)).toBe(sourceIdentity); });
+  test('verification snapshot safely reuses primary worktree dependencies only when dependency metadata is unchanged', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-deps-controller-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-deps-repo-'));
+    const worktreeParent = mkdtempSync(join(tmpdir(), 'forge-work-validation-deps-worktree-parent-'));
+    const worktreeRoot = join(worktreeParent, 'worktree');
+    roots.push(controllerHome, repoRoot, worktreeParent);
+    writeFileSync(join(repoRoot, '.gitignore'), 'node_modules/\n');
+    writeFileSync(join(repoRoot, 'package.json'), '{\"name\":\"fixture\",\"private\":true}\n');
+    writeFileSync(join(repoRoot, 'bun.lock'), '# stable dependency lock\n');
+    mkdirSync(join(repoRoot, 'node_modules', 'fixture-dependency'), { recursive: true });
+    writeFileSync(join(repoRoot, 'node_modules', 'fixture-dependency', 'marker.txt'), 'primary dependency cache\n');
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot });
+    execFileSync('git', ['add', '.gitignore', 'package.json', 'bun.lock'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    execFileSync('git', ['worktree', 'add', '-q', '-b', 'work/dependency-reuse', worktreeRoot], { cwd: repoRoot });
+    expect(existsSync(join(worktreeRoot, 'node_modules'))).toBe(false);
+
+    const reused = materializeWorkVerificationSnapshot({
+      controllerHome,
+      repoId: 'repo-validation-dependency-reuse',
+      sourceRoot: worktreeRoot,
+      scope: { workId: 'work-validation-dependency-reuse', allowedPaths: ['**'], forbiddenPaths: [] },
+    });
+    expect(existsSync(join(reused.root, 'node_modules', 'fixture-dependency', 'marker.txt'))).toBe(true);
+    expect(realpathSync(join(reused.root, 'node_modules'))).toBe(realpathSync(join(repoRoot, 'node_modules')));
+
+    writeFileSync(join(worktreeRoot, 'package.json'), '{\"name\":\"fixture\",\"private\":true,\"dependencies\":{\"new-package\":\"1.0.0\"}}\n');
+    const changed = materializeWorkVerificationSnapshot({
+      controllerHome,
+      repoId: 'repo-validation-dependency-reuse',
+      sourceRoot: worktreeRoot,
+      scope: { workId: 'work-validation-dependency-changed', allowedPaths: ['package.json'], forbiddenPaths: [] },
+    });
+    expect(existsSync(join(changed.root, 'node_modules'))).toBe(false);
+  });
+
   test('verification snapshot removes empty parent directories for tracked deletions', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-delete-controller-'));
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-delete-repo-'));
