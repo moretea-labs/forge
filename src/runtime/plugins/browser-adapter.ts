@@ -162,6 +162,12 @@ type BrowserLike = {
   disconnect?(): Promise<void> | void;
 };
 
+type FrameLike = {
+  url(): string;
+  name(): string;
+  evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T>;
+};
+
 type PageLike = {
   goto(url: string, options?: Record<string, unknown>): Promise<unknown>;
   reload?(options?: Record<string, unknown>): Promise<unknown>;
@@ -184,6 +190,8 @@ type PageLike = {
   uncheck?(selector: string, options?: Record<string, unknown>): Promise<void>;
   waitForSelector(selector: string, options?: Record<string, unknown>): Promise<unknown>;
   waitForLoadState?(state?: string, options?: Record<string, unknown>): Promise<void>;
+  frames?(): FrameLike[];
+  mainFrame?(): FrameLike;
   locator?(selector: string): { screenshot(options?: Record<string, unknown>): Promise<Buffer> };
   on?(event: string, handler: (...args: unknown[]) => void): void;
   bringToFront?(): Promise<void>;
@@ -2366,8 +2374,50 @@ function selectorRepairHint(selector: string, errorMessage: string): string {
   return `Check selector "${selector}" against the current page structure.`;
 }
 
-async function extractText(page: PageLike, selector: string | undefined, maxChars: number): Promise<Record<string, unknown>> {
-  const raw = await page.evaluate<string>(scriptText(selector));
+type BrowserEvaluationScope = Pick<PageLike, 'evaluate'>;
+
+type BrowserFrameSelection = {
+  scope: BrowserEvaluationScope;
+  frame?: { url: string; name: string };
+};
+
+function requestedFrameSelection(args: Record<string, unknown>): { frameUrl?: string; frameName?: string } {
+  return { frameUrl: stringValue(args.frame_url), frameName: stringValue(args.frame_name) };
+}
+
+function resolveBrowserEvaluationScope(
+  page: PageLike,
+  args: Record<string, unknown>,
+  connection: BrowserConnectionSummary,
+): BrowserFrameSelection {
+  const { frameUrl, frameName } = requestedFrameSelection(args);
+  if (!frameUrl && !frameName) return { scope: page };
+  if (connection.provider === 'macos-apple-events' || !page.frames) {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_FRAME_SCOPE_UNAVAILABLE',
+      'Explicit frame targeting requires a Playwright/CDP-controlled page; native Apple Events sessions fail closed.',
+      { retryable: false, details: { provider: connection.provider, frameUrl, frameName } },
+    );
+  }
+  const matches = page.frames().filter((frame) => (!frameUrl || frame.url() === frameUrl) && (!frameName || frame.name() === frameName));
+  if (matches.length === 0) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_FRAME_NOT_FOUND', 'No browser frame matched the requested exact frame identity.', {
+      retryable: true,
+      details: { frameUrl, frameName },
+    });
+  }
+  if (matches.length > 1) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_FRAME_AMBIGUOUS', 'Multiple browser frames matched the requested frame identity; specify both frame_url and frame_name.', {
+      retryable: false,
+      details: { frameUrl, frameName, matchCount: matches.length },
+    });
+  }
+  const frame = matches[0]!;
+  return { scope: frame, frame: { url: frame.url(), name: frame.name() } };
+}
+
+async function extractText(scope: BrowserEvaluationScope, selector: string | undefined, maxChars: number): Promise<Record<string, unknown>> {
+  const raw = await scope.evaluate<string>(scriptText(selector));
   return truncateText(raw, maxChars);
 }
 
@@ -2465,7 +2515,7 @@ function capabilities(): AssistantPluginCapability[] {
       scopes: ['browser.read', 'browser.profile'],
       actions: [
         'open_page', 'navigate', 'reload', 'go_back', 'wait_for_load_state',
-        'get_text', 'get_html', 'query_selector', 'query_all', 'get_attribute',
+        'get_text', 'get_html', 'query_selector', 'query_all', 'get_attribute', 'list_frames',
         'screenshot', 'extract_links', 'extract_tables', 'extract_forms', 'snapshot_interactive',
         'get_console_errors', 'get_failed_requests',
       ],
@@ -2477,7 +2527,7 @@ function capabilities(): AssistantPluginCapability[] {
       scopes: ['browser.interact', 'browser.profile'],
       actions: [
         'activate_page', 'click', 'click_text', 'double_click', 'hover', 'focus', 'type', 'fill', 'select_option',
-        'check', 'uncheck', 'press', 'keyboard_shortcut', 'dispatch_event', 'wait_for_selector', 'attach_local_file', 'await_file_transfer',
+        'check', 'uncheck', 'press', 'keyboard_shortcut', 'trusted_input', 'dispatch_event', 'wait_for_selector', 'attach_local_file', 'await_file_transfer',
       ],
     },
   ];
@@ -2502,6 +2552,11 @@ function sessionTargetSchema(extra: Record<string, unknown> = {}, required: stri
     additionalProperties: false,
   };
 }
+
+const frameScopeProperties = {
+  frame_url: { type: 'string' },
+  frame_name: { type: 'string' },
+};
 
 function interactSchema(extra: Record<string, unknown>, required: string[]): Record<string, unknown> {
   return sessionTargetSchema({
@@ -2688,7 +2743,7 @@ function actions(): AssistantPluginActionDescriptor[] {
       description: 'Extract text from a URL or saved browser session.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
       scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({ selector: { type: 'string' }, max_chars: { type: 'number' } }),
+      argumentsSchema: sessionTargetSchema({ selector: { type: 'string' }, max_chars: { type: 'number' }, ...frameScopeProperties }),
     },
     {
       actionId: 'get_html',
@@ -2696,7 +2751,7 @@ function actions(): AssistantPluginActionDescriptor[] {
       description: 'Extract HTML for the page or a selector (bounded).',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
       scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({ selector: { type: 'string' }, max_chars: { type: 'number' } }),
+      argumentsSchema: sessionTargetSchema({ selector: { type: 'string' }, max_chars: { type: 'number' }, ...frameScopeProperties }),
     },
     {
       actionId: 'query_selector',
@@ -2704,7 +2759,7 @@ function actions(): AssistantPluginActionDescriptor[] {
       description: 'Return the first matching element summary with a stable selector hint.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
       scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({ selector: { type: 'string' } }, ['selector']),
+      argumentsSchema: sessionTargetSchema({ selector: { type: 'string' }, ...frameScopeProperties }, ['selector']),
     },
     {
       actionId: 'query_all',
@@ -2712,7 +2767,7 @@ function actions(): AssistantPluginActionDescriptor[] {
       description: 'Return matching element summaries (bounded).',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
       scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({ selector: { type: 'string' }, limit: { type: 'number' } }, ['selector']),
+      argumentsSchema: sessionTargetSchema({ selector: { type: 'string' }, limit: { type: 'number' }, ...frameScopeProperties }, ['selector']),
     },
     {
       actionId: 'get_attribute',
@@ -2720,7 +2775,15 @@ function actions(): AssistantPluginActionDescriptor[] {
       description: 'Read one attribute from a selector.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
       scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({ selector: { type: 'string' }, attribute: { type: 'string' } }, ['selector', 'attribute']),
+      argumentsSchema: sessionTargetSchema({ selector: { type: 'string' }, attribute: { type: 'string' }, ...frameScopeProperties }, ['selector', 'attribute']),
+    },
+    {
+      actionId: 'list_frames',
+      title: 'List page frames',
+      description: 'List bounded Playwright/CDP frame identities for explicit frame-scoped DOM observation.',
+      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
+      scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
+      argumentsSchema: sessionTargetSchema({ limit: { type: 'number', minimum: 1, maximum: 100 } }),
     },
     {
       actionId: 'screenshot',
@@ -2760,7 +2823,7 @@ function actions(): AssistantPluginActionDescriptor[] {
       description: 'Snapshot interactive elements with stable selector hints plus CSS-pixel viewport geometry for screenshot-to-input grounding.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
       scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({ limit: { type: 'number' } }),
+      argumentsSchema: sessionTargetSchema({ limit: { type: 'number' }, ...frameScopeProperties }),
     },
     {
       actionId: 'get_console_errors',
@@ -3539,20 +3602,26 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           provider: 'playwright',
           sessionId: target.sessionId,
           url: target.url,
-          ...(await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => ({
-            ...(await extractText(page, stringValue(input.args.selector), positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS))),
-            browserConnection: connection,
-          }), { persistSession: true })),
+          ...(await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+            const selection = resolveBrowserEvaluationScope(page, input.args, connection);
+            return {
+              ...(await extractText(selection.scope, stringValue(input.args.selector), positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS))),
+              ...(selection.frame ? { frame: selection.frame } : {}),
+              browserConnection: connection,
+            };
+          }, { persistSession: true })),
         };
       }
       case 'get_html': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
-          const raw = await page.evaluate<string>(EXTRACTION_SCRIPTS.html(stringValue(input.args.selector)));
+          const selection = resolveBrowserEvaluationScope(page, input.args, connection);
+          const raw = await selection.scope.evaluate<string>(EXTRACTION_SCRIPTS.html(stringValue(input.args.selector)));
           return {
             provider: 'playwright',
             sessionId: target.sessionId,
             url: target.url,
+            ...(selection.frame ? { frame: selection.frame } : {}),
             browserConnection: connection,
             ...truncateText(raw, positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS)),
           };
@@ -3564,12 +3633,14 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const selector = requiredString(input.args.selector, 'selector');
         const limit = Math.min(positiveNumber(input.args.limit, 25), 100);
         return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
-          const matches = await page.evaluate<Array<Record<string, unknown>>>(EXTRACTION_SCRIPTS.query(selector, input.actionId === 'query_selector' ? 1 : limit));
+          const selection = resolveBrowserEvaluationScope(page, input.args, connection);
+          const matches = await selection.scope.evaluate<Array<Record<string, unknown>>>(EXTRACTION_SCRIPTS.query(selector, input.actionId === 'query_selector' ? 1 : limit));
           return {
             provider: 'playwright',
             sessionId: target.sessionId,
             url: target.url,
             selector,
+            ...(selection.frame ? { frame: selection.frame } : {}),
             browserConnection: connection,
             ...(input.actionId === 'query_selector'
               ? { match: matches[0] ?? null, found: matches.length > 0 }
@@ -3581,15 +3652,42 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const target = resolveActionTarget(input.repoRoot, input.args);
         const selector = requiredString(input.args.selector, 'selector');
         const attribute = requiredString(input.args.attribute, 'attribute');
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => ({
-          provider: 'playwright',
-          sessionId: target.sessionId,
-          url: target.url,
-          selector,
-          attribute,
-          browserConnection: connection,
-          value: await page.evaluate<string | null>(EXTRACTION_SCRIPTS.attribute(selector, attribute)),
-        }), { persistSession: true });
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+          const selection = resolveBrowserEvaluationScope(page, input.args, connection);
+          return {
+            provider: 'playwright',
+            sessionId: target.sessionId,
+            url: target.url,
+            selector,
+            attribute,
+            ...(selection.frame ? { frame: selection.frame } : {}),
+            browserConnection: connection,
+            value: await selection.scope.evaluate<string | null>(EXTRACTION_SCRIPTS.attribute(selector, attribute)),
+          };
+        }, { persistSession: true });
+      }
+      case 'list_frames': {
+        const target = resolveActionTarget(input.repoRoot, input.args);
+        const limit = Math.min(positiveNumber(input.args.limit, 50), 100);
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+          if (connection.provider === 'macos-apple-events' || !page.frames) {
+            throw new AssistantPluginError('PLUGIN_BROWSER_FRAME_SCOPE_UNAVAILABLE', 'Frame discovery requires a Playwright/CDP-controlled page; native Apple Events sessions fail closed.', {
+              retryable: false,
+              details: { provider: connection.provider },
+            });
+          }
+          const allFrames = page.frames();
+          const frames = allFrames.slice(0, limit).map((frame) => ({ url: frame.url(), name: frame.name() }));
+          return {
+            provider: 'playwright',
+            sessionId: target.sessionId,
+            url: target.url,
+            frames,
+            count: allFrames.length,
+            truncated: allFrames.length > frames.length,
+            browserConnection: connection,
+          };
+        }, { persistSession: true });
       }
       case 'screenshot': {
         const target = resolveActionTarget(input.repoRoot, input.args);
@@ -3629,7 +3727,10 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
               : input.actionId === 'extract_forms'
                 ? EXTRACTION_SCRIPTS.forms(limit)
                 : EXTRACTION_SCRIPTS.interactive(limit);
-          const evaluated = await page.evaluate<unknown>(script);
+          const selection = input.actionId === 'snapshot_interactive'
+            ? resolveBrowserEvaluationScope(page, input.args, connection)
+            : { scope: page } as BrowserFrameSelection;
+          const evaluated = await selection.scope.evaluate<unknown>(script);
           const grounded = input.actionId === 'snapshot_interactive' && evaluated && typeof evaluated === 'object' && !Array.isArray(evaluated)
             ? evaluated as { geometryVersion?: unknown; viewport?: unknown; elements?: unknown }
             : undefined;
@@ -3639,6 +3740,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             url: target.url,
             actionId: input.actionId,
             data: grounded && Array.isArray(grounded.elements) ? grounded.elements : evaluated,
+            ...(selection.frame ? { frame: selection.frame } : {}),
             ...(grounded?.geometryVersion === 1 ? { geometryVersion: 1, viewport: grounded.viewport } : {}),
             browserConnection: connection,
           };
