@@ -1325,6 +1325,7 @@ export interface PrimaryConnectorRecoveryDependencies {
   verifyLocal?: (config: RecoveryConfig) => Promise<VerifyResult>;
   reconnect?: (config: RecoveryConfig) => Promise<{ ok: boolean; detail: string; verify: VerifyResult }>;
   probeConnectorLocal?: (config: RecoveryConfig) => Promise<{ ok: boolean; detail: string; status?: number } | undefined>;
+  probeConnectorOwnership?: (config: RecoveryConfig) => Promise<{ ok: boolean; detail: string }>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -1343,6 +1344,39 @@ async function probePrimaryConnectorLocal(config: RecoveryConfig): Promise<{ ok:
   const localMcpUrl = config.primaryConnectorService?.localMcpUrl?.trim();
   if (!localMcpUrl) return undefined;
   return probeExternalMcp(createRecoveryHttpTransport(config.controllerHome), localMcpUrl);
+}
+
+async function probePrimaryConnectorOwnership(
+  config: RecoveryConfig,
+  service: LaunchdService,
+  runCommand: CommandRunner = command,
+): Promise<{ ok: boolean; detail: string }> {
+  const localMcpUrl = config.primaryConnectorService?.localMcpUrl?.trim();
+  if (!localMcpUrl) return { ok: false, detail: 'primary Connector local MCP endpoint is not configured' };
+  let port: number;
+  try {
+    const parsed = new URL(localMcpUrl);
+    const rawPort = parsed.port || (parsed.protocol === 'https:' ? '443' : parsed.protocol === 'http:' ? '80' : '');
+    port = Number(rawPort);
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('invalid port');
+  } catch {
+    return { ok: false, detail: `primary Connector local MCP endpoint has no verifiable TCP port: ${localMcpUrl}` };
+  }
+  const printed = await runCommand('launchctl', ['print', service.target], 5_000);
+  const pidMatch = printed.ok ? printed.stdout.match(/\bpid\s*=\s*(\d+)/) : null;
+  const pid = pidMatch ? Number(pidMatch[1]) : undefined;
+  if (!pid || !Number.isInteger(pid)) {
+    return { ok: false, detail: `configured primary Connector launchd service has no live pid: ${service.target}` };
+  }
+  const listening = await runCommand('lsof', ['-nP', '-a', '-p', String(pid), `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], 5_000);
+  const listenerPids = listening.stdout.split(/\s+/).map((value) => Number(value)).filter(Number.isInteger);
+  const ok = listening.ok && listenerPids.includes(pid);
+  return {
+    ok,
+    detail: ok
+      ? `configured primary Connector pid ${pid} owns TCP ${port}`
+      : `configured primary Connector pid ${pid} does not own TCP ${port}`,
+  };
 }
 
 export async function restartPrimaryConnector(
@@ -1370,13 +1404,17 @@ export async function restartPrimaryConnector(
   }
   const reconnect = dependencies.reconnect ?? reconnectMain;
   const probeConnectorLocal = dependencies.probeConnectorLocal ?? probePrimaryConnectorLocal;
+  const runCommand = dependencies.runCommand ?? command;
+  const probeConnectorOwnership = dependencies.probeConnectorOwnership
+    ?? ((candidateConfig: RecoveryConfig) => probePrimaryConnectorOwnership(candidateConfig, service, runCommand));
   const now = dependencies.now ?? Date.now;
   const wait = dependencies.sleep ?? sleep;
   const timeoutMs = config.primaryConnectorService?.postRestartVerifyTimeoutMs ?? 30_000;
   const locked = await withLock(config, { action: 'restart_primary_connector' }, async () => {
     const tunnelConfigured = Boolean(configuredPrimaryPublicTunnel(config));
     let localConnector = await probeConnectorLocal(config);
-    let observed = localConnector?.ok ? await reconnect(config) : undefined;
+    let connectorOwnership = localConnector?.ok ? await probeConnectorOwnership(config) : undefined;
+    let observed = localConnector?.ok && connectorOwnership?.ok ? await reconnect(config) : undefined;
     if (observed?.ok) {
       return {
         ok: true,
@@ -1391,9 +1429,9 @@ export async function restartPrimaryConnector(
     // A healthy local OAuth endpoint proves the Connector is not the broken hop.
     // If a distinct primary tunnel is configured, skip the pointless Gateway
     // restart and repair the public hop directly.
-    const restartConnector = !localConnector?.ok || !tunnelConfigured;
+    const restartConnector = !localConnector?.ok || !connectorOwnership?.ok || !tunnelConfigured;
     if (restartConnector) {
-      const restarted = await ensureLaunchdServiceStarted(service, dependencies.runCommand ?? command);
+      const restarted = await ensureLaunchdServiceStarted(service, runCommand);
       if (!restarted.ok) {
         audit(config, 'primary_connector_restart_failed', { serviceTarget: service.target, detail: restarted.detail });
         return { ok: false, attempted: true, detail: restarted.detail, serviceTarget: service.target, verify: initialLocal } satisfies PrimaryConnectorRestartResult;
@@ -1405,12 +1443,18 @@ export async function restartPrimaryConnector(
         await wait(1_000);
         localConnector = await probeConnectorLocal(config);
       }
-      if (localConnector && !localConnector.ok) {
-        audit(config, 'primary_connector_restart_local_unverified', { serviceTarget: service.target, detail: localConnector.detail });
+      connectorOwnership = localConnector?.ok ? await probeConnectorOwnership(config) : undefined;
+      if (localConnector && (!localConnector.ok || !connectorOwnership?.ok)) {
+        const detail = localConnector.ok
+          ? (connectorOwnership?.detail ?? 'configured primary Connector listener ownership could not be verified')
+          : localConnector.detail;
+        audit(config, 'primary_connector_restart_local_unverified', { serviceTarget: service.target, detail });
         return {
           ok: false,
           attempted: true,
-          detail: 'primary Connector restarted but its local MCP endpoint did not recover before timeout',
+          detail: localConnector.ok
+            ? 'primary Connector restarted but the configured launchd service does not own its local MCP listener'
+            : 'primary Connector restarted but its local MCP endpoint did not recover before timeout',
           serviceTarget: service.target,
           verify: initialLocal,
         } satisfies PrimaryConnectorRestartResult;
@@ -1418,7 +1462,7 @@ export async function restartPrimaryConnector(
     }
 
     observed ??= await reconnect(config);
-    if (!observed.ok && localConnector?.ok && configuredPrimaryPublicTunnel(config)) {
+    if (!observed.ok && localConnector?.ok && connectorOwnership?.ok && configuredPrimaryPublicTunnel(config)) {
       const tunnel = primaryPublicTunnelService(config, service.uid);
       if (tunnel) {
         const tunnelRestarted = await ensureLaunchdServiceStarted(tunnel, dependencies.runCommand ?? command);
