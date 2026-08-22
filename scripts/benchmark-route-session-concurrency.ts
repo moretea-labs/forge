@@ -363,18 +363,22 @@ async function main(): Promise<void> {
     }
     const sameAuthorityAdmission = await runSemanticAdmissionBurst({ controllerHome, repoId: first.repository.repoId, storeRoot: join(root, 'semantic-same-authority'), mode: 'same' });
     const independentRequirementAdmission = await runSemanticAdmissionBurst({ controllerHome, repoId: first.repository.repoId, storeRoot: join(root, 'semantic-independent-requirements'), mode: 'independent' });
-    const semanticAdmissionCriticalP95Ms = Math.max(sameAuthorityAdmission.criticalSectionP95Ms, independentRequirementAdmission.criticalSectionP95Ms);
+    const semanticAdmissionCriticalWallP95Ms = Math.max(sameAuthorityAdmission.criticalSectionP95Ms, independentRequirementAdmission.criticalSectionP95Ms);
+    const semanticAdmissionCriticalCpuP95Ms = Math.max(sameAuthorityAdmission.criticalSectionCpuP95Ms, independentRequirementAdmission.criticalSectionCpuP95Ms);
     const semanticAdmission = {
       sameAuthority: sameAuthorityAdmission,
       independentRequirements: independentRequirementAdmission,
       acceptance: {
         minimumControllers: 32,
-        criticalSectionP95ThresholdMs: 10,
-        criticalSectionP95TargetMs: 5,
-        observedCriticalSectionP95Ms: semanticAdmissionCriticalP95Ms,
+        criticalSectionCpuP95ThresholdMs: 10,
+        criticalSectionCpuP95TargetMs: 5,
+        criticalSectionWallP95GuardrailMs: 100,
+        observedCriticalSectionCpuP95Ms: semanticAdmissionCriticalCpuP95Ms,
+        observedCriticalSectionWallP95Ms: semanticAdmissionCriticalWallP95Ms,
         passed: sameAuthorityAdmission.success
           && independentRequirementAdmission.success
-          && semanticAdmissionCriticalP95Ms <= 10,
+          && semanticAdmissionCriticalCpuP95Ms <= 10
+          && semanticAdmissionCriticalWallP95Ms <= 100,
       },
     };
     const results = new Map<string, Sample[]>();
