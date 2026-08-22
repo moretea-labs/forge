@@ -2053,6 +2053,99 @@ describe("MCP controller profile", () => {
     });
   });
 
+  test("terminal cleanup accepts a current Controller claim without weakening historical WorkHandle principal fencing", async () => {
+    await withController(async (repoRoot, _ctx) => {
+      const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
+      spawnSync("git", ["config", "user.name", "Forge Test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["config", "user.email", "forge@example.test"], { cwd: repoRoot, stdio: "ignore" });
+      spawnSync("git", ["add", "."], { cwd: repoRoot, stdio: "ignore" });
+      expect(spawnSync("git", ["commit", "-m", "fixture"], { cwd: repoRoot, stdio: "ignore" }).status).toBe(0);
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      persistControllerAccessMode(controllerHome, "full_access", repoRoot);
+      const advanced = createMultiRepositoryContext({
+        repo: repoRoot,
+        profile: "controller",
+        toolset: "advanced",
+        controllerHome,
+        principalId: "current-controller-principal",
+        controllerInstanceId: "current-controller-instance",
+      });
+      const started = await executionJson(advanced, "session_start", {});
+      const sessionId = String(started.session.sessionId);
+      await executionJson(advanced, "session_bind_repository", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: repository.activeCheckoutId,
+      });
+      const prepared = await executionJson(advanced, "work_prepare", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        checkout_id: repository.activeCheckoutId,
+        request_id: "historical-principal-terminal-cleanup",
+        objective: "Clean a terminal historical Work under the current Controller claim",
+        isolation: "new_worktree",
+      });
+      expect(prepared.error).toBeUndefined();
+      const workId = String(prepared.work.workId);
+      const handle = readWorkHandle(controllerHome, repository.repoId, workId)!;
+      const contractId = handle.workContractId!;
+      writeWorkHandle(controllerHome, { ...handle, principalId: "historical-controller-principal" });
+
+      const ordinaryExecution = await executionJson(advanced, "work_execute", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        work_id: workId,
+        command: ["git", "status", "--short"],
+      });
+      expect(ordinaryExecution.error.code).toBe("WORK_HANDLE_PRINCIPAL_MISMATCH");
+
+      updateWorkContract({ controllerHome, repoId: repository.repoId }, contractId, { status: "cancelled" });
+      const owner = getControllerSession({ controllerHome, repoId: repository.repoId }, contractId)!;
+      releaseControllerSession({ controllerHome, repoId: repository.repoId }, contractId, owner.controllerId);
+      const unclaimedCleanup = await executionJson(advanced, "work_finalize", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        work_id: workId,
+        cleanup: true,
+        delete_branch: true,
+        target_branch: "main",
+      });
+      expect(unclaimedCleanup.error.code).toBe("WORK_HANDLE_PRINCIPAL_MISMATCH");
+
+      claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+        workId: contractId,
+        controllerId: "current-controller-principal",
+        controllerType: "chatgpt",
+        sessionId,
+        principalId: "current-controller-principal",
+        controllerInstanceId: "current-controller-instance",
+        leaseMs: 60_000,
+      });
+      const cleaned = await executionJson(advanced, "work_finalize", {
+        session_id: sessionId,
+        repo_id: repository.repoId,
+        work_id: workId,
+        cleanup: true,
+        delete_branch: true,
+        target_branch: "main",
+      });
+      expect(cleaned.error).toBeUndefined();
+      expect(cleaned).toMatchObject({
+        completed: false,
+        cleanupCompleted: true,
+        failurePreserved: true,
+        work: { state: "cleaned" },
+        cleanupReceipt: {
+          terminalOutcome: "cancelled",
+          complete: true,
+          ownership: { controllerLease: "released" },
+        },
+      });
+      expect(existsSync(handle.worktreePath)).toBe(false);
+      expect(getControllerSession({ controllerHome, repoId: repository.repoId }, contractId)).toBeUndefined();
+    });
+  });
+
   test("failed Work cleanup checkpoints dirty content despite unrelated check failure", async () => {
     await withController(async (repoRoot, _ctx) => {
       const controllerHome = process.env.FORGE_CONTROLLER_HOME!;

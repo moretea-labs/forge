@@ -391,14 +391,30 @@ function findWorkHandle(
   });
 }
 
+function currentControllerClaimAuthorizesTerminalCleanup(
+  ctx: MultiRepositoryMcpToolContext,
+  session: ExecutionSessionContext,
+  handle: WorkHandleState,
+): boolean {
+  if (!terminalCleanupOutcome(ctx, handle)) return false;
+  const workIdValue = handle.workContractId ?? handle.workId;
+  const owner = getControllerSession({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, workIdValue);
+  if (!owner) return false;
+  return (owner.principalId?.trim() || owner.controllerId) === session.principalId
+    && owner.controllerInstanceId === session.controllerInstanceId;
+}
+
 function workForSession(
   ctx: MultiRepositoryMcpToolContext,
   session: ExecutionSessionContext,
   args: Record<string, unknown>,
-  options: { reconcileValidation?: boolean } = {},
+  options: { reconcileValidation?: boolean; allowClaimedTerminalCleanup?: boolean } = {},
 ): WorkHandleState {
   let handle = findWorkHandle(ctx, session, args);
-  if (handle.principalId !== session.principalId) throw new Error('WORK_HANDLE_PRINCIPAL_MISMATCH: work handle belongs to another principal');
+  if (
+    handle.principalId !== session.principalId
+    && !(options.allowClaimedTerminalCleanup === true && currentControllerClaimAuthorizesTerminalCleanup(ctx, session, handle))
+  ) throw new Error('WORK_HANDLE_PRINCIPAL_MISMATCH: work handle belongs to another principal');
   if (options.reconcileValidation !== false) handle = reconcileWorkValidation(ctx.controllerHome, handle).handle;
   if (
     session.activeRepositoryId !== handle.repositoryId
@@ -1180,7 +1196,10 @@ export function selectDefaultWorkValidationChecks(
 
 async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const session = requireSession(ctx, args);
-  const handle = workForSession(ctx, session, args, { reconcileValidation: false });
+  const handle = workForSession(ctx, session, args, {
+    reconcileValidation: false,
+    allowClaimedTerminalCleanup: args.cleanup !== false,
+  });
   const terminalOutcome = terminalCleanupOutcome(ctx, handle);
   if (terminalOutcome && args.cleanup !== false) {
     return await reconcileTerminalCleanup(ctx, session, handle, args, terminalOutcome);
@@ -1617,7 +1636,7 @@ function currentWorkValidationInput(
 
 async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const session = requireSession(ctx, args);
-  let current = workForSession(ctx, session, args);
+  let current = workForSession(ctx, session, args, { allowClaimedTerminalCleanup: args.cleanup !== false });
   const requestedWants = { commit: args.commit === true, merge: args.merge === true, cleanup: args.cleanup === true };
   const retryStage = current.state === 'failed'
     ? requestedFailedFinalizationRetry(current.finalization, requestedWants)
