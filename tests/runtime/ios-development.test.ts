@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   iosAppBuild,
+  iosAppInstall,
   iosAppLaunch,
   iosProjectDiscover,
   iosSchemesList,
@@ -206,6 +207,59 @@ describe('iOS development simulator reliability', () => {
     expect(first.ready).toBe(true);
     expect(second.ready).toBe(true);
     expect('screenshot' in first ? first.screenshot : undefined).not.toBe('screenshot' in second ? second.screenshot : undefined);
+  });
+
+  test('accepts Controller-owned prebuilt apps for skip-build smoke while rejecting arbitrary external paths', () => {
+    const repo = repository();
+    const artifactRoot = mkdtempSync(join(tmpdir(), 'forge-ios-controller-artifacts-'));
+    const outsideRoot = mkdtempSync(join(tmpdir(), 'forge-ios-untrusted-app-'));
+    roots.push(artifactRoot, outsideRoot);
+    const controllerApp = join(artifactRoot, 'prebuilt', 'Example.app');
+    const outsideApp = join(outsideRoot, 'Outside.app');
+    mkdirSync(controllerApp, { recursive: true });
+    mkdirSync(outsideApp, { recursive: true });
+    writeFileSync(join(controllerApp, 'Info.plist'), '<plist/>', 'utf-8');
+    writeFileSync(join(outsideApp, 'Info.plist'), '<plist/>', 'utf-8');
+    let installedPath = '';
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      sleep: () => {},
+      runCommand: (command, args) => {
+        if (command === 'xcodebuild' && args.includes('-list')) {
+          return result(command, args, { stdout: JSON.stringify({ project: { schemes: ['App'] } }) });
+        }
+        if (command === 'plutil') {
+          return result(command, args, { stdout: args.includes('CFBundleIdentifier') ? 'com.example.app\n' : 'Example\n' });
+        }
+        if (command === 'xcrun' && args[1] === 'install') {
+          installedPath = args[3] ?? '';
+          return result(command, args);
+        }
+        if (command === 'xcrun' && args[1] === 'launch') return result(command, args, { stdout: 'com.example.app: 4242\n' });
+        if (command === 'xcrun' && args[1] === 'spawn' && args[3] === 'launchctl') {
+          return result(command, args, { stdout: 'program path = /tmp/Example\n' });
+        }
+        if (command === 'xcrun' && args[1] === 'spawn' && args[3] === 'log') {
+          return result(command, args, { stdout: 'target app log\n' });
+        }
+        return result(command, args);
+      },
+    });
+
+    const review = iosSmokeReview(repo.record, {
+      scheme: 'App',
+      udid: 'D',
+      skipBuild: true,
+      appPath: 'controller-artifacts/ios/prebuilt/Example.app',
+      artifactRoot,
+      launchWaitMs: 0,
+    });
+
+    expect(review.ready).toBe(true);
+    expect(installedPath).toBe(controllerApp);
+    expect(review.appExecutable).toBe('Example');
+    expect('appPath' in review.install! ? review.install!.appPath : undefined).toBe('controller-artifacts/ios/prebuilt/Example.app');
+    expect(() => iosAppInstall(repo.record, { udid: 'D', appPath: outsideApp, artifactRoot })).toThrow('IOS_APP_PATH_NOT_BOUNDED');
   });
 
   test('keeps smoke stages unique, reuses one simulator inventory, and filters logs by app executable', () => {

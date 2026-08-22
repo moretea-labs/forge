@@ -553,7 +553,7 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
       const udid = stringValue(input.args.udid);
       const appPath = stringValue(input.args.app_path);
       if (!udid || !appPath) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'udid and app_path are required.', { retryable: false });
-      return { ...iosAppInstall(repository, { udid, appPath }) };
+      return { ...iosAppInstall(repository, { udid, appPath, artifactRoot }) };
     }
     case 'launch_app': {
       const udid = stringValue(input.args.udid);

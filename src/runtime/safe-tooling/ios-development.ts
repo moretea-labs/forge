@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'fs';
 import { basename, dirname, join, relative, resolve, sep } from 'path';
 import { spawnSync } from 'child_process';
 import type { RepositoryRecord } from '../../cli/repositories/types';
@@ -552,20 +552,20 @@ function selectBuiltAppProduct(scheme: string, builtApps: string[]): {
   };
 }
 
-function readBuiltAppPlistValue(repository: RepositoryRecord, appPath: string, key: string): string | undefined {
-  const appRoot = assertRepoBoundedAppPath(repository, appPath);
+function readBuiltAppPlistValue(repository: RepositoryRecord, appPath: string, key: string, artifactRoot?: string): string | undefined {
+  const appRoot = assertBoundedAppPath(repository, appPath, artifactRoot);
   const plist = join(appRoot, 'Info.plist');
   if (!existsSync(plist)) return undefined;
   const plutil = runCommand('plutil', ['-extract', key, 'raw', '-o', '-', plist]);
   return plutil.ok && plutil.stdout.trim() ? plutil.stdout.trim() : undefined;
 }
 
-function readBuiltAppBundleId(repository: RepositoryRecord, appPath: string): string | undefined {
-  return readBuiltAppPlistValue(repository, appPath, 'CFBundleIdentifier');
+function readBuiltAppBundleId(repository: RepositoryRecord, appPath: string, artifactRoot?: string): string | undefined {
+  return readBuiltAppPlistValue(repository, appPath, 'CFBundleIdentifier', artifactRoot);
 }
 
-function readBuiltAppExecutable(repository: RepositoryRecord, appPath: string): string | undefined {
-  return readBuiltAppPlistValue(repository, appPath, 'CFBundleExecutable');
+function readBuiltAppExecutable(repository: RepositoryRecord, appPath: string, artifactRoot?: string): string | undefined {
+  return readBuiltAppPlistValue(repository, appPath, 'CFBundleExecutable', artifactRoot);
 }
 
 function compareSimulatorCandidates(
@@ -603,22 +603,45 @@ function chooseSimulatorUdid(input: { udid?: string; simulatorName?: string }): 
   throw new Error('IOS_SIMULATOR_UNAVAILABLE: no available simulator was found');
 }
 
-function assertRepoBoundedAppPath(repository: RepositoryRecord, appPath: string): string {
-  const resolved = resolve(repository.canonicalRoot, appPath);
-  const allowedRoot = resolve(repository.canonicalRoot, '.forge', 'ios', 'DerivedData');
-  const rel = relative(allowedRoot, resolved);
-  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`)) throw new Error('IOS_APP_PATH_NOT_BOUNDED: app_path must be under .forge/ios/DerivedData');
+function pathIsWithin(root: string, target: string): boolean {
+  const canonicalRoot = existsSync(root) ? realpathSync(root) : resolve(root);
+  const canonicalTarget = existsSync(target) ? realpathSync(target) : resolve(target);
+  const rel = relative(canonicalRoot, canonicalTarget);
+  return Boolean(rel) && rel !== '..' && !rel.startsWith(`..${sep}`);
+}
+
+function assertBoundedAppPath(repository: RepositoryRecord, appPath: string, artifactRoot?: string): string {
+  const controllerPrefix = 'controller-artifacts/ios/';
+  const resolved = artifactRoot && appPath.startsWith(controllerPrefix)
+    ? resolve(artifactRoot, appPath.slice(controllerPrefix.length))
+    : resolve(repository.canonicalRoot, appPath);
   if (!resolved.endsWith('.app')) throw new Error('IOS_APP_PATH_INVALID: app_path must end with .app');
+  const derivedDataRoot = resolve(repository.canonicalRoot, '.forge', 'ios', 'DerivedData');
+  const controllerArtifactRoot = artifactRoot ? resolve(artifactRoot) : undefined;
+  if (!pathIsWithin(derivedDataRoot, resolved) && !(controllerArtifactRoot && pathIsWithin(controllerArtifactRoot, resolved))) {
+    throw new Error(
+      controllerArtifactRoot
+        ? 'IOS_APP_PATH_NOT_BOUNDED: app_path must be under .forge/ios/DerivedData or the Controller iOS artifact root'
+        : 'IOS_APP_PATH_NOT_BOUNDED: app_path must be under .forge/ios/DerivedData',
+    );
+  }
   return resolved;
 }
 
-export function iosAppInstall(repository: RepositoryRecord, input: { udid: string; appPath: string }) {
+export function iosAppInstall(repository: RepositoryRecord, input: { udid: string; appPath: string; artifactRoot?: string }) {
   const unsupported = assertDarwin();
   if (unsupported) return unsupported;
   const udid = String(input.udid ?? '').trim();
-  const appPath = assertRepoBoundedAppPath(repository, String(input.appPath ?? ''));
+  const appPath = assertBoundedAppPath(repository, String(input.appPath ?? ''), input.artifactRoot);
   const result = runCommand('xcrun', ['simctl', 'install', udid, appPath], { timeoutMs: 120_000 });
-  return { ready: result.ok, installed: result.ok, udid, appPath: relative(repository.canonicalRoot, appPath), error: result.ok ? undefined : { code: 'IOS_INSTALL_FAILED', message: result.stderr || result.stdout } };
+  return {
+    ready: result.ok,
+    installed: result.ok,
+    udid,
+    appPath: artifactRelativePath(repository, appPath, input.artifactRoot),
+    absolutePath: appPath,
+    error: result.ok ? undefined : { code: 'IOS_INSTALL_FAILED', message: result.stderr || result.stdout },
+  };
 }
 
 export function iosAppLaunch(input: { udid: string; bundleId: string; arguments?: string[]; waitMs?: number }) {
@@ -1048,7 +1071,7 @@ export function iosSmokeReview(repository: RepositoryRecord, input: IosSmokeRevi
   }));
 
   // 5. install
-  const install = iosAppInstall(repository, { udid, appPath });
+  const install = iosAppInstall(repository, { udid, appPath, artifactRoot: input.artifactRoot });
   if (!install.ready) {
     overallStatus = 'failed';
     blockedStage = 'install';
@@ -1071,7 +1094,7 @@ export function iosSmokeReview(repository: RepositoryRecord, input: IosSmokeRevi
   }));
 
   // 6. launch
-  const bundleId = String(input.bundleId ?? readBuiltAppBundleId(repository, appPath) ?? '').trim();
+  const bundleId = String(input.bundleId ?? readBuiltAppBundleId(repository, appPath, input.artifactRoot) ?? '').trim();
   if (!bundleId) {
     overallStatus = 'failed';
     blockedStage = 'launch';
@@ -1089,7 +1112,7 @@ export function iosSmokeReview(repository: RepositoryRecord, input: IosSmokeRevi
       simulatorOwnership, cleanupPolicy, simulatorCleanup,
     };
   }
-  const appExecutable = readBuiltAppExecutable(repository, appPath);
+  const appExecutable = readBuiltAppExecutable(repository, appPath, input.artifactRoot);
   const launch = iosAppLaunch({ udid, bundleId, waitMs: input.launchWaitMs });
   if (!launch.ready) {
     overallStatus = 'failed';
