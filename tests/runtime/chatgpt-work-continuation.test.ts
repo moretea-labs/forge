@@ -11,6 +11,7 @@ import {
   rebindChatgptWorkConversation,
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
 import {
+  chatgptAutomationControlWaitBudgets,
   chatgptAutomationPageFailure,
   chatgptAutomationReasoningLevelFromLabel,
   chatgptBrowserActionArgs,
@@ -131,6 +132,13 @@ describe('ChatGPT Work conversation binding', () => {
     expect(chatgptAutomationReasoningLevelFromLabel('High contrast')).toBeUndefined();
   });
 
+  test('keeps ChatGPT control readiness probes repeatable within a bounded hydration window', () => {
+    expect(chatgptAutomationControlWaitBudgets()).toEqual({ waitBudgetMs: 30_000, probeTimeoutMs: 2_500 });
+    expect(chatgptAutomationControlWaitBudgets(8_000)).toEqual({ waitBudgetMs: 8_000, probeTimeoutMs: 2_500 });
+    expect(chatgptAutomationControlWaitBudgets(1_000)).toEqual({ waitBudgetMs: 1_000, probeTimeoutMs: 1_000 });
+    expect(chatgptAutomationControlWaitBudgets(60_000)).toEqual({ waitBudgetMs: 30_000, probeTimeoutMs: 2_500 });
+  });
+
   test('classifies missing ChatGPT composer as login-required when authentication UI is visible', () => {
     expect(chatgptAutomationPageFailure('Log in  Sign up  Continue with Google', false)).toBe('CHATGPT_AUTOMATION_LOGIN_REQUIRED');
     expect(chatgptAutomationPageFailure('登录  注册  使用 Apple 继续', false)).toBe('CHATGPT_AUTOMATION_LOGIN_REQUIRED');
@@ -174,6 +182,9 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).not.toContain(':has-text(');
     expect(source).toContain('waitForChatgptIntelligenceControl'); expect(source).toContain('reasoningLabelMatches'); expect(source).toContain("'main button, main [role=\"button\"]'"); expect(source).toContain("limit: selector.startsWith('main ') ? 80 : 240"); expect(source).toContain('chatgptAutomationReasoningLevelFromLabel'); expect(source).toContain('CHATGPT_AUTOMATION_LOGIN_REQUIRED'); expect(source).not.toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('runWorkChatgptContinuation'); expect(engine).toContain("if (controllerType === 'chatgpt')"); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/'"); expect(engine).toContain("conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined");
     expect(source).toContain('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'); expect(source).toContain('workflowToolAttributionInstruction'); expect(source).toContain('repository_command_execute and repository_safe_patch_apply');
+    expect(source).toContain('buildBrowserPluginManifest(0, undefined, repoRoot).enabled');
+    expect(source).toContain("controllerBrowserAction(controllerHome, workId, 'configure', { enabled: true })");
+    expect(source.indexOf('buildBrowserPluginManifest(0, undefined, repoRoot).enabled')).toBeLessThan(source.indexOf("controllerBrowserAction(controllerHome, workId, 'configure', { enabled: true })"));
     expect(source).toContain('runStandaloneChatgptPrompt');
     const standaloneStart = source.indexOf('export async function runStandaloneChatgptPrompt');
     const workStart = source.indexOf('export async function runWorkChatgptContinuation');

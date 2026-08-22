@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { executeBrowserPluginAction } from '../../plugins/browser-adapter';
+import { buildBrowserPluginManifest, executeBrowserPluginAction } from '../../plugins/browser-adapter';
 import { controllerPluginRepository } from '../../plugins/store';
 import { getWorkContract } from '../facade/work-contract-store';
 import {
@@ -115,6 +115,11 @@ async function ensureControllerChatgptBrowser(controllerHome: string, workId: st
   const repository = controllerPluginRepository(controllerHome);
   const repoRoot = repository.canonicalRoot ?? repository.localRoot;
   if (!repoRoot) throw new Error('CHATGPT_CONTROLLER_BROWSER_ROOT_UNAVAILABLE');
+  // Browser configure is not a read: it persists configuration and closes managed
+  // contexts. Scheduled continuations must not disturb an already-enabled provider
+  // merely to prove it is available. Only enable it when the persisted authority is
+  // explicitly disabled; action-level transport overrides still fail closed later.
+  if (buildBrowserPluginManifest(0, undefined, repoRoot).enabled) return;
   await controllerBrowserAction(controllerHome, workId, 'configure', { enabled: true });
 }
 
@@ -260,16 +265,24 @@ async function findChatgptIntelligenceControl(
   return undefined;
 }
 
+export function chatgptAutomationControlWaitBudgets(timeoutMs?: number): { waitBudgetMs: number; probeTimeoutMs: number } {
+  const waitBudgetMs = Math.min(Math.max(timeoutMs ?? 30_000, 1_000), 30_000);
+  // One probe checks both the preferred <main> scope and the global fallback.
+  // Keep each selector query short enough that one slow pre-hydration pass cannot
+  // consume the whole readiness window before React exposes the reasoning control.
+  return { waitBudgetMs, probeTimeoutMs: Math.min(waitBudgetMs, 2_500) };
+}
+
 async function waitForChatgptIntelligenceControl(
   controllerHome: string,
   workId: string,
   browserSessionId: string,
   timeoutMs?: number,
 ): Promise<BrowserQueryMatch | undefined> {
-  const waitBudgetMs = Math.min(Math.max(timeoutMs ?? 12_000, 1_000), 12_000);
+  const { waitBudgetMs, probeTimeoutMs } = chatgptAutomationControlWaitBudgets(timeoutMs);
   const deadline = Date.now() + waitBudgetMs;
   do {
-    const control = await findChatgptIntelligenceControl(controllerHome, workId, browserSessionId, Math.min(waitBudgetMs, 5_000));
+    const control = await findChatgptIntelligenceControl(controllerHome, workId, browserSessionId, probeTimeoutMs);
     if (control) return control;
     if (Date.now() >= deadline) break;
     await new Promise((resolveWait) => setTimeout(resolveWait, 500));
