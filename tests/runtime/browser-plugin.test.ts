@@ -2558,6 +2558,7 @@ describe('browser plugin', () => {
       { url: 'https://example.com/frame-a', name: 'frame-a', text: 'Frame A text', box: { x: 300, y: 100, width: 640, height: 480 } },
       { url: 'https://example.com/frame-b', name: 'frame-b', text: 'Frame B text', box: { x: 50, y: 250, width: 640, height: 480 } },
       { url: 'https://example.com/frame-hidden', name: 'frame-hidden', text: 'Hidden frame text', box: null },
+      { url: 'https://example.com/frame-offscreen', name: 'frame-offscreen', text: 'Offscreen frame text', box: { x: 2000, y: 100, width: 640, height: 480 } },
     ] }) as unknown as { frameEvaluations: Array<{ url: string; name: string; expression: unknown }> };
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => frameRuntime as never });
     const frameSession = await executeBrowserPluginAction({
@@ -2575,6 +2576,7 @@ describe('browser plugin', () => {
       { url: 'https://example.com/frame-a', name: 'frame-a' },
       { url: 'https://example.com/frame-b', name: 'frame-b' },
       { url: 'https://example.com/frame-hidden', name: 'frame-hidden' },
+      { url: 'https://example.com/frame-offscreen', name: 'frame-offscreen' },
     ]);
     const frameText = await executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
@@ -2619,6 +2621,9 @@ describe('browser plugin', () => {
     expect(frameSnapshot.data).toEqual([expect.objectContaining({
       bounds: { x: 310, y: 120, width: 100, height: 40, right: 410, bottom: 160 },
       center: { x: 360, y: 140 },
+      frameLocalInViewport: true,
+      topLevelInViewport: true,
+      inViewport: true,
     })]);
     expect(frameRuntime.frameEvaluations.length).toBeGreaterThanOrEqual(2);
     await expect(executeBrowserPluginAction({
@@ -2626,6 +2631,17 @@ describe('browser plugin', () => {
       requestId: 'browser-hidden-frame-snapshot', args: { session_id: frameSessionId, frame_name: 'frame-hidden' },
       origin: { surface: 'local-ui', actor: 'test' },
     })).rejects.toThrow('PLUGIN_BROWSER_FRAME_GEOMETRY_UNAVAILABLE');
+    const offscreenSnapshot = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'snapshot_interactive',
+      requestId: 'browser-offscreen-frame-snapshot', args: { session_id: frameSessionId, frame_name: 'frame-offscreen' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(offscreenSnapshot.data).toEqual([expect.objectContaining({
+      visible: true,
+      frameLocalInViewport: true,
+      topLevelInViewport: false,
+      inViewport: false,
+    })]);
   });
 
   test('explicit frame targeting fails closed on native user-owned sessions without changing the active tab', async () => {
