@@ -57,6 +57,7 @@ interface SemanticAdmissionWorkerResult {
   created: boolean;
   authorityWorkId?: string;
   criticalSectionMs: number;
+  criticalSectionCpuMs: number;
   totalAdmissionMs: number;
 }
 
@@ -67,6 +68,7 @@ interface SemanticAdmissionBurstResult {
   deterministicResolutions: number;
   criticalSectionP50Ms: number;
   criticalSectionP95Ms: number;
+  criticalSectionCpuP95Ms: number;
   totalAdmissionP95Ms: number;
   success: boolean;
 }
@@ -221,9 +223,11 @@ async function semanticAdmissionWorker(): Promise<void> {
   const delayMs = Math.max(0, startAt - Date.now());
   if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
   let criticalSectionMs = 0;
+  let criticalSectionCpuMs = 0;
   const started = performance.now();
   const facade = await withPrimaryWorkAdmissionLockAsync({ controllerHome, repoId }, () => {
     const entered = performance.now();
+    const cpuEntered = process.cpuUsage();
     const value = startGoalWorkloop({
       workStore: { root: join(storeRoot, 'work') },
       handoffStore: { root: join(storeRoot, 'handoff') },
@@ -249,6 +253,8 @@ async function semanticAdmissionWorker(): Promise<void> {
       },
     });
     criticalSectionMs = elapsed(entered);
+    const cpuElapsed = process.cpuUsage(cpuEntered);
+    criticalSectionCpuMs = (cpuElapsed.user + cpuElapsed.system) / 1_000;
     return value;
   });
   const data = facade.data && typeof facade.data === 'object' ? facade.data as Record<string, unknown> : {};
@@ -267,6 +273,7 @@ async function semanticAdmissionWorker(): Promise<void> {
     created: data.workContractCreated === true,
     ...(authorityWorkId ? { authorityWorkId } : {}),
     criticalSectionMs: Math.round(criticalSectionMs * 1000) / 1000,
+    criticalSectionCpuMs: Math.round(criticalSectionCpuMs * 1000) / 1000,
     totalAdmissionMs: Math.round(elapsed(started) * 1000) / 1000,
   };
   process.stdout.write(`${JSON.stringify(result)}\n`);
@@ -323,6 +330,7 @@ async function runSemanticAdmissionBurst(input: {
     deterministicResolutions,
     criticalSectionP50Ms: percentile(criticalValues, 0.50),
     criticalSectionP95Ms: percentile(criticalValues, 0.95),
+    criticalSectionCpuP95Ms: percentile(rows.map((row) => row.criticalSectionCpuMs), 0.95),
     totalAdmissionP95Ms: percentile(rows.map((row) => row.totalAdmissionMs), 0.95),
     success,
   };

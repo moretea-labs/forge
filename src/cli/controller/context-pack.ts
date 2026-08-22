@@ -687,7 +687,7 @@ export function buildControllerContextPack(
  * its sidecar while broad lexical retrieval performs bounded async file I/O;
  * the sync builder then consumes the warmed session cache/evidence.
  */
-export const AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS = 2_000;
+export const AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS = 1_000;
 
 export async function buildControllerContextPackAsync(
   repoRoot: string,

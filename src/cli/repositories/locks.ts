@@ -1,4 +1,4 @@
-import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { ensureControllerHome, repositoryControllerRoot } from './controller-home';
 import { recordGatewayLatency } from '../../runtime/observability/gateway-contention-metrics';
@@ -39,7 +39,6 @@ export type ControllerLockTryResult =
 const DEFAULT_ASYNC_LOCK_WAIT_MS = 500;
 const MAX_ASYNC_LOCK_WAIT_MS = 5_000;
 const LOCK_POLL_INTERVAL_MS = 10;
-const CORRUPT_LOCK_GRACE_MS = 1_000;
 
 function safe(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'unknown';
@@ -96,23 +95,59 @@ function isPidAlive(pid: number | undefined): boolean {
   }
 }
 
-export function readControllerLock(controllerHome: string, key: ControllerLockKey): ControllerLockRecord | undefined {
-  const path = controllerLockPath(controllerHome, key);
+function readControllerLockRecord(path: string): ControllerLockRecord | undefined {
   try {
-    const record = JSON.parse(readFileSync(path, 'utf-8')) as ControllerLockRecord;
-    if (isExpired(record) || !isPidAlive(record.pid)) {
-      rmSync(path, { force: true });
-      return undefined;
-    }
-    return record;
+    return JSON.parse(readFileSync(path, 'utf-8')) as ControllerLockRecord;
   } catch {
-    try {
-      if (Date.now() - statSync(path).mtimeMs >= CORRUPT_LOCK_GRACE_MS) rmSync(path, { force: true });
-    } catch {
-      /* a concurrent owner may still be creating or releasing the lock */
-    }
     return undefined;
   }
+}
+
+/**
+ * Reap only the exact stale lock identity that the caller observed. The
+ * per-lockId guard serializes competing reapers, then the canonical path is
+ * re-read before unlink so an owner that replaced the stale record is never
+ * deleted from an old observation.
+ */
+export function reapControllerLockIfUnchanged(
+  controllerHome: string,
+  key: ControllerLockKey,
+  observed: ControllerLockRecord,
+): boolean {
+  const path = controllerLockPath(controllerHome, key);
+  const guardPath = `${path}.reap-${safe(observed.lockId)}.guard`;
+  let guardFd: number | undefined;
+  try {
+    guardFd = openSync(guardPath, 'wx');
+  } catch {
+    return false;
+  }
+  try {
+    const current = readControllerLockRecord(path);
+    if (!current || current.lockId !== observed.lockId) return false;
+    if (!isExpired(current) && isPidAlive(current.pid)) return false;
+    rmSync(path, { force: true });
+    return true;
+  } finally {
+    if (guardFd !== undefined) closeSync(guardFd);
+    rmSync(guardPath, { force: true });
+  }
+}
+
+export function readControllerLock(controllerHome: string, key: ControllerLockKey): ControllerLockRecord | undefined {
+  const path = controllerLockPath(controllerHome, key);
+  const record = readControllerLockRecord(path);
+  if (!record) {
+    // Canonical lock publication is atomic. A malformed file therefore means
+    // legacy/corrupt state; fail closed instead of deleting an identity that
+    // cannot be compared safely.
+    return undefined;
+  }
+  if (isExpired(record) || !isPidAlive(record.pid)) {
+    reapControllerLockIfUnchanged(controllerHome, key, record);
+    return undefined;
+  }
+  return record;
 }
 
 function metric(key: ControllerLockKey, waitedMs: number, outcome: 'success' | 'contention' | 'timeout'): void {
@@ -157,9 +192,11 @@ export function tryAcquireControllerLock(
   };
   let fd: number | undefined;
   try {
+    // The exclusive create is the ownership primitive. A concurrent reader may
+    // briefly observe incomplete JSON, but malformed state is never deleted;
+    // competing open(..., 'wx') attempts therefore still fail closed.
     fd = openSync(path, 'wx');
-    writeFileSync(fd, `${JSON.stringify(record, null, 2)}
-`, 'utf-8');
+    writeFileSync(fd, `${JSON.stringify(record, null, 2)}\n`, 'utf-8');
     const waitedMs = performance.now() - started;
     if (recordMetrics) metric(key, waitedMs, 'success');
     return { acquired: true, lock: record, waitedMs };

@@ -160,13 +160,13 @@ function workRiskFor(input: GoalWorkloopStartInput): WorkRisk {
   return 'medium';
 }
 
-function suggestedForWork(work: WorkContract, extras: SuggestedNextAction[] = []): SuggestedNextAction[] {
+function suggestedForWorkIdentity(workId: string, checks: string[], extras: SuggestedNextAction[] = []): SuggestedNextAction[] {
   const base: SuggestedNextAction[] = [
     {
       label: 'Continue workloop',
       tool: 'rh_work',
       operation: 'continue',
-      payload: { work_id: work.workId },
+      payload: { work_id: workId },
       risk: 'readonly',
       confidence: 'high',
     },
@@ -174,22 +174,26 @@ function suggestedForWork(work: WorkContract, extras: SuggestedNextAction[] = []
       label: 'Verify registered checks',
       tool: 'rh_work',
       operation: 'verify',
-      payload: { work_id: work.workId, check_id: work.checks[0] },
+      payload: { work_id: workId, check_id: checks[0] },
       risk: 'workspace_write',
-      confidence: work.checks[0] ? 'high' : 'low',
+      confidence: checks[0] ? 'high' : 'low',
     },
     {
       label: 'Finalize when ready',
       tool: 'rh_work',
       operation: 'finalize',
-      payload: { work_id: work.workId },
+      payload: { work_id: workId },
       risk: 'readonly',
       confidence: 'medium',
     },
   ];
   return validateSuggestedNextActions([...extras, ...base], {
-    validCheckIds: work.checks,
+    validCheckIds: checks,
   }).actions;
+}
+
+function suggestedForWork(work: WorkContract, extras: SuggestedNextAction[] = []): SuggestedNextAction[] {
+  return suggestedForWorkIdentity(work.workId, work.checks, extras);
 }
 
 function initialEvidence(objective: string): EvidenceRef {
@@ -784,6 +788,11 @@ export function startGoalWorkloop(
       return buildFacadeResult({ status: 'blocked', summary: `PLAN_STEP_ALREADY_COMPLETED: ${planStep.id}`, data: { executionStarted: false, workContractCreated: false, planId: plan.planId, planStepId: planStep.id } });
     }
   }
+  const initialSuggestedNextActions = suggestedForWorkIdentity(
+    generatedWorkId,
+    normalized.validCheckIds,
+    normalized.suggestedNextActions,
+  );
   const work = createWorkContract(ctx.workStore, {
     workId: generatedWorkId,
     repoId: ctx.repoId,
@@ -852,7 +861,7 @@ export function startGoalWorkloop(
     requestedBy: input.requestedBy ?? 'chatgpt',
     evidenceRefs: [initialEvidence(input.objective)],
     policyDecisions: policy ? [policy] : [],
-    suggestedNextActions: [],
+    suggestedNextActions: initialSuggestedNextActions,
     continuationPrompt: `Continue work ${ctx.repoId}: ${input.objective.slice(0, 200)}`,
   });
 
@@ -880,17 +889,11 @@ export function startGoalWorkloop(
     }
   }
 
-  const suggested = suggestedForWork(work, normalized.suggestedNextActions);
-  const updated = updateWorkContract(ctx.workStore, work.workId, {
-    suggestedNextActions: suggested,
-    updatedAt: at,
-  });
-
   return buildFacadeResult({
     status: 'ok',
     summary: executionMode === 'direct_control'
-      ? `Direct-control Work lineage started as ${updated.workId}.`
-      : `Goal workloop started as ${updated.workId}.`,
+      ? `Direct-control Work lineage started as ${work.workId}.`
+      : `Goal workloop started as ${work.workId}.`,
     data: {
       mode: {
         mode: executionMode,
@@ -904,14 +907,14 @@ export function startGoalWorkloop(
         routeDecision,
       },
       workContractCreated: true,
-      work: summarizeWorkContract(updated),
-      worktreeRequired: updated.worktreePolicy.required,
+      work: summarizeWorkContract(work),
+      worktreeRequired: work.worktreePolicy.required,
       normalizedChecks: normalized,
       policy,
     },
-    evidenceRefs: updated.evidenceRefs,
+    evidenceRefs: work.evidenceRefs,
     warnings: normalized.warnings,
-    suggestedNextActions: suggested,
+    suggestedNextActions: initialSuggestedNextActions,
     rawAvailable: false,
   });
 }

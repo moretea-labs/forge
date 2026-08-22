@@ -95,12 +95,16 @@ try {
     if (run.metrics.preSpawnHarnessMs !== undefined) preSpawnHarness.push(run.metrics.preSpawnHarnessMs);
   }
 
+  const steadyContextCold = contextCold.slice(1);
   const output = {
     schemaVersion: 1,
     iterations,
     context: {
       structuralContext,
       coldP50Ms: percentile(contextCold, 0.5), coldP95Ms: percentile(contextCold, 0.95),
+      startupColdMs: Math.round((contextCold[0] ?? 0) * 100) / 100,
+      steadyColdP50Ms: percentile(steadyContextCold, 0.5),
+      steadyColdP95Ms: percentile(steadyContextCold, 0.95),
       coldSamplesMs: contextCold.map((value) => Math.round(value * 100) / 100),
       structuralProcessP50Ms: percentile(structuralProcess, 0.5),
       structuralProcessP95Ms: percentile(structuralProcess, 0.95),

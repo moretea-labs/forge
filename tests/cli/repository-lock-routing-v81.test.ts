@@ -6,6 +6,7 @@ import {
   acquireControllerLock,
   controllerLockPath,
   readControllerLock,
+  reapControllerLockIfUnchanged,
   releaseControllerLock,
 } from '../../src/cli/repositories/locks';
 import { repositoryFixture } from './repository-v81-fixture';
@@ -89,6 +90,35 @@ describe('v8.1 repository lock and remote routing', () => {
       expect(() => readFileSync(path, 'utf-8')).toThrow();
       const reacquired = acquireControllerLock(fixture.controllerHome, key, 'fresh-owner');
       releaseControllerLock(fixture.controllerHome, key, reacquired.lockId);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test('never reaps a replacement owner from a stale lock observation', () => {
+    const fixture = repositoryFixture();
+    const key = { scope: 'repository' as const, repoId: fixture.repoA.repoId };
+    try {
+      const path = controllerLockPath(fixture.controllerHome, key);
+      mkdirSync(dirname(path), { recursive: true });
+      const observed = {
+        ...key,
+        lockId: 'repository:stale-observed',
+        owner: 'stale-owner',
+        pid: 999_999_999,
+        acquiredAt: '2026-06-24T00:00:00.000Z',
+        heartbeatAt: '2026-06-24T00:00:00.000Z',
+        path,
+      };
+      writeFileSync(path, `${JSON.stringify(observed, null, 2)}\n`, 'utf-8');
+      // Simulate the TOCTOU window: the stale owner disappears and a fresh
+      // owner publishes at the same canonical path before the old observation
+      // reaches its unlink step.
+      releaseControllerLock(fixture.controllerHome, key);
+      const replacement = acquireControllerLock(fixture.controllerHome, key, 'replacement-owner');
+      expect(reapControllerLockIfUnchanged(fixture.controllerHome, key, observed)).toBe(false);
+      expect(readControllerLock(fixture.controllerHome, key)?.lockId).toBe(replacement.lockId);
+      releaseControllerLock(fixture.controllerHome, key, replacement.lockId);
     } finally {
       fixture.cleanup();
     }

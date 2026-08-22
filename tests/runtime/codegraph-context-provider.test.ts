@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process';
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { buildControllerContextPack, buildControllerContextPackAsync } from '../../src/cli/controller/context-pack';
+import { AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS, buildControllerContextPack, buildControllerContextPackAsync } from '../../src/cli/controller/context-pack';
 import { structuralIntentQuery } from '../../src/cli/controller/context/query-planning';
 import { clearSourceSymbolIndexCacheForTest, materializeSource, sourceSymbolIndexCacheSnapshotForTest } from '../../src/cli/controller/context/source-materializer';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
@@ -444,6 +444,10 @@ describe('CodeGraph read provider', () => {
     expect(pack.files.find((file) => file.path === 'src/notification.ts')?.reasons.some((reason) => reason.startsWith('impact:notification:'))).toBe(true);
     expect(pack.contextContract.semanticSufficiencyAuthority).toBe('chatgpt');
     expect(pack.contextContract.expansionSignals).toContain('impact_domain_without_evidence:concurrency');
+  });
+
+  test('keeps optional auto structural prefetch within the bounded interactive fallback budget', () => {
+    expect(AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS).toBe(1_000);
   });
 
   test('ranks an exact code query before saturated broad-token decoys', async () => {
