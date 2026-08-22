@@ -41,6 +41,7 @@ import {
   isSafeFixedShellCombination,
   shellCommandHasUnsafeConstructs,
 } from '../../src/cli/repositories/command-classifier';
+import { runCanonicalCommand } from '../../src/cli/repositories/command-process';
 import {
   classifyRepositoryCommandRoute,
   executeRepositoryCommandViaProcessRuntime,
@@ -73,6 +74,7 @@ import {
 import { defaultProcessIdentityProbe, executableFingerprint } from '../../src/runtime/shared/process-identity';
 import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
 import { resolveEphemeralWorkspaceTarget } from '../../src/cli/repositories/ephemeral-workspace';
+import { sanitizeFileComponent } from '../../src/runtime/shared/json-files';
 import { callProcessTool, DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS, processToolDefinitions } from '../../src/runtime/gateway/mcp/process-tools';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { rebuildRepositoryProjection } from '../../src/runtime/projections/materialized-view';
@@ -1143,6 +1145,71 @@ describe('run_check Process Runtime facade', () => {
     expect(JSON.stringify(terminal)).not.toContain(expectedBearer);
     clearLightweightProcessMemoryForTest();
     expect(JSON.stringify(getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, started.handle.processId))).not.toContain(expectedBearer);
+  });
+
+  test('publishes the exact child exit observation before command completion returns', async () => {
+    const fx = fixture();
+    let observed: Awaited<ReturnType<typeof runCanonicalCommand>> | undefined;
+    const script = "process.stdout.write('EARLY_EXIT_OBSERVED\\n')";
+    const result = await runCanonicalCommand({
+      kind: 'argv',
+      value: [process.execPath, '-e', script],
+      executable: process.execPath,
+      args: ['-e', script],
+    }, fx.repoRoot, 5_000, 32 * 1024, {
+      onExit: (value) => { observed = value; },
+    });
+    expect(observed).toEqual(result);
+    expect(observed).toMatchObject({ ok: true, exitCode: 0, timedOut: false, cancelled: false, stdout: 'EARLY_EXIT_OBSERVED\n' });
+  });
+
+  test('recovers an observed lightweight child exit instead of degrading to completed_unknown after Runtime memory loss', () => {
+    const fx = fixture();
+    const processId = 'lightweight:exit-observation-recovery';
+    const startedAt = new Date().toISOString();
+    const runningRoot = join(repositoryControllerRoot(fx.controllerHome, fx.repository.repoId), 'process-runtime', 'lightweight-running');
+    mkdirSync(runningRoot, { recursive: true });
+    const runningPath = join(runningRoot, `${sanitizeFileComponent(processId)}.json`);
+    writeFileSync(runningPath, `${JSON.stringify({
+      schemaVersion: 1,
+      repoId: fx.repository.repoId,
+      processId,
+      updatedAt: startedAt,
+      handle: {
+        processId,
+        commandId: 'exit-observation-recovery',
+        status: 'running',
+        contractStatus: 'running',
+        route: 'managed',
+        startedAt,
+        interactiveWaitMs: 0,
+        timeoutMs: 30_000,
+        completed: false,
+        stdoutTail: 'EXIT_OBSERVATION_PASS\n',
+        stderrTail: '',
+        durableSideEffects: { executionJobCount: 0, localJobCount: 0, workerSpawnCount: 0, projectionUpdateCount: 0 },
+      },
+      exitObservation: { ok: true, exitCode: 0, timedOut: false, cancelled: false },
+    }, null, 2)}\n`);
+
+    clearLightweightProcessMemoryForTest();
+    const recovered = getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, processId);
+    expect(recovered).toMatchObject({
+      processId,
+      status: 'succeeded',
+      contractStatus: 'succeeded',
+      route: 'direct',
+      completed: true,
+      ok: true,
+      exitCode: 0,
+      timedOut: false,
+      cancelled: false,
+      stdout: 'EXIT_OBSERVATION_PASS\n',
+    });
+    expect(recovered?.stderr).not.toContain('PROCESS_RESULT_UNAVAILABLE_AFTER_RUNTIME_RESTART');
+    expect(existsSync(runningPath)).toBe(false);
+    clearLightweightProcessMemoryForTest();
+    expect(getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, processId)).toMatchObject({ completed: true, ok: true, exitCode: 0 });
   });
 
   test('gateway classifies ordinary run_check as fast process path', () => {

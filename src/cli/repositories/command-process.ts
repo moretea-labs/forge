@@ -16,6 +16,8 @@ export interface RepositoryCommandAsyncHooks {
   onSpawn?: (pid: number) => void;
   onStdout?: (chunk: string) => void;
   onStderr?: (chunk: string) => void;
+  /** Observe the exact child exit result before repository post-processing begins. */
+  onExit?: (result: SpawnCommandResult) => void;
   signal?: AbortSignal;
 }
 
@@ -90,7 +92,9 @@ export async function runCanonicalCommand(
       if (timedOut) errors.push(`process timed out after ${timeoutMs}ms: ${redactProcessOutput(display)}`);
       if (cancelled) errors.push('process cancelled');
       if (spawnError) errors.push(redactProcessOutput(spawnError));
-      resolve({ ok: exitCode === 0 && !timedOut && !cancelled && !spawnError, exitCode, timedOut, cancelled, stdout: stdout.complete(), stderr: capProcessOutput(errors.filter(Boolean).join('\n'), maxOutputBytes) });
+      const result = { ok: exitCode === 0 && !timedOut && !cancelled && !spawnError, exitCode, timedOut, cancelled, stdout: stdout.complete(), stderr: capProcessOutput(errors.filter(Boolean).join('\n'), maxOutputBytes) };
+      try { hooks.onExit?.(result); } catch { /* observation hooks must never change the command outcome */ }
+      resolve(result);
     };
     const onAbort = () => { cancelled = true; void killCommandTree(child).finally(() => finish(1)); };
     timeoutHandle = setTimeout(() => { timedOut = true; void killCommandTree(child).finally(() => finish(1)); }, timeoutMs);

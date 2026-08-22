@@ -54,6 +54,13 @@ interface LightweightExecutionResult {
   stderr?: string;
 }
 
+interface LightweightExitObservation {
+  ok: boolean;
+  exitCode: number;
+  timedOut: boolean;
+  cancelled: boolean;
+}
+
 interface LightweightEntry {
   processId: string;
   controllerHome: string;
@@ -70,6 +77,7 @@ interface LightweightEntry {
   spawnedAtMs?: number;
   identity?: ExpectedProcessIdentity;
   runningReceiptUpdatedAtMs?: number;
+  exitObservation?: LightweightExitObservation;
   stdout: string;
   stderr: string;
   stdoutTail: string;
@@ -90,6 +98,7 @@ interface LightweightRunningReceipt {
   updatedAt: string;
   handle: ProcessHandle;
   identity?: ExpectedProcessIdentity;
+  exitObservation?: LightweightExitObservation;
 }
 
 interface LightweightTerminalReceipt {
@@ -168,6 +177,7 @@ function persistRunningReceipt(entry: LightweightEntry, force = false): void {
       updatedAt: new Date(now).toISOString(),
       handle: entryHandle(entry),
       ...(entry.identity ? { identity: entry.identity } : {}),
+      ...(entry.exitObservation ? { exitObservation: entry.exitObservation } : {}),
     };
     writeJsonAtomic(path, receipt);
     try { chmodSync(path, 0o600); } catch { /* Windows or restricted filesystem. */ }
@@ -340,6 +350,34 @@ function persistRecoveredTerminalReceipt(
     // Recovery evidence persistence must not trigger command re-execution or unsafe signalling.
   }
   return handle;
+}
+
+function completedObservedExitHandle(receipt: LightweightRunningReceipt): ProcessHandle {
+  const observation = receipt.exitObservation!;
+  const status = observation.cancelled
+    ? 'cancelled'
+    : observation.timedOut
+      ? 'timed_out'
+      : observation.ok
+        ? 'succeeded'
+        : 'failed';
+  const stdout = visibleOutput(receipt.handle.stdoutTail ?? '', DEFAULT_MAX_OUTPUT_BYTES);
+  const stderr = visibleOutput(receipt.handle.stderrTail ?? '', DEFAULT_MAX_OUTPUT_BYTES);
+  return {
+    ...receipt.handle,
+    status,
+    contractStatus: status === 'succeeded' ? 'succeeded' : status === 'cancelled' ? 'cancelled' : 'failed',
+    route: 'direct',
+    completed: true,
+    ok: observation.ok,
+    exitCode: observation.exitCode,
+    timedOut: observation.timedOut,
+    cancelled: observation.cancelled,
+    stdout,
+    stderr,
+    stdoutTail: visibleOutputTail(stdout),
+    stderrTail: visibleOutputTail(stderr),
+  };
 }
 
 function completedUnknownRecoveredHandle(receipt: LightweightRunningReceipt, reason: string): ProcessHandle {
@@ -590,6 +628,15 @@ export async function startLightweightRepositoryCommand(
         entry.stderr = boundedAppend(entry.stderr, chunk, maxOutputBytes);
         entry.stderrTail = boundedTailAppend(entry.stderrTail, chunk);
         persistRunningReceipt(entry);
+      },
+      onExit: (result) => {
+        entry.exitObservation = {
+          ok: result.ok,
+          exitCode: result.exitCode,
+          timedOut: result.timedOut,
+          cancelled: result.cancelled,
+        };
+        persistRunningReceipt(entry, true);
       },
     },
   ).then((result) => {
@@ -889,6 +936,9 @@ export function getLightweightProcessHandle(controllerHome: string, repoId: stri
   if (terminal) return terminal.handle;
   const running = readRunningReceipt(controllerHome, repoId, processId);
   if (!running) return undefined;
+  if (running.exitObservation) {
+    return persistRecoveredTerminalReceipt(controllerHome, running, completedObservedExitHandle(running));
+  }
   const inspection = inspectRecoveredRunningReceipt(running);
   if (inspection.state === 'dead') {
     return persistRecoveredTerminalReceipt(controllerHome, running, completedUnknownRecoveredHandle(running, inspection.reason ?? 'process_dead'));
@@ -916,6 +966,9 @@ export async function waitForLightweightProcess(
     while (true) {
       const recoveredTerminal = readTerminalReceipt(controllerHome, repoId, processId);
       if (recoveredTerminal) return recoveredTerminal.handle;
+      if (running.exitObservation) {
+        return persistRecoveredTerminalReceipt(controllerHome, running, completedObservedExitHandle(running));
+      }
       const inspection = inspectRecoveredRunningReceipt(running);
       if (inspection.state === 'dead') {
         return persistRecoveredTerminalReceipt(controllerHome, running, completedUnknownRecoveredHandle(running, inspection.reason ?? 'process_dead'));
@@ -964,6 +1017,9 @@ export async function cancelLightweightProcess(controllerHome: string, repoId: s
     if (terminal) return terminal.handle;
     const running = readRunningReceipt(controllerHome, repoId, processId);
     if (!running) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
+    if (running.exitObservation) {
+      return persistRecoveredTerminalReceipt(controllerHome, running, completedObservedExitHandle(running));
+    }
     const inspection = inspectRecoveredRunningReceipt(running);
     if (inspection.state === 'dead') {
       return persistRecoveredTerminalReceipt(controllerHome, running, completedUnknownRecoveredHandle(running, inspection.reason ?? 'process_dead'));
