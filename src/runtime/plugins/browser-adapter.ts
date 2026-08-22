@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { createRequire } from 'module';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
-import { basename, dirname, join, relative, resolve } from 'path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
@@ -3101,8 +3101,8 @@ function actions(): AssistantPluginActionDescriptor[] {
       actionId: 'go_back',
       title: 'Go back',
       description: 'Navigate back in history for a session.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.read'], resourceClaims: readRemote,
+      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
+      scopes: ['browser.read', 'browser.interact', 'browser.profile'], resourceClaims: writeRemote,
       argumentsSchema: sessionTargetSchema({}, ['session_id']),
     },
     {
@@ -4592,15 +4592,30 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         if (requested.length === 0 || requested.length > 32) {
           throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'attach_local_file requires file_path or 1-32 file_paths.', { retryable: false });
         }
-        const resolved = requested.map((filePath) => resolve(input.repoRoot, filePath));
-        for (const path of resolved) {
-          if (!existsSync(path)) {
-            throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Local attachment does not exist: ${basename(path)}`, { retryable: false });
+        const repositoryLexicalRoot = resolve(input.repoRoot);
+        const repositoryRoot = realpathSync(input.repoRoot);
+        const resolved = requested.map((filePath) => {
+          const lexicalPath = resolve(input.repoRoot, filePath);
+          const lexicalRelative = relative(repositoryLexicalRoot, lexicalPath);
+          if (lexicalRelative === '..' || lexicalRelative.startsWith(`..${sep}`) || isAbsolute(lexicalRelative)) {
+            throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Local file attachments must stay inside the repository root.', { retryable: false, details: { fileName: basename(filePath) } });
           }
-          if (/\.(exe|dmg|pkg|sh|bat|cmd|app)$/i.test(path)) {
+          if (!existsSync(lexicalPath)) {
+            throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Local attachment does not exist: ${basename(lexicalPath)}`, { retryable: false });
+          }
+          const realPath = realpathSync(lexicalPath);
+          const repositoryRelative = relative(repositoryRoot, realPath);
+          if (repositoryRelative === '..' || repositoryRelative.startsWith(`..${sep}`) || isAbsolute(repositoryRelative)) {
+            throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Local file attachments must resolve inside the repository root.', { retryable: false, details: { fileName: basename(lexicalPath) } });
+          }
+          if (!statSync(realPath).isFile()) {
+            throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Local attachment is not a regular file: ${basename(lexicalPath)}`, { retryable: false });
+          }
+          if (/\.(exe|dmg|pkg|sh|bat|cmd|app)$/i.test(realPath)) {
             throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Executable file attachments are not allowed.', { retryable: false });
           }
-        }
+          return lexicalPath;
+        });
         return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           await page.evaluate((payload) => {
             const args = payload as { selector: string; count: number };
