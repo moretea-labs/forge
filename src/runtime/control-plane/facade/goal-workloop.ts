@@ -214,9 +214,18 @@ interface WorkCompletionEvidenceEvaluation {
   reasons: string[];
 }
 
-function verificationRecordAppliesToRevision(record: VerificationRecord, currentRevision?: string): boolean {
-  if (!currentRevision || !record.sourceRevision) return true;
-  return record.sourceRevision === currentRevision;
+function verificationRecordAppliesToCurrentWorkspace(
+  record: VerificationRecord,
+  currentRevision?: string,
+  currentWorkspaceFingerprint?: string,
+): boolean {
+  if (currentRevision && record.sourceRevision && record.sourceRevision !== currentRevision) return false;
+  if (
+    currentWorkspaceFingerprint
+    && record.workspaceFingerprint
+    && record.workspaceFingerprint !== currentWorkspaceFingerprint
+  ) return false;
+  return true;
 }
 
 function isAuthoritativeCurrentWorkVerification(
@@ -242,8 +251,10 @@ function isAuthoritativeCurrentWorkVerification(
 function evaluateWorkCompletionEvidence(
   work: WorkContract,
   currentRevision?: string,
+  currentWorkspaceFingerprint?: string,
 ): WorkCompletionEvidenceEvaluation {
-  const applicableCheckRefs = work.checkRefs.filter((record) => verificationRecordAppliesToRevision(record, currentRevision));
+  const applicableCheckRefs = work.checkRefs.filter((record) =>
+    verificationRecordAppliesToCurrentWorkspace(record, currentRevision, currentWorkspaceFingerprint));
   const history = reconcileVerificationHistory(
     applicableCheckRefs.map((record) => ({ checkId: record.checkId, outcome: record.outcome, recordedAt: record.recordedAt })),
   );
@@ -266,10 +277,11 @@ function evaluateWorkCompletionEvidence(
     reasons.push(`Declared checks are missing valid_pass evidence: ${missingChecks.join(', ')}.`);
   }
   if (work.checks.length === 0 && !durableResultEvidence) {
-    const staleWorkVerification = Boolean(currentRevision && work.checkRefs.some((record) =>
-      record.receipt && record.sourceRevision && record.sourceRevision !== currentRevision));
+    const staleWorkVerification = work.checkRefs.some((record) =>
+      Boolean(record.receipt)
+      && !verificationRecordAppliesToCurrentWorkspace(record, currentRevision, currentWorkspaceFingerprint));
     reasons.push(staleWorkVerification
-      ? `Work-bound verification evidence is stale for current revision ${currentRevision}.`
+      ? 'Work-bound verification evidence is stale for the current source/workspace identity.'
       : 'No durable result evidence (evidenceId, artifactId, or current Work-bound verification receipt) was recorded for this no-check WorkContract.');
   }
 
@@ -954,8 +966,10 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
+  const currentCheckRefs = work.checkRefs.filter((record) =>
+    verificationRecordAppliesToCurrentWorkspace(record, ctx.sourceRevision, ctx.workspaceFingerprint));
   const history = reconcileVerificationHistory(
-    work.checkRefs.map((record) => ({ checkId: record.checkId, outcome: record.outcome, recordedAt: record.recordedAt })),
+    currentCheckRefs.map((record) => ({ checkId: record.checkId, outcome: record.outcome, recordedAt: record.recordedAt })),
   );
 
   // Ambiguous: acceptance failure present → ask once per distinct failure evidence.
@@ -1149,7 +1163,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
-  const completionEvidence = evaluateWorkCompletionEvidence(work, ctx.sourceRevision);
+  const completionEvidence = evaluateWorkCompletionEvidence(work, ctx.sourceRevision, ctx.workspaceFingerprint);
   if (completionEvidence.status !== 'complete') {
     const suggested = validateSuggestedNextActions([
       {
@@ -1390,7 +1404,7 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
-  const completionEvidence = evaluateWorkCompletionEvidence(work, ctx.sourceRevision);
+  const completionEvidence = evaluateWorkCompletionEvidence(work, ctx.sourceRevision, ctx.workspaceFingerprint);
   const history = completionEvidence.history;
 
   if (input.forceFailed || completionEvidence.status === 'failed') {

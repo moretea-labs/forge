@@ -505,6 +505,82 @@ describe('rh_work managed lifecycle closure', () => {
     expect(staleFinalize.data).toMatchObject({ validPasses: [], durableResultEvidence: false });
   });
 
+  test('invalidates Work verification after dirty workspace drift at the same Git revision', async () => {
+    const fx = fixture('work-bound-verification-workspace-drift');
+    const checkId = 'package:check:workspace-drift';
+    writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({
+      scripts: { 'check:workspace-drift': 'node -e "process.exit(0)"' },
+    }, null, 2));
+    git(fx.repoRoot, ['add', 'package.json']);
+    git(fx.repoRoot, ['commit', '-m', 'add workspace drift check']);
+
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Require fresh verification when dirty workspace content changes',
+      check_ids: [checkId],
+      allowed_paths: ['workspace-drift.txt'],
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 1,
+      requires_recovery: true,
+      constraints: { requireWorktree: true },
+    });
+    expect(started?.isError, JSON.stringify(started?.structuredContent)).not.toBe(true);
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const initial = getWorkContract(store, workId)!;
+    expect(initial.checks).toEqual([checkId]);
+    expect(initial.worktreeRef).toBeTruthy();
+    const verifiedRevision = git(initial.worktreeRef!, ['rev-parse', 'HEAD']);
+
+    const verifyArgs = { repo_id: fx.repository.repoId, operation: 'verify', work_id: workId, check_id: checkId };
+    let verified = await callRuntimeTool(fx.ctx, 'rh_work', verifyArgs);
+    let verification = (verified?.structuredContent as { data?: { verification?: { processId?: string; outcome?: string } } })?.data?.verification;
+    if (verification?.processId && verification.outcome === 'running') {
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, verification.processId, { timeoutMs: 5_000 });
+      verified = await callRuntimeTool(fx.ctx, 'rh_work', verifyArgs);
+      verification = (verified?.structuredContent as { data?: { verification?: { processId?: string; outcome?: string } } })?.data?.verification;
+    }
+    expect(verification?.outcome).toBe('valid_pass');
+    const persisted = getWorkContract(store, workId)!.checkRefs.find((record) => record.checkId === checkId && record.outcome === 'valid_pass');
+    expect(persisted?.sourceRevision).toBe(verifiedRevision);
+    expect(persisted?.workspaceFingerprint).toBeTruthy();
+
+    const ready = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'continue', work_id: workId });
+    expect(ready?.structuredContent).toMatchObject({ status: 'ok', data: { nextStep: 'finalize' } });
+
+    writeFileSync(join(initial.worktreeRef!, 'workspace-drift.txt'), 'uncommitted drift\n');
+    expect(git(initial.worktreeRef!, ['rev-parse', 'HEAD'])).toBe(verifiedRevision);
+    const drifted = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'continue', work_id: workId });
+    expect(drifted?.isError, JSON.stringify(drifted?.structuredContent)).not.toBe(true);
+    expect(drifted?.structuredContent).toMatchObject({
+      status: 'ok',
+      data: { nextStep: 'verify', remainingChecks: [checkId] },
+    });
+
+    const staleFinalize = finalizeGoalWorkloop({
+      workStore: store,
+      handoffStore: store,
+      repoId: fx.repository.repoId,
+      sourceRevision: verifiedRevision,
+      workspaceFingerprint: 'changed-workspace-fingerprint',
+    }, { workId });
+    expect(staleFinalize.status).toBe('blocked');
+    expect(staleFinalize.data).toMatchObject({ validPasses: [], missingChecks: [checkId] });
+
+    verified = await callRuntimeTool(fx.ctx, 'rh_work', verifyArgs);
+    verification = (verified?.structuredContent as { data?: { verification?: { processId?: string; outcome?: string } } })?.data?.verification;
+    if (verification?.processId && verification.outcome === 'running') {
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, verification.processId, { timeoutMs: 5_000 });
+      verified = await callRuntimeTool(fx.ctx, 'rh_work', verifyArgs);
+      verification = (verified?.structuredContent as { data?: { verification?: { processId?: string; outcome?: string } } })?.data?.verification;
+    }
+    expect(verification?.outcome, JSON.stringify(verified?.structuredContent)).toBe('valid_pass');
+    const refreshed = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'continue', work_id: workId });
+    expect(refreshed?.structuredContent).toMatchObject({ status: 'ok', data: { nextStep: 'finalize' } });
+  });
+
   test('reuses one acceptance-failure handoff until newer failure evidence appears', async () => {
     const fx = fixture('acceptance-handoff-dedupe');
     const started = await callRuntimeTool(fx.ctx, 'rh_work', {

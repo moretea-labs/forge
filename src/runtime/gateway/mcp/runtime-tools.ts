@@ -2281,7 +2281,7 @@ function reconcileTerminalFacadeWorkVerifications(
   ctx: MultiRepositoryMcpToolContext,
   repository: ReturnType<typeof selected>,
   workId: string,
-): { sourceRevision?: string; reconciledProcessIds: string[] } {
+): { sourceRevision?: string; workspaceFingerprint?: string; reconciledProcessIds: string[] } {
   const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
   const workContract = getWorkContract(store, workId);
   if (!workContract || workContract.completionReceipt) return { reconciledProcessIds: [] };
@@ -2399,7 +2399,7 @@ function reconcileTerminalFacadeWorkVerifications(
     }
   }
 
-  return { sourceRevision, reconciledProcessIds };
+  return { sourceRevision, workspaceFingerprint, reconciledProcessIds };
 }
 
 async function runFacadeVerify(
@@ -4232,6 +4232,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
 
         let resumedControllerSession: ReturnType<typeof resumeControllerSession> | undefined;
         let continuationSourceRevision = workloopCtx.sourceRevision;
+        let continuationWorkspaceFingerprint: string | undefined;
         if (operation === 'continue') {
           try {
             const workId = String(args.work_id ?? '').trim();
@@ -4262,6 +4263,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             if (workId) {
               const reconciled = reconcileTerminalFacadeWorkVerifications(ctx, repository, workId);
               continuationSourceRevision = reconciled.sourceRevision ?? continuationSourceRevision;
+              continuationWorkspaceFingerprint = reconciled.workspaceFingerprint ?? continuationWorkspaceFingerprint;
             }
           } catch (error) {
             const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller resume failed.', data: { operation, executionStarted: false, ownershipResumed: false } });
@@ -4276,7 +4278,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           || (typeof args.related_work_id === 'string' && args.related_work_id.trim())
           || (typeof args.work_relation === 'string' && args.work_relation.trim()),
         );
-        const startContext = { ...workloopCtx, sourceRevision: continuationSourceRevision ?? undefined, semanticAdmissionLocked: semanticAdmissionRequired };
+        const startContext = {
+          ...workloopCtx,
+          sourceRevision: continuationSourceRevision ?? undefined,
+          workspaceFingerprint: continuationWorkspaceFingerprint,
+          semanticAdmissionLocked: semanticAdmissionRequired,
+        };
         const facade = semanticAdmissionRequired
           ? await withPrimaryWorkAdmissionLockAsync(store, () => runGoalWorkloop(startContext, 'start', args))
           : runGoalWorkloop(startContext, operation as 'start' | 'continue', args);
