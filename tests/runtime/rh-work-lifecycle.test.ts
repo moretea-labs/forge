@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { createMcpToolContext } from '../../src/cli/mcp/server';
+import { repositoryScopedToolArgs } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { addRepositoryCheckout, registerRepository, resolveRepositorySelection, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
 import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools';
@@ -704,6 +705,98 @@ describe('rh_work managed lifecycle closure', () => {
     expect((blocked?.structuredContent as { error?: { code?: string } }).error?.code).toBe('WORK_DELIVERY_REQUIRES_FINALIZE');
   });
 
+  test('exact claimed Work resolves its owned checkout across transient repository-command contexts', async () => {
+    const fx = fixture('claimed-work-checkout-continuity');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Resolve the exact claimed Work checkout across transient MCP contexts',
+      allowed_paths: ['claimed-work.txt'],
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 1,
+      requires_recovery: true,
+      constraints: { workspaceMode: 'isolated' },
+    });
+    expect(started?.isError, JSON.stringify(started?.structuredContent)).not.toBe(true);
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    const work = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
+    expect(work.checkoutId).toBeTruthy();
+    expect(work.checkoutId).not.toBe(fx.repository.activeCheckoutId);
+    const claimed = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'controller_claim',
+      work_id: workId,
+      controller_type: 'chatgpt',
+    });
+    expect(claimed?.isError, JSON.stringify(claimed?.structuredContent)).not.toBe(true);
+
+    const repositoryTools = await import('../../src/cli/mcp/repository-tools');
+    const transientCtx = {
+      ...fx.ctx,
+      sessionId: 'mcp-claimed-work-checkout-next',
+      controllerInstanceId: `${fx.owner.record.runtimeInstanceId}-next`,
+    };
+    const implicitCheckout = await repositoryTools.callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
+      repo_id: fx.repository.repoId,
+      work_id: workId,
+      command: ['git', 'status', '--short'],
+    }, transientCtx);
+    expect(implicitCheckout?.isError, JSON.stringify(implicitCheckout?.structuredContent)).not.toBe(true);
+    expect((implicitCheckout?.structuredContent as { checkoutId?: string }).checkoutId).toBe(work.checkoutId);
+
+    const explicitCheckout = await repositoryTools.callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
+      repo_id: fx.repository.repoId,
+      checkout_id: work.checkoutId,
+      work_id: workId,
+      command: ['git', 'status', '--short'],
+    }, transientCtx);
+    expect(explicitCheckout?.isError, JSON.stringify(explicitCheckout?.structuredContent)).not.toBe(true);
+
+    const wrongCheckout = await repositoryTools.callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
+      repo_id: fx.repository.repoId,
+      checkout_id: fx.repository.activeCheckoutId,
+      work_id: workId,
+      command: ['git', 'status', '--short'],
+    }, transientCtx);
+    expect(wrongCheckout?.isError).toBe(true);
+    expect((wrongCheckout?.structuredContent as { error?: { code?: string } }).error?.code).toBe('WORK_CHECKOUT_MISMATCH');
+
+    const foreignPrincipal = await repositoryTools.callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
+      repo_id: fx.repository.repoId,
+      work_id: workId,
+      command: ['git', 'status', '--short'],
+    }, { ...transientCtx, principalId: 'foreign-principal' });
+    expect(foreignPrincipal?.isError).toBe(true);
+    expect((foreignPrincipal?.structuredContent as { error?: { code?: string } }).error?.code).toBe('WORK_CONTROLLER_OWNERSHIP_MISMATCH');
+
+    const foreignWork = await repositoryTools.callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
+      repo_id: fx.repository.repoId,
+      work_id: `${workId}-foreign`,
+      command: ['git', 'status', '--short'],
+    }, transientCtx);
+    expect(foreignWork?.isError).toBe(true);
+    expect((foreignWork?.structuredContent as { error?: { code?: string } }).error?.code).toBe('WORK_ATTRIBUTION_INVALID');
+
+    const scoped = repositoryScopedToolArgs('repository_command_execute', {
+      repo_id: fx.repository.repoId,
+      work_id: workId,
+      command: ['git', 'status', '--short'],
+    }, fx.repository);
+    expect(scoped.checkout_id).toBeUndefined();
+    const workRepository = resolveRepositorySelection({
+      repoId: fx.repository.repoId,
+      checkoutId: work.checkoutId,
+      controllerHome: fx.controllerHome,
+    });
+    expect(repositoryScopedToolArgs('repository_command_execute', {
+      repo_id: fx.repository.repoId,
+      checkout_id: work.checkoutId,
+      work_id: workId,
+      command: ['git', 'status', '--short'],
+    }, workRepository).checkout_id).toBe(work.checkoutId);
+  });
+
   test('repository safe patch continues one Work-owned edit session across transient MCP Runtime rotation', async () => {
     const fx = fixture('safe-patch-runtime-rotation');
     const started = await callRuntimeTool(fx.ctx, 'rh_work', {
@@ -751,7 +844,6 @@ describe('rh_work managed lifecycle closure', () => {
     };
     const continuedPatch = await repositoryTools.callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
       repo_id: fx.repository.repoId,
-      checkout_id: work.checkoutId,
       work_id: workId,
       session_id: editSessionId,
       operations: [{ type: 'append', path: 'runtime-rotation.txt', content: 'continued\n' }],

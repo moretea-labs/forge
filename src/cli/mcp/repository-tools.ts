@@ -293,23 +293,35 @@ export interface RepositoryToolCallerContext {
   controllerInstanceId?: string;
 }
 
+function claimedExplicitWork(
+  controllerHome: string,
+  repoId: string,
+  caller: RepositoryToolCallerContext | undefined,
+  requestedWorkId: string,
+) {
+  if (!caller?.principalId?.trim()) return undefined;
+  const work = getWorkContract({ controllerHome, repoId }, requestedWorkId);
+  if (!work || isTerminalWorkContractStatus(work.status)) throw new Error(`WORK_ATTRIBUTION_INVALID: ${requestedWorkId}`);
+  const owner = getControllerSession({ controllerHome, repoId }, requestedWorkId);
+  if (!owner) throw new Error(`WORK_CONTROLLER_CLAIM_REQUIRED: ${requestedWorkId}`);
+  if ((owner.principalId?.trim() || owner.controllerId) !== caller.principalId.trim()) throw new Error(`WORK_CONTROLLER_OWNERSHIP_MISMATCH: ${requestedWorkId}`);
+  return work;
+}
+
 function claimedSessionWorkId(
   controllerHome: string,
   repository: ReturnType<typeof resolveRepositorySelection>,
   caller?: RepositoryToolCallerContext,
   explicitWorkId?: unknown,
 ): string | undefined {
-  if (!caller?.principalId?.trim()) return undefined;
   const requestedWorkId = typeof explicitWorkId === 'string' ? explicitWorkId.trim() : '';
   if (requestedWorkId) {
-    const work = getWorkContract({ controllerHome, repoId: repository.repoId }, requestedWorkId);
-    if (!work || isTerminalWorkContractStatus(work.status)) throw new Error(`WORK_ATTRIBUTION_INVALID: ${requestedWorkId}`);
+    const work = claimedExplicitWork(controllerHome, repository.repoId, caller, requestedWorkId);
+    if (!work) return undefined;
     if (work.checkoutId && work.checkoutId !== repository.activeCheckoutId) throw new Error(`WORK_CHECKOUT_MISMATCH: ${requestedWorkId}:${repository.activeCheckoutId}`);
-    const owner = getControllerSession({ controllerHome, repoId: repository.repoId }, requestedWorkId);
-    if (!owner) throw new Error(`WORK_CONTROLLER_CLAIM_REQUIRED: ${requestedWorkId}`);
-    if ((owner.principalId?.trim() || owner.controllerId) !== caller.principalId.trim()) throw new Error(`WORK_CONTROLLER_OWNERSHIP_MISMATCH: ${requestedWorkId}`);
     return requestedWorkId;
   }
+  if (!caller?.principalId?.trim()) return undefined;
   if (caller.sessionId?.trim()) {
     const executionSession = readExecutionSession(controllerHome, {
       sessionId: caller.sessionId,
@@ -353,6 +365,31 @@ function claimedSessionEditBinding(
   };
 }
 
+function resolveRepositorySelectionForClaimedWork(
+  controllerHome: string,
+  args: Record<string, unknown>,
+  repoIdValue: string,
+  caller?: RepositoryToolCallerContext,
+): ReturnType<typeof resolveRepositorySelection> {
+  const checkoutId = typeof args.checkout_id === 'string' ? args.checkout_id.trim() : '';
+  const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+  const repository = resolveRepositorySelection({
+    repoId: repoIdValue || undefined,
+    checkoutId: checkoutId || undefined,
+    controllerHome,
+    allowSoleRepository: true,
+  });
+  if (!explicitWorkId || checkoutId) return repository;
+  const work = claimedExplicitWork(controllerHome, repository.repoId, caller, explicitWorkId);
+  if (!work?.checkoutId || work.checkoutId === repository.activeCheckoutId) return repository;
+  return resolveRepositorySelection({
+    repoId: repository.repoId,
+    checkoutId: work.checkoutId,
+    controllerHome,
+    allowSoleRepository: true,
+  });
+}
+
 function rawDefaultBranchMergeCommand(repository: ReturnType<typeof resolveRepositorySelection>, command: unknown): boolean {
   if (!repository.defaultBranch) return false;
   const checkout = repository.checkouts.find((entry) => entry.checkoutId === repository.activeCheckoutId);
@@ -394,12 +431,7 @@ function resolveRepositoryCommandTarget(
       workspace: { workspaceId: target.workspaceId, root: target.canonicalRoot, registered: false },
     };
   }
-  const repository = resolveRepositorySelection({
-    repoId: repoIdValue || undefined,
-    checkoutId: checkoutId || undefined,
-    controllerHome,
-    allowSoleRepository: true,
-  });
+  const repository = resolveRepositorySelectionForClaimedWork(controllerHome, args, repoIdValue, caller);
   const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
   const workId = explicitWorkId
     ? claimedSessionWorkId(controllerHome, repository, caller, explicitWorkId)
@@ -921,12 +953,7 @@ export async function callRepositoryTool(
         });
       }
       case 'repository_safe_patch_apply': {
-        const repository = resolveRepositorySelection({
-          repoId: repoIdValue || undefined,
-          checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
-          controllerHome,
-          allowSoleRepository: true,
-        });
+        const repository = resolveRepositorySelectionForClaimedWork(controllerHome, args, repoIdValue, caller);
         const binding = claimedSessionEditBinding(controllerHome, repository, caller, args.work_id);
         const applied = withControllerLock(
           controllerHome,
