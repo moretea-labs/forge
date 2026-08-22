@@ -104,6 +104,17 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
     },
     async evaluate<T>(expression?: unknown) {
       evaluatedExpressions.push(expression);
+      if (typeof expression === 'string' && expression.includes('geometryVersion: 1') && expression.includes('devicePixelRatio')) {
+        return {
+          geometryVersion: 1,
+          viewport: { width: 1280, height: 720, scrollX: 0, scrollY: 120, devicePixelRatio: 2 },
+          elements: [{
+            tag: 'button', text: 'Continue', selectorHint: '#continue',
+            bounds: { x: 100, y: 200, width: 80, height: 32, right: 180, bottom: 232 },
+            center: { x: 140, y: 216 }, visible: true, inViewport: true, disabled: false, editable: false,
+          }],
+        } as T;
+      }
       return 'Example page text' as T;
     },
     async screenshot(args: Record<string, unknown>) {
@@ -2464,8 +2475,19 @@ describe('browser plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     });
     expect(extracted.actionId).toBe('snapshot_interactive');
+    expect(extracted.geometryVersion).toBe(1);
+    expect(extracted.viewport).toEqual({ width: 1280, height: 720, scrollX: 0, scrollY: 120, devicePixelRatio: 2 });
+    expect(extracted.data).toEqual([expect.objectContaining({
+      selectorHint: '#continue',
+      bounds: { x: 100, y: 200, width: 80, height: 32, right: 180, bottom: 232 },
+      center: { x: 140, y: 216 },
+      visible: true,
+      inViewport: true,
+    })]);
     const selectorScript = String(runtime.evaluatedExpressions.at(-1)); expect(selectorScript).toContain('data-legacy-thread-id');
     expect(selectorScript).toContain('previousElementSibling');
+    expect(selectorScript).toContain('getBoundingClientRect');
+    expect(selectorScript).toContain('devicePixelRatio');
     expect(selectorScript).not.toContain('(index + 1)');
 
     const consoleErrors = await executeBrowserPluginAction({
