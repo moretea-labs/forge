@@ -120,6 +120,8 @@ bun run benchmark:mcp-transport -- \
 
 For a Cloudflare Tunnel or another HTTPS route terminating at the same OAuth Gateway, keep `--local-service-auth`, the repo, host, tool, arguments, warmup, and iteration count unchanged and only replace the endpoint/label, for example `https://forge-bench.example.com/mcp-bearer` with label `cloudflare`. This isolates public transport from Forge execution without exposing the credential to the controller. Use a temporary, access-controlled route and remove it after the test if it exists only for benchmarking. For a benchmark launched away from the Forge host, omit `--local-service-auth` and populate `FORGE_MCP_BENCH_TOKEN` through that client's secret store instead.
 
+By default, `clientTotalMs` measures only the steady-state `tools/call`, after the MCP connection is established. Add `--include-connect` when comparing tunnel or cloud placement cold paths: every measured sample creates a fresh MCP client, includes connect/initialize plus the tool call in `clientTotalMs`, then closes that client. Reports group `timingScope=tool_call` and `timingScope=connect_and_tool_call` separately so cold connection cost is never mixed with steady-state calls. Use `--warmup 0` for a true first-call probe.
+
 OpenAI Secure MCP Tunnel is identified by a tunnel ID rather than a directly addressable HTTPS URL, so this script must not pretend that an ordinary HTTP probe measures that path. When client-observed Secure Tunnel samples are available, save them as JSONL/JSON with `label`, `tool`, `clientTotalMs`, and `serverDurationMs`, then aggregate them with:
 
 ```bash

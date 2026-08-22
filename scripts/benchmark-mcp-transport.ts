@@ -52,6 +52,8 @@ async function probe(): Promise<McpTransportLatencySample[]> {
   const iterations = positiveInteger('--iterations', 30);
   const warmup = integerAtLeast('--warmup', 3, 0);
   const timeoutMs = positiveInteger('--timeout-ms', 120_000);
+  const includeConnect = process.argv.includes('--include-connect');
+  const timingScope = includeConnect ? 'connect_and_tool_call' as const : 'tool_call' as const;
   const tokenEnv = option('--token-env')?.trim() || 'FORGE_MCP_BENCH_TOKEN';
   const localServiceAuth = process.argv.includes('--local-service-auth');
   const token = process.env[tokenEnv]?.trim()
@@ -68,18 +70,28 @@ async function probe(): Promise<McpTransportLatencySample[]> {
   const repoId = option('--repo-id')?.trim();
   if (repoId && args.repo_id === undefined) args.repo_id = repoId;
 
-  const transport = new StreamableHTTPClientTransport(endpoint, {
-    requestInit: { headers: { Authorization: `Bearer ${token}` } },
-  });
-  const client = new Client({ name: 'forge-mcp-transport-benchmark', version: '1.0.0' });
+  const createClient = () => {
+    const transport = new StreamableHTTPClientTransport(endpoint, {
+      requestInit: { headers: { Authorization: `Bearer ${token}` } },
+    });
+    const client = new Client({ name: 'forge-mcp-transport-benchmark', version: '1.0.0' });
+    return { client, transport };
+  };
+  const steadyState = includeConnect ? undefined : createClient();
   const call = async (): Promise<{ response: unknown; totalMs: number }> => {
+    const connection = steadyState ?? createClient();
     const started = performance.now();
-    const response = await client.callTool({ name: tool, arguments: args }, undefined, { timeout: timeoutMs });
-    return { response, totalMs: performance.now() - started };
+    try {
+      if (includeConnect) await connection.client.connect(connection.transport);
+      const response = await connection.client.callTool({ name: tool, arguments: args }, undefined, { timeout: timeoutMs });
+      return { response, totalMs: performance.now() - started };
+    } finally {
+      if (includeConnect) await connection.client.close().catch(() => undefined);
+    }
   };
   const samples: McpTransportLatencySample[] = [];
   try {
-    await client.connect(transport);
+    if (steadyState) await steadyState.client.connect(steadyState.transport);
     for (let index = 0; index < warmup; index += 1) await call();
     for (let index = 0; index < iterations; index += 1) {
       const { response, totalMs } = await call();
@@ -99,6 +111,7 @@ async function probe(): Promise<McpTransportLatencySample[]> {
       samples.push({
         label,
         tool,
+        timingScope,
         clientTotalMs: totalMs,
         serverDurationMs,
         ...(typeof meta.traceId === 'string' ? { traceId: meta.traceId } : {}),
@@ -107,7 +120,7 @@ async function probe(): Promise<McpTransportLatencySample[]> {
       });
     }
   } finally {
-    await client.close().catch(() => undefined);
+    if (steadyState) await steadyState.client.close().catch(() => undefined);
   }
   return samples;
 }
