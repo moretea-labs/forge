@@ -112,6 +112,58 @@ const emptyEffects = {
   projectionUpdateCount: 0,
 };
 
+const STANDALONE_RECOVERY_LIFECYCLE_COMMANDS = new Set([
+  'restart-runtime',
+  'bootstrap-cutover',
+  'restart-connector',
+  'stage-and-activate-runtime',
+  'recover',
+  'rollback',
+  'restart',
+  'activate-runtime',
+  'install',
+]);
+
+function commandBasename(value: string): string {
+  return value.split(/[\\/]/).pop()?.toLowerCase() ?? '';
+}
+
+function recoveryLifecycleFromArgv(executable: string, args: readonly string[]): string | undefined {
+  const executableName = commandBasename(executable);
+  let recoveryArgs: readonly string[];
+  if (executableName === 'forge' || executableName === 'forge.mjs') {
+    recoveryArgs = args;
+  } else if (['bun', 'node', 'nodejs'].includes(executableName)) {
+    const scriptIndex = args.findIndex((arg) => {
+      const name = commandBasename(arg);
+      return name === 'forge' || name === 'forge.mjs';
+    });
+    if (scriptIndex < 0) return undefined;
+    recoveryArgs = args.slice(scriptIndex + 1);
+  } else {
+    return undefined;
+  }
+  if (recoveryArgs[0] !== 'recovery') return undefined;
+  const subcommand = recoveryArgs[1]?.toLowerCase();
+  return subcommand && STANDALONE_RECOVERY_LIFECYCLE_COMMANDS.has(subcommand) ? subcommand : undefined;
+}
+
+function recoveryLifecycleFromShell(shellCommand: string): string | undefined {
+  const match = /^\s*(?:exec\s+)?(?:(?:\S*[\\/])?(?:bun|node|nodejs)\s+)?(?:\S*[\\/])?forge(?:\.mjs)?\s+recovery\s+([a-z-]+)\b/i.exec(shellCommand);
+  const subcommand = match?.[1]?.toLowerCase();
+  return subcommand && STANDALONE_RECOVERY_LIFECYCLE_COMMANDS.has(subcommand) ? subcommand : undefined;
+}
+
+function repositoryCommandRecoveryLifecycle(command: string | readonly string[]): string | undefined {
+  const normalized = normalizeRepositoryCommand(command);
+  if (normalized.kind === 'shell') return recoveryLifecycleFromShell(normalized.shellCommand ?? '');
+  const direct = recoveryLifecycleFromArgv(normalized.executable ?? '', normalized.args ?? []);
+  if (direct) return direct;
+  const argv = normalized.value as string[];
+  const wrapped = fixedShellWrapperCommand(argv);
+  return wrapped ? recoveryLifecycleFromShell(wrapped) : undefined;
+}
+
 function toProcessCommand(command: string | readonly string[], cwd: string): ProcessCommandSpec {
   const normalized = normalizeRepositoryCommand(command);
   if (normalized.kind === 'argv') {
@@ -140,6 +192,9 @@ export function classifyRepositoryCommandRoute(
     timeoutMs?: number;
   } = {},
 ): { route: RepositoryCommandRoute; reason: string } {
+  if (repositoryCommandRecoveryLifecycle(command)) {
+    return { route: 'reject', reason: 'standalone_recovery_lifecycle_required' };
+  }
   if (options.forceDurable) {
     return { route: 'durable', reason: 'force_durable_or_async' };
   }
@@ -216,7 +271,9 @@ export async function executeRepositoryCommandViaProcessRuntime(
       route: decision.route,
       reason: decision.reason,
       durableSideEffects: emptyEffects,
-      suggestedOperation: 'repository_command_execute via Durable Work / Local Job',
+      suggestedOperation: decision.reason === 'standalone_recovery_lifecycle_required'
+        ? 'Use the standalone Forge Recovery connector for canonical Runtime/connector lifecycle operations.'
+        : 'repository_command_execute via Durable Work / Local Job',
       externalEffect: decision.route === 'durable'
         ? {
             outcome: 'not_started',
