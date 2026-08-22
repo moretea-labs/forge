@@ -166,6 +166,7 @@ type FrameLike = {
   url(): string;
   name(): string;
   evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T>;
+  frameElement?(): Promise<{ boundingBox(): Promise<{ x: number; y: number; width: number; height: number } | null> }>;
 };
 
 type PageLike = {
@@ -2379,6 +2380,7 @@ type BrowserEvaluationScope = Pick<PageLike, 'evaluate'>;
 type BrowserFrameSelection = {
   scope: BrowserEvaluationScope;
   frame?: { url: string; name: string };
+  frameHandle?: FrameLike;
 };
 
 function requestedFrameSelection(args: Record<string, unknown>): { frameUrl?: string; frameName?: string } {
@@ -2413,7 +2415,85 @@ function resolveBrowserEvaluationScope(
     });
   }
   const frame = matches[0]!;
-  return { scope: frame, frame: { url: frame.url(), name: frame.name() } };
+  return { scope: frame, frame: { url: frame.url(), name: frame.name() }, frameHandle: frame };
+}
+
+const VIEWPORT_METRICS_SCRIPT = `(() => ({
+  viewportMetricsVersion: 1,
+  viewport: {
+    width: Number(window.innerWidth || document.documentElement?.clientWidth || 0),
+    height: Number(window.innerHeight || document.documentElement?.clientHeight || 0),
+    scrollX: Number(window.scrollX || window.pageXOffset || 0),
+    scrollY: Number(window.scrollY || window.pageYOffset || 0),
+    devicePixelRatio: Number(window.devicePixelRatio || 1),
+  }
+}))()`;
+
+async function resolveFrameViewportOffset(page: PageLike, selection: BrowserFrameSelection): Promise<{ x: number; y: number; width: number; height: number } | undefined> {
+  const frame = selection.frameHandle;
+  if (!frame) return undefined;
+  if (page.mainFrame && page.mainFrame() === frame) return { x: 0, y: 0, width: 0, height: 0 };
+  if (!frame.frameElement) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_FRAME_GEOMETRY_UNAVAILABLE', 'The selected Playwright frame does not expose a frame element for coordinate grounding.', {
+      retryable: false,
+      details: selection.frame,
+    });
+  }
+  let box: { x: number; y: number; width: number; height: number } | null;
+  try {
+    box = await (await frame.frameElement()).boundingBox();
+  } catch (error) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_FRAME_GEOMETRY_UNAVAILABLE', 'Could not resolve the selected frame element bounding box.', {
+      retryable: true,
+      details: { ...selection.frame, cause: error instanceof Error ? error.message : String(error) },
+    });
+  }
+  if (!box || ![box.x, box.y, box.width, box.height].every((value) => Number.isFinite(value))) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_FRAME_GEOMETRY_UNAVAILABLE', 'The selected frame element has no stable visible bounding box; refusing to guess trusted-input coordinates.', {
+      retryable: true,
+      details: selection.frame,
+    });
+  }
+  return box;
+}
+
+function translateFrameGroundingElements(elements: unknown[], offset: { x: number; y: number }): unknown[] {
+  return elements.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+    const record = entry as Record<string, unknown>;
+    const bounds = record.bounds && typeof record.bounds === 'object' && !Array.isArray(record.bounds)
+      ? record.bounds as Record<string, unknown>
+      : {};
+    const center = record.center && typeof record.center === 'object' && !Array.isArray(record.center)
+      ? record.center as Record<string, unknown>
+      : {};
+    const required = (value: unknown, field: string): number => {
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        throw new AssistantPluginError('PLUGIN_BROWSER_FRAME_GEOMETRY_UNAVAILABLE', `Frame grounding field ${field} is not finite.`, { retryable: true });
+      }
+      return value;
+    };
+    const x = required(bounds.x, 'bounds.x');
+    const y = required(bounds.y, 'bounds.y');
+    const width = required(bounds.width, 'bounds.width');
+    const height = required(bounds.height, 'bounds.height');
+    const right = required(bounds.right, 'bounds.right');
+    const bottom = required(bounds.bottom, 'bounds.bottom');
+    const centerX = required(center.x, 'center.x');
+    const centerY = required(center.y, 'center.y');
+    return {
+      ...record,
+      bounds: {
+        x: x + offset.x,
+        y: y + offset.y,
+        width,
+        height,
+        right: right + offset.x,
+        bottom: bottom + offset.y,
+      },
+      center: { x: centerX + offset.x, y: centerY + offset.y },
+    };
+  });
 }
 
 async function extractText(scope: BrowserEvaluationScope, selector: string | undefined, maxChars: number): Promise<Record<string, unknown>> {
@@ -3734,14 +3814,32 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           const grounded = input.actionId === 'snapshot_interactive' && evaluated && typeof evaluated === 'object' && !Array.isArray(evaluated)
             ? evaluated as { geometryVersion?: unknown; viewport?: unknown; elements?: unknown }
             : undefined;
+          let data = grounded && Array.isArray(grounded.elements) ? grounded.elements : evaluated;
+          let viewport = grounded?.viewport;
+          let frameViewport: unknown;
+          let frameOffset: { x: number; y: number; width: number; height: number } | undefined;
+          if (grounded?.geometryVersion === 1 && selection.frame && Array.isArray(grounded.elements)) {
+            frameOffset = await resolveFrameViewportOffset(page, selection);
+            if (!frameOffset) {
+              throw new AssistantPluginError('PLUGIN_BROWSER_FRAME_GEOMETRY_UNAVAILABLE', 'Frame geometry offset was not available.', { retryable: true });
+            }
+            const topMetrics = await page.evaluate<{ viewportMetricsVersion?: unknown; viewport?: unknown }>(VIEWPORT_METRICS_SCRIPT);
+            if (topMetrics?.viewportMetricsVersion !== 1 || !topMetrics.viewport) {
+              throw new AssistantPluginError('PLUGIN_BROWSER_FRAME_GEOMETRY_UNAVAILABLE', 'Top-level viewport metrics were not available for frame grounding.', { retryable: true });
+            }
+            frameViewport = grounded.viewport;
+            viewport = topMetrics.viewport;
+            data = translateFrameGroundingElements(grounded.elements, frameOffset);
+          }
           return {
             provider: 'playwright',
             sessionId: target.sessionId,
             url: target.url,
             actionId: input.actionId,
-            data: grounded && Array.isArray(grounded.elements) ? grounded.elements : evaluated,
+            data,
             ...(selection.frame ? { frame: selection.frame } : {}),
-            ...(grounded?.geometryVersion === 1 ? { geometryVersion: 1, viewport: grounded.viewport } : {}),
+            ...(grounded?.geometryVersion === 1 ? { geometryVersion: 1, viewport } : {}),
+            ...(selection.frame && frameOffset ? { coordinateSpace: 'main_viewport_css', frameViewport, frameOffset } : {}),
             browserConnection: connection,
           };
         }, { persistSession: true });

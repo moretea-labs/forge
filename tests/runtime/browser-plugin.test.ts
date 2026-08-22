@@ -84,7 +84,7 @@ function writeAuthorizationBrowserSession(repoRoot: string, sessionId: string, u
   }));
 }
 
-function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?: string; frames?: Array<{ url: string; name: string; text?: string }> } = {}) {
+function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?: string; frames?: Array<{ url: string; name: string; text?: string; box?: { x: number; y: number; width: number; height: number } | null }> } = {}) {
   let currentUrl = 'https://example.com/';
   let currentTitle = options.title ?? 'Example';
   const routeDecisions: string[] = [];
@@ -106,6 +106,9 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
       }
       return (frame.text ?? 'Frame text') as T;
     },
+    async frameElement() {
+      return { async boundingBox() { return frame.box === undefined ? { x: 300, y: 100, width: 640, height: 480 } : frame.box; } };
+    },
   }));
 
   const page = {
@@ -120,6 +123,9 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
     },
     async evaluate<T>(expression?: unknown) {
       evaluatedExpressions.push(expression);
+      if (typeof expression === 'string' && expression.includes('viewportMetricsVersion: 1')) {
+        return { viewportMetricsVersion: 1, viewport: { width: 1280, height: 720, scrollX: 0, scrollY: 120, devicePixelRatio: 2 } } as T;
+      }
       if (typeof expression === 'string' && expression.includes('geometryVersion: 1') && expression.includes('devicePixelRatio')) {
         return {
           geometryVersion: 1,
@@ -2542,8 +2548,9 @@ describe('browser plugin', () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'managed_persistent', profileMode: 'repo_local' });
     const frameRuntime = mockPlaywright({ frames: [
-      { url: 'https://example.com/frame-a', name: 'frame-a', text: 'Frame A text' },
-      { url: 'https://example.com/frame-b', name: 'frame-b', text: 'Frame B text' },
+      { url: 'https://example.com/frame-a', name: 'frame-a', text: 'Frame A text', box: { x: 300, y: 100, width: 640, height: 480 } },
+      { url: 'https://example.com/frame-b', name: 'frame-b', text: 'Frame B text', box: { x: 50, y: 250, width: 640, height: 480 } },
+      { url: 'https://example.com/frame-hidden', name: 'frame-hidden', text: 'Hidden frame text', box: null },
     ] }) as unknown as { frameEvaluations: Array<{ url: string; name: string; expression: unknown }> };
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => frameRuntime as never });
     const frameSession = await executeBrowserPluginAction({
@@ -2560,6 +2567,7 @@ describe('browser plugin', () => {
     expect(frameList.frames).toEqual([
       { url: 'https://example.com/frame-a', name: 'frame-a' },
       { url: 'https://example.com/frame-b', name: 'frame-b' },
+      { url: 'https://example.com/frame-hidden', name: 'frame-hidden' },
     ]);
     const frameText = await executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
@@ -2575,7 +2583,20 @@ describe('browser plugin', () => {
     });
     expect(frameSnapshot.frame).toEqual({ url: 'https://example.com/frame-a', name: 'frame-a' });
     expect(frameSnapshot.geometryVersion).toBe(1);
+    expect(frameSnapshot.coordinateSpace).toBe('main_viewport_css');
+    expect(frameSnapshot.viewport).toEqual({ width: 1280, height: 720, scrollX: 0, scrollY: 120, devicePixelRatio: 2 });
+    expect(frameSnapshot.frameViewport).toEqual({ width: 640, height: 480, scrollX: 0, scrollY: 0, devicePixelRatio: 1 });
+    expect(frameSnapshot.frameOffset).toEqual({ x: 300, y: 100, width: 640, height: 480 });
+    expect(frameSnapshot.data).toEqual([expect.objectContaining({
+      bounds: { x: 310, y: 120, width: 100, height: 40, right: 410, bottom: 160 },
+      center: { x: 360, y: 140 },
+    })]);
     expect(frameRuntime.frameEvaluations.length).toBeGreaterThanOrEqual(2);
+    await expect(executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'snapshot_interactive',
+      requestId: 'browser-hidden-frame-snapshot', args: { session_id: frameSessionId, frame_name: 'frame-hidden' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('PLUGIN_BROWSER_FRAME_GEOMETRY_UNAVAILABLE');
   });
 
   test('explicit frame targeting fails closed on native user-owned sessions without changing the active tab', async () => {
