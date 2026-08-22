@@ -18,6 +18,7 @@ import {
   readControlPlaneRecord,
   writeControlPlaneRecord,
 } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 
 const homes: string[] = [];
 
@@ -124,6 +125,49 @@ test('persists facade Plan contracts as independently revisioned SQLite records'
   expect(readControlPlaneRecord(options.controllerHome, 'plan_contract', 'repo-1', 'plan-1')?.revision).toBe(2);
 });
 
+test('rejects a dangling Requirement reference before Plan persistence', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-requirement-integrity-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-requirement-integrity' };
+  expect(() => createPlanContract(options, {
+    planId: 'plan-missing-requirement',
+    repoId: options.repoId,
+    requirementId: 'REQ-missing',
+    scopeKey: 'missing-requirement',
+    sourceRevision: 'abc123',
+    goal: 'Never persist dangling Requirement authority',
+    steps: [{ id: 'step-a', objective: 'do not execute', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['Requirement exists'] }],
+  })).toThrow(/PLAN_REQUIREMENT_NOT_FOUND: REQ-missing/);
+  expect(listPlanContracts({ ...options, status: 'all' })).toHaveLength(0);
+});
+
+test('fails closed when a legacy Plan gains a dangling Requirement before approval or Work claim', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-legacy-requirement-integrity-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-legacy-requirement-integrity' };
+  const plan = createPlanContract(options, {
+    planId: 'plan-legacy-requirement',
+    repoId: options.repoId,
+    scopeKey: 'legacy-requirement',
+    sourceRevision: 'abc123',
+    goal: 'Preserve a legacy Plan but never execute dangling Requirement authority',
+    steps: [{ id: 'step-a', objective: 'do not execute', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['Requirement exists'] }],
+  });
+  const draftRecord = readControlPlaneRecord<typeof plan>(home, 'plan_contract', options.repoId, plan.planId)!;
+  writeControlPlaneRecord(home, {
+    namespace: 'plan_contract', scope: options.repoId, key: plan.planId, schemaVersion: 1,
+    value: { ...plan, requirementId: 'REQ-legacy-missing' }, expectedRevision: draftRecord.revision, action: 'seed_legacy_dangling_requirement',
+  });
+  expect(() => approvePlanContract(options, plan.planId)).toThrow(/PLAN_REQUIREMENT_NOT_FOUND: REQ-legacy-missing/);
+  const dangling = readControlPlaneRecord<typeof plan>(home, 'plan_contract', options.repoId, plan.planId)!;
+  writeControlPlaneRecord(home, {
+    namespace: 'plan_contract', scope: options.repoId, key: plan.planId, schemaVersion: 1,
+    value: { ...dangling.value, status: 'approved' }, expectedRevision: dangling.revision, action: 'seed_legacy_approved_dangling_requirement',
+  });
+  expect(() => claimPlanStepForWork(options, { planId: plan.planId, stepId: 'step-a', workId: 'work-never-created', sourceRevision: 'abc123' }))
+    .toThrow(/PLAN_REQUIREMENT_NOT_FOUND: REQ-legacy-missing/);
+});
+
 test('rejects a second create and stale writer without changing the authoritative row', () => {
   const home = mkdtempSync(join('/tmp', 'forge-plan-store-'));
   homes.push(home);
@@ -139,6 +183,7 @@ test('rejects a second create and stale writer without changing the authoritativ
 test('atomically admits one canonical Plan for concurrent same-scope callers', async () => {
   const home = mkdtempSync(join('/tmp', 'forge-plan-admission-race-'));
   homes.push(home);
+  createRequirement({ controllerHome: home }, { requirementId: 'REQ-race', title: 'Race authority', outcomeStatement: 'Exactly one Plan owns the shared requirement scope.' });
   const results = await runPlanStoreChildren({
     controllerHome: home,
     repoId: 'repo-race',
@@ -158,6 +203,7 @@ test('requires explicit Requirement relation and permits only distinct-scope par
   const home = mkdtempSync(join('/tmp', 'forge-plan-relation-'));
   homes.push(home);
   const options = { controllerHome: home, repoId: 'repo-relation' };
+  createRequirement({ controllerHome: home }, { requirementId: 'REQ-relation', title: 'Relation authority', outcomeStatement: 'Plan slices remain explicitly related to one Requirement.' });
   const base = {
     repoId: 'repo-relation',
     requirementId: 'REQ-relation',
@@ -261,7 +307,7 @@ test('rejects nonterminal Work and replans from failed Work', () => {
     stepId: 'step-1',
     work: { workId: 'work-terminal', status: 'failed', phase: 'cleanup', evidenceState: 'failed', completionOutcome: undefined, completionReceipt: undefined, evidenceRefs: [] },
   });
-  expect(failed).toMatchObject({ status: 'replanning', steps: [{ workId: 'work-terminal', status: 'ready' }] });
+  expect(failed).toMatchObject({ status: 'replanning', steps: [{ workId: undefined, status: 'ready' }] });
 });
 
 test('projects terminal Work evidence to validating and requires explicit semantic acceptance to complete the PlanStep', () => {

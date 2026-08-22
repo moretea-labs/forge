@@ -24,6 +24,7 @@ import {
   type PlanContractStoreOptions,
 } from './plan-contract-store';
 import { withPrimaryWorkAdmissionLock } from './semantic-admission';
+import { readRequirement } from '../persistence/requirement-store';
 import {
   classifyVerificationOutcome,
   normalizeCheckIds,
@@ -580,6 +581,17 @@ export function startGoalWorkloop(
     });
   }
   const effectiveRequirementId = requestedRequirementId || plan?.requirementId;
+  if (
+    effectiveRequirementId
+    && ctx.workStore.controllerHome
+    && !readRequirement({ controllerHome: ctx.workStore.controllerHome }, effectiveRequirementId)
+  ) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `${plan ? 'PLAN' : 'WORK'}_REQUIREMENT_NOT_FOUND: ${effectiveRequirementId}. Create or reconcile the Requirement authority before admitting Work.`,
+      data: { executionStarted: false, workContractCreated: false, requirementId: effectiveRequirementId, planId: plan?.planId },
+    });
+  }
   const sameStringSet = (provided: string[] | undefined, frozen: string[]): boolean => {
     if (provided === undefined) return true;
     const actual = [...new Set(provided)].sort();

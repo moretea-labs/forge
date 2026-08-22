@@ -13,6 +13,7 @@ import { createWorkContract, getWorkContract, listWorkContracts, recordWorkCompl
 import { continueGoalWorkloop, finalizeGoalWorkloop, verifyGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { listHandoffItems, resolveHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { acceptPlanStepEvidence, approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { createRequirement, readRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { createSchedule, getSchedule, listOccurrences, saveOccurrence, saveSchedule } from '../../src/runtime/workflow/schedules/store';
@@ -655,12 +656,13 @@ describe('rh_work managed lifecycle closure', () => {
     expect(blocked?.isError).toBe(true);
     expect((blocked?.structuredContent as { error?: { code?: string } }).error?.code).toBe('WORK_DELIVERY_REQUIRES_FINALIZE');
   });
-  test('reuses exact Plan scope but resolves distinct slices under the same Requirement before creation', async () => { const fx = fixture('plan-admission'); const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim(); const step = (id: string) => [{ id, objective: 'Implement it', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [], check_ids: [], acceptance_criteria: ['done'] }]; const first = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-primary', requirement_id: 'REQ-primary', scope_key: 'primary-scope', source_revision: sourceRevision, objective: 'Implement the primary requirement', plan_steps: step('step-a'), }); expect(first?.isError).not.toBe(true); expect(first?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new' } }); const exactDuplicate = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-duplicate', requirement_id: 'REQ-primary', scope_key: 'primary-scope', source_revision: sourceRevision, objective: 'Duplicate exact scope', plan_steps: step('step-dup'), }); expect(exactDuplicate?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: false, admissionDecision: 'reuse_existing', plan: { planId: 'PLAN-primary' } } }); const ambiguousSlice = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-slice-b', requirement_id: 'REQ-primary', scope_key: 'parallel-scope', source_revision: sourceRevision, objective: 'A distinct slice under the same broad requirement', plan_steps: step('step-b'), }); expect(ambiguousSlice?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: false, admissionDecision: 'resolution_required', resolutionRequired: true, allowedPlanRelations: ['extend', 'parallel'] }, }); const parallelSlice = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-slice-b', requirement_id: 'REQ-primary', scope_key: 'parallel-scope', plan_relation: 'parallel', source_revision: sourceRevision, objective: 'A distinct explicitly parallel slice', plan_steps: step('step-b'), }); expect(parallelSlice?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new', plan: { planId: 'PLAN-slice-b', requirementId: 'REQ-primary' } } }); });
+  test('reuses exact Plan scope but resolves distinct slices under the same Requirement before creation', async () => { const fx = fixture('plan-admission'); createRequirement({ controllerHome: fx.controllerHome }, { requirementId: 'REQ-primary', title: 'Primary requirement', outcomeStatement: 'Own the primary Plan scope without duplicates.' }); const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim(); const step = (id: string) => [{ id, objective: 'Implement it', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [], check_ids: [], acceptance_criteria: ['done'] }]; const first = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-primary', requirement_id: 'REQ-primary', scope_key: 'primary-scope', source_revision: sourceRevision, objective: 'Implement the primary requirement', plan_steps: step('step-a'), }); expect(first?.isError).not.toBe(true); expect(first?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new' } }); const exactDuplicate = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-duplicate', requirement_id: 'REQ-primary', scope_key: 'primary-scope', source_revision: sourceRevision, objective: 'Duplicate exact scope', plan_steps: step('step-dup'), }); expect(exactDuplicate?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: false, admissionDecision: 'reuse_existing', plan: { planId: 'PLAN-primary' } } }); const ambiguousSlice = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-slice-b', requirement_id: 'REQ-primary', scope_key: 'parallel-scope', source_revision: sourceRevision, objective: 'A distinct slice under the same broad requirement', plan_steps: step('step-b'), }); expect(ambiguousSlice?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: false, admissionDecision: 'resolution_required', resolutionRequired: true, allowedPlanRelations: ['extend', 'parallel'] }, }); const parallelSlice = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-slice-b', requirement_id: 'REQ-primary', scope_key: 'parallel-scope', plan_relation: 'parallel', source_revision: sourceRevision, objective: 'A distinct explicitly parallel slice', plan_steps: step('step-b'), }); expect(parallelSlice?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new', plan: { planId: 'PLAN-slice-b', requirementId: 'REQ-primary' } } }); });
 
   test('atomically admits exactly one primary Work for concurrent starts of one Plan step', async () => {
     const fx = fixture('work-admission-plan-step-race');
     const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    createRequirement({ controllerHome: fx.controllerHome }, { requirementId: 'REQ-work-admission-race', title: 'Work admission race', outcomeStatement: 'One Work owns the Plan step.' });
     createPlanContract(store, {
       planId: 'PLAN-work-admission-race',
       repoId: fx.repository.repoId,
@@ -698,9 +700,25 @@ describe('rh_work managed lifecycle closure', () => {
     expect(payloads.every((entry) => entry.data?.work?.workId === active[0]?.workId)).toBe(true);
   });
 
+  test('rejects standalone Work admission when Requirement authority is missing', async () => {
+    const fx = fixture('work-missing-requirement-admission');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      requirement_id: 'REQ-work-missing',
+      objective: 'Never execute dangling Requirement authority',
+      requires_recovery: true,
+    });
+    expect(started?.isError).toBe(true);
+    expect(JSON.stringify(started?.structuredContent)).toContain('WORK_REQUIREMENT_NOT_FOUND: REQ-work-missing');
+    expect(listWorkContracts({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId, status: 'active', limit: 100 })
+      .filter((work) => work.requirementId === 'REQ-work-missing')).toHaveLength(0);
+  });
+
   test('serializes Requirement-bound admission while preserving explicit parallel Work placement', async () => {
     const fx = fixture('work-admission-requirement-race');
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    createRequirement({ controllerHome: fx.controllerHome }, { requirementId: 'REQ-shared-work-admission', title: 'Shared Work admission', outcomeStatement: 'Requirement-bound Work admission is serialized unless explicitly parallel.' });
     const baseArgs = {
       repo_id: fx.repository.repoId,
       operation: 'start',
@@ -1496,8 +1514,31 @@ describe('rh_work managed lifecycle closure', () => {
     expect(branchExists(fx.repoRoot, branch)).toBe(false);
   });
 
+  test('rejects Plan creation before a missing Requirement can become completion projection debt', async () => {
+    const fx = fixture('plan-missing-requirement-admission');
+    const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim();
+    const missing = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'PLAN-missing-requirement',
+      requirement_id: 'REQ-missing-requirement',
+      scope_key: 'missing-requirement',
+      source_revision: sourceRevision,
+      objective: 'Never persist a Plan with dangling Requirement authority',
+      plan_steps: [{ id: 'step-a', objective: 'Do not execute', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [], check_ids: [], acceptance_criteria: ['Requirement authority exists before Plan persistence.'] }],
+    });
+    expect(missing?.isError).toBe(true);
+    expect(JSON.stringify(missing?.structuredContent)).toContain('PLAN_REQUIREMENT_NOT_FOUND: REQ-missing-requirement');
+    expect(getPlanContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, 'PLAN-missing-requirement')).toBeUndefined();
+  });
+
   test('authenticated finalize semantically closes its delivered Plan step without a second acceptance call', async () => {
     const fx = fixture('plan-finalize-semantic-accept');
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId: 'REQ-finalize-semantic-accept-without-record',
+      title: 'Finalize semantic acceptance',
+      outcomeStatement: 'Delivered Work evidence projects to the real Requirement authority without orphaned projection debt.',
+    });
     writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({ scripts: { 'check:type': 'node -e "process.exit(0)"' } }, null, 2));
     git(fx.repoRoot, ['add', 'package.json']);
     git(fx.repoRoot, ['commit', '-m', 'register semantic acceptance check']);
@@ -1589,7 +1630,10 @@ describe('rh_work managed lifecycle closure', () => {
     const completedWork = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId);
     expect(completedWork?.status).toBe('completed');
     expect(completedWork?.completionReceipt).toBeTruthy();
-    expect(completedWork?.evidenceRefs.some((evidence) => evidence.title === 'requirement completion projection pending' && (evidence.summary ?? '').includes('REQUIREMENT_NOT_FOUND'))).toBe(true);
+    expect(completedWork?.evidenceRefs.some((evidence) => evidence.title === 'requirement completion projection pending')).toBe(false);
+    const requirement = readRequirement({ controllerHome: fx.controllerHome }, 'REQ-finalize-semantic-accept-without-record')?.value;
+    expect(requirement?.state).toBe('waiting_for_user');
+    expect(requirement?.auditRefs).toContain(completedWork?.completionReceipt?.receiptId);
   });
 
   test('stop can close a legacy Work after its source checkout registry entry was removed', async () => {

@@ -17,6 +17,7 @@ import {
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
 } from '../persistence/sqlite-store';
+import { readRequirement } from '../persistence/requirement-store';
 import {
   isTerminalPlanContractStatus,
   type EvidenceRef,
@@ -130,6 +131,14 @@ function updatePlanContract(
   );
 }
 
+function assertRequirementReference(options: PlanContractStoreOptions, requirementId: string | undefined): void {
+  const normalized = requirementId?.trim();
+  if (!normalized || !options.controllerHome) return;
+  if (!readRequirement({ controllerHome: options.controllerHome, now: options.now }, normalized)) {
+    throw new Error(`PLAN_REQUIREMENT_NOT_FOUND: ${normalized}`);
+  }
+}
+
 export function planContractRoot(location: PlanContractStoreLocation): string {
   if (location.root) {
     mkdirSync(location.root, { recursive: true });
@@ -221,6 +230,7 @@ function writePlanContractStore(options: PlanContractStoreOptions, store: PlanCo
 }
 
 function createPlanContractUnlocked(options: PlanContractStoreOptions, input: CreatePlanContractInput): PlanContract {
+  assertRequirementReference(options, input.requirementId);
   const at = nowIso(options);
   const planId = sanitizeFileComponent(input.planId);
   if (!String(input.planId ?? '').trim() || planId === 'unknown') throw new Error('plan_id is required');
@@ -270,6 +280,7 @@ export function createPlanContract(options: PlanContractStoreOptions, input: Cre
 }
 
 function admitPlanContractUnlocked(options: PlanContractStoreOptions, input: AdmitPlanContractInput): AdmitPlanContractResult {
+  assertRequirementReference(options, input.requirementId);
   const activePlans = listPlanContracts({ ...options, status: 'active', limit: 100 });
   const resolution = resolvePlanAdmission(activePlans, {
     requirementId: input.requirementId,
@@ -358,6 +369,7 @@ function approvePlanContractUnlocked(options: PlanContractStoreOptions, planId: 
   const index = store.contracts.findIndex((contract) => contract.planId === sanitizeFileComponent(planId));
   if (index < 0) throw new Error(`plan contract not found: ${sanitizeFileComponent(planId)}`);
   const current = store.contracts[index];
+  assertRequirementReference(options, current.requirementId);
   if (current.status !== 'draft' && current.status !== 'reviewing') throw new Error(`plan contract ${current.planId} cannot be approved from ${current.status}`);
   const errors = approvalErrors(current, store.contracts);
   if (errors.length > 0) throw new Error(`plan contract ${current.planId} cannot be approved: ${errors.join('; ')}`);
@@ -403,6 +415,7 @@ export function claimPlanStepForWork(
   input: { planId: string; stepId: string; workId: string; sourceRevision: string },
 ): PlanContract {
   return updatePlanContract(options, input.planId, (current) => {
+    assertRequirementReference(options, current.requirementId);
     if (current.status !== 'approved' && current.status !== 'executing') {
       throw new Error(`PLAN_NOT_EXECUTABLE: ${current.planId} is ${current.status}`);
     }

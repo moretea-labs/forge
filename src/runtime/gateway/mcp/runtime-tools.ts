@@ -192,6 +192,7 @@ import {
   resumeControllerSession,
 } from '../../control-plane/facade';
 import { currentControllerInstanceId, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../control-plane/execution/session-store';
+import { readRequirement } from '../../control-plane/persistence/requirement-store';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { currentPermissionSnapshotVersion } from '../../control-plane/execution/validation';
 import { observeRuntimeStatus } from '../../root/status';
@@ -3908,6 +3909,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 ? args.plan_relation
                 : undefined;
               const relatedPlanId = typeof args.related_plan_id === 'string' && args.related_plan_id.trim() ? args.related_plan_id.trim() : undefined;
+              if (requestedRequirementId && !readRequirement({ controllerHome: ctx.controllerHome }, requestedRequirementId)) {
+                const facade = buildFacadeResult({
+                  status: 'failed',
+                  summary: `PLAN_REQUIREMENT_NOT_FOUND: ${requestedRequirementId}. Plan was not persisted; create or reconcile the Requirement authority first.`,
+                  data: { executionStarted: false, planContractCreated: false, admissionDecision: 'missing_requirement', requirementId: requestedRequirementId },
+                });
+                return result(facade as unknown as Record<string, unknown>, true);
+              }
               const admissionInput = {
                 requirementId: requestedRequirementId,
                 scopeKey: String(args.scope_key ?? ''),
