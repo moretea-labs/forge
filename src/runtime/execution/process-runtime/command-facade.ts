@@ -164,6 +164,31 @@ function repositoryCommandRecoveryLifecycle(command: string | readonly string[])
   return wrapped ? recoveryLifecycleFromShell(wrapped) : undefined;
 }
 
+function rawGitCommitRequiresExplicitPathScope(command: string | readonly string[]): boolean {
+  const normalized = normalizeRepositoryCommand(command);
+  if (normalized.kind === 'shell') {
+    return /(?:^|[;&|]\s*)\s*git\s+commit\b/i.test(normalized.shellCommand ?? '');
+  }
+  const executable = commandBasename(normalized.executable ?? '');
+  const args = [...(normalized.args ?? [])];
+  if (executable !== 'git') {
+    const wrapped = fixedShellWrapperCommand(normalized.value as string[]);
+    return wrapped ? /(?:^|[;&|]\s*)\s*git\s+commit\b/i.test(wrapped) : false;
+  }
+  let index = 0;
+  while (index < args.length && args[index]?.startsWith('-')) {
+    const option = args[index]!;
+    if (['-c', '-C', '--git-dir', '--work-tree', '--namespace'].includes(option)) index += 2;
+    else index += 1;
+  }
+  if (args[index]?.toLowerCase() !== 'commit') return false;
+  const commitArgs = args.slice(index + 1);
+  const pathSeparator = commitArgs.indexOf('--');
+  const hasExplicitOnly = commitArgs.includes('--only') || commitArgs.includes('-o');
+  const paths = pathSeparator >= 0 ? commitArgs.slice(pathSeparator + 1).filter(Boolean) : [];
+  return !(hasExplicitOnly && paths.length > 0);
+}
+
 function toProcessCommand(command: string | readonly string[], cwd: string): ProcessCommandSpec {
   const normalized = normalizeRepositoryCommand(command);
   if (normalized.kind === 'argv') {
@@ -194,6 +219,9 @@ export function classifyRepositoryCommandRoute(
 ): { route: RepositoryCommandRoute; reason: string } {
   if (repositoryCommandRecoveryLifecycle(command)) {
     return { route: 'reject', reason: 'standalone_recovery_lifecycle_required' };
+  }
+  if (rawGitCommitRequiresExplicitPathScope(command)) {
+    return { route: 'reject', reason: 'git_commit_requires_explicit_path_scope' };
   }
   if (options.forceDurable) {
     return { route: 'durable', reason: 'force_durable_or_async' };

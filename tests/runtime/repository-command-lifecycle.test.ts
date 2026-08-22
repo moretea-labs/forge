@@ -17,6 +17,8 @@ import {
   REPOSITORY_COMMAND_MAX_TIMEOUT_MS,
   REPOSITORY_COMMAND_MIN_TIMEOUT_MS} from '../../src/cli/repositories/command-executor';
 import { registerRepository } from '../../src/cli/repositories/registry';
+import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-actions';
+import { acquireControllerLock, releaseControllerLock } from '../../src/cli/repositories/locks';
 import { persistControllerAccessMode } from '../../src/cli/mcp/access-mode';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { classifyRepositoryCommandRoute, executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
@@ -45,6 +47,12 @@ function git(root: string, args: string[]): void {
   if (result.status !== 0) {
     throw new Error(result.stderr || `git ${args.join(' ')} failed`);
   }
+}
+
+function gitOutput(root: string, args: string[]): string {
+  const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+  if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(' ')} failed`);
+  return String(result.stdout ?? '').trim();
 }
 
 function seedRepo(controllerHome: string, repoRoot: string) {
@@ -153,6 +161,38 @@ describe('repository command execution lifecycle', () => {
     } finally {
       owner.release();
     }
+  });
+
+  test('raw git commits require explicit path scope and selected-path commits keep unrelated staged work isolated', () => {
+    const route = (command: string[] | string) => classifyRepositoryCommandRoute(command);
+    expect(route(['git', 'commit', '-m', 'unsafe'])).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
+    expect(route('git commit -m unsafe')).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
+    expect(route(['git', 'commit', '--only', '-m', 'safe', '--', 'README.md'])).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
+
+    const controllerHome = tempRoot('forge-selected-commit-home-');
+    const repoRoot = tempRoot('forge-selected-commit-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    writeFileSync(join(repoRoot, 'README.md'), 'selected change\n');
+    writeFileSync(join(repoRoot, 'other.txt'), 'other staged change\n');
+    git(repoRoot, ['add', 'other.txt']);
+
+    const held = acquireControllerLock(
+      controllerHome,
+      { scope: 'worktree', repoId: repository.repoId, worktreeId: repository.activeCheckoutId },
+      'concurrent-controller',
+    );
+    try {
+      expect(() => commitSelectedPaths(controllerHome, repository, { paths: ['README.md'], message: 'selected only' })).toThrow(/LOCK_HELD/);
+    } finally {
+      releaseControllerLock(controllerHome, { scope: 'worktree', repoId: repository.repoId, worktreeId: repository.activeCheckoutId }, held.lockId);
+    }
+
+    const committed = commitSelectedPaths(controllerHome, repository, { paths: ['README.md'], message: 'selected only' });
+    expect(committed.error).toBeUndefined();
+    expect(committed.commit?.ok).toBe(true);
+    expect(gitOutput(repoRoot, ['show', '--pretty=format:', '--name-only', 'HEAD']).split(/\r?\n/).filter(Boolean)).toEqual(['README.md']);
+    expect(gitOutput(repoRoot, ['diff', '--cached', '--name-only'])).toBe('other.txt');
   });
 
   test('routes fixed shell diagnostics and ordinary local scripts without weakening external boundaries', () => {

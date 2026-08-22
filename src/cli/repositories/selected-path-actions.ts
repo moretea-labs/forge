@@ -4,6 +4,7 @@ import { join, relative, resolve } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
 import { buildPatchHandoffArtifact } from '../../runtime/recovery/patch-handoff';
 import { executeRepositoryGitCommand, type RepositoryGitExecution } from './git-command-executor';
+import { withControllerLock } from './locks';
 import type { RepositoryRecord } from './types';
 
 const DEFAULT_MAX_OUTPUT_BYTES = 128 * 1024;
@@ -254,6 +255,11 @@ export function commitSelectedPaths(
   const message = String(input.message ?? '').trim();
   if (!message) throw new Error('COMMIT_MESSAGE_REQUIRED: message is required');
 
+  return withControllerLock(
+    controllerHome,
+    { scope: 'worktree', repoId: repository.repoId, worktreeId: repository.activeCheckoutId },
+    `selected-path-commit:${repository.activeCheckoutId}`,
+    () => {
   const stage = executeRepositoryGitCommand(controllerHome, repository, {
     args: ['add', '--all', '--', ...paths],
     authorization: 'explicit_user_request',
@@ -281,15 +287,17 @@ export function commitSelectedPaths(
     args: ['commit', '--only', '-m', message, '--', ...paths],
     authorization: 'explicit_user_request',
   });
-  return {
-    paths,
-    stage,
-    stagedPaths: staged,
-    commit,
-    ...(commit.status !== 'executed' || commit.ok !== true
-      ? { error: { code: 'SELECTED_PATH_COMMIT_FAILED', message: commit.stderr || 'git commit failed for selected paths' } }
-      : {}),
-  };
+      return {
+        paths,
+        stage,
+        stagedPaths: staged,
+        commit,
+        ...(commit.status !== 'executed' || commit.ok !== true
+          ? { error: { code: 'SELECTED_PATH_COMMIT_FAILED', message: commit.stderr || 'git commit failed for selected paths' } }
+          : {}),
+      };
+    },
+  );
 }
 
 export function prepareTransferArtifacts(
