@@ -168,6 +168,34 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore); expect(listLocalBridgeJobSnapshots(fx.repoRoot).length).toBe(localBefore);
   });
 
+  test('repository_command_execute surfaces standalone Recovery lifecycle rejection without spawning work', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
+    const localBefore = listLocalBridgeJobSnapshots(fx.repoRoot).length;
+    const processesBefore = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
+
+    const response = await callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
+      repo_id: fx.repository.repoId,
+      command: ['bun', 'bin/forge.mjs', 'recovery', 'activate-runtime', '--release-manifest', '/tmp/release/manifest.json'],
+      timeout_ms: 5_000,
+    });
+    expect(response?.isError).not.toBe(true);
+    const payload = response?.structuredContent as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      accepted: false,
+      mode: 'reject',
+      path: 'standalone_recovery_lifecycle_required',
+      route: 'reject',
+      status: 'rejected',
+    });
+    expect(String(payload.message ?? '')).toContain('standalone Forge Recovery');
+    expect(String(payload.suggestedOperation ?? '')).toContain('standalone Forge Recovery');
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore);
+    expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
+    expect(listLocalBridgeJobSnapshots(fx.repoRoot).length).toBe(localBefore);
+  });
+
   test('MCP routeDurableMcpCall does not create ExecutionJob for Fast git status', async () => {
     const fx = fixture();
     roots.push(fx.root);

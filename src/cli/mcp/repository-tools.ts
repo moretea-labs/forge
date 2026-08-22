@@ -1111,6 +1111,30 @@ export async function callRepositoryTool(
               defaultBranch: repository.defaultBranch,
               timeoutMs,
             });
+            if (routeClass.route === 'reject') {
+              return result({
+                accepted: false,
+                mode: 'reject',
+                path: routeClass.reason,
+                route: 'reject',
+                status: 'rejected',
+                repoId: repository.repoId,
+                checkoutId: repository.activeCheckoutId,
+                workspace: target.workspace,
+                message: routeClass.reason === 'standalone_recovery_lifecycle_required'
+                  ? 'Canonical Runtime and connector lifecycle operations must be submitted to the standalone Forge Recovery owner, not executed as a child of repository Process Runtime.'
+                  : 'Repository command execution was rejected by Process Runtime routing policy.',
+                suggestedOperation: routeClass.reason === 'standalone_recovery_lifecycle_required'
+                  ? 'Use the standalone Forge Recovery connector.'
+                  : routingDecision.suggestedOperation,
+                durableSideEffects: {
+                  executionJobCount: 0,
+                  localJobCount: 0,
+                  workerSpawnCount: 0,
+                  projectionUpdateCount: 0,
+                },
+              });
+            }
             if (routeClass.route === 'durable' && target.workspace) {
               return result({
                 accepted: false,
