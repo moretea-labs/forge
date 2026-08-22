@@ -272,7 +272,7 @@ describe('handoff and facade contracts', () => {
     expect(capabilities.map((entry) => entry.capabilityId)).toContain('repository.direct_edit');
     expect(capabilities.map((entry) => entry.capabilityId)).toContain('controller.goal_workloop');
     expect(capabilities.map((entry) => entry.capabilityId)).toContain('controller.self_healing');
-    expect(capabilities.map((entry) => entry.capabilityId)).toContain('controller.codex_delegation');
+    expect(capabilities.map((entry) => entry.capabilityId)).toContain('controller.external_controller');
     expect(new Set(capabilities.map((entry) => entry.exposedVia).filter((surface) => surface.startsWith('rh_')))).toEqual(new Set(['rh_context', 'rh_inbox', 'rh_status', 'rh_work']));
     expect(capabilities.some((entry) => entry.exposedVia === 'plugin_action_execute')).toBe(true);
     expect(new Set(capabilities.map((entry) => entry.group))).toEqual(new Set([
