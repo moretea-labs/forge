@@ -835,6 +835,10 @@ function responseWithWarnings(base: Record<string, unknown>, warnings: string[])
   return warnings.length > 0 ? { ...base, warnings } : base;
 }
 
+function browserResultProvider(provider: BrowserSessionConnectionState['provider'] | BrowserConnectionSummary['provider'] | undefined): 'playwright' | 'macos-apple-events' {
+  return provider === 'macos-apple-events' ? 'macos-apple-events' : 'playwright';
+}
+
 function interactionResult(
   actionId: string,
   session: BrowserSessionState,
@@ -844,7 +848,7 @@ function interactionResult(
   extra: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return responseWithWarnings({
-    provider: 'playwright',
+    provider: browserResultProvider(session.browser?.provider),
     session,
     url: session.url,
     title: session.title,
@@ -3726,7 +3730,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           const session = sessionFromPage(target, identity.url, identity.title, connection);
           saveSession(input.repoRoot, session);
           return {
-            provider: 'playwright',
+            provider: browserResultProvider(connection.provider),
             session,
             navigation: diagnostics.navigation,
             browserConnection: {
@@ -3759,7 +3763,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           const session = sessionFromPage(target, identity.url, identity.title, connection);
           saveSession(input.repoRoot, session);
           return {
-            provider: 'playwright',
+            provider: browserResultProvider(connection.provider),
             session,
             navigation: diagnostics.navigation,
             actionId: input.actionId,
@@ -3776,12 +3780,12 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       case 'get_text': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         return {
-          provider: 'playwright',
           sessionId: target.sessionId,
           url: target.url,
           ...(await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
             const selection = resolveBrowserEvaluationScope(page, input.args, connection);
             return {
+              provider: browserResultProvider(connection.provider),
               ...(await extractText(selection.scope, stringValue(input.args.selector), positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS))),
               ...(selection.frame ? { frame: selection.frame } : {}),
               browserConnection: connection,
@@ -3795,7 +3799,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           const selection = resolveBrowserEvaluationScope(page, input.args, connection);
           const raw = await selection.scope.evaluate<string>(EXTRACTION_SCRIPTS.html(stringValue(input.args.selector)));
           return {
-            provider: 'playwright',
+            provider: browserResultProvider(connection.provider),
             sessionId: target.sessionId,
             url: target.url,
             ...(selection.frame ? { frame: selection.frame } : {}),
@@ -3813,7 +3817,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           const selection = resolveBrowserEvaluationScope(page, input.args, connection);
           const matches = await selection.scope.evaluate<Array<Record<string, unknown>>>(EXTRACTION_SCRIPTS.query(selector, input.actionId === 'query_selector' ? 1 : limit));
           return {
-            provider: 'playwright',
+            provider: browserResultProvider(connection.provider),
             sessionId: target.sessionId,
             url: target.url,
             selector,
@@ -3832,7 +3836,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           const selection = resolveBrowserEvaluationScope(page, input.args, connection);
           return {
-            provider: 'playwright',
+            provider: browserResultProvider(connection.provider),
             sessionId: target.sessionId,
             url: target.url,
             selector,
@@ -3856,7 +3860,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           const allFrames = page.frames();
           const frames = allFrames.slice(0, limit).map((frame) => ({ url: frame.url(), name: frame.name() }));
           return {
-            provider: 'playwright',
+            provider: browserResultProvider(connection.provider),
             sessionId: target.sessionId,
             url: target.url,
             frames,
@@ -3908,7 +3912,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             });
           }
           return {
-            provider: 'playwright',
+            provider: browserResultProvider(connection.provider),
             sessionId: target.sessionId,
             url: target.url,
             observedUrl,
@@ -3941,7 +3945,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             browserConnection: connection,
           };
         });
-        return { provider: 'playwright', screenshot };
+        return { provider: browserResultProvider(screenshot.browserConnection.provider), screenshot };
       }
       case 'extract_links':
       case 'extract_tables':
@@ -3982,7 +3986,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             data = translateFrameGroundingElements(grounded.elements, frameOffset, topMetrics.viewport);
           }
           return {
-            provider: 'playwright',
+            provider: browserResultProvider(connection.provider),
             sessionId: target.sessionId,
             url: target.url,
             actionId: input.actionId,
@@ -3998,7 +4002,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       case 'get_failed_requests': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         return await withPage(input.repoRoot, current, target, input.args, async (_page, diagnostics, connection) => ({
-          provider: 'playwright',
+          provider: browserResultProvider(connection.provider),
           sessionId: target.sessionId,
           url: target.url,
           navigation: diagnostics.navigation,
