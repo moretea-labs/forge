@@ -152,6 +152,12 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(blockingMutations.length).toBeGreaterThan(0);
     expect(blockingMutations.every((action) => action.executionMode === 'lightweight_process')).toBe(true);
     expect(manifest.actions.find((action) => action.actionId === 'physical_device_confirm_foreground')?.executionMode).toBeUndefined();
+    expect(manifest.actions.find((action) => action.actionId === 'launch_simulator')?.resourceClaims).toEqual([
+      { resource: 'provider-state', mode: 'write' },
+    ]);
+    expect(manifest.actions.find((action) => action.actionId === 'capture_screenshot')?.resourceClaims).toEqual([
+      { resource: 'provider-state', mode: 'read' },
+    ]);
     expect(manifest.actions.filter((action) => action.readOnly).every((action) => action.executionMode !== 'lightweight_process')).toBe(true);
     expect((manifest.health.details?.physicalDevice as Record<string, unknown>).probed).toBe(false);
   });

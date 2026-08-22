@@ -3,12 +3,16 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+  iosAppBuild,
   iosAppLaunch,
+  iosProjectDiscover,
   iosSchemesList,
   iosSimulatorBoot,
   iosSimulatorLogTail,
+  iosSimulatorScreenshot,
   iosSimulatorShutdown,
   iosSmokeReview,
+  iosXcodeTest,
   resetIosDevelopmentHooksForTest,
   setIosDevelopmentHooksForTest,
   type IosCommandResult,
@@ -85,6 +89,18 @@ describe('iOS development simulator reliability', () => {
     expect('ownership' in boot ? boot.ownership : undefined).toBe('reused');
   });
 
+  test('discovers Xcode projects nested deeply in monorepos while pruning generated dependency trees', () => {
+    const repo = repository();
+    const deepProject = join(repo.root, 'packages', 'mobile', 'clients', 'apple', 'ios', 'Deep.xcodeproj');
+    mkdirSync(deepProject, { recursive: true });
+    mkdirSync(join(repo.root, 'packages', 'mobile', 'Pods', 'Ignored.xcodeproj'), { recursive: true });
+    setIosDevelopmentHooksForTest({ platform: () => 'darwin' });
+
+    const discovered = iosProjectDiscover(repo.record, { forceRefresh: true });
+    expect(discovered.projects).toContain('packages/mobile/clients/apple/ios/Deep.xcodeproj');
+    expect(discovered.projects.some((entry) => entry.includes('/Pods/'))).toBe(false);
+  });
+
   test('caches xcodebuild scheme inventory on the hot path', () => {
     const repo = repository();
     let listCalls = 0;
@@ -103,6 +119,93 @@ describe('iOS development simulator reliability', () => {
     expect(iosSchemesList(repo.record).ready).toBe(true);
     expect(iosSchemesList(repo.record).ready).toBe(true);
     expect(listCalls).toBe(1);
+  });
+
+  test('reuses stable build DerivedData while preferring newly produced apps over stale cached products', () => {
+    const repo = repository();
+    let buildCalls = 0;
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      now: () => new Date('2026-08-22T00:00:00.000Z'),
+      runCommand: (command, args) => {
+        if (command === 'xcodebuild' && args.includes('-list')) {
+          return result(command, args, { stdout: JSON.stringify({ project: { schemes: ['Old'] } }) });
+        }
+        if (command === 'xcodebuild' && args[0] === 'build') {
+          buildCalls += 1;
+          const derivedDataPath = args[args.indexOf('-derivedDataPath') + 1]!;
+          const appName = buildCalls === 1 ? 'Old.app' : buildCalls === 2 ? 'New.app' : `Build${buildCalls}.app`;
+          mkdirSync(join(derivedDataPath, 'Build', 'Products', 'Debug-iphonesimulator', appName), { recursive: true });
+          return result(command, args);
+        }
+        return result(command, args);
+      },
+    });
+
+    const first = iosAppBuild(repo.record, { scheme: 'Old', udid: 'D1' });
+    const second = iosAppBuild(repo.record, { scheme: 'Old', udid: 'D1' });
+    const otherConfiguration = iosAppBuild(repo.record, { scheme: 'Old', udid: 'D1', configuration: 'Release' });
+    const otherDestination = iosAppBuild(repo.record, { scheme: 'Old', udid: 'D2' });
+
+    expect(first.ready).toBe(true);
+    expect(second.ready).toBe(true);
+    if (!(
+      'derivedDataPath' in first
+      && 'derivedDataPath' in second
+      && 'derivedDataPath' in otherConfiguration
+      && 'derivedDataPath' in otherDestination
+      && 'derivedDataReused' in first
+      && 'derivedDataReused' in second
+      && 'newBuiltApps' in second
+      && 'appPath' in second
+    )) throw new Error('expected successful build evidence');
+    expect(first.derivedDataPath).toBe(second.derivedDataPath);
+    expect(first.derivedDataReused).toBe(false);
+    expect(second.derivedDataReused).toBe(true);
+    expect(second.appPath?.endsWith('/New.app')).toBe(true);
+    expect(second.newBuiltApps.some((entry: string) => entry.endsWith('/New.app'))).toBe(true);
+    expect(otherConfiguration.derivedDataPath).not.toBe(first.derivedDataPath);
+    expect(otherDestination.derivedDataPath).not.toBe(first.derivedDataPath);
+  });
+
+  test('keeps Xcode tests serial by default but supports bounded opt-in parallel workers', () => {
+    const repo = repository();
+    const commands: string[][] = [];
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (command === 'xcodebuild' && args.includes('-list')) {
+          return result(command, args, { stdout: JSON.stringify({ project: { schemes: ['AppTests'] } }) });
+        }
+        return result(command, args);
+      },
+    });
+
+    const serial = iosXcodeTest(repo.record, { scheme: 'AppTests', udid: 'D1' });
+    const parallel = iosXcodeTest(repo.record, { scheme: 'AppTests', udid: 'D1', parallelTesting: true, maxParallelTestingWorkers: 4 });
+    expect(serial.ready).toBe(true);
+    expect(parallel.ready).toBe(true);
+    const testCommands = commands.filter((entry) => entry[0] === 'xcodebuild' && entry[1] === 'test');
+    expect(testCommands[0]).toContain('NO');
+    expect(testCommands[0]).toContain('1');
+    expect(testCommands[1]).toContain('YES');
+    expect(testCommands[1]).toContain('4');
+  });
+
+  test('uses collision-resistant screenshot artifact names even with a fixed clock', () => {
+    const repo = repository();
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      now: () => new Date('2026-08-22T00:00:00.000Z'),
+      runCommand: (command, args) => result(command, args),
+    });
+
+    const first = iosSimulatorScreenshot(repo.record, { udid: 'D', label: 'same' });
+    const second = iosSimulatorScreenshot(repo.record, { udid: 'D', label: 'same' });
+    expect(first.ready).toBe(true);
+    expect(second.ready).toBe(true);
+    expect('screenshot' in first ? first.screenshot : undefined).not.toBe('screenshot' in second ? second.screenshot : undefined);
   });
 
   test('keeps smoke stages unique, reuses one simulator inventory, and filters logs by app executable', () => {

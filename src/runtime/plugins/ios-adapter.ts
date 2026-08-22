@@ -182,6 +182,8 @@ function actions(): AssistantPluginActionDescriptor[] {
     { resource: 'workspace' as const, mode: 'write' as const },
     { resource: 'repo-state' as const, mode: 'write' as const },
   ];
+  const providerMutationClaims = [{ resource: 'provider-state' as const, mode: 'write' as const }];
+  const providerReadClaims = [{ resource: 'provider-state' as const, mode: 'read' as const }];
   return [
     {
       actionId: 'xcode_status',
@@ -303,6 +305,8 @@ function actions(): AssistantPluginActionDescriptor[] {
           project: { type: 'string' },
           configuration: { type: 'string' },
           only_testing: { type: 'array', items: { type: 'string' }, maxItems: 50 },
+          parallel_testing: { type: 'boolean' },
+          max_parallel_testing_workers: { type: 'number', minimum: 1, maximum: 8 },
           timeout_ms: { type: 'number' },
         },
         additionalProperties: false,
@@ -320,7 +324,7 @@ function actions(): AssistantPluginActionDescriptor[] {
       idempotent: true,
       executionMode: 'lightweight_process',
       scopes: ['ios.simulator'],
-      resourceClaims: writeClaims,
+      resourceClaims: providerMutationClaims,
       argumentsSchema: {
         type: 'object',
         properties: {
@@ -344,7 +348,7 @@ function actions(): AssistantPluginActionDescriptor[] {
       idempotent: false,
       executionMode: 'lightweight_process',
       scopes: ['ios.simulator'],
-      resourceClaims: writeClaims,
+      resourceClaims: providerReadClaims,
       argumentsSchema: {
         type: 'object',
         properties: {
@@ -478,6 +482,10 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
           project: stringValue(input.args.project),
           configuration: stringValue(input.args.configuration),
           onlyTesting,
+          parallelTesting: input.args.parallel_testing === true,
+          maxParallelTestingWorkers: typeof input.args.max_parallel_testing_workers === 'number'
+            ? input.args.max_parallel_testing_workers
+            : undefined,
           timeoutMs: typeof input.args.timeout_ms === 'number' ? input.args.timeout_ms : undefined,
         }),
       };

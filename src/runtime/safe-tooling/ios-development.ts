@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { basename, dirname, join, relative, resolve, sep } from 'path';
 import { spawnSync } from 'child_process';
@@ -19,6 +20,7 @@ export interface IosDevelopmentHooks {
 }
 
 let hooks: IosDevelopmentHooks = {};
+let artifactSequence = 0;
 
 /** Host Xcode/simctl probes are expensive (spawnSync). Cache them for hot MCP reads. */
 const XCODE_STATUS_TTL_MS = 60_000;
@@ -33,6 +35,7 @@ const schemeListCache = new Map<string, { expiresAt: number; value: ReturnType<t
 
 export function setIosDevelopmentHooksForTest(next: IosDevelopmentHooks): void {
   hooks = next;
+  artifactSequence = 0;
   xcodeStatusCache = undefined;
   projectDiscoverCache.clear();
   schemeListCache.clear();
@@ -40,6 +43,7 @@ export function setIosDevelopmentHooksForTest(next: IosDevelopmentHooks): void {
 
 export function resetIosDevelopmentHooksForTest(): void {
   hooks = {};
+  artifactSequence = 0;
   xcodeStatusCache = undefined;
   projectDiscoverCache.clear();
   schemeListCache.clear();
@@ -140,8 +144,22 @@ function timestamp(): string {
   return now().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
 }
 
+function artifactStamp(): string {
+  artifactSequence = (artifactSequence + 1) % Number.MAX_SAFE_INTEGER;
+  return `${timestamp()}-${process.pid}-${artifactSequence}`;
+}
+
 function sanitize(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'ios';
+}
+
+function stableBuildDerivedDataPath(
+  repository: RepositoryRecord,
+  input: { workspace?: string; project?: string; scheme: string; configuration: string; destination: string },
+): string {
+  const identity = JSON.stringify([input.workspace ?? '', input.project ?? '', input.scheme, input.configuration, input.destination]);
+  const digest = createHash('sha256').update(identity).digest('hex').slice(0, 16);
+  return join(safeArtifactDir(repository, 'DerivedData'), `build-${sanitize(input.scheme)}-${digest}`);
 }
 
 function boundedText(value: string, maxBytes = 20_000): { content: string; truncated: boolean } {
@@ -232,15 +250,16 @@ export function iosSimulatorsList(input: { runtime?: string; name?: string } = {
   return { ready: true, devices };
 }
 
-function findFiles(root: string, suffix: string, maxDepth = 3): string[] {
+function findFiles(root: string, suffix: string, maxDepth = 6): string[] {
   const results: string[] = [];
+  const skippedDirectories = new Set(['node_modules', '.git', '.forge', '.ai', 'DerivedData', 'Pods', '.build', 'build', 'dist', '.cache', 'Carthage']);
   function visit(dir: string, depth: number) {
     if (depth > maxDepth || results.length > 50) return;
     let entries;
     try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
       const entryName = String(entry.name);
-      if (entryName === 'node_modules' || entryName === '.git' || entryName === '.forge' || entryName === '.ai') continue;
+      if (skippedDirectories.has(entryName)) continue;
       const path = join(dir, entryName);
       if (entry.isDirectory() && entryName.endsWith(suffix)) results.push(path);
       else if (entry.isDirectory()) visit(path, depth + 1);
@@ -386,28 +405,36 @@ export function iosAppBuild(repository: RepositoryRecord, input: { scheme?: stri
   if (!scheme) throw new Error('IOS_SCHEME_REQUIRED: provide scheme or share at least one Xcode scheme');
   const workspace = safeRepoRelativePath(repository.canonicalRoot, input.workspace ?? listedReady.workspace);
   const project = safeRepoRelativePath(repository.canonicalRoot, input.project ?? listedReady.project);
-  const derivedDataRoot = safeArtifactDir(repository, 'DerivedData');
-  const derivedDataPath = join(derivedDataRoot, `${timestamp()}-${sanitize(scheme)}`);
+  const configuration = input.configuration ?? 'Debug';
+  const destination = input.udid
+    ? `platform=iOS Simulator,id=${String(input.udid).trim()}`
+    : `platform=iOS Simulator,name=${input.simulatorName ?? 'iPhone 16 Pro'}`;
+  const derivedDataPath = stableBuildDerivedDataPath(repository, { workspace, project, scheme, configuration, destination });
+  const derivedDataReused = existsSync(derivedDataPath);
   mkdirSync(derivedDataPath, { recursive: true });
+  const priorBuiltApps = derivedDataReused ? findBuiltApps(repository, derivedDataPath) : [];
   const args = ['build'];
   if (workspace) args.push('-workspace', workspace);
   else if (project) args.push('-project', project);
-  args.push('-scheme', scheme, '-configuration', input.configuration ?? 'Debug');
-  if (input.udid) args.push('-destination', `platform=iOS Simulator,id=${String(input.udid).trim()}`);
-  else args.push('-destination', 'platform=iOS Simulator,name=' + (input.simulatorName ?? 'iPhone 16 Pro'));
+  args.push('-scheme', scheme, '-configuration', configuration, '-destination', destination);
   args.push('-derivedDataPath', derivedDataPath);
   const result = runCommand('xcodebuild', args, { cwd: repository.canonicalRoot, timeoutMs: input.timeoutMs ?? 10 * 60_000 });
   const builtApps = findBuiltApps(repository, derivedDataPath);
-  const selected = selectBuiltAppProduct(scheme, builtApps);
+  const priorSet = new Set(priorBuiltApps);
+  const newBuiltApps = builtApps.filter((candidate) => !priorSet.has(candidate));
+  const selected = selectBuiltAppProduct(scheme, newBuiltApps.length > 0 ? newBuiltApps : builtApps);
   const productError = result.ok ? selected.error : undefined;
   return {
     ready: result.ok && Boolean(selected.appPath),
     ok: result.ok && Boolean(selected.appPath),
     scheme,
-    configuration: input.configuration ?? 'Debug',
+    configuration,
+    destination,
     derivedDataPath: relative(repository.canonicalRoot, derivedDataPath),
+    derivedDataReused,
     appPath: selected.appPath,
     builtApps,
+    newBuiltApps,
     command: result.command,
     stdout: boundedText(result.stdout),
     stderr: boundedText(result.stderr),
@@ -425,6 +452,8 @@ export function iosXcodeTest(repository: RepositoryRecord, input: {
   project?: string;
   configuration?: string;
   onlyTesting?: string[];
+  parallelTesting?: boolean;
+  maxParallelTestingWorkers?: number;
   timeoutMs?: number;
 }) {
   const unsupported = assertDarwin();
@@ -445,7 +474,14 @@ export function iosXcodeTest(repository: RepositoryRecord, input: {
   args.push('-scheme', scheme, '-configuration', input.configuration ?? 'Debug');
   if (input.udid) args.push('-destination', `platform=iOS Simulator,id=${String(input.udid).trim()}`);
   else args.push('-destination', 'platform=iOS Simulator,name=' + (input.simulatorName ?? 'iPhone 16 Pro'));
-  args.push('-parallel-testing-enabled', 'NO', '-maximum-parallel-testing-workers', '1');
+  const parallelTesting = input.parallelTesting === true;
+  const maxParallelTestingWorkers = parallelTesting
+    ? Math.max(1, Math.min(8, Math.trunc(input.maxParallelTestingWorkers ?? 2)))
+    : 1;
+  args.push(
+    '-parallel-testing-enabled', parallelTesting ? 'YES' : 'NO',
+    '-maximum-parallel-testing-workers', String(maxParallelTestingWorkers),
+  );
   for (const selector of (input.onlyTesting ?? []).slice(0, 50)) {
     const normalized = String(selector).trim();
     if (normalized) args.push(`-only-testing:${normalized}`);
@@ -458,6 +494,8 @@ export function iosXcodeTest(repository: RepositoryRecord, input: {
     scheme,
     configuration: input.configuration ?? 'Debug',
     onlyTesting: (input.onlyTesting ?? []).map((entry) => String(entry).trim()).filter(Boolean).slice(0, 50),
+    parallelTesting,
+    maxParallelTestingWorkers,
     derivedDataPath: artifactRelativePath(repository, derivedDataPath),
     resultBundlePath: artifactRelativePath(repository, resultBundlePath),
     command: result.command,
@@ -499,7 +537,7 @@ function selectBuiltAppProduct(scheme: string, builtApps: string[]): {
     return !/(?:tests?|uitests?|xctrunner|runner|testhost)\.app$/i.test(name);
   });
   if (productionCandidates.length === 0) {
-    return { error: { code: 'IOS_BUILD_PRODUCT_MISSING', message: 'Build succeeded but no application product was found in this build-specific DerivedData directory.' } };
+    return { error: { code: 'IOS_BUILD_PRODUCT_MISSING', message: 'Build succeeded but no application product was found in this DerivedData cache bucket.' } };
   }
   const normalizedScheme = normalizedProductName(scheme);
   const exact = productionCandidates.filter((candidate) => normalizedProductName(basename(candidate)) === normalizedScheme);
@@ -628,7 +666,7 @@ export function iosSimulatorScreenshot(repository: RepositoryRecord, input: { ud
   const udid = String(input.udid ?? '').trim();
   if (!udid) throw new Error('IOS_SIMULATOR_UDID_REQUIRED');
   const dir = safeArtifactDir(repository, 'screenshots', input.artifactRoot);
-  const file = join(dir, `${timestamp()}-${sanitize(input.label ?? udid)}.png`);
+  const file = join(dir, `${artifactStamp()}-${sanitize(input.label ?? udid)}.png`);
   const result = runCommand('xcrun', ['simctl', 'io', udid, 'screenshot', file], { timeoutMs: 60_000 });
   return {
     ready: result.ok,
@@ -663,7 +701,7 @@ export function iosSimulatorLogTail(repository: RepositoryRecord, input: { udid:
   const diagnosticResult = simulatorResult.ok ? simulatorResult : hostResult?.ok ? hostResult : simulatorResult;
   const text = boundedText(diagnosticResult.stdout || diagnosticResult.stderr, input.maxBytes ?? 20_000);
   const dir = safeArtifactDir(repository, 'logs', input.artifactRoot);
-  const file = join(dir, `${timestamp()}-${sanitize(input.process ?? udid)}.log`);
+  const file = join(dir, `${artifactStamp()}-${sanitize(input.process ?? udid)}.log`);
   writeFileSync(file, text.content, 'utf-8');
   return {
     ready: simulatorResult.ok,
