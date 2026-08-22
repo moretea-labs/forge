@@ -7,6 +7,11 @@ import {
   refreshIssueWithGitHubPlugin,
   saveGitHubPluginConfig,
 } from '../../cli/github/plugin';
+import {
+  dispatchGitHubWorkflow,
+  listGitHubWorkflowRuns,
+  listGitHubWorkflows,
+} from '../../cli/github/github';
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
@@ -38,6 +43,20 @@ function githubPermissions(ready: boolean, projectConfigured: boolean): Assistan
       required: projectConfigured,
     },
     {
+      scope: 'github:actions:read',
+      mode: 'read',
+      description: 'List GitHub Actions workflows and recent workflow runs.',
+      granted: ready,
+      required: false,
+    },
+    {
+      scope: 'github:actions:write',
+      mode: 'write',
+      description: 'Dispatch an explicitly named workflow_dispatch workflow.',
+      granted: ready,
+      required: false,
+    },
+    {
       scope: 'controller:issues:write',
       mode: 'write',
       description: 'Persist linked GitHub metadata back into controller issue state.',
@@ -62,6 +81,13 @@ function githubCapabilities(): AssistantPluginCapability[] {
       description: 'Attach published issues to a configured GitHub Project when project settings exist.',
       scopes: ['github:projects:write'],
       actions: ['configure', 'publish_issue'],
+    },
+    {
+      capabilityId: 'actions-ci',
+      title: 'GitHub Actions CI',
+      description: 'List workflow definitions and runs, and dispatch an explicitly named workflow_dispatch workflow.',
+      scopes: ['github:actions:read', 'github:actions:write'],
+      actions: ['list_workflows', 'list_workflow_runs', 'dispatch_workflow'],
     },
   ];
 }
@@ -141,6 +167,74 @@ function githubActions(): AssistantPluginActionDescriptor[] {
           issue_id: { type: 'string' },
         },
         required: ['issue_id'],
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'list_workflows',
+      title: 'List GitHub Actions workflows',
+      description: 'List workflow definitions for the configured GitHub repository.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'none',
+      defaultTimeoutMs: 30_000,
+      cancellable: true,
+      idempotent: true,
+      scopes: ['github:actions:read'],
+      resourceClaims: [{ resource: 'remote', mode: 'read' }],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', minimum: 1, maximum: 100 },
+          include_disabled: { type: 'boolean' },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'list_workflow_runs',
+      title: 'List GitHub Actions runs',
+      description: 'List recent GitHub Actions workflow runs with optional workflow, branch, and status filters.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'none',
+      defaultTimeoutMs: 30_000,
+      cancellable: true,
+      idempotent: true,
+      scopes: ['github:actions:read'],
+      resourceClaims: [{ resource: 'remote', mode: 'read' }],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          workflow: { type: 'string' },
+          branch: { type: 'string' },
+          status: { type: 'string' },
+          limit: { type: 'number', minimum: 1, maximum: 100 },
+          include_disabled: { type: 'boolean' },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'dispatch_workflow',
+      title: 'Dispatch GitHub Actions workflow',
+      description: 'Create a workflow_dispatch event for one explicitly named workflow.',
+      readOnly: false,
+      risk: 'remote_write',
+      confirmation: 'authorization',
+      defaultTimeoutMs: 60_000,
+      cancellable: true,
+      idempotent: false,
+      scopes: ['github:actions:write'],
+      resourceClaims: [{ resource: 'remote', mode: 'exclusive' }],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          workflow: { type: 'string' },
+          ref: { type: 'string' },
+          inputs: { type: 'object', additionalProperties: { type: ['string', 'number', 'boolean'] } },
+        },
+        required: ['workflow'],
         additionalProperties: false,
       },
     },
@@ -252,6 +346,37 @@ export async function executeGitHubPluginAction(input: AssistantPluginActionExec
       return { issue: publishIssueWithGitHubPlugin(input.repoRoot, String(input.args.issue_id ?? '').trim()) };
     case 'refresh_issue':
       return refreshIssueWithGitHubPlugin(input.repoRoot, String(input.args.issue_id ?? '').trim()) as Record<string, unknown>;
+    case 'list_workflows': {
+      const config = loadGitHubPluginConfig(input.repoRoot);
+      return {
+        workflows: listGitHubWorkflows(input.repoRoot, config.repository, {
+          limit: typeof input.args.limit === 'number' ? input.args.limit : undefined,
+          includeDisabled: input.args.include_disabled === true,
+        }),
+      };
+    }
+    case 'list_workflow_runs': {
+      const config = loadGitHubPluginConfig(input.repoRoot);
+      return {
+        runs: listGitHubWorkflowRuns(input.repoRoot, config.repository, {
+          workflow: typeof input.args.workflow === 'string' ? input.args.workflow : undefined,
+          branch: typeof input.args.branch === 'string' ? input.args.branch : undefined,
+          status: typeof input.args.status === 'string' ? input.args.status : undefined,
+          limit: typeof input.args.limit === 'number' ? input.args.limit : undefined,
+          includeDisabled: input.args.include_disabled === true,
+        }),
+      };
+    }
+    case 'dispatch_workflow': {
+      const config = loadGitHubPluginConfig(input.repoRoot);
+      return dispatchGitHubWorkflow(input.repoRoot, config.repository, {
+        workflow: String(input.args.workflow ?? ''),
+        ref: typeof input.args.ref === 'string' ? input.args.ref : undefined,
+        inputs: input.args.inputs && typeof input.args.inputs === 'object' && !Array.isArray(input.args.inputs)
+          ? input.args.inputs as Record<string, string | number | boolean>
+          : undefined,
+      });
+    }
     case 'close_issue':
       return { issue: closeIssueWithGitHubPlugin(input.repoRoot, String(input.args.issue_id ?? '').trim()) };
     default:
