@@ -566,6 +566,17 @@ describe('browser plugin', () => {
       ]));
     }
 
+    for (const actionId of ['navigate', 'reload']) {
+      expect(actions[actionId]?.readOnly).toBe(false);
+      expect(actions[actionId]?.risk).toBe('workspace_write');
+      expect(actions[actionId]?.confirmation).toBe('authorization');
+      expect(actions[actionId]?.scopes).toEqual(expect.arrayContaining(['browser.interact', 'browser.profile']));
+      expect(actions[actionId]?.resourceClaims).toEqual(expect.arrayContaining([
+        { resource: 'remote', mode: 'exclusive' },
+        { resource: 'repo-state', mode: 'write' },
+      ]));
+    }
+
     expect(actions.activate_page?.risk).toBe('workspace_write');
     expect(actions.activate_page?.confirmation).toBe('authorization');
     expect(actions.click?.risk).toBe('remote_write');
@@ -957,6 +968,31 @@ describe('browser plugin', () => {
     })).rejects.toThrow('PLUGIN_BROWSER_SESSION_STATE_LOST');
     expect(runtime.events.launches).toBe(0);
     expect(runtime.events.newPages).toBe(0);
+  });
+
+  test('corrupt saved session metadata fails explicitly and session writes use atomic replacement', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+    });
+    const sessionsDir = join(repoRoot, '.forge/browser/sessions');
+    mkdirSync(sessionsDir, { recursive: true });
+    writeFileSync(join(sessionsDir, 'corrupt-session.json'), '{ not-json', 'utf8');
+
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'list_sessions',
+      requestId: 'browser-corrupt-session-list', args: {},
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('PLUGIN_BROWSER_SESSION_STATE_CORRUPT');
+
+    const source = readFileSync(join(process.cwd(), 'src/runtime/plugins/browser-adapter.ts'), 'utf8');
+    expect(source).toContain('renameSync(tempPath, path)');
+    expect(source).toContain('writeAtomicJson(sessionPath(repoRoot, session.sessionId), session)');
+    expect(source).toContain("PLUGIN_BROWSER_SESSION_STATE_CORRUPT");
   });
 
   test('list_sessions distinguishes saved metadata from live managed sessions without creating pages', async () => {
