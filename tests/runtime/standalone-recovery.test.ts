@@ -48,7 +48,7 @@ import {
   readRuntimeReleaseAuthority,
 } from '../../src/runtime/root/release-store';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
-import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
+import { ensureForgeRuntimeLaunchAgentContract, forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { recoveryConnectorDescriptor } from '../../src/cli/commands/recovery';
 import { ensureMcpControllerHomeOAuthPassphrase } from '../../src/cli/mcp/auth';
 import { inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
@@ -727,7 +727,7 @@ describe('standalone recovery on canonical Runtime', () => {
       runtimeServiceConfig(home);
       const paths = forgeRuntimeServicePaths(home);
       mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
-      writeFileSync(paths.installedPlistPath, '<plist/>');
+      ensureForgeRuntimeLaunchAgentContract({ controllerHome: home, installUserLaunchAgent: true });
       const commands: string[][] = [];
 
       const result = await activateRuntimeRelease(createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }), candidate.path, {
@@ -744,6 +744,61 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(result.detail).toContain('restart skipped');
       expect(commands).toEqual([]);
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('does not skip behavior-identical activation when the installed Runtime service contract is stale', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const active = verifiedManifest(home, 'release-a', 'same-runtime');
+      const candidate = verifiedManifest(home, 'release-b', 'same-runtime');
+      ensureActiveRuntimeRelease(home, active.path);
+      runtimeServiceConfig(home);
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.sourcePlistPath, '<plist/>');
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+      let launchdLoaded = true;
+      const commands: string[][] = [];
+
+      const result = await activateRuntimeRelease(createRecoveryConfig(home, { primaryRuntimeService: { platform: 'launchd' } }), candidate.path, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (name, args) => {
+          commands.push([name, ...args]);
+          if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          if (args[0] === 'bootstrap' || args[0] === 'kickstart') launchdLoaded = true;
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => {
+          const authority = readRuntimeReleaseAuthority(home)!;
+          return {
+            ...healthyVerify(),
+            releases: {
+              active: { path: authority.active.manifestPath, revision: authority.active.releaseId, artifactIdentity: authority.active.artifactIdentity, manifestSha256: 'test-sha', workerProtocolVersion: 1 },
+              coherent: true,
+            },
+          };
+        },
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+
+      expect(result).toMatchObject({ ok: true, attempted: true });
+      expect(commands.some((command) => command.includes('bootout'))).toBe(true);
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
+      expect(readFileSync(paths.sourcePlistPath, 'utf8')).not.toBe('<plist/>');
+      expect(readFileSync(paths.installedPlistPath, 'utf8')).toBe(readFileSync(paths.sourcePlistPath, 'utf8'));
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

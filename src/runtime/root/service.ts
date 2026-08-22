@@ -231,32 +231,55 @@ export function syncForgeRuntimeActiveEntrypoint(controllerHome: string): { path
   return { path: paths.activeEntrypointPath, target, changed: true };
 }
 
-export function ensureForgeRuntimeLaunchAgentContract(
-  input: { controllerHome: string; bootstrapNodeExecutable?: string; bootstrapRunnerPath?: string; installUserLaunchAgent?: boolean },
-): { paths: ForgeRuntimeServicePaths; mode: 'release' | 'bootstrap'; changed: boolean } {
+function desiredForgeRuntimeLaunchAgentContract(
+  input: { controllerHome: string; bootstrapNodeExecutable?: string; bootstrapRunnerPath?: string },
+): { paths: ForgeRuntimeServicePaths; mode: 'release' | 'bootstrap'; plist: string } {
   const paths = forgeRuntimeServicePaths(input.controllerHome);
   const active = activeRuntimeEntrypoint(input.controllerHome);
   const useRelease = Boolean(active);
   const releaseLaunch = useRelease ? activeRuntimeLaunchSpec(input.controllerHome) : undefined;
-  if (useRelease) syncForgeRuntimeActiveEntrypoint(input.controllerHome);
   if (!useRelease && (!input.bootstrapNodeExecutable || !input.bootstrapRunnerPath)) {
     throw new Error('FORGE_RUNTIME_BOOTSTRAP_RUNNER_REQUIRED');
   }
   if (useRelease && !releaseLaunch) throw new Error('FORGE_RUNTIME_RELEASE_LAUNCH_SPEC_UNAVAILABLE');
-  const plist = renderForgeRuntimeLaunchAgent({
+  return {
     paths,
-    ...(useRelease
-      ? { activeEntrypointPath: paths.activeEntrypointPath, runtimeArgs: releaseLaunch!.args, environment: releaseLaunch!.environment }
-      : { nodeExecutable: input.bootstrapNodeExecutable!, runnerPath: input.bootstrapRunnerPath! }),
-  });
-  const existingSource = existsSync(paths.sourcePlistPath) ? readFileSync(paths.sourcePlistPath, 'utf8') : undefined;
-  const existingInstalled = input.installUserLaunchAgent && existsSync(paths.installedPlistPath)
-    ? readFileSync(paths.installedPlistPath, 'utf8')
+    mode: useRelease ? 'release' : 'bootstrap',
+    plist: renderForgeRuntimeLaunchAgent({
+      paths,
+      ...(useRelease
+        ? { activeEntrypointPath: paths.activeEntrypointPath, runtimeArgs: releaseLaunch!.args, environment: releaseLaunch!.environment }
+        : { nodeExecutable: input.bootstrapNodeExecutable!, runnerPath: input.bootstrapRunnerPath! }),
+    }),
+  };
+}
+
+export function inspectForgeRuntimeLaunchAgentContract(
+  input: { controllerHome: string; bootstrapNodeExecutable?: string; bootstrapRunnerPath?: string; inspectUserLaunchAgent?: boolean },
+): { paths: ForgeRuntimeServicePaths; mode: 'release' | 'bootstrap'; sourceMatches: boolean; installedMatches: boolean; matches: boolean } {
+  const desired = desiredForgeRuntimeLaunchAgentContract(input);
+  const existingSource = existsSync(desired.paths.sourcePlistPath) ? readFileSync(desired.paths.sourcePlistPath, 'utf8') : undefined;
+  const existingInstalled = input.inspectUserLaunchAgent && existsSync(desired.paths.installedPlistPath)
+    ? readFileSync(desired.paths.installedPlistPath, 'utf8')
     : undefined;
-  const changed = existingSource !== plist || (input.installUserLaunchAgent === true && existingInstalled !== plist);
-  if (existingSource !== plist) atomicWrite(paths.sourcePlistPath, plist);
-  if (input.installUserLaunchAgent === true && existingInstalled !== plist) atomicWrite(paths.installedPlistPath, plist, 0o644);
-  return { paths, mode: useRelease ? 'release' : 'bootstrap', changed };
+  const sourceMatches = existingSource === desired.plist;
+  const installedMatches = input.inspectUserLaunchAgent !== true || existingInstalled === desired.plist;
+  return { paths: desired.paths, mode: desired.mode, sourceMatches, installedMatches, matches: sourceMatches && installedMatches };
+}
+
+export function ensureForgeRuntimeLaunchAgentContract(
+  input: { controllerHome: string; bootstrapNodeExecutable?: string; bootstrapRunnerPath?: string; installUserLaunchAgent?: boolean },
+): { paths: ForgeRuntimeServicePaths; mode: 'release' | 'bootstrap'; changed: boolean } {
+  const desired = desiredForgeRuntimeLaunchAgentContract(input);
+  if (desired.mode === 'release') syncForgeRuntimeActiveEntrypoint(input.controllerHome);
+  const existingSource = existsSync(desired.paths.sourcePlistPath) ? readFileSync(desired.paths.sourcePlistPath, 'utf8') : undefined;
+  const existingInstalled = input.installUserLaunchAgent && existsSync(desired.paths.installedPlistPath)
+    ? readFileSync(desired.paths.installedPlistPath, 'utf8')
+    : undefined;
+  const changed = existingSource !== desired.plist || (input.installUserLaunchAgent === true && existingInstalled !== desired.plist);
+  if (existingSource !== desired.plist) atomicWrite(desired.paths.sourcePlistPath, desired.plist);
+  if (input.installUserLaunchAgent === true && existingInstalled !== desired.plist) atomicWrite(desired.paths.installedPlistPath, desired.plist, 0o644);
+  return { paths: desired.paths, mode: desired.mode, changed };
 }
 
 export function renderForgeRuntimeLaunchAgent(input: { paths: ForgeRuntimeServicePaths; activeEntrypointPath?: string; runtimeArgs?: string[]; environment?: Record<string, string>; nodeExecutable?: string; runnerPath?: string }): string {

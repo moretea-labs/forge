@@ -9,6 +9,7 @@ import {
   activeRuntimeLaunchSpec,
   ensureForgeRuntimeLaunchAgentContract,
   forgeRuntimeServicePaths,
+  inspectForgeRuntimeLaunchAgentContract,
   readForgeRuntimeServiceConfig,
 } from '../root/service';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
@@ -1981,7 +1982,25 @@ export async function activateRuntimeRelease(
       } satisfies RuntimeReleaseActivationResult;
     }
     if (current) {
-      if (runtimeBehaviorEquivalent(current.active.manifestPath, candidate.manifestPath) && !storageMigrationRequired) {
+      const behaviorEquivalent = runtimeBehaviorEquivalent(current.active.manifestPath, candidate.manifestPath);
+      let serviceContractMatches = false;
+      if (behaviorEquivalent && !storageMigrationRequired) {
+        try {
+          serviceContractMatches = inspectForgeRuntimeLaunchAgentContract({
+            controllerHome: config.controllerHome,
+            inspectUserLaunchAgent: true,
+          }).matches;
+        } catch (error) {
+          audit(config, 'runtime_release_activation_service_contract_inspection_failed', {
+            operationId,
+            requestId: lockRequestId,
+            activeRevision: current.active.releaseId,
+            candidateRevision: candidate.manifest.releaseId,
+            detail: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (behaviorEquivalent && !storageMigrationRequired && serviceContractMatches) {
         const verify = await verifyLocal(config);
         audit(config, 'runtime_release_activation_behavior_identical', {
           operationId,
@@ -1995,8 +2014,8 @@ export async function activateRuntimeRelease(
           attempted: false,
           noOp: true,
           detail: verify.ok
-            ? 'candidate Runtime behavior is identical to the active release; restart skipped'
-            : 'candidate Runtime behavior is identical to the active release, but the active Runtime is unhealthy',
+            ? 'candidate Runtime behavior and launchd service contract are identical to the active release; restart skipped'
+            : 'candidate Runtime behavior and launchd service contract are identical to the active release, but the active Runtime is unhealthy',
           operationId,
           verify,
         } satisfies RuntimeReleaseActivationResult;
