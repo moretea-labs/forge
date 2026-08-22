@@ -50,6 +50,7 @@ import {
 } from '../../src/runtime/execution/process-runtime/command-facade';
 import {
   cancelAllLightweightProcesses,
+  cancelLightweightProcess,
   clearLightweightProcessMemoryForTest,
   getLightweightProcessHandle,
   readLightweightProcessLogs,
@@ -1081,6 +1082,34 @@ describe('run_check Process Runtime facade', () => {
     expect(getLightweightProcessHandle(other.controllerHome, other.repository.repoId, second.handle.processId)).toMatchObject({ completed: false });
     await cancelAllLightweightProcesses(other.controllerHome);
     clearLightweightProcessMemoryForTest();
+  });
+
+  test('keeps a running lightweight handle addressable after in-memory state loss', async () => {
+    const fx = fixture();
+    const before = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
+    const started = await startLightweightInternalProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      executable: 'node',
+      args: ['-e', "process.stdout.write('RECOVERED_LIGHTWEIGHT\\n'); setTimeout(() => process.exit(0), 5000)"],
+      cwd: fx.repoRoot,
+      timeoutMs: 10_000,
+      interactiveWaitMs: 25,
+    });
+    expect(started.handle).toMatchObject({ completed: false, route: 'managed' });
+    expect(started.handle.pid).toBeNumber();
+    clearLightweightProcessMemoryForTest();
+
+    const recovered = getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, started.handle.processId);
+    expect(recovered).toMatchObject({ processId: started.handle.processId, completed: false, status: 'running_recovered', route: 'managed' });
+    expect(readLightweightProcessLogs(fx.controllerHome, fx.repository.repoId, started.handle.processId)?.processId).toBe(started.handle.processId);
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId)).toHaveLength(before);
+    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toHaveLength(0);
+
+    const cancelled = await cancelLightweightProcess(fx.controllerHome, fx.repository.repoId, started.handle.processId);
+    expect(cancelled).toMatchObject({ processId: started.handle.processId, completed: true, cancelled: true, status: 'cancelled' });
+    clearLightweightProcessMemoryForTest();
+    expect(getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, started.handle.processId)).toMatchObject({ completed: true, cancelled: true });
   });
 
   test('redacts a bearer value split across active lightweight output chunks', async () => {

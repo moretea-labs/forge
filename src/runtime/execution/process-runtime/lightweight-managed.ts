@@ -22,6 +22,13 @@ import {
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
+import {
+  defaultProcessIdentityProbe,
+  executableFingerprint,
+  processIdentityMatches,
+  type ExpectedProcessIdentity,
+} from '../../shared/process-identity';
+import { terminateProcessTree } from '../../shared/process-tree';
 import { runBoundedProcess } from '../thin-harness/async-process';
 import { PROCESS_LOG_TAIL_BYTES, type ProcessHandle, type ProcessLogSlice, type WaitProcessOptions } from './types';
 
@@ -36,6 +43,7 @@ const TERMINAL_RETENTION_MS = 60 * 60_000;
 const MAX_RETAINED_HANDLES = 256;
 const TERMINAL_RECEIPT_RETENTION_MS = 6 * 60 * 60_000;
 const MAX_TERMINAL_RECEIPTS = 256;
+const RUNNING_RECEIPT_PERSIST_INTERVAL_MS = 250;
 
 interface LightweightExecutionResult {
   ok?: boolean;
@@ -60,6 +68,8 @@ interface LightweightEntry {
   maxOutputBytes: number;
   pid?: number;
   spawnedAtMs?: number;
+  identity?: ExpectedProcessIdentity;
+  runningReceiptUpdatedAtMs?: number;
   stdout: string;
   stderr: string;
   stdoutTail: string;
@@ -73,12 +83,29 @@ interface LightweightEntry {
 
 const entries = new Map<string, LightweightEntry>();
 
+interface LightweightRunningReceipt {
+  schemaVersion: 1;
+  repoId: string;
+  processId: string;
+  updatedAt: string;
+  handle: ProcessHandle;
+  identity?: ExpectedProcessIdentity;
+}
+
 interface LightweightTerminalReceipt {
   schemaVersion: 1;
   repoId: string;
   processId: string;
   finishedAt: string;
   handle: ProcessHandle;
+}
+
+function runningReceiptRoot(controllerHome: string, repoId: string): string {
+  return join(repositoryControllerRoot(controllerHome, repoId), 'process-runtime', 'lightweight-running');
+}
+
+function runningReceiptPath(controllerHome: string, repoId: string, processId: string): string {
+  return join(runningReceiptRoot(controllerHome, repoId), `${sanitizeFileComponent(processId)}.json`);
 }
 
 function terminalReceiptRoot(controllerHome: string, repoId: string): string {
@@ -111,6 +138,56 @@ function visibleOutputTail(value: string): string {
   return buffer.length <= PROCESS_LOG_TAIL_BYTES
     ? safe
     : buffer.subarray(buffer.length - PROCESS_LOG_TAIL_BYTES).toString('utf8');
+}
+
+function captureProcessIdentity(pid: number): ExpectedProcessIdentity | undefined {
+  const inspected = defaultProcessIdentityProbe.inspect?.(pid);
+  const command = inspected?.command ?? defaultProcessIdentityProbe.command(pid);
+  const processStartTime = inspected?.startTime ?? defaultProcessIdentityProbe.startTime(pid);
+  if (!command || !processStartTime) return undefined;
+  return { pid, processStartTime, executableFingerprint: executableFingerprint(command) };
+}
+
+function removeRunningReceipt(controllerHome: string, repoId: string, processId: string): void {
+  try { rmSync(runningReceiptPath(controllerHome, repoId, processId), { force: true }); } catch { /* best effort */ }
+}
+
+function persistRunningReceipt(entry: LightweightEntry, force = false): void {
+  if (entry.result) return;
+  const now = Date.now();
+  if (!force && entry.runningReceiptUpdatedAtMs !== undefined
+    && now - entry.runningReceiptUpdatedAtMs < RUNNING_RECEIPT_PERSIST_INTERVAL_MS) return;
+  try {
+    const root = runningReceiptRoot(entry.controllerHome, entry.repoId);
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    const path = runningReceiptPath(entry.controllerHome, entry.repoId, entry.processId);
+    const receipt: LightweightRunningReceipt = {
+      schemaVersion: 1,
+      repoId: entry.repoId,
+      processId: entry.processId,
+      updatedAt: new Date(now).toISOString(),
+      handle: entryHandle(entry),
+      ...(entry.identity ? { identity: entry.identity } : {}),
+    };
+    writeJsonAtomic(path, receipt);
+    try { chmodSync(path, 0o600); } catch { /* Windows or restricted filesystem. */ }
+    entry.runningReceiptUpdatedAtMs = now;
+  } catch {
+    // Running receipts are recovery hints only; the in-memory handle remains authoritative while this Runtime is alive.
+  }
+}
+
+function readRunningReceipt(controllerHome: string, repoId: string, processId: string): LightweightRunningReceipt | undefined {
+  const path = runningReceiptPath(controllerHome, repoId, processId);
+  if (!existsSync(path)) return undefined;
+  try {
+    const receipt = readJsonFile<LightweightRunningReceipt>(path);
+    if (receipt.schemaVersion !== 1 || receipt.repoId !== repoId || receipt.processId !== processId) return undefined;
+    if (receipt.handle?.processId !== processId || receipt.handle.completed) return undefined;
+    return receipt;
+  } catch {
+    return undefined;
+  }
 }
 
 function terminalHandle(entry: LightweightEntry): ProcessHandle {
@@ -157,6 +234,11 @@ function pruneTerminalReceipts(root: string, keepPath: string): void {
 
 function persistTerminalReceipt(controllerHome: string, entry: LightweightEntry): void {
   if (!entry.result || !entry.finishedAtMs) return;
+  const existing = readTerminalReceipt(controllerHome, entry.repoId, entry.processId);
+  if (existing) {
+    removeRunningReceipt(controllerHome, entry.repoId, entry.processId);
+    return;
+  }
   try {
     const root = terminalReceiptRoot(controllerHome, entry.repoId);
     mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -170,6 +252,7 @@ function persistTerminalReceipt(controllerHome: string, entry: LightweightEntry)
     };
     writeJsonAtomic(path, receipt);
     try { chmodSync(path, 0o600); } catch { /* Windows or restricted filesystem. */ }
+    removeRunningReceipt(controllerHome, entry.repoId, entry.processId);
     pruneTerminalReceipts(root, path);
   } catch {
     // A receipt failure must never turn a completed local command into a failure.
@@ -192,6 +275,111 @@ function readTerminalReceipt(controllerHome: string, repoId: string, processId: 
   } catch {
     return undefined;
   }
+}
+
+function recoveredRunningHandle(receipt: LightweightRunningReceipt, note?: string): ProcessHandle {
+  const stderrTail = note
+    ? visibleOutputTail([receipt.handle.stderrTail, note].filter(Boolean).join('\n'))
+    : receipt.handle.stderrTail;
+  return {
+    ...receipt.handle,
+    status: 'running_recovered',
+    contractStatus: 'running',
+    route: 'managed',
+    completed: false,
+    ok: undefined,
+    exitCode: undefined,
+    timedOut: undefined,
+    cancelled: undefined,
+    stdout: undefined,
+    stderr: undefined,
+    stderrTail,
+  };
+}
+
+function inspectRecoveredRunningReceipt(receipt: LightweightRunningReceipt): { state: 'running' | 'dead' | 'unsafe'; reason?: string } {
+  const pid = receipt.handle.pid ?? receipt.identity?.pid;
+  if (!pid) return { state: 'unsafe', reason: 'identity_missing' };
+  if (!receipt.identity) {
+    return defaultProcessIdentityProbe.isAlive(pid)
+      ? { state: 'unsafe', reason: 'identity_missing' }
+      : { state: 'dead', reason: 'process_dead' };
+  }
+  const result = processIdentityMatches(receipt.identity, pid);
+  if (result.matches) return { state: 'running' };
+  if (result.reason === 'identity_probe_unavailable') return { state: 'unsafe', reason: result.reason };
+  return { state: 'dead', reason: result.reason ?? 'identity_mismatch' };
+}
+
+function persistRecoveredTerminalReceipt(
+  controllerHome: string,
+  receipt: LightweightRunningReceipt,
+  handle: ProcessHandle,
+): ProcessHandle {
+  const existing = readTerminalReceipt(controllerHome, receipt.repoId, receipt.processId);
+  if (existing) {
+    removeRunningReceipt(controllerHome, receipt.repoId, receipt.processId);
+    return existing.handle;
+  }
+  try {
+    const root = terminalReceiptRoot(controllerHome, receipt.repoId);
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    const path = terminalReceiptPath(controllerHome, receipt.repoId, receipt.processId);
+    const terminal: LightweightTerminalReceipt = {
+      schemaVersion: 1,
+      repoId: receipt.repoId,
+      processId: receipt.processId,
+      finishedAt: new Date().toISOString(),
+      handle,
+    };
+    writeJsonAtomic(path, terminal);
+    try { chmodSync(path, 0o600); } catch { /* Windows or restricted filesystem. */ }
+    removeRunningReceipt(controllerHome, receipt.repoId, receipt.processId);
+    pruneTerminalReceipts(root, path);
+  } catch {
+    // Recovery evidence persistence must not trigger command re-execution or unsafe signalling.
+  }
+  return handle;
+}
+
+function completedUnknownRecoveredHandle(receipt: LightweightRunningReceipt, reason: string): ProcessHandle {
+  const message = `PROCESS_RESULT_UNAVAILABLE_AFTER_RUNTIME_RESTART: ${reason}`;
+  const stderr = visibleOutput([receipt.handle.stderrTail, message].filter(Boolean).join('\n'), DEFAULT_MAX_OUTPUT_BYTES);
+  return {
+    ...receipt.handle,
+    status: 'completed_unknown',
+    contractStatus: 'unknown',
+    route: 'direct',
+    completed: true,
+    ok: false,
+    exitCode: undefined,
+    timedOut: false,
+    cancelled: false,
+    stdout: receipt.handle.stdoutTail ?? '',
+    stderr,
+    stdoutTail: visibleOutputTail(receipt.handle.stdoutTail ?? ''),
+    stderrTail: visibleOutputTail(stderr),
+  };
+}
+
+function cancelledRecoveredHandle(receipt: LightweightRunningReceipt): ProcessHandle {
+  const message = 'process cancelled after recovering a lightweight handle from persisted PID identity';
+  const stderr = visibleOutput([receipt.handle.stderrTail, message].filter(Boolean).join('\n'), DEFAULT_MAX_OUTPUT_BYTES);
+  return {
+    ...receipt.handle,
+    status: 'cancelled',
+    contractStatus: 'cancelled',
+    route: 'direct',
+    completed: true,
+    ok: false,
+    exitCode: 1,
+    timedOut: false,
+    cancelled: true,
+    stdout: receipt.handle.stdoutTail ?? '',
+    stderr,
+    stdoutTail: visibleOutputTail(receipt.handle.stdoutTail ?? ''),
+    stderrTail: visibleOutputTail(stderr),
+  };
 }
 
 function sweep(): void {
@@ -387,14 +575,21 @@ export async function startLightweightRepositoryCommand(
     { ...input.execution, timeoutMs: input.timeoutMs, maxOutputBytes, signal: abort.signal },
     {
       signal: abort.signal,
-      onSpawn: (pid) => { entry.pid = pid; entry.spawnedAtMs = Date.now(); },
+      onSpawn: (pid) => {
+        entry.pid = pid;
+        entry.spawnedAtMs = Date.now();
+        entry.identity = captureProcessIdentity(pid);
+        persistRunningReceipt(entry, true);
+      },
       onStdout: (chunk) => {
         entry.stdout = boundedAppend(entry.stdout, chunk, maxOutputBytes);
         entry.stdoutTail = boundedTailAppend(entry.stdoutTail, chunk);
+        persistRunningReceipt(entry);
       },
       onStderr: (chunk) => {
         entry.stderr = boundedAppend(entry.stderr, chunk, maxOutputBytes);
         entry.stderrTail = boundedTailAppend(entry.stderrTail, chunk);
+        persistRunningReceipt(entry);
       },
     },
   ).then((result) => {
@@ -412,6 +607,7 @@ export async function startLightweightRepositoryCommand(
       })
     : startExecution();
   entries.set(processId, entry);
+  persistRunningReceipt(entry, true);
 
   if (entry.interactiveWaitMs > 0) {
     await Promise.race([
@@ -504,14 +700,21 @@ export async function startLightweightInternalProcess(
     timeoutMs: input.timeoutMs,
     maxOutputBytes,
     signal: abort.signal,
-    onSpawn: (pid) => { entry.pid = pid; entry.spawnedAtMs = Date.now(); },
+    onSpawn: (pid) => {
+      entry.pid = pid;
+      entry.spawnedAtMs = Date.now();
+      entry.identity = captureProcessIdentity(pid);
+      persistRunningReceipt(entry, true);
+    },
     onStdout: (chunk) => {
       entry.stdout = boundedAppend(entry.stdout, chunk, maxOutputBytes);
       entry.stdoutTail = boundedTailAppend(entry.stdoutTail, chunk);
+      persistRunningReceipt(entry);
     },
     onStderr: (chunk) => {
       entry.stderr = boundedAppend(entry.stderr, chunk, maxOutputBytes);
       entry.stderrTail = boundedTailAppend(entry.stderrTail, chunk);
+      persistRunningReceipt(entry);
     },
   }).then((result) => {
     entry.result = result;
@@ -521,6 +724,7 @@ export async function startLightweightInternalProcess(
     return result;
   });
   entries.set(processId, entry);
+  persistRunningReceipt(entry, true);
 
   if (entry.interactiveWaitMs > 0) {
     await Promise.race([
@@ -610,7 +814,12 @@ export async function startLightweightControllerCheck(
   entry.promise = runControllerCheckAsync(input.repoRoot, input.checkId, {
     requestedTimeoutMs: input.timeoutMs,
     subscriberId: processId,
-    onSpawn: (pid) => { entry.pid = pid; entry.spawnedAtMs = Date.now(); },
+    onSpawn: (pid) => {
+      entry.pid = pid;
+      entry.spawnedAtMs = Date.now();
+      entry.identity = captureProcessIdentity(pid);
+      persistRunningReceipt(entry, true);
+    },
   }).then((result): LightweightExecutionResult => ({
     ok: result.ok && !entry.cancelRequested,
     exitCode: result.status,
@@ -630,6 +839,7 @@ export async function startLightweightControllerCheck(
     return result;
   });
   entries.set(processId, entry);
+  persistRunningReceipt(entry, true);
 
   if (entry.interactiveWaitMs > 0) {
     await Promise.race([
@@ -675,7 +885,18 @@ export function clearLightweightProcessMemoryForTest(): void {
 export function getLightweightProcessHandle(controllerHome: string, repoId: string, processId: string): ProcessHandle | undefined {
   const entry = entries.get(processId);
   if (entry?.repoId === repoId) return entryHandle(entry);
-  return readTerminalReceipt(controllerHome, repoId, processId)?.handle;
+  const terminal = readTerminalReceipt(controllerHome, repoId, processId);
+  if (terminal) return terminal.handle;
+  const running = readRunningReceipt(controllerHome, repoId, processId);
+  if (!running) return undefined;
+  const inspection = inspectRecoveredRunningReceipt(running);
+  if (inspection.state === 'dead') {
+    return persistRecoveredTerminalReceipt(controllerHome, running, completedUnknownRecoveredHandle(running, inspection.reason ?? 'process_dead'));
+  }
+  return recoveredRunningHandle(
+    running,
+    inspection.state === 'unsafe' ? `PROCESS_IDENTITY_UNTRUSTED: ${inspection.reason ?? 'unknown'}` : undefined,
+  );
 }
 
 export async function waitForLightweightProcess(
@@ -686,9 +907,31 @@ export async function waitForLightweightProcess(
 ): Promise<ProcessHandle> {
   const entry = entries.get(processId);
   if (!entry) {
-    const receipt = readTerminalReceipt(controllerHome, repoId, processId);
-    if (receipt) return receipt.handle;
-    throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
+    const terminal = readTerminalReceipt(controllerHome, repoId, processId);
+    if (terminal) return terminal.handle;
+    let running = readRunningReceipt(controllerHome, repoId, processId);
+    if (!running) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
+    const timeoutMs = Math.max(1, options.timeoutMs ?? 15_000);
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      const recoveredTerminal = readTerminalReceipt(controllerHome, repoId, processId);
+      if (recoveredTerminal) return recoveredTerminal.handle;
+      const inspection = inspectRecoveredRunningReceipt(running);
+      if (inspection.state === 'dead') {
+        return persistRecoveredTerminalReceipt(controllerHome, running, completedUnknownRecoveredHandle(running, inspection.reason ?? 'process_dead'));
+      }
+      if (options.signal?.aborted || Date.now() >= deadline) {
+        return recoveredRunningHandle(
+          running,
+          inspection.state === 'unsafe' ? `PROCESS_IDENTITY_UNTRUSTED: ${inspection.reason ?? 'unknown'}` : undefined,
+        );
+      }
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, Math.min(50, Math.max(1, deadline - Date.now())));
+        timer.unref?.();
+      });
+      running = readRunningReceipt(controllerHome, repoId, processId) ?? running;
+    }
   }
   if (entry.repoId !== repoId) throw new Error(`PROCESS_REPO_MISMATCH: process ${processId} belongs to ${entry.repoId}, not ${repoId}`);
   if (entry.result) return entryHandle(entry);
@@ -717,9 +960,21 @@ export async function cancelAllLightweightProcesses(controllerHome: string): Pro
 export async function cancelLightweightProcess(controllerHome: string, repoId: string, processId: string): Promise<ProcessHandle> {
   const entry = entries.get(processId);
   if (!entry) {
-    const receipt = readTerminalReceipt(controllerHome, repoId, processId);
-    if (receipt) return receipt.handle;
-    throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
+    const terminal = readTerminalReceipt(controllerHome, repoId, processId);
+    if (terminal) return terminal.handle;
+    const running = readRunningReceipt(controllerHome, repoId, processId);
+    if (!running) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
+    const inspection = inspectRecoveredRunningReceipt(running);
+    if (inspection.state === 'dead') {
+      return persistRecoveredTerminalReceipt(controllerHome, running, completedUnknownRecoveredHandle(running, inspection.reason ?? 'process_dead'));
+    }
+    if (inspection.state === 'unsafe') {
+      throw new Error(`PROCESS_IDENTITY_UNTRUSTED: refusing to signal ${processId}: ${inspection.reason ?? 'unknown'}`);
+    }
+    const pid = running.handle.pid ?? running.identity?.pid;
+    if (!pid) throw new Error(`PROCESS_IDENTITY_UNTRUSTED: refusing to signal ${processId}: pid missing`);
+    await terminateProcessTree(pid, { gracePeriodMs: 200, killAfterMs: 1_000, pollIntervalMs: 25 });
+    return persistRecoveredTerminalReceipt(controllerHome, running, cancelledRecoveredHandle(running));
   }
   if (entry.repoId !== repoId) throw new Error(`PROCESS_REPO_MISMATCH: process ${processId} belongs to ${entry.repoId}, not ${repoId}`);
   if (!entry.result) {
@@ -737,18 +992,32 @@ export function readLightweightProcessLogs(
 ): ProcessLogSlice | undefined {
   const entry = entries.get(processId);
   if (!entry) {
-    const receipt = readTerminalReceipt(controllerHome, repoId, processId);
-    if (!receipt) return undefined;
-    const stdout = capProcessOutput(receipt.handle.stdout ?? '', maxBytes);
-    const stderr = capProcessOutput(receipt.handle.stderr ?? '', maxBytes);
+    const terminal = readTerminalReceipt(controllerHome, repoId, processId);
+    if (terminal) {
+      const stdout = capProcessOutput(terminal.handle.stdout ?? '', maxBytes);
+      const stderr = capProcessOutput(terminal.handle.stderr ?? '', maxBytes);
+      return {
+        processId,
+        stdout,
+        stderr,
+        stdoutBytes: Buffer.byteLength(terminal.handle.stdout ?? '', 'utf8'),
+        stderrBytes: Buffer.byteLength(terminal.handle.stderr ?? '', 'utf8'),
+        truncated: Buffer.byteLength(terminal.handle.stdout ?? '', 'utf8') > maxBytes
+          || Buffer.byteLength(terminal.handle.stderr ?? '', 'utf8') > maxBytes,
+      };
+    }
+    const running = readRunningReceipt(controllerHome, repoId, processId);
+    if (!running) return undefined;
+    const stdout = capProcessOutput(running.handle.stdoutTail ?? '', maxBytes);
+    const stderr = capProcessOutput(running.handle.stderrTail ?? '', maxBytes);
     return {
       processId,
       stdout,
       stderr,
-      stdoutBytes: Buffer.byteLength(receipt.handle.stdout ?? '', 'utf8'),
-      stderrBytes: Buffer.byteLength(receipt.handle.stderr ?? '', 'utf8'),
-      truncated: Buffer.byteLength(receipt.handle.stdout ?? '', 'utf8') > maxBytes
-        || Buffer.byteLength(receipt.handle.stderr ?? '', 'utf8') > maxBytes,
+      stdoutBytes: Buffer.byteLength(running.handle.stdoutTail ?? '', 'utf8'),
+      stderrBytes: Buffer.byteLength(running.handle.stderrTail ?? '', 'utf8'),
+      truncated: Buffer.byteLength(running.handle.stdoutTail ?? '', 'utf8') > maxBytes
+        || Buffer.byteLength(running.handle.stderrTail ?? '', 'utf8') > maxBytes,
     };
   }
   if (entry.repoId !== repoId) return undefined;
