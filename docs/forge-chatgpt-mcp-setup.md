@@ -97,6 +97,37 @@ ChatGPT developer-mode/MCP availability is controlled by the current ChatGPT pla
 
 The bounded default surface intentionally exposes the preferred `rh_*` facade plus repository/source/check/process/plugin escape hatches. Do not switch to exhaustive compatibility mode merely to see more tool names.
 
+## Transport latency A/B benchmark
+
+Forge exposes `responseMeta.serverDurationMs` on tool results, so a client can separate server work from the time outside Forge. The transport benchmark calls the authenticated `/mcp-bearer` sibling route, measures client wall time, and reports:
+
+- client total p50/p95;
+- Forge server-duration p50/p95;
+- `max(0, clientTotalMs - serverDurationMs)` as the external transport/client residual;
+- the residual share of total latency and any server/client timing anomalies.
+
+Do not put the literal bearer credential in shell history, benchmark labels, output files, chat, or source control. On the Forge host, `--local-service-auth` reads the existing service credential inside the benchmark process without printing it. A same-host control run looks like:
+
+```bash
+bun run benchmark:mcp-transport -- \
+  --local-service-auth \
+  --endpoint http://127.0.0.1:8767/mcp-bearer \
+  --label loopback \
+  --repo-id <repo-id> \
+  --tool rh_status \
+  --iterations 50
+```
+
+For a Cloudflare Tunnel or another HTTPS route terminating at the same OAuth Gateway, keep `--local-service-auth`, the repo, host, tool, arguments, warmup, and iteration count unchanged and only replace the endpoint/label, for example `https://forge-bench.example.com/mcp-bearer` with label `cloudflare`. This isolates public transport from Forge execution without exposing the credential to the controller. Use a temporary, access-controlled route and remove it after the test if it exists only for benchmarking. For a benchmark launched away from the Forge host, omit `--local-service-auth` and populate `FORGE_MCP_BENCH_TOKEN` through that client's secret store instead.
+
+OpenAI Secure MCP Tunnel is identified by a tunnel ID rather than a directly addressable HTTPS URL, so this script must not pretend that an ordinary HTTP probe measures that path. When client-observed Secure Tunnel samples are available, save them as JSONL/JSON with `label`, `tool`, `clientTotalMs`, and `serverDurationMs`, then aggregate them with:
+
+```bash
+bun run benchmark:mcp-transport -- --input secure-tunnel-samples.jsonl
+```
+
+That imported-sample path is also useful for comparing ChatGPT-observed timing with direct HTTPS probes without exposing credentials.
+
 ## Verify
 
 Local Runtime:
