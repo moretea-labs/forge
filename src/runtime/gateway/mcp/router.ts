@@ -9,6 +9,7 @@ import { runtimeToolDefinitions } from './runtime-tools';
 import { executionToolDefinitions } from './execution-tools';
 import { processToolDefinitions } from './process-tools';
 import { resolveRepositorySelection } from '../../../cli/repositories/registry';
+import { listControllerChecks } from '../../../cli/controller/check-runner';
 import { executionIdentityForRepository } from '../../control-plane/execution/execution-identity';
 import { startOrJoinEditValidation } from '../../control-plane/execution/edit-validation-coordinator';
 import type { ExecutionTimeoutPolicy } from '../../execution/jobs/types';
@@ -23,6 +24,7 @@ import {
   classifyRepositoryCommandRoute,
 } from '../../execution/process-runtime';
 import { runPersistedCheckViaProcessRuntime } from './persisted-check-process';
+import { buildCheckExecutionSchedule } from '../../execution/process-runtime/check-scheduling';
 import {
   isProcessIsolatedReadDiagnostic,
   runReadOnlyDiagnosticViaProcessRuntime,
@@ -374,10 +376,16 @@ export function classifyGatewayExecutionPath(
   // run_check: Process Runtime for ordinary checks; Durable only for release/multi-phase.
   if (name === 'run_check') {
     const checkId = String(args.check_id ?? args.checkId ?? '').trim();
+    const batchCheckIds = Array.isArray(args.check_ids)
+      ? args.check_ids.map((value) => String(value).trim()).filter(Boolean)
+      : [];
     if (args.mode === 'durable' || args.force_durable === true) {
       return { path: 'durable', reasons: ['caller_requested_durable_check'] };
     }
-    if (checkId && checkRequiresDurableWorkflow(checkId)) {
+    // A batch containing release/multi-phase checks is routed through the fast
+    // facade only so the batch validator can fail closed with structured
+    // scheduling evidence. It must never create a partial Durable workflow.
+    if (batchCheckIds.length === 0 && checkId && checkRequiresDurableWorkflow(checkId)) {
       return { path: 'durable', reasons: ['multi_phase_or_release_check'] };
     }
     // Route as "fast" so shouldCreateDurableJob returns false; actual execution
@@ -893,12 +901,145 @@ export async function routeDurableMcpCall(
       });
     }
     const checkId = String(args.check_id ?? '').trim();
-    if (!checkId) {
+    const rawBatchCheckIds = args.check_ids;
+    const hasBatchInput = Array.isArray(rawBatchCheckIds);
+    const batchCheckIds: string[] = hasBatchInput
+      ? [...new Set(rawBatchCheckIds.map((value: unknown) => String(value).trim()).filter(Boolean))]
+      : [];
+    if (checkId && hasBatchInput) {
       return result({
         accepted: false,
         mode: 'reject',
         path: 'reject',
-        message: 'run_check requires check_id',
+        message: 'run_check accepts either check_id or check_ids, not both',
+      }, true);
+    }
+    if (!checkId && batchCheckIds.length === 0) {
+      return result({
+        accepted: false,
+        mode: 'reject',
+        path: 'reject',
+        message: 'run_check requires check_id or a non-empty check_ids array',
+      }, true);
+    }
+    if (hasBatchInput) {
+      const availableChecks = listControllerChecks(repository.canonicalRoot);
+      const availableChecksById = new Map(availableChecks.map((check) => [check.id, check]));
+      const checkScheduling = buildCheckExecutionSchedule({
+        checks: availableChecks,
+        requestedCheckIds: batchCheckIds,
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+      });
+      const schedulePayload = {
+        waveCount: checkScheduling.waves.length,
+        maxParallel: checkScheduling.maxParallel,
+        waves: checkScheduling.waves,
+        conflicts: checkScheduling.conflicts,
+        invalidCheckIds: checkScheduling.invalidCheckIds,
+        guidance: checkScheduling.guidance,
+      };
+      if (checkScheduling.invalidCheckIds.length > 0) {
+        return result({
+          accepted: false,
+          mode: 'reject',
+          path: 'reject',
+          reason: 'invalid_check_ids',
+          checkIds: batchCheckIds,
+          checkScheduling: schedulePayload,
+          message: `run_check batch contains unregistered checks: ${checkScheduling.invalidCheckIds.join(', ')}`,
+        }, true);
+      }
+      const durableCheckIds = batchCheckIds.filter((id) => checkRequiresDurableWorkflow(id, availableChecksById.get(id)));
+      if (durableCheckIds.length > 0) {
+        return result({
+          accepted: false,
+          mode: 'reject',
+          path: 'reject',
+          reason: 'batch_contains_durable_check',
+          checkIds: batchCheckIds,
+          durableCheckIds,
+          checkScheduling: schedulePayload,
+          message: 'Batch run_check only launches ordinary focused checks; run release or multi-phase checks through an explicit durable workflow.',
+        }, true);
+      }
+      if (checkScheduling.waves.length !== 1 || checkScheduling.waves[0]?.checkIds.length !== batchCheckIds.length) {
+        return result({
+          accepted: false,
+          mode: 'reject',
+          path: 'reject',
+          reason: 'batch_spans_multiple_check_waves',
+          checkIds: batchCheckIds,
+          checkScheduling: schedulePayload,
+          message: 'Requested checks span multiple resource-conflicting waves. Launch one returned wave per run_check call; Forge will not hide serial waiting inside a batch.',
+        }, true);
+      }
+      const baseRequestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+      const facades = await Promise.all(batchCheckIds.map((batchCheckId, index) => {
+        const suffix = createHash('sha256').update(batchCheckId).digest('hex').slice(0, 8);
+        return runPersistedCheckViaProcessRuntime({
+          controllerHome: ctx.controllerHome,
+          repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          repoRoot: repository.canonicalRoot,
+          executionIdentity: executionIdentityForRepository(repository),
+          checkId: batchCheckId,
+          timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+          interactiveWaitMs: 0,
+          requestId: baseRequestId ? `${baseRequestId}:batch:${index + 1}:${suffix}` : undefined,
+          forceDurable: false,
+        });
+      }));
+      const unexpectedDurable = facades.filter((facade) => facade.mode === 'durable');
+      if (unexpectedDurable.length > 0) {
+        return result({
+          accepted: false,
+          mode: 'reject',
+          path: 'reject',
+          reason: 'batch_check_escalated_to_durable',
+          checkIds: batchCheckIds,
+          checkScheduling: schedulePayload,
+          message: 'At least one batch check unexpectedly requires Durable execution; no further batch orchestration will be created.',
+        }, true);
+      }
+      const processes = facades.map((facade) => ({
+        checkId: facade.checkId,
+        processId: facade.process?.processId,
+        status: facade.process?.status,
+        completed: facade.process?.completed === true,
+        ok: facade.process?.ok,
+        exitCode: facade.process?.exitCode,
+        timedOut: facade.process?.timedOut,
+        deduplicated: facade.process?.deduplicated === true,
+        semanticDeduplicated: facade.process?.semanticDeduplicated === true,
+        durableSideEffects: facade.durableSideEffects,
+      }));
+      const completed = processes.every((process) => process.completed);
+      const mode = processes.every((process) => process.completed) ? 'direct' : 'managed';
+      const durableSideEffects = facades.reduce((total, facade) => ({
+        executionJobCount: total.executionJobCount + facade.durableSideEffects.executionJobCount,
+        localJobCount: total.localJobCount + facade.durableSideEffects.localJobCount,
+        workerSpawnCount: total.workerSpawnCount + facade.durableSideEffects.workerSpawnCount,
+        projectionUpdateCount: total.projectionUpdateCount + facade.durableSideEffects.projectionUpdateCount,
+      }), { executionJobCount: 0, localJobCount: 0, workerSpawnCount: 0, projectionUpdateCount: 0 });
+      return result({
+        accepted: true,
+        batch: true,
+        mode,
+        path: mode === 'direct' ? 'process_batch_direct' : 'process_batch_managed',
+        routing: { path: 'fast', reasons: ['run_check_batch_process_runtime'] },
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        checkIds: batchCheckIds,
+        checkScheduling: schedulePayload,
+        processes,
+        processIds: processes.map((process) => process.processId).filter(Boolean),
+        completed,
+        ...(completed ? { ok: processes.every((process) => process.ok === true) } : {}),
+        durableSideEffects,
+        next: completed
+          ? 'Batch check wave finished on Process Runtime without ExecutionJob / LocalBridgeJob / Worker.'
+          : 'Batch check wave is running concurrently. Continue independent work. Attach to each returned process only when that result becomes a real dependency; do not poll or re-run the checks.',
       });
     }
     const facade = await runPersistedCheckViaProcessRuntime({

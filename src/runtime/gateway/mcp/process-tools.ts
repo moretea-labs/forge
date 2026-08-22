@@ -50,11 +50,12 @@ const processIdProp = {
 export const processToolDefinitions: McpToolDefinition[] = [
   definition(
     'run_check',
-    'Run one named focused repository check through Process Runtime. Long ordinary checks return a managed handle and continue in the background; use the returned continuation contract to keep doing independent work, then join once when this exact result becomes a dependency. Release or multi-phase checks require an explicit durable workflow.',
+    'Run one focused repository check, or launch one resource-compatible check wave, through Process Runtime. Use check_id for the existing single-check behavior or check_ids for a batch; do not send both. Batch mode validates the existing check-scheduling resource model and starts every check in one compatible wave concurrently without waiting for completion or creating a second scheduler. Cross-wave, invalid, release, and multi-phase batches fail closed. Long ordinary checks return managed handles; attach only at a real dependency boundary.',
     {
       repo_id: repoIdProp,
       checkout_id: { type: 'string' },
-      check_id: { type: 'string' },
+      check_id: { type: 'string', description: 'Single check id. Mutually exclusive with check_ids.' },
+      check_ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 32, uniqueItems: true, description: 'Batch check ids. All requested checks must fit one resource-compatible execution wave; mutually exclusive with check_id.' },
       timeout_ms: { type: 'number' },
       request_id: { type: 'string' },
       issue_id: { type: 'string' },
@@ -63,7 +64,7 @@ export const processToolDefinitions: McpToolDefinition[] = [
       apply_mode: { type: 'string', enum: ['sync', 'async'] },
       force_durable: { type: 'boolean' },
     },
-    ['check_id'],
+    [],
     false,
   ),
   definition(
