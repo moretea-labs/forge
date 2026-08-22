@@ -1,6 +1,9 @@
+export type McpTransportTimingScope = 'tool_call' | 'connect_and_tool_call';
+
 export interface McpTransportLatencySample {
   label: string;
   tool: string;
+  timingScope?: McpTransportTimingScope;
   clientTotalMs: number;
   serverDurationMs: number;
   traceId?: string;
@@ -17,6 +20,7 @@ export interface McpTransportLatencyStats {
 export interface McpTransportLatencyGroup {
   label: string;
   tool: string;
+  timingScope: McpTransportTimingScope;
   sampleCount: number;
   clientTotalMs: McpTransportLatencyStats;
   serverDurationMs: McpTransportLatencyStats;
@@ -61,13 +65,20 @@ export function normalizeMcpTransportLatencySample(value: unknown): McpTransport
   const record = value as Record<string, unknown>;
   const label = typeof record.label === 'string' ? record.label.trim() : '';
   const tool = typeof record.tool === 'string' ? record.tool.trim() : '';
+  const timingScope = record.timingScope === undefined || record.timingScope === 'tool_call'
+    ? 'tool_call'
+    : record.timingScope === 'connect_and_tool_call'
+      ? 'connect_and_tool_call'
+      : undefined;
   if (!label) throw new Error('MCP_TRANSPORT_SAMPLE_INVALID: label is required');
   if (!tool) throw new Error('MCP_TRANSPORT_SAMPLE_INVALID: tool is required');
+  if (!timingScope) throw new Error('MCP_TRANSPORT_SAMPLE_INVALID: timingScope must be tool_call or connect_and_tool_call');
   if (!validDuration(record.clientTotalMs)) throw new Error('MCP_TRANSPORT_SAMPLE_INVALID: clientTotalMs must be a non-negative finite number');
   if (!validDuration(record.serverDurationMs)) throw new Error('MCP_TRANSPORT_SAMPLE_INVALID: serverDurationMs must be a non-negative finite number');
   return {
     label,
     tool,
+    timingScope,
     clientTotalMs: record.clientTotalMs,
     serverDurationMs: record.serverDurationMs,
     ...(typeof record.traceId === 'string' && record.traceId.trim() ? { traceId: record.traceId.trim() } : {}),
@@ -90,7 +101,7 @@ export function aggregateMcpTransportLatencySamples(values: unknown[]): McpTrans
   const samples = values.map(normalizeMcpTransportLatencySample);
   const grouped = new Map<string, McpTransportLatencySample[]>();
   for (const sample of samples) {
-    const key = `${sample.label}\u0000${sample.tool}`;
+    const key = `${sample.label}\u0000${sample.tool}\u0000${sample.timingScope ?? 'tool_call'}`;
     const entries = grouped.get(key) ?? [];
     entries.push(sample);
     grouped.set(key, entries);
@@ -103,6 +114,7 @@ export function aggregateMcpTransportLatencySamples(values: unknown[]): McpTrans
     return {
       label: entries[0]!.label,
       tool: entries[0]!.tool,
+      timingScope: entries[0]!.timingScope ?? 'tool_call',
       sampleCount: entries.length,
       clientTotalMs: stats(client),
       serverDurationMs: stats(server),
@@ -110,6 +122,8 @@ export function aggregateMcpTransportLatencySamples(values: unknown[]): McpTrans
       externalSharePct: stats(share),
       serverExceedsClientCount: entries.filter((sample) => sample.serverDurationMs > sample.clientTotalMs).length,
     };
-  }).sort((left, right) => left.label.localeCompare(right.label) || left.tool.localeCompare(right.tool));
+  }).sort((left, right) => left.label.localeCompare(right.label)
+    || left.tool.localeCompare(right.tool)
+    || left.timingScope.localeCompare(right.timingScope));
   return { schemaVersion: 1, sampleCount: samples.length, groups };
 }
