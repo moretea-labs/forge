@@ -2457,7 +2457,15 @@ async function resolveFrameViewportOffset(page: PageLike, selection: BrowserFram
   return box;
 }
 
-function translateFrameGroundingElements(elements: unknown[], offset: { x: number; y: number }): unknown[] {
+function translateFrameGroundingElements(elements: unknown[], offset: { x: number; y: number }, viewport: unknown): unknown[] {
+  const viewportRecord = viewport && typeof viewport === 'object' && !Array.isArray(viewport)
+    ? viewport as Record<string, unknown>
+    : {};
+  const viewportWidth = typeof viewportRecord.width === 'number' && Number.isFinite(viewportRecord.width) ? viewportRecord.width : undefined;
+  const viewportHeight = typeof viewportRecord.height === 'number' && Number.isFinite(viewportRecord.height) ? viewportRecord.height : undefined;
+  if (viewportWidth === undefined || viewportHeight === undefined) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_FRAME_GEOMETRY_UNAVAILABLE', 'Top-level viewport dimensions are not finite for frame grounding.', { retryable: true });
+  }
   return elements.map((entry) => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
     const record = entry as Record<string, unknown>;
@@ -2481,17 +2489,29 @@ function translateFrameGroundingElements(elements: unknown[], offset: { x: numbe
     const bottom = required(bounds.bottom, 'bounds.bottom');
     const centerX = required(center.x, 'center.x');
     const centerY = required(center.y, 'center.y');
+    const translatedX = x + offset.x;
+    const translatedY = y + offset.y;
+    const translatedRight = right + offset.x;
+    const translatedBottom = bottom + offset.y;
+    const frameLocalInViewport = record.inViewport === true;
+    const topLevelInViewport = translatedRight > 0
+      && translatedBottom > 0
+      && translatedX < viewportWidth
+      && translatedY < viewportHeight;
     return {
       ...record,
       bounds: {
-        x: x + offset.x,
-        y: y + offset.y,
+        x: translatedX,
+        y: translatedY,
         width,
         height,
-        right: right + offset.x,
-        bottom: bottom + offset.y,
+        right: translatedRight,
+        bottom: translatedBottom,
       },
       center: { x: centerX + offset.x, y: centerY + offset.y },
+      frameLocalInViewport,
+      topLevelInViewport,
+      inViewport: frameLocalInViewport && topLevelInViewport,
     };
   });
 }
@@ -3930,7 +3950,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             }
             frameViewport = grounded.viewport;
             viewport = topMetrics.viewport;
-            data = translateFrameGroundingElements(grounded.elements, frameOffset);
+            data = translateFrameGroundingElements(grounded.elements, frameOffset, topMetrics.viewport);
           }
           return {
             provider: 'playwright',
