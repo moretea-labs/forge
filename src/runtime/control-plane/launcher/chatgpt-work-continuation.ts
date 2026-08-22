@@ -57,6 +57,19 @@ export interface WorkChatgptContinuationResult {
   error?: { code: string; message: string };
 }
 
+export interface StandaloneChatgptPromptInput {
+  controllerHome: string;
+  repoId: string;
+  scopeId: string;
+  prompt: string;
+  browserSessionId?: string;
+  conversationUrl?: string;
+  model?: string;
+  reasoning?: ChatgptAutomationReasoning;
+  tabPolicy?: ChatgptAutomationTabPolicy;
+  timeoutMs?: number;
+}
+
 const workflowToolAttributionInstruction = (workId: string): string => `Forge Workflow execution contract: first claim exact Work ${workId}. For every repository_command_execute and repository_safe_patch_apply call in this turn, pass work_id=${workId} explicitly. MCP transport sessions may change between tool calls; never omit this Work id.`;
 
 function requestId(workId: string, actionId: string): string {
@@ -126,6 +139,18 @@ function normalizeTabPolicy(value?: ChatgptAutomationTabPolicy): ChatgptAutomati
 export function stableChatgptWorkBrowserSessionId(repoId: string, workId: string): string {
   const digest = createHash('sha256').update(`${repoId}\n${workId}`).digest('hex').slice(0, 20);
   return `forge-chatgpt-work-${digest}`;
+}
+
+export function stableStandaloneChatgptBrowserSessionId(repoId: string, scopeId: string): string {
+  const digest = createHash('sha256').update(`${repoId}\nstandalone\n${scopeId}`).digest('hex').slice(0, 20);
+  return `forge-chatgpt-standalone-${digest}`;
+}
+
+function resolveStandaloneChatgptBrowserSessionId(input: StandaloneChatgptPromptInput): string {
+  const policy = normalizeTabPolicy(input.tabPolicy);
+  const stable = stableStandaloneChatgptBrowserSessionId(input.repoId, input.scopeId);
+  if (policy === 'new') return `${stable}-${randomUUID().slice(0, 8)}`;
+  return input.browserSessionId?.trim() || stable;
 }
 
 export function resolveChatgptWorkBrowserSessionId(input: {
@@ -464,6 +489,75 @@ export function withForgePluginMention(prompt: string): string {
   if (!value) throw new Error('CHATGPT_AUTOMATION_PROMPT_REQUIRED');
   if (/^@forge(?:\s|$)/i.test(value)) return value;
   return `${DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION} ${value}`;
+}
+
+/**
+ * Dispatches a bounded standalone prompt through the same controller-owned
+ * ChatGPT browser path without creating or requiring a WorkContract. The scope
+ * id is only a stable browser correlation key (for example a Schedule id).
+ */
+export async function runStandaloneChatgptPrompt(input: StandaloneChatgptPromptInput): Promise<WorkChatgptContinuationResult> {
+  const model = normalizeModel(input.model);
+  const reasoning = normalizeReasoning(input.reasoning);
+  const tabPolicy = normalizeTabPolicy(input.tabPolicy);
+  const sessionId = resolveStandaloneChatgptBrowserSessionId(input);
+  const browserScopeId = `standalone:${input.scopeId}`;
+  const seedUrl = input.conversationUrl?.trim();
+
+  try {
+    await ensureControllerChatgptBrowser(input.controllerHome, browserScopeId);
+    const targetUrl = seedUrl ?? 'https://chatgpt.com/';
+    const navigation = await navigateWorkConversation(
+      input.controllerHome,
+      browserScopeId,
+      sessionId,
+      targetUrl,
+      input.timeoutMs,
+    );
+    const executionPreferenceVerified = await ensureChatgptExecutionPreference(
+      input.controllerHome,
+      browserScopeId,
+      sessionId,
+      model,
+      reasoning,
+      input.timeoutMs,
+    );
+    const observedUrl = await submitChatgptPrompt(
+      input.controllerHome,
+      browserScopeId,
+      sessionId,
+      input.prompt,
+      navigation.submissionTargetUrl,
+      input.timeoutMs,
+    );
+    return {
+      status: 'dispatched',
+      provider: 'controller-browser',
+      browserSessionId: sessionId,
+      conversationUrl: observedUrl,
+      resumedFromBinding: false,
+      model,
+      reasoning,
+      tabPolicy,
+      executionPreferenceVerified,
+    };
+  } catch (error) {
+    return {
+      status: 'failed',
+      provider: 'controller-browser',
+      browserSessionId: sessionId,
+      conversationUrl: seedUrl,
+      resumedFromBinding: false,
+      model,
+      reasoning,
+      tabPolicy,
+      executionPreferenceVerified: false,
+      error: {
+        code: error instanceof Error && error.message.includes(':') ? error.message.split(':', 1)[0] : 'CHATGPT_CONTROLLER_BROWSER_FAILED',
+        message: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
 }
 
 /**

@@ -4,6 +4,7 @@ import {
   classifyScheduledBrowserObservation,
   scheduledBrowserProbeNavigationAction,
 } from '../../src/runtime/workflow/schedules/browser-probe';
+import { createWorkContinuationSchedule } from '../../src/runtime/workflow/schedules/work-continuation';
 
 describe('scheduled browser probe primitives', () => {
   test('fingerprints only selected lines and can strip volatile timestamps', () => {
@@ -43,6 +44,16 @@ describe('scheduled browser probe primitives', () => {
     expect(scheduledBrowserProbeNavigationAction('plugin_owned', false)).toBe('reload');
     expect(scheduledBrowserProbeNavigationAction('plugin_owned', true)).toBe('navigate');
     expect(scheduledBrowserProbeNavigationAction(undefined, true)).toBe('navigate');
+  });
+
+  test('rejects non-ChatGPT standalone keepalive before creating any Work or schedule state', () => {
+    expect(() => createWorkContinuationSchedule('/tmp/unused-controller-home', 'repo-test', {
+      scheduleMode: 'browser_keepalive',
+      controllerType: 'codex',
+      triggerType: 'manual',
+      probeBrowserSessionId: 'browser-session',
+      requestId: 'standalone-non-chatgpt',
+    })).toThrow('STANDALONE_BROWSER_KEEPALIVE_CHATGPT_REQUIRED');
   });
 
   test('rejects invalid ignore regex instead of silently corrupting the observation key', () => {

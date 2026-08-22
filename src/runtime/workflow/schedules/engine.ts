@@ -12,7 +12,7 @@ import {
 import { getControllerSession, getWorkContract, isTerminalWorkContractStatus, listHandoffItems } from '../../control-plane/facade';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
 import { getExternalControllerLaunchReservation } from '../../control-plane/launcher/launch-reservation-store';
-import { runWorkChatgptContinuation } from '../../control-plane/launcher/chatgpt-work-continuation';
+import { runStandaloneChatgptPrompt, runWorkChatgptContinuation } from '../../control-plane/launcher/chatgpt-work-continuation';
 import {
   getOccurrence,
   getSchedule,
@@ -852,14 +852,43 @@ export async function evaluateSchedule(
           nextEligibleAt: undefined,
           pausedReason: undefined,
         });
-        if (args.wake_on_auth_required !== false && workId) {
+        if (args.wake_on_auth_required !== false) {
           const authPrompt = typeof args.auth_required_prompt === 'string'
             ? args.auth_required_prompt
             : typeof args.continuation_prompt === 'string'
               ? args.continuation_prompt
               : `Scheduled browser watcher ${schedule.scheduleId} detected that authentication is required (${probe.authReason ?? 'login marker'}). Inspect the external dependency and request user login only if it cannot be restored safely.`;
-          const wakeArgs = { ...args, continuation_prompt: authPrompt };
-          return executeExternalControllerWake(controllerHome, observedSchedule, occurrence, timestamp, wakeArgs, { ...observationEvidence, authReason: probe.authReason });
+          if (workId) {
+            const wakeArgs = { ...args, continuation_prompt: authPrompt };
+            return executeExternalControllerWake(controllerHome, observedSchedule, occurrence, timestamp, wakeArgs, { ...observationEvidence, authReason: probe.authReason });
+          }
+          const controllerType = typeof args.controller_type === 'string' ? args.controller_type.trim() : 'chatgpt';
+          if (controllerType !== 'chatgpt') {
+            return decideOccurrence(controllerHome, observedSchedule, occurrence, 'operation_blocked', 'skipped', 'STANDALONE_BROWSER_KEEPALIVE_CHATGPT_REQUIRED', observationEvidence);
+          }
+          const dispatched = await runStandaloneChatgptPrompt({
+            controllerHome,
+            repoId: schedule.repoId,
+            scopeId: `schedule:${schedule.scheduleId}`,
+            prompt: authPrompt,
+            browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
+            conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
+          });
+          if (dispatched.status === 'failed') throw new Error(dispatched.error?.message ?? 'CHATGPT_STANDALONE_PROMPT_FAILED');
+          return decideOccurrence(
+            controllerHome,
+            observedSchedule,
+            occurrence,
+            'execute',
+            'succeeded',
+            'Standalone browser keepalive auth-required prompt dispatched to ChatGPT.',
+            {
+              ...observationEvidence,
+              authReason: probe.authReason,
+              browserSessionId: dispatched.browserSessionId,
+              conversationUrl: dispatched.conversationUrl,
+            },
+          );
         }
         return decideOccurrence(controllerHome, observedSchedule, occurrence, 'operation_blocked', 'skipped', `Browser ${workId ? 'watcher' : 'keepalive'} requires authentication: ${probe.authReason ?? 'login marker matched'}`, observationEvidence);
       }

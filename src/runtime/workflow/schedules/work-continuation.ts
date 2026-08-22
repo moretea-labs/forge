@@ -152,6 +152,7 @@ export function createWorkContinuationSchedule(
   const scheduleMode = input.scheduleMode ?? 'continuation';
   const requestedWorkId = input.workId?.trim();
   if (!requestedWorkId && scheduleMode !== 'browser_keepalive') throw new Error('WORK_ID_REQUIRED');
+  if (!requestedWorkId && scheduleMode === 'browser_keepalive' && controllerType !== 'chatgpt') throw new Error('STANDALONE_BROWSER_KEEPALIVE_CHATGPT_REQUIRED');
   const work = requestedWorkId ? activeWork(controllerHome, repoId, requestedWorkId) : undefined;
   const trigger = normalizedTrigger(input);
   const operation = scheduleMode === 'continuation' ? 'external_controller_wake' : 'browser_probe';
