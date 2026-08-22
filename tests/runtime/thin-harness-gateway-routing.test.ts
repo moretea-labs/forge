@@ -139,6 +139,8 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       ['run_check', { check_id: 'typecheck', apply_mode: 'async' }, 'fast'],
       ['run_check', { check_id: 'typecheck', mode: 'durable' }, 'durable'],
       ['run_check', { check_id: 'check:release', apply_mode: 'async' }, 'durable'],
+      ['run_check', { check_ids: ['typecheck', 'lint'] }, 'fast'],
+      ['run_check', { check_ids: ['typecheck', 'check:release'] }, 'fast'],
     ] as const;
     for (const [name, args, expected] of cases) expect(classifyGatewayExecutionPath(name, args).path).toBe(expected);
     expect(classifyGatewayExecutionPath('plugin_action_execute', {}).path).toBe('direct');
@@ -600,6 +602,115 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       },
     });
     expect(readFileSync(marker, 'utf8')).toBe('1');
+  });
+
+  test('batch run_check launches one resource-compatible wave concurrently in one gateway call', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
+    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
+      version: 1,
+      checks: {
+        parallel_a: {
+          description: 'parallel check A',
+          command: [process.execPath, '-e', 'setTimeout(() => { console.log("a-ok"); process.exit(0); }, 1200)'],
+          timeoutMs: 10_000,
+          effects: { reads: ['src/a'] },
+        },
+        parallel_b: {
+          description: 'parallel check B',
+          command: [process.execPath, '-e', 'setTimeout(() => { console.log("b-ok"); process.exit(0); }, 1200)'],
+          timeoutMs: 10_000,
+          effects: { reads: ['src/b'] },
+        },
+      },
+    }, null, 2));
+
+    const started = await routeDurableMcpCall(fx.ctx, 'run_check', {
+      repo_id: fx.repository.repoId,
+      check_ids: ['parallel_a', 'parallel_b'],
+      request_id: 'batch-parallel-wave',
+    });
+    expect(started?.isError).not.toBe(true);
+    const payload = started?.structuredContent as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      accepted: true,
+      batch: true,
+      path: 'process_batch_managed',
+      completed: false,
+      checkScheduling: { waveCount: 1, maxParallel: 2 },
+      durableSideEffects: { executionJobCount: 0, localJobCount: 0, workerSpawnCount: 0, projectionUpdateCount: 0 },
+    });
+    const processes = payload.processes as Array<{ checkId: string; processId: string; completed: boolean }>;
+    expect(processes.map((process) => process.checkId)).toEqual(['parallel_a', 'parallel_b']);
+    expect(processes).toHaveLength(2);
+    expect(processes.every((process) => process.processId && process.completed === false)).toBe(true);
+    expect(String(payload.next ?? '')).toContain('Continue independent work');
+    expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId)).toHaveLength(jobsBefore);
+
+    const completed = await Promise.all(processes.map((process) => waitForProcess(
+      fx.controllerHome,
+      fx.repository.repoId,
+      process.processId,
+      { timeoutMs: 10_000 },
+    )));
+    expect(completed.every((handle) => handle.ok === true)).toBe(true);
+  });
+
+  test('batch run_check rejects cross-wave, invalid, and durable requests without partial execution', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
+      version: 1,
+      checks: {
+        conflict_a: {
+          description: 'conflicting check A',
+          command: [process.execPath, '-e', 'setTimeout(() => process.exit(0), 100)'],
+          timeoutMs: 10_000,
+          effects: { writes: ['src/shared'] },
+        },
+        conflict_b: {
+          description: 'conflicting check B',
+          command: [process.execPath, '-e', 'setTimeout(() => process.exit(0), 100)'],
+          timeoutMs: 10_000,
+          effects: { writes: ['src/shared'] },
+        },
+        'release-fixture': {
+          description: 'release check must stay durable',
+          command: [process.execPath, '-e', 'process.exit(0)'],
+          timeoutMs: 10_000,
+          effects: { reads: ['src/release'] },
+        },
+      },
+    }, null, 2));
+    const processesBefore = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
+
+    const crossWave = await routeDurableMcpCall(fx.ctx, 'run_check', {
+      repo_id: fx.repository.repoId,
+      check_ids: ['conflict_a', 'conflict_b'],
+      request_id: 'batch-conflict-wave',
+    });
+    expect(crossWave?.isError).toBe(true);
+    expect(crossWave?.structuredContent).toMatchObject({
+      accepted: false,
+      reason: 'batch_spans_multiple_check_waves',
+      checkScheduling: { waveCount: 2, maxParallel: 1 },
+    });
+
+    const invalid = await routeDurableMcpCall(fx.ctx, 'run_check', {
+      repo_id: fx.repository.repoId,
+      check_ids: ['conflict_a', 'missing-check'],
+    });
+    expect(invalid?.isError).toBe(true);
+    expect(invalid?.structuredContent).toMatchObject({ accepted: false, reason: 'invalid_check_ids' });
+
+    const durable = await routeDurableMcpCall(fx.ctx, 'run_check', {
+      repo_id: fx.repository.repoId,
+      check_ids: ['release-fixture'],
+    });
+    expect(durable?.isError).toBe(true);
+    expect(durable?.structuredContent).toMatchObject({ accepted: false, reason: 'batch_contains_durable_check' });
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId)).toHaveLength(processesBefore);
   });
 
   test('controller instructions make bounded dependency attachment explicit instead of normal polling', () => {
