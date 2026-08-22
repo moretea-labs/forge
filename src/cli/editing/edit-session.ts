@@ -257,19 +257,45 @@ function calculateAssurance(session: EditSession, at: string): EditSessionAssura
   };
 }
 
-function assertSessionIdentity(session: EditSession, binding: EditSessionBinding | undefined): void {
+function assertDurableSessionIdentity(session: EditSession, binding: EditSessionBinding | undefined): void {
   if (!binding) return;
   const pairs: Array<[keyof EditSessionBinding, string | undefined, string | undefined]> = [
     ['workId', session.workId, binding.workId],
     ['repoId', session.repoId, binding.repoId],
     ['checkoutId', session.checkoutId, binding.checkoutId],
     ['principalId', session.principalId, binding.principalId],
-    ['controllerInstanceId', session.controllerInstanceId, binding.controllerInstanceId],
     ['routeDecisionFingerprint', session.routeDecisionFingerprint, binding.routeDecisionFingerprint],
   ];
   for (const [field, expected, observed] of pairs) {
     if (expected && expected !== observed) throw new Error(`EDIT_SESSION_IDENTITY_MISMATCH: ${String(field)}`);
   }
+}
+
+function bindSessionControllerInstance(repoRoot: string, session: EditSession, binding: EditSessionBinding | undefined): EditSession {
+  assertDurableSessionIdentity(session, binding);
+  const nextInstanceId = binding?.controllerInstanceId?.trim();
+  if (!nextInstanceId || session.controllerInstanceId === nextInstanceId) return session;
+  const durableIdentity = [
+    [session.workId, binding?.workId],
+    [session.repoId, binding?.repoId],
+    [session.checkoutId, binding?.checkoutId],
+    [session.principalId, binding?.principalId],
+  ];
+  if (!durableIdentity.every(([expected, observed]) => Boolean(expected) && expected === observed)) {
+    throw new Error('EDIT_SESSION_IDENTITY_MISMATCH: controllerInstanceId');
+  }
+  const rebound = { ...session, controllerInstanceId: nextInstanceId, updatedAt: now() };
+  writeSession(repoRoot, rebound);
+  tryAppendControllerWorklogEvent(repoRoot, {
+    category: 'edit',
+    action: 'edit_session_controller_instance_rebound',
+    summary: `${session.purpose}: resumed after Controller Runtime instance change`,
+    issueId: session.issueId,
+    taskId: session.taskId,
+    editSessionId: session.sessionId,
+    details: { workId: session.workId, checkoutId: session.checkoutId },
+  });
+  return rebound;
 }
 
 function now(): string {
@@ -1102,7 +1128,7 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
   maxBatchOperations?: number;
   binding?: EditSessionBinding;
 } = {}): EditSession {
-  const session = getEditSession(repoRoot, sessionId);
+  let session = getEditSession(repoRoot, sessionId);
   if (['finalized', 'rolled_back'].includes(session.status)) throw new Error(`edit session is closed: ${session.status}`);
   if (operations.length === 0) throw new Error('at least one edit operation is required');
   const maxBatchOperations = Math.max(1, Math.trunc(options.maxBatchOperations ?? MAX_EDIT_PATCH_BATCH_OPERATIONS));
@@ -1136,7 +1162,7 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
   }
   const uniquePaths = new Set(operations.map((operation) => operation.path));
   if (uniquePaths.size !== operations.length) throw new Error('each path may appear only once per patch batch');
-  assertSessionIdentity(session, options.binding);
+  session = bindSessionControllerInstance(repoRoot, session, options.binding);
   if (session.baseRevision && gitRevision(repoRoot) !== session.baseRevision) throw new Error('EDIT_SESSION_BASE_REVISION_CHANGED');
   if (session.workspaceFingerprint && workspaceFingerprint(repoRoot) !== session.workspaceFingerprint) throw new Error('EDIT_SESSION_WORKSPACE_FINGERPRINT_CHANGED');
   try {
@@ -1588,8 +1614,8 @@ export function finalizeEditSession(repoRoot: string, sessionId: string, input: 
   approvalConfirmed?: boolean;
   binding?: EditSessionBinding;
 } = {}): EditSession {
-  const session = getEditSession(repoRoot, sessionId);
-  assertSessionIdentity(session, input.binding);
+  let session = getEditSession(repoRoot, sessionId);
+  session = bindSessionControllerInstance(repoRoot, session, input.binding);
   if (session.baseRevision && gitRevision(repoRoot) !== session.baseRevision) throw new Error('EDIT_SESSION_BASE_REVISION_CHANGED');
   if (session.workspaceFingerprint && workspaceFingerprint(repoRoot) !== session.workspaceFingerprint) throw new Error('EDIT_SESSION_WORKSPACE_FINGERPRINT_CHANGED');
   if (session.assurance?.approvalRequired && input.approvalConfirmed !== true) throw new Error('EDIT_SESSION_APPROVAL_REQUIRED');
