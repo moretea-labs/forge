@@ -91,12 +91,16 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
   const launches: Array<{ userDataDir: string; options: Record<string, unknown> }> = [];
   const evaluatedExpressions: unknown[] = [];
   const fileSelections: Array<{ selector: string; files: string[] }> = [];
+  const trustedInputs: Array<Record<string, unknown>> = [];
   const frameEvaluations: Array<{ url: string; name: string; expression: unknown }> = [];
   const frames = (options.frames ?? []).map((frame) => ({
     url: () => frame.url,
     name: () => frame.name,
     async evaluate<T>(expression?: unknown) {
       frameEvaluations.push({ url: frame.url, name: frame.name, expression });
+      if (typeof expression === 'string' && expression.includes('trustedInputGuardVersion: 1')) {
+        return { trustedInputGuardVersion: 1, found: true, visible: true, bounds: { x: 10, y: 20, width: 100, height: 40, right: 110, bottom: 60 } } as T;
+      }
       if (typeof expression === 'string' && expression.includes('verificationVersion: 1')) {
         return { verificationVersion: 1, selectorExists: true, visible: true, textContains: true, textSample: 'Frame ready', textLength: 11, truncated: false } as T;
       }
@@ -126,6 +130,9 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
     },
     async evaluate<T>(expression?: unknown) {
       evaluatedExpressions.push(expression);
+      if (typeof expression === 'string' && expression.includes('trustedInputGuardVersion: 1')) {
+        return { trustedInputGuardVersion: 1, found: true, visible: true, bounds: { x: 100, y: 200, width: 80, height: 32, right: 180, bottom: 232 } } as T;
+      }
       if (typeof expression === 'string' && expression.includes('verificationVersion: 1')) {
         return { verificationVersion: 1, selectorExists: true, visible: true, textContains: true, textSample: 'Ready to continue', textLength: 17, truncated: false } as T;
       }
@@ -164,6 +171,17 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
       currentTitle = options.title ?? 'Waiting Example';
       return {};
     },
+    mouse: {
+      async click(x: number, y: number, inputOptions?: Record<string, unknown>) { trustedInputs.push({ kind: 'click', x, y, ...inputOptions }); },
+      async move(x: number, y: number, inputOptions?: Record<string, unknown>) { trustedInputs.push({ kind: 'move', x, y, ...inputOptions }); },
+      async wheel(deltaX: number, deltaY: number) { trustedInputs.push({ kind: 'wheel', deltaX, deltaY }); },
+      async down(inputOptions?: Record<string, unknown>) { trustedInputs.push({ kind: 'down', ...inputOptions }); },
+      async up(inputOptions?: Record<string, unknown>) { trustedInputs.push({ kind: 'up', ...inputOptions }); },
+    },
+    keyboard: {
+      async press(key: string) { trustedInputs.push({ kind: 'key', key }); },
+      async insertText(text: string) { trustedInputs.push({ kind: 'text', text }); },
+    },
     frames() {
       return frames;
     },
@@ -196,7 +214,7 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
       },
     },
     routeDecisions,
-    launches, evaluatedExpressions, fileSelections, frameEvaluations,
+    launches, evaluatedExpressions, fileSelections, frameEvaluations, trustedInputs,
   } as never;
 }
 
@@ -212,6 +230,7 @@ function mockAttachPlaywright(
     gotos: [] as string[],
     broughtToFront: [] as string[],
     trustedInputs: [] as Array<Record<string, unknown>>,
+    guardBounds: { x: 0, y: 0, width: 100, height: 100, right: 100, bottom: 100 },
   };
 
   const makePage = (state: { url: string; title: string; ownerToken?: string }) => ({
@@ -294,6 +313,7 @@ function mockManagedPersistentPlaywright() {
     gotos: [] as Array<{ id: string; url: string }>,
     broughtToFront: [] as string[],
     trustedInputs: [] as Array<Record<string, unknown>>,
+    guardBounds: { x: 0, y: 0, width: 100, height: 100, right: 100, bottom: 100 },
   };
   const states: PageState[] = [{ id: 'page-1', url: 'about:blank', title: 'New Tab', closed: false }];
   const pageByState = new Map<PageState, any>();
@@ -314,6 +334,12 @@ function mockManagedPersistentPlaywright() {
         return state.url;
       },
       async evaluate<T>(expression?: unknown, arg?: unknown) {
+        if (typeof expression === 'string' && expression.includes('trustedInputGuardVersion: 1')) {
+          return { trustedInputGuardVersion: 1, found: true, visible: true, bounds: events.guardBounds } as T;
+        }
+        if (typeof expression === 'string' && expression.includes('viewportMetricsVersion: 1')) {
+          return { viewportMetricsVersion: 1, viewport: { width: 1280, height: 720 } } as T;
+        }
         if (typeof expression === 'function' && typeof arg === 'string') {
           state.ownerToken = arg;
           return undefined as T;
@@ -1069,7 +1095,11 @@ describe('browser plugin', () => {
       profileMode: 'repo_local',
     });
     const runtime = mockManagedPersistentPlaywright() as unknown as {
-      events: { trustedInputs: Array<Record<string, unknown>>; broughtToFront: string[] };
+      events: {
+        trustedInputs: Array<Record<string, unknown>>;
+        broughtToFront: string[];
+        guardBounds: { x: number; y: number; width: number; height: number; right: number; bottom: number };
+      };
     };
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
     const opened = await executeBrowserPluginAction({
@@ -1084,13 +1114,19 @@ describe('browser plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     });
     await invoke('browser-trusted-click', { kind: 'click', x: 10, y: 20, button: 'right', click_count: 2 });
+    const guarded = await invoke('browser-trusted-guarded-click', { kind: 'click', x: 50, y: 50, guard_selector: '#target' });
+    expect((guarded.action as Record<string, unknown>).guard).toEqual(expect.objectContaining({ selector: '#target', pointInsideTarget: true }));
+    runtime.events.guardBounds = { x: 200, y: 200, width: 100, height: 100, right: 300, bottom: 300 };
+    await expect(invoke('browser-trusted-stale-click', { kind: 'click', x: 50, y: 50, guard_selector: '#target' })).rejects.toThrow('PLUGIN_BROWSER_TRUSTED_INPUT_GUARD_MISMATCH');
+    runtime.events.guardBounds = { x: 0, y: 0, width: 100, height: 100, right: 100, bottom: 100 };
     await invoke('browser-trusted-wheel', { kind: 'wheel', delta_x: -4, delta_y: 120 });
-    await invoke('browser-trusted-drag', { kind: 'drag', from_x: 1, from_y: 2, to_x: 30, to_y: 40, steps: 5 });
+    await invoke('browser-trusted-drag', { kind: 'drag', from_x: 1, from_y: 2, to_x: 30, to_y: 40, steps: 5, guard_selector: '#target' });
     await invoke('browser-trusted-key', { kind: 'key', key: 'Meta+A' });
     await invoke('browser-trusted-text', { kind: 'text', text: 'hello' });
 
     expect(runtime.events.trustedInputs).toEqual([
       { kind: 'click', x: 10, y: 20, button: 'right', clickCount: 2 },
+      { kind: 'click', x: 50, y: 50, button: 'left', clickCount: 1 },
       { kind: 'wheel', deltaX: -4, deltaY: 120 },
       { kind: 'move', x: 1, y: 2 },
       { kind: 'down', button: 'left' },
@@ -2559,7 +2595,10 @@ describe('browser plugin', () => {
       { url: 'https://example.com/frame-b', name: 'frame-b', text: 'Frame B text', box: { x: 50, y: 250, width: 640, height: 480 } },
       { url: 'https://example.com/frame-hidden', name: 'frame-hidden', text: 'Hidden frame text', box: null },
       { url: 'https://example.com/frame-offscreen', name: 'frame-offscreen', text: 'Offscreen frame text', box: { x: 2000, y: 100, width: 640, height: 480 } },
-    ] }) as unknown as { frameEvaluations: Array<{ url: string; name: string; expression: unknown }> };
+    ] }) as unknown as {
+      frameEvaluations: Array<{ url: string; name: string; expression: unknown }>;
+      trustedInputs: Array<Record<string, unknown>>;
+    };
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => frameRuntime as never });
     const frameSession = await executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
@@ -2618,6 +2657,18 @@ describe('browser plugin', () => {
     expect(frameSnapshot.viewport).toEqual({ width: 1280, height: 720, scrollX: 0, scrollY: 120, devicePixelRatio: 2 });
     expect(frameSnapshot.frameViewport).toEqual({ width: 640, height: 480, scrollX: 0, scrollY: 0, devicePixelRatio: 1 });
     expect(frameSnapshot.frameOffset).toEqual({ x: 300, y: 100, width: 640, height: 480 });
+    const guardedFrameClick = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'trusted_input',
+      requestId: 'browser-frame-guarded-click',
+      args: { session_id: frameSessionId, kind: 'click', x: 360, y: 140, guard_selector: '#frame-action', frame_name: 'frame-a', post_action_wait_ms: 1 },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect((guardedFrameClick.action as Record<string, unknown>).guard).toEqual(expect.objectContaining({
+      selector: '#frame-action',
+      frame: { url: 'https://example.com/frame-a', name: 'frame-a' },
+      pointInsideTarget: true,
+    }));
+    expect(frameRuntime.trustedInputs).toContainEqual({ kind: 'click', x: 360, y: 140, button: 'left', clickCount: 1 });
     expect(frameSnapshot.data).toEqual([expect.objectContaining({
       bounds: { x: 310, y: 120, width: 100, height: 40, right: 410, bottom: 160 },
       center: { x: 360, y: 140 },

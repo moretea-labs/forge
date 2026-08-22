@@ -2521,6 +2521,33 @@ async function extractText(scope: BrowserEvaluationScope, selector: string | und
   return truncateText(raw, maxChars);
 }
 
+function trustedInputGuardScript(selector: string): string {
+  const encodedSelector = JSON.stringify(selector);
+  return `(() => {
+    let element;
+    try { element = document.querySelector(${encodedSelector}); }
+    catch (error) { return { trustedInputGuardVersion: 1, found: false, selectorError: String(error) }; }
+    if (!element) return { trustedInputGuardVersion: 1, found: false };
+    const rect = element.getBoundingClientRect();
+    const style = typeof getComputedStyle === 'function' ? getComputedStyle(element) : undefined;
+    const visible = Number(rect.width || 0) > 0
+      && Number(rect.height || 0) > 0
+      && style?.display !== 'none'
+      && style?.visibility !== 'hidden'
+      && Number(style?.opacity ?? 1) !== 0;
+    return {
+      trustedInputGuardVersion: 1,
+      found: true,
+      visible,
+      bounds: {
+        x: Number(rect.left || 0), y: Number(rect.top || 0),
+        width: Number(rect.width || 0), height: Number(rect.height || 0),
+        right: Number(rect.right || 0), bottom: Number(rect.bottom || 0),
+      },
+    };
+  })()`;
+}
+
 function verifyStateObservationScript(selector: string | undefined, textContains: string | undefined, maxChars: number): string {
   const payload = JSON.stringify({ selector: selector ?? null, textContains: textContains ?? null, maxChars });
   return `(() => {
@@ -3114,6 +3141,8 @@ function actions(): AssistantPluginActionDescriptor[] {
         steps: { type: 'number', minimum: 1, maximum: 100 },
         key: { type: 'string', minLength: 1, maxLength: 100 },
         text: { type: 'string', maxLength: 10000 },
+        guard_selector: { type: 'string' },
+        ...frameScopeProperties,
       }, ['kind']),
     },
     {
@@ -4151,6 +4180,14 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         if (!['click', 'move', 'wheel', 'drag', 'key', 'text'].includes(kind)) {
           throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'kind must be click, move, wheel, drag, key, or text.', { retryable: false });
         }
+        const guardSelector = stringValue(input.args.guard_selector);
+        const hasFrameScope = Boolean(stringValue(input.args.frame_url) || stringValue(input.args.frame_name));
+        if (hasFrameScope && !guardSelector) {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'trusted_input frame scope requires guard_selector; trusted input coordinates are always main-viewport CSS pixels.', { retryable: false });
+        }
+        if (guardSelector && kind !== 'click' && kind !== 'drag') {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'guard_selector is supported only for trusted_input click or drag.', { retryable: false });
+        }
         return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (connection.provider === 'macos-apple-events' || !page.mouse || !page.keyboard) {
             throw new AssistantPluginError(
@@ -4160,6 +4197,61 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             );
           }
           const button = input.args.button === 'middle' || input.args.button === 'right' ? input.args.button : 'left';
+          let guard: Record<string, unknown> | undefined;
+          if (guardSelector) {
+            const point = kind === 'click'
+              ? { x: requiredFiniteNumber(input.args.x, 'x', 0), y: requiredFiniteNumber(input.args.y, 'y', 0) }
+              : { x: requiredFiniteNumber(input.args.from_x, 'from_x', 0), y: requiredFiniteNumber(input.args.from_y, 'from_y', 0) };
+            const selection = resolveBrowserEvaluationScope(page, input.args, connection);
+            const observed = await selection.scope.evaluate<{
+              trustedInputGuardVersion?: unknown; found?: unknown; visible?: unknown; selectorError?: unknown;
+              bounds?: { x?: unknown; y?: unknown; width?: unknown; height?: unknown; right?: unknown; bottom?: unknown };
+            }>(trustedInputGuardScript(guardSelector));
+            if (observed?.trustedInputGuardVersion !== 1 || observed.found !== true || observed.visible !== true || !observed.bounds) {
+              throw new AssistantPluginError('PLUGIN_BROWSER_TRUSTED_INPUT_GUARD_MISMATCH', 'Trusted input guard selector is missing or not visibly actionable.', {
+                retryable: true,
+                details: { selector: guardSelector, frame: selection.frame, found: observed?.found, visible: observed?.visible, selectorError: observed?.selectorError },
+              });
+            }
+            const finite = (value: unknown, field: string): number => {
+              if (typeof value !== 'number' || !Number.isFinite(value)) {
+                throw new AssistantPluginError('PLUGIN_BROWSER_TRUSTED_INPUT_GUARD_MISMATCH', `Trusted input guard ${field} is not finite.`, { retryable: true });
+              }
+              return value;
+            };
+            let bounds = {
+              x: finite(observed.bounds.x, 'bounds.x'), y: finite(observed.bounds.y, 'bounds.y'),
+              width: finite(observed.bounds.width, 'bounds.width'), height: finite(observed.bounds.height, 'bounds.height'),
+              right: finite(observed.bounds.right, 'bounds.right'), bottom: finite(observed.bounds.bottom, 'bounds.bottom'),
+            };
+            if (selection.frame) {
+              const offset = await resolveFrameViewportOffset(page, selection);
+              if (!offset) throw new AssistantPluginError('PLUGIN_BROWSER_TRUSTED_INPUT_GUARD_MISMATCH', 'Trusted input frame offset is unavailable.', { retryable: true });
+              bounds = {
+                ...bounds,
+                x: bounds.x + offset.x,
+                y: bounds.y + offset.y,
+                right: bounds.right + offset.x,
+                bottom: bounds.bottom + offset.y,
+              };
+            }
+            const metrics = await page.evaluate<{ viewportMetricsVersion?: unknown; viewport?: { width?: unknown; height?: unknown } }>(VIEWPORT_METRICS_SCRIPT);
+            const viewportWidth = metrics?.viewportMetricsVersion === 1 && typeof metrics.viewport?.width === 'number' && Number.isFinite(metrics.viewport.width) ? metrics.viewport.width : undefined;
+            const viewportHeight = metrics?.viewportMetricsVersion === 1 && typeof metrics.viewport?.height === 'number' && Number.isFinite(metrics.viewport.height) ? metrics.viewport.height : undefined;
+            if (viewportWidth === undefined || viewportHeight === undefined) {
+              throw new AssistantPluginError('PLUGIN_BROWSER_TRUSTED_INPUT_GUARD_MISMATCH', 'Trusted input guard could not verify the top-level viewport.', { retryable: true });
+            }
+            const targetInViewport = bounds.right > 0 && bounds.bottom > 0 && bounds.x < viewportWidth && bounds.y < viewportHeight;
+            const pointInViewport = point.x >= 0 && point.y >= 0 && point.x < viewportWidth && point.y < viewportHeight;
+            const pointInsideTarget = point.x >= bounds.x && point.x <= bounds.right && point.y >= bounds.y && point.y <= bounds.bottom;
+            if (!targetInViewport || !pointInViewport || !pointInsideTarget) {
+              throw new AssistantPluginError('PLUGIN_BROWSER_TRUSTED_INPUT_GUARD_MISMATCH', 'Trusted input coordinates no longer match the guarded selector geometry.', {
+                retryable: true,
+                details: { selector: guardSelector, frame: selection.frame, point, bounds, targetInViewport, pointInViewport, pointInsideTarget },
+              });
+            }
+            guard = { selector: guardSelector, ...(selection.frame ? { frame: selection.frame } : {}), point, bounds, targetInViewport: true, pointInViewport: true, pointInsideTarget: true };
+          }
           if (kind === 'click') {
             const x = requiredFiniteNumber(input.args.x, 'x', 0);
             const y = requiredFiniteNumber(input.args.y, 'y', 0);
@@ -4200,7 +4292,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             await page.keyboard.insertText(text);
           }
           await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
-          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'trusted_input', `Sent trusted browser input (${kind}).`, { kind });
+          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'trusted_input', `Sent trusted browser input (${kind}).`, { kind, ...(guard ? { guard } : {}) });
         });
       }
       case 'dispatch_event': {
