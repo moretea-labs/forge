@@ -1758,6 +1758,25 @@ describe('browser plugin', () => {
     expect(native.events.activeTabId).toBe('9001');
   });
 
+  test('native console and request diagnostics fail closed instead of returning false empty evidence', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'] });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+    const opened = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page', requestId: 'native-diagnostics-open',
+      args: { session_id: 'native-diagnostics', url: 'https://example.com/native-diagnostics' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(opened.browserConnection).toMatchObject({ provider: 'macos-apple-events' });
+    for (const actionId of ['get_console_errors', 'get_failed_requests'] as const) {
+      await expect(executeBrowserPluginAction({
+        controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId, requestId: `native-diagnostics-${actionId}`,
+        args: { session_id: 'native-diagnostics' }, origin: { surface: 'local-ui', actor: 'test' },
+      })).rejects.toThrow('PLUGIN_BROWSER_DIAGNOSTICS_UNAVAILABLE');
+    }
+  });
+
   test('native attach fails closed when the stable macOS capability broker is unavailable', async () => {
     repoFixture();
     setMacOsBrowserRuntimeHooksForTest({
@@ -2780,6 +2799,11 @@ describe('browser plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     });
     expect(Array.isArray(consoleErrors.consoleErrors)).toBe(true);
+    const failedRequests = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_failed_requests',
+      requestId: 'browser-failed-requests', args: { session_id: sessionId }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(Array.isArray(failedRequests.failedRequests)).toBe(true);
 
     const closed = await executeBrowserPluginAction({
       controllerHome: repoRoot,
