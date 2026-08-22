@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -690,7 +690,7 @@ describe('browser plugin', () => {
       ]));
     }
 
-    for (const actionId of ['navigate', 'reload']) {
+    for (const actionId of ['navigate', 'reload', 'go_back']) {
       expect(actions[actionId]?.readOnly).toBe(false);
       expect(actions[actionId]?.risk).toBe('workspace_write');
       expect(actions[actionId]?.confirmation).toBe('authorization');
@@ -776,6 +776,24 @@ describe('browser plugin', () => {
       files: [join(repoRoot, 'one.png'), join(repoRoot, 'two.jpg')],
     }]);
     expect((attached.action as Record<string, unknown>).fileCount).toBe(2);
+
+    const outsideRoot = mkdtempSync(join(tmpdir(), 'forge-browser-outside-attachment-'));
+    roots.push(outsideRoot);
+    const outsideFile = join(outsideRoot, 'outside.txt');
+    writeFileSync(outsideFile, 'outside');
+    symlinkSync(outsideFile, join(repoRoot, 'outside-link.txt'));
+    for (const [requestId, filePath] of [
+      ['browser-attach-parent-escape', '../outside.txt'],
+      ['browser-attach-absolute-escape', outsideFile],
+      ['browser-attach-symlink-escape', 'outside-link.txt'],
+    ] as const) {
+      await expect(executeBrowserPluginAction({
+        controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'attach_local_file', requestId,
+        args: { session_id: sessionId, selector: 'input[type=file]', file_path: filePath, post_action_wait_ms: 1 },
+        origin: { surface: 'local-ui', actor: 'test' },
+      })).rejects.toThrow('PLUGIN_POLICY_BLOCKED');
+    }
+    expect((runtime as any).fileSelections).toHaveLength(1);
 
     const dispatched = await executeBrowserPluginAction({
       controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'dispatch_event', requestId: 'browser-dispatch-publish',
