@@ -700,6 +700,99 @@ describe('rh_work managed lifecycle closure', () => {
     expect(blocked?.isError).toBe(true);
     expect((blocked?.structuredContent as { error?: { code?: string } }).error?.code).toBe('WORK_DELIVERY_REQUIRES_FINALIZE');
   });
+
+  test('repository safe patch continues one Work-owned edit session across transient MCP Runtime rotation', async () => {
+    const fx = fixture('safe-patch-runtime-rotation');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Continue one Work-owned edit session across transient MCP Runtime rotation',
+      allowed_paths: ['runtime-rotation.txt'],
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 2,
+      requires_recovery: true,
+      constraints: { workspaceMode: 'isolated' },
+    });
+    expect(started?.isError, JSON.stringify(started?.structuredContent)).not.toBe(true);
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    expect(workId).toBeTruthy();
+    const work = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
+    expect(work.checkoutId).toBeTruthy();
+    expect(work.checkoutId).not.toBe(fx.repository.activeCheckoutId);
+    expect(work.worktreeRef).toBeTruthy();
+    const repositoryTools = await import('../../src/cli/mcp/repository-tools');
+
+    const firstPatch = await repositoryTools.callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+      repo_id: fx.repository.repoId,
+      checkout_id: work.checkoutId,
+      work_id: workId,
+      purpose: 'Cross-transport Work edit',
+      allowed_paths: ['runtime-rotation.txt'],
+      operations: [{ type: 'create', path: 'runtime-rotation.txt', content: 'first\n' }],
+    }, fx.ctx);
+    expect(firstPatch?.isError).not.toBe(true);
+    const firstSession = (firstPatch?.structuredContent as { session?: { sessionId?: string; workId?: string; controllerInstanceId?: string; currentRevision?: number } }).session;
+    expect(firstSession).toMatchObject({
+      workId,
+      controllerInstanceId: fx.owner.record.runtimeInstanceId,
+      currentRevision: 1,
+    });
+    const editSessionId = String(firstSession?.sessionId ?? '');
+    expect(editSessionId).toBeTruthy();
+
+    const transientCtx = {
+      ...fx.ctx,
+      sessionId: 'mcp-safe-patch-runtime-rotation-next',
+      controllerInstanceId: `${fx.owner.record.runtimeInstanceId}-next`,
+    };
+    const continuedPatch = await repositoryTools.callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+      repo_id: fx.repository.repoId,
+      checkout_id: work.checkoutId,
+      work_id: workId,
+      session_id: editSessionId,
+      operations: [{ type: 'append', path: 'runtime-rotation.txt', content: 'continued\n' }],
+    }, transientCtx);
+    expect(continuedPatch?.isError).not.toBe(true);
+    expect((continuedPatch?.structuredContent as { session?: { sessionId?: string; workId?: string; controllerInstanceId?: string; currentRevision?: number } }).session).toMatchObject({
+      sessionId: editSessionId,
+      workId,
+      controllerInstanceId: transientCtx.controllerInstanceId,
+      currentRevision: 2,
+    });
+
+    const foreignPrincipal = await repositoryTools.callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+      repo_id: fx.repository.repoId,
+      checkout_id: work.checkoutId,
+      work_id: workId,
+      session_id: editSessionId,
+      operations: [{ type: 'append', path: 'runtime-rotation.txt', content: 'foreign\n' }],
+    }, { ...transientCtx, principalId: 'foreign-principal' });
+    expect(foreignPrincipal?.isError).toBe(true);
+    expect((foreignPrincipal?.structuredContent as { error?: { code?: string } }).error?.code).toBe('WORK_CONTROLLER_OWNERSHIP_MISMATCH');
+
+    const foreignWork = await repositoryTools.callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+      repo_id: fx.repository.repoId,
+      checkout_id: work.checkoutId,
+      work_id: `${workId}-foreign`,
+      session_id: editSessionId,
+      operations: [{ type: 'append', path: 'runtime-rotation.txt', content: 'foreign-work\n' }],
+    }, transientCtx);
+    expect(foreignWork?.isError).toBe(true);
+    expect((foreignWork?.structuredContent as { error?: { code?: string } }).error?.code).toBe('WORK_ATTRIBUTION_INVALID');
+
+    const wrongCheckout = await repositoryTools.callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+      repo_id: fx.repository.repoId,
+      checkout_id: fx.repository.activeCheckoutId,
+      work_id: workId,
+      session_id: editSessionId,
+      operations: [{ type: 'append', path: 'runtime-rotation.txt', content: 'wrong-checkout\n' }],
+    }, transientCtx);
+    expect(wrongCheckout?.isError).toBe(true);
+    expect((wrongCheckout?.structuredContent as { error?: { code?: string } }).error?.code).toBe('WORK_CHECKOUT_MISMATCH');
+    expect(readFileSync(join(String(work.worktreeRef), 'runtime-rotation.txt'), 'utf8')).toBe('first\ncontinued\n');
+  });
+
   test('reuses exact Plan scope but resolves distinct slices under the same Requirement before creation', async () => { const fx = fixture('plan-admission'); createRequirement({ controllerHome: fx.controllerHome }, { requirementId: 'REQ-primary', title: 'Primary requirement', outcomeStatement: 'Own the primary Plan scope without duplicates.' }); const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim(); const step = (id: string) => [{ id, objective: 'Implement it', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [], check_ids: [], acceptance_criteria: ['done'] }]; const first = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-primary', requirement_id: 'REQ-primary', scope_key: 'primary-scope', source_revision: sourceRevision, objective: 'Implement the primary requirement', plan_steps: step('step-a'), }); expect(first?.isError).not.toBe(true); expect(first?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new' } }); const exactDuplicate = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-duplicate', requirement_id: 'REQ-primary', scope_key: 'primary-scope', source_revision: sourceRevision, objective: 'Duplicate exact scope', plan_steps: step('step-dup'), }); expect(exactDuplicate?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: false, admissionDecision: 'reuse_existing', plan: { planId: 'PLAN-primary' } } }); const ambiguousSlice = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-slice-b', requirement_id: 'REQ-primary', scope_key: 'parallel-scope', source_revision: sourceRevision, objective: 'A distinct slice under the same broad requirement', plan_steps: step('step-b'), }); expect(ambiguousSlice?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: false, admissionDecision: 'resolution_required', resolutionRequired: true, allowedPlanRelations: ['extend', 'parallel'] }, }); const parallelSlice = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-slice-b', requirement_id: 'REQ-primary', scope_key: 'parallel-scope', plan_relation: 'parallel', source_revision: sourceRevision, objective: 'A distinct explicitly parallel slice', plan_steps: step('step-b'), }); expect(parallelSlice?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new', plan: { planId: 'PLAN-slice-b', requirementId: 'REQ-primary' } } }); });
 
   test('continue adopts explicit non-Plan policy scope but keeps discovery-only paths non-authoritative and Plan scope frozen', async () => {

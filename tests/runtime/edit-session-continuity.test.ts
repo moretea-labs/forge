@@ -88,6 +88,18 @@ describe('edit session Runtime continuity', () => {
       expectedSha256: sha256(fx.initial),
       replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
     }], { binding: durableBinding('runtime-b', { principalId: 'foreign-principal' }) })).toThrow('EDIT_SESSION_IDENTITY_MISMATCH: principalId');
+    expect(() => applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+      type: 'replace',
+      path: 'source.ts',
+      expectedSha256: sha256(fx.initial),
+      replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+    }], { binding: durableBinding('runtime-b', { workId: 'foreign-work' }) })).toThrow('EDIT_SESSION_IDENTITY_MISMATCH: workId');
+    expect(() => applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+      type: 'replace',
+      path: 'source.ts',
+      expectedSha256: sha256(fx.initial),
+      replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+    }], { binding: durableBinding('runtime-b', { checkoutId: 'foreign-checkout' }) })).toThrow('EDIT_SESSION_IDENTITY_MISMATCH: checkoutId');
     expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(fx.initial);
     expect(getEditSession(fx.repoRoot, session.sessionId).controllerInstanceId).toBe('runtime-a');
   });
