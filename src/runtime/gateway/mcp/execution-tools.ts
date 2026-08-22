@@ -2005,33 +2005,48 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     const pendingAuthorization = [committed.stage, committed.commit].find((execution) => execution?.authorizationDecision?.decision === 'user_confirmation_required')?.authorizationDecision;
     if (pendingAuthorization) return { authorization: pendingAuthorization, work: compactHandle(current), stages: current.finalization };
     if (!committed.committed) return { ...failStage('commit', committed.error?.message ?? 'commit failed'), commit: committed };
+    const checks = contract?.checks ?? [];
+    const committedValidatedWorkspaceFingerprint = exactValidationInput && committed.after.clean
+      ? workspaceValidationFingerprint(validated.worktreeRepository.canonicalRoot, committed.before)
+      : undefined;
+    const validationPreservedAcrossCommit = Boolean(
+      checks.length > 0
+      && exactValidationInput
+      && committedValidatedWorkspaceFingerprint === exactValidationInput.workspaceFingerprint
+    );
+    const committedHead = gitHead(validated.worktreeRepository.canonicalRoot);
+    const postCommitInput = currentWorkValidationInput(validated.worktreeRepository, { ...current, expectedHead: committedHead }, checks);
     current = transact('commit-done', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, 'committed', {
-      expectedHead: gitHead(validated.worktreeRepository.canonicalRoot),
+      expectedHead: committedHead,
       finalization: {
         ...fresh.finalization,
-        validation: contract?.checks.length ? 'pending' : 'done',
+        validation: checks.length ? (validationPreservedAcrossCommit ? 'done' : 'pending') : 'done',
         commit: 'done',
         lastError: undefined,
       },
-      validatedInputFingerprint: contract?.checks.length ? undefined : fresh.validatedInputFingerprint,
+      validatedInputFingerprint: checks.length
+        ? (validationPreservedAcrossCommit ? postCommitInput.fingerprint : undefined)
+        : postCommitInput.fingerprint,
       failureReason: undefined,
     }));
-    if (contract?.checks.length) {
+    if (checks.length && !validationPreservedAcrossCommit) {
       markWorkValidationPending(ctx.controllerHome, current);
       return {
         work: compactHandle(current),
         stages: current.finalization,
         completed: false,
-        continuation: 'WORK_COMMITTED_REVALIDATION_REQUIRED: run work_validate on the exact committed HEAD before merge or completion',
+        continuation: 'WORK_COMMITTED_REVALIDATION_REQUIRED: committed content changed from the exact validated workspace; run work_validate on the committed HEAD before merge or completion',
       };
     }
-    const postCommitInput = currentWorkValidationInput(validated.worktreeRepository, current, []);
-    current = transact('commit-no-checks-validation', (fresh) => writeWorkHandle(ctx.controllerHome, {
-      ...fresh,
-      expectedHead: postCommitInput.head,
-      validatedInputFingerprint: postCommitInput.fingerprint,
-    }));
-    projectWorkValidationOutcome(ctx.controllerHome, current, 'passed', 'No validation checks were required after commit.');
+    if (validationPreservedAcrossCommit && exactValidationInput) {
+      appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
+        title: 'validation authority preserved across content-equivalent commit',
+        summary: `Exact validated workspace ${exactValidationInput.workspaceFingerprint.slice(0, 16)} was committed without content/status drift; validation authority transferred to committed HEAD ${postCommitInput.head}.`,
+        detailLevel: 'summary',
+      });
+    } else if (checks.length === 0) {
+      projectWorkValidationOutcome(ctx.controllerHome, current, 'passed', 'No validation checks were required after commit.');
+    }
   } else if (!wants.commit && current.finalization.commit === 'pending') {
     current = transact('commit-skipped', (fresh) => writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, commit: 'skipped' } }));
   }

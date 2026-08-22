@@ -1172,14 +1172,12 @@ describe('rh_work managed lifecycle closure', () => {
     writeFileSync(join(work.worktreePath, 'lifecycle.txt'), 'closed-loop\n');
 
     let finalized = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'finalize', work_id: work.workId });
-    for (let attempt = 0; attempt < 4 && (finalized?.structuredContent as { status?: string })?.status !== 'ok'; attempt += 1) {
-      expect(finalized?.isError).not.toBe(true);
-      const validation = finalized?.structuredContent as { validation?: { checks?: Array<{ process?: { processId?: string } }> } };
-      const processId = validation.validation?.checks?.find((entry) => entry.process?.processId)?.process?.processId;
-      expect(processId).toBeTruthy();
-      await waitForProcess(fx.controllerHome, fx.repository.repoId, processId!, { timeoutMs: 5_000 });
-      finalized = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'finalize', work_id: work.workId });
-    }
+    expect(finalized?.isError).not.toBe(true);
+    const validation = finalized?.structuredContent as { validation?: { checks?: Array<{ process?: { processId?: string } }> } };
+    const processId = validation.validation?.checks?.find((entry) => entry.process?.processId)?.process?.processId;
+    expect(processId).toBeTruthy();
+    await waitForProcess(fx.controllerHome, fx.repository.repoId, processId!, { timeoutMs: 5_000 });
+    finalized = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'finalize', work_id: work.workId });
     expect(finalized?.isError).not.toBe(true);
     const payload = finalized?.structuredContent as { status?: string; data?: { lifecycleClosed?: boolean } };
     expect(payload.status).toBe('ok'); expect(payload.data?.lifecycleClosed).toBe(true);
