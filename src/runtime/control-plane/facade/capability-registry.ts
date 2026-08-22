@@ -83,14 +83,14 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     summary: 'Diagnose and dry-run repair stuck jobs, stale projections, invalid check pollution, and worker unavailability without treating infrastructure failure as acceptance failure.',
   },
   {
-    capabilityId: 'controller.codex_delegation',
+    capabilityId: 'controller.external_controller',
     domain: 'controller',
     group: 'controller',
     operationClass: 'execute',
     risk: 'workspace_write',
     exposedVia: 'rh_work',
     schemaExposure: 'stable_static',
-    summary: 'Delegate bounded implementation work to Codex or Claude with context packs; workers return evidence and proposals but do not own final acceptance.',
+    summary: 'Claim Work ownership and start an external Codex, Claude, or ChatGPT controller through controller_claim and launcher_start, with handoff decisions coordinated through rh_inbox; deprecated delegate is not an execution path.',
   },
   {
     capabilityId: 'controller.work_contract',
