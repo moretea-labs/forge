@@ -22,6 +22,13 @@ describe('Desktop Operator trusted external registration', () => {
       'desktop.clipboard',
       'desktop.batch',
     ]);
+    expect(input.capabilities.find((capability) => capability.capabilityId === 'desktop.interact')?.actions).toEqual([
+      'desktop_press',
+      'desktop_pointer_click',
+      'desktop_type_text',
+      'desktop_key',
+      'desktop_open_url',
+    ]);
     expect(input.actions.map((action) => action.actionId)).toEqual([
       'desktop_status',
       'desktop_permissions_request',
