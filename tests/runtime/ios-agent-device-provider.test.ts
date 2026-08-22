@@ -148,6 +148,11 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(manifest.lifecycle.state).toBe('degraded');
     expect(manifest.actions.map((action) => action.actionId)).toContain('physical_device_list');
     expect(manifest.actions.map((action) => action.actionId)).toContain('agent_device_status');
+    const blockingMutations = manifest.actions.filter((action) => !action.readOnly && action.actionId !== 'physical_device_confirm_foreground');
+    expect(blockingMutations.length).toBeGreaterThan(0);
+    expect(blockingMutations.every((action) => action.executionMode === 'lightweight_process')).toBe(true);
+    expect(manifest.actions.find((action) => action.actionId === 'physical_device_confirm_foreground')?.executionMode).toBeUndefined();
+    expect(manifest.actions.filter((action) => action.readOnly).every((action) => action.executionMode !== 'lightweight_process')).toBe(true);
     expect((manifest.health.details?.physicalDevice as Record<string, unknown>).probed).toBe(false);
   });
 

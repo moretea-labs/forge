@@ -1015,7 +1015,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
     { resource: 'repo-state' as const, mode: 'write' as const },
   ];
   const interactionProperty = { interaction_id: { type: 'string' } };
-  return [
+  const actions: AssistantPluginActionDescriptor[] = [
     {
       actionId: 'physical_device_status', title: 'Physical iOS device status',
       description: 'Report CoreDevice readiness. This provider has no XCTest/WDA Runner lifecycle.',
@@ -1161,6 +1161,9 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: { type: 'object', properties: { ...interactionProperty }, required: ['interaction_id'], additionalProperties: false },
     },
   ];
+  return actions.map((action) => action.readOnly || action.actionId === 'physical_device_confirm_foreground'
+    ? action
+    : { ...action, executionMode: 'lightweight_process' });
 }
 
 export async function executeIosPhysicalDeviceAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {

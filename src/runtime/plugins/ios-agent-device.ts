@@ -2096,7 +2096,7 @@ export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
     { resource: 'repo-state' as const, mode: 'write' as const },
   ];
   const interactionProperty = { interaction_id: { type: 'string' } };
-  return [
+  const actions: AssistantPluginActionDescriptor[] = [
     {
       actionId: 'agent_device_status', title: 'agent-device status',
       description: 'Resolve the exact executable and verify a reviewed agent-device command contract.',
@@ -2225,6 +2225,9 @@ export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: { type: 'object', properties: { ...interactionProperty, shutdown_simulator: { type: 'boolean' } }, required: ['interaction_id'], additionalProperties: false },
     },
   ];
+  return actions.map((action) => action.readOnly
+    ? action
+    : { ...action, executionMode: 'lightweight_process' });
 }
 
 export async function executeIosAgentDeviceAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
