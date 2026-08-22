@@ -1652,14 +1652,25 @@ describe('browser plugin', () => {
       args: { session_id: 'browser-native-activate', url: 'https://example.com/foreground' }, origin: { surface: 'local-ui', actor: 'test' },
     });
     expect((opened.session as Record<string, unknown>).sessionId).toBe('browser-native-activate');
+    expect(opened.provider).toBe('macos-apple-events');
+    expect((opened.browserConnection as Record<string, unknown>).provider).toBe('macos-apple-events');
     expect(native.events.created).toEqual(['9001']);
     expect(native.events.activeTabId).toBe('501');
+
+    const observed = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text', requestId: 'browser-native-provider-read',
+      args: { session_id: 'browser-native-activate' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(observed.provider).toBe('macos-apple-events');
+    expect((observed.browserConnection as Record<string, unknown>).provider).toBe('macos-apple-events');
 
     const activated = await executeBrowserPluginAction({
       controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'activate_page', requestId: 'browser-native-activate-page',
       args: { session_id: 'browser-native-activate', post_action_wait_ms: 1 }, origin: { surface: 'local-ui', actor: 'test' },
     });
     expect((activated.action as Record<string, unknown>).actionId).toBe('activate_page');
+    expect(activated.provider).toBe('macos-apple-events');
+    expect((activated.browserConnection as Record<string, unknown>).provider).toBe('macos-apple-events');
     expect(native.events.created).toEqual(['9001']);
     expect(native.events.activeTabId).toBe('9001');
   });
@@ -2510,6 +2521,8 @@ describe('browser plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     });
     const sessionId = String(opened.sessionId);
+    expect(opened.provider).toBe('playwright');
+    expect((opened.browserConnection as Record<string, unknown>).provider).toMatch(/^playwright-/);
 
     const listed = await executeBrowserPluginAction({
       controllerHome: repoRoot,
@@ -2534,6 +2547,7 @@ describe('browser plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     });
     expect((filled.action as Record<string, unknown>).actionId).toBe('fill');
+    expect(filled.provider).toBe('playwright');
     expect(filled.screenshot).toBeDefined();
 
     const extracted = await executeBrowserPluginAction({
@@ -2547,6 +2561,7 @@ describe('browser plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     });
     expect(extracted.actionId).toBe('snapshot_interactive');
+    expect(extracted.provider).toBe('playwright');
     expect(extracted.geometryVersion).toBe(1);
     expect(extracted.viewport).toEqual({ width: 1280, height: 720, scrollX: 0, scrollY: 120, devicePixelRatio: 2 });
     expect(extracted.data).toEqual([expect.objectContaining({
