@@ -130,6 +130,14 @@ bun run benchmark:mcp-transport -- --input secure-tunnel-samples.jsonl
 
 That imported-sample path is also useful for comparing ChatGPT-observed timing with direct HTTPS probes without exposing credentials.
 
+For a provider-neutral machine-placement baseline, run an isolated temporary Runtime on the target host:
+
+```bash
+bun run benchmark:mcp-host
+```
+
+`benchmark:mcp-host` creates a temporary Controller Home and ephemeral bearer credential, registers only the current checkout, starts a non-persistent Runtime on port `18765`, waits on `/ready`, measures both steady-state and connect-inclusive `rh_status`, prints one combined JSON report, then terminates only that temporary Runtime and removes its temporary state. It does not reuse or restart the normal Forge service. The same command can run on local macOS, a GitHub-hosted Ubuntu runner, OCI, or GCP. Use `FORGE_MCP_BENCH_LABEL`, `FORGE_MCP_BENCH_PORT`, `FORGE_MCP_BENCH_ITERATIONS`, and `FORGE_MCP_BENCH_CONNECT_ITERATIONS` to keep labels and sample counts explicit when comparing hosts. Set `FORGE_MCP_BENCH_OUTPUT` when a CI system or a restarting controller needs the combined non-secret JSON report persisted outside the temporary Runtime directory.
+
 ## Verify
 
 Local Runtime:
