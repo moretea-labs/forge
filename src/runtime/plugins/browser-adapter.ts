@@ -4205,16 +4205,25 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       case 'get_console_errors':
       case 'get_failed_requests': {
         const target = resolveActionTarget(input.repoRoot, input.args);
-        return await withPage(input.repoRoot, current, target, input.args, async (_page, diagnostics, connection) => ({
-          provider: browserResultProvider(connection.provider),
-          sessionId: target.sessionId,
-          url: target.url,
-          navigation: diagnostics.navigation,
-          browserConnection: connection,
-          ...(input.actionId === 'get_console_errors'
-            ? { consoleErrors: diagnostics.consoleErrors.slice(0, 50) }
-            : { failedRequests: diagnostics.failedRequests.slice(0, 50) }),
-        }), { persistSession: true });
+        return await withPage(input.repoRoot, current, target, input.args, async (_page, diagnostics, connection) => {
+          if (connection.provider === 'macos-apple-events') {
+            throw new AssistantPluginError(
+              'PLUGIN_BROWSER_DIAGNOSTICS_UNAVAILABLE',
+              'Console and failed-request diagnostics require a Playwright/CDP-controlled page; native Apple Events sessions do not expose browser diagnostic events.',
+              { retryable: false, details: { provider: connection.provider, actionId: input.actionId, sessionId: target.sessionId } },
+            );
+          }
+          return {
+            provider: browserResultProvider(connection.provider),
+            sessionId: target.sessionId,
+            url: target.url,
+            navigation: diagnostics.navigation,
+            browserConnection: connection,
+            ...(input.actionId === 'get_console_errors'
+              ? { consoleErrors: diagnostics.consoleErrors.slice(0, 50) }
+              : { failedRequests: diagnostics.failedRequests.slice(0, 50) }),
+          };
+        }, { persistSession: true });
       }
       case 'activate_page': {
         const target = resolveActionTarget(input.repoRoot, input.args);
