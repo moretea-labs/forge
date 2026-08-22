@@ -483,9 +483,16 @@ export class GlobalScheduler {
     }
     this.sourceScansAvoided += sourceSampling.avoidedRepositoryCount;
     // Phase 0 reuses one durable Work admission policy. Cleanup, stale-state
-    // reconciliation, and read-only source sampling above remain available, but
-    // ordinary schedule/workflow advancement and Worker dispatch stop here.
+    // reconciliation, read-only source sampling, and projection maintenance remain
+    // available, but ordinary schedule/workflow advancement and Worker dispatch stop here.
     if (!schedulerDispatchAllowed(this.controllerHome)) {
+      refreshSchedulerRepositoryProjections({
+        controllerHome: this.controllerHome,
+        repositories,
+        sourceScanRepositories,
+        projectionRefreshRepoIds: [],
+        controllerPid: this.controllerPid,
+      });
       this.lastHeartbeatAt = new Date().toISOString();
       this.persistState(true);
       return { activeJobs: activeJobSnapshot.length };

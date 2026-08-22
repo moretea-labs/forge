@@ -13,6 +13,9 @@ import {
   type RuntimeCleanupReport,
 } from '../../src/runtime/control-plane/runtime-cleanup';
 import { previewRuntimeCleanup } from '../../src/runtime/maintenance/cleanup';
+import { activateExclusiveWorkAdmission } from '../../src/runtime/control-plane/facade/work-admission-policy';
+import { markRepositoryProjectionDirty, repositoryProjectionIsDirty } from '../../src/runtime/projections/invalidation';
+import type { RepositoryRecord } from '../../src/cli/repositories/types';
 
 const homes: string[] = [];
 
@@ -460,6 +463,58 @@ describe('runtime cleanup', () => {
     expect(['repo-a', 'repo-b']).toContain(processGcRepos[0]!);
     expect(validationRepos.sort()).toEqual(['repo-a', 'repo-b']);
     expect(editValidationRepos.sort()).toEqual(['repo-a', 'repo-b']);
+  });
+
+  test('refreshes dirty repository projections even when exclusive Work admission disables dispatch', async () => {
+    const home = controllerHome();
+    const root = mkdtempSync(join(tmpdir(), 'forge-projection-refresh-disabled-dispatch-'));
+    homes.push(root);
+    const at = new Date().toISOString();
+    const repository: RepositoryRecord = {
+      schemaVersion: 1,
+      repoId: 'repo-projection-refresh-disabled-dispatch',
+      displayName: 'projection refresh disabled dispatch',
+      localRoot: root,
+      canonicalRoot: root,
+      activeCheckoutId: 'checkout-main',
+      checkouts: [{
+        checkoutId: 'checkout-main', localRoot: root, canonicalRoot: root, worktree: false,
+        branch: 'main', createdAt: at, updatedAt: at, lastSeenAt: at,
+      }],
+      repositoryType: 'git',
+      enabled: true,
+      createdAt: at,
+      updatedAt: at,
+      lastSeenAt: at,
+      configurationPath: join(root, '.ai', 'harness', 'repository.json'),
+      stateStorageStrategy: 'controller-home',
+    };
+    const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 });
+    const internal = scheduler as unknown as {
+      repositoryList: () => RepositoryRecord[];
+      lastSourceScanAt: number;
+      lastGitStatusSampleAt: number;
+      runtimeCleanup: () => void;
+      terminalWorkCleanup: () => Promise<void>;
+      processGc: () => { ok: boolean };
+      workValidationReconcile: () => { errors: unknown[] };
+      editValidationReconcile: () => Promise<{ errors: unknown[] }>;
+    };
+    internal.repositoryList = () => [repository];
+    internal.lastSourceScanAt = 0;
+    internal.lastGitStatusSampleAt = 0;
+    internal.runtimeCleanup = () => undefined;
+    internal.terminalWorkCleanup = async () => undefined;
+    internal.processGc = () => ({ ok: true });
+    internal.workValidationReconcile = () => ({ errors: [] });
+    internal.editValidationReconcile = async () => ({ errors: [] });
+    activateExclusiveWorkAdmission(home, { allowedWorkId: 'work-exclusive', reason: 'test exclusive admission' });
+    markRepositoryProjectionDirty(home, repository.repoId, 'source-scan-test', { sourceRevision: 'abc123' });
+    expect(repositoryProjectionIsDirty(home, repository.repoId)).toBe(true);
+
+    await expect(scheduler.tick()).resolves.toEqual({ activeJobs: 0 });
+
+    expect(repositoryProjectionIsDirty(home, repository.repoId)).toBe(false);
   });
 
   test('a cleanup failure does not interrupt the scheduler tick', async () => {
