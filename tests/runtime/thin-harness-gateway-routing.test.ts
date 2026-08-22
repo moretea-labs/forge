@@ -12,7 +12,7 @@ import {
 import { createMcpToolContext } from '../../src/cli/mcp/server';
 import { callMultiRepositoryTool } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { listLocalBridgeJobSnapshots } from '../../src/cli/local-bridge/job-store';
 import { callRepositoryTool } from '../../src/cli/mcp/repository-tools';
@@ -32,11 +32,15 @@ import { runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagno
 import { MCP_SERVER_INSTRUCTIONS } from '../../src/cli/mcp/instructions';
 import {
   applyEditOperations,
+  assertEditSessionDurableBinding,
   beginEditSession,
   getEditSession,
 } from '../../src/cli/editing/edit-session';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
-import { reconcilePendingEditValidations } from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
+import {
+  reconcilePendingEditValidations,
+  startOrJoinEditValidation,
+} from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
@@ -938,10 +942,42 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const afterEdit = readFileSync(sourcePath, 'utf8');
     expect(afterEdit).toContain('n = 2');
     const sessionId = String((startedPayload.session as { sessionId: string }).sessionId);
+    const originalCheckoutId = fx.repository.activeCheckoutId;
+    const rotatedRepoRoot = join(fx.root, 'rotated-checkout');
+    git(fx.repoRoot, ['worktree', 'add', '-b', 'validation-rotation', rotatedRepoRoot, 'HEAD']);
+    const rotatedRepository = addRepositoryCheckout({
+      repoId: fx.repository.repoId,
+      path: rotatedRepoRoot,
+      controllerHome: fx.controllerHome,
+      activate: true,
+    });
+    expect(rotatedRepository.activeCheckoutId).not.toBe(originalCheckoutId);
 
+    // Reproduce the production authority shape: the durable Work/edit root is
+    // still the original checkout while the repository registry's unrelated
+    // active checkout has rotated. Before the fix this returned
+    // EDIT_VALIDATION_CHECKOUT_CHANGED even though the original Process and
+    // edit session were still valid on their durable checkout.
+    const workBoundRepositoryView = {
+      ...rotatedRepository,
+      localRoot: fx.repoRoot,
+      canonicalRoot: fx.repoRoot,
+    };
+    const reconciled = await startOrJoinEditValidation(fx.controllerHome, workBoundRepositoryView, {
+      editSessionId: sessionId,
+      checkIds: ['verify'],
+      validationRequestId,
+    });
+    expect(reconciled.error?.code).not.toBe('EDIT_VALIDATION_CHECKOUT_CHANGED');
+    expect(reconciled.completed).toBe(true);
+    expect(reconciled.ok).toBe(true);
+    expect(reconciled.receipts?.[0]?.checkoutId).toBe(originalCheckoutId);
+
+    // validation_only intentionally omits checkout_id here. The gateway must
+    // recover the durable edit-session checkout instead of inheriting the
+    // unrelated active checkout from the repository registry.
     const joined = await routeDurableMcpCall(fx.ctx, 'repository_safe_patch_apply', {
       repo_id: fx.repository.repoId,
-      checkout_id: fx.repository.activeCheckoutId,
       session_id: sessionId,
       validation_only: true,
       check_ids: ['verify'],
@@ -957,6 +993,32 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect((joinedPayload.validation as Record<string, unknown>).validationRequestId).toBe(validationRequestId);
     expect(getEditSession(fx.repoRoot, sessionId).status).toBe('checked');
     expect(readFileSync(sourcePath, 'utf8')).toBe(afterEdit);
+  });
+
+  test('durable edit-session validation binding rejects different Work, principal, or checkout', () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const binding = {
+      workId: 'work-validation-owner',
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: 'principal-validation-owner',
+      routeDecisionFingerprint: 'route-validation-owner',
+    };
+    const session = beginEditSession(fx.repoRoot, {
+      purpose: 'durable validation identity fence',
+      binding,
+    });
+
+    expect(() => assertEditSessionDurableBinding(session, binding, { requireBoundIdentity: true })).not.toThrow();
+    expect(() => assertEditSessionDurableBinding(session, { ...binding, workId: 'work-other' }, { requireBoundIdentity: true }))
+      .toThrow('EDIT_SESSION_IDENTITY_MISMATCH: workId');
+    expect(() => assertEditSessionDurableBinding(session, { ...binding, principalId: 'principal-other' }, { requireBoundIdentity: true }))
+      .toThrow('EDIT_SESSION_IDENTITY_MISMATCH: principalId');
+    expect(() => assertEditSessionDurableBinding(session, { ...binding, checkoutId: 'checkout_other' }, { requireBoundIdentity: true }))
+      .toThrow('EDIT_SESSION_IDENTITY_MISMATCH: checkoutId');
+    expect(() => assertEditSessionDurableBinding(session, undefined, { requireBoundIdentity: true }))
+      .toThrow('EDIT_SESSION_IDENTITY_MISMATCH: binding');
   });
 
   test('run_check preserves Process Runtime request conflicts instead of masking them', async () => {
