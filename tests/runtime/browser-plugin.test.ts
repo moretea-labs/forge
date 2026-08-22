@@ -169,6 +169,7 @@ function mockAttachPlaywright(
     newPages: 0,
     gotos: [] as string[],
     broughtToFront: [] as string[],
+    trustedInputs: [] as Array<Record<string, unknown>>,
   };
 
   const makePage = (state: { url: string; title: string; ownerToken?: string }) => ({
@@ -250,6 +251,7 @@ function mockManagedPersistentPlaywright() {
     pageCloses: [] as string[],
     gotos: [] as Array<{ id: string; url: string }>,
     broughtToFront: [] as string[],
+    trustedInputs: [] as Array<Record<string, unknown>>,
   };
   const states: PageState[] = [{ id: 'page-1', url: 'about:blank', title: 'New Tab', closed: false }];
   const pageByState = new Map<PageState, any>();
@@ -287,6 +289,17 @@ function mockManagedPersistentPlaywright() {
       async click() {},
       async fill() {},
       async press() {},
+      mouse: {
+        async click(x: number, y: number, options?: Record<string, unknown>) { events.trustedInputs.push({ kind: 'click', x, y, ...options }); },
+        async move(x: number, y: number, options?: Record<string, unknown>) { events.trustedInputs.push({ kind: 'move', x, y, ...options }); },
+        async wheel(deltaX: number, deltaY: number) { events.trustedInputs.push({ kind: 'wheel', deltaX, deltaY }); },
+        async down(options?: Record<string, unknown>) { events.trustedInputs.push({ kind: 'down', ...options }); },
+        async up(options?: Record<string, unknown>) { events.trustedInputs.push({ kind: 'up', ...options }); },
+      },
+      keyboard: {
+        async press(key: string) { events.trustedInputs.push({ kind: 'key', key }); },
+        async insertText(text: string) { events.trustedInputs.push({ kind: 'text', text }); },
+      },
       async waitForSelector() { return {}; },
       async bringToFront() {
         events.broughtToFront.push(state.id);
@@ -543,6 +556,7 @@ describe('browser plugin', () => {
       'fill',
       'type',
       'press',
+      'trusted_input',
       'wait_for_selector',
       'close_page',
       'await_file_transfer',
@@ -582,6 +596,9 @@ describe('browser plugin', () => {
     expect(actions.click?.risk).toBe('remote_write');
     expect(actions.click?.confirmation).toBe('authorization');
     expect(actions.click_text?.risk).toBe('remote_write');
+    expect(actions.trusted_input?.risk).toBe('remote_write');
+    expect(actions.trusted_input?.confirmation).toBe('authorization');
+    expect(actions.trusted_input?.argumentsSchema).toMatchObject({ properties: { kind: { enum: ['click', 'move', 'wheel', 'drag', 'key', 'text'] } } });
     expect(actions.dispatch_event?.risk).toBe('remote_write');
     expect(actions.attach_local_file?.argumentsSchema).toMatchObject({ properties: { file_path: { type: 'string' }, file_paths: { type: 'array', maxItems: 32 } } });
     expect(actions.type?.risk).toBe('remote_write');
@@ -993,6 +1010,49 @@ describe('browser plugin', () => {
     expect(source).toContain('renameSync(tempPath, path)');
     expect(source).toContain('writeAtomicJson(sessionPath(repoRoot, session.sessionId), session)');
     expect(source).toContain("PLUGIN_BROWSER_SESSION_STATE_CORRUPT");
+  });
+
+  test('trusted_input uses Playwright mouse and keyboard primitives without foregrounding the page', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+    });
+    const runtime = mockManagedPersistentPlaywright() as unknown as {
+      events: { trustedInputs: Array<Record<string, unknown>>; broughtToFront: string[] };
+    };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+    const opened = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-trusted-input-open', args: { url: 'https://example.com/trusted-input' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    const invoke = async (requestId: string, args: Record<string, unknown>) => executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'trusted_input', requestId,
+      args: { session_id: sessionId, post_action_wait_ms: 1, ...args },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    await invoke('browser-trusted-click', { kind: 'click', x: 10, y: 20, button: 'right', click_count: 2 });
+    await invoke('browser-trusted-wheel', { kind: 'wheel', delta_x: -4, delta_y: 120 });
+    await invoke('browser-trusted-drag', { kind: 'drag', from_x: 1, from_y: 2, to_x: 30, to_y: 40, steps: 5 });
+    await invoke('browser-trusted-key', { kind: 'key', key: 'Meta+A' });
+    await invoke('browser-trusted-text', { kind: 'text', text: 'hello' });
+
+    expect(runtime.events.trustedInputs).toEqual([
+      { kind: 'click', x: 10, y: 20, button: 'right', clickCount: 2 },
+      { kind: 'wheel', deltaX: -4, deltaY: 120 },
+      { kind: 'move', x: 1, y: 2 },
+      { kind: 'down', button: 'left' },
+      { kind: 'move', x: 30, y: 40, steps: 5 },
+      { kind: 'up', button: 'left' },
+      { kind: 'key', key: 'Meta+A' },
+      { kind: 'text', text: 'hello' },
+    ]);
+    expect(runtime.events.broughtToFront).toEqual([]);
   });
 
   test('list_sessions distinguishes saved metadata from live managed sessions without creating pages', async () => {
@@ -2790,6 +2850,16 @@ describe('browser plugin', () => {
     expect(adoptedSession.browser.tab.ownership).toBe('user_owned');
     expect(adoptedSession.browser.tab.windowId).toBe('window-77');
     expect(adoptedSession.browser.tab.tabId).toBe('501');
+    expect(native.events.created).toEqual([]);
+    expect(native.events.navigated).toEqual([]);
+
+    await expect(executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'trusted_input',
+      requestId: 'browser-native-trusted-input-refused',
+      args: { session_id: adoptedSession.sessionId, kind: 'click', x: 12, y: 24, post_action_wait_ms: 1 },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('PLUGIN_BROWSER_TRUSTED_INPUT_UNAVAILABLE');
+    expect(native.events.activeTabId).toBe('501');
     expect(native.events.created).toEqual([]);
     expect(native.events.navigated).toEqual([]);
 
