@@ -131,6 +131,30 @@ describe('persistent Gateway release retention', () => {
     expect(report.skippedByReason.release_authority).toBe(3);
   });
 
+  test('pins standalone recovery known-good Runtime releases beyond active and previous', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-known-good-retention-'));
+    roots.push(home);
+    const active = retentionRelease(home, 'active-release');
+    const previous = retentionRelease(home, 'previous-release');
+    const knownGood = retentionRelease(home, 'known-good-release');
+    const stale = retentionRelease(home, 'stale-release');
+    writeRetentionRuntimeAuthority(home, 'active-release', 'previous-release');
+    const stateRoot = join(home, 'recovery', 'state');
+    mkdirSync(stateRoot, { recursive: true });
+    writeFileSync(join(stateRoot, 'known-good.json'), `${JSON.stringify({
+      schemaVersion: 1,
+      releases: [{ revision: 'known-good-release', path: join(knownGood, 'manifest.json') }],
+      updatedAt: '2026-08-22T00:00:00.000Z',
+    }, null, 2)}\n`);
+
+    const report = cleanupControllerReleaseHistory(home, { nowMs: Date.now() + 1_000, graceMs: 0, stagingGraceMs: 0, maxRemovals: 20 });
+    expect(existsSync(active)).toBe(true);
+    expect(existsSync(previous)).toBe(true);
+    expect(existsSync(knownGood)).toBe(true);
+    expect(existsSync(stale)).toBe(false);
+    expect(report.removedPaths).toContain('runtime/releases/stale-release');
+  });
+
   test('fails runtime release cleanup closed when a configured Gateway authority is missing or malformed', () => {
     for (const mode of ['missing', 'malformed'] as const) {
       const home = mkdtempSync(join(tmpdir(), `forge-gateway-retention-${mode}-`));

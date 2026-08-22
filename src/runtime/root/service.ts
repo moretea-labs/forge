@@ -220,7 +220,11 @@ function atomicSymlink(path: string, target: string): void {
 export function syncForgeRuntimeActiveEntrypoint(controllerHome: string): { path: string; target?: string; changed: boolean } {
   const paths = forgeRuntimeServicePaths(controllerHome);
   const target = activeRuntimeEntrypoint(controllerHome);
-  if (!target) return { path: paths.activeEntrypointPath, changed: false };
+  if (!target) {
+    const existed = existsSync(paths.activeEntrypointPath);
+    if (existed) rmSync(paths.activeEntrypointPath, { force: true, recursive: true });
+    return { path: paths.activeEntrypointPath, changed: existed };
+  }
   let current: string | undefined;
   try {
     if (lstatSync(paths.activeEntrypointPath).isSymbolicLink()) current = resolve(dirname(paths.activeEntrypointPath), readlinkSync(paths.activeEntrypointPath));
