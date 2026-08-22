@@ -103,7 +103,7 @@
     "smoke:tool-surface": "bun scripts/smoke-mcp-tool-surface.ts",
     "check:smoke": "bun run smoke:mcp-http-runtime && bun run smoke:runtime-recovery && bun run smoke:schedule-engine && bun run smoke:tool-surface",
     "check:task": "bun scripts/run-governed-gate.ts task",
-    "check:main": "bun scripts/run-governed-gate.ts main",
+    "check:main": "bash -lc 'bun scripts/run-governed-gate.ts main; gate=$?; FORGE_MCP_BENCH_LABEL=github-ubuntu-pr bun run benchmark:mcp-host; bench=$?; if [ $bench -ne 0 ]; then exit $bench; fi; exit $gate'",
     "check:ci": "bun run check:main",
     "check:release": "bun scripts/run-governed-gate.ts release",
     "check:release-surface": "bash scripts/check-public-release-surface.sh",
