@@ -84,13 +84,29 @@ function writeAuthorizationBrowserSession(repoRoot: string, sessionId: string, u
   }));
 }
 
-function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?: string } = {}) {
+function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?: string; frames?: Array<{ url: string; name: string; text?: string }> } = {}) {
   let currentUrl = 'https://example.com/';
   let currentTitle = options.title ?? 'Example';
   const routeDecisions: string[] = [];
   const launches: Array<{ userDataDir: string; options: Record<string, unknown> }> = [];
   const evaluatedExpressions: unknown[] = [];
   const fileSelections: Array<{ selector: string; files: string[] }> = [];
+  const frameEvaluations: Array<{ url: string; name: string; expression: unknown }> = [];
+  const frames = (options.frames ?? []).map((frame) => ({
+    url: () => frame.url,
+    name: () => frame.name,
+    async evaluate<T>(expression?: unknown) {
+      frameEvaluations.push({ url: frame.url, name: frame.name, expression });
+      if (typeof expression === 'string' && expression.includes('geometryVersion: 1')) {
+        return {
+          geometryVersion: 1,
+          viewport: { width: 640, height: 480, scrollX: 0, scrollY: 0, devicePixelRatio: 1 },
+          elements: [{ tag: 'button', text: 'Frame action', selectorHint: '#frame-action', bounds: { x: 10, y: 20, width: 100, height: 40, right: 110, bottom: 60 }, center: { x: 60, y: 40 }, visible: true, inViewport: true, disabled: false, editable: false }],
+        } as T;
+      }
+      return (frame.text ?? 'Frame text') as T;
+    },
+  }));
 
   const page = {
     async goto(url: string) {
@@ -136,6 +152,9 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
       currentTitle = options.title ?? 'Waiting Example';
       return {};
     },
+    frames() {
+      return frames;
+    },
     async setInputFiles(selector: string, files: string | string[]) {
       fileSelections.push({ selector, files: Array.isArray(files) ? [...files] : [files] });
     },
@@ -165,7 +184,7 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
       },
     },
     routeDecisions,
-    launches, evaluatedExpressions, fileSelections,
+    launches, evaluatedExpressions, fileSelections, frameEvaluations,
   } as never;
 }
 
@@ -550,6 +569,7 @@ describe('browser plugin', () => {
       'configure',
       'create_session',
       'list_sessions',
+      'list_frames',
       'reconcile_sessions',
       'close_session',
       'open_page',
@@ -601,6 +621,9 @@ describe('browser plugin', () => {
         { resource: 'repo-state', mode: 'write' },
       ]));
     }
+
+    const interactionCapability = manifest.capabilities.find((capability) => capability.capabilityId === 'browser-interaction');
+    expect(interactionCapability?.actions).toContain('trusted_input');
 
     expect(actions.activate_page?.risk).toBe('workspace_write');
     expect(actions.activate_page?.confirmation).toBe('authorization');
@@ -2513,6 +2536,76 @@ describe('browser plugin', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     });
     expect(closed.closed).toBe(true);
+  });
+
+  test('discovers Playwright frames and scopes DOM observations to one exact frame', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'managed_persistent', profileMode: 'repo_local' });
+    const frameRuntime = mockPlaywright({ frames: [
+      { url: 'https://example.com/frame-a', name: 'frame-a', text: 'Frame A text' },
+      { url: 'https://example.com/frame-b', name: 'frame-b', text: 'Frame B text' },
+    ] }) as unknown as { frameEvaluations: Array<{ url: string; name: string; expression: unknown }> };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => frameRuntime as never });
+    const frameSession = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
+      requestId: 'browser-frame-session-create', args: { url: 'https://example.com/' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const frameSessionId = String((frameSession.session as Record<string, unknown>).sessionId);
+    const frameList = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'list_frames',
+      requestId: 'browser-list-frames', args: { session_id: frameSessionId },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(frameList.frames).toEqual([
+      { url: 'https://example.com/frame-a', name: 'frame-a' },
+      { url: 'https://example.com/frame-b', name: 'frame-b' },
+    ]);
+    const frameText = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'browser-frame-get-text', args: { session_id: frameSessionId, frame_url: 'https://example.com/frame-b', frame_name: 'frame-b' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(frameText.frame).toEqual({ url: 'https://example.com/frame-b', name: 'frame-b' });
+    expect(frameText.text).toBe('Frame B text');
+    const frameSnapshot = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'snapshot_interactive',
+      requestId: 'browser-frame-snapshot', args: { session_id: frameSessionId, frame_name: 'frame-a' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(frameSnapshot.frame).toEqual({ url: 'https://example.com/frame-a', name: 'frame-a' });
+    expect(frameSnapshot.geometryVersion).toBe(1);
+    expect(frameRuntime.frameEvaluations.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test('explicit frame targeting fails closed on native user-owned sessions without changing the active tab', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+    const adopted = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
+      requestId: 'browser-native-frame-adopt', args: { url: 'https://example.com/user-work', native_active_tab: true },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((adopted.session as Record<string, unknown>).sessionId);
+    const activeBefore = native.events.activeTabId;
+    await expect(executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'browser-native-frame-read', args: { session_id: sessionId, frame_name: 'embedded' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('PLUGIN_BROWSER_FRAME_SCOPE_UNAVAILABLE');
+    expect(native.events.activeTabId).toBe(activeBefore);
+    expect(native.events.created).toEqual([]);
   });
 
   test('managed persistent handoff reuses the live owner page without a second browser launch', async () => {
