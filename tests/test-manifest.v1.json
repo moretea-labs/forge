@@ -389,6 +389,10 @@
       "module": "workflow",
       "resource": "git-worktree"
     },
+    "tests/runtime/edit-session-continuity.test.ts": {
+      "module": "controller",
+      "resource": "git-worktree"
+    },
     "tests/runtime/execution-identity-guard.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
@@ -437,6 +441,10 @@
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
+    "tests/runtime/github-actions-plugin.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/github-issue-watch.test.ts": {
       "module": "workflow",
       "resource": "pure"
@@ -457,6 +465,10 @@
       "module": "ios",
       "resource": "process-tree"
     },
+    "tests/runtime/ios-development.test.ts": {
+      "module": "ios",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/ios-physical-device.test.ts": {
       "module": "ios",
       "resource": "temp-isolated"
@@ -472,6 +484,10 @@
     "tests/runtime/managed-process-plugin.test.ts": {
       "module": "controller",
       "resource": "process-tree"
+    },
+    "tests/runtime/mcp-transport-benchmark.test.ts": {
+      "module": "process-runtime",
+      "resource": "pure"
     },
     "tests/runtime/pending-continuation-activation.test.ts": {
       "module": "workflow",
@@ -580,6 +596,10 @@
     "tests/runtime/thin-harness.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
+    },
+    "tests/runtime/thin-launcher.test.ts": {
+      "module": "controller",
+      "resource": "process-tree"
     },
     "tests/runtime/work-handle-store.test.ts": {
       "module": "process-runtime",
