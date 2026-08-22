@@ -1627,6 +1627,8 @@ async function openManagedContext(
   const profile = selectedProfile(config, repoRoot, activeMode, target.sessionId);
   const persistentKey = managedContextKey(profile);
   const requireExistingResource = args.__forge_require_existing_resource === true;
+  const allowManagedSessionRehydrate = requireExistingResource && args.__forge_allow_managed_session_rehydrate === true;
+  const managedContextWasMissing = !managedBrowserContexts.has(persistentKey);
   if (requireExistingResource && target.existingSession && activeMode === 'managed_persistent') {
     const savedConnection = target.existingSession.browser;
     if (savedConnection?.provider !== 'playwright-persistent-context'
@@ -1645,7 +1647,7 @@ async function openManagedContext(
         },
       );
     }
-    if (!managedBrowserContexts.has(persistentKey)) {
+    if (managedContextWasMissing && !allowManagedSessionRehydrate) {
       throw new AssistantPluginError(
         'PLUGIN_BROWSER_SESSION_STATE_LOST',
         'The managed browser context for this saved session is no longer live; refusing to launch a replacement browser/page for this existing-session action.',
@@ -1664,7 +1666,10 @@ async function openManagedContext(
     try {
       selected = await selectManagedSessionPage(managedState, target, { allowReplacement: !requireExistingResource });
     } catch (error) {
-      if (requireExistingResource) throw error;
+      if (requireExistingResource) {
+        if (allowManagedSessionRehydrate && managedContextWasMissing) await evictManagedContext(persistentKey);
+        throw error;
+      }
       await evictManagedContext(persistentKey);
       assertBrowserProfileAvailable(repoRoot, profile.selectedProfilePath);
       managedState = await managedContextState(runtime, repoRoot, config, profile);

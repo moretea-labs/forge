@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   buildScheduledBrowserFingerprint,
   classifyScheduledBrowserObservation,
+  scheduledBrowserProbeManagedRehydrateIntent,
   scheduledBrowserProbeNavigationAction,
 } from '../../src/runtime/workflow/schedules/browser-probe';
 import { createWorkContinuationSchedule } from '../../src/runtime/workflow/schedules/work-continuation';
@@ -44,6 +45,19 @@ describe('scheduled browser probe primitives', () => {
     expect(scheduledBrowserProbeNavigationAction('plugin_owned', false)).toBe('reload');
     expect(scheduledBrowserProbeNavigationAction('plugin_owned', true)).toBe('navigate');
     expect(scheduledBrowserProbeNavigationAction(undefined, true)).toBe('navigate');
+  });
+
+  test('only managed plugin-owned saved sessions opt into Runtime-restart rehydration', () => {
+    expect(scheduledBrowserProbeManagedRehydrateIntent({
+      ownership: 'plugin_owned', provider: 'playwright-persistent-context', activeMode: 'managed_persistent',
+    })).toEqual({ __forge_allow_managed_session_rehydrate: true });
+    expect(scheduledBrowserProbeManagedRehydrateIntent({
+      ownership: 'user_owned', provider: 'playwright-persistent-context', activeMode: 'managed_persistent',
+    })).toEqual({});
+    expect(scheduledBrowserProbeManagedRehydrateIntent({
+      ownership: 'plugin_owned', provider: 'macos-apple-events', activeMode: 'attach_preferred',
+    })).toEqual({});
+    expect(scheduledBrowserProbeManagedRehydrateIntent(undefined)).toEqual({});
   });
 
   test('rejects non-ChatGPT standalone keepalive before creating any Work or schedule state', () => {

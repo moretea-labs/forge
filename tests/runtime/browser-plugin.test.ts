@@ -1150,6 +1150,80 @@ describe('browser plugin', () => {
     expect((listed.sessions as Array<{ sessionId: string }>).some((session) => session.sessionId === sessionId)).toBe(false);
   });
 
+  test('schedule recovery intent can rehydrate the same managed profile and recover only its owner-token page', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+    });
+    const runtime = mockManagedPersistentPlaywright() as unknown as {
+      events: { launches: number; newPages: number; contextCloses: number };
+      states: Array<{ id: string; url: string; ownerToken?: string; closed: boolean }>;
+    };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+    const opened = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-schedule-rehydrate-open', args: { url: 'https://example.com/schedule-rehydrate' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    const launchesBefore = runtime.events.launches;
+    const newPagesBefore = runtime.events.newPages;
+
+    resetBrowserPluginRuntimeHooksForTest();
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+    const recovered = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'browser-schedule-rehydrate-read',
+      args: { session_id: sessionId, __forge_allow_managed_session_rehydrate: true },
+      origin: { surface: 'schedule', actor: 'browser-probe' },
+    });
+    expect(runtime.events.launches).toBe(launchesBefore + 1);
+    expect(runtime.events.newPages).toBe(newPagesBefore);
+    expect(runtime.events.contextCloses).toBe(0);
+    expect(recovered.browserConnection).toMatchObject({ sessionResume: { status: 'matched' }, tab: { ownership: 'plugin_owned' } });
+  });
+
+  test('failed schedule rehydrate closes the reopened context and still refuses replacement pages', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+    });
+    const runtime = mockManagedPersistentPlaywright() as unknown as {
+      events: { launches: number; newPages: number; contextCloses: number };
+      states: Array<{ id: string; url: string; ownerToken?: string; closed: boolean }>;
+    };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+    const opened = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-schedule-rehydrate-fail-open', args: { url: 'https://example.com/schedule-rehydrate-fail' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    const launchesBefore = runtime.events.launches;
+    const newPagesBefore = runtime.events.newPages;
+    runtime.states[0]!.ownerToken = undefined;
+
+    resetBrowserPluginRuntimeHooksForTest();
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'browser-schedule-rehydrate-fail-read',
+      args: { session_id: sessionId, __forge_allow_managed_session_rehydrate: true },
+      origin: { surface: 'schedule', actor: 'browser-probe' },
+    })).rejects.toThrow('PLUGIN_BROWSER_SESSION_STATE_LOST');
+    expect(runtime.events.launches).toBe(launchesBefore + 1);
+    expect(runtime.events.newPages).toBe(newPagesBefore);
+    expect(runtime.events.contextCloses).toBe(1);
+  });
+
   test('existing-session actions never relaunch a stale managed context or create replacement pages', async () => {
     const { repoRoot, controllerHome } = repoFixture();
     writeBrowserConfig(repoRoot, {

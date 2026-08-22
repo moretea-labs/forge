@@ -98,6 +98,8 @@ async function browserAction(
 interface ScheduledBrowserSessionMetadata {
   url?: string;
   ownership?: string;
+  provider?: string;
+  activeMode?: string;
 }
 
 export type ScheduledBrowserProbeNavigationAction = 'navigate' | 'reload' | 'wait_for_load_state';
@@ -108,6 +110,16 @@ export function scheduledBrowserProbeNavigationAction(
 ): ScheduledBrowserProbeNavigationAction {
   if (ownership === 'user_owned') return 'wait_for_load_state';
   return hasUrl ? 'navigate' : 'reload';
+}
+
+export function scheduledBrowserProbeManagedRehydrateIntent(
+  savedSession: Pick<ScheduledBrowserSessionMetadata, 'ownership' | 'provider' | 'activeMode'> | undefined,
+): Record<string, true> {
+  return savedSession?.ownership === 'plugin_owned'
+    && savedSession.provider === 'playwright-persistent-context'
+    && savedSession.activeMode === 'managed_persistent'
+    ? { __forge_allow_managed_session_rehydrate: true }
+    : {};
 }
 
 function comparableProbeUrl(value: string): string {
@@ -137,6 +149,8 @@ async function scheduledBrowserSessionMetadata(
   return {
     url: stringValue(saved.url),
     ownership: stringValue(tab.ownership),
+    provider: stringValue(browser.provider),
+    activeMode: stringValue(browser.activeMode),
   };
 }
 
@@ -162,6 +176,7 @@ export async function executeScheduledBrowserProbe(input: {
     ? await scheduledBrowserSessionMetadata(input.controllerHome, input.repository, input.occurrenceId, requestedSessionId)
     : undefined;
   const navigationAction = scheduledBrowserProbeNavigationAction(savedSession?.ownership, Boolean(url));
+  const managedRehydrateIntent = scheduledBrowserProbeManagedRehydrateIntent(savedSession);
   let navigation: Record<string, unknown>;
   if (navigationAction === 'wait_for_load_state') {
     if (!savedSession) throw new Error('SCHEDULE_BROWSER_PROBE_USER_SESSION_STATE_UNAVAILABLE');
@@ -172,6 +187,7 @@ export async function executeScheduledBrowserProbe(input: {
       session_id: requestedSessionId!,
       state: waitUntil,
       timeout_ms: timeoutMs,
+      ...managedRehydrateIntent,
     });
   } else if (navigationAction === 'navigate') {
     navigation = await browserAction(input.controllerHome, input.repository, input.occurrenceId, 'navigate', {
@@ -180,12 +196,14 @@ export async function executeScheduledBrowserProbe(input: {
       wait_until: waitUntil,
       timeout_ms: timeoutMs,
       retries: 1,
+      ...managedRehydrateIntent,
     });
   } else {
     navigation = await browserAction(input.controllerHome, input.repository, input.occurrenceId, 'reload', {
       session_id: requestedSessionId!,
       wait_until: waitUntil,
       timeout_ms: timeoutMs,
+      ...managedRehydrateIntent,
     });
   }
 
