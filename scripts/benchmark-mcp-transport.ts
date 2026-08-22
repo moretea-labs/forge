@@ -17,12 +17,19 @@ function option(name: string): string | undefined {
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
-function positiveInteger(name: string, fallback: number): number {
+function integerAtLeast(name: string, fallback: number, minimum: number): number {
   const raw = option(name);
   if (!raw) return fallback;
   const value = Number(raw);
-  if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
+  if (!Number.isInteger(value) || value < minimum) {
+    const requirement = minimum === 0 ? 'a non-negative integer' : `an integer >= ${minimum}`;
+    throw new Error(`${name} must be ${requirement}`);
+  }
   return value;
+}
+
+function positiveInteger(name: string, fallback: number): number {
+  return integerAtLeast(name, fallback, 1);
 }
 
 function readSamples(path: string): McpTransportLatencySample[] {
@@ -43,7 +50,7 @@ async function probe(): Promise<McpTransportLatencySample[]> {
   const label = option('--label')?.trim() || endpoint.hostname;
   const tool = option('--tool')?.trim() || 'rh_status';
   const iterations = positiveInteger('--iterations', 30);
-  const warmup = positiveInteger('--warmup', 3);
+  const warmup = integerAtLeast('--warmup', 3, 0);
   const timeoutMs = positiveInteger('--timeout-ms', 120_000);
   const tokenEnv = option('--token-env')?.trim() || 'FORGE_MCP_BENCH_TOKEN';
   const localServiceAuth = process.argv.includes('--local-service-auth');
