@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { createRequire } from 'module';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { basename, dirname, join, relative, resolve } from 'path';
 import type {
   AssistantPluginActionDescriptor,
@@ -408,6 +408,38 @@ function writeJson(path: string, value: unknown): void {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
 }
 
+function writeAtomicJson(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tempPath = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
+    renameSync(tempPath, path);
+  } finally {
+    rmSync(tempPath, { force: true });
+  }
+}
+
+function readBrowserSessionJson(path: string): BrowserSessionState | undefined {
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf-8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return undefined;
+    throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_STATE_READ_FAILED', 'Saved browser session metadata could not be read.', {
+      retryable: true,
+      details: { fileName: basename(path), cause: error instanceof Error ? error.message : String(error) },
+    });
+  }
+  try {
+    return JSON.parse(raw) as BrowserSessionState;
+  } catch (error) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_STATE_CORRUPT', 'Saved browser session metadata is malformed; refusing to treat corrupt state as a missing session.', {
+      retryable: false,
+      details: { fileName: basename(path), cause: error instanceof Error ? error.message : String(error) },
+    });
+  }
+}
+
 function loadConfig(repoRoot: string): BrowserPluginConfig {
   return normalizeConfig(readJson<Partial<BrowserPluginConfig>>(configPath(repoRoot)) ?? {});
 }
@@ -477,23 +509,29 @@ function sessionPath(repoRoot: string, sessionId: string): string {
 }
 
 function saveSession(repoRoot: string, session: BrowserSessionState): void {
-  writeJson(sessionPath(repoRoot, session.sessionId), session);
+  writeAtomicJson(sessionPath(repoRoot, session.sessionId), session);
 }
 
 function findSession(repoRoot: string, sessionId: string): BrowserSessionState | undefined {
-  return readJson<BrowserSessionState>(sessionPath(repoRoot, sessionId));
+  return readBrowserSessionJson(sessionPath(repoRoot, sessionId));
 }
 
 function listSavedBrowserSessions(repoRoot: string): BrowserSessionState[] {
   const root = stateDir(repoRoot, 'sessions');
+  let names: string[];
   try {
-    return readdirSync(root)
-      .filter((name) => name.endsWith('.json'))
-      .map((name) => readJson<BrowserSessionState>(join(root, name)))
-      .filter((session): session is BrowserSessionState => Boolean(session));
-  } catch {
-    return [];
+    names = readdirSync(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
+    throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_STATE_READ_FAILED', 'Saved browser session directory could not be read.', {
+      retryable: true,
+      details: { cause: error instanceof Error ? error.message : String(error) },
+    });
   }
+  return names
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => readBrowserSessionJson(join(root, name)))
+    .filter((session): session is BrowserSessionState => Boolean(session));
 }
 
 function loadSession(repoRoot: string, sessionId: string): BrowserSessionState {
@@ -2051,17 +2089,9 @@ async function withPage<T>(
 }
 
 function listSavedSessions(repoRoot: string): BrowserSessionState[] {
-  const dir = stateDir(repoRoot, 'sessions');
-  if (!existsSync(dir)) return [];
-  try {
-    return readdirSync(dir)
-      .filter((name) => name.endsWith('.json'))
-      .map((name) => readJson<BrowserSessionState>(join(dir, name)))
-      .filter((entry): entry is BrowserSessionState => Boolean(entry?.sessionId && entry.url))
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  } catch {
-    return [];
-  }
+  return listSavedBrowserSessions(repoRoot)
+    .filter((entry) => Boolean(entry.sessionId && entry.url))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
 async function inspectSavedSessions(
@@ -2576,16 +2606,16 @@ function actions(): AssistantPluginActionDescriptor[] {
       actionId: 'navigate',
       title: 'Navigate',
       description: 'Navigate an existing session or open a new page to an HTTP(S) URL.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.read'], resourceClaims: readRemote,
+      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
+      scopes: ['browser.read', 'browser.interact', 'browser.profile'], resourceClaims: writeRemote,
       argumentsSchema: sessionTargetSchema({}, ['url']),
     },
     {
       actionId: 'reload',
       title: 'Reload page',
       description: 'Reload the current page for a session.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.read'], resourceClaims: readRemote,
+      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
+      scopes: ['browser.read', 'browser.interact', 'browser.profile'], resourceClaims: writeRemote,
       argumentsSchema: sessionTargetSchema({}, ['session_id']),
     },
     {
