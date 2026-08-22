@@ -1600,9 +1600,17 @@ export function stopGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopSt
     // cleanup handler verifies ownership, cleanliness and successful removal.
     worktreeRef: work.worktreeRef,
   });
-  const plan = updated.planId && updated.planStepId && ctx.planStore
-    ? completePlanStepForWork(ctx.planStore, { planId: updated.planId, stepId: updated.planStepId, work: updated })
+  const planId = updated.planId;
+  const planStepId = updated.planStepId;
+  let plan = planId && ctx.planStore
+    ? getPlanContract(ctx.planStore, planId)
     : undefined;
+  if (plan && planId && planStepId && ctx.planStore) {
+    const step = plan.steps.find((entry) => entry.id === planStepId);
+    if (step?.workId === updated.workId) {
+      plan = completePlanStepForWork(ctx.planStore, { planId, stepId: planStepId, work: updated });
+    }
+  }
 
   return buildFacadeResult({
     status: 'ok',

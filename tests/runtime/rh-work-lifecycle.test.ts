@@ -1749,6 +1749,59 @@ describe('rh_work managed lifecycle closure', () => {
     expect(branchExists(fx.repoRoot, work.branch)).toBe(false);
   });
 
+  test('stop cleanup is idempotent after the historical Plan step binding was already released', async () => {
+    const fx = fixture('stop-released-plan-step');
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim();
+    createPlanContract(store, {
+      planId: 'PLAN-stop-released-plan-step',
+      repoId: fx.repository.repoId,
+      scopeKey: 'stop-released-plan-step',
+      sourceRevision,
+      goal: 'Preserve current Plan authority while cleaning historical Work',
+      steps: [{ id: 'step-a', objective: 'Deliver one slice', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['Historical cleanup cannot reclaim a released Plan binding.'] }],
+    });
+    approvePlanContract(store, 'PLAN-stop-released-plan-step');
+    createWorkContract(store, {
+      workId: 'work-historical-stop',
+      repoId: fx.repository.repoId,
+      baseRevision: sourceRevision,
+      mode: 'goal_workloop',
+      objective: 'Historical slice',
+      acceptanceCriteria: ['The released Plan binding remains unchanged.'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      planId: 'PLAN-stop-released-plan-step',
+      planStepId: 'step-a',
+    });
+    claimPlanStepForWork(store, { planId: 'PLAN-stop-released-plan-step', stepId: 'step-a', workId: 'work-historical-stop', sourceRevision });
+    transitionWorkContractPhase(store, 'work-historical-stop', {
+      status: 'cancelled',
+      phase: 'cleanup',
+      state: 'skipped',
+      summary: 'Previous stop already released the Plan step.',
+      evidenceRefs: [],
+    });
+    const terminal = getWorkContract(store, 'work-historical-stop');
+    expect(terminal).toBeTruthy();
+    completePlanStepForWork(store, { planId: 'PLAN-stop-released-plan-step', stepId: 'step-a', work: terminal! });
+    const beforeRetry = getPlanContract(store, 'PLAN-stop-released-plan-step');
+    expect(beforeRetry).toMatchObject({ status: 'replanning', steps: [{ id: 'step-a', status: 'ready' }] });
+    expect(beforeRetry?.steps[0]?.workId).toBeUndefined();
+
+    const cleanupRetry = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'stop',
+      work_id: 'work-historical-stop',
+      reason: 'terminal cleanup retry after prior Plan projection',
+    });
+    expect(cleanupRetry?.isError, JSON.stringify(cleanupRetry?.structuredContent)).not.toBe(true);
+    expect(getPlanContract(store, 'PLAN-stop-released-plan-step')).toEqual(beforeRetry);
+  });
+
   test('rh_work rejects a Work-free generic workflow schedule', async () => {
     const fx = fixture('schedule-workflow-retired');
     const created = await callRuntimeTool(fx.ctx, 'rh_work', {
