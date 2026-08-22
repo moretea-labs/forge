@@ -117,8 +117,9 @@ type BrowserSessionLiveness = 'live' | 'unverified' | 'dead';
 type BrowserSessionInventoryItem = {
   session: BrowserSessionState;
   liveness: BrowserSessionLiveness;
-  evidence: 'runtime_session_binding' | 'runtime_owner_token' | 'runtime_bound_page_missing' | 'runtime_context_unavailable' | 'runtime_owner_token_not_observed' | 'provider_unverified';
+  evidence: 'runtime_session_binding' | 'runtime_owner_token' | 'runtime_bound_page_missing' | 'runtime_context_unavailable' | 'runtime_owner_token_not_observed' | 'provider_unverified' | 'native_tab_live' | 'native_tab_missing' | 'native_tab_invalid' | 'native_tab_invalid_closed' | 'native_tab_invalid_close_failed' | 'native_inventory_unavailable';
   pruned?: boolean;
+  cleanupError?: string;
 };
 
 type BrowserSessionInventory = {
@@ -126,8 +127,12 @@ type BrowserSessionInventory = {
   scannedSessionCount: number;
   savedSessionCount: number;
   liveManagedSessionCount: number;
+  liveNativeSessionCount: number;
   unverifiedSessionCount: number;
   deadManagedSessionCount: number;
+  deadNativeSessionCount: number;
+  closedInvalidNativeSessionCount: number;
+  failedNativeCleanupCount: number;
   prunedSessionCount: number;
 };
 
@@ -1372,15 +1377,26 @@ async function evictManagedContext(key: string): Promise<void> {
   }
 }
 
-async function closeManagedContextsForRepo(repoRoot: string): Promise<void> {
+async function closeManagedContextsForRepo(repoRoot: string, options: { strict?: boolean } = {}): Promise<void> {
   const canonicalRoot = resolve(repoRoot);
   for (const [key, pending] of [...managedBrowserContexts.entries()]) {
+    let state: ManagedBrowserContextState;
     try {
-      const state = await pending;
-      if (state.repoRoot !== canonicalRoot) continue;
-      managedBrowserContexts.delete(key);
-      await state.context.close().catch(() => undefined);
+      state = await pending;
     } catch {
+      managedBrowserContexts.delete(key);
+      continue;
+    }
+    if (state.repoRoot !== canonicalRoot) continue;
+    try {
+      await state.context.close();
+      managedBrowserContexts.delete(key);
+    } catch (error) {
+      if (options.strict === true) {
+        throw new AssistantPluginError('PLUGIN_BROWSER_MANAGED_CONTEXT_CLOSE_FAILED', 'Managed browser context could not be closed; retaining Runtime binding and session metadata for a safe retry.', {
+          retryable: true, details: { profilePath: state.profilePath, cause: error instanceof Error ? error.message : String(error) },
+        });
+      }
       managedBrowserContexts.delete(key);
     }
   }
@@ -1560,9 +1576,12 @@ async function closeManagedSessionPage(repoRoot: string, config: BrowserPluginCo
     const index = inventory.findIndex((entry) => entry.ownerToken === expectedOwnerToken);
     if (index >= 0) page = state.context.pages()[index];
   }
+  if (!page || typeof page.close !== 'function') {
+    state.pagesBySession.delete(session.sessionId);
+    return false;
+  }
+  await page.close();
   state.pagesBySession.delete(session.sessionId);
-  if (!page || typeof page.close !== 'function') return false;
-  await page.close().catch(() => undefined);
   return true;
 }
 
@@ -1755,6 +1774,9 @@ async function openNativeAttachedContext(
   args: Record<string, unknown>,
 ): Promise<{ handle?: BrowserOpenHandle; attempts: MacOsBrowserAttachAttempt[] }> {
   if (config.nativeAttachMode === 'disabled') return { attempts: [] };
+  if (!target.existingSession && !stringValue(args.session_id)) {
+    await inspectNativeOwnedSessions(repoRoot, config, listSavedSessions(repoRoot), { pruneDead: true });
+  }
   const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
   const savedTab = target.existingSession?.browser?.tab;
   const savedOwnership = savedTab?.ownership;
@@ -1870,6 +1892,10 @@ async function openNativeAttachedContext(
         );
       }
       if (ownedSelection.candidate) {
+        if (ownedSelection.session) {
+          target.sessionId = ownedSelection.session.sessionId;
+          target.existingSession = ownedSelection.session;
+        }
         const rebound = await reattachMacOsBrowserOwnedPage(
           activeAttachment.metadata.product,
           { windowId: ownedSelection.candidate.windowId, tabId: ownedSelection.candidate.tabId },
@@ -2121,6 +2147,148 @@ function listSavedSessions(repoRoot: string): BrowserSessionState[] {
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
+function isDiscardableNativeOwnedTabUrl(url: string): boolean {
+  const normalized = url.trim().toLowerCase();
+  return isBlankPage(normalized)
+    || normalized === 'chrome://new-tab-page/'
+    || normalized === 'vivaldi://newtab/'
+    || normalized === 'vivaldi://startpage/';
+}
+
+type NativeOwnedSessionInspection = {
+  items: Map<string, BrowserSessionInventoryItem>;
+  liveCount: number;
+  deadCount: number;
+  unverifiedCount: number;
+  prunedCount: number;
+  closedInvalidCount: number;
+  failedCleanupCount: number;
+};
+
+async function inspectNativeOwnedSessions(
+  repoRoot: string,
+  config: BrowserPluginConfig,
+  saved: BrowserSessionState[],
+  options: { pruneDead?: boolean } = {},
+): Promise<NativeOwnedSessionInspection> {
+  const items = new Map<string, BrowserSessionInventoryItem>();
+  const inventories = new Map<MacOsBrowserProduct, Awaited<ReturnType<typeof listMacOsBrowserTabs>> | Error>();
+  const groups = new Map<string, BrowserSessionState[]>();
+  let liveCount = 0;
+  let deadCount = 0;
+  let unverifiedCount = 0;
+  let prunedCount = 0;
+  let closedInvalidCount = 0;
+  let failedCleanupCount = 0;
+  const timeout = config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  for (const session of saved) {
+    const browser = session.browser;
+    const tab = browser?.tab;
+    const product = browser?.browserProduct;
+    if (browser?.provider !== 'macos-apple-events' || tab?.ownership !== 'plugin_owned' || !product || !tab.windowId || !tab.tabId) continue;
+    const key = `${product}:${tab.windowId}:${tab.tabId}`;
+    const group = groups.get(key) ?? [];
+    group.push(session);
+    groups.set(key, group);
+  }
+
+  for (const group of groups.values()) {
+    const canonical = group.reduce((latest, session) => session.updatedAt > latest.updatedAt ? session : latest);
+    const browser = canonical.browser!;
+    const tab = browser.tab!;
+    const product = browser.browserProduct!;
+    let inventory = inventories.get(product);
+    if (!inventory) {
+      try {
+        inventory = await listMacOsBrowserTabs(product, timeout);
+      } catch (error) {
+        inventory = error instanceof Error ? error : new Error(String(error));
+      }
+      inventories.set(product, inventory);
+    }
+    if (inventory instanceof Error) {
+      for (const session of group) items.set(session.sessionId, { session, liveness: 'unverified', evidence: 'native_inventory_unavailable', cleanupError: inventory.message });
+      unverifiedCount += group.length;
+      continue;
+    }
+
+    const live = inventory.tabs.find((entry) => entry.windowId === tab.windowId && entry.tabId === tab.tabId);
+    if (!live) {
+      const pruned = options.pruneDead === true;
+      if (pruned) {
+        for (const session of group) rmSync(sessionPath(repoRoot, session.sessionId), { force: true });
+        prunedCount += group.length;
+      }
+      for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_missing', pruned });
+      deadCount += group.length;
+      continue;
+    }
+
+    if (isDiscardableNativeOwnedTabUrl(live.url)) {
+      deadCount += group.length;
+      if (options.pruneDead === true) {
+        try {
+          await closeMacOsBrowserOwnedTab(product, { windowId: tab.windowId!, tabId: tab.tabId! }, timeout);
+          for (const session of group) rmSync(sessionPath(repoRoot, session.sessionId), { force: true });
+          prunedCount += group.length;
+          closedInvalidCount += 1;
+          for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_invalid_closed', pruned: true });
+        } catch (error) {
+          failedCleanupCount += 1;
+          const cleanupError = error instanceof Error ? error.message : String(error);
+          for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_invalid_close_failed', cleanupError });
+        }
+      } else {
+        for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_invalid' });
+      }
+      continue;
+    }
+
+    for (const session of group) items.set(session.sessionId, { session, liveness: 'live', evidence: 'native_tab_live' });
+    liveCount += group.length;
+  }
+
+  return { items, liveCount, deadCount, unverifiedCount, prunedCount, closedInvalidCount, failedCleanupCount };
+}
+
+async function closeTrackedNativeOwnedSession(
+  session: BrowserSessionState,
+  config: BrowserPluginConfig,
+): Promise<{ resourceClosed: boolean; resourceAlreadyMissing: boolean }> {
+  const browser = session.browser;
+  const tab = browser?.tab;
+  if (browser?.provider !== 'macos-apple-events' || tab?.ownership !== 'plugin_owned') {
+    return { resourceClosed: false, resourceAlreadyMissing: false };
+  }
+  if (!browser.browserProduct || !tab.windowId || !tab.tabId) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Tracked plugin-owned native tab is missing stable browser identity; retaining session metadata instead of orphaning the tab.', {
+      retryable: false, details: { sessionId: session.sessionId, browserProduct: browser.browserProduct, windowId: tab.windowId, tabId: tab.tabId },
+    });
+  }
+  const timeout = config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const inventory = await listMacOsBrowserTabs(browser.browserProduct, timeout);
+  const live = inventory.tabs.some((entry) => entry.windowId === tab.windowId && entry.tabId === tab.tabId);
+  if (!live) return { resourceClosed: false, resourceAlreadyMissing: true };
+  await closeMacOsBrowserOwnedTab(browser.browserProduct, { windowId: tab.windowId, tabId: tab.tabId }, timeout);
+  return { resourceClosed: true, resourceAlreadyMissing: false };
+}
+
+function nativeOwnedAliasSessionIds(repoRoot: string, session: BrowserSessionState): string[] {
+  const browser = session.browser;
+  const tab = browser?.tab;
+  if (browser?.provider !== 'macos-apple-events' || tab?.ownership !== 'plugin_owned' || !browser.browserProduct || !tab.windowId || !tab.tabId) {
+    return [session.sessionId];
+  }
+  return listSavedSessions(repoRoot)
+    .filter((candidate) => candidate.browser?.provider === 'macos-apple-events'
+      && candidate.browser.browserProduct === browser.browserProduct
+      && candidate.browser.tab?.ownership === 'plugin_owned'
+      && candidate.browser.tab.windowId === tab.windowId
+      && candidate.browser.tab.tabId === tab.tabId)
+    .map((candidate) => candidate.sessionId);
+}
+
 async function inspectSavedSessions(
   repoRoot: string,
   config: BrowserPluginConfig,
@@ -2132,8 +2300,20 @@ async function inspectSavedSessions(
   let unverifiedSessionCount = 0;
   let deadManagedSessionCount = 0;
   let prunedSessionCount = 0;
+  const native = await inspectNativeOwnedSessions(repoRoot, config, saved, options);
+  let liveNativeSessionCount = native.liveCount;
+  let deadNativeSessionCount = native.deadCount;
+  let closedInvalidNativeSessionCount = native.closedInvalidCount;
+  let failedNativeCleanupCount = native.failedCleanupCount;
+  prunedSessionCount += native.prunedCount;
+  unverifiedSessionCount += native.unverifiedCount;
 
   for (const session of saved) {
+    const nativeItem = native.items.get(session.sessionId);
+    if (nativeItem) {
+      sessions.push(nativeItem);
+      continue;
+    }
     if (session.browser?.provider !== 'playwright-persistent-context' || session.browser.activeMode !== 'managed_persistent') {
       sessions.push({ session, liveness: 'unverified', evidence: 'provider_unverified' });
       unverifiedSessionCount += 1;
@@ -2202,8 +2382,12 @@ async function inspectSavedSessions(
     scannedSessionCount: saved.length,
     savedSessionCount: saved.length - prunedSessionCount,
     liveManagedSessionCount,
+    liveNativeSessionCount,
     unverifiedSessionCount,
     deadManagedSessionCount,
+    deadNativeSessionCount,
+    closedInvalidNativeSessionCount,
+    failedNativeCleanupCount,
     prunedSessionCount,
   };
 }
@@ -3436,9 +3620,11 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           scannedSessionCount: inventory.scannedSessionCount,
           savedSessionCount: inventory.savedSessionCount,
           liveManagedSessionCount: inventory.liveManagedSessionCount,
+          liveNativeSessionCount: inventory.liveNativeSessionCount,
           unverifiedSessionCount: inventory.unverifiedSessionCount,
           deadManagedSessionCount: inventory.deadManagedSessionCount,
-          sessions: inventory.sessions.map(({ session, liveness, evidence }) => ({
+          deadNativeSessionCount: inventory.deadNativeSessionCount,
+          sessions: inventory.sessions.map(({ session, liveness, evidence, cleanupError }) => ({
             sessionId: session.sessionId,
             url: session.url,
             title: session.title,
@@ -3447,6 +3633,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             browser: session.browser,
             liveness,
             livenessEvidence: evidence,
+            ...(cleanupError ? { cleanupError } : {}),
           })),
         };
       }
@@ -3459,8 +3646,12 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           scannedSessionCount: inventory.scannedSessionCount,
           savedSessionCount: inventory.savedSessionCount,
           liveManagedSessionCount: inventory.liveManagedSessionCount,
+          liveNativeSessionCount: inventory.liveNativeSessionCount,
           unverifiedSessionCount: inventory.unverifiedSessionCount,
           deadManagedSessionCount: inventory.deadManagedSessionCount,
+          deadNativeSessionCount: inventory.deadNativeSessionCount,
+          closedInvalidNativeSessionCount: inventory.closedInvalidNativeSessionCount,
+          failedNativeCleanupCount: inventory.failedNativeCleanupCount,
           prunedSessionCount: inventory.prunedSessionCount,
           prunedSessionIds: inventory.sessions.filter((item) => item.pruned).map((item) => item.session.sessionId),
         };
@@ -3472,34 +3663,47 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const session = findSession(input.repoRoot, sessionId);
         const tab = session?.browser?.tab;
         const managedClosed = session ? await closeManagedSessionPage(input.repoRoot, current, session) : false;
-        if (session?.browser?.provider === 'macos-apple-events'
-          && session.browser.browserProduct
-          && tab?.ownership === 'plugin_owned'
-          && typeof tab.windowId === 'string'
-          && typeof tab.tabId === 'string') {
-          await closeMacOsBrowserOwnedTab(session.browser.browserProduct, { windowId: tab.windowId, tabId: tab.tabId }, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS)
-            .catch(() => undefined);
-        }
-        rmSync(sessionPath(input.repoRoot, sessionId), { force: true });
-        return { closed: true, sessionId, resourceClosed: managedClosed || tab?.ownership === 'plugin_owned' };
+        const nativeClose = session ? await closeTrackedNativeOwnedSession(session, current) : { resourceClosed: false, resourceAlreadyMissing: false };
+        const closedSessionIds = session ? nativeOwnedAliasSessionIds(input.repoRoot, session) : [sessionId];
+        for (const closedSessionId of closedSessionIds) rmSync(sessionPath(input.repoRoot, closedSessionId), { force: true });
+        return {
+          closed: true, sessionId,
+          resourceClosed: managedClosed || nativeClose.resourceClosed,
+          ...(closedSessionIds.length > 1 ? { closedSessionIds } : {}),
+          ...(nativeClose.resourceAlreadyMissing ? { resourceAlreadyMissing: true } : {}),
+          ...(tab?.ownership === 'user_owned' ? { preservedUserOwnedTab: true } : {}),
+        };
       }
       case 'clear_session': {
         assertBrowserSessionAvailable(input.repoRoot);
         const sessions = listSavedSessions(input.repoRoot);
-        await closeManagedContextsForRepo(input.repoRoot);
+        await closeManagedContextsForRepo(input.repoRoot, { strict: true });
+        const failedSessionIds: string[] = [];
+        const cleanupErrors: Array<{ sessionId: string; error: string }> = [];
+        let removedCount = 0;
+        let resourceClosedCount = 0;
+        let resourceAlreadyMissingCount = 0;
         for (const session of sessions) {
-          const tab = session.browser?.tab;
-          if (session.browser?.provider === 'macos-apple-events'
-            && session.browser.browserProduct
-            && tab?.ownership === 'plugin_owned'
-            && typeof tab.windowId === 'string'
-            && typeof tab.tabId === 'string') {
-            await closeMacOsBrowserOwnedTab(session.browser.browserProduct, { windowId: tab.windowId, tabId: tab.tabId }, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS)
-              .catch(() => undefined);
+          try {
+            const nativeClose = await closeTrackedNativeOwnedSession(session, current);
+            if (nativeClose.resourceClosed) resourceClosedCount += 1;
+            if (nativeClose.resourceAlreadyMissing) resourceAlreadyMissingCount += 1;
+            rmSync(sessionPath(input.repoRoot, session.sessionId), { force: true });
+            removedCount += 1;
+          } catch (error) {
+            failedSessionIds.push(session.sessionId);
+            cleanupErrors.push({ sessionId: session.sessionId, error: error instanceof Error ? error.message : String(error) });
           }
-          rmSync(sessionPath(input.repoRoot, session.sessionId), { force: true });
         }
-        return { cleared: true, count: sessions.length };
+        return {
+          cleared: failedSessionIds.length === 0,
+          count: removedCount,
+          requestedCount: sessions.length,
+          resourceClosedCount,
+          resourceAlreadyMissingCount,
+          failedSessionIds,
+          cleanupErrors,
+        };
       }
       case 'request_human_handoff': {
         const target = resolveActionTarget(input.repoRoot, input.args);

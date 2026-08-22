@@ -314,6 +314,8 @@ function mockManagedPersistentPlaywright() {
     broughtToFront: [] as string[],
     trustedInputs: [] as Array<Record<string, unknown>>,
     guardBounds: { x: 0, y: 0, width: 100, height: 100, right: 100, bottom: 100 },
+    failPageCloseIds: new Set<string>(),
+    failContextClose: false,
   };
   const states: PageState[] = [{ id: 'page-1', url: 'about:blank', title: 'New Tab', closed: false }];
   const pageByState = new Map<PageState, any>();
@@ -374,6 +376,7 @@ function mockManagedPersistentPlaywright() {
       },
       async close() {
         if (state.closed) return;
+        if (events.failPageCloseIds.has(state.id)) throw new Error(`simulated managed close failure for ${state.id}`);
         state.closed = true;
         events.pageCloses.push(state.id);
       },
@@ -399,6 +402,7 @@ function mockManagedPersistentPlaywright() {
     },
     async close() {
       events.contextCloses += 1;
+      if (events.failContextClose) throw new Error('simulated managed context close failure');
       for (const state of states) state.closed = true;
     },
     async route() {},
@@ -434,6 +438,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
     localFileInput: undefined as { name: string; size: number } | undefined,
     localFileInputs: [] as Array<{ name: string; size: number }>,
     evaluatedJavaScript: [] as string[],
+    failCloseTabIds: new Set<string>(),
   };
   let nextTabId = 9001;
   const appName = product === 'chrome' ? 'Google Chrome' : 'Vivaldi';
@@ -459,6 +464,18 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
     events,
     dropOwnedTab(tabId: string) {
       ownedTabs.delete(tabId);
+    },
+    setOwnedTabUrl(tabId: string, url: string, title = '') {
+      const entry = ownedTabs.get(tabId);
+      if (!entry) throw new Error(`missing owned tab ${tabId}`);
+      entry.url = url;
+      entry.title = title;
+    },
+    failClose(tabId: string) {
+      events.failCloseTabIds.add(tabId);
+    },
+    allowClose(tabId: string) {
+      events.failCloseTabIds.delete(tabId);
     },
     setUserTab(url: string, title = 'User Work') {
       userTab.url = url;
@@ -503,6 +520,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
         if (script.includes('close targetTab')) {
           assertWindowResolution(script);
           const tabId = tabIdFromScript(script);
+          if (tabId && events.failCloseTabIds.has(tabId)) throw new Error(`simulated close failure for ${tabId}`);
           if (tabId && ownedTabs.delete(tabId)) events.closed.push(tabId);
           return '';
         }
@@ -928,6 +946,71 @@ describe('browser plugin', () => {
     });
     expect(runtime.events.launches).toBe(1);
     expect(bResumed.browserConnection).toMatchObject({ sessionResume: { status: 'matched' } });
+  });
+
+  test('managed close_session retains metadata and binding when page close fails', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'managed_persistent', profileMode: 'repo_local' });
+    const runtime = mockManagedPersistentPlaywright() as unknown as {
+      events: { failPageCloseIds: Set<string>; pageCloses: string[] };
+      states: Array<{ id: string; url: string; ownerToken?: string; closed: boolean }>;
+    };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+    const opened = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page', requestId: 'managed-close-failure-open',
+      args: { url: 'https://example.com/managed-close-failure' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    const live = runtime.states.find((state) => !state.closed && state.url === 'https://example.com/managed-close-failure');
+    expect(live).toBeDefined();
+    runtime.events.failPageCloseIds.add(live!.id);
+
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'close_session', requestId: 'managed-close-failure-close',
+      args: { session_id: sessionId }, origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('simulated managed close failure');
+    expect(live!.closed).toBe(false);
+    const listed = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'list_sessions', requestId: 'managed-close-failure-list',
+      args: {}, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect((listed.sessions as Array<Record<string, unknown>>).some((entry) => entry.sessionId === sessionId)).toBe(true);
+
+    runtime.events.failPageCloseIds.delete(live!.id);
+    const closed = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'close_session', requestId: 'managed-close-failure-retry',
+      args: { session_id: sessionId }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(closed).toMatchObject({ closed: true, resourceClosed: true });
+    expect(runtime.events.pageCloses).toContain(live!.id);
+  });
+
+  test('managed clear_session retains metadata when context close fails', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'managed_persistent', profileMode: 'repo_local' });
+    const runtime = mockManagedPersistentPlaywright() as unknown as { events: { failContextClose: boolean }; };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+    const opened = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page', requestId: 'managed-clear-failure-open',
+      args: { url: 'https://example.com/managed-clear-failure' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    runtime.events.failContextClose = true;
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'clear_session', requestId: 'managed-clear-failure-clear',
+      args: {}, origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('PLUGIN_BROWSER_MANAGED_CONTEXT_CLOSE_FAILED');
+    const listed = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'list_sessions', requestId: 'managed-clear-failure-list',
+      args: {}, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect((listed.sessions as Array<Record<string, unknown>>).some((entry) => entry.sessionId === sessionId)).toBe(true);
+    runtime.events.failContextClose = false;
+    const cleared = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'clear_session', requestId: 'managed-clear-failure-retry',
+      args: {}, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(cleared).toMatchObject({ cleared: true, requestedCount: 1 });
   });
 
   test('reload reuses the exact managed page and fails closed after that page lifecycle is lost', async () => {
@@ -1947,6 +2030,114 @@ describe('browser plugin', () => {
     expect(native.events.activeTabId).toBe('501');
   });
 
+  test('native close_session retains metadata when an owned tab cannot be closed', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'] });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const opened = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'native-close-failure-open', args: { session_id: 'native-close-failure', url: 'https://example.com/close-failure' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(opened.browserConnection).toMatchObject({ tab: { ownership: 'plugin_owned', tabId: '9001' } });
+    native.failClose('9001');
+
+    await expect(executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'close_session',
+      requestId: 'native-close-failure-close', args: { session_id: 'native-close-failure' }, origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('simulated close failure');
+    const afterFailure = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'list_sessions',
+      requestId: 'native-close-failure-list', args: {}, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect((afterFailure.sessions as Array<Record<string, unknown>>).some((entry) => entry.sessionId === 'native-close-failure')).toBe(true);
+    expect(native.events.closed).toEqual([]);
+
+    native.allowClose('9001');
+    await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'close_session',
+      requestId: 'native-close-failure-retry', args: { session_id: 'native-close-failure' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(native.events.closed).toEqual(['9001']);
+  });
+
+  test('native reconcile and fresh session preflight close invalid Forge-owned tabs but preserve user-owned tabs', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'] });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const first = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'native-invalid-owned-open', args: { session_id: 'native-invalid-owned', url: 'https://example.com/temporary' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(first.browserConnection).toMatchObject({ tab: { ownership: 'plugin_owned', tabId: '9001' } });
+    const savedPath = join(repoRoot, '.forge/browser/sessions/native-invalid-owned.json');
+    const historicalAlias = JSON.parse(readFileSync(savedPath, 'utf8')) as Record<string, unknown>;
+    historicalAlias.sessionId = 'native-invalid-owned-alias';
+    historicalAlias.updatedAt = '2099-01-01T00:00:00.000Z';
+    writeFileSync(join(repoRoot, '.forge/browser/sessions/native-invalid-owned-alias.json'), JSON.stringify(historicalAlias), 'utf8');
+    native.setOwnedTabUrl('9001', 'chrome://newtab/');
+
+    const reconciled = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'reconcile_sessions',
+      requestId: 'native-invalid-owned-reconcile', args: {}, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(reconciled).toMatchObject({ deadNativeSessionCount: 2, closedInvalidNativeSessionCount: 1, failedNativeCleanupCount: 0, prunedSessionCount: 2 });
+    expect(native.events.closed).toEqual(['9001']);
+
+    native.setUserTab('https://example.com/user-preserved', 'User Preserved');
+    const adopted = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'native-user-preserved-open', args: { url: 'https://example.com/user-preserved' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(adopted.browserConnection).toMatchObject({ tab: { ownership: 'user_owned', tabId: '501' } });
+    await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'reconcile_sessions',
+      requestId: 'native-user-preserved-reconcile', args: {}, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(native.events.closed).toEqual(['9001']);
+
+    const secondOwned = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'native-auto-clean-open', args: { session_id: 'native-auto-clean', url: 'https://example.net/temporary' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(secondOwned.browserConnection).toMatchObject({ tab: { ownership: 'plugin_owned', tabId: '9002' } });
+    native.setOwnedTabUrl('9002', 'chrome://new-tab-page/');
+    const next = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'native-auto-clean-next', args: { url: 'https://other.example.org/next' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(native.events.closed).toEqual(['9001', '9002']);
+    expect(next.browserConnection).toMatchObject({ tab: { ownership: 'plugin_owned', tabId: '9003' } });
+  });
+
+  test('native clear_session keeps failed owned-tab cleanup metadata and clears the rest', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'] });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+    for (const [sessionId, url] of [['native-clear-a', 'https://example.com/a'], ['native-clear-b', 'https://example.net/b']] as const) {
+      await executeBrowserPluginAction({ controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page', requestId: `${sessionId}-open`, args: { session_id: sessionId, url }, origin: { surface: 'local-ui', actor: 'test' } });
+    }
+    native.failClose('9001');
+    const cleared = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'clear_session',
+      requestId: 'native-clear-partial', args: {}, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(cleared).toMatchObject({ cleared: false, count: 1, requestedCount: 2, resourceClosedCount: 1, failedSessionIds: ['native-clear-a'] });
+    expect(native.events.closed).toEqual(['9002']);
+    const remaining = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'list_sessions',
+      requestId: 'native-clear-remaining', args: {}, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect((remaining.sessions as Array<Record<string, unknown>>).map((entry) => entry.sessionId)).toContain('native-clear-a');
+  });
+
   test('sessionless native open_page reuses the live Forge-owned tab for the same origin instead of opening one tab per URL', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {
@@ -1959,7 +2150,7 @@ describe('browser plugin', () => {
 
     const firstUrl = 'https://www.google.com/search?q=avela+meds';
     const secondUrl = 'https://www.google.com/search?q=medication+reminder+app';
-    await executeBrowserPluginAction({
+    const first = await executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
       requestId: 'sessionless-owned-first', args: { url: firstUrl }, origin: { surface: 'local-ui', actor: 'test' },
     });
@@ -1969,6 +2160,7 @@ describe('browser plugin', () => {
     });
 
     expect(native.events.created).toEqual(['9001']);
+    expect((second.session as Record<string, unknown>).sessionId).toBe((first.session as Record<string, unknown>).sessionId);
     expect(native.events.navigated).toContainEqual({ tabId: '9001', url: secondUrl });
     expect(second.browserConnection).toMatchObject({
       provider: 'macos-apple-events',
