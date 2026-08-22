@@ -658,6 +658,68 @@ describe('rh_work managed lifecycle closure', () => {
   });
   test('reuses exact Plan scope but resolves distinct slices under the same Requirement before creation', async () => { const fx = fixture('plan-admission'); createRequirement({ controllerHome: fx.controllerHome }, { requirementId: 'REQ-primary', title: 'Primary requirement', outcomeStatement: 'Own the primary Plan scope without duplicates.' }); const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim(); const step = (id: string) => [{ id, objective: 'Implement it', dependencies: [], authoritative_files: [], allowed_paths: [], forbidden_paths: [], check_ids: [], acceptance_criteria: ['done'] }]; const first = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-primary', requirement_id: 'REQ-primary', scope_key: 'primary-scope', source_revision: sourceRevision, objective: 'Implement the primary requirement', plan_steps: step('step-a'), }); expect(first?.isError).not.toBe(true); expect(first?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new' } }); const exactDuplicate = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-duplicate', requirement_id: 'REQ-primary', scope_key: 'primary-scope', source_revision: sourceRevision, objective: 'Duplicate exact scope', plan_steps: step('step-dup'), }); expect(exactDuplicate?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: false, admissionDecision: 'reuse_existing', plan: { planId: 'PLAN-primary' } } }); const ambiguousSlice = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-slice-b', requirement_id: 'REQ-primary', scope_key: 'parallel-scope', source_revision: sourceRevision, objective: 'A distinct slice under the same broad requirement', plan_steps: step('step-b'), }); expect(ambiguousSlice?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: false, admissionDecision: 'resolution_required', resolutionRequired: true, allowedPlanRelations: ['extend', 'parallel'] }, }); const parallelSlice = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'plan_create', plan_id: 'PLAN-slice-b', requirement_id: 'REQ-primary', scope_key: 'parallel-scope', plan_relation: 'parallel', source_revision: sourceRevision, objective: 'A distinct explicitly parallel slice', plan_steps: step('step-b'), }); expect(parallelSlice?.structuredContent).toMatchObject({ status: 'ok', data: { planContractCreated: true, admissionDecision: 'create_new', plan: { planId: 'PLAN-slice-b', requirementId: 'REQ-primary' } } }); });
 
+  test('continue adopts explicit non-Plan policy scope but keeps discovery-only paths non-authoritative and Plan scope frozen', async () => {
+    const fx = fixture('continue-policy-scope-adoption');
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Exercise explicit continuation scope adoption',
+      allowed_paths: ['initial.txt'],
+      scope_clear: true,
+      requires_recovery: true,
+    });
+    expect(started?.isError, JSON.stringify(started?.structuredContent)).not.toBe(true);
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    expect(workId).toBeTruthy();
+
+    const discoveryOnly = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'continue',
+      work_id: workId,
+      additional_likely_paths: ['discovered-only.txt'],
+    });
+    expect(discoveryOnly?.structuredContent).toBeTruthy();
+    expect(getWorkContract(store, workId)?.allowedPaths).toEqual(['initial.txt']);
+    expect(getWorkContract(store, workId)?.scopeEvidence?.initialLikelyPaths).toContain('discovered-only.txt');
+
+    const expanded = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'continue',
+      work_id: workId,
+      allowed_paths: ['expanded.txt'],
+      forbidden_paths: ['blocked.txt'],
+    });
+    expect(expanded?.structuredContent).toBeTruthy();
+    expect(getWorkContract(store, workId)).toMatchObject({
+      allowedPaths: ['initial.txt', 'expanded.txt'],
+      forbiddenPaths: ['blocked.txt'],
+    });
+
+    createWorkContract(store, {
+      workId: 'work-plan-scope-frozen',
+      repoId: fx.repository.repoId,
+      planId: 'PLAN-scope-frozen',
+      mode: 'goal_workloop',
+      objective: 'Keep Plan-owned scope frozen',
+      acceptanceCriteria: [],
+      constraints: {},
+      allowedPaths: ['plan-owned.txt'],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+    });
+    const blocked = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'continue',
+      work_id: 'work-plan-scope-frozen',
+      allowed_paths: ['must-replan.txt'],
+    });
+    expect(blocked?.isError).toBe(true);
+    expect(JSON.stringify(blocked?.structuredContent)).toContain('PLAN_EXTENSION_REQUIRES_REPLAN');
+    expect(getWorkContract(store, 'work-plan-scope-frozen')?.allowedPaths).toEqual(['plan-owned.txt']);
+  });
+
   test('atomically admits exactly one primary Work for concurrent starts of one Plan step', async () => {
     const fx = fixture('work-admission-plan-step-race');
     const sourceRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']).trim();

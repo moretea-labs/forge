@@ -96,6 +96,9 @@ export interface GoalWorkloopStartInput {
 export interface GoalWorkloopContinueInput {
   workId: string;
   note?: string;
+  allowedPaths?: string[];
+  forbiddenPaths?: string[];
+  checks?: string[];
   additionalLikelyPaths?: string[];
   inspectedPaths?: string[];
 }
@@ -971,6 +974,42 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
+  const explicitPolicyScope = input.allowedPaths !== undefined
+    || input.forbiddenPaths !== undefined
+    || input.checks !== undefined;
+  if (explicitPolicyScope) {
+    if (work.planId) {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `PLAN_EXTENSION_REQUIRES_REPLAN: Work ${work.workId} is governed by Plan ${work.planId}; continue cannot widen frozen policy scope. Replan the authoritative Plan instead.`,
+        data: { work: summarizeWorkContract(work), planId: work.planId, policyScopeUpdated: false },
+      });
+    }
+    const normalizedChecks = normalizeCheckIds(input.checks ?? [], ctx.availableChecks ?? []);
+    if (normalizedChecks.invalidCheckIds.length > 0) {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `WORK_CHECKS_INVALID: ${normalizedChecks.invalidCheckIds.join(', ')}. Work scope was not updated.`,
+        data: { work: summarizeWorkContract(work), policyScopeUpdated: false, normalizedChecks },
+      });
+    }
+    work = updateWorkContract(ctx.workStore, work.workId, {
+      allowedPaths: [...new Set([...work.allowedPaths, ...(input.allowedPaths ?? [])])].slice(0, 50),
+      forbiddenPaths: [...new Set([...work.forbiddenPaths, ...(input.forbiddenPaths ?? [])])].slice(0, 50),
+      checks: [...new Set([...work.checks, ...normalizedChecks.validCheckIds])].slice(0, 30),
+      scopeEvidence: {
+        initialLikelyPaths: [...new Set([
+          ...(work.scopeEvidence?.initialLikelyPaths ?? work.allowedPaths),
+          ...(input.allowedPaths ?? []),
+        ])].slice(0, 100),
+        inspectedPaths: work.scopeEvidence?.inspectedPaths ?? [],
+        actualChangedPaths: work.scopeEvidence?.actualChangedPaths ?? [],
+        recordedAt: nowIso(ctx),
+      },
+      scopeSummary: `Continue adopted explicit policy scope for ${work.workId}.`.slice(0, 500),
+    });
+  }
+
   if ((input.additionalLikelyPaths?.length ?? 0) > 0 || (input.inspectedPaths?.length ?? 0) > 0) {
     work = recordWorkScopeEvidence(ctx.workStore, work.workId, {
       initialLikelyPaths: input.additionalLikelyPaths,
@@ -1643,6 +1682,9 @@ export function runGoalWorkloop(
       return continueGoalWorkloop(ctx, {
         workId: String(args.work_id ?? ''),
         note: typeof args.note === 'string' ? args.note : undefined,
+        allowedPaths: Array.isArray(args.allowed_paths) ? args.allowed_paths.map(String) : undefined,
+        forbiddenPaths: Array.isArray(args.forbidden_paths) ? args.forbidden_paths.map(String) : undefined,
+        checks: Array.isArray(args.check_ids) ? args.check_ids.map(String) : undefined,
         additionalLikelyPaths: Array.isArray(args.additional_likely_paths) ? args.additional_likely_paths.map(String) : undefined,
         inspectedPaths: Array.isArray(args.inspected_paths) ? args.inspected_paths.map(String) : undefined,
       });
