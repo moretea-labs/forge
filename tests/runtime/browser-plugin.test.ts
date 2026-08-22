@@ -97,6 +97,9 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
     name: () => frame.name,
     async evaluate<T>(expression?: unknown) {
       frameEvaluations.push({ url: frame.url, name: frame.name, expression });
+      if (typeof expression === 'string' && expression.includes('verificationVersion: 1')) {
+        return { verificationVersion: 1, selectorExists: true, visible: true, textContains: true, textSample: 'Frame ready', textLength: 11, truncated: false } as T;
+      }
       if (typeof expression === 'string' && expression.includes('geometryVersion: 1')) {
         return {
           geometryVersion: 1,
@@ -123,6 +126,9 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
     },
     async evaluate<T>(expression?: unknown) {
       evaluatedExpressions.push(expression);
+      if (typeof expression === 'string' && expression.includes('verificationVersion: 1')) {
+        return { verificationVersion: 1, selectorExists: true, visible: true, textContains: true, textSample: 'Ready to continue', textLength: 17, truncated: false } as T;
+      }
       if (typeof expression === 'string' && expression.includes('viewportMetricsVersion: 1')) {
         return { viewportMetricsVersion: 1, viewport: { width: 1280, height: 720, scrollX: 0, scrollY: 120, devicePixelRatio: 2 } } as T;
       }
@@ -576,6 +582,7 @@ describe('browser plugin', () => {
       'create_session',
       'list_sessions',
       'list_frames',
+      'verify_state',
       'reconcile_sessions',
       'close_session',
       'open_page',
@@ -2576,6 +2583,28 @@ describe('browser plugin', () => {
     });
     expect(frameText.frame).toEqual({ url: 'https://example.com/frame-b', name: 'frame-b' });
     expect(frameText.text).toBe('Frame B text');
+    const frameVerification = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'verify_state',
+      requestId: 'browser-frame-verify-state',
+      args: { session_id: frameSessionId, frame_name: 'frame-b', expected_url: 'https://example.com/frame-b', selector: '#ready', require_visible: true, text_contains: 'ready' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(frameVerification.matched).toBe(true);
+    expect(frameVerification.frame).toEqual({ url: 'https://example.com/frame-b', name: 'frame-b' });
+    expect((frameVerification.checks as Array<Record<string, unknown>>).every((check) => check.matched === true)).toBe(true);
+    const mismatchedVerification = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'verify_state',
+      requestId: 'browser-frame-verify-mismatch',
+      args: { session_id: frameSessionId, frame_name: 'frame-b', expected_url: 'https://example.com/frame-a' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(mismatchedVerification.matched).toBe(false);
+    await expect(executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'verify_state',
+      requestId: 'browser-frame-verify-no-criteria', args: { session_id: frameSessionId },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('verify_state requires at least one');
+
     const frameSnapshot = await executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'snapshot_interactive',
       requestId: 'browser-frame-snapshot', args: { session_id: frameSessionId, frame_name: 'frame-a' },
