@@ -1,11 +1,19 @@
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getRuntimeWriteClaim } from '../../root/write-fence';
 import { rebuildRepositoryProjection, refreshRepositoryProjectionForRepository } from '../../projections/materialized-view';
+import { readRepositoryProjectionDirty } from '../../projections/invalidation';
 import { readRepositoryGitStatusSample } from '../../projections/git-status-sampler';
 
 export interface SchedulerProjectionRefreshTargets {
   repositories: RepositoryRecord[];
   rebuildRepoIds: string[];
+}
+
+export function selectSchedulerDirtyProjectionRepositories(
+  controllerHome: string,
+  repositories: readonly RepositoryRecord[],
+): RepositoryRecord[] {
+  return repositories.filter((repository) => readRepositoryProjectionDirty(controllerHome, repository.repoId) !== undefined);
 }
 
 export function selectSchedulerProjectionRefreshTargets(

@@ -42,7 +42,10 @@ import {
   createSchedulerDispatchCapacity,
   schedulerDispatchCapacityAllows,
 } from './dispatch-capacity';
-import { refreshSchedulerRepositoryProjections } from './projection-refresh';
+import {
+  refreshSchedulerRepositoryProjections,
+  selectSchedulerDirtyProjectionRepositories,
+} from './projection-refresh';
 import { createSchedulerWorkerStderrCapture } from './worker-stderr';
 import { persistSchedulerWorkerAttachment } from './worker-attachment';
 import {
@@ -473,6 +476,7 @@ export class GlobalScheduler {
       lastGitStatusSampleAt: this.lastGitStatusSampleAt,
     });
     const sourceScanRepositories = sourceSampling.sourceScanRepositories;
+    const dirtyProjectionRepositories = selectSchedulerDirtyProjectionRepositories(this.controllerHome, repositories);
     if (sourceSampling.shouldSample) {
       // Advance source-sampling state before the filesystem probe so a failing
       // sample cannot create a tight retry loop on every scheduler tick.
@@ -481,6 +485,21 @@ export class GlobalScheduler {
       this.lastSourceScanRepoCount = sourceScanRepositories.length;
       sampleRepositoryGitStatusForRepositories(this.controllerHome, sourceScanRepositories);
     }
+    // Dirty projection markers are authoritative maintenance requests. Do not
+    // make them wait behind the idle one-repository-per-minute safety scan: only
+    // the dirty repositories receive this extra fresh source sample.
+    const alreadySampledRepoIds = new Set(
+      sourceSampling.shouldSample ? sourceScanRepositories.map((repository) => repository.repoId) : [],
+    );
+    const dirtyRepositoriesToSample = dirtyProjectionRepositories
+      .filter((repository) => !alreadySampledRepoIds.has(repository.repoId));
+    if (dirtyRepositoriesToSample.length > 0) {
+      sampleRepositoryGitStatusForRepositories(this.controllerHome, dirtyRepositoriesToSample);
+    }
+    const projectionMaintenanceRepositories = Array.from(new Map(
+      [...sourceScanRepositories, ...dirtyProjectionRepositories]
+        .map((repository) => [repository.repoId, repository] as const),
+    ).values());
     this.sourceScansAvoided += sourceSampling.avoidedRepositoryCount;
     // Phase 0 reuses one durable Work admission policy. Cleanup, stale-state
     // reconciliation, read-only source sampling, and projection maintenance remain
@@ -489,7 +508,7 @@ export class GlobalScheduler {
       refreshSchedulerRepositoryProjections({
         controllerHome: this.controllerHome,
         repositories,
-        sourceScanRepositories,
+        sourceScanRepositories: projectionMaintenanceRepositories,
         projectionRefreshRepoIds: [],
         controllerPid: this.controllerPid,
       });
@@ -574,7 +593,7 @@ export class GlobalScheduler {
     refreshSchedulerRepositoryProjections({
       controllerHome: this.controllerHome,
       repositories,
-      sourceScanRepositories,
+      sourceScanRepositories: projectionMaintenanceRepositories,
       projectionRefreshRepoIds: projectionRefreshRepos,
       controllerPid: this.controllerPid,
     });
