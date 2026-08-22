@@ -1,0 +1,69 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "forge-direct-lightweight-fast-path",
+  "title": "Direct and Lightweight execution preserve the fast path",
+  "userIntent": "Keep ordinary bounded reads and local commands off durable lifecycle machinery while retaining bounded terminal evidence and deterministic mutation ownership.",
+  "snapshot": {
+    "source": ".",
+    "commit": "f69ad7d1282a8de2335ffe12adb2e54f01fd1b10"
+  },
+  "groundTruth": {
+    "intendedBehavior": [
+      "Readonly and short bounded repository commands use Direct/Lightweight execution.",
+      "Fast execution creates no ExecutionJob, Local Job, Worker, scheduler wake, or projection invalidation.",
+      "Concurrent mutation ownership remains serialized and recoverable without promoting ordinary work into durable execution."
+    ],
+    "affectedDomains": [
+      "thin-harness",
+      "direct-execution",
+      "lightweight-process"
+    ],
+    "behavioralInvariants": [
+      "Duration alone does not make ordinary checks durable.",
+      "Fast-path commands remain cancellable and bounded.",
+      "Lightweight terminal evidence may survive completion without replaying running commands."
+    ],
+    "regressionRisks": [
+      "Reintroducing durable jobs for ordinary local commands.",
+      "Writing leases or projections on the readonly fast path.",
+      "Replaying a missing lightweight process."
+    ]
+  },
+  "execution": {
+    "interface": "forge_cli",
+    "arguments": [
+      "docs",
+      "list",
+      "--json"
+    ],
+    "timeoutMs": 30000
+  },
+  "validators": [
+    {
+      "id": "forge-direct-lightweight-fast-path-ground-truth",
+      "kind": "invariant",
+      "type": "command",
+      "command": "bun",
+      "arguments": [
+        "test",
+        "tests/runtime/thin-harness.test.ts"
+      ],
+      "expectedExitCode": 0,
+      "timeoutMs": 120000
+    },
+    {
+      "id": "forge-direct-lightweight-fast-path-source-isolation",
+      "kind": "regression",
+      "type": "changed_paths",
+      "forbiddenGlobs": [
+        "src/**",
+        "package.json",
+        "bun.lock"
+      ]
+    }
+  ],
+  "provenance": {
+    "sourceCommit": "f69ad7d1282a8de2335ffe12adb2e54f01fd1b10",
+    "note": "Final exact-main convergence acceptance scenario added by Plan S4; the immutable snapshot is the S3-integrated main revision."
+  }
+}

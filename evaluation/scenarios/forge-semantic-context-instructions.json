@@ -1,0 +1,69 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "forge-semantic-context-instructions",
+  "title": "Semantic context resolves repository instructions",
+  "userIntent": "Resolve source context together with the applicable root-to-nearest AGENTS.md/CLAUDE.md guidance without treating guidance as semantic scope authority.",
+  "snapshot": {
+    "source": ".",
+    "commit": "f69ad7d1282a8de2335ffe12adb2e54f01fd1b10"
+  },
+  "groundTruth": {
+    "intendedBehavior": [
+      "Selected source paths include applicable root-to-nearest AGENTS.md and CLAUDE.md guidance.",
+      "Sibling guidance does not leak into unrelated targets.",
+      "Instruction files remain guidance-only evidence and do not consume the exact source file budget."
+    ],
+    "affectedDomains": [
+      "context-plane",
+      "instruction-context",
+      "semantic-context"
+    ],
+    "behavioralInvariants": [
+      "Guidance resolution follows bounded directory ancestry.",
+      "Missing optional guidance is normal; denied or unreadable guidance remains a visible coverage gap.",
+      "Context precision and source budgets remain independent from instruction guidance."
+    ],
+    "regressionRisks": [
+      "Dropping AGENTS/CLAUDE guidance from exact-path context.",
+      "Leaking sibling guidance across target paths.",
+      "Promoting guidance files into lifecycle or semantic authority."
+    ]
+  },
+  "execution": {
+    "interface": "forge_cli",
+    "arguments": [
+      "docs",
+      "list",
+      "--json"
+    ],
+    "timeoutMs": 30000
+  },
+  "validators": [
+    {
+      "id": "forge-semantic-context-instructions-ground-truth",
+      "kind": "invariant",
+      "type": "command",
+      "command": "bun",
+      "arguments": [
+        "test",
+        "tests/runtime/codegraph-context-provider.test.ts"
+      ],
+      "expectedExitCode": 0,
+      "timeoutMs": 120000
+    },
+    {
+      "id": "forge-semantic-context-instructions-source-isolation",
+      "kind": "regression",
+      "type": "changed_paths",
+      "forbiddenGlobs": [
+        "src/**",
+        "package.json",
+        "bun.lock"
+      ]
+    }
+  ],
+  "provenance": {
+    "sourceCommit": "f69ad7d1282a8de2335ffe12adb2e54f01fd1b10",
+    "note": "Final exact-main convergence acceptance scenario added by Plan S4; the immutable snapshot is the S3-integrated main revision."
+  }
+}

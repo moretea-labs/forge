@@ -1,0 +1,70 @@
+{
+  "schemaVersion": "forge-evaluation-scenario/v1",
+  "id": "forge-scale-coordination",
+  "title": "Scale coordination uses Plan and bounded Work authority",
+  "userIntent": "Coordinate independent Scale slices through an approved Plan and existing Work/Process/resource-claim authorities without inventing a second lifecycle.",
+  "snapshot": {
+    "source": ".",
+    "commit": "f69ad7d1282a8de2335ffe12adb2e54f01fd1b10"
+  },
+  "groundTruth": {
+    "intendedBehavior": [
+      "Explicit Scale requires an approved Plan step.",
+      "Independent Plan steps are admitted as independent bounded Work units.",
+      "Stopping Scale units projects lifecycle state through the same Plan/Work authority."
+    ],
+    "affectedDomains": [
+      "scale-routing",
+      "plan-contract",
+      "work-contract",
+      "resource-claims"
+    ],
+    "behavioralInvariants": [
+      "Scale is coordination, not an agent swarm.",
+      "Independent deliverables may run concurrently when resource claims do not conflict.",
+      "Plan and Work remain the only project-level semantic lifecycle authorities."
+    ],
+    "regressionRisks": [
+      "Allowing Scale without a Plan.",
+      "Creating a second scheduler or project lifecycle.",
+      "Collapsing independent Plan steps into one unrelated Work authority."
+    ]
+  },
+  "execution": {
+    "interface": "forge_cli",
+    "arguments": [
+      "docs",
+      "list",
+      "--json"
+    ],
+    "timeoutMs": 30000
+  },
+  "validators": [
+    {
+      "id": "forge-scale-coordination-ground-truth",
+      "kind": "invariant",
+      "type": "command",
+      "command": "bun",
+      "arguments": [
+        "test",
+        "tests/runtime/rh-work-lifecycle.test.ts"
+      ],
+      "expectedExitCode": 0,
+      "timeoutMs": 120000
+    },
+    {
+      "id": "forge-scale-coordination-source-isolation",
+      "kind": "regression",
+      "type": "changed_paths",
+      "forbiddenGlobs": [
+        "src/**",
+        "package.json",
+        "bun.lock"
+      ]
+    }
+  ],
+  "provenance": {
+    "sourceCommit": "f69ad7d1282a8de2335ffe12adb2e54f01fd1b10",
+    "note": "Final exact-main convergence acceptance scenario added by Plan S4; the immutable snapshot is the S3-integrated main revision."
+  }
+}

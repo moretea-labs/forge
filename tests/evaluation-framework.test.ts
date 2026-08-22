@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, test } from 'bun:test';
-import { parseScenario } from '../evaluation/lib/scenario.ts';
+import { loadScenario, parseScenario } from '../evaluation/lib/scenario.ts';
 import { runEvaluation } from '../evaluation/lib/runner.ts';
 import type { EvaluationScenario } from '../evaluation/lib/types.ts';
 
@@ -45,6 +45,23 @@ function scenario(source: string, commit: string): EvaluationScenario {
 }
 
 describe('Forge evaluation framework', () => {
+  test('canonical convergence scenarios carry explicit semantic, Scale, and Direct/Lightweight ground truth', () => {
+    const expected = new Map([
+      ['forge-semantic-context-instructions', ['context-plane', 'instruction-context', 'semantic-context']],
+      ['forge-scale-coordination', ['scale-routing', 'plan-contract', 'work-contract', 'resource-claims']],
+      ['forge-direct-lightweight-fast-path', ['thin-harness', 'direct-execution', 'lightweight-process']],
+    ]);
+    for (const [id, domains] of expected) {
+      const item = loadScenario(join(process.cwd(), 'evaluation', 'scenarios', `${id}.json`));
+      expect(item.id).toBe(id);
+      expect(item.snapshot.commit).toBe('f69ad7d1282a8de2335ffe12adb2e54f01fd1b10');
+      expect(item.groundTruth.affectedDomains).toEqual(domains);
+      expect(item.groundTruth.intendedBehavior.length).toBeGreaterThanOrEqual(2);
+      expect(item.groundTruth.behavioralInvariants.length).toBeGreaterThanOrEqual(2);
+      expect(item.groundTruth.regressionRisks.length).toBeGreaterThanOrEqual(2);
+      expect(item.validators.some((validator) => validator.kind === 'invariant')).toBe(true);
+    }
+  });
   test('runs only in a clone, captures a trace, calculates metrics, and writes a report externally', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-evaluation-test-'));
     try {
