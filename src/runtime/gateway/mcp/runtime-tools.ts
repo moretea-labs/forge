@@ -3922,7 +3922,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 },
               }) as unknown as Record<string, unknown>);
             }
-            const launched = launchSuperController({ work: store, handoff: store }, {
+            const launched = await launchSuperController({ work: store, handoff: store }, {
               controllerType: controllerType as 'codex' | 'grok' | 'claude',
               executable: typeof args.executable === 'string' && args.executable.trim() ? args.executable.trim() : undefined,
               args: launchArgs,

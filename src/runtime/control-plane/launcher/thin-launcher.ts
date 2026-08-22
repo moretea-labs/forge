@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'child_process';
+import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import {
   getHandoffItem,
   getWorkContract,
@@ -7,12 +7,14 @@ import {
 } from '../facade';
 import {
   attachExternalControllerLaunchPid,
+  recordExternalControllerLaunchExit,
   releaseExternalControllerLaunchReservation,
   reserveExternalControllerLaunch,
 } from './launch-reservation-store';
 import type { ControllerType } from '../facade/types';
 import { codexMcpConfigArgs, resolveProviderMcpBootstrap, type ProviderMcpBootstrap } from './provider-mcp-bootstrap';
 import { getChatgptWorkConversationBinding } from './chatgpt-work-binding-store';
+import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
 
 export interface ThinLauncherRequest {
   controllerType: Exclude<ControllerType, 'human'>;
@@ -42,7 +44,20 @@ export interface ThinLauncherResult {
   executable: string;
 }
 
-function resolveLauncherExecutable(request: ThinLauncherRequest): string {
+const LAUNCHER_STARTUP_GRACE_MS = 250;
+
+function launcherProcessEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const repositoryEnv = repositoryChildProcessEnvironment(env);
+  return {
+    ...env,
+    PATH: repositoryEnv.PATH,
+  };
+}
+
+export function resolveLauncherExecutable(
+  request: ThinLauncherRequest,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
   const configured = request.executable?.trim();
   if (configured) return configured;
   const executable = request.controllerType === 'codex'
@@ -50,18 +65,57 @@ function resolveLauncherExecutable(request: ThinLauncherRequest): string {
     : request.controllerType === 'claude'
       ? 'claude'
       : request.controllerType === 'chatgpt'
-        ? process.env.FORGE_CLI_EXECUTABLE?.trim() || 'forge'
+        ? env.FORGE_CLI_EXECUTABLE?.trim() || 'forge'
         : '';
   if (!executable) throw new Error(`LAUNCHER_EXECUTABLE_REQUIRED: ${request.controllerType} requires an external launcher executable`);
   const probe = spawnSync(executable, ['--version'], {
     cwd: request.cwd,
     stdio: 'ignore',
     timeout: 5_000,
+    env: launcherProcessEnvironment(env),
   });
   if (probe.error || probe.status !== 0) {
     throw new Error(`LAUNCHER_EXECUTABLE_UNAVAILABLE: ${executable}`);
   }
   return executable;
+}
+
+async function awaitExternalControllerStartup(
+  child: ChildProcess,
+  stores: { work: WorkContractStoreOptions & { controllerHome: string; repoId: string } },
+  workId: string,
+  reservationId: string,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let startupSettled = false;
+    const timer = setTimeout(() => {
+      startupSettled = true;
+      resolve();
+    }, LAUNCHER_STARTUP_GRACE_MS);
+
+    child.once('error', (error) => {
+      if (startupSettled) return;
+      startupSettled = true;
+      clearTimeout(timer);
+      releaseExternalControllerLaunchReservation(stores.work, workId, reservationId, `spawn_error:${error.message}`);
+      reject(new Error(`LAUNCHER_STARTUP_FAILED: ${error.message}`));
+    });
+
+    child.once('exit', (exitCode, signal) => {
+      try {
+        recordExternalControllerLaunchExit(stores.work, workId, reservationId, {
+          exitCode,
+          signal: signal ? String(signal) : null,
+        });
+      } catch {
+        // Exit evidence is best-effort after another authority has already released the reservation.
+      }
+      if (startupSettled) return;
+      startupSettled = true;
+      clearTimeout(timer);
+      reject(new Error(`LAUNCHER_STARTUP_FAILED: external Controller exited during startup grace (code=${String(exitCode ?? 'null')}, signal=${signal ?? 'none'})`));
+    });
+  });
 }
 
 function assertChatgptConversationUrl(value: string | undefined): string | undefined {
@@ -134,13 +188,13 @@ export function buildSuperControllerInvocation(
  * provider process selection and prompt construction; the execution Kernel
  * receives neither provider-specific arguments nor model output.
  */
-export function launchSuperController(
+export async function launchSuperController(
   stores: {
     work: WorkContractStoreOptions & { controllerHome: string; repoId: string };
     handoff: HandoffInboxStoreOptions;
   },
   request: ThinLauncherRequest,
-): ThinLauncherResult {
+): Promise<ThinLauncherResult> {
   const executable = resolveLauncherExecutable(request);
   const work = getWorkContract(stores.work, request.workId);
   if (!work) throw new Error(`WORK_NOT_FOUND: ${request.workId}`);
@@ -178,10 +232,11 @@ export function launchSuperController(
       cwd: request.cwd,
       detached: true,
       stdio: 'ignore',
-      env: mcpBootstrap?.env ?? process.env,
+      env: launcherProcessEnvironment(mcpBootstrap?.env ?? process.env),
     });
-    child.unref();
     attachExternalControllerLaunchPid(stores.work, work.workId, reservation.reservationId, child.pid);
+    await awaitExternalControllerStartup(child, stores, work.workId, reservation.reservationId);
+    child.unref();
     return { controllerType: request.controllerType, reservationId: reservation.reservationId, pid: child.pid, prompt, executable };
   } catch (error) {
     releaseExternalControllerLaunchReservation(stores.work, work.workId, reservation.reservationId, 'spawn_failed');

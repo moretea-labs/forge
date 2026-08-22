@@ -198,7 +198,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(launcherStart).toContain("if (controllerType === 'chatgpt')");
     expect(launcherStart).toContain('await runWorkChatgptContinuation({');
     expect(launcherStart).toContain("summary: 'ChatGPT continuation dispatched directly through controller browser.'");
-    expect(launcherStart.indexOf('await runWorkChatgptContinuation({')).toBeLessThan(launcherStart.indexOf('const launched = launchSuperController'));
+    expect(launcherStart.indexOf('await runWorkChatgptContinuation({')).toBeLessThan(launcherStart.indexOf('const launched = await launchSuperController'));
     expect(launcherStart).toContain("controllerType: controllerType as 'codex' | 'grok' | 'claude'");
   });
 

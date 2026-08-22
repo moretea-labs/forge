@@ -462,7 +462,7 @@ async function executeExternalControllerWake(
         reason: `ChatGPT Work continuation dispatched via ${dispatched.browserSessionId}; execution preference verified.`,
       });
     }
-    const launched = launchSuperController({
+    const launched = await launchSuperController({
       work: { controllerHome, repoId: schedule.repoId },
       handoff: { controllerHome, repoId: schedule.repoId },
     }, {

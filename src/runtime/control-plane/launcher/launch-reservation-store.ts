@@ -19,6 +19,9 @@ export interface ExternalControllerLaunchReservation {
   createdAt: string;
   expiresAt: string;
   pid?: number;
+  exitedAt?: string;
+  exitCode?: number;
+  exitSignal?: string;
   releasedAt?: string;
   releaseReason?: string;
 }
@@ -121,6 +124,43 @@ export function attachExternalControllerLaunchPid(
         schemaVersion: 1,
         value: next,
         action: 'external_controller_launch_bind_pid',
+        expectedRevision: existing.revision,
+      });
+      return next;
+    },
+  );
+}
+
+export function recordExternalControllerLaunchExit(
+  options: LaunchReservationStoreOptions,
+  workId: string,
+  reservationId: string,
+  exit: { exitCode: number | null; signal: string | null },
+): ExternalControllerLaunchReservation | undefined {
+  return withControllerLock(
+    options.controllerHome,
+    { scope: 'task', repoId: options.repoId, taskId: `controller-launch-${workId}` },
+    `controller-launch-exit:${reservationId}`,
+    () => {
+      const existing = record(options, workId);
+      if (!existing || existing.value.reservationId !== reservationId || existing.value.releasedAt) return existing?.value;
+      const exitedAt = nowIso(options);
+      const next: ExternalControllerLaunchReservation = {
+        ...existing.value,
+        expiresAt: exitedAt,
+        exitedAt,
+        ...(exit.exitCode === null ? {} : { exitCode: exit.exitCode }),
+        ...(exit.signal ? { exitSignal: exit.signal } : {}),
+        releasedAt: exitedAt,
+        releaseReason: `process_exit:code=${String(exit.exitCode ?? 'null')}:signal=${exit.signal ?? 'none'}`.slice(0, 240),
+      };
+      writeControlPlaneRecord(options.controllerHome, {
+        namespace: NAMESPACE,
+        scope: options.repoId,
+        key: workId,
+        schemaVersion: 1,
+        value: next,
+        action: 'external_controller_launch_exit',
         expectedRevision: existing.revision,
       });
       return next;
