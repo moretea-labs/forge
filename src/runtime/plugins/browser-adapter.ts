@@ -2315,10 +2315,44 @@ const EXTRACTION_SCRIPTS = {
   })()`,
   interactive: (limit: number) => `(() => {
     ${STABLE_SELECTOR_HELPERS}
-    return Array.from(document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"]')).slice(0, ${limit}).map((el) => {
+    const viewport = {
+      width: Number(window.innerWidth || document.documentElement?.clientWidth || 0),
+      height: Number(window.innerHeight || document.documentElement?.clientHeight || 0),
+      scrollX: Number(window.scrollX || window.pageXOffset || 0),
+      scrollY: Number(window.scrollY || window.pageYOffset || 0),
+      devicePixelRatio: Number(window.devicePixelRatio || 1),
+    };
+    const elements = Array.from(document.querySelectorAll('a,button,input,select,textarea,[contenteditable="true"],[role="button"],[role="link"],[role="textbox"]')).slice(0, ${limit}).map((el) => {
       const text = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('value') || el.textContent || '').trim().slice(0, 100);
-      return { tag: el.tagName.toLowerCase(), text, type: el.getAttribute('type') || undefined, href: el.getAttribute('href') || undefined, selectorHint: forgeSelectorHint(el) };
+      const rect = el.getBoundingClientRect();
+      const style = typeof getComputedStyle === 'function' ? getComputedStyle(el) : undefined;
+      const width = Number(rect.width || 0);
+      const height = Number(rect.height || 0);
+      const left = Number(rect.left || 0);
+      const top = Number(rect.top || 0);
+      const right = Number(rect.right || (left + width));
+      const bottom = Number(rect.bottom || (top + height));
+      const visible = width > 0 && height > 0 && style?.display !== 'none' && style?.visibility !== 'hidden' && Number(style?.opacity ?? 1) !== 0;
+      const inViewport = visible && right > 0 && bottom > 0 && left < viewport.width && top < viewport.height;
+      const disabled = Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true');
+      const editable = !disabled && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable || el.getAttribute('role') === 'textbox');
+      return {
+        tag: el.tagName.toLowerCase(),
+        text,
+        type: el.getAttribute('type') || undefined,
+        href: el.getAttribute('href') || undefined,
+        role: el.getAttribute('role') || undefined,
+        ariaLabel: el.getAttribute('aria-label') || undefined,
+        selectorHint: forgeSelectorHint(el),
+        bounds: { x: left, y: top, width, height, right, bottom },
+        center: { x: left + width / 2, y: top + height / 2 },
+        visible,
+        inViewport,
+        disabled,
+        editable,
+      };
     });
+    return { geometryVersion: 1, viewport, elements };
   })()`,
 };
 
@@ -2723,7 +2757,7 @@ function actions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'snapshot_interactive',
       title: 'Snapshot interactive elements',
-      description: 'Snapshot buttons/inputs/links with stable selector hints.',
+      description: 'Snapshot interactive elements with stable selector hints plus CSS-pixel viewport geometry for screenshot-to-input grounding.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
       scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
       argumentsSchema: sessionTargetSchema({ limit: { type: 'number' } }),
@@ -3595,13 +3629,17 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
               : input.actionId === 'extract_forms'
                 ? EXTRACTION_SCRIPTS.forms(limit)
                 : EXTRACTION_SCRIPTS.interactive(limit);
-          const data = await page.evaluate<unknown>(script);
+          const evaluated = await page.evaluate<unknown>(script);
+          const grounded = input.actionId === 'snapshot_interactive' && evaluated && typeof evaluated === 'object' && !Array.isArray(evaluated)
+            ? evaluated as { geometryVersion?: unknown; viewport?: unknown; elements?: unknown }
+            : undefined;
           return {
             provider: 'playwright',
             sessionId: target.sessionId,
             url: target.url,
             actionId: input.actionId,
-            data,
+            data: grounded && Array.isArray(grounded.elements) ? grounded.elements : evaluated,
+            ...(grounded?.geometryVersion === 1 ? { geometryVersion: 1, viewport: grounded.viewport } : {}),
             browserConnection: connection,
           };
         }, { persistSession: true });
