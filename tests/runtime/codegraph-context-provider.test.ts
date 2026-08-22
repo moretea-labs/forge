@@ -547,6 +547,35 @@ describe('CodeGraph read provider', () => {
 
   test('keeps bounded text fallback visible when required structural context is unavailable', () => { const root = contextRepo(); const unavailable = structuralResponse({ ok: false, status: 'unavailable', metadata: undefined, result: undefined, error: { code: 'CODEGRAPH_PLATFORM_BUNDLE_MISSING', message: 'not installed' } }); const pack = buildControllerContextPack(root, getMcpPolicy('controller'), { description: 'runService', searchTerms: ['runService'], structuralContext: 'required' }, { queryCodeGraph: () => unavailable }); expect(pack.structuralContext).toMatchObject({ requestedMode: 'required', status: 'unavailable', requiredSatisfied: false }); expect(pack.impactContext).toMatchObject({ status: 'degraded', confidence: 'medium' }); expect(pack.impactContext.coverageGaps).toContain('structural_provider_unavailable'); expect(pack.next[0]).toContain('Structural context was required'); expect(pack.files.some((file) => file.path === 'src/service.ts')).toBe(true); });
 
+  test('runs lexical fallback when stale required structural candidates already saturate discovery', () => {
+    const root = contextRepo();
+    const noiseFiles = Array.from({ length: 16 }, (_, index) => `noise/changed-${index}.ts`);
+    mkdirSync(join(root, 'noise'), { recursive: true });
+    for (const path of noiseFiles) writeFileSync(join(root, path), `export const changed${path.match(/\d+/)?.[0] ?? 'x'} = true;\n`);
+    const stale = structuralResponse({
+      status: 'stale',
+      metadata: {
+        initialized: true,
+        lastIndexedAt: 1,
+        buildVersion: '1.0.1',
+        extractionVersion: 1,
+        staleEngine: false,
+        changedFiles: { added: noiseFiles, modified: [], removed: [] },
+      },
+      result: { nodes: [], entryPoints: [], relatedFiles: [], truncated: false },
+    });
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      description: 'runService',
+      searchTerms: ['runService'],
+      structuralContext: 'required',
+      maxFiles: 4,
+    }, { queryCodeGraph: () => stale });
+    expect(pack.structuralContext).toMatchObject({ requestedMode: 'required', status: 'stale', requiredSatisfied: false });
+    expect(pack.search.scannedFiles).toBeGreaterThan(0);
+    expect(pack.files[0]?.path).toBe('src/service.ts');
+    expect(pack.files[0]?.reasons).toContain('search:runService');
+  });
+
   test('reuses a repository CodeGraph as explicit baseline while current worktree changes stay raw/lexical', () => { const root = contextRepo(); const baselineRoot = mkdtempSync(join(tmpdir(), 'forge-codegraph-baseline-')); roots.push(baselineRoot); execFileSync('git', ['clone', '-q', root, baselineRoot]); writeFileSync(join(root, 'src/service.ts'), 'export function runService() { return 43; }\n'); const queriedRoots: string[] = []; const pack = buildControllerContextPack(root, getMcpPolicy('controller'), { description: 'runService', structuralContext: 'required', structuralIndexRoot: baselineRoot }, { queryCodeGraph: (queryRoot, request) => { queriedRoots.push(queryRoot); return request.operation === 'file_dependencies' ? structuralResponse({ operation: 'file_dependencies', result: { filePath: 'src/service.ts', dependencies: [], dependents: [] } }) : structuralResponse(); } }); expect(new Set(queriedRoots)).toEqual(new Set([baselineRoot])); expect(pack.structuralContext).toMatchObject({ indexSource: 'repository_baseline', status: 'stale', requiredSatisfied: false, baselineRevisionMatches: true }); expect(pack.structuralContext.overlayChangedFiles).toContain('src/service.ts'); expect(pack.impactContext).toMatchObject({ primaryTargets: [], structuralHints: ['src/service.ts'], mustInspect: [] }); expect(pack.impactContext.coverageGaps).toContain('structural_repository_baseline_overlay'); expect(pack.impactContext.freshness).toMatchObject({ indexSource: 'repository_baseline', overlayChangedFileCount: 1, baselineRevisionMatches: true }); expect(pack.files.find((file) => file.path === 'src/service.ts')?.reasons).toContain('worktree:changed-file'); expect(pack.files.find((file) => file.path === 'src/service.ts')?.snippets[0]?.content).toContain('return 43'); });
 
   test('rechecks graph-selected paths through Forge policy before returning source', () => {

@@ -319,7 +319,8 @@ export function buildControllerContextPack(
   // The old per-term loop reread the same source files up to 14 times even
   // though inventory itself was cached.
   const lexicalStartedAt = performance.now();
-  if (searchQueries.length > 0 && candidates.size < maxFiles * 3) {
+  const requiredStructuralFallbackNeedsLexical = structuralMode === "required" && !structuralContext.requiredSatisfied;
+  if (searchQueries.length > 0 && (requiredStructuralFallbackNeedsLexical || candidates.size < maxFiles * 3)) {
     const search = searchRepositoryMany(repoRoot, policy, {
       queries: searchQueries,
       files: scopedExactKnownFileSearch ? exactKnownFiles : undefined,
