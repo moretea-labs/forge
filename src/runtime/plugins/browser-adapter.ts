@@ -174,6 +174,13 @@ type FrameLike = {
   frameElement?(): Promise<{ boundingBox(): Promise<{ x: number; y: number; width: number; height: number } | null> }>;
 };
 
+type BrowserDownloadLike = {
+  suggestedFilename(): string;
+  saveAs(path: string): Promise<void>;
+  failure?(): Promise<string | null>;
+  delete?(): Promise<void>;
+};
+
 type PageLike = {
   goto(url: string, options?: Record<string, unknown>): Promise<unknown>;
   reload?(options?: Record<string, unknown>): Promise<unknown>;
@@ -196,6 +203,7 @@ type PageLike = {
   uncheck?(selector: string, options?: Record<string, unknown>): Promise<void>;
   waitForSelector(selector: string, options?: Record<string, unknown>): Promise<unknown>;
   waitForLoadState?(state?: string, options?: Record<string, unknown>): Promise<void>;
+  waitForEvent?(event: 'download', options?: Record<string, unknown>): Promise<BrowserDownloadLike>;
   frames?(): FrameLike[];
   mainFrame?(): FrameLike;
   locator?(selector: string): { screenshot(options?: Record<string, unknown>): Promise<Buffer> };
@@ -828,6 +836,27 @@ function screenshotFilePath(repoRoot: string, actionId: string, sessionId: strin
   const actionLabel = actionId.replace(/[^a-zA-Z0-9_-]/g, '_');
   const sessionLabel = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
   return join(screenshotDir, `${Date.now()}-${actionLabel}-${sessionLabel}-${digest}.png`);
+}
+
+function safeDownloadArtifactName(requestedName: string | undefined, browserSuggestedName: string | undefined): string {
+  const fallback = `download-${Date.now()}`;
+  const raw = (requestedName || browserSuggestedName || fallback).trim();
+  const leaf = basename(raw) || fallback;
+  const sanitized = leaf.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 180);
+  return sanitized && sanitized !== '.' && sanitized !== '..' ? sanitized : fallback;
+}
+
+function isBlockedExecutableArtifactName(name: string | undefined): boolean {
+  return Boolean(name && /\.(exe|dmg|pkg|sh|bat|cmd|app)$/i.test(basename(name)));
+}
+
+function uniqueDownloadArtifactPath(downloadDir: string, fileName: string): string {
+  const initial = join(downloadDir, fileName);
+  if (!existsSync(initial)) return initial;
+  const dot = fileName.lastIndexOf('.');
+  const stem = dot > 0 ? fileName.slice(0, dot) : fileName;
+  const ext = dot > 0 ? fileName.slice(dot) : '';
+  return join(downloadDir, `${stem}-${Date.now()}${ext}`);
 }
 
 async function captureActionScreenshot(page: PageLike, repoRoot: string, actionId: string, sessionId: string, url: string): Promise<BrowserActionScreenshot | undefined> {
@@ -4596,32 +4625,65 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       case 'await_file_transfer': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         const selector = requiredString(input.args.selector, 'selector');
+        const requestedName = stringValue(input.args.suggested_name);
         const downloadDir = stateDir(input.repoRoot, 'downloads');
         mkdirSync(downloadDir, { recursive: true });
-        const suggested = stringValue(input.args.suggested_name) ?? `download-${Date.now()}`;
-        const safeName = suggested.replace(/[^a-zA-Z0-9._-]+/g, '_');
-        const dest = join(downloadDir, safeName);
         return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (connection.provider === 'macos-apple-events') {
             throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_ACTION_UNSUPPORTED', 'Native Apple Events attachment does not support download capture. Use CDP or a managed browser context.', { retryable: false });
           }
-          await page.click(selector, { timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
-          // Best-effort artifact placeholder when Playwright download events are unavailable in mocks.
-          if (!existsSync(dest)) writeFileSync(dest, '');
-          if (/\.(exe|dmg|pkg|sh|bat|cmd|app)$/i.test(dest)) {
+          if (!page.waitForEvent) {
+            throw new AssistantPluginError('PLUGIN_BROWSER_DOWNLOAD_UNAVAILABLE', 'The selected Playwright page does not expose download events; refusing to fabricate a download artifact.', { retryable: false, details: { provider: connection.provider } });
+          }
+          const timeout = positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
+          let download: BrowserDownloadLike;
+          try {
+            [download] = await Promise.all([
+              page.waitForEvent('download', { timeout }),
+              page.click(selector, { timeout }),
+            ]);
+          } catch (error) {
+            throw new AssistantPluginError('PLUGIN_BROWSER_DOWNLOAD_FAILED', 'Browser download did not start successfully after the authorized click.', {
+              retryable: true, details: { selector, cause: error instanceof Error ? error.message : String(error) },
+            });
+          }
+          const browserSuggestedName = download.suggestedFilename();
+          if (isBlockedExecutableArtifactName(browserSuggestedName) || isBlockedExecutableArtifactName(requestedName)) {
+            await download.delete?.().catch(() => undefined);
+            throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Downloaded executable files are not retained or auto-opened and were discarded.', {
+              retryable: false, details: { suggestedFilename: browserSuggestedName },
+            });
+          }
+          if (download.failure) {
+            const failure = await download.failure();
+            if (failure) {
+              throw new AssistantPluginError('PLUGIN_BROWSER_DOWNLOAD_FAILED', 'Browser reported that the download failed.', { retryable: true, details: { selector, cause: failure } });
+            }
+          }
+          const safeName = safeDownloadArtifactName(requestedName, browserSuggestedName);
+          const dest = uniqueDownloadArtifactPath(downloadDir, safeName);
+          try {
+            await download.saveAs(dest);
+          } catch (error) {
             rmSync(dest, { force: true });
-            throw new AssistantPluginError('PLUGIN_POLICY_BLOCKED', 'Downloaded executable files are not auto-opened and were discarded.', { retryable: false });
+            throw new AssistantPluginError('PLUGIN_BROWSER_DOWNLOAD_FAILED', 'Browser download could not be saved into Forge artifact storage.', {
+              retryable: true, details: { selector, cause: error instanceof Error ? error.message : String(error) },
+            });
+          }
+          if (!existsSync(dest)) {
+            throw new AssistantPluginError('PLUGIN_BROWSER_DOWNLOAD_FAILED', 'Browser download save completed without producing an artifact; refusing false success.', { retryable: true, details: { selector } });
           }
           await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
-          const result = await finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'await_file_transfer', `Captured download artifact for ${selector}.`, {
+          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'await_file_transfer', `Captured download artifact for ${selector}.`, {
             selector,
             download: {
               path: dest,
               relativePath: relative(input.repoRoot, dest),
+              fileName: basename(dest),
+              browserSuggestedName,
               autoOpened: false,
             },
           });
-          return result;
         });
       }
       default:
