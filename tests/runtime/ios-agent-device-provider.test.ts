@@ -158,6 +158,12 @@ describe('optional agent-device iOS Simulator provider', () => {
     expect(manifest.actions.find((action) => action.actionId === 'capture_screenshot')?.resourceClaims).toEqual([
       { resource: 'provider-state', mode: 'read' },
     ]);
+    expect(['xcode_status', 'list_simulators', 'discover_project', 'list_schemes'].every((actionId) =>
+      manifest.actions.find((action) => action.actionId === actionId)?.cancellable === false
+    )).toBe(true);
+    expect(['build', 'xcode_test', 'launch_simulator', 'capture_screenshot', 'smoke_review'].every((actionId) =>
+      manifest.actions.find((action) => action.actionId === actionId)?.cancellable === true
+    )).toBe(true);
     expect(manifest.actions.filter((action) => action.readOnly).every((action) => action.executionMode !== 'lightweight_process')).toBe(true);
     expect((manifest.health.details?.physicalDevice as Record<string, unknown>).probed).toBe(false);
   });
