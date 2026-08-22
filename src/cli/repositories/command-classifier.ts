@@ -274,6 +274,7 @@ function isReadOnlyGitHubCliCommand(words: string[]): boolean {
   if (group === 'pr' && ['list', 'view', 'status', 'checks', 'diff'].includes(action)) return true;
   if (group === 'issue' && ['list', 'view'].includes(action)) return true;
   if (group === 'run' && ['list', 'view', 'watch'].includes(action)) return true;
+  if (group === 'workflow' && ['list', 'view'].includes(action)) return true;
   if (group === 'release' && ['list', 'view', 'download'].includes(action)) return true;
   if (group !== 'api') return false;
 

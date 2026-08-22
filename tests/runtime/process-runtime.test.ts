@@ -1344,6 +1344,8 @@ describe('command classifier safe shell combinations', () => {
       ['gh', 'issue', 'view', '92', '--repo', 'tscircuit/autorouting'],
       ['gh', 'auth', 'status'],
       ['gh', 'search', 'prs', 'repo:tscircuit/autorouting 92'],
+      ['gh', 'workflow', 'list', '--repo', 'tscircuit/autorouting'],
+      ['gh', 'workflow', 'view', 'ci.yml', '--repo', 'tscircuit/autorouting'],
       ['gh', 'api', '-X', 'GET', 'search/issues', '-f', 'q=repo:tscircuit/autorouting is:pr 92'],
     ];
     for (const command of readonly) expect(classifyRepositoryCommand(command).risk).toBe('readonly');
