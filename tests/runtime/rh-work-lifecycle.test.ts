@@ -998,6 +998,13 @@ describe('rh_work managed lifecycle closure', () => {
     const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
     expect(workId).toBeTruthy();
     const recordedAt = '2026-08-22T00:00:00.000Z';
+    updateWorkContract(store, workId, {
+      suggestedNextActions: [
+        { label: 'Continue workloop', tool: 'rh_work', operation: 'continue', payload: { work_id: workId }, risk: 'readonly' },
+        { label: 'Verify before completion', tool: 'rh_work', operation: 'verify', payload: { work_id: workId, check_id: 'package:check:type' }, risk: 'workspace_write' },
+        { label: 'Finalize work', tool: 'rh_work', operation: 'finalize', payload: { work_id: workId }, risk: 'readonly' },
+      ],
+    });
     recordWorkCompletionReceipt(store, workId, {
       schemaVersion: 1,
       receiptId: 'REC-terminal-work-repair',
@@ -1015,6 +1022,19 @@ describe('rh_work managed lifecycle closure', () => {
       verifiedAt: recordedAt,
       recordedAt,
     }, 'completed_no_change', 'completed_no_change');
+    expect(getWorkContract(store, workId)?.suggestedNextActions).toEqual([]);
+    const terminalContext = await callRuntimeTool(fx.ctx, 'rh_context', {
+      repo_id: fx.repository.repoId,
+      operation: 'get',
+      work_id: workId,
+      detail_level: 'raw',
+    });
+    expect(terminalContext?.isError, JSON.stringify(terminalContext?.structuredContent)).not.toBe(true);
+    expect((terminalContext?.structuredContent as { data?: { work?: { status?: string; suggestedNextActions?: unknown[]; continuation?: { nextSafeAction?: string } } } })?.data?.work).toMatchObject({
+      status: 'completed',
+      suggestedNextActions: [],
+      continuation: { nextSafeAction: expect.stringContaining('completion receipt') },
+    });
     expect(getPlanContract(store, 'PLAN-terminal-work-repair')).toMatchObject({ status: 'executing', steps: [{ id: 'step-a', status: 'executing', workId }] });
 
     const diagnosed = await callRuntimeTool(fx.ctx, 'rh_work', {

@@ -392,6 +392,11 @@ function validateWorkSemanticTransition(current: WorkContract, next: WorkContrac
   return next;
 }
 
+function suggestedActionsForStatus(status: WorkContractStatus, actions: readonly SuggestedNextAction[]): SuggestedNextAction[] {
+  if (status === 'completed' || status === 'cancelled') return [];
+  return actions.slice(0, 8);
+}
+
 function sqliteBacked(options: WorkContractStoreOptions): options is WorkContractStoreOptions & { controllerHome: string; repoId: string } {
   // A caller-provided root is a test/portable compatibility store.  Runtime
   // controller state always carries controllerHome + repoId and is SQLite.
@@ -429,6 +434,7 @@ function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore
         workKind: legacy.workKind ?? 'repository_change',
         dispatchState: legacy.dispatchState ?? inferredDispatchState(status),
         evidenceState: legacy.evidenceState ?? inferredEvidenceState(status),
+        suggestedNextActions: suggestedActionsForStatus(status, legacy.suggestedNextActions ?? []),
         reconciliations: legacy.reconciliations ?? [],
         driver: (legacy.driver as unknown as { preferred?: string } | undefined)?.preferred === 'codex_worker'
           ? { ...legacy.driver, preferred: 'external_controller', allowWorker: false }
@@ -998,7 +1004,7 @@ function updateWorkContractInternal(
     completionOutcome: patch.completionOutcome ?? current.completionOutcome,
     evidenceRefs: (patch.evidenceRefs ?? current.evidenceRefs).slice(0, current.evidencePolicy.maxEvidenceRefs),
     handoffRefs: (patch.handoffRefs ?? current.handoffRefs).slice(0, 20),
-    suggestedNextActions: (patch.suggestedNextActions ?? current.suggestedNextActions).slice(0, 8),
+    suggestedNextActions: suggestedActionsForStatus(patch.status ?? current.status, patch.suggestedNextActions ?? current.suggestedNextActions),
     policyDecisions: (patch.policyDecisions ?? current.policyDecisions).slice(0, 20),
     checkRefs: (patch.checkRefs ?? current.checkRefs).slice(0, 50),
     reconciliations: (patch.reconciliations ?? current.reconciliations ?? []).slice(0, 20),
