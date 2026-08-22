@@ -187,7 +187,14 @@ type PageLike = {
   locator?(selector: string): { screenshot(options?: Record<string, unknown>): Promise<Buffer> };
   on?(event: string, handler: (...args: unknown[]) => void): void;
   bringToFront?(): Promise<void>;
-  keyboard?: { press(key: string): Promise<void> };
+  mouse?: {
+    click(x: number, y: number, options?: { button?: 'left' | 'middle' | 'right'; clickCount?: number }): Promise<void>;
+    move(x: number, y: number, options?: { steps?: number }): Promise<void>;
+    wheel(deltaX: number, deltaY: number): Promise<void>;
+    down(options?: { button?: 'left' | 'middle' | 'right' }): Promise<void>;
+    up(options?: { button?: 'left' | 'middle' | 'right' }): Promise<void>;
+  };
+  keyboard?: { press(key: string): Promise<void>; insertText?(text: string): Promise<void> };
   setInputFiles?: (selector: string, files: string | string[]) => Promise<void>;
   close?(): Promise<void>;
 };
@@ -281,6 +288,13 @@ function stringValue(value: unknown): string | undefined {
 
 function positiveNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.trunc(value) : fallback;
+}
+
+function requiredFiniteNumber(value: unknown, name: string, min = -100_000, max = 100_000): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `${name} must be a finite number between ${min} and ${max}.`, { retryable: false });
+  }
+  return value;
 }
 
 function browserProfileMode(value: unknown): BrowserProfileMode | undefined {
@@ -2835,6 +2849,29 @@ function actions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: interactSchema({ key: { type: 'string' } }, ['key']),
     },
     {
+      actionId: 'trusted_input',
+      title: 'Trusted background browser input',
+      description: 'Send bounded Playwright/CDP mouse, wheel, drag, key, or text input directly to the browser page without OS-level pointer movement. Native-only sessions fail closed.',
+      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
+      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
+      argumentsSchema: interactSchema({
+        kind: { type: 'string', enum: ['click', 'move', 'wheel', 'drag', 'key', 'text'] },
+        x: { type: 'number', minimum: 0, maximum: 100000 },
+        y: { type: 'number', minimum: 0, maximum: 100000 },
+        from_x: { type: 'number', minimum: 0, maximum: 100000 },
+        from_y: { type: 'number', minimum: 0, maximum: 100000 },
+        to_x: { type: 'number', minimum: 0, maximum: 100000 },
+        to_y: { type: 'number', minimum: 0, maximum: 100000 },
+        delta_x: { type: 'number', minimum: -100000, maximum: 100000 },
+        delta_y: { type: 'number', minimum: -100000, maximum: 100000 },
+        button: { type: 'string', enum: ['left', 'middle', 'right'] },
+        click_count: { type: 'number', minimum: 1, maximum: 3 },
+        steps: { type: 'number', minimum: 1, maximum: 100 },
+        key: { type: 'string', minLength: 1, maxLength: 100 },
+        text: { type: 'string', maxLength: 10000 },
+      }, ['kind']),
+    },
+    {
       actionId: 'dispatch_event',
       title: 'Dispatch DOM event',
       description: 'Dispatch one named bubbling/composed DOM CustomEvent on an explicit selector after authorization. No arbitrary JavaScript payload is accepted.',
@@ -3747,6 +3784,64 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           else await page.press('body', key, { timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
           await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'keyboard_shortcut', `Pressed shortcut ${key}.`, { key });
+        });
+      }
+      case 'trusted_input': {
+        const target = resolveActionTarget(input.repoRoot, input.args);
+        const kind = requiredString(input.args.kind, 'kind');
+        if (!['click', 'move', 'wheel', 'drag', 'key', 'text'].includes(kind)) {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'kind must be click, move, wheel, drag, key, or text.', { retryable: false });
+        }
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+          if (connection.provider === 'macos-apple-events' || !page.mouse || !page.keyboard) {
+            throw new AssistantPluginError(
+              'PLUGIN_BROWSER_TRUSTED_INPUT_UNAVAILABLE',
+              'Trusted background input requires a Playwright/CDP-controlled page; native Apple Events sessions are never promoted to foreground or OS-level input as fallback.',
+              { retryable: false, details: { provider: connection.provider, sessionId: target.sessionId } },
+            );
+          }
+          const button = input.args.button === 'middle' || input.args.button === 'right' ? input.args.button : 'left';
+          if (kind === 'click') {
+            const x = requiredFiniteNumber(input.args.x, 'x', 0);
+            const y = requiredFiniteNumber(input.args.y, 'y', 0);
+            const clickCount = Math.min(Math.max(positiveNumber(input.args.click_count, 1), 1), 3);
+            await page.mouse.click(x, y, { button, clickCount });
+          } else if (kind === 'move') {
+            const x = requiredFiniteNumber(input.args.x, 'x', 0);
+            const y = requiredFiniteNumber(input.args.y, 'y', 0);
+            const steps = Math.min(Math.max(positiveNumber(input.args.steps, 1), 1), 100);
+            await page.mouse.move(x, y, { steps });
+          } else if (kind === 'wheel') {
+            const deltaX = requiredFiniteNumber(input.args.delta_x, 'delta_x');
+            const deltaY = requiredFiniteNumber(input.args.delta_y, 'delta_y');
+            await page.mouse.wheel(deltaX, deltaY);
+          } else if (kind === 'drag') {
+            const fromX = requiredFiniteNumber(input.args.from_x, 'from_x', 0);
+            const fromY = requiredFiniteNumber(input.args.from_y, 'from_y', 0);
+            const toX = requiredFiniteNumber(input.args.to_x, 'to_x', 0);
+            const toY = requiredFiniteNumber(input.args.to_y, 'to_y', 0);
+            const steps = Math.min(Math.max(positiveNumber(input.args.steps, 10), 1), 100);
+            await page.mouse.move(fromX, fromY);
+            await page.mouse.down({ button });
+            try {
+              await page.mouse.move(toX, toY, { steps });
+            } finally {
+              await page.mouse.up({ button });
+            }
+          } else if (kind === 'key') {
+            await page.keyboard.press(requiredString(input.args.key, 'key'));
+          } else {
+            if (!page.keyboard.insertText) {
+              throw new AssistantPluginError('PLUGIN_BROWSER_TRUSTED_INPUT_UNAVAILABLE', 'This Playwright page does not expose trusted text insertion.', { retryable: false });
+            }
+            const text = typeof input.args.text === 'string' ? input.args.text : undefined;
+            if (text === undefined || text.length > 10_000) {
+              throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'text is required and must be at most 10000 characters.', { retryable: false });
+            }
+            await page.keyboard.insertText(text);
+          }
+          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'trusted_input', `Sent trusted browser input (${kind}).`, { kind });
         });
       }
       case 'dispatch_event': {
