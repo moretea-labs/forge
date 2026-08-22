@@ -1,5 +1,6 @@
+import { randomUUID } from 'crypto';
 import { spawn, spawnSync, type SpawnSyncReturns } from 'child_process';
-import { closeSync, mkdirSync, openSync, renameSync, writeFileSync } from 'fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
@@ -9,11 +10,13 @@ import {
   activeRuntimeLaunchSpec,
   forgeRuntimeServicePaths,
   installForgeRuntimeService,
+  readForgeRuntimeServiceConfig,
   syncForgeRuntimeActiveEntrypoint,
   writeForgeRuntimeServiceConfig,
   type ForgeRuntimeServiceConfig,
 } from './service';
 import { materializePackageRuntimeRelease, type PackageRuntimeRelease } from './package-runtime-release';
+import { readRuntimeReleaseAuthority, revertInitialRuntimeReleasePublication, rollbackRuntimeRelease } from './release-store';
 import { loadMcpServiceLocalConfig } from '../../cli/mcp/auth';
 import { ensurePackageConnectorService, type PackageConnectorServiceResult } from './package-connector-service';
 
@@ -42,6 +45,11 @@ export interface PackageRuntimeServiceOptions {
   env?: NodeJS.ProcessEnv;
   forcePortable?: boolean;
   refreshConnector?: boolean;
+}
+
+export interface PackageRuntimeServiceDependencies {
+  installDarwinService?: typeof installForgeRuntimeService;
+  ensureConnectorService?: typeof ensurePackageConnectorService;
 }
 
 function atomicWrite(path: string, content: string, mode = 0o600): void {
@@ -142,9 +150,17 @@ function startPortableRuntime(controllerHome: string, env: NodeJS.ProcessEnv): n
   }
 }
 
-export async function installPackageRuntimeService(options: PackageRuntimeServiceOptions): Promise<PackageRuntimeServiceInstallResult> {
+export async function installPackageRuntimeService(
+  options: PackageRuntimeServiceOptions,
+  dependencies: PackageRuntimeServiceDependencies = {},
+): Promise<PackageRuntimeServiceInstallResult> {
   const controllerHome = resolveControllerHome(options.controllerHome);
-  const release = materializePackageRuntimeRelease({ controllerHome, packageRoot: options.packageRoot });
+  const servicePaths = forgeRuntimeServicePaths(controllerHome);
+  const priorAuthority = readRuntimeReleaseAuthority(controllerHome);
+  const priorConfigBytes = existsSync(servicePaths.configPath) ? readFileSync(servicePaths.configPath, 'utf8') : undefined;
+  const operationId = `package-runtime-install-${randomUUID()}`;
+  const release = materializePackageRuntimeRelease({ controllerHome, packageRoot: options.packageRoot, operationId });
+  const publicationChanged = release.authority.operationId === operationId;
   const config: ForgeRuntimeServiceConfig = {
     schemaVersion: 1,
     controllerHome,
@@ -158,28 +174,57 @@ export async function installPackageRuntimeService(options: PackageRuntimeServic
   syncForgeRuntimeActiveEntrypoint(controllerHome);
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
+  const installDarwinService = dependencies.installDarwinService ?? installForgeRuntimeService;
 
   let base: PackageRuntimeServiceInstallResult;
-  if (!options.forcePortable && platform === 'darwin') {
-    const paths = await installForgeRuntimeService({ config, runnerPath: join(release.packageRoot, 'bin', 'forge-runtime-service.mjs'), nodeExecutable: process.execPath });
-    base = { status: 'installed', mode: 'launchd', persistent: true, controllerHome, release, servicePath: paths.installedPlistPath, warnings: [] };
-  } else if (!options.forcePortable && platform === 'linux' && systemdUserAvailable(env)) {
-    const unitPath = installSystemdUserService(controllerHome, env);
-    base = { status: 'installed', mode: 'systemd-user', persistent: true, controllerHome, release, servicePath: unitPath, warnings: [] };
-  } else {
-    const pid = startPortableRuntime(controllerHome, env);
-    base = {
-      status: 'installed', mode: 'portable', persistent: false, controllerHome, release, pid,
-      warnings: [platform === 'win32'
-        ? 'Native Windows is preview: Forge started detached Runtime and OAuth Gateway processes for this session; automatic login/reboot persistence is not yet claimed.'
-        : 'systemd --user is unavailable: Forge started detached Runtime and OAuth Gateway processes; enable a user service manager for reboot persistence.'],
-    };
+  try {
+    if (!options.forcePortable && platform === 'darwin') {
+      const paths = await installDarwinService({ config, runnerPath: join(release.packageRoot, 'bin', 'forge-runtime-service.mjs'), nodeExecutable: process.execPath });
+      base = { status: 'installed', mode: 'launchd', persistent: true, controllerHome, release, servicePath: paths.installedPlistPath, warnings: [] };
+    } else if (!options.forcePortable && platform === 'linux' && systemdUserAvailable(env)) {
+      const unitPath = installSystemdUserService(controllerHome, env);
+      base = { status: 'installed', mode: 'systemd-user', persistent: true, controllerHome, release, servicePath: unitPath, warnings: [] };
+    } else {
+      const pid = startPortableRuntime(controllerHome, env);
+      base = {
+        status: 'installed', mode: 'portable', persistent: false, controllerHome, release, pid,
+        warnings: [platform === 'win32'
+          ? 'Native Windows is preview: Forge started detached Runtime and OAuth Gateway processes for this session; automatic login/reboot persistence is not yet claimed.'
+          : 'systemd --user is unavailable: Forge started detached Runtime and OAuth Gateway processes; enable a user service manager for reboot persistence.'],
+      };
+    }
+  } catch (installError) {
+    const recoveryErrors: string[] = [];
+    try {
+      if (publicationChanged) {
+        if (priorAuthority) rollbackRuntimeRelease(controllerHome, `${operationId}-rollback`);
+        else revertInitialRuntimeReleasePublication(controllerHome, operationId);
+      }
+      if (priorConfigBytes === undefined) rmSync(servicePaths.configPath, { force: true });
+      else atomicWrite(servicePaths.configPath, priorConfigBytes);
+      syncForgeRuntimeActiveEntrypoint(controllerHome);
+
+      if (priorAuthority && !options.forcePortable && platform === 'darwin' && priorConfigBytes !== undefined) {
+        const priorConfig = readForgeRuntimeServiceConfig(servicePaths.configPath);
+        await installDarwinService({ config: priorConfig, runnerPath: join(priorConfig.repositoryRoot, 'bin', 'forge-runtime-service.mjs'), nodeExecutable: process.execPath });
+      } else if (priorAuthority && !options.forcePortable && platform === 'linux' && priorConfigBytes !== undefined && systemdUserAvailable(env)) {
+        installSystemdUserService(controllerHome, env);
+      }
+    } catch (recoveryError) {
+      recoveryErrors.push(recoveryError instanceof Error ? recoveryError.message : String(recoveryError));
+    }
+    const detail = installError instanceof Error ? installError.message : String(installError);
+    if (recoveryErrors.length > 0) {
+      throw new Error(`FORGE_PACKAGE_RUNTIME_INSTALL_FAILED_AND_RECOVERY_FAILED: ${detail}; recovery: ${recoveryErrors.join('; ')}`);
+    }
+    throw installError;
   }
 
   const localConfig = loadMcpServiceLocalConfig(controllerHome);
   const connectorEndpoint = localConfig?.chatgpt?.localEndpoint;
   if (!connectorEndpoint) return base;
-  const connector = await ensurePackageConnectorService({
+  const ensureConnectorService = dependencies.ensureConnectorService ?? ensurePackageConnectorService;
+  const connector = await ensureConnectorService({
     release, controllerHome, endpoint: connectorEndpoint, platform, env, forcePortable: options.forcePortable === true, refresh: options.refreshConnector === true,
   });
   return { ...base, connector };

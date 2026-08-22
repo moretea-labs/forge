@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { ensureControllerHome } from '../../cli/repositories/controller-home';
 import {
@@ -102,9 +102,14 @@ function validRelease(controllerHome: string, release: RuntimePublishedRelease |
   }
 }
 
-export function readRuntimeReleaseAuthority(controllerHome: string): RuntimeReleaseAuthority | undefined {
+type RuntimeReleaseAuthorityRead =
+  | { state: 'missing' }
+  | { state: 'valid'; authority: RuntimeReleaseAuthority }
+  | { state: 'invalid'; reason: string };
+
+function inspectRuntimeReleaseAuthority(controllerHome: string): RuntimeReleaseAuthorityRead {
   const path = runtimeReleaseAuthorityPath(controllerHome);
-  if (!existsSync(path)) return undefined;
+  if (!existsSync(path)) return { state: 'missing' };
   try {
     const value = JSON.parse(readFileSync(path, 'utf8')) as RuntimeReleaseAuthority;
     if (
@@ -117,11 +122,24 @@ export function readRuntimeReleaseAuthority(controllerHome: string): RuntimeRele
       || !Number.isFinite(Date.parse(value.committedAt))
       || !validRelease(controllerHome, value.active)
       || (value.previous !== undefined && !validRelease(controllerHome, value.previous))
-    ) return undefined;
-    return value;
-  } catch {
-    return undefined;
+    ) return { state: 'invalid', reason: 'authority fields or referenced release evidence are invalid' };
+    return { state: 'valid', authority: value };
+  } catch (error) {
+    return { state: 'invalid', reason: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function mutableRuntimeReleaseAuthority(controllerHome: string): RuntimeReleaseAuthority | undefined {
+  const observed = inspectRuntimeReleaseAuthority(controllerHome);
+  if (observed.state === 'invalid') {
+    throw new Error(`RUNTIME_RELEASE_AUTHORITY_INVALID_EXISTING: ${observed.reason}`);
+  }
+  return observed.state === 'valid' ? observed.authority : undefined;
+}
+
+export function readRuntimeReleaseAuthority(controllerHome: string): RuntimeReleaseAuthority | undefined {
+  const observed = inspectRuntimeReleaseAuthority(controllerHome);
+  return observed.state === 'valid' ? observed.authority : undefined;
 }
 
 function writeRuntimeReleaseAuthority(controllerHome: string, authority: RuntimeReleaseAuthority): RuntimeReleaseAuthority {
@@ -145,7 +163,7 @@ export function ensureActiveRuntimeRelease(
   operationId = 'runtime-start',
 ): RuntimeReleaseAuthority {
   const active = manifestRecord(controllerHome, manifestPath);
-  const current = readRuntimeReleaseAuthority(controllerHome);
+  const current = mutableRuntimeReleaseAuthority(controllerHome);
   if (current) {
     if (!sameRelease(current.active, active)) throw new Error('RUNTIME_RELEASE_AUTHORITY_MISMATCH');
     return current;
@@ -169,8 +187,18 @@ export function publishRuntimeRelease(
 ): RuntimeReleaseAuthority {
   if (!operationId.trim()) throw new Error('RUNTIME_RELEASE_OPERATION_ID_REQUIRED');
   const candidate = manifestRecord(controllerHome, manifestPath);
-  const current = readRuntimeReleaseAuthority(controllerHome);
-  if (!current) return ensureActiveRuntimeRelease(controllerHome, manifestPath, operationId);
+  const current = mutableRuntimeReleaseAuthority(controllerHome);
+  if (!current) {
+    return writeRuntimeReleaseAuthority(controllerHome, {
+      schemaVersion: 1,
+      status: 'committed',
+      revision: 1,
+      fencingToken: randomUUID(),
+      active: candidate,
+      operationId,
+      committedAt: new Date().toISOString(),
+    });
+  }
   if (sameRelease(current.active, candidate)) return current;
   const backup = backupPath(controllerHome, current.active.releaseId, operationId);
   const inspection = dependencies.backupDatabase(controllerHome, backup);
@@ -190,13 +218,22 @@ export function publishRuntimeRelease(
   });
 }
 
+export function revertInitialRuntimeReleasePublication(controllerHome: string, operationId: string): void {
+  const current = mutableRuntimeReleaseAuthority(controllerHome);
+  if (!current) return;
+  if (current.revision !== 1 || current.previous !== undefined || current.operationId !== operationId) {
+    throw new Error('RUNTIME_RELEASE_INITIAL_PUBLICATION_REVERT_MISMATCH');
+  }
+  rmSync(runtimeReleaseAuthorityPath(controllerHome), { force: true });
+}
+
 export function rollbackRuntimeRelease(
   controllerHome: string,
   operationId: string,
   dependencies: RuntimeReleaseStoreDependencies = DEFAULT_DEPENDENCIES,
 ): RuntimeReleaseAuthority {
   if (!operationId.trim()) throw new Error('RUNTIME_RELEASE_OPERATION_ID_REQUIRED');
-  const current = readRuntimeReleaseAuthority(controllerHome);
+  const current = mutableRuntimeReleaseAuthority(controllerHome);
   const target = current?.previous;
   if (!current || !target?.databaseBackup) throw new Error('RUNTIME_PREVIOUS_RELEASE_UNAVAILABLE');
   const currentBackup = backupPath(controllerHome, current.active.releaseId, operationId);

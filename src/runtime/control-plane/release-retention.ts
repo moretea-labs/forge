@@ -127,6 +127,36 @@ function loadPackageConnectorReleaseProtection(controllerHome: string, releasesR
   return canonical(releaseRoot);
 }
 
+function loadRecoveryKnownGoodReleaseProtection(controllerHome: string, releasesRoot: string): Set<string> {
+  const knownGoodPath = join(controllerHome, 'recovery', 'state', 'known-good.json');
+  const protectedPaths = new Set<string>();
+  if (!existsSync(knownGoodPath)) return protectedPaths;
+  const parsed = JSON.parse(readFileSync(knownGoodPath, 'utf8')) as Record<string, unknown>;
+  if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.releases)) {
+    throw new Error('standalone recovery known-good authority is invalid');
+  }
+  for (const raw of parsed.releases) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('standalone recovery known-good release record is invalid');
+    const record = raw as Record<string, unknown>;
+    const releaseId = typeof record.revision === 'string' ? record.revision.trim() : '';
+    const manifestPathValue = typeof record.path === 'string' ? record.path.trim() : '';
+    if (!releaseId || !manifestPathValue) throw new Error('standalone recovery known-good release identity is incomplete');
+    const manifestPath = resolve(manifestPathValue);
+    const releaseRoot = dirname(manifestPath);
+    if (
+      basename(manifestPath) !== 'manifest.json'
+      || basename(releaseRoot) !== releaseId
+      || !directChild(releasesRoot, releaseRoot)
+      || !existsSync(manifestPath)
+      || !existsSync(releaseRoot)
+    ) {
+      throw new Error('standalone recovery known-good release is outside runtime releases or missing');
+    }
+    protectedPaths.add(canonical(releaseRoot));
+  }
+  return protectedPaths;
+}
+
 function loadRuntimeProtection(controllerHome: string): RuntimeProtection | undefined {
   const releasesRoot = join(controllerHome, 'runtime', 'releases');
   if (!existsSync(releasesRoot)) return undefined;
@@ -147,6 +177,9 @@ function loadRuntimeProtection(controllerHome: string): RuntimeProtection | unde
   }
   const connectorRelease = loadPackageConnectorReleaseProtection(controllerHome, releasesRoot);
   if (connectorRelease) releasePaths.add(connectorRelease);
+  for (const knownGoodRelease of loadRecoveryKnownGoodReleaseProtection(controllerHome, releasesRoot)) {
+    releasePaths.add(knownGoodRelease);
+  }
 
   const backupPaths = new Set<string>();
   let backupAuthoritySafe = true;

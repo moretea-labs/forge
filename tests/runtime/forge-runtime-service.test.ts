@@ -10,9 +10,11 @@ import {
   renderForgeRuntimeLaunchAgent,
   syncForgeRuntimeActiveEntrypoint,
   validateForgeRuntimeServiceConfig,
+  writeForgeRuntimeServiceConfig,
 } from '../../src/runtime/root/service';
 import { materializePackageRuntimeRelease } from '../../src/runtime/root/package-runtime-release';
-import { renderForgeRuntimeSystemdUserUnit } from '../../src/runtime/root/package-runtime-service';
+import { installPackageRuntimeService, renderForgeRuntimeSystemdUserUnit } from '../../src/runtime/root/package-runtime-service';
+import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { ensurePackageConnectorService, packageConnectorLaunchSpec, packageConnectorServicePaths, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit } from '../../src/runtime/root/package-connector-service';
 
 const roots: string[] = [];
@@ -171,13 +173,112 @@ describe('Forge Runtime service', () => {
 
   test('materializes an npm/package Runtime release without Git or Bun compilation and fences package drift', () => {
     const fx = fixture(), packageRoot = join(fx.root, 'package');
-    for (const dir of ['src', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
-    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' })); writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 1;\n'); writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
+    for (const dir of ['src/runtime/root', 'src/runtime/shared', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
+    writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 1;\n');
+    writeFileSync(join(packageRoot, 'src', 'runtime', 'root', 'entry.ts'), 'process.exit(0);\n');
+    writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), 'export async function load(url, context, nextLoad) { return nextLoad(url, context); }\n');
+    writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(99);\n');
     const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'package-test' });
     expect(release.releaseId).toStartWith('package-9.9.9-test-'); expect(activeRuntimeEntrypoint(fx.home)).toBe(release.entrypointPath);
-    const manifest = JSON.parse(readFileSync(release.manifestPath, 'utf8')); expect(manifest.releaseRevision).toBe(`package:9.9.9-test:${release.packageFingerprint}`); expect(manifest.sourceCommit).toBeUndefined();
+    const manifestBytes = readFileSync(release.manifestPath, 'utf8');
+    const manifest = JSON.parse(manifestBytes); expect(manifest.releaseRevision).toBe(`package:9.9.9-test:${release.packageFingerprint}`); expect(manifest.sourceCommit).toBeUndefined();
+    const repeated = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'package-test-repeat' });
+    expect(repeated.releaseId).toBe(release.releaseId);
+    expect(readFileSync(repeated.manifestPath, 'utf8')).toBe(manifestBytes);
+    const launcherBytes = readFileSync(release.entrypointPath, 'utf8');
+    expect(launcherBytes).toContain('process.versions?.bun');
+    expect(launcherBytes).not.toContain('FORGE_FORCE_NODE');
+    const launchdEnvironment = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' };
+    const launched = spawnSync(release.entrypointPath, [], { encoding: 'utf8', env: launchdEnvironment }); expect(launched.status).toBe(0);
     writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 2;\n');
-    const rejected = spawnSync(release.entrypointPath, [], { encoding: 'utf8' }); expect(rejected.status).toBe(78); expect(rejected.stderr).toContain('FORGE_PACKAGE_RUNTIME_SOURCE_CHANGED');
+    const rejected = spawnSync(release.entrypointPath, [], { encoding: 'utf8', env: launchdEnvironment }); expect(rejected.status).toBe(78); expect(rejected.stderr).toContain('FORGE_PACKAGE_RUNTIME_SOURCE_CHANGED');
+  });
+
+  test('fails closed instead of repairing bytes inside an existing package release directory', () => {
+    const fx = fixture(), packageRoot = join(fx.root, 'package');
+    for (const dir of ['src', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
+    writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 1;\n');
+    writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
+    const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'immutable-first' });
+    const corrupted = readFileSync(release.manifestPath, 'utf8').replace('"cleanWorkspace": true', '"cleanWorkspace": false');
+    writeFileSync(release.manifestPath, corrupted);
+    expect(() => materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'immutable-repeat' }))
+      .toThrow('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION');
+    expect(readFileSync(release.manifestPath, 'utf8')).toBe(corrupted);
+  });
+
+  test('removes a first package publication when service activation fails', async () => {
+    const fx = fixture(), packageRoot = join(fx.root, 'package');
+    for (const dir of ['src', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
+    writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 1;\n');
+    writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
+    const paths = forgeRuntimeServicePaths(fx.home);
+    let installAttempts = 0;
+    await expect(installPackageRuntimeService({
+      controllerHome: fx.home,
+      packageRoot,
+      authTokenFile: fx.token,
+      platform: 'darwin',
+      refreshConnector: false,
+    }, {
+      installDarwinService: async () => {
+        installAttempts += 1;
+        throw new Error('synthetic launchd activation failure');
+      },
+    })).rejects.toThrow('synthetic launchd activation failure');
+    expect(installAttempts).toBe(1);
+    expect(readRuntimeReleaseAuthority(fx.home)).toBeUndefined();
+    expect(existsSync(paths.configPath)).toBe(false);
+    expect(existsSync(paths.activeEntrypointPath)).toBe(false);
+  });
+
+  test('restores the previous package authority, config, and service after activation failure', async () => {
+    const fx = fixture();
+    const makePackage = (name: string, runtimeValue: number) => {
+      const packageRoot = join(fx.root, name);
+      for (const dir of ['src', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+      writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
+      writeFileSync(join(packageRoot, 'src', 'runtime.ts'), `export const runtime = ${runtimeValue};\n`);
+      writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
+      return packageRoot;
+    };
+    const priorPackageRoot = makePackage('package-prior', 1);
+    const candidatePackageRoot = makePackage('package-candidate', 2);
+    const priorRelease = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot: priorPackageRoot, operationId: 'prior-package' });
+    writeForgeRuntimeServiceConfig({
+      schemaVersion: 1,
+      controllerHome: fx.home,
+      repositoryRoot: priorPackageRoot,
+      host: '127.0.0.1',
+      port: 8765,
+      authTokenFile: fx.token,
+    });
+    syncForgeRuntimeActiveEntrypoint(fx.home);
+    const paths = forgeRuntimeServicePaths(fx.home);
+    const priorConfigBytes = readFileSync(paths.configPath, 'utf8');
+    let installAttempts = 0;
+    await expect(installPackageRuntimeService({
+      controllerHome: fx.home,
+      packageRoot: candidatePackageRoot,
+      authTokenFile: fx.token,
+      platform: 'darwin',
+      refreshConnector: false,
+    }, {
+      installDarwinService: async () => {
+        installAttempts += 1;
+        if (installAttempts === 1) throw new Error('synthetic candidate launchd failure');
+        return forgeRuntimeServicePaths(fx.home);
+      },
+    })).rejects.toThrow('synthetic candidate launchd failure');
+    expect(installAttempts).toBe(2);
+    const authority = readRuntimeReleaseAuthority(fx.home);
+    expect(authority?.active.releaseId).toBe(priorRelease.releaseId);
+    expect(authority?.previous?.releaseId).not.toBe(priorRelease.releaseId);
+    expect(activeRuntimeEntrypoint(fx.home)).toBe(priorRelease.entrypointPath);
+    expect(readFileSync(paths.configPath, 'utf8')).toBe(priorConfigBytes);
   });
 
   test('renders a persistent OAuth connector separate from the bearer-only Runtime port', () => {

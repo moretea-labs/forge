@@ -563,6 +563,23 @@ describe('standalone recovery on canonical Runtime', () => {
     });
   });
 
+  test('fails closed when an existing authority is invalid instead of rebuilding revision 1', () => {
+    const home = controllerHome();
+    const first = manifest(home, 'release-a', 'artifact-a');
+    const second = manifest(home, 'release-b', 'artifact-b');
+    const third = manifest(home, 'release-c', 'artifact-c');
+    ensureActiveRuntimeRelease(home, first);
+    publishRuntimeRelease(home, second, 'publish-release-b');
+    const authorityPath = join(home, 'runtime', 'releases', 'authority.json');
+    const committedAuthority = readFileSync(authorityPath, 'utf8');
+    writeFileSync(first, `${readFileSync(first, 'utf8')}\n`);
+    expect(readRuntimeReleaseAuthority(home)).toBeUndefined();
+    expect(() => publishRuntimeRelease(home, third, 'must-not-reset-authority'))
+      .toThrow('RUNTIME_RELEASE_AUTHORITY_INVALID_EXISTING');
+    expect(readFileSync(authorityPath, 'utf8')).toBe(committedAuthority);
+    expect(JSON.parse(committedAuthority)).toMatchObject({ revision: 2, active: { releaseId: 'release-b' }, previous: { releaseId: 'release-a' } });
+  });
+
   test('refuses rollback while the canonical Runtime owner is live', async () => {
     const home = controllerHome();
     const first = manifest(home, 'release-a', 'artifact-a');
