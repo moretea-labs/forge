@@ -210,6 +210,50 @@ describe('rh_work managed lifecycle closure', () => {
       ok: true,
     });
   });
+  test('recommends finalize directly only after the final required authoritative verification passes', async () => {
+    const fx = fixture('verify-direct-finalize');
+    writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({
+      scripts: {
+        'check:first': 'node -e "process.exit(0)"',
+        'check:second': 'node -e "process.exit(0)"',
+      },
+    }, null, 2));
+    git(fx.repoRoot, ['add', 'package.json']);
+    git(fx.repoRoot, ['commit', '-m', 'add direct-finalize checks']);
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Verify two checks before direct finalize guidance',
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 1,
+      requires_recovery: true,
+      allowed_paths: ['README.md'],
+      check_ids: ['package:check:first', 'package:check:second'],
+      constraints: { workspaceMode: 'isolated' },
+    });
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    expect(workId).toBeTruthy();
+
+    const completeVerify = async (checkId: string, requestId: string) => {
+      const args = { repo_id: fx.repository.repoId, operation: 'verify', work_id: workId, check_id: checkId, request_id: requestId };
+      let verified = await callRuntimeTool(fx.ctx, 'rh_work', args);
+      const processId = String((verified?.structuredContent as { data?: { verification?: { processId?: string } } })?.data?.verification?.processId ?? '');
+      expect(processId).toBeTruthy();
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 5_000 });
+      verified = await callRuntimeTool(fx.ctx, 'rh_work', args);
+      return verified?.structuredContent as { data?: { nextStep?: string }; suggestedNextActions?: Array<{ operation?: string }> };
+    };
+
+    const first = await completeVerify('package:check:first', 'verify-direct-finalize-first');
+    expect(first.data?.nextStep).toBe('continue');
+    expect(first.suggestedNextActions?.map((action) => action.operation)).toEqual(['continue']);
+
+    const second = await completeVerify('package:check:second', 'verify-direct-finalize-second');
+    expect(second.data?.nextStep).toBe('finalize');
+    expect(second.suggestedNextActions?.map((action) => action.operation)).toEqual(['finalize']);
+  });
+
   test('waits through brief build-cache contention instead of creating a terminal failed verification Process', async () => {
     const fx = fixture('verify-build-cache-lease-wait');
     writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({

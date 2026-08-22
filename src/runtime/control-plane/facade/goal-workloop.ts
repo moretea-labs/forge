@@ -1363,12 +1363,16 @@ export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
         ? 'failed'
         : 'ok';
 
+  const completionEvidence = classified.outcome === 'valid_pass'
+    ? evaluateWorkCompletionEvidence(updated, sourceRevision, input.workspaceFingerprint)
+    : undefined;
+  const validPassReadyToFinalize = completionEvidence?.status === 'complete';
   const suggested = validateSuggestedNextActions(
     classified.outcome === 'valid_pass'
       ? [{
-          label: 'Continue workloop',
+          label: validPassReadyToFinalize ? 'Finalize work' : 'Continue workloop',
           tool: 'rh_work',
-          operation: 'continue',
+          operation: validPassReadyToFinalize ? 'finalize' : 'continue',
           payload: { work_id: work.workId },
           risk: 'readonly',
           confidence: 'high',
@@ -1407,6 +1411,9 @@ export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
         doesNotRequestTaskChanges: !classified.isAcceptanceFailure,
       },
       backgroundCompleted: false,
+      ...(classified.outcome === 'valid_pass'
+        ? { nextStep: validPassReadyToFinalize ? 'finalize' : 'continue' }
+        : {}),
     },
     warnings: classified.warnings,
     evidenceRefs: record.evidenceRef ? [record.evidenceRef] : [],
