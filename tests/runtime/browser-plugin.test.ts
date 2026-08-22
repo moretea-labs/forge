@@ -84,7 +84,11 @@ function writeAuthorizationBrowserSession(repoRoot: string, sessionId: string, u
   }));
 }
 
-function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?: string; frames?: Array<{ url: string; name: string; text?: string; box?: { x: number; y: number; width: number; height: number } | null }> } = {}) {
+function mockPlaywright(options: {
+  finalUrl?: string; title?: string; routeUrl?: string;
+  frames?: Array<{ url: string; name: string; text?: string; box?: { x: number; y: number; width: number; height: number } | null }>;
+  download?: { suggestedFilename?: string; contents?: string; failure?: string | null; waitError?: string; saveError?: string };
+} = {}) {
   let currentUrl = 'https://example.com/';
   let currentTitle = options.title ?? 'Example';
   const routeDecisions: string[] = [];
@@ -92,6 +96,8 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
   const evaluatedExpressions: unknown[] = [];
   const fileSelections: Array<{ selector: string; files: string[] }> = [];
   const trustedInputs: Array<Record<string, unknown>> = [];
+  const savedDownloads: string[] = [];
+  let deletedDownloads = 0;
   const frameEvaluations: Array<{ url: string; name: string; expression: unknown }> = [];
   const frames = (options.frames ?? []).map((frame) => ({
     url: () => frame.url,
@@ -171,6 +177,21 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
       currentTitle = options.title ?? 'Waiting Example';
       return {};
     },
+    async waitForEvent(event: 'download') {
+      if (event !== 'download') throw new Error(`unsupported mock event: ${event}`);
+      if (options.download?.waitError) throw new Error(options.download.waitError);
+      if (!options.download) throw new Error('mock download event timed out');
+      return {
+        suggestedFilename: () => options.download?.suggestedFilename ?? 'download.txt',
+        async failure() { return options.download?.failure ?? null; },
+        async saveAs(path: string) {
+          if (options.download?.saveError) throw new Error(options.download.saveError);
+          writeFileSync(path, options.download?.contents ?? 'download-content');
+          savedDownloads.push(path);
+        },
+        async delete() { deletedDownloads += 1; },
+      };
+    },
     mouse: {
       async click(x: number, y: number, inputOptions?: Record<string, unknown>) { trustedInputs.push({ kind: 'click', x, y, ...inputOptions }); },
       async move(x: number, y: number, inputOptions?: Record<string, unknown>) { trustedInputs.push({ kind: 'move', x, y, ...inputOptions }); },
@@ -214,7 +235,8 @@ function mockPlaywright(options: { finalUrl?: string; title?: string; routeUrl?:
       },
     },
     routeDecisions,
-    launches, evaluatedExpressions, fileSelections, frameEvaluations, trustedInputs,
+    launches, evaluatedExpressions, fileSelections, frameEvaluations, trustedInputs, savedDownloads,
+    get deletedDownloads() { return deletedDownloads; },
   } as never;
 }
 
@@ -767,6 +789,53 @@ describe('browser plugin', () => {
       args: { session_id: sessionId, selector: 'xhs-publish-btn', event: 'publish();alert(1)' },
       origin: { surface: 'local-ui', actor: 'test' },
     })).rejects.toThrow('event must be a simple DOM event name');
+  });
+
+  test('await_file_transfer captures a real Playwright download and never fabricates placeholders', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'managed_persistent', profileMode: 'repo_local' });
+    const runtime = mockPlaywright({ download: { suggestedFilename: 'report final.txt', contents: 'real-download' } }) as unknown as { savedDownloads: string[] };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+    const opened = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page', requestId: 'download-real-open',
+      args: { url: 'https://example.com/download' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    const result = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'await_file_transfer', requestId: 'download-real-capture',
+      args: { session_id: sessionId, selector: '#download', suggested_name: '../saved report.txt', post_action_wait_ms: 1 }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const download = (result.action as Record<string, any>).download as Record<string, unknown>;
+    expect(download.fileName).toBe('saved_report.txt');
+    expect(download.browserSuggestedName).toBe('report final.txt');
+    expect(runtime.savedDownloads).toHaveLength(1);
+    expect(readFileSync(String(download.path), 'utf8')).toBe('real-download');
+  });
+
+  test('await_file_transfer fails when no real download event occurs and blocks executable downloads before saving', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'managed_persistent', profileMode: 'repo_local' });
+    const downloadOptions: Parameters<typeof mockPlaywright>[0] = {};
+    const runtime = mockPlaywright(downloadOptions) as unknown as { savedDownloads: string[]; deletedDownloads: number };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+    const opened = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page', requestId: 'download-missing-open',
+      args: { url: 'https://example.com/download-missing' }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((opened.session as Record<string, unknown>).sessionId);
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'await_file_transfer', requestId: 'download-missing-capture',
+      args: { session_id: sessionId, selector: '#download', timeout_ms: 5 }, origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('PLUGIN_BROWSER_DOWNLOAD_FAILED');
+    expect(runtime.savedDownloads).toEqual([]);
+
+    downloadOptions.download = { suggestedFilename: 'payload.exe', contents: 'MZ' };
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'await_file_transfer', requestId: 'download-executable-capture',
+      args: { session_id: sessionId, selector: '#download', suggested_name: 'renamed-safe.txt' }, origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('PLUGIN_POLICY_BLOCKED');
+    expect(runtime.savedDownloads).toEqual([]);
+    expect(runtime.deletedDownloads).toBe(1);
   });
 
   test('interaction actions inherit host authorization before job submission', async () => {
