@@ -907,6 +907,7 @@ describe('browser plugin', () => {
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
     const staleActions: Array<{ actionId: string; args: Record<string, unknown> }> = [
       { actionId: 'get_text', args: { session_id: sessionId } },
+      { actionId: 'navigate', args: { session_id: sessionId, url: 'https://example.com/existing-stale-next' } },
       { actionId: 'query_all', args: { session_id: sessionId, selector: 'body' } },
       { actionId: 'click', args: { session_id: sessionId, selector: 'button' } },
       { actionId: 'fill', args: { session_id: sessionId, selector: 'input', text: 'x' } },
@@ -925,7 +926,7 @@ describe('browser plugin', () => {
     expect(runtime.states).toHaveLength(pageCountBefore);
   });
 
-  test('existing native session is not cross-provider migrated by read actions while explicit navigate may replace it', async () => {
+  test('existing native session is never cross-provider migrated, including explicit navigate', async () => {
     const { repoRoot, controllerHome } = repoFixture();
     writeBrowserConfig(repoRoot, {
       schemaVersion: 1,
@@ -949,13 +950,13 @@ describe('browser plugin', () => {
     expect(runtime.events.launches).toBe(0);
     expect(runtime.events.newPages).toBe(0);
 
-    const navigated = await executeBrowserPluginAction({
+    await expect(executeBrowserPluginAction({
       controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'navigate',
       requestId: 'browser-legacy-native-explicit-navigate', args: { session_id: sessionId, url: 'https://example.com/explicit-replacement' },
       origin: { surface: 'local-ui', actor: 'test' },
-    });
-    expect(runtime.events.launches).toBe(1);
-    expect(navigated).toMatchObject({ session: { sessionId, url: 'https://example.com/explicit-replacement' } });
+    })).rejects.toThrow('PLUGIN_BROWSER_SESSION_STATE_LOST');
+    expect(runtime.events.launches).toBe(0);
+    expect(runtime.events.newPages).toBe(0);
   });
 
   test('list_sessions distinguishes saved metadata from live managed sessions without creating pages', async () => {

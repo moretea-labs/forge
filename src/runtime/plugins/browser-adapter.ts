@@ -3397,7 +3397,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
               ? { text: await extractText(page, undefined, positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS)) }
               : {}),
           };
-        }, { requireExistingResource: false });
+        }, { requireExistingResource: Boolean(existingSessionId) });
       }
       case 'reload':
       case 'go_back':

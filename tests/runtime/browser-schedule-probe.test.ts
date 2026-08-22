@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   buildScheduledBrowserFingerprint,
   classifyScheduledBrowserObservation,
+  scheduledBrowserProbeNavigationAction,
 } from '../../src/runtime/workflow/schedules/browser-probe';
 
 describe('scheduled browser probe primitives', () => {
@@ -34,6 +35,14 @@ describe('scheduled browser probe primitives', () => {
 
     const explicitFirstWake = classifyScheduledBrowserObservation(undefined, 'fp-a', true);
     expect(explicitFirstWake).toEqual({ status: 'baseline', shouldWake: true });
+  });
+
+  test('keeps user-owned browser sessions observe-only while plugin-owned probes may refresh or navigate', () => {
+    expect(scheduledBrowserProbeNavigationAction('user_owned', false)).toBe('wait_for_load_state');
+    expect(scheduledBrowserProbeNavigationAction('user_owned', true)).toBe('wait_for_load_state');
+    expect(scheduledBrowserProbeNavigationAction('plugin_owned', false)).toBe('reload');
+    expect(scheduledBrowserProbeNavigationAction('plugin_owned', true)).toBe('navigate');
+    expect(scheduledBrowserProbeNavigationAction(undefined, true)).toBe('navigate');
   });
 
   test('rejects invalid ignore regex instead of silently corrupting the observation key', () => {

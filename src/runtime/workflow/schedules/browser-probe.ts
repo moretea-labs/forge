@@ -95,10 +95,56 @@ async function browserAction(
   });
 }
 
+interface ScheduledBrowserSessionMetadata {
+  url?: string;
+  ownership?: string;
+}
+
+export type ScheduledBrowserProbeNavigationAction = 'navigate' | 'reload' | 'wait_for_load_state';
+
+export function scheduledBrowserProbeNavigationAction(
+  ownership: string | undefined,
+  hasUrl: boolean,
+): ScheduledBrowserProbeNavigationAction {
+  if (ownership === 'user_owned') return 'wait_for_load_state';
+  return hasUrl ? 'navigate' : 'reload';
+}
+
+function comparableProbeUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return value;
+  }
+}
+
+async function scheduledBrowserSessionMetadata(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  occurrenceId: string,
+  sessionId: string,
+): Promise<ScheduledBrowserSessionMetadata | undefined> {
+  const inventory = await browserAction(controllerHome, repository, occurrenceId, 'list_sessions', {});
+  const sessions = Array.isArray(inventory.sessions) ? inventory.sessions : [];
+  const saved = sessions
+    .map((entry) => recordValue(entry))
+    .find((entry) => stringValue(entry.sessionId) === sessionId);
+  if (!saved) return undefined;
+  const browser = recordValue(saved.browser);
+  const tab = recordValue(browser.tab);
+  return {
+    url: stringValue(saved.url),
+    ownership: stringValue(tab.ownership),
+  };
+}
+
 /**
  * Bounded read-only browser observation for Schedule. It never interprets page
- * meaning: it only refreshes/navigates, extracts bounded text, projects matching
- * lines, detects configured login markers, and returns a stable fingerprint.
+ * meaning: it only refreshes/navigates plugin-owned targets, observes user-owned
+ * targets without mutating them, extracts bounded text, projects matching lines,
+ * detects configured login markers, and returns a stable fingerprint.
  */
 export async function executeScheduledBrowserProbe(input: {
   controllerHome: string;
@@ -112,8 +158,22 @@ export async function executeScheduledBrowserProbe(input: {
 
   const waitUntil = stringValue(input.args.wait_until) ?? 'domcontentloaded';
   const timeoutMs = boundedNumber(input.args.timeout_ms, 60_000, 1_000, 120_000);
+  const savedSession = requestedSessionId
+    ? await scheduledBrowserSessionMetadata(input.controllerHome, input.repository, input.occurrenceId, requestedSessionId)
+    : undefined;
+  const navigationAction = scheduledBrowserProbeNavigationAction(savedSession?.ownership, Boolean(url));
   let navigation: Record<string, unknown>;
-  if (url) {
+  if (navigationAction === 'wait_for_load_state') {
+    if (!savedSession) throw new Error('SCHEDULE_BROWSER_PROBE_USER_SESSION_STATE_UNAVAILABLE');
+    if (url && savedSession.url && comparableProbeUrl(url) !== comparableProbeUrl(savedSession.url)) {
+      throw new Error('SCHEDULE_BROWSER_PROBE_USER_SESSION_NAVIGATION_REFUSED');
+    }
+    navigation = await browserAction(input.controllerHome, input.repository, input.occurrenceId, 'wait_for_load_state', {
+      session_id: requestedSessionId!,
+      state: waitUntil,
+      timeout_ms: timeoutMs,
+    });
+  } else if (navigationAction === 'navigate') {
     navigation = await browserAction(input.controllerHome, input.repository, input.occurrenceId, 'navigate', {
       ...(requestedSessionId ? { session_id: requestedSessionId } : {}),
       url,
