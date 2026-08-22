@@ -199,6 +199,7 @@ import { observeRuntimeStatus } from '../../root/status';
 import { reconcileWorkValidation } from './work-validation-reconciler';
 import { callExecutionTool } from './execution-tools';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
+import { runWorkChatgptContinuation } from '../../control-plane/launcher/chatgpt-work-continuation';
 
 export {
   connectorExposedTools,
@@ -3860,11 +3861,72 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           try {
             const controllerType = String(args.controller_type ?? 'codex');
             if (!['chatgpt', 'codex', 'grok', 'claude'].includes(controllerType)) throw new Error('CONTROLLER_TYPE_INVALID');
+            const workId = String(args.work_id ?? '').trim();
+            const launchArgs = Array.isArray(args.launch_args) ? args.launch_args.map(String) : [];
+            if (controllerType === 'chatgpt') {
+              const work = getWorkContract(store, workId);
+              if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
+              const handoffId = typeof args.handoff_id === 'string' ? args.handoff_id.trim() : '';
+              const handoff = handoffId ? getHandoffItem(store, handoffId) : undefined;
+              const valueForFlag = (flag: string): string | undefined => {
+                const index = launchArgs.indexOf(flag);
+                if (index < 0) return undefined;
+                const value = launchArgs[index + 1];
+                if (!value || value.startsWith('--')) throw new Error(`CHATGPT_LAUNCH_ARG_VALUE_REQUIRED: ${flag}`);
+                return value;
+              };
+              const supportedFlags = new Set(['--model', '--reasoning', '--tab-policy', '--timeout-ms']);
+              for (let index = 0; index < launchArgs.length; index += 2) {
+                const flag = launchArgs[index];
+                if (!flag || !supportedFlags.has(flag)) throw new Error(`CHATGPT_LAUNCH_ARG_UNSUPPORTED: ${flag ?? ''}`);
+                if (!launchArgs[index + 1] || launchArgs[index + 1]!.startsWith('--')) throw new Error(`CHATGPT_LAUNCH_ARG_VALUE_REQUIRED: ${flag}`);
+              }
+              const reasoning = valueForFlag('--reasoning') ?? 'high';
+              if (!['medium', 'high', 'xhigh'].includes(reasoning)) throw new Error(`CHATGPT_LAUNCH_REASONING_INVALID: ${reasoning}`);
+              const tabPolicy = valueForFlag('--tab-policy') ?? 'auto';
+              if (!['auto', 'reuse', 'new'].includes(tabPolicy)) throw new Error(`CHATGPT_LAUNCH_TAB_POLICY_INVALID: ${tabPolicy}`);
+              const timeoutValue = valueForFlag('--timeout-ms');
+              const timeoutMs = timeoutValue === undefined ? undefined : Number(timeoutValue);
+              if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) throw new Error(`CHATGPT_LAUNCH_TIMEOUT_INVALID: ${timeoutValue}`);
+              const continuationPrompt = typeof args.continuation_prompt === 'string' ? args.continuation_prompt.trim() : '';
+              const prompt = [
+                `Continue Forge Work ${work.workId} in repo ${work.repoId}.`,
+                `Objective: ${work.objective}`,
+                `Acceptance: ${work.acceptanceCriteria.join('; ') || 'none declared'}`,
+                `Current status: ${work.status}`,
+                handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
+                continuationPrompt ? `Continuation: ${continuationPrompt}` : '',
+                'Treat Forge Work/Plan/evidence as source of truth. Claim the exact Work before any mutation; if ownership cannot be established, do not mutate.',
+              ].filter(Boolean).join('\n');
+              const dispatched = await runWorkChatgptContinuation({
+                controllerHome: ctx.controllerHome,
+                repoId: repository.repoId,
+                repoRoot: repository.canonicalRoot,
+                workId,
+                prompt,
+                browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
+                conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
+                model: valueForFlag('--model') ?? 'gpt-5.6',
+                reasoning: reasoning as 'medium' | 'high' | 'xhigh',
+                tabPolicy: tabPolicy as 'auto' | 'reuse' | 'new',
+                timeoutMs,
+              });
+              if (dispatched.status === 'failed') throw new Error(dispatched.error?.message ?? 'CHATGPT_WORK_CONTINUATION_FAILED');
+              return result(buildFacadeResult({
+                summary: 'ChatGPT continuation dispatched directly through controller browser.',
+                data: {
+                  workId,
+                  browserSessionId: dispatched.browserSessionId,
+                  conversationUrl: dispatched.conversationUrl,
+                  executionPreferenceVerified: dispatched.executionPreferenceVerified,
+                },
+              }) as unknown as Record<string, unknown>);
+            }
             const launched = launchSuperController({ work: store, handoff: store }, {
-              controllerType: controllerType as 'chatgpt' | 'codex' | 'grok' | 'claude',
+              controllerType: controllerType as 'codex' | 'grok' | 'claude',
               executable: typeof args.executable === 'string' && args.executable.trim() ? args.executable.trim() : undefined,
-              args: Array.isArray(args.launch_args) ? args.launch_args.map(String) : [],
-              workId: String(args.work_id ?? '').trim(),
+              args: launchArgs,
+              workId,
               launchReservationMs: typeof args.launch_reservation_ms === 'number' ? args.launch_reservation_ms : typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
               handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
               browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
@@ -3872,7 +3934,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               continuationPrompt: typeof args.continuation_prompt === 'string' ? args.continuation_prompt : undefined,
               cwd: repository.canonicalRoot,
             });
-            return result(buildFacadeResult({ summary: `Thin Launcher started ${launched.controllerType}.`, data: { pid: launched.pid, executable: launched.executable, workId: String(args.work_id ?? ''), reservationId: launched.reservationId } }) as unknown as Record<string, unknown>);
+            return result(buildFacadeResult({ summary: `Thin Launcher started ${launched.controllerType}.`, data: { pid: launched.pid, executable: launched.executable, workId, reservationId: launched.reservationId } }) as unknown as Record<string, unknown>);
           } catch (error) {
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Launcher failed.', data: {} }) as unknown as Record<string, unknown>, true);
           }
