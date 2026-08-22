@@ -28,6 +28,7 @@ describe('Desktop Operator trusted external registration', () => {
       'desktop_session_open',
       'desktop_observe',
       'desktop_press',
+      'desktop_pointer_click',
       'desktop_type_text',
       'desktop_key',
       'desktop_clipboard_read',
@@ -42,7 +43,7 @@ describe('Desktop Operator trusted external registration', () => {
     for (const action of input.actions.filter((action) => action.readOnly)) {
       expect(action.risk).toBe('readonly');
     }
-    for (const action of input.actions.filter((action) => ['desktop_permissions_request', 'desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_open_url', 'desktop_batch'].includes(action.actionId))) {
+    for (const action of input.actions.filter((action) => ['desktop_permissions_request', 'desktop_press', 'desktop_pointer_click', 'desktop_type_text', 'desktop_key', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_open_url', 'desktop_batch'].includes(action.actionId))) {
       expect(action.risk).toBe('workspace_write');
       expect(action.confirmation).toBe('authorization');
     }
@@ -50,6 +51,11 @@ describe('Desktop Operator trusted external registration', () => {
     const pressSchema = press?.argumentsSchema as { properties?: Record<string, unknown> } | undefined;
     expect(pressSchema?.properties?.force_coordinate).toBeUndefined();
     expect(press?.description).toContain('pointer/coordinate fallback is intentionally unavailable');
+    const pointerClick = input.actions.find((action) => action.actionId === 'desktop_pointer_click');
+    expect(pointerClick).toMatchObject({ readOnly: false, risk: 'workspace_write', confirmation: 'authorization', scopes: ['desktop.interact'] });
+    expect(pointerClick?.argumentsSchema?.required).toEqual(['interaction_id', 'window_id', 'visual_revision', 'x', 'y']);
+    expect(pointerClick?.description).toContain('fresh window screenshot visual revision');
+    expect(pointerClick?.description).toContain('never activates or focuses');
     const observe = input.actions.find((action) => action.actionId === 'desktop_observe');
     const observeSchema = observe?.argumentsSchema as { properties?: {
       root_selector?: { properties?: { ref?: { type?: string } } };
