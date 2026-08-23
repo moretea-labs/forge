@@ -240,6 +240,31 @@ function workReturnCheckoutId(
   return target.activeCheckoutId ?? repository.activeCheckoutId ?? fallbackCheckoutId;
 }
 
+function exactCommitChangedPaths(repoRoot: string, revision: string): string[] {
+  const result = spawnSync('git', ['-C', repoRoot, 'diff-tree', '--root', '--no-commit-id', '--name-only', '-r', revision], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  if (result.status !== 0 || result.error || typeof result.stdout !== 'string') {
+    throw new Error(`WORK_COMPLETION_RECEIPT_COMMIT_PATHS_UNAVAILABLE: ${revision}`);
+  }
+  return Array.from(new Set(result.stdout.split('\n').map((entry) => entry.trim()).filter(Boolean)))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function workOwnedDirtyPaths(
+  contract: ReturnType<typeof contractFor>,
+  status: ReturnType<typeof repositoryGitStatus>,
+): { dirtyPaths: string[]; ownedPaths: string[] } {
+  const dirtyPaths = [...new Set([...status.staged, ...status.unstaged, ...status.untracked])]
+    .sort((left, right) => left.localeCompare(right));
+  if (!contract) return { dirtyPaths, ownedPaths: dirtyPaths };
+  const ownedPaths = dirtyPaths.filter((path) => {
+    if (contract.forbiddenPaths.some((pattern) => globMatches(pattern, path))) return false;
+    return contract.allowedPaths.length === 0 || contract.allowedPaths.some((pattern) => globMatches(pattern, path));
+  });
+  return { dirtyPaths, ownedPaths };
+}
+
 function completionReceiptChangedPaths(repoRoot: string, baseRevision: string, deliveryRevision: string): string[] {
   const result = spawnSync('git', ['-C', repoRoot, 'diff', '--name-only', `${baseRevision}..${deliveryRevision}`], {
     encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
@@ -277,9 +302,11 @@ function completionReceiptForFinalizedWork(
   if (!reachable) throw new Error(`WORK_COMPLETION_RECEIPT_DELIVERY_NOT_PROVEN: ${deliveryRevision} is not reachable from ${targetBranch}`);
   const changedPaths = noChange
     ? []
-    : handle.baseCommit
-      ? completionReceiptChangedPaths(target.canonicalRoot, handle.baseCommit, deliveryRevision)
-      : (() => { throw new Error('WORK_COMPLETION_RECEIPT_BASE_REQUIRED: Work base revision is unavailable'); })();
+    : !handle.managedWorktree && handle.finalization.commit === 'done'
+      ? exactCommitChangedPaths(target.canonicalRoot, deliveryRevision)
+      : handle.baseCommit
+        ? completionReceiptChangedPaths(target.canonicalRoot, handle.baseCommit, deliveryRevision)
+        : (() => { throw new Error('WORK_COMPLETION_RECEIPT_BASE_REQUIRED: Work base revision is unavailable'); })();
   const recordedAt = new Date().toISOString();
   const warnings = [
     ...(handle.finalization.branchCleanup === 'skipped' ? [{ code: 'cleanup_retained_by_request' as const, message: 'Branch cleanup was skipped by the finalization request.', resourceKind: 'branch' as const, resourceId: handle.branch, recordedAt }] : []),
@@ -2019,7 +2046,10 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     const contract = contractFor(ctx, current);
     if (contract?.constraints.allowCommit === false) throw new Error('WORK_COMMIT_NOT_ALLOWED: WorkContract disallows commit');
     const status = repositoryGitStatus(validated.worktreeRepository);
-    const commitPaths = [...new Set([...status.staged, ...status.unstaged, ...status.untracked])];
+    const { dirtyPaths, ownedPaths: commitPaths } = workOwnedDirtyPaths(contract, status);
+    if (dirtyPaths.length > 0 && commitPaths.length === 0) {
+      throw new Error(`WORK_COMMIT_NO_OWNED_DIRTY_PATHS: ${current.workId} has ${dirtyPaths.length} dirty path(s), but none are owned by its WorkContract path scope`);
+    }
     const committed = repositoryGitCommit(ctx.controllerHome, validated.worktreeRepository, { message: String(args.message ?? `Complete ${current.workId}`), paths: commitPaths, allowEmpty: false, authorizationDecision: gitAuthorization, sessionId: session.sessionId, principalId: session.principalId, workId: current.workId, goalId: current.goalId });
     const pendingAuthorization = [committed.stage, committed.commit].find((execution) => execution?.authorizationDecision?.decision === 'user_confirmation_required')?.authorizationDecision;
     if (pendingAuthorization) return { authorization: pendingAuthorization, work: compactHandle(current), stages: current.finalization };

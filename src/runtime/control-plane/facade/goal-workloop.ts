@@ -801,6 +801,7 @@ export function startGoalWorkloop(
   const needsWorktree = executionMode === 'goal_workloop' && (input.constraints?.requireWorktree
     ?? (workspaceMode === 'isolated'
       || placementConflict
+      || input.modeInput.requiresParallelism === true
       || (workspaceMode === 'auto' && routeDecision.requiresIsolation === true)));
   if (!needsWorktree && workspaceOwner) {
     return buildFacadeResult({

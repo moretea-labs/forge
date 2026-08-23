@@ -10,7 +10,7 @@ import { addRepositoryCheckout, registerRepository, resolveRepositorySelection, 
 import { callExecutionTool } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool, classifyTerminalCheckEvidence, RH_WORK_VERIFY_LEASE_WAIT_MS } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { getProcessRecord, waitForProcess } from '../../src/runtime/execution/process-runtime';
-import { createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { appendWorkEvidence, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { continueGoalWorkloop, finalizeGoalWorkloop, verifyGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { listHandoffItems, resolveHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { acceptPlanStepEvidence, approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
@@ -1642,9 +1642,71 @@ describe('rh_work managed lifecycle closure', () => {
     });
   });
 
+  test('requires_parallelism materializes an isolated managed checkout for recoverable Work', async () => {
+    const fx = fixture('parallel-placement');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Run one parallel-safe bounded repository change',
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 20,
+      requires_recovery: true,
+      requires_parallelism: true,
+      allowed_paths: ['parallel-owned.txt'],
+    });
+    expect(started?.isError, JSON.stringify(started?.structuredContent)).not.toBe(true);
+    const data = (started?.structuredContent as { data?: { work?: { workId?: string }; executionHandle?: { checkoutId?: string; managedWorktree?: boolean } } })?.data;
+    const workId = String(data?.work?.workId ?? '');
+    expect(workId).toBeTruthy();
+    expect(data?.executionHandle?.managedWorktree).toBe(true);
+    expect(data?.executionHandle?.checkoutId).toBeTruthy();
+    expect(data?.executionHandle?.checkoutId).not.toBe(fx.repository.activeCheckoutId);
+    const stopped = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, reason: 'parallel placement regression cleanup' });
+    expect(stopped?.isError, JSON.stringify(stopped?.structuredContent)).not.toBe(true);
+  });
+
+  test('direct finalize commits only Work-owned dirty paths and leaves unrelated checkout dirtiness untouched', async () => {
+    const fx = fixture('finalize-path-ownership');
+    writeFileSync(join(fx.repoRoot, 'unrelated-dirty.txt'), 'pre-existing unrelated edit\n');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Commit only the exact Work-owned direct-edit path',
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 20,
+      requires_recovery: true,
+      allowed_paths: ['owned-direct.txt'],
+    });
+    expect(started?.isError, JSON.stringify(started?.structuredContent)).not.toBe(true);
+    const data = (started?.structuredContent as { data?: { work?: { workId?: string }; executionHandle?: { managedWorktree?: boolean } } })?.data;
+    const workId = String(data?.work?.workId ?? '');
+    expect(workId).toBeTruthy();
+    expect(data?.executionHandle?.managedWorktree).toBe(false);
+
+    writeFileSync(join(fx.repoRoot, 'owned-direct.txt'), 'owned delivery\n');
+    appendWorkEvidence({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId, {
+      artifactId: 'artifact-owned-direct-result',
+      title: 'owned direct-edit result',
+      summary: 'The bounded direct-edit result is ready for delivery.',
+      detailLevel: 'summary',
+    });
+    const continued = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'continue', work_id: workId });
+    expect(continued?.isError, JSON.stringify(continued?.structuredContent)).not.toBe(true);
+
+    const finalized = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'finalize', work_id: workId, merge: false, cleanup: false });
+    expect(finalized?.isError, JSON.stringify(finalized?.structuredContent)).not.toBe(true);
+    const receipt = (finalized?.structuredContent as { data?: { completionReceipt?: { changedPaths?: string[] } } })?.data?.completionReceipt;
+    expect(receipt?.changedPaths).toEqual(['owned-direct.txt']);
+    expect(git(fx.repoRoot, ['show', '--format=', '--name-only', 'HEAD']).split('\n').filter(Boolean)).toEqual(['owned-direct.txt']);
+    expect(readFileSync(join(fx.repoRoot, 'unrelated-dirty.txt'), 'utf8')).toBe('pre-existing unrelated edit\n');
+    expect(git(fx.repoRoot, ['status', '--porcelain', '--', 'unrelated-dirty.txt'])).toContain('?? unrelated-dirty.txt');
+  });
+
   test('rh_work finalize owns exact validation, commit, merge, and cleanup without exposing work_validate', async () => {
     const fx = fixture('finalize');
-    writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({ scripts: { 'check:finalize': 'node -e "process.exit(0)"' } }, null, 2));
+    writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({ scripts: { 'check:finalize': 'node -e \"process.exit(0)\"' } }, null, 2));
     git(fx.repoRoot, ['add', 'package.json']); git(fx.repoRoot, ['commit', '-m', 'add finalize check']);
     const started = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'start', objective: 'Add one lifecycle acceptance file', scope_clear: true, expected_files: 4, expected_changed_lines: 200, requires_recovery: true, check_ids: ['package:check:finalize'], constraints: { requireWorktree: true } });
     expect(started?.isError).not.toBe(true);
@@ -1652,6 +1714,7 @@ describe('rh_work managed lifecycle closure', () => {
     expect((started?.structuredContent as { data?: { executionHandle?: { workId?: string; managedWorktree?: boolean }; ownershipClaimed?: boolean } })?.data).toMatchObject({ executionHandle: { workId, managedWorktree: true }, ownershipClaimed: true });
     const contract = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
     const work = { workId, worktreePath: contract.worktreeRef!, branch: git(contract.worktreeRef!, ['branch', '--show-current']) };
+    mkdirSync(join(work.worktreePath, 'node_modules'), { recursive: true });
     writeFileSync(join(work.worktreePath, 'lifecycle.txt'), 'precommitted\n');
     git(work.worktreePath, ['add', 'lifecycle.txt']);
     git(work.worktreePath, ['commit', '-m', 'Work-owned progress']);
@@ -1664,9 +1727,9 @@ describe('rh_work managed lifecycle closure', () => {
     expect(processId).toBeTruthy();
     await waitForProcess(fx.controllerHome, fx.repository.repoId, processId!, { timeoutMs: 5_000 });
     finalized = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'finalize', work_id: work.workId });
-    expect(finalized?.isError).not.toBe(true);
+    expect(finalized?.isError, JSON.stringify(finalized?.structuredContent)).not.toBe(true);
     const payload = finalized?.structuredContent as { status?: string; data?: { lifecycleClosed?: boolean } };
-    expect(payload.status).toBe('ok'); expect(payload.data?.lifecycleClosed).toBe(true);
+    expect(payload.status, JSON.stringify(finalized?.structuredContent)).toBe('ok'); expect(payload.data?.lifecycleClosed).toBe(true);
     expect(readFileSync(join(fx.repoRoot, 'lifecycle.txt'), 'utf8')).toBe('closed-loop\n');
     expect(existsSync(work.worktreePath)).toBe(false);
     expect(branchExists(fx.repoRoot, work.branch)).toBe(false);
