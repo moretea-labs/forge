@@ -19,6 +19,7 @@ function addSession(
   options: {
     route?: McpSessionRoute; principalId?: string; clientIdentity?: string;
     toolSurfaceFingerprint?: string; notifyToolListChanged?: () => Promise<void> | void;
+    refreshToolSurface?: () => Promise<{ toolSurfaceFingerprint: string; toolNames?: string[] } | undefined>;
   } = {},
 ): FakeTransport {
   const transport = new FakeTransport();
@@ -30,12 +31,39 @@ function addSession(
     principalId: options.principalId ?? 'principal-a',
     clientIdentity: options.clientIdentity ?? `client-${sessionId}`,
     toolSurfaceFingerprint: options.toolSurfaceFingerprint, notifyToolListChanged: options.notifyToolListChanged,
+    refreshToolSurface: options.refreshToolSurface,
   });
   return transport;
 }
 
 describe('MCP session lifecycle registry', () => {
   test('notifies only stale tool-surface sessions once per new fingerprint without marking them refreshed', async () => { const registry = new McpSessionRegistry(); let oldNotifications = 0; let currentNotifications = 0; addSession(registry, 'old-schema', { toolSurfaceFingerprint: 'schema-v1', notifyToolListChanged: () => { oldNotifications += 1; } }); addSession(registry, 'current-schema', { toolSurfaceFingerprint: 'schema-v2', notifyToolListChanged: () => { currentNotifications += 1; } }); expect(await registry.notifyToolListChanged('schema-v2')).toBe(1); expect(await registry.notifyToolListChanged('schema-v2')).toBe(0); expect(oldNotifications).toBe(1); expect(currentNotifications).toBe(0); expect(registry.get('old-schema')?.toolSurfaceFingerprint).toBe('schema-v1'); expect(mcpSessionToolSurfaceFingerprintIsCurrent(registry.get('old-schema')?.toolSurfaceFingerprint, 'schema-v2')).toBe(false); });
+
+  test('refreshes a stale session fingerprint and tool names in place after tools/list', async () => {
+    const registry = new McpSessionRegistry();
+    addSession(registry, 'refreshable', {
+      toolSurfaceFingerprint: 'schema-v1',
+      refreshToolSurface: async () => ({
+        toolSurfaceFingerprint: 'schema-v2',
+        toolNames: ['rh_status', 'rh_work'],
+      }),
+    });
+
+    const refreshed = await registry.refreshToolSurface('refreshable');
+    expect(refreshed).toEqual({
+      toolSurfaceFingerprint: 'schema-v2',
+      toolNames: ['rh_status', 'rh_work'],
+    });
+    expect(registry.get('refreshable')).toMatchObject({
+      toolSurfaceFingerprint: 'schema-v2',
+      toolNames: ['rh_status', 'rh_work'],
+      lastNotifiedToolSurfaceFingerprint: 'schema-v2',
+    });
+    expect(mcpSessionToolSurfaceFingerprintIsCurrent(
+      registry.get('refreshable')?.toolSurfaceFingerprint,
+      'schema-v2',
+    )).toBe(true);
+  });
 
   test('survives 500 initialize and client-close cycles without consuming capacity', async () => {
     const registry = new McpSessionRegistry({ maximumSessions: 4 });
