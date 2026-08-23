@@ -2157,6 +2157,65 @@ describe('rh_work managed lifecycle closure', () => {
     expect(branchExists(fx.repoRoot, work.branch)).toBe(false);
   });
 
+  test('stop cleanup converges when the managed checkout and worktree were already released', async () => {
+    const fx = fixture('stop-already-released-checkout');
+    const work = await prepareManagedWork(fx, 'Cleanup an already released managed checkout');
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    transitionWorkContractPhase(store, work.workId, {
+      status: 'cancelled',
+      phase: 'cleanup',
+      state: 'skipped',
+      summary: 'Simulate semantic stop having committed before physical cleanup returned.',
+      evidenceRefs: [],
+    });
+    expect(getWorkContract(store, work.workId)).toMatchObject({ status: 'cancelled', phase: 'cleanup' });
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)?.state).not.toBe('cleaned');
+
+    git(fx.repoRoot, ['worktree', 'remove', '--force', work.worktreePath]);
+    setRepositoryCheckoutLifecycle({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: work.checkoutId,
+      lifecycle: 'removed',
+      reason: 'simulate an earlier successful resource release before semantic stop converged',
+    });
+    expect(existsSync(work.worktreePath)).toBe(false);
+
+    const stopped = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'stop',
+      work_id: work.workId,
+      reason: 'converge cancelled cleanup after resources were already released',
+    });
+    expect(stopped?.isError, JSON.stringify(stopped?.structuredContent)).not.toBe(true);
+    expect(JSON.stringify(stopped?.structuredContent)).not.toContain('CHECKOUT_NOT_ACTIVE');
+    expect(stopped?.structuredContent).toMatchObject({
+      status: 'ok',
+      data: { finalStatus: 'cancelled', worktreeDeleted: true, cleanupPending: false },
+    });
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)).toMatchObject({
+      state: 'cleaned',
+      cleanupReceipt: {
+        complete: true,
+        worktree: { status: 'already_removed' },
+        checkoutRegistry: { status: 'already_removed' },
+      },
+    });
+
+    const repeated = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'stop',
+      work_id: work.workId,
+      reason: 'repeat terminal cleanup after convergence',
+    });
+    expect(repeated?.isError, JSON.stringify(repeated?.structuredContent)).not.toBe(true);
+    expect(JSON.stringify(repeated?.structuredContent)).not.toContain('CHECKOUT_NOT_ACTIVE');
+    expect(repeated?.structuredContent).toMatchObject({
+      status: 'ok',
+      data: { finalStatus: 'cancelled', worktreeDeleted: true, cleanupPending: false },
+    });
+  });
+
   test('stop cancels and automatically removes the managed worktree and branch', async () => {
     const fx = fixture('stop');
     const work = await prepareManagedWork(fx, 'Disposable no-change acceptance Work');
