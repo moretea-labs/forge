@@ -208,14 +208,9 @@ export function materializeManagedWorkspaceDependencies(repoRoot: string): Manag
   if (existsSync(nodeModulesRoot)) {
     return { mode: 'already_ready', nodeModulesRoot: realpathSync(nodeModulesRoot) };
   }
-  // A package manifest can define dependency-free scripts (for example a
-  // built-in `node -e` check). Such checks do not need node_modules and must not
-  // be rejected merely because the repository intentionally has no lockfile.
-  if (!packageManifestRequiresDependencyMaterialization(repoRoot)) return undefined;
-  const bootstrap = managedWorkspaceDependencyBootstrap(repoRoot);
-  if (!bootstrap) {
-    throw new Error('MANAGED_WORKSPACE_DEPENDENCY_LOCK_REQUIRED: package.json declares dependencies but no supported lockfile was found');
-  }
+  // A linked worktree may safely reuse canonical dependencies even when the
+  // package manifest itself declares no dependencies. The supported lockfile
+  // and dependency-reuse inputs remain the authority for proving equivalence.
   const reusable = resolveManagedWorkspaceCanonicalDependencies(repoRoot);
   if (reusable) {
     try {
@@ -231,6 +226,14 @@ export function materializeManagedWorkspaceDependencies(repoRoot: string): Manag
       nodeModulesRoot: realpathSync(nodeModulesRoot),
       canonicalRoot: reusable.canonicalRoot,
     };
+  }
+  // A package manifest can define dependency-free scripts (for example a
+  // built-in `node -e` check). Such checks do not need node_modules and must not
+  // be rejected merely because the repository intentionally has no lockfile.
+  if (!packageManifestRequiresDependencyMaterialization(repoRoot)) return undefined;
+  const bootstrap = managedWorkspaceDependencyBootstrap(repoRoot);
+  if (!bootstrap) {
+    throw new Error('MANAGED_WORKSPACE_DEPENDENCY_LOCK_REQUIRED: package.json declares dependencies but no supported lockfile was found');
   }
   const childEnv = repositoryChildProcessEnvironment();
   const executable = bootstrap.packageManager === 'bun'
