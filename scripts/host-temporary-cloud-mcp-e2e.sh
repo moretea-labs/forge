@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUN_BIN="${BUN_BIN:-bun}"
 RUNTIME_PORT="${FORGE_CLOUD_MCP_RUNTIME_PORT:-18765}"
 GATEWAY_PORT="${FORGE_CLOUD_MCP_GATEWAY_PORT:-18767}"
+AUTH_PROXY_PORT="${FORGE_CLOUD_OAUTH_PROXY_PORT:-18768}"
 HOLD_SECONDS="${FORGE_CLOUD_MCP_HOLD_SECONDS:-1500}"
 TUNNEL_ID="${FORGE_CLOUD_TUNNEL_ID:-tunnel_6a8a862b52188191b859cf61e7cdb9a3}"
 TUNNEL_ALIAS="${FORGE_CLOUD_TUNNEL_ALIAS:-forge-cloud-ci}"
@@ -20,19 +21,24 @@ TUNNEL_ARCHIVE="$TMP_ROOT/tunnel-client.zip"
 TUNNEL_DIR="$TMP_ROOT/tunnel-client"
 TUNNEL_CLIENT="$TUNNEL_DIR/tunnel-client"
 TUNNEL_STATUS_JSON="$TMP_ROOT/tunnel-status.json"
+AUTH_PROXY_SCRIPT="$TMP_ROOT/oauth-only-proxy.mjs"
+AUTH_TUNNEL_LOG="$TMP_ROOT/oauth-public-tunnel.log"
 RUNTIME_PID=''
 GATEWAY_PID=''
+AUTH_PROXY_PID=''
+AUTH_TUNNEL_PID=''
+AUTH_PUBLIC_ORIGIN=''
 
 cleanup() {
   if [[ -x "$TUNNEL_CLIENT" ]]; then
     "$TUNNEL_CLIENT" runtimes stop "$TUNNEL_ALIAS" --json >/dev/null 2>&1 || true
   fi
-  for pid in "$GATEWAY_PID" "$RUNTIME_PID"; do
+  for pid in "$AUTH_TUNNEL_PID" "$AUTH_PROXY_PID" "$GATEWAY_PID" "$RUNTIME_PID"; do
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
     fi
   done
-  for pid in "$GATEWAY_PID" "$RUNTIME_PID"; do
+  for pid in "$AUTH_TUNNEL_PID" "$AUTH_PROXY_PID" "$GATEWAY_PID" "$RUNTIME_PID"; do
     if [[ -n "$pid" ]]; then
       wait "$pid" 2>/dev/null || true
     fi
@@ -51,6 +57,71 @@ if [[ -z "${!RUNTIME_API_KEY_ENV:-}" ]]; then
 fi
 
 cd "$ROOT"
+
+mkdir -p "$TUNNEL_DIR"
+TUNNEL_CLIENT_ASSET="tunnel-client-${TUNNEL_CLIENT_VERSION}-linux-amd64.zip"
+curl -LfsS \
+  "https://github.com/openai/tunnel-client/releases/download/${TUNNEL_CLIENT_VERSION}/${TUNNEL_CLIENT_ASSET}" \
+  -o "$TUNNEL_ARCHIVE"
+unzip -q "$TUNNEL_ARCHIVE" -d "$TUNNEL_DIR"
+chmod +x "$TUNNEL_CLIENT" "$TUNNEL_DIR/cloudflared"
+
+cat > "$AUTH_PROXY_SCRIPT" <<'NODE'
+import http from 'node:http';
+const upstreamPort = Number(process.argv[2]);
+const listenPort = Number(process.argv[3]);
+const allowed = new Set([
+  '/.well-known/oauth-authorization-server',
+  '/authorize',
+  '/token',
+  '/register',
+  '/revoke',
+]);
+const server = http.createServer((req, res) => {
+  const parsed = new URL(req.url ?? '/', 'http://127.0.0.1');
+  if (!allowed.has(parsed.pathname)) {
+    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('not found');
+    return;
+  }
+  const headers = { ...req.headers, host: `127.0.0.1:${upstreamPort}` };
+  const upstream = http.request({
+    hostname: '127.0.0.1',
+    port: upstreamPort,
+    method: req.method,
+    path: req.url,
+    headers,
+  }, (upstreamRes) => {
+    res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+    upstreamRes.pipe(res);
+  });
+  upstream.on('error', () => {
+    if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('oauth upstream unavailable');
+  });
+  req.pipe(upstream);
+});
+server.listen(listenPort, '127.0.0.1');
+NODE
+node "$AUTH_PROXY_SCRIPT" "$GATEWAY_PORT" "$AUTH_PROXY_PORT" > "$TMP_ROOT/oauth-proxy.log" 2>&1 &
+AUTH_PROXY_PID=$!
+
+"$TUNNEL_DIR/cloudflared" tunnel --no-autoupdate --url "http://127.0.0.1:${AUTH_PROXY_PORT}" > "$AUTH_TUNNEL_LOG" 2>&1 &
+AUTH_TUNNEL_PID=$!
+for _ in $(seq 1 45); do
+  AUTH_PUBLIC_ORIGIN="$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' "$AUTH_TUNNEL_LOG" | head -1 || true)"
+  [[ -n "$AUTH_PUBLIC_ORIGIN" ]] && break
+  if ! kill -0 "$AUTH_TUNNEL_PID" 2>/dev/null; then
+    cat "$AUTH_TUNNEL_LOG" >&2
+    exit 1
+  fi
+  sleep 1
+done
+if [[ -z "$AUTH_PUBLIC_ORIGIN" ]]; then
+  cat "$AUTH_TUNNEL_LOG" >&2
+  echo 'FORGE_CLOUD_OAUTH_PUBLIC_ORIGIN_MISSING' >&2
+  exit 1
+fi
 
 "$BUN_BIN" bin/forge.mjs mcp setup chatgpt \
   --user-level \
@@ -75,6 +146,7 @@ curl --fail --silent --show-error \
   --retry 30 --retry-delay 1 --retry-connrefused \
   "http://127.0.0.1:${RUNTIME_PORT}/ready" > "$TMP_ROOT/runtime-ready.json"
 
+FORGE_MCP_PUBLIC_ORIGIN="$AUTH_PUBLIC_ORIGIN" \
 FORGE_CONTROLLER_LIFECYCLE_OWNER=1 \
   "$BUN_BIN" bin/forge.mjs mcp serve \
   --repo "$ROOT" \
@@ -98,13 +170,18 @@ for _ in $(seq 1 30); do
 done
 test -s "$TMP_ROOT/local-oauth.json"
 
-mkdir -p "$TUNNEL_DIR"
-TUNNEL_CLIENT_ASSET="tunnel-client-${TUNNEL_CLIENT_VERSION}-linux-amd64.zip"
-curl -LfsS \
-  "https://github.com/openai/tunnel-client/releases/download/${TUNNEL_CLIENT_VERSION}/${TUNNEL_CLIENT_ASSET}" \
-  -o "$TUNNEL_ARCHIVE"
-unzip -q "$TUNNEL_ARCHIVE" -d "$TUNNEL_DIR"
-chmod +x "$TUNNEL_CLIENT" "$TUNNEL_DIR/cloudflared"
+curl --fail --silent --show-error \
+  --retry 20 --retry-delay 1 --retry-all-errors \
+  "$AUTH_PUBLIC_ORIGIN/.well-known/oauth-authorization-server" > "$TMP_ROOT/public-oauth.json"
+node - "$TMP_ROOT/public-oauth.json" "$AUTH_PUBLIC_ORIGIN" <<'NODE'
+const fs = require('node:fs');
+const metadata = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const origin = process.argv[3];
+if (metadata.authorization_endpoint !== `${origin}/authorize`) {
+  console.error('FORGE_CLOUD_OAUTH_AUTHORIZATION_ENDPOINT_MISMATCH');
+  process.exit(1);
+}
+NODE
 
 "$TUNNEL_CLIENT" runtimes connect \
   --alias "$TUNNEL_ALIAS" \
@@ -127,6 +204,7 @@ NODE
 
 printf 'FORGE_CLOUD_TUNNEL_ID=%s\n' "$TUNNEL_ID"
 printf 'FORGE_CLOUD_TUNNEL_ALIAS=%s\n' "$TUNNEL_ALIAS"
+printf 'FORGE_CLOUD_OAUTH_ORIGIN=%s\n' "$AUTH_PUBLIC_ORIGIN"
 printf 'FORGE_CLOUD_MCP_RUN_ID=%s\n' "${GITHUB_RUN_ID:-unknown}"
 printf 'FORGE_CLOUD_MCP_RUNNER_OS=%s\n' "${RUNNER_OS:-unknown}"
 printf 'FORGE_CLOUD_MCP_RUNNER_ARCH=%s\n' "${RUNNER_ARCH:-unknown}"
