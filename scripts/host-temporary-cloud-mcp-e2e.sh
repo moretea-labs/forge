@@ -9,6 +9,8 @@ AUTH_PROXY_PORT="${FORGE_CLOUD_OAUTH_PROXY_PORT:-18768}"
 HOLD_SECONDS="${FORGE_CLOUD_MCP_HOLD_SECONDS:-1500}"
 TUNNEL_ID="${FORGE_CLOUD_TUNNEL_ID:-tunnel_6a8a862b52188191b859cf61e7cdb9a3}"
 TUNNEL_ALIAS="${FORGE_CLOUD_TUNNEL_ALIAS:-forge-cloud-ci}"
+AUTH_TUNNEL_ID="${FORGE_CLOUD_AUTH_TUNNEL_ID:-52259e78-1451-4c14-85ef-eeffe0e2ef51}"
+AUTH_PUBLIC_ORIGIN="${FORGE_CLOUD_AUTH_PUBLIC_ORIGIN:-https://forge-cloud-auth.moretea-lab.tech}"
 TUNNEL_CLIENT_VERSION="${FORGE_TUNNEL_CLIENT_VERSION:-v0.0.12}"
 RUNTIME_API_KEY_ENV="${FORGE_CLOUD_TUNNEL_RUNTIME_API_KEY_ENV:-CONTROL_PLANE_API_KEY}"
 
@@ -23,11 +25,11 @@ TUNNEL_CLIENT="$TUNNEL_DIR/tunnel-client"
 TUNNEL_STATUS_JSON="$TMP_ROOT/tunnel-status.json"
 AUTH_PROXY_SCRIPT="$TMP_ROOT/oauth-only-proxy.mjs"
 AUTH_TUNNEL_LOG="$TMP_ROOT/oauth-public-tunnel.log"
+AUTH_TUNNEL_CREDENTIALS_FILE="$TMP_ROOT/oauth-tunnel-credentials.json"
 RUNTIME_PID=''
 GATEWAY_PID=''
 AUTH_PROXY_PID=''
 AUTH_TUNNEL_PID=''
-AUTH_PUBLIC_ORIGIN=''
 
 cleanup() {
   if [[ -x "$TUNNEL_CLIENT" ]]; then
@@ -53,6 +55,11 @@ trap cleanup EXIT INT TERM
 
 if [[ -z "${!RUNTIME_API_KEY_ENV:-}" ]]; then
   echo "FORGE_CLOUD_TUNNEL_RUNTIME_KEY_MISSING env=$RUNTIME_API_KEY_ENV" >&2
+  exit 1
+fi
+
+if [[ -z "${FORGE_CLOUD_AUTH_TUNNEL_CREDENTIALS_B64:-}" ]]; then
+  echo 'FORGE_CLOUD_AUTH_TUNNEL_CREDENTIALS_MISSING' >&2
   exit 1
 fi
 
@@ -106,22 +113,15 @@ NODE
 node "$AUTH_PROXY_SCRIPT" "$GATEWAY_PORT" "$AUTH_PROXY_PORT" > "$TMP_ROOT/oauth-proxy.log" 2>&1 &
 AUTH_PROXY_PID=$!
 
-"$TUNNEL_DIR/cloudflared" tunnel --no-autoupdate --url "http://127.0.0.1:${AUTH_PROXY_PORT}" > "$AUTH_TUNNEL_LOG" 2>&1 &
+umask 077
+printf '%s' "$FORGE_CLOUD_AUTH_TUNNEL_CREDENTIALS_B64" | base64 --decode > "$AUTH_TUNNEL_CREDENTIALS_FILE"
+chmod 600 "$AUTH_TUNNEL_CREDENTIALS_FILE"
+
+"$TUNNEL_DIR/cloudflared" tunnel --no-autoupdate \
+  --credentials-file "$AUTH_TUNNEL_CREDENTIALS_FILE" \
+  --url "http://127.0.0.1:${AUTH_PROXY_PORT}" \
+  run "$AUTH_TUNNEL_ID" > "$AUTH_TUNNEL_LOG" 2>&1 &
 AUTH_TUNNEL_PID=$!
-for _ in $(seq 1 45); do
-  AUTH_PUBLIC_ORIGIN="$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' "$AUTH_TUNNEL_LOG" | head -1 || true)"
-  [[ -n "$AUTH_PUBLIC_ORIGIN" ]] && break
-  if ! kill -0 "$AUTH_TUNNEL_PID" 2>/dev/null; then
-    cat "$AUTH_TUNNEL_LOG" >&2
-    exit 1
-  fi
-  sleep 1
-done
-if [[ -z "$AUTH_PUBLIC_ORIGIN" ]]; then
-  cat "$AUTH_TUNNEL_LOG" >&2
-  echo 'FORGE_CLOUD_OAUTH_PUBLIC_ORIGIN_MISSING' >&2
-  exit 1
-fi
 
 "$BUN_BIN" bin/forge.mjs mcp setup chatgpt \
   --user-level \

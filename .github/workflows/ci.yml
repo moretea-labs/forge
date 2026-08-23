@@ -41,4 +41,5 @@ jobs:
           TEST_BASE_REF: origin/${{ github.base_ref || 'main' }}
           CONTROL_PLANE_API_KEY: ${{ secrets.FORGE_CLOUD_TUNNEL_RUNTIME_API_KEY }}
           FORGE_MCP_OAUTH_PASSPHRASE: ${{ secrets.FORGE_CLOUD_MCP_OAUTH_PASSPHRASE }}
+          FORGE_CLOUD_AUTH_TUNNEL_CREDENTIALS_B64: ${{ secrets.FORGE_CLOUD_AUTH_TUNNEL_CREDENTIALS_B64 }}
         run: bun run check:main
