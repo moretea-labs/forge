@@ -28,6 +28,7 @@ import {
   watchdogRuntimeRestartBudgetStableMs,
   watchdogRuntimeStartupGraceMs,
   verifyStableRuntime,
+  watchdogTick,
   type VerifyResult,
 } from '../../src/runtime/standalone-recovery/core';
 import {
@@ -245,7 +246,13 @@ function writeMainToken(home: string): void {
   writeFileSync(path, JSON.stringify({ bearerToken: 't'.repeat(32) }));
 }
 
-function startObservedRuntime(home: string, endpoint: string, releaseId: string, artifactIdentity: string): RuntimeOwnershipHandle {
+function startObservedRuntime(
+  home: string,
+  endpoint: string,
+  releaseId: string,
+  artifactIdentity: string,
+  startedAt = new Date(Date.now() - 1_000).toISOString(),
+): RuntimeOwnershipHandle {
   const runtimeInstanceId = `runtime-${releaseId}`;
   const ownership = acquireRuntimeOwnership(home, runtimeInstanceId);
   ownerships.push(ownership);
@@ -256,7 +263,7 @@ function startObservedRuntime(home: string, endpoint: string, releaseId: string,
     releaseId,
     artifactIdentity,
     endpoint,
-    startedAt: new Date(Date.now() - 1_000).toISOString(),
+    startedAt,
     updatedAt: new Date().toISOString(),
     readiness: {
       ready: true,
@@ -464,6 +471,23 @@ describe('standalone recovery on canonical Runtime', () => {
     writeMainToken(home);
     startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
     const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
+    const knownGoodPath = join(home, 'recovery', 'state', 'known-good.json');
+    mkdirSync(dirname(knownGoodPath), { recursive: true });
+    writeFileSync(knownGoodPath, `${JSON.stringify({
+      schemaVersion: 1,
+      releases: [{
+        path: join(home, 'runtime', 'releases', 'deleted-release', 'manifest.json'),
+        revision: 'deleted-release',
+        artifactIdentity: 'artifact-deleted',
+        manifestSha256: '0'.repeat(64),
+        workerProtocolVersion: 1,
+        controllerHome: resolve(home),
+        releaseAuthorityRevision: 1,
+        releaseFencingTokenSha256: '0'.repeat(64),
+        attestedAt: new Date().toISOString(),
+      }],
+      updatedAt: new Date().toISOString(),
+    }, null, 2)}\n`);
 
     const verified = await verifyStableRuntime(config);
     expect(verified.ok).toBe(true);
@@ -474,6 +498,8 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(attested).toMatchObject({ revision: 'release-a', artifactIdentity: 'artifact-a', controllerHome: resolve(home) });
     expect(attested.releaseAuthorityRevision).toBe(1);
     expect(attested.releaseFencingTokenSha256).toHaveLength(64);
+    const repairedKnownGood = JSON.parse(readFileSync(knownGoodPath, 'utf8')) as { releases: Array<{ revision: string }> };
+    expect(repairedKnownGood.releases.map((entry) => entry.revision)).toEqual(['release-a']);
 
     const listed = await listReleases(config) as { runtimeRunning: boolean; runtimeReady: boolean; knownGood: Array<{ revision: string }> };
     expect(listed.runtimeRunning).toBe(true);
@@ -499,6 +525,52 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_CLI_COMMANDS).toContain('recover-primary-runtime');
     expect(RECOVERY_CLI_COMMANDS).toContain('activate-runtime-release');
   });
+  test('Watchdog full verification automatically attests a healthy active Runtime release', async () => {
+    const home = controllerHome();
+    const activeManifest = manifest(home, 'release-watchdog-known-good', 'artifact-watchdog-known-good');
+    ensureActiveRuntimeRelease(home, activeManifest);
+    const runtime = await runtimeServer();
+    writeMainToken(home);
+    const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
+    startObservedRuntime(
+      home,
+      runtime.endpoint,
+      'release-watchdog-known-good',
+      'artifact-watchdog-known-good',
+      new Date(Date.now() - watchdogRuntimeStartupGraceMs(config) - 1_000).toISOString(),
+    );
+
+    const tick = await watchdogTick(config, { failures: 0, rollbackUsed: false });
+    expect(tick.decision.action).toBe('healthy');
+    expect(tick.state.lastFullVerifyAt).toBeNumber();
+    const knownGoodPath = join(home, 'recovery', 'state', 'known-good.json');
+    const stored = JSON.parse(readFileSync(knownGoodPath, 'utf8')) as { releases: Array<{ revision: string; path: string }> };
+    expect(stored.releases).toHaveLength(1);
+    expect(stored.releases[0]).toMatchObject({ revision: 'release-watchdog-known-good', path: activeManifest });
+  });
+
+  test('Watchdog cheap healthy ticks do not create known-good evidence without a full verification', async () => {
+    const home = controllerHome();
+    const activeManifest = manifest(home, 'release-watchdog-cheap', 'artifact-watchdog-cheap');
+    ensureActiveRuntimeRelease(home, activeManifest);
+    const runtime = await runtimeServer();
+    writeMainToken(home);
+    const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
+    startObservedRuntime(
+      home,
+      runtime.endpoint,
+      'release-watchdog-cheap',
+      'artifact-watchdog-cheap',
+      new Date(Date.now() - watchdogRuntimeStartupGraceMs(config) - 1_000).toISOString(),
+    );
+    const lastFullVerifyAt = Date.now();
+
+    const tick = await watchdogTick(config, { failures: 0, rollbackUsed: false, lastFullVerifyAt });
+    expect(tick.decision.action).toBe('healthy');
+    expect(tick.state.lastFullVerifyAt).toBe(lastFullVerifyAt);
+    expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
+  });
+
   test('probes Runtime readiness at /ready and MCP with POST initialize while accepting a Bearer challenge', async () => {
     const home = controllerHome();
     const activeManifest = manifest(home, 'release-probe', 'artifact-probe');
