@@ -206,7 +206,7 @@ export function detectSetupPlatform(options: { platform?: NodeJS.Platform; arch?
 }
 
 
-function isLoopbackMcpEndpoint(value: string | undefined): boolean {
+function isLoopbackMcpEndpoint(value: string | undefined): value is string {
   if (!value) return false;
   try {
     const parsed = new URL(value);
