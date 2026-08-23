@@ -1471,6 +1471,80 @@ describe('rh_work managed lifecycle closure', () => {
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toMatchObject({ status: 'completed', completionOutcome: 'completed_changed' });
   });
 
+  test('rh_work finalize reconciles historically delivered managed Work only after durable managed cleanup is complete', async () => {
+    const fx = fixture('historical-managed');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Deliver one historical managed Work',
+      scope_clear: true,
+      expected_files: 4,
+      expected_changed_lines: 200,
+      requires_recovery: true,
+      allowed_paths: ['historical-managed.txt'],
+      constraints: { requireWorktree: true },
+    });
+    expect(started?.isError).not.toBe(true);
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    let handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
+    expect(handle.managedWorktree).toBe(true);
+
+    writeFileSync(join(handle.worktreePath, 'historical-managed.txt'), 'already integrated managed delivery\n');
+    git(handle.worktreePath, ['add', 'historical-managed.txt']);
+    git(handle.worktreePath, ['commit', '-m', 'historical managed delivery']);
+    const targetRevision = git(handle.worktreePath, ['rev-parse', 'HEAD']);
+    git(fx.repoRoot, ['merge', '--ff-only', targetRevision]);
+
+    handle = writeWorkHandle(fx.controllerHome, {
+      ...readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!,
+      state: 'merged',
+      expectedHead: targetRevision,
+      finalization: {
+        validation: 'done',
+        commit: 'failed',
+        merge: 'done',
+        branchCleanup: 'pending',
+        worktreeCleanup: 'pending',
+      },
+    });
+    const reconciliationArgs = {
+      repo_id: fx.repository.repoId,
+      operation: 'finalize',
+      work_id: workId,
+      reconcile_historical_delivery: true,
+      reconcile_target_revision: targetRevision,
+      reconcile_compared_paths: ['historical-managed.txt'],
+      reconcile_rationale: 'The exact managed Work path tree is already integrated at the reviewed commit.',
+      reconcile_cleanup_proof: 'Managed merge and cleanup stages are reviewed from the durable WorkHandle.',
+    } as const;
+    const blocked = await callRuntimeTool(fx.ctx, 'rh_work', reconciliationArgs);
+    expect(blocked?.isError).toBe(true);
+    expect((blocked?.structuredContent as { summary?: string })?.summary).toContain('DIRECT_EDIT_WORK_RECONCILIATION_MANAGED_CLEANUP_REQUIRED');
+
+    git(fx.repoRoot, ['worktree', 'remove', '--force', handle.worktreePath]);
+    git(fx.repoRoot, ['branch', '-D', handle.branch]);
+    handle = writeWorkHandle(fx.controllerHome, {
+      ...readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!,
+      finalization: {
+        ...handle.finalization,
+        branchCleanup: 'done',
+        worktreeCleanup: 'done',
+      },
+    });
+    expect(existsSync(handle.worktreePath)).toBe(false);
+
+    const finalized = await callRuntimeTool(fx.ctx, 'rh_work', reconciliationArgs);
+    expect(finalized?.isError, JSON.stringify(finalized?.structuredContent)).not.toBe(true);
+    expect(finalized?.structuredContent).toMatchObject({
+      status: 'ok',
+      data: { lifecycleClosed: true, completionReceipt: { targetRevision } },
+    });
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)).toMatchObject({
+      state: 'cleaned',
+      finalization: { commit: 'failed', merge: 'done', branchCleanup: 'done', worktreeCleanup: 'done' },
+    });
+  });
+
   test('rh_work finalize owns exact validation, commit, merge, and cleanup without exposing work_validate', async () => {
     const fx = fixture('finalize');
     writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({ scripts: { 'check:finalize': 'node -e "process.exit(0)"' } }, null, 2));

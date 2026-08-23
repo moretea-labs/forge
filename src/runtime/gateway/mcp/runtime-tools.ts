@@ -4320,7 +4320,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CONTROLLER_CLAIM_REQUIRED: ${workId}`);
               }
               const historicalHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
-              if (historicalHandle?.managedWorktree) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_MANAGED_CLEANUP_REQUIRED: ${workId}`);
+              if (historicalHandle?.managedWorktree) {
+                const managedCleanupComplete = historicalHandle.finalization.merge === 'done'
+                  && historicalHandle.finalization.branchCleanup === 'done'
+                  && historicalHandle.finalization.worktreeCleanup === 'done'
+                  && !existsSync(historicalHandle.worktreePath);
+                if (!managedCleanupComplete) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_MANAGED_CLEANUP_REQUIRED: ${workId}`);
+              }
               const reconciliation = acceptReviewedDirectEditWorkReconciliation({
                 controllerHome: ctx.controllerHome,
                 repoId: repository.repoId,
@@ -4335,7 +4341,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 cleanupOwnershipProof: String(args.reconcile_cleanup_proof ?? ''),
               });
               if (historicalHandle && historicalHandle.state !== 'cleaned') {
-                const finalization: WorkHandleState['finalization'] = { validation: 'done', commit: 'done', merge: 'skipped', branchCleanup: 'skipped', worktreeCleanup: 'skipped' };
+                const finalization: WorkHandleState['finalization'] = historicalHandle.managedWorktree
+                  ? historicalHandle.finalization
+                  : { validation: 'done', commit: 'done', merge: 'skipped', branchCleanup: 'skipped', worktreeCleanup: 'skipped' };
                 const delivered = historicalHandle.state === 'committed' || historicalHandle.state === 'merged' || historicalHandle.state === 'failed_terminal_cleanup'
                   ? historicalHandle
                   : transitionWorkHandle(ctx.controllerHome, historicalHandle, 'committed', { expectedHead: reconciliation.receipt.targetRevision, finalization, failureReason: undefined });

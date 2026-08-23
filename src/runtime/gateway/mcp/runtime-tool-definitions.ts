@@ -189,7 +189,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     no_ff: { type: 'boolean' },
     completion_outcome: { type: 'string', enum: ['completed_changed', 'completed_no_change'] },
     no_change_evidence: { type: 'string', description: 'Optional explicit proof for a no-change completion; otherwise the lifecycle coordinator derives proof only for an unchanged validated HEAD.' },
-    reconcile_historical_delivery: { type: 'boolean', description: 'Explicitly request reviewed reconciliation for a historically delivered Direct Edit Work whose original Work binding/receipt is missing.' },
+    reconcile_historical_delivery: { type: 'boolean', description: 'Explicitly request reviewed reconciliation for a historically delivered repository Work whose original receipt is missing. Managed Work is eligible only after merge, branch cleanup, and worktree cleanup are durably complete.' },
     reconcile_target_revision: { type: 'string', description: 'Exact already-integrated commit accepted by the reviewer.' },
     reconcile_compared_paths: { type: 'array', items: { type: 'string' }, description: 'Complete exact path set changed from the Work base revision to reconcile_target_revision.' },
     reconcile_rationale: { type: 'string', description: 'Bounded reviewer rationale for accepting the historical delivery.' },
