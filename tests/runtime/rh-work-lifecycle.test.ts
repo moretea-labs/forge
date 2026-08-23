@@ -631,6 +631,32 @@ describe('rh_work managed lifecycle closure', () => {
     expect(refreshed?.structuredContent).toMatchObject({ status: 'ok', data: { nextStep: 'finalize' } });
   });
 
+  test('explicit bounded repair decision resumes implementation after valid_fail without creating a review handoff', async () => {
+    const fx = fixture('acceptance-explicit-repair');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Repair one deterministic acceptance failure in the same Work',
+      requires_recovery: true,
+    });
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    expect(workId).toBeTruthy();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    updateWorkContract(store, workId, { checks: ['decision-check'] });
+    const workloopCtx = { workStore: store, handoffStore: store, repoId: fx.repository.repoId, availableChecks: [{ id: 'decision-check' }] };
+
+    verifyGoalWorkloop(workloopCtx, { workId, checkId: 'decision-check', checkFailed: true });
+    const resumed = continueGoalWorkloop(workloopCtx, { workId, acceptanceFailureDecision: 'repair' });
+    expect(resumed.status).toBe('ok');
+    expect(resumed.data).toMatchObject({ nextStep: 'execute', acceptanceFailureDecision: 'repair' });
+    const handoffs = listHandoffItems({ ...store, status: 'all', limit: 100 })
+      .filter((item) => item.workId === workId && item.title === 'Acceptance failure needs review');
+    expect(handoffs).toHaveLength(0);
+    const updated = getWorkContract(store, workId);
+    expect(updated?.phase).toBe('implementation');
+    expect(updated?.status).toBe('running');
+  });
+
   test('reuses one acceptance-failure handoff until newer failure evidence appears', async () => {
     const fx = fixture('acceptance-handoff-dedupe');
     const started = await callRuntimeTool(fx.ctx, 'rh_work', {
