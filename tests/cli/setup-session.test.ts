@@ -33,23 +33,16 @@ describe('Forge setup session', () => {
   });
 
   test('keeps user-level Controller Home global when setup runs inside a repository', () => {
-    const root = temp('forge-setup-global-controller-home-');
-    const previousControllerHome = process.env.FORGE_CONTROLLER_HOME;
+    const root = temp('forge-setup-global-controller-home-'), previousControllerHome = process.env.FORGE_CONTROLLER_HOME;
     try {
-      const setupRoot = join(root, 'setup-home');
-      const repoControllerHome = join(root, '_ops', 'controller-home');
-      const controllerHome = join(root, 'global-controller-home');
-      const endpoint = 'https://forge.example.com/mcp';
-      mkdirSync(repoControllerHome, { recursive: true });
+      const setupRoot = join(root, 'setup-home'), controllerHome = join(root, 'global-controller-home'), endpoint = 'https://forge.example.com/mcp';
+      mkdirSync(join(root, '_ops', 'controller-home'), { recursive: true });
       const profile = configureSetupProfile({ setupRoot, controller: 'chatgpt', tunnel: 'existing', endpoint });
-      runMcpSetupChatgpt({ controllerHome, userLevel: true, endpoint });
-      process.env.FORGE_CONTROLLER_HOME = controllerHome;
+      runMcpSetupChatgpt({ controllerHome, userLevel: true, endpoint }); process.env.FORGE_CONTROLLER_HOME = controllerHome;
       const session = openSetupSession({ cwd: root, setupRoot, accountHome: root, profile, report: report('none'), platform, uuid: () => 'global-controller-home' });
-      expect(session.nextAction).toMatchObject({ id: 'runtime.package.install', command: 'forge runtime service install-package' });
-      expect(session.nextAction?.id).not.toBe('controller.chatgpt.configure');
+      expect(session.nextAction).toMatchObject({ id: 'runtime.package.install', command: 'forge runtime service install-package' }); expect(session.nextAction?.id).not.toBe('controller.chatgpt.configure');
     } finally {
-      if (previousControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
-      else process.env.FORGE_CONTROLLER_HOME = previousControllerHome;
+      if (previousControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME; else process.env.FORGE_CONTROLLER_HOME = previousControllerHome;
       rmSync(root, { recursive: true, force: true });
     }
   });
