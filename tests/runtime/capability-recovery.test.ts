@@ -20,6 +20,7 @@ import { applyEditOperations, beginEditSession, getEditSession } from '../../src
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { approvePlanContract, claimPlanStepForWork, createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import {
   applyExternalFilesystemGrant,
   buildWorkspaceAuthStatus,
@@ -402,7 +403,61 @@ describe('runtime maintenance executor', () => {
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-stale-ready')?.status).toBe('cancelled');
   });
 
-  it('does not classify an old Work as safe to cancel while an active Plan still owns it', () => { const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-plan-authority-')); temporaryRoots.push(root); const controllerHome = join(root, 'controller'); const repoRoot = join(root, 'repo'); mkdirSync(controllerHome, { recursive: true }); mkdirSync(repoRoot, { recursive: true }); const repository = { repoId: 'repo-plan-owned-work', canonicalRoot: repoRoot }; const oldAt = '2026-01-01T00:00:00.000Z'; createWorkContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, { workId: 'work-plan-owned', repoId: repository.repoId, mode: 'goal_workloop', objective: 'authoritative old work', acceptanceCriteria: ['finish plan'], allowedPaths: [], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'ready', }); createPlanContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, { planId: 'PLAN-owned', repoId: repository.repoId, scopeKey: 'owned-scope', sourceRevision: 'revision-a', goal: 'Own the old work', steps: [{ id: 'step-a', objective: 'Execute authoritative work', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['finish plan'] }], }); approvePlanContract({ controllerHome, repoId: repository.repoId }, 'PLAN-owned'); claimPlanStepForWork({ controllerHome, repoId: repository.repoId }, { planId: 'PLAN-owned', stepId: 'step-a', workId: 'work-plan-owned', sourceRevision: 'revision-a' }); const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 }); expect(status.candidates).toContainEqual(expect.objectContaining({ kind: 'stale_work_contract', id: 'work-plan-owned', safe: false, reason: expect.stringContaining('plan:PLAN-owned'), })); const applied = applyRuntimeMaintenance(repository, controllerHome, { actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 1, maxCandidates: 50 }); expect(applied.applied).toContainEqual(expect.objectContaining({ kind: 'stale_work_contract', id: 'work-plan-owned', applied: false, result: 'not_selected' })); expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-plan-owned')?.status).toBe('ready'); });
+  it('does not classify an old Work as stale while an active Plan still owns it', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-plan-authority-'));
+    temporaryRoots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    mkdirSync(controllerHome, { recursive: true });
+    mkdirSync(repoRoot, { recursive: true });
+    const repository = { repoId: 'repo-plan-owned-work', canonicalRoot: repoRoot };
+    const oldAt = '2026-01-01T00:00:00.000Z';
+    createWorkContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
+      workId: 'work-plan-owned', repoId: repository.repoId, mode: 'goal_workloop', objective: 'authoritative old work',
+      acceptanceCriteria: ['finish plan'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'ready',
+    });
+    createPlanContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
+      planId: 'PLAN-owned', repoId: repository.repoId, scopeKey: 'owned-scope', sourceRevision: 'revision-a', goal: 'Own the old work',
+      steps: [{ id: 'step-a', objective: 'Execute authoritative work', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['finish plan'] }],
+    });
+    approvePlanContract({ controllerHome, repoId: repository.repoId }, 'PLAN-owned');
+    claimPlanStepForWork({ controllerHome, repoId: repository.repoId }, { planId: 'PLAN-owned', stepId: 'step-a', workId: 'work-plan-owned', sourceRevision: 'revision-a' });
+
+    const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
+    expect(status.candidates).not.toContainEqual(expect.objectContaining({ kind: 'stale_work_contract', id: 'work-plan-owned' }));
+    const applied = applyRuntimeMaintenance(repository, controllerHome, { actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 1, maxCandidates: 50 });
+    expect(applied.applied).not.toContainEqual(expect.objectContaining({ kind: 'stale_work_contract', id: 'work-plan-owned' }));
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-plan-owned')?.status).toBe('ready');
+  });
+
+  it('treats a live Controller lease as lifecycle authority until the lease is released', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-controller-authority-'));
+    temporaryRoots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    mkdirSync(controllerHome, { recursive: true });
+    mkdirSync(repoRoot, { recursive: true });
+    const repository = { repoId: 'repo-controller-owned-work', canonicalRoot: repoRoot };
+    const oldAt = '2026-01-01T00:00:00.000Z';
+    createWorkContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
+      workId: 'work-controller-owned', repoId: repository.repoId, mode: 'goal_workloop', objective: 'controller-owned old work',
+      acceptanceCriteria: ['preserve ownership'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'ready',
+    });
+    claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+      workId: 'work-controller-owned', controllerId: 'controller-a', controllerType: 'chatgpt', sessionId: 'mcp-a',
+      principalId: 'principal-a', controllerInstanceId: 'runtime-a', leaseMs: 60_000,
+    });
+
+    const active = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
+    expect(active.candidates).not.toContainEqual(expect.objectContaining({ kind: 'stale_work_contract', id: 'work-controller-owned' }));
+    releaseControllerSession({ controllerHome, repoId: repository.repoId }, 'work-controller-owned', 'controller-a');
+    const released = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
+    expect(released.candidates).toContainEqual(expect.objectContaining({
+      kind: 'stale_work_contract', id: 'work-controller-owned', safe: true,
+    }));
+  });
 
   it('reconciles committed Direct Edit metadata during maintenance discovery', () => {
     const fx = editFixture();

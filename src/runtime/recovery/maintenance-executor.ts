@@ -438,23 +438,25 @@ function scanStaleWorkContractCandidates(
       return { contract, ageMinutes };
     })
     .filter(({ ageMinutes }) => ageMinutes >= options.minAgeMinutes)
+    .flatMap(({ contract, ageMinutes }) => {
+      const authorityRefs = activeWorkAuthorityRefs(repository, controllerHome, contract);
+      // A live Plan/Requirement/Schedule/Controller reference is lifecycle authority,
+      // not maintenance debt. Keep the Work fenced until that authority disappears;
+      // if it later becomes unowned, the next scan will surface it as stale.
+      return authorityRefs.length > 0 ? [] : [{ contract, ageMinutes }];
+    })
     .sort((left, right) => right.ageMinutes - left.ageMinutes)
     .slice(0, options.maxCandidates)
-    .map(({ contract, ageMinutes }) => {
-      const authorityRefs = activeWorkAuthorityRefs(repository, controllerHome, contract);
-      return {
-        kind: 'stale_work_contract' as const,
-        id: contract.workId,
-        status: contract.status,
-        safe: authorityRefs.length === 0,
-        reason: authorityRefs.length > 0
-          ? `Nonterminal WorkContract is old but still has active lifecycle authority (${authorityRefs.join(', ')}); maintenance must not cancel it from age alone.`
-          : 'Nonterminal WorkContract exceeded the explicit maintenance age threshold and has no active Plan, Requirement, Schedule, or Controller authority; explicit full maintenance may cancel it while retaining evidence.',
-        ageMinutes,
-        suggestedAction: 'full_maintenance_pass' as const,
-        ownershipStatus: 'explicit' as const,
-      };
-    });
+    .map(({ contract, ageMinutes }) => ({
+      kind: 'stale_work_contract' as const,
+      id: contract.workId,
+      status: contract.status,
+      safe: true,
+      reason: 'Nonterminal WorkContract exceeded the explicit maintenance age threshold and has no active Plan, Requirement, Schedule, or Controller authority; explicit full maintenance may cancel it while retaining evidence.',
+      ageMinutes,
+      suggestedAction: 'full_maintenance_pass' as const,
+      ownershipStatus: 'explicit' as const,
+    }));
 }
 
 function scanStaleEditSessionCandidates(
