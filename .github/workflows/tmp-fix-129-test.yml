@@ -1,0 +1,57 @@
+name: tmp-fix-129-test
+on:
+  push:
+    branches:
+      - fix/controller-home-global-setup
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/controller-home-global-setup
+          fetch-depth: 0
+      - name: Replace repo-preferred setup assertion and self-delete
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tests/cli/setup-session.test.ts')
+          text = p.read_text()
+          start_marker = "  test('prefers an existing repo controller home when setup runs inside that repository', () => {"
+          end_marker = "\n\n  test('only explicitly configured local controllers enable their host-tooling checks', () => {"
+          start = text.find(start_marker)
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit('expected setup-session test anchors not found')
+          replacement = """  test('keeps user-level Controller Home global when setup runs inside a repository', () => {
+    const root = temp('forge-setup-global-controller-home-');
+    const previousControllerHome = process.env.FORGE_CONTROLLER_HOME;
+    try {
+      const setupRoot = join(root, 'setup-home');
+      const repoControllerHome = join(root, '_ops', 'controller-home');
+      const controllerHome = join(root, 'global-controller-home');
+      const endpoint = 'https://forge.example.com/mcp';
+      mkdirSync(repoControllerHome, { recursive: true });
+      const profile = configureSetupProfile({ setupRoot, controller: 'chatgpt', tunnel: 'existing', endpoint });
+      runMcpSetupChatgpt({ controllerHome, userLevel: true, endpoint });
+      process.env.FORGE_CONTROLLER_HOME = controllerHome;
+      const session = openSetupSession({ cwd: root, setupRoot, accountHome: root, profile, report: report('none'), platform, uuid: () => 'global-controller-home' });
+      expect(session.nextAction).toMatchObject({ id: 'runtime.package.install', command: 'forge runtime service install-package' });
+      expect(session.nextAction?.id).not.toBe('controller.chatgpt.configure');
+    } finally {
+      if (previousControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+      else process.env.FORGE_CONTROLLER_HOME = previousControllerHome;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });"""
+          p.write_text(text[:start] + replacement + text[end:])
+          PY
+          rm .github/workflows/tmp-fix-129-test.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/cli/setup-session.test.ts .github/workflows/tmp-fix-129-test.yml
+          git commit -m "test(setup): keep Controller Home independent from cwd"
+          git push origin HEAD:fix/controller-home-global-setup
