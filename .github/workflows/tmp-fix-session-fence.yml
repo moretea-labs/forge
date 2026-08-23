@@ -1,0 +1,126 @@
+name: tmp-fix-session-fence
+on:
+  push:
+    branches: [fix/live-session-fence-confirmation]
+permissions:
+  contents: write
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/live-session-fence-confirmation
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+      - name: Live-confirm schema fence mismatches
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          http = Path('src/cli/mcp/transports/http.ts')
+          text = http.read_text()
+          old = '''export async function resolveMcpSessionCurrentFingerprint(
+  publishedFingerprint: string | undefined,
+  loadRuntimeFingerprint?: () => Promise<string | undefined>,
+): Promise<string | undefined> {
+  // Runtime status publishes the exact schema fingerprint observed at session
+  // initialization/cutover. Prefer that O(1) fence on the hot path. If the
+  // publication is temporarily unavailable, retain the previous fail-safe
+  // behavior by asking the Canonical Runtime directly.
+  if (publishedFingerprint) return publishedFingerprint;
+  return await loadRuntimeFingerprint?.();
+}'''
+          new = '''export async function resolveMcpSessionCurrentFingerprint(
+  publishedFingerprint: string | undefined,
+  loadRuntimeFingerprint?: () => Promise<string | undefined>,
+  sessionFingerprint?: string,
+): Promise<string | undefined> {
+  // Keep the O(1) published fingerprint on the normal hot path. A disagreement
+  // with an established session is different: status.json is only a projection,
+  // so it cannot reject a live session until Canonical Runtime schema confirms
+  // the disagreement. If live confirmation is unavailable, preserve the session
+  // rather than promoting stale projection state into lifecycle authority.
+  if (!publishedFingerprint) return await loadRuntimeFingerprint?.();
+  if (!sessionFingerprint || publishedFingerprint === sessionFingerprint) return publishedFingerprint;
+  const liveFingerprint = await loadRuntimeFingerprint?.();
+  return liveFingerprint ?? sessionFingerprint;
+}'''
+          if old not in text:
+              raise SystemExit('fingerprint helper anchor not found')
+          text = text.replace(old, new, 1)
+
+          pattern = re.compile(r'(const currentFingerprint = await resolveMcpSessionCurrentFingerprint\(\n.*?: undefined,\n)(\s+)(\);)', re.S)
+          def add_session(match):
+              indent = match.group(2)
+              return match.group(1) + indent + 'managed.toolSurfaceFingerprint,\n' + indent + match.group(3)
+          text, count = pattern.subn(add_session, text)
+          if count != 2:
+              raise SystemExit(f'expected 2 session fence call sites, found {count}')
+          http.write_text(text)
+
+          test = Path('tests/cli/mcp-runtime-proxy-routing.test.ts')
+          text = test.read_text()
+          text = text.replace("""  test('uses the published Runtime fingerprint without rediscovering tools on the hot path', async () => {
+    let discoveryCalls = 0;
+    const fingerprint = await resolveMcpSessionCurrentFingerprint('runtime-schema-v1', async () => {
+      discoveryCalls += 1;
+      return 'runtime-schema-v1';
+    });
+
+    expect(fingerprint).toBe('runtime-schema-v1');
+    expect(discoveryCalls).toBe(0);
+  });
+
+  test('falls back to live Runtime discovery when the published fingerprint is unavailable', async () => {
+    let discoveryCalls = 0;
+    const fingerprint = await resolveMcpSessionCurrentFingerprint(undefined, async () => {
+      discoveryCalls += 1;
+      return 'runtime-schema-v1';
+    });
+
+    expect(fingerprint).toBe('runtime-schema-v1');
+    expect(discoveryCalls).toBe(1);
+  });""", """  test('uses the published Runtime fingerprint without rediscovering tools when the session agrees', async () => {
+    let discoveryCalls = 0;
+    const fingerprint = await resolveMcpSessionCurrentFingerprint('runtime-schema-v1', async () => {
+      discoveryCalls += 1;
+      return 'runtime-schema-v1';
+    }, 'runtime-schema-v1');
+
+    expect(fingerprint).toBe('runtime-schema-v1');
+    expect(discoveryCalls).toBe(0);
+  });
+
+  test('live-confirms a published mismatch before invalidating the session', async () => {
+    let discoveryCalls = 0;
+    const staleProjection = await resolveMcpSessionCurrentFingerprint('runtime-schema-v2', async () => {
+      discoveryCalls += 1; return 'runtime-schema-v1';
+    }, 'runtime-schema-v1');
+    const changedRuntime = await resolveMcpSessionCurrentFingerprint('runtime-schema-v2', async () => 'runtime-schema-v2', 'runtime-schema-v1');
+    const missingProjection = await resolveMcpSessionCurrentFingerprint(undefined, async () => 'runtime-schema-v1', 'runtime-schema-v1');
+
+    expect(staleProjection).toBe('runtime-schema-v1'); expect(changedRuntime).toBe('runtime-schema-v2');
+    expect(missingProjection).toBe('runtime-schema-v1'); expect(discoveryCalls).toBe(1);
+  });""", 1)
+          if "live-confirms a published mismatch" not in text:
+              raise SystemExit('test replacement failed')
+          test.write_text(text)
+          PY
+          rm -f .session-fence-trigger
+          bun install --frozen-lockfile
+          bun test tests/cli/mcp-runtime-proxy-routing.test.ts
+          TEST_BASE_REF=origin/main bun run check:main
+          rm .github/workflows/tmp-fix-session-fence.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/cli/mcp/transports/http.ts tests/cli/mcp-runtime-proxy-routing.test.ts .github/workflows/tmp-fix-session-fence.yml .session-fence-trigger
+          git commit -m "fix(mcp): live-confirm session schema fence mismatches"
+          git push origin HEAD:fix/live-session-fence-confirmation
