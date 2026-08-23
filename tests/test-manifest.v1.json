@@ -433,6 +433,10 @@
       "module": "release",
       "resource": "temp-isolated"
     },
+    "tests/runtime/package-runtime-release.test.ts": {
+      "module": "release",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/git-executable-and-workspace.test.ts": {
       "module": "repository",
       "resource": "git-worktree"

@@ -75,6 +75,45 @@ export function packageRuntimeFingerprint(records: PackageRuntimeFileRecord[]): 
   return hash.digest('hex');
 }
 
+function assertPackageRuntimeSnapshot(snapshotRoot: string, records: PackageRuntimeFileRecord[]): void {
+  if (!existsSync(snapshotRoot)) throw new Error('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: package snapshot is missing');
+  const rootStat = lstatSync(snapshotRoot);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: package snapshot is not a regular directory');
+  }
+  for (const record of records) {
+    const path = join(snapshotRoot, record.path);
+    if (!existsSync(path)) throw new Error(`PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: package file is missing: ${record.path}`);
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error(`PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: package file is not regular: ${record.path}`);
+    }
+    const bytes = readFileSync(path);
+    if (bytes.length !== record.bytes || sha256(bytes) !== record.sha256) {
+      throw new Error(`PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: package file changed: ${record.path}`);
+    }
+  }
+}
+
+function stagePackageRuntimeSnapshot(sourceRoot: string, snapshotRoot: string, records: PackageRuntimeFileRecord[]): void {
+  mkdirSync(snapshotRoot, { recursive: false, mode: 0o700 });
+  for (const record of records) {
+    const source = join(sourceRoot, record.path);
+    const stat = lstatSync(source);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`PACKAGE_RUNTIME_SOURCE_CHANGED_DURING_STAGE: ${record.path}`);
+    const bytes = readFileSync(source);
+    if (bytes.length !== record.bytes || sha256(bytes) !== record.sha256) {
+      throw new Error(`PACKAGE_RUNTIME_SOURCE_CHANGED_DURING_STAGE: ${record.path}`);
+    }
+    const destination = join(snapshotRoot, record.path);
+    mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+    const mode = stat.mode & 0o777;
+    writeFileSync(destination, bytes, { mode });
+    try { chmodSync(destination, mode); } catch { /* best effort */ }
+  }
+  assertPackageRuntimeSnapshot(snapshotRoot, records);
+}
+
 function packageVersion(root: string): string {
   try {
     const value = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { name?: unknown; version?: unknown };
@@ -111,6 +150,8 @@ function launcherSource(input: { packageRoot: string; indexPath: string; indexSh
 
 function assertImmutablePackageRuntimeRelease(input: {
   releaseRoot: string;
+  packageRoot: string;
+  records: PackageRuntimeFileRecord[];
   indexPath: string;
   indexJson: string;
   entrypointPath: string;
@@ -120,6 +161,7 @@ function assertImmutablePackageRuntimeRelease(input: {
 }): void {
   const rootStat = lstatSync(input.releaseRoot);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: release root is not a regular directory');
+  assertPackageRuntimeSnapshot(input.packageRoot, input.records);
   const assertFile = (path: string, expected: string, label: string) => {
     if (!existsSync(path)) throw new Error(`PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: ${label} is missing`);
     const stat = lstatSync(path);
@@ -161,15 +203,16 @@ export function materializePackageRuntimeRelease(input: {
   operationId?: string;
 } = {}): PackageRuntimeRelease {
   const controllerHome = ensureControllerHome(input.controllerHome);
-  const packageRoot = resolve(input.packageRoot ?? packageRuntimeSourceRoot());
-  const version = packageVersion(packageRoot);
-  const records = packageRuntimeFileIndex(packageRoot);
+  const sourcePackageRoot = resolve(input.packageRoot ?? packageRuntimeSourceRoot());
+  const version = packageVersion(sourcePackageRoot);
+  const records = packageRuntimeFileIndex(sourcePackageRoot);
   const fingerprint = packageRuntimeFingerprint(records);
   const safeVersion = version.replace(/[^A-Za-z0-9._-]+/g, '-');
-  const launcherBinding = sha256(`${packageRoot}\0${resolve(process.execPath)}\0package-launcher-v3`);
+  const launcherBinding = sha256(`${resolve(process.execPath)}\0package-launcher-v4`);
   const releaseId = `package-${safeVersion}-${fingerprint.slice(0, 16)}-${launcherBinding.slice(0, 12)}`;
   const releasesRoot = join(controllerHome, 'runtime', 'releases');
   const releaseRoot = join(releasesRoot, releaseId);
+  const packageRoot = join(releaseRoot, 'package');
   const indexPath = join(releaseRoot, 'package-files.json');
   const indexJson = `${JSON.stringify({ schemaVersion: 1, package: '@moretea-labs/forge', version, fingerprint, files: records }, null, 2)}\n`;
   const entrypointPath = join(releaseRoot, 'forge-runtime');
@@ -190,7 +233,7 @@ export function materializePackageRuntimeRelease(input: {
   };
   const manifestPath = join(releaseRoot, 'manifest.json');
   const assertExisting = () => assertImmutablePackageRuntimeRelease({
-    releaseRoot, indexPath, indexJson, entrypointPath, launcher, manifestPath, expectedManifest,
+    releaseRoot, packageRoot, records, indexPath, indexJson, entrypointPath, launcher, manifestPath, expectedManifest,
   });
 
   if (existsSync(releaseRoot)) {
@@ -200,6 +243,7 @@ export function materializePackageRuntimeRelease(input: {
     const stagingRoot = join(releasesRoot, `.staging-${releaseId}-${process.pid}-${randomUUID().slice(0, 8)}`);
     try {
       mkdirSync(stagingRoot, { recursive: false, mode: 0o700 });
+      stagePackageRuntimeSnapshot(sourcePackageRoot, join(stagingRoot, 'package'), records);
       atomicWrite(join(stagingRoot, 'package-files.json'), indexJson);
       atomicWrite(join(stagingRoot, 'forge-runtime'), launcher, 0o700);
       chmodSync(join(stagingRoot, 'forge-runtime'), 0o700);

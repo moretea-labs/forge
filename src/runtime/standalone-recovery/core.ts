@@ -896,8 +896,8 @@ function quarantine(config: RecoveryConfig, release: ReleaseEvidence | undefined
 async function rollbackPreviousLocked(config: RecoveryConfig, reason: string): Promise<RollbackResult> {
   const before = await verifyStableRuntime(config);
   const active = before.releases.active;
-  if (matchingKnownGood(config, active)) {
-    return { ok: true, noOp: true, detail: 'active whole-Runtime release is already independently attested known-good', verify: before };
+  if (before.ok && matchingKnownGood(config, active)) {
+    return { ok: true, noOp: true, detail: 'active whole-Runtime release is currently healthy and independently attested known-good', verify: before };
   }
   if (before.runtime.running) {
     return {
