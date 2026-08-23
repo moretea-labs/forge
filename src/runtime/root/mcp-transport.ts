@@ -25,6 +25,12 @@ export interface StartRuntimeMcpTransportOptions {
   authToken: string;
   readiness: () => RuntimeReadiness;
   createServer: (principalId: string, sessionId?: string, controllerType?: ForwardedControllerType) => Server;
+  /**
+   * Called immediately before Runtime schema-observing requests are served.
+   * The Canonical Runtime uses this to keep its published status projection in
+   * sync with the live tool surface without making status.json an authority.
+   */
+  onToolSurfaceObservation?: () => void;
   onFatal?: (error: Error) => void;
 }
 
@@ -44,6 +50,15 @@ function isInitialize(body: unknown): boolean {
   const values = Array.isArray(body) ? body : [body];
   return values.some((value) => value && typeof value === 'object'
     && (value as Record<string, unknown>).method === 'initialize');
+}
+
+function observesToolSurface(body: unknown): boolean {
+  const values = Array.isArray(body) ? body : [body];
+  return values.some((value) => {
+    if (!value || typeof value !== 'object') return false;
+    const method = (value as Record<string, unknown>).method;
+    return method === 'initialize' || method === 'tools/list';
+  });
 }
 
 function parseBody(body: unknown): unknown {
@@ -91,6 +106,7 @@ export async function startRuntimeMcpTransport(
         res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
         return;
       }
+      if (observesToolSurface(body)) options.onToolSurfaceObservation?.();
       const requestedSessionId = req.headers['mcp-session-id'];
       const sessionId = typeof requestedSessionId === 'string' ? requestedSessionId : undefined;
       if (isInitialize(body)) {
