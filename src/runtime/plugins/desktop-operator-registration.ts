@@ -68,7 +68,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'desktop_session_open',
       title: 'Open desktop session',
-      description: 'Launch or locate one application in the background and create a bounded interaction session without stealing foreground focus.',
+      description: 'Launch or locate one application and create a bounded interaction session; stays in the background by default, or explicitly activates the target when activate=true.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
@@ -83,6 +83,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
           bundle_id: { type: 'string' },
           app_name: { type: 'string' },
           launch: { type: 'boolean' },
+          activate: { type: 'boolean', description: 'Explicitly activate the target application after launch/lookup. Defaults to false.' },
         },
         anyOf: [{ required: ['bundle_id'] }, { required: ['app_name'] }],
         additionalProperties: false,
