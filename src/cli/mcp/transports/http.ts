@@ -282,7 +282,7 @@ function getConfiguredPublicOrigin(config: McpLocalConfig | null): string | unde
 
 function getPublicOrigin(req: Request, configuredOrigin: string | undefined): string {
   if (configuredOrigin) return configuredOrigin;
-  const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? 'https';
+  const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? req.protocol ?? 'http';
   const host = (req.headers['x-forwarded-host'] as string | undefined) ?? req.headers.host ?? '127.0.0.1:8765';
   return `${proto}://${host}`;
 }

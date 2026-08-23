@@ -482,6 +482,12 @@ describe('mcp http transport', () => {
           bearerEndpoint: `http://127.0.0.1:${port}/mcp-bearer`,
         });
 
+        const loopbackMetadata = await fetch(`http://127.0.0.1:${port}/.well-known/oauth-protected-resource/mcp`);
+        expect(await loopbackMetadata.json()).toMatchObject({
+          resource: `http://127.0.0.1:${port}/mcp`,
+          authorization_servers: [`http://127.0.0.1:${port}`],
+        });
+
         const metadata = await fetch(`http://127.0.0.1:${port}/.well-known/oauth-protected-resource/mcp`, {
           headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'example.test' },
         });
