@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -2331,12 +2331,14 @@ describe('rh_work managed lifecycle closure', () => {
     const fx = fixture('schedule-management');
     const work = await prepareManagedWork(fx, 'Continue this bounded Work without repeated user prompts');
 
+    const fakeController = join(fx.repoRoot, 'fake-controller.sh');
+    writeFileSync(fakeController, '#!/bin/sh\nsleep 2\n'); chmodSync(fakeController, 0o755);
     const created = await callRuntimeTool(fx.ctx, 'rh_work', {
       repo_id: fx.repository.repoId,
       operation: 'schedule_create',
       work_id: work.workId,
       controller_type: 'codex',
-      executable: '/usr/bin/true',
+      executable: fakeController,
       trigger_type: 'interval',
       every_minutes: 60,
       schedule_request_id: 'schedule-management-stable',
@@ -2604,12 +2606,14 @@ describe('rh_work managed lifecycle closure', () => {
   test('non-shadow continuation trigger reserves one launch while authenticated MCP retains Work ownership authority', async () => {
     const fx = fixture('schedule-live-wake');
     const work = await prepareManagedWork(fx, 'Wake one external Controller for this bounded Work');
+    const fakeController = join(fx.repoRoot, 'fake-controller-live-wake.sh');
+    writeFileSync(fakeController, '#!/bin/sh\nsleep 2\n'); chmodSync(fakeController, 0o755);
     const created = await callRuntimeTool(fx.ctx, 'rh_work', {
       repo_id: fx.repository.repoId,
       operation: 'schedule_create',
       work_id: work.workId,
       controller_type: 'codex',
-      executable: '/usr/bin/true',
+      executable: fakeController,
       trigger_type: 'manual',
       shadow_mode: false,
       schedule_request_id: 'schedule-live-wake-stable',

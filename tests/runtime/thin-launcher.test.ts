@@ -97,6 +97,8 @@ describe('Thin Launcher startup observability', () => {
     if (launched.pid) launchedPids.push(launched.pid);
 
     expect(launched.pid).toBeGreaterThan(0);
+    expect(launched.prompt).toContain('operation=controller_claim');
+    expect(launched.prompt).toContain(`work_id=${fx.workId}`);
     expect(getExternalControllerLaunchReservation(fx.store, fx.workId)).toMatchObject({
       reservationId: launched.reservationId,
       pid: launched.pid,
