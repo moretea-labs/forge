@@ -208,8 +208,76 @@ export class McpOAuthTokenStore implements OAuthRegisteredClientsStore {
   }
 }
 
-export function createMcpOAuthProvider(store: McpOAuthTokenStore): OAuthServerProvider {
-  const authCodes = new Map<string, { challenge: string; clientId: string }>();
+interface PendingAuthorizationCode {
+  challenge: string;
+  clientId: string;
+  issuedAt: number;
+  expiresAt: number;
+}
+
+export interface McpOAuthProviderOptions {
+  now?: () => number;
+  authorizationCodeTtlSeconds?: number;
+  maxPendingAuthorizationCodes?: number;
+  maxPendingAuthorizationCodesPerClient?: number;
+}
+
+const DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS = 10 * 60;
+const DEFAULT_MAX_PENDING_AUTHORIZATION_CODES = 512;
+const DEFAULT_MAX_PENDING_AUTHORIZATION_CODES_PER_CLIENT = 32;
+
+export function createMcpOAuthProvider(
+  store: McpOAuthTokenStore,
+  options: McpOAuthProviderOptions = {},
+): OAuthServerProvider {
+  const authCodes = new Map<string, PendingAuthorizationCode>();
+  const currentTime = options.now ?? nowSeconds;
+  const ttlSeconds = Math.max(30, Math.trunc(options.authorizationCodeTtlSeconds ?? DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS));
+  const globalLimit = Math.max(8, Math.trunc(options.maxPendingAuthorizationCodes ?? DEFAULT_MAX_PENDING_AUTHORIZATION_CODES));
+  const clientLimit = Math.max(2, Math.min(globalLimit, Math.trunc(
+    options.maxPendingAuthorizationCodesPerClient ?? DEFAULT_MAX_PENDING_AUTHORIZATION_CODES_PER_CLIENT,
+  )));
+
+  const purgeExpiredCodes = (now = currentTime()): void => {
+    for (const [code, pending] of authCodes) {
+      if (pending.expiresAt <= now) authCodes.delete(code);
+    }
+  };
+
+  const evictOldest = (predicate: (entry: PendingAuthorizationCode) => boolean): boolean => {
+    let oldest: { code: string; issuedAt: number } | undefined;
+    for (const [code, pending] of authCodes) {
+      if (!predicate(pending)) continue;
+      if (!oldest || pending.issuedAt < oldest.issuedAt) oldest = { code, issuedAt: pending.issuedAt };
+    }
+    if (!oldest) return false;
+    authCodes.delete(oldest.code);
+    return true;
+  };
+
+  const reserveAuthorizationCodeCapacity = (clientId: string, now: number): void => {
+    purgeExpiredCodes(now);
+    while ([...authCodes.values()].filter((pending) => pending.clientId === clientId).length >= clientLimit) {
+      if (!evictOldest((pending) => pending.clientId === clientId)) break;
+    }
+    while (authCodes.size >= globalLimit) {
+      if (!evictOldest(() => true)) break;
+    }
+  };
+
+  const pendingAuthorizationCode = (
+    client: OAuthClientInformationFull,
+    authorizationCode: string,
+  ): PendingAuthorizationCode => {
+    const now = currentTime();
+    purgeExpiredCodes(now);
+    const stored = authCodes.get(authorizationCode);
+    if (!stored || stored.clientId !== client.client_id || stored.expiresAt <= now) {
+      if (stored?.expiresAt !== undefined && stored.expiresAt <= now) authCodes.delete(authorizationCode);
+      throw new InvalidGrantError('Invalid authorization code');
+    }
+    return stored;
+  };
 
   return {
     get clientsStore(): OAuthRegisteredClientsStore {
@@ -217,10 +285,14 @@ export function createMcpOAuthProvider(store: McpOAuthTokenStore): OAuthServerPr
     },
 
     async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res): Promise<void> {
+      const now = currentTime();
+      reserveAuthorizationCodeCapacity(client.client_id, now);
       const code = issueToken();
       authCodes.set(code, {
         challenge: params.codeChallenge,
         clientId: client.client_id,
+        issuedAt: now,
+        expiresAt: now + ttlSeconds,
       });
       const redirectUrl = new URL(params.redirectUri);
       redirectUrl.searchParams.set('code', code);
@@ -228,10 +300,8 @@ export function createMcpOAuthProvider(store: McpOAuthTokenStore): OAuthServerPr
       res.redirect(302, redirectUrl.toString());
     },
 
-    async challengeForAuthorizationCode(_client: OAuthClientInformationFull, authorizationCode: string): Promise<string> {
-      const stored = authCodes.get(authorizationCode);
-      if (!stored) throw new InvalidGrantError('Invalid authorization code');
-      return stored.challenge;
+    async challengeForAuthorizationCode(client: OAuthClientInformationFull, authorizationCode: string): Promise<string> {
+      return pendingAuthorizationCode(client, authorizationCode).challenge;
     },
 
     async exchangeAuthorizationCode(
@@ -239,10 +309,10 @@ export function createMcpOAuthProvider(store: McpOAuthTokenStore): OAuthServerPr
       authorizationCode: string,
       _codeVerifier?: string,
     ): Promise<OAuthTokens> {
-      const stored = authCodes.get(authorizationCode);
-      if (!stored || stored.clientId !== client.client_id) {
-        throw new InvalidGrantError('Invalid authorization code');
-      }
+      pendingAuthorizationCode(client, authorizationCode);
+      // Delete before issuing credentials. A failed downstream persistence is
+      // retried as a new OAuth flow rather than making an authorization code
+      // replayable after a partial token response.
       authCodes.delete(authorizationCode);
       const accessToken = issueToken();
       const refreshToken = issueToken();
