@@ -228,18 +228,13 @@ export function classifyRepositoryCommandRoute(
   }
   const classification = classifyRepositoryCommand(command, options.defaultBranch);
   const text = Array.isArray(command) ? command.join(' ') : String(command);
-  // External, destructive, release, and non-idempotent remote effects are an
-  // explicit durable boundary. They never enter an ordinary Process route that
-  // a caller could mistake for safely replayable local execution.
+  // Classification chooses scheduling/receipt granularity only; it does not
+  // decide whether a scoped repository command is allowed to run. Known remote
+  // or broadly effectful commands use managed Process Runtime so existing
+  // resource claims and receipts can serialize/reconcile them. Unknown commands
+  // still execute instead of requiring a new allow rule.
   if (classification.risk === 'remote_write' || classification.risk === 'destructive') {
-    return {
-      route: 'durable',
-      reason: `explicit_external_${classification.risk}`,
-    };
-  }
-  // release / rollback style commands
-  if (/\b(?:gh\s+release\s+(?:create|delete|edit|upload)|git\s+push|npm\s+publish)\b/i.test(text)) {
-    return { route: 'durable', reason: 'release_or_remote_mutation' };
+    return { route: 'process_managed', reason: 'effectful_command_managed' };
   }
   const argv = Array.isArray(command) ? command : [];
   const executable = argv[0]?.split(/[\\/]/).pop()?.toLowerCase();
@@ -291,9 +286,9 @@ export async function executeRepositoryCommandViaProcessRuntime(
     defaultBranch: input.repository.defaultBranch,
     timeoutMs: input.timeoutMs,
   });
-  // Remote and destructive effects stop at the explicit external boundary.
-  // This low-level command facade never dispatches them itself: a caller must
-  // use the existing explicit workflow and reconcile any ambiguous outcome.
+  // Only explicit lifecycle/delivery rejection or a caller-requested durable
+  // mode stops here. Ordinary command effects, including remote writes, execute
+  // through Process Runtime; classification does not become an authorization gate.
   if (decision.route === 'reject' || decision.route === 'durable') {
     return {
       route: decision.route,

@@ -350,9 +350,9 @@ describe("repository MCP command tools", () => {
       expect(write.workspace).toEqual(preview.workspace);
       expect(write.authorization?.source).not.toBe("bounded_read_direct");
 
-      const deleteAttempt = await json(callRepositoryTool(controllerHome, "repository_command_execute", { workspace_root: localRoot, command: ["rm", "-f", "created-by-ephemeral.txt"], request_id: "ephemeral-delete-without-confirmation" }));
-      expect([deleteAttempt.accepted, deleteAttempt.status, deleteAttempt.authorization?.decision]).toEqual([false, "approval_required", "user_confirmation_required"]);
-      expect(existsSync(join(localRoot, "created-by-ephemeral.txt"))).toBe(true);
+      const deleteAttempt = await json(callRepositoryTool(controllerHome, "repository_command_execute", { workspace_root: localRoot, command: ["rm", "-f", "created-by-ephemeral.txt"], request_id: "ephemeral-delete-through-harness" }));
+      expect([deleteAttempt.accepted, deleteAttempt.status, deleteAttempt.authorization?.decision]).toEqual([true, "succeeded", "allow"]);
+      expect(existsSync(join(localRoot, "created-by-ephemeral.txt"))).toBe(false);
 
       expect(listRepositories(controllerHome)).toHaveLength(0);
       expect(existsSync(join(localRoot, ".git"))).toBe(false);
@@ -582,7 +582,7 @@ describe("repository MCP command tools", () => {
         repo_id: repository.repoId,
         command: `cat ${join(fakeSsh, "id_ed25519")}`,
       }));
-      expect(sensitive.error.code).toBe("COMMAND_POLICY_DENIED");
+      expect(sensitive.error.code).toBe("COMMAND_SCOPE_DENIED");
 
       const externalWrite = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
         repo_id: repository.repoId,

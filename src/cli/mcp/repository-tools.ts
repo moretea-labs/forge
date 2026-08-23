@@ -1087,47 +1087,33 @@ export async function callRepositoryTool(
         const forceDurable = fromDurableWorker
           || args.mode === 'durable'
           || args.force_durable === true;
-        const routingDecision = routeExecution({
-          operation: 'repository_command_execute',
-          mode: forceDurable ? 'durable' : args.mode === 'fast' ? 'fast' : 'auto',
-          command: args.command as string | string[] | undefined,
-          timeoutMs,
-          background: forceDurable && (args.background === true || args.async === true),
-          defaultBranch: repository.defaultBranch,
-          approvalContinuation: typeof args.approval_request_id === 'string'
-            || typeof args.approval_token === 'string',
-        });
-        // The thin-router reject is an execution boundary, not just a routing
-        // hint. In particular, an unconfirmed destructive command must never
-        // fall through to the local Process Runtime path.
-        if (routingDecision.mode === 'reject') {
-          const confirmationRequired = routingDecision.risk === 'destructive';
-          const authorization = confirmationRequired
-            ? {
-                decision: 'user_confirmation_required',
-                source: 'execution_router',
-                reason: 'Explicit destructive commands require user confirmation before execution.',
-              }
-            : {
-                decision: 'deny',
-                source: 'execution_router',
-                reason: 'Command rejected by the execution safety boundary.',
-              };
-          return result({
-            accepted: false,
-            mode: 'reject',
-            path: 'execution_policy_rejected',
-            route: 'reject',
-            status: confirmationRequired ? 'approval_required' : 'rejected',
-            policyDecision: confirmationRequired ? 'approval_required' : 'rejected',
-            authorization,
-            repoId: repository.repoId,
-            checkoutId: repository.activeCheckoutId,
-            workspace: target.workspace,
-            message: authorization.reason,
-            suggestedOperation: routingDecision.suggestedOperation,
-          });
-        }
+        // repository_command_execute owns its command execution architecture.
+        // Do not send ordinary command text through Thin Harness semantic risk
+        // routing: that creates duplicate regex/classifier policy and turns
+        // unknown CLI shapes into false durable/reject decisions. Only an
+        // explicitly requested durable mode uses the generic durable router.
+        const routingDecision = forceDurable
+          ? routeExecution({
+              operation: 'repository_command_execute',
+              mode: 'durable',
+              timeoutMs,
+              background: args.background === true || args.async === true,
+            })
+          : {
+              mode: 'fast' as const,
+              reasons: ['repository_command_process_runtime_authoritative'],
+              risk: 'unknown' as const,
+              estimatedClass: 'unknown' as const,
+              requiresIsolation: false,
+              requiresRecovery: false,
+              suggestedOperation: undefined,
+              effects: {
+                readsWorkspace: true,
+                mutatesWorkspace: true,
+                mutatesGitRefs: false,
+                remoteWrite: false,
+              },
+            };
         // Unified Process Runtime for local commands (Direct/Managed) when not forced durable.
         // Ephemeral workspaces cannot persist a recoverable async Process handle,
         // so their async requests remain promotion-required below.

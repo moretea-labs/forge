@@ -4,6 +4,13 @@ export type RepositoryCommandRisk = 'readonly' | 'workspace_write' | 'remote_wri
 export type RepositoryCommandAuthorization = 'explicit_user_request' | 'confirmed_plan' | 'policy' | 'full_access' | 'goal_delegation' | 'gpt_risk_delegate' | 'user_confirmation';
 export type RepositoryCommandConfirmation = 'none' | 'authorization' | 'strong_confirmation';
 
+/**
+ * Advisory command metadata only. This classifier is intentionally heuristic:
+ * consumers may use it for observability, replay hints, and conservative
+ * resource-claim selection, but it is not an execution-permission authority.
+ * Repository command admission is defined by concrete repository/cwd/capability
+ * scope and the Process Runtime rather than an exhaustive command allow/deny list.
+ */
 export interface RepositoryCommandClassification {
   risk: RepositoryCommandRisk;
   confirmation: RepositoryCommandConfirmation;

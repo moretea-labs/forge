@@ -297,23 +297,26 @@ describe('repository command execution lifecycle', () => {
     expect(terminal.stdout).toContain('lightweight-ok');
   });
 
-  test('remote and destructive commands stop at a never-auto-replay boundary', async () => {
+  test('ordinary remote writes execute through managed Process Runtime without external-controller delegation', async () => {
     const controllerHome = tempRoot('forge-cmd-external-home-');
     const repoRoot = tempRoot('forge-cmd-external-repo-');
+    const remoteRoot = tempRoot('forge-cmd-external-remote-');
     const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    git(remoteRoot, ['init', '--bare']);
+    git(repoRoot, ['remote', 'add', 'origin', remoteRoot]);
     const result = await executeRepositoryCommandViaProcessRuntime({
       controllerHome,
       repository,
-      command: ['git', 'push', 'origin', 'main'],
+      command: ['git', 'push', 'origin', 'HEAD:refs/heads/cloud-test'],
+      timeoutMs: 10_000,
       executionIdentity: executionIdentityForRepository(repository),
     });
-    expect(result).toMatchObject({
-      route: 'durable',
-      externalEffect: { outcome: 'not_started', replayPolicy: 'never_auto_retry' },
-      executionMetrics: { lane: 'durable_external', durableWrites: 0, leaseOperations: 0 },
-    });
-    expect(result.externalEffect?.reconciliation).toContain('outcome_unknown');
-    expect(listProcessRecords(controllerHome, repository.repoId)).toHaveLength(0);
+    expect(result.route).toBe('process_direct');
+    expect(result.ok).toBe(true);
+    expect(result.process?.processId).toBeTruthy();
+    expect(result.executionMetrics).toMatchObject({ lane: 'durable_process' });
+    expect(gitOutput(remoteRoot, ['rev-parse', 'refs/heads/cloud-test'])).toBe(gitOutput(repoRoot, ['rev-parse', 'HEAD']));
     expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
   });
 

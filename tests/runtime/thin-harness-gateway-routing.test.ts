@@ -1167,8 +1167,8 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       reason: 'ephemeral_local_workspace_mutation',
     });
     expect(classifyRepositoryCommandRoute(['git', 'reset', '--hard', 'HEAD'])).toEqual({
-      route: 'durable',
-      reason: 'explicit_external_destructive',
+      route: 'process_managed',
+      reason: 'effectful_command_managed',
     });
   });
 
