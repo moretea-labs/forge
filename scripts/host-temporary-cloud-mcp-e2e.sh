@@ -32,7 +32,16 @@ cleanup() {
       kill "$pid" 2>/dev/null || true
     fi
   done
-  rm -rf "$TMP_ROOT"
+  for pid in "$GATEWAY_PID" "$RUNTIME_PID"; do
+    if [[ -n "$pid" ]]; then
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
+  for _ in 1 2 3 4 5; do
+    rm -rf "$TMP_ROOT" 2>/dev/null || true
+    [[ ! -e "$TMP_ROOT" ]] && break
+    sleep 1
+  done
 }
 trap cleanup EXIT INT TERM
 
@@ -74,11 +83,11 @@ FORGE_CONTROLLER_LIFECYCLE_OWNER=1 \
   --host 127.0.0.1 \
   --port "$GATEWAY_PORT" \
   --profile controller \
-  --auth oauth > "$GATEWAY_LOG" 2>&1 &
+  --auth none > "$GATEWAY_LOG" 2>&1 &
 GATEWAY_PID=$!
 
 for _ in $(seq 1 30); do
-  if curl --fail --silent "http://127.0.0.1:${GATEWAY_PORT}/.well-known/oauth-authorization-server" > "$TMP_ROOT/local-oauth.json" 2>/dev/null; then
+  if curl --silent --show-error --output /dev/null "http://127.0.0.1:${GATEWAY_PORT}/mcp" 2>/dev/null; then
     break
   fi
   if ! kill -0 "$GATEWAY_PID" 2>/dev/null; then
@@ -87,7 +96,7 @@ for _ in $(seq 1 30); do
   fi
   sleep 1
 done
-test -s "$TMP_ROOT/local-oauth.json"
+kill -0 "$GATEWAY_PID" 2>/dev/null || { cat "$GATEWAY_LOG" >&2; exit 1; }
 
 mkdir -p "$TUNNEL_DIR"
 TUNNEL_CLIENT_ASSET="tunnel-client-${TUNNEL_CLIENT_VERSION}-linux-amd64.zip"
@@ -138,3 +147,5 @@ NODE
 done
 # fresh-run trigger after Actions secret provisioning
 # fresh-run trigger after exact workflow secret provisioning
+
+# Secure Tunnel is the external trust boundary; loopback cloud MCP intentionally uses auth none.
