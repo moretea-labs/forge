@@ -266,8 +266,8 @@ export function resolveControllerGuidance(
           controller,
           ready: false,
           title: controller === 'chatgpt' ? 'Configure the ChatGPT controller endpoint' : 'Configure the remote MCP controller endpoint',
-          detail: 'Create the user-level Forge OAuth/MCP configuration. This does not install Codex or Claude and does not require a repository.',
-          command: `forge mcp setup chatgpt --user-level${endpoint}`,
+          detail: 'Create or refresh the Forge OAuth/MCP configuration in the selected Controller Home. This does not install Codex or Claude and does not require a repository.',
+          command: `forge mcp setup chatgpt --user-level --controller-home ${JSON.stringify(controllerHome)}${endpoint}`,
         };
       }
       continue;
@@ -327,7 +327,7 @@ export function resolveRuntimeGuidance(
     ready: false,
     title: 'Install the user-level Forge Runtime',
     detail: 'Use the packaged Runtime path. It does not require a Git checkout, Bun compilation, CodeGraph, or Standalone Recovery.',
-    command: 'forge runtime service install-package',
+    command: `forge runtime service install-package --controller-home ${JSON.stringify(controllerHome)}`,
   };
 }
 
@@ -365,19 +365,20 @@ export function resolveTunnelGuidance(
       };
     }
     const preferredAlias = 'forge';
-    const aliases = [preferredAlias];
+    const configuredAliases: string[] = [];
     const listed = spawnSync('tunnel-client', ['runtimes', 'list', '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, env: options.env ?? process.env });
     if (listed.status === 0) {
       try {
         const value = JSON.parse(listed.stdout || '{}') as { aliases?: Array<{ alias?: string; tunnel_id?: string }> };
         for (const entry of value.aliases ?? []) {
-          if (entry.tunnel_id === profile.tunnel.tunnelId && entry.alias) aliases.push(entry.alias);
+          if (entry.tunnel_id === profile.tunnel.tunnelId && entry.alias) configuredAliases.push(entry.alias);
         }
       } catch {
         // Older clients may not expose local aliases as JSON. Keep the preferred alias fallback.
       }
     }
-    for (const alias of Array.from(new Set(aliases))) {
+    const aliases = Array.from(new Set([...configuredAliases, preferredAlias]));
+    for (const alias of aliases) {
       const status = spawnSync('tunnel-client', ['runtimes', 'status', alias, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, env: options.env ?? process.env });
       if (status.status !== 0) continue;
       try {
@@ -393,14 +394,17 @@ export function resolveTunnelGuidance(
         // Treat malformed or older status output as not-ready instead of claiming success.
       }
     }
-    const alias = preferredAlias;
+    // A stopped alias still owns its recorded tunnel identity. Reconnect that
+    // alias instead of repointing the conventional `forge` alias, which may
+    // legitimately refer to a different tunnel from an earlier setup.
+    const alias = configuredAliases[0] ?? preferredAlias;
     const localConfig = loadMcpServiceLocalConfig(resolveControllerHome(options.controllerHome));
     const localEndpoint = localConfig?.chatgpt?.localEndpoint;
     if (!isLoopbackMcpEndpoint(localEndpoint)) {
       return {
         provider, ready: false, title: 'Prepare the local ChatGPT OAuth endpoint',
         detail: 'Secure Tunnel must terminate at Forge’s loopback OAuth Gateway, not the bearer-only Canonical Runtime. Refresh the user-level ChatGPT MCP configuration first.',
-        command: 'forge mcp setup chatgpt --user-level',
+        command: `forge mcp setup chatgpt --user-level --controller-home ${JSON.stringify(resolveControllerHome(options.controllerHome))}`,
       };
     }
     return {

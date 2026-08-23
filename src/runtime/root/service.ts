@@ -7,6 +7,7 @@ import {
   bootstrapLaunchAgentWithRetryV2,
   bootoutLaunchAgentWithRetryV2,
   installLaunchAgent,
+  retireConflictingForgeLaunchAgents,
 } from '../../cli/controller/launch-agents';
 
 export interface ForgeRuntimeServiceConfig {
@@ -315,6 +316,12 @@ export async function installForgeRuntimeService(input: { config: ForgeRuntimeSe
     bootstrapRunnerPath: input.runnerPath,
   });
   await retireLegacyBrowserAutomationLaunchAgent(config.controllerHome);
+  await retireConflictingForgeLaunchAgents({
+    desiredLabel: paths.label,
+    labelPrefix: 'com.moretea.forge.runtime.',
+    port: config.port,
+    requiredArguments: ['--controller-home'],
+  });
   installLaunchAgent(paths.sourcePlistPath, paths.label);
   const result = await bootstrapLaunchAgentWithRetryV2({ label: paths.label, plistPath: paths.installedPlistPath });
   if (!result.ok) throw new Error(`FORGE_RUNTIME_SERVICE_BOOTSTRAP_FAILED: ${result.diagnostics.join('; ')}`);

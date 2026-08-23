@@ -16,6 +16,7 @@ import { materializePackageRuntimeRelease } from '../../src/runtime/root/package
 import { installPackageRuntimeService, renderForgeRuntimeSystemdUserUnit } from '../../src/runtime/root/package-runtime-service';
 import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { ensurePackageConnectorService, packageConnectorLaunchSpec, packageConnectorServicePaths, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit } from '../../src/runtime/root/package-connector-service';
+import { retireConflictingForgeLaunchAgents } from '../../src/cli/controller/launch-agents';
 
 const roots: string[] = [];
 function fixture(): { root: string; home: string; repo: string; token: string } {
@@ -345,6 +346,73 @@ describe('Forge Runtime service', () => {
     expect(readFileSync(paths.authorityPath, 'utf8')).toBe(before);
     expect(readPackageConnectorServiceAuthority(fx.home)?.installedAt).toBe(installedAt);
     expect(existsSync(paths.sourcePlistPath)).toBe(false);
+  });
+
+  test('retires a stale Forge connector owner on the same port before reboot can reload it', async () => {
+    const fx = fixture();
+    const launchAgents = join(fx.root, 'Library', 'LaunchAgents');
+    mkdirSync(launchAgents, { recursive: true });
+    const staleLabel = 'com.moretea.forge.mcp-gateway';
+    const stalePlist = join(launchAgents, `${staleLabel}.plist`);
+    writeFileSync(stalePlist, `<?xml version="1.0"?><plist><dict>
+      <key>Label</key><string>${staleLabel}</string>
+      <key>ProgramArguments</key><array>
+        <string>/usr/local/bin/forge</string><string>mcp</string><string>serve</string>
+        <string>--port</string><string>8767</string><string>--auth</string><string>oauth</string>
+      </array>
+    </dict></plist>`);
+    const differentPort = join(launchAgents, 'com.moretea.forge.mcp-gateway.other.plist');
+    writeFileSync(differentPort, readFileSync(stalePlist, 'utf8')
+      .replaceAll(staleLabel, 'com.moretea.forge.mcp-gateway.other')
+      .replace('8767', '9767'));
+    const calls: string[] = [];
+    const retired = await retireConflictingForgeLaunchAgents({
+      accountHome: fx.root,
+      desiredLabel: 'com.moretea.forge.mcp-gateway.current',
+      labelPrefix: 'com.moretea.forge.mcp-gateway',
+      port: 8767,
+      requiredArguments: ['mcp', 'serve', '--auth', 'oauth'],
+    }, {
+      now: () => 1234,
+      bootout: async ({ label }) => {
+        calls.push(label);
+        return { ok: true, attempts: 1, serviceTarget: `gui/501/${label}`, diagnostics: [] };
+      },
+    });
+    expect(calls).toEqual([staleLabel]);
+    expect(retired).toEqual([{
+      label: staleLabel,
+      plistPath: stalePlist,
+      backupPath: join(launchAgents, '.forge-retired', `${staleLabel}.1234.plist`),
+    }]);
+    expect(existsSync(stalePlist)).toBe(false);
+    expect(existsSync(retired[0]!.backupPath)).toBe(true);
+    expect(existsSync(differentPort)).toBe(true);
+  });
+
+  test('fails closed without moving a conflicting Forge owner when bootout fails', async () => {
+    const fx = fixture();
+    const launchAgents = join(fx.root, 'Library', 'LaunchAgents');
+    mkdirSync(launchAgents, { recursive: true });
+    const label = 'com.moretea.forge.runtime.stale';
+    const plist = join(launchAgents, `${label}.plist`);
+    writeFileSync(plist, `<?xml version="1.0"?><plist><dict>
+      <key>Label</key><string>${label}</string>
+      <key>ProgramArguments</key><array>
+        <string>/tmp/forge-runtime</string><string>--controller-home</string><string>/tmp/stale</string>
+        <string>--port</string><string>8765</string>
+      </array>
+    </dict></plist>`);
+    await expect(retireConflictingForgeLaunchAgents({
+      accountHome: fx.root,
+      desiredLabel: 'com.moretea.forge.runtime.current',
+      labelPrefix: 'com.moretea.forge.runtime.',
+      port: 8765,
+      requiredArguments: ['--controller-home'],
+    }, {
+      bootout: async () => ({ ok: false, attempts: 1, serviceTarget: 'gui/501/stale', diagnostics: ['busy'] }),
+    })).rejects.toThrow('FORGE_LAUNCH_AGENT_CONFLICT_RETIRE_FAILED');
+    expect(existsSync(plist)).toBe(true);
   });
 
   test('renders a systemd user owner with restart and release environment', () => {

@@ -28,7 +28,28 @@ describe('Forge setup session', () => {
       const localConfig = JSON.parse(require('fs').readFileSync(join(controllerHome, 'mcp', 'mcp.local.json'), 'utf8'));
       expect(localConfig.localController).toMatchObject({ enabled: false, mode: 'disabled' });
       const session = openSetupSession({ setupRoot: root, controllerHome, accountHome: root, profile, report: report('none'), platform, uuid: () => 's2' });
-      expect(session).toMatchObject({ status: 'open', target: 'none', profile: { primaryController: 'chatgpt', controllers: ['chatgpt'] }, nextAction: { id: 'runtime.package.install', command: 'forge runtime service install-package' } });
+      expect(session).toMatchObject({ status: 'open', target: 'none', profile: { primaryController: 'chatgpt', controllers: ['chatgpt'] }, nextAction: { id: 'runtime.package.install', command: `forge runtime service install-package --controller-home ${JSON.stringify(controllerHome)}` } });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test('repairs a partial controller config in place instead of creating a second Controller Home', () => {
+    const root = temp('forge-setup-controller-home-reuse-'); try {
+      const controllerHome = join(root, 'repo', '_ops', 'controller-home');
+      const profile = configureSetupProfile({ setupRoot: root, controller: 'chatgpt', tunnel: 'openai', tunnelId: 'tunnel_0123456789abcdef0123456789abcdef' });
+      const session = openSetupSession({
+        setupRoot: root,
+        controllerHome,
+        accountHome: root,
+        profile,
+        report: report('none'),
+        platform,
+        uuid: () => 'reuse-home',
+      });
+      expect(session.nextAction).toMatchObject({
+        id: 'controller.chatgpt.configure',
+        command: `forge mcp setup chatgpt --user-level --controller-home ${JSON.stringify(controllerHome)}`,
+      });
+      expect(session.nextAction?.command).not.toBe('forge mcp setup chatgpt --user-level');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
@@ -109,6 +130,41 @@ exit 1
       const guidance = resolveTunnelGuidance(profile, tunnelPlatform, { env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ''}` } });
       expect(guidance).toMatchObject({ provider: 'openai', ready: true, title: 'OpenAI Secure MCP Tunnel' });
       expect(guidance.detail).toContain('forge-openai-test');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('reconnects a stopped matching alias instead of repointing the preferred alias', () => {
+    const root = temp('forge-setup-openai-stopped-alias-');
+    try {
+      const tunnelId = 'tunnel_0123456789abcdef0123456789abcdef';
+      const controllerHome = join(root, 'controller');
+      runMcpSetupChatgpt({ controllerHome, userLevel: true });
+      const binDir = join(root, 'bin');
+      mkdirSync(binDir, { recursive: true });
+      const tunnelClient = join(binDir, 'tunnel-client');
+      writeFileSync(tunnelClient, `#!/bin/sh
+if [ "$1" = "runtimes" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+  echo '{"aliases":[{"alias":"forge-current","tunnel_id":"${tunnelId}"},{"alias":"forge","tunnel_id":"tunnel_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}'
+  exit 0
+fi
+if [ "$1" = "runtimes" ] && [ "$2" = "status" ] && [ "$4" = "--json" ]; then
+  echo '{"process_running":false,"healthy":false,"ready":false}'
+  exit 0
+fi
+exit 1
+`);
+      chmodSync(tunnelClient, 0o700);
+      const profile = configureSetupProfile({ setupRoot: root, controller: 'chatgpt', tunnel: 'openai', tunnelId });
+      const tunnelPlatform = { ...platform, commands: { ...platform.commands, tunnelClient: true } };
+      const guidance = resolveTunnelGuidance(profile, tunnelPlatform, {
+        controllerHome,
+        env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ''}` },
+      });
+      expect(guidance).toMatchObject({ provider: 'openai', ready: false, title: 'Connect OpenAI Secure MCP Tunnel' });
+      expect(guidance.command).toContain('--alias forge-current');
+      expect(guidance.command).not.toContain('--alias forge ');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

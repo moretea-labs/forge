@@ -1,5 +1,5 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, rmSync } from 'fs';
-import { dirname, join } from 'path';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync, rmSync } from 'fs';
+import { basename, dirname, join } from 'path';
 import { homedir } from 'os';
 import { runProcess } from '../../effects/process-runner';
 import { isProcessAlive } from '../../runtime/shared/process-tree';
@@ -339,6 +339,81 @@ export interface LaunchAgentLifecycleResult {
   attempts: number;
   serviceTarget: string;
   diagnostics: string[];
+}
+
+export interface RetiredConflictingLaunchAgent {
+  label: string;
+  plistPath: string;
+  backupPath: string;
+}
+
+function decodePlistString(value: string): string {
+  return value
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&amp;', '&');
+}
+
+function readLaunchAgentIdentity(path: string): { label: string; arguments: string[] } | undefined {
+  let content: string;
+  try { content = readFileSync(path, 'utf8'); } catch { return undefined; }
+  const label = content.match(/<key>\s*Label\s*<\/key>\s*<string>([\s\S]*?)<\/string>/)?.[1];
+  const argumentsBlock = content.match(/<key>\s*ProgramArguments\s*<\/key>\s*<array>([\s\S]*?)<\/array>/)?.[1];
+  if (!label || !argumentsBlock) return undefined;
+  const args = Array.from(argumentsBlock.matchAll(/<string>([\s\S]*?)<\/string>/g), (match) => decodePlistString(match[1] ?? ''));
+  return { label: decodePlistString(label), arguments: args };
+}
+
+/**
+ * Retire Forge-owned launchd entries that would compete for the same listener.
+ * A Controller Home hash makes labels stable, but it must not make two local
+ * lifecycle owners valid for one port after a migration or reboot.
+ */
+export async function retireConflictingForgeLaunchAgents(
+  input: {
+    accountHome?: string;
+    desiredLabel: string;
+    labelPrefix: string;
+    port: number;
+    requiredArguments: string[];
+  },
+  dependencies: {
+    bootout?: typeof bootoutLaunchAgentWithRetryV2;
+    now?: () => number;
+  } = {},
+): Promise<RetiredConflictingLaunchAgent[]> {
+  const accountHome = input.accountHome?.trim() || process.env.HOME?.trim() || homedir();
+  const launchAgentsRoot = join(accountHome, 'Library', 'LaunchAgents');
+  if (!existsSync(launchAgentsRoot)) return [];
+  const retiredRoot = join(launchAgentsRoot, '.forge-retired');
+  const bootout = dependencies.bootout ?? bootoutLaunchAgentWithRetryV2;
+  const retired: RetiredConflictingLaunchAgent[] = [];
+  const expectedPort = String(input.port);
+  const normalizedLabelPrefix = input.labelPrefix.replace(/\.+$/, '');
+
+  for (const entry of readdirSync(launchAgentsRoot).sort()) {
+    if (!entry.endsWith('.plist')) continue;
+    const plistPath = join(launchAgentsRoot, entry);
+    const identity = readLaunchAgentIdentity(plistPath);
+    const forgeOwnedLabel = identity?.label === normalizedLabelPrefix || identity?.label.startsWith(`${normalizedLabelPrefix}.`);
+    if (!identity || identity.label === input.desiredLabel || !forgeOwnedLabel) continue;
+    if (basename(plistPath, '.plist') !== identity.label) continue;
+    if (!input.requiredArguments.every((argument) => identity.arguments.includes(argument))) continue;
+    const portIndex = identity.arguments.indexOf('--port');
+    if (portIndex < 0 || identity.arguments[portIndex + 1] !== expectedPort) continue;
+
+    const stopped = await bootout({ label: identity.label, plistPath });
+    if (!stopped.ok) {
+      throw new Error(`FORGE_LAUNCH_AGENT_CONFLICT_RETIRE_FAILED: ${identity.label}: ${stopped.diagnostics.join('; ')}`);
+    }
+    mkdirSync(retiredRoot, { recursive: true, mode: 0o700 });
+    const backupPath = join(retiredRoot, `${identity.label}.${(dependencies.now ?? Date.now)()}.plist`);
+    renameSync(plistPath, backupPath);
+    retired.push({ label: identity.label, plistPath, backupPath });
+  }
+  return retired;
 }
 
 export function currentUserLaunchdDomain(): string {

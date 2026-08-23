@@ -3,7 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, w
 import { homedir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
 import { spawn, spawnSync } from 'child_process';
-import { bootstrapLaunchAgentWithRetryV2, installLaunchAgent, launchAgentPath } from '../../cli/controller/launch-agents';
+import { bootstrapLaunchAgentWithRetryV2, installLaunchAgent, launchAgentPath, retireConflictingForgeLaunchAgents } from '../../cli/controller/launch-agents';
 import type { PackageRuntimeRelease } from './package-runtime-release';
 
 export interface PackageConnectorServicePaths {
@@ -185,6 +185,13 @@ export async function installPackageConnectorService(input: { release: PackageRu
   const launch = packageConnectorLaunchSpec({ release: input.release, controllerHome: input.controllerHome, endpoint: input.endpoint });
   const platform = input.platform ?? process.platform, env = input.env ?? process.env;
   if (!input.forcePortable && platform === 'darwin') {
+    await retireConflictingForgeLaunchAgents({
+      accountHome: env.HOME,
+      desiredLabel: paths.label,
+      labelPrefix: 'com.moretea.forge.mcp-gateway',
+      port: launch.port,
+      requiredArguments: ['mcp', 'serve', '--auth', 'oauth'],
+    });
     atomicWrite(paths.sourcePlistPath, renderPackageConnectorLaunchAgent({ paths, launch }), 0o600);
     installLaunchAgent(paths.sourcePlistPath, paths.label);
     const result = await bootstrapLaunchAgentWithRetryV2({ label: paths.label, plistPath: paths.installedPlistPath });
@@ -216,6 +223,18 @@ export async function ensurePackageConnectorService(input: {
   refresh?: boolean;
   probeEndpoint?: (endpoint: string) => Promise<boolean>;
 }): Promise<PackageConnectorServiceResult> {
+  const platform = input.platform ?? process.platform;
+  if (!input.refresh && !input.forcePortable && platform === 'darwin') {
+    const paths = packageConnectorServicePaths(input.controllerHome, input.env?.HOME);
+    const port = Number(new URL(input.endpoint).port);
+    await retireConflictingForgeLaunchAgents({
+      accountHome: input.env?.HOME,
+      desiredLabel: paths.label,
+      labelPrefix: 'com.moretea.forge.mcp-gateway',
+      port,
+      requiredArguments: ['mcp', 'serve', '--auth', 'oauth'],
+    });
+  }
   if (!input.refresh && !input.forcePortable) {
     let authority: PackageConnectorServiceAuthority | undefined;
     try { authority = readPackageConnectorServiceAuthority(input.controllerHome); } catch { authority = undefined; }
