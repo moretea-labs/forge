@@ -635,6 +635,33 @@ describe('standalone recovery on canonical Runtime', () => {
     });
   });
 
+  test('rolls back when the active release was attested previously but is currently unhealthy', async () => {
+    const home = controllerHome();
+    const first = manifest(home, 'release-a', 'artifact-a');
+    const second = manifest(home, 'release-b', 'artifact-b', 2);
+    ensureActiveRuntimeRelease(home, first);
+    const runtime = await runtimeServer();
+    writeMainToken(home);
+    const firstOwnership = startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
+    const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
+    await attestKnownGood(config);
+    removeOwnership(firstOwnership);
+
+    publishRuntimeRelease(home, second, 'publish-release-b');
+    const secondOwnership = startObservedRuntime(home, runtime.endpoint, 'release-b', 'artifact-b');
+    await attestKnownGood(config);
+    removeOwnership(secondOwnership);
+
+    const rolled = await rollbackPrevious(config, 'active release became unhealthy after attestation');
+    expect(rolled.ok).toBe(true);
+    expect(rolled.noOp).not.toBe(true);
+    expect(readRuntimeReleaseAuthority(home)).toMatchObject({
+      revision: 3,
+      active: { releaseId: 'release-a', artifactIdentity: 'artifact-a' },
+      previous: { releaseId: 'release-b', artifactIdentity: 'artifact-b' },
+    });
+  });
+
   test('fails closed when an existing authority is invalid instead of rebuilding revision 1', () => {
     const home = controllerHome();
     const first = manifest(home, 'release-a', 'artifact-a');

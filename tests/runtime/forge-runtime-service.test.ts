@@ -172,7 +172,7 @@ describe('Forge Runtime service', () => {
     expect(readFileSync(paths.sourcePlistPath, 'utf8')).not.toContain('browser-automation-helper');
   });
 
-  test('materializes an npm/package Runtime release without Git or Bun compilation and fences package drift', () => {
+  test('materializes an npm/package Runtime release without Git or Bun compilation and snapshots package drift', () => {
     const fx = fixture(), packageRoot = join(fx.root, 'package');
     for (const dir of ['src/runtime/root', 'src/runtime/shared', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
     writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
@@ -193,7 +193,11 @@ describe('Forge Runtime service', () => {
     const launchdEnvironment = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' };
     const launched = spawnSync(release.entrypointPath, [], { encoding: 'utf8', env: launchdEnvironment }); expect(launched.status).toBe(0);
     writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 2;\n');
-    const rejected = spawnSync(release.entrypointPath, [], { encoding: 'utf8', env: launchdEnvironment }); expect(rejected.status).toBe(78); expect(rejected.stderr).toContain('FORGE_PACKAGE_RUNTIME_SOURCE_CHANGED');
+    const unchanged = spawnSync(release.entrypointPath, [], { encoding: 'utf8', env: launchdEnvironment }); expect(unchanged.status).toBe(0);
+    expect(readFileSync(join(release.packageRoot, 'src', 'runtime.ts'), 'utf8')).toBe('export const runtime = 1;\n');
+    const changed = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'package-test-changed' });
+    expect(changed.releaseId).not.toBe(release.releaseId);
+    expect(readFileSync(join(changed.packageRoot, 'src', 'runtime.ts'), 'utf8')).toBe('export const runtime = 2;\n');
   });
 
   test('fails closed instead of repairing bytes inside an existing package release directory', () => {
