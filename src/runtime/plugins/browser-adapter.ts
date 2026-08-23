@@ -1829,6 +1829,25 @@ async function openNativeAttachedContext(
     && typeof savedTab.tabId === 'string'
     ? target.existingSession.browser.browserProduct
     : undefined;
+  if (args.__forge_require_existing_resource === true
+    && target.existingSession?.browser?.provider === 'macos-apple-events'
+    && !savedProduct) {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_SESSION_STATE_LOST',
+      'Saved native browser session lacks a complete stable browser/tab identity; refusing to create or adopt a replacement tab for this existing-session action.',
+      {
+        retryable: false,
+        details: {
+          sessionId: target.sessionId,
+          provider: target.existingSession.browser.provider,
+          browserProduct: target.existingSession.browser.browserProduct,
+          ownership: savedOwnership,
+          windowId: savedTab?.windowId,
+          tabId: savedTab?.tabId,
+        },
+      },
+    );
+  }
   let page: PageLike | undefined;
   let discovered: Awaited<ReturnType<typeof discoverMacOsBrowserAttachment>> | undefined;
   let sessionResume: BrowserSessionResumeDiagnostic = savedTab
@@ -3591,7 +3610,9 @@ export function buildBrowserPluginManifest(previousRevision = 0, previousUpdated
 
 export async function executeBrowserPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
   const persisted = loadConfig(input.repoRoot);
-  const current = input.actionId === 'configure' ? persisted : effectiveBrowserActionConfig(persisted, input.args);
+  const actionSessionId = input.actionId === 'configure' ? undefined : stringValue(input.args.session_id);
+  const actionSession = actionSessionId ? findSession(input.repoRoot, actionSessionId) : undefined;
+  const current = input.actionId === 'configure' ? persisted : effectiveBrowserActionConfig(persisted, input.args, actionSession);
   if (!current.enabled && input.actionId !== 'configure') {
     throw new AssistantPluginError('PLUGIN_DISABLED', 'Browser plugin is disabled.', { retryable: false });
   }

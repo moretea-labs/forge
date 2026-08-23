@@ -965,6 +965,64 @@ describe('browser plugin', () => {
     expect(persisted.nativeAttachMode).toBeUndefined();
   });
 
+  test('existing native session inherits its saved per-action transport mode across later DOM actions', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const created = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
+      requestId: 'browser-native-ephemeral-mode-create',
+      args: {
+        url: 'https://example.com/user-work',
+        browser_mode: 'attach_preferred',
+        cdp_attach_fallback: 'fail_closed',
+        native_attach_mode: 'auto',
+        native_browser_candidates: ['chrome'],
+        native_active_tab: true,
+      },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((created.session as Record<string, unknown>).sessionId);
+    expect(created.browserConnection).toMatchObject({ provider: 'macos-apple-events', mode: 'attach_preferred' });
+    expect(JSON.parse(readFileSync(join(repoRoot, '.forge/plugins/browser.json'), 'utf8')).browserMode).toBe('managed_persistent');
+
+    const observed = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'browser-native-ephemeral-mode-read',
+      args: { session_id: sessionId },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(observed.provider).toBe('macos-apple-events');
+    expect(observed.browserConnection).toMatchObject({
+      requestedMode: 'attach_preferred',
+      mode: 'attach_preferred',
+      provider: 'macos-apple-events',
+      tab: { ownership: 'user_owned', windowId: 'window-77', tabId: '501' },
+    });
+    expect(native.events.created).toEqual([]);
+    expect(native.events.navigated).toEqual([]);
+
+    const managed = mockManagedPersistentPlaywright() as unknown as { events: { launches: number } };
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => managed as never });
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'browser-native-explicit-cross-provider-refused',
+      args: { session_id: sessionId, browser_mode: 'managed_persistent' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('PLUGIN_BROWSER_SESSION_STATE_LOST');
+    expect(managed.events.launches).toBe(0);
+    expect(native.events.created).toEqual([]);
+  });
+
   test('managed persistent sessions share one context but keep separate owner-bound pages across A-B-A reuse', async () => {
     const { repoRoot, controllerHome } = repoFixture();
     writeBrowserConfig(repoRoot, {
