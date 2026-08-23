@@ -11,6 +11,7 @@ import { atomicWriteFileSync } from '../installer/shared';
 import { runBoundedChild } from '../../runtime/shared/bounded-child-supervisor';
 import { signalProcessTree } from '../../runtime/shared/process-tree';
 import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../runtime/shared/process-environment';
+import { materializeManagedWorkspaceCheckDependencies } from '../../runtime/execution/managed-workspace';
 
 export interface ControllerCheckEffects {
   /** Repository-relative read scopes. Use [\".\"] for the whole checkout. */
@@ -560,9 +561,15 @@ function readControllerCheckEvidenceByKey(repoRoot: string, id: string, cacheKey
   }
 }
 
+function prepareControllerCheckDependencies(repoRoot: string, check: ControllerCheck): void {
+  if (check.source !== 'package-script' || existsSync(join(repoRoot, 'node_modules'))) return;
+  materializeManagedWorkspaceCheckDependencies(repoRoot);
+}
+
 export function runControllerCheck(repoRoot: string, id: string, requestedTimeoutMs?: number, snapshot?: ControllerCheckSnapshot): ControllerCheckResult {
   const check = snapshot ? validateControllerCheckSnapshot(repoRoot, snapshot) : listControllerChecks(repoRoot).find((entry) => entry.id === id);
   if (!check || check.id !== id) throw new Error(`check not found: ${id}`);
+  prepareControllerCheckDependencies(repoRoot, check);
   const identity = controllerCheckExecutionIdentity(repoRoot, id, requestedTimeoutMs, snapshot);
   const timeoutMs = identity.timeoutMs;
   const revision = identity.revision;
@@ -896,6 +903,11 @@ export function runControllerCheckAsync(
     return Promise.reject(error);
   }
   if (!check || check.id !== id) return Promise.reject(new Error(`check not found: ${id}`));
+  try {
+    prepareControllerCheckDependencies(repoRoot, check);
+  } catch (error) {
+    return Promise.reject(error);
+  }
   const identity = controllerCheckExecutionIdentity(repoRoot, id, options.requestedTimeoutMs, options.snapshot);
   const timeoutMs = identity.timeoutMs;
   const revision = identity.revision;
