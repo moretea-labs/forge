@@ -200,7 +200,15 @@ import { observeRuntimeStatus } from '../../root/status';
 import { reconcileWorkValidation } from './work-validation-reconciler';
 import { callExecutionTool } from './execution-tools';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
-import { runWorkChatgptContinuation } from '../../control-plane/launcher/chatgpt-work-continuation';
+import { runStandaloneChatgptPrompt, runWorkChatgptContinuation } from '../../control-plane/launcher/chatgpt-work-continuation';
+import { getChatgptWorkConversationBinding } from '../../control-plane/launcher/chatgpt-work-binding-store';
+import {
+  beginControllerRoundRelayAfterRelease,
+  buildControllerRoundRelayPrompt,
+  finishControllerRoundRelayDispatch,
+  submitControllerRoundDisposition,
+  type ControllerRoundDisposition,
+} from '../../control-plane/facade/controller-round-relay';
 
 export {
   connectorExposedTools,
@@ -3849,6 +3857,41 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller claim failed.', data: {} }) as unknown as Record<string, unknown>, true);
           }
         }
+        if (operation === 'controller_disposition') {
+          try {
+            const workId = String(args.work_id ?? '').trim();
+            const disposition = String(args.disposition ?? '').trim();
+            if (!['continue_immediately', 'wait', 'wait_for_user', 'goal_complete'].includes(disposition)) {
+              throw new Error('CONTROLLER_RELAY_DISPOSITION_INVALID');
+            }
+            const identity = authenticatedFacadeControllerIdentity(ctx, args);
+            const chatgptBinding = getChatgptWorkConversationBinding(store, workId);
+            const relay = submitControllerRoundDisposition({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, {
+              workId,
+              identity,
+              disposition: disposition as ControllerRoundDisposition,
+              relayScopeId: typeof args.relay_scope_id === 'string' ? args.relay_scope_id : undefined,
+              requirementId: typeof args.requirement_id === 'string' ? args.requirement_id : undefined,
+              handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
+              stateFingerprint: typeof args.state_fingerprint === 'string' ? args.state_fingerprint : undefined,
+              reason: typeof args.reason === 'string' ? args.reason : undefined,
+              browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : chatgptBinding?.latestBrowserSessionId,
+              conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : chatgptBinding?.conversationUrl,
+              maxRounds: typeof args.max_rounds === 'number' ? args.max_rounds : undefined,
+              maxRepeatedState: typeof args.max_repeated_state === 'number' ? args.max_repeated_state : undefined,
+              maxFailures: typeof args.max_failures === 'number' ? args.max_failures : undefined,
+            });
+            return result(buildFacadeResult({
+              status: relay.status === 'blocked' ? 'blocked' : 'ok',
+              summary: relay.status === 'pending_release'
+                ? `Controller disposition ${relay.disposition} recorded; relay will dispatch only after the current lease is released.`
+                : `Controller disposition ${relay.disposition} recorded with status ${relay.status}.`,
+              data: { relay },
+            }) as unknown as Record<string, unknown>, relay.status === 'blocked');
+          } catch (error) {
+            return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller disposition failed.', data: {} }) as unknown as Record<string, unknown>, true);
+          }
+        }
         if (operation === 'controller_release') {
           try {
             const workId = String(args.work_id ?? '').trim();
@@ -3862,7 +3905,49 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             if (executionSession?.activeWorkId === workId) {
               updateExecutionSession(ctx.controllerHome, identity, { activeWorkId: undefined, lastValidatedAt: new Date().toISOString() });
             }
-            return result(buildFacadeResult({ summary: 'Controller lease released.', data: {} }) as unknown as Record<string, unknown>);
+            const relay = owner ? beginControllerRoundRelayAfterRelease(
+              { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+              { workId, releasedSession: owner },
+            ) : undefined;
+            if (relay?.status === 'dispatching') {
+              try {
+                assertAutomatedOperationAllowed('external_controller_wake', {
+                  controller_type: 'chatgpt',
+                  relay_scope_id: relay.relayScopeId,
+                  requirement_id: relay.requirementId,
+                });
+                const prompt = buildControllerRoundRelayPrompt({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, relay);
+                const dispatched = await runStandaloneChatgptPrompt({
+                  controllerHome: ctx.controllerHome,
+                  repoId: repository.repoId,
+                  scopeId: `controller-relay:${relay.relayScopeId}`,
+                  prompt,
+                  browserSessionId: relay.browserSessionId,
+                  conversationUrl: relay.conversationUrl,
+                  tabPolicy: 'new',
+                });
+                if (dispatched.status === 'failed') throw new Error(dispatched.error?.message ?? 'CONTROLLER_RELAY_DISPATCH_FAILED');
+                const completed = finishControllerRoundRelayDispatch(
+                  { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+                  { workId, ok: true, browserSessionId: dispatched.browserSessionId, conversationUrl: dispatched.conversationUrl },
+                );
+                return result(buildFacadeResult({
+                  summary: `Controller lease released and immediate relay ${relay.relayScopeId} dispatched through the canonical ChatGPT launcher.`,
+                  data: { relay: completed, dispatch: dispatched },
+                }) as unknown as Record<string, unknown>);
+              } catch (relayError) {
+                const failed = finishControllerRoundRelayDispatch(
+                  { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+                  { workId, ok: false, error: relayError instanceof Error ? relayError.message : String(relayError) },
+                );
+                return result(buildFacadeResult({
+                  status: 'blocked',
+                  summary: `Controller lease released, but immediate relay dispatch failed: ${relayError instanceof Error ? relayError.message : String(relayError)}`,
+                  data: { relay: failed },
+                }) as unknown as Record<string, unknown>, true);
+              }
+            }
+            return result(buildFacadeResult({ summary: 'Controller lease released.', data: { relay } }) as unknown as Record<string, unknown>);
           } catch (error) {
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller release failed.', data: {} }) as unknown as Record<string, unknown>, true);
           }
