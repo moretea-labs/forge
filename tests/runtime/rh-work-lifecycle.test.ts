@@ -18,6 +18,12 @@ import { createRequirement, readRequirement } from '../../src/runtime/control-pl
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { bindChatgptWorkConversation } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
+import {
+  beginInitialControllerRoundDispatch,
+  claimStalledControllerRoundRelays,
+  finishControllerRoundRelayDispatch,
+} from '../../src/runtime/control-plane/facade/controller-round-relay';
+import { runSchedulerControllerRoundRecovery } from '../../src/runtime/control-plane/global-scheduler/maintenance';
 import { createSchedule, getSchedule, listOccurrences, saveOccurrence, saveSchedule } from '../../src/runtime/workflow/schedules/store';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
 import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
@@ -2784,6 +2790,183 @@ describe('rh_work managed lifecycle closure', () => {
       data: { relay: { status: 'blocked', repeatedStateCount: 1 } },
     });
     expect(String(((blocked?.structuredContent as { data?: { relay?: { blockedReason?: string } } }).data?.relay?.blockedReason ?? ''))).toContain('repeated_state');
+  });
+
+  test('initial ChatGPT launcher dispatch becomes a durable stale-round recovery obligation and terminal Work suppresses recovery', async () => {
+    const fx = fixture('initial-chatgpt-round-recovery');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Keep one initial ChatGPT launcher round supervised until explicit closure',
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 1,
+      requires_recovery: true,
+      allowed_paths: ['README.md'],
+    });
+    expect(started?.isError, JSON.stringify(started?.structuredContent)).not.toBe(true);
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    expect(workId).toBeTruthy();
+
+    const oldDispatchMs = Date.now() - 120_000;
+    const relayStore = {
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      now: () => new Date(oldDispatchMs).toISOString(),
+    };
+    const initial = beginInitialControllerRoundDispatch(relayStore, {
+      workId,
+      identity: {
+        controllerId: 'launcher:test',
+        principalId: 'principal:test',
+        controllerInstanceId: 'runtime:test',
+        sessionId: 'session:test',
+      },
+      browserSessionId: 'initial-browser-session',
+      conversationUrl: 'https://chatgpt.com/c/initial-round',
+    });
+    expect(initial).toMatchObject({
+      status: 'dispatching',
+      disposition: 'continue_immediately',
+      claimGeneration: 0,
+      roundCount: 1,
+      repeatedStateCount: 0,
+      reason: 'launcher_start_requested_continuation',
+    });
+    const dispatched = finishControllerRoundRelayDispatch(relayStore, {
+      workId,
+      ok: true,
+      browserSessionId: 'initial-browser-session',
+      conversationUrl: 'https://chatgpt.com/c/initial-round',
+    });
+    expect(dispatched).toMatchObject({ status: 'dispatched', roundCount: 1 });
+    expect(() => beginInitialControllerRoundDispatch(relayStore, {
+      workId,
+      identity: { controllerId: 'launcher:test', principalId: 'principal:test', controllerInstanceId: 'runtime:test', sessionId: 'session:test' },
+    })).toThrow('CONTROLLER_RELAY_ROUND_ALREADY_OPEN');
+
+    const released = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'controller_release',
+      work_id: workId,
+    });
+    expect(released?.isError, JSON.stringify(released?.structuredContent)).not.toBe(true);
+
+    const prompts: string[] = [];
+    const recovery = await runSchedulerControllerRoundRecovery({
+      controllerHome: fx.controllerHome,
+      nowMs: Date.now(),
+      repositories: [fx.repository],
+      graceMs: 60_000,
+      maxRecoveries: 1,
+      authorizeWake: () => {},
+      dispatchPrompt: async (input) => {
+        prompts.push(input.prompt);
+        return {
+          status: 'dispatched',
+          provider: 'controller-browser',
+          browserSessionId: 'recovered-browser-session',
+          conversationUrl: 'https://chatgpt.com/c/initial-round',
+          resumedFromBinding: true,
+          model: 'gpt-5.6',
+          reasoning: 'high',
+          tabPolicy: 'auto',
+          executionPreferenceVerified: true,
+        } as const;
+      },
+    });
+    expect(recovery).toEqual({ claimed: 1, dispatched: 1, failed: 0 });
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain('did not submit an explicit disposition');
+    expect(prompts[0]).toContain('mechanical recovery only');
+
+    const stopped = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'stop',
+      work_id: workId,
+      reason: 'terminal suppression regression',
+    });
+    expect(stopped?.isError, JSON.stringify(stopped?.structuredContent)).not.toBe(true);
+    expect(claimStalledControllerRoundRelays(
+      { controllerHome: fx.controllerHome, repoId: fx.repository.repoId },
+      { nowMs: Date.now() + 120_000, graceMs: 60_000, limit: 1 },
+    )).toEqual([]);
+
+    const runtimeSource = readFileSync(join(process.cwd(), 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
+    const launcherStart = runtimeSource.slice(runtimeSource.indexOf("if (operation === 'launcher_start')"), runtimeSource.indexOf('const launched = await launchSuperController'));
+    expect(launcherStart).toContain('beginInitialControllerRoundDispatch');
+    expect(launcherStart.indexOf('beginInitialControllerRoundDispatch')).toBeLessThan(launcherStart.indexOf('await runWorkChatgptContinuation'));
+    expect(launcherStart).toContain('dispatch success is not semantic completion');
+    expect(launcherStart).toContain('submit exactly one rh_work controller_disposition');
+    expect(launcherStart).toContain('finishControllerRoundRelayDispatch');
+  });
+
+  test('explicit wait and goal_complete dispositions suppress stale initial-launch recovery', async () => {
+    const fx = fixture('initial-chatgpt-explicit-disposition');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Honor explicit controller round closure over mechanical recovery',
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 1,
+      requires_recovery: true,
+      allowed_paths: ['README.md'],
+    });
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    expect(workId).toBeTruthy();
+    const oldDispatchMs = Date.now() - 120_000;
+    const relayStore = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId, now: () => new Date(oldDispatchMs).toISOString() };
+    const identity = { controllerId: 'launcher:test', principalId: 'principal:test', controllerInstanceId: 'runtime:test', sessionId: 'session:test' };
+
+    const initial = beginInitialControllerRoundDispatch(relayStore, { workId, identity });
+    finishControllerRoundRelayDispatch(relayStore, { workId, ok: true });
+    const releasedInitial = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_release', work_id: workId });
+    expect(releasedInitial?.isError, JSON.stringify(releasedInitial?.structuredContent)).not.toBe(true);
+    const claimedWait = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId, controller_type: 'chatgpt' });
+    expect(claimedWait?.isError, JSON.stringify(claimedWait?.structuredContent)).not.toBe(true);
+    const waiting = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'controller_disposition',
+      work_id: workId,
+      disposition: 'wait',
+      relay_scope_id: initial.relayScopeId,
+      reason: 'Explicitly wait for a later semantic decision.',
+    });
+    expect(waiting?.structuredContent).toMatchObject({ status: 'ok', data: { relay: { status: 'waiting', disposition: 'wait' } } });
+    await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_release', work_id: workId });
+    expect((await runSchedulerControllerRoundRecovery({
+      controllerHome: fx.controllerHome,
+      nowMs: Date.now() + 120_000,
+      repositories: [fx.repository],
+      graceMs: 60_000,
+      authorizeWake: () => {},
+      dispatchPrompt: async () => { throw new Error('wait disposition must suppress dispatch'); },
+    })).claimed).toBe(0);
+
+    const nextRoundStore = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId, now: () => new Date(Date.now() - 120_000).toISOString() };
+    const relaunched = beginInitialControllerRoundDispatch(nextRoundStore, { workId, identity });
+    finishControllerRoundRelayDispatch(nextRoundStore, { workId, ok: true });
+    const claimedComplete = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId, controller_type: 'chatgpt' });
+    expect(claimedComplete?.isError, JSON.stringify(claimedComplete?.structuredContent)).not.toBe(true);
+    const completed = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'controller_disposition',
+      work_id: workId,
+      disposition: 'goal_complete',
+      relay_scope_id: relaunched.relayScopeId,
+      reason: 'Explicit semantic goal completion.',
+    });
+    expect(completed?.structuredContent).toMatchObject({ status: 'ok', data: { relay: { status: 'goal_complete', disposition: 'goal_complete' } } });
+    await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_release', work_id: workId });
+    expect((await runSchedulerControllerRoundRecovery({
+      controllerHome: fx.controllerHome,
+      nowMs: Date.now() + 120_000,
+      repositories: [fx.repository],
+      graceMs: 60_000,
+      authorizeWake: () => {},
+      dispatchPrompt: async () => { throw new Error('goal_complete disposition must suppress dispatch'); },
+    })).claimed).toBe(0);
   });
 
   test('non-shadow continuation trigger reserves one launch while authenticated MCP retains Work ownership authority', async () => {
