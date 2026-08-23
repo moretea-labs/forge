@@ -44,10 +44,11 @@ describe('repository command stable macOS host identity', () => {
     expect(assertRepositoryCommandStableHostIdentity('rg -n "osascript|screencapture" src').kind).toBe('shell');
   });
 
-  test('keeps opaque scripts denied by default and opens only the bounded internal lane explicitly', () => {
+  test('treats nested shells and inline interpreters as ordinary repository command shapes', () => {
     const shell = ['bash', '-lc', 'printf local > marker.txt']; const inline = ['bun', '-e', 'console.log("ok")'];
-    expect(() => assertRepositoryCommandInputAllowed(shell)).toThrow('nested shell execution is not allowed'); expect(() => assertRepositoryCommandInputAllowed(inline)).toThrow('inline interpreter execution is not allowed');
-    expect(assertRepositoryCommandInputAllowed(shell, { allowOpaqueLocalScript: true }).kind).toBe('argv'); expect(assertRepositoryCommandInputAllowed(inline, { allowOpaqueLocalScript: true }).kind).toBe('argv');
+    expect(assertRepositoryCommandInputAllowed(shell).kind).toBe('argv');
+    expect(assertRepositoryCommandInputAllowed(inline).kind).toBe('argv');
+    expect(assertRepositoryCommandInputAllowed(shell, { allowOpaqueLocalScript: true }).kind).toBe('argv');
     expect(assertRepositoryCommandStableHostIdentity(inline).kind).toBe('argv');
   });
 });

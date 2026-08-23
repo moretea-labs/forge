@@ -181,7 +181,11 @@ function finalizePreparedExecution(
   const isGit = command.kind === 'argv'
     ? command.executable?.split(/[\\/]/).at(-1)?.toLowerCase() === 'git'
     : /^\s*git\s+/i.test(command.shellCommand!);
-  const risk = classification.risk === 'readonly' ? 'readonly' : classification.risk === 'remote_write' ? 'remote_write' : classification.risk === 'destructive' ? 'destructive' : isGit ? 'local_git' : 'workspace_write';
+  // Command classification is observability/replay metadata, not execution
+  // authority. Raw repository commands follow the host AI permission model once
+  // repository/cwd/external-path scope has been resolved. Typed catastrophic
+  // Forge operations retain their own explicit confirmation contracts.
+  const risk = isGit ? 'local_git' : 'local_command';
   const delegated = input.authorizationDecision ?? (controllerHome ? decideAuthorization({
     controllerHome,
     accessMode: permission?.mode ?? 'request',
@@ -212,16 +216,16 @@ function finalizePreparedExecution(
     approvalToken: token,
     authorization: input.authorization,
     before,
-    policyDecision: input.dryRun === true || classification.risk === 'readonly'
+    policyDecision: input.dryRun === true || !controllerHome || effectiveDecision?.decision === 'allow'
       ? 'allowed'
-      : effectiveDecision?.decision === 'allow' ? 'allowed' : 'approval_required',
+      : 'approval_required',
     ...(effectiveDecision ? { authorizationDecision: effectiveDecision } : {}),
     ...(effectiveDecision?.decision === 'user_confirmation_required' ? { approvalRequestId: effectiveDecision.approvalRequestId } : {}),
     externalPathUsages: externalPathUsages.length > 0 ? externalPathUsages : undefined,
   };
   const confirmed = input.authorization === 'confirmed_plan' && input.approvalToken === token;
-  const delegatedAllowed = effectiveDecision?.decision === 'allow';
-  const executable = input.dryRun === true || classification.risk === 'readonly' || confirmed || delegatedAllowed;
+  const delegatedAllowed = !controllerHome || effectiveDecision?.decision === 'allow';
+  const executable = input.dryRun === true || confirmed || delegatedAllowed;
   execution.policyDecision = executable ? 'allowed' : 'approval_required';
   return {
     root,

@@ -1337,7 +1337,7 @@ describe('command classifier safe shell combinations', () => {
     for (const command of remoteWrites) {
       expect(classifyRepositoryCommand(command)).toMatchObject({ risk: 'remote_write', confirmation: 'authorization' });
       expect(classifyRepositoryCommandReplay(command)).toMatchObject({ replayable: false, idempotent: false, retryPolicy: 'none' });
-      expect(classifyRepositoryCommandRoute(command).route).toBe('durable');
+      expect(classifyRepositoryCommandRoute(command)).toMatchObject({ route: 'process_managed', reason: 'effectful_command_managed' });
     }
 
     const readonly: string[][] = [

@@ -57,7 +57,7 @@ interface RepositoryCommandInputPolicyOptions {
 
 export function assertRepositoryCommandAllowed(
   command: string,
-  options: RepositoryCommandInputPolicyOptions = {},
+  _options: RepositoryCommandInputPolicyOptions = {},
 ): string {
   const normalized = command.trim();
   if (!normalized) throw new Error('COMMAND_INVALID: command is required');
@@ -65,27 +65,11 @@ export function assertRepositoryCommandAllowed(
     throw new Error(`COMMAND_INVALID: command exceeds ${MAX_COMMAND_LENGTH} characters`);
   }
   if (normalized.includes('\0')) throw new Error('COMMAND_INVALID: command contains a null byte');
-
-  const denied: Array<[RegExp, string]> = [
-    [/\$\(|`/, 'nested command substitution is not allowed'],
-    [/(?:^|[;&|]\s*)(?:eval|source)\b|(?:^|[;&|]\s*)\.\s+[^/]/i, 'dynamic shell evaluation is not allowed'],
-    [/(?:^|[\s'"=])(?:\.\.(?:\/|\\)|~(?:\/|\\)|[A-Za-z]:[\\/])/, 'ambiguous parent/home/drive paths are not allowed; use repo-relative paths or an authorized absolute external path'],
-    [/(?:^|[;&|]\s*)cd(?:\s|$)/i, 'use the cwd argument instead of cd'],
-    [/\b(?:env|printenv)\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b|\bsecurity\s+find-(?:generic|internet)-password\b/i, 'credential or environment inspection is not allowed'],
-    [/(?:^|[\s'"/])(?:\.ssh|\.aws|\.gnupg|Library\/Keychains|login\.keychain|\.config\/gh\/hosts\.yml)(?:[\s'"/]|$)/i, 'sensitive credential paths are not allowed'],
-    [/(?:^|[;&|]\s*)(?:curl|wget|scp|sftp|ftp|nc|ncat|netcat|socat|ssh)(?:\s|$)/i, 'direct network or exfiltration utilities are not allowed'],
-    [/\bgit\s+(?:--git-dir|--work-tree|-C)\b|\b(?:GIT_DIR|GIT_WORK_TREE)\s*=/i, 'Git repository scope overrides are not allowed'],
-    [/\bgit\s+config\b[^\n]*(?:--global|--system)\b/i, 'global or system Git configuration changes are not allowed'],
-  ];
-  if (!options.allowOpaqueLocalScript) {
-    denied.push(
-      [/\b(?:bash|sh|zsh|fish|dash|cmd|powershell|pwsh)\b\s+(?:-[^\s]*c\b|\/c\b)/i, 'nested shell execution is not allowed'],
-      [/\b(?:python\d*|node|ruby|perl)\b\s+(?:-[ce]\b|--eval\b)/i, 'inline interpreter execution is not allowed'],
-    );
-  }
-  for (const [pattern, reason] of denied) {
-    if (pattern.test(normalized)) throw new Error(`COMMAND_POLICY_DENIED: ${reason}`);
-  }
+  // Repository commands are an execution surface, not a shell-language policy
+  // engine. Do not maintain an enumerated command/program denylist here: it is
+  // necessarily incomplete and turns new CLI/subcommand shapes into false
+  // negatives. Structural repository/cwd/external-path authority is enforced
+  // separately after normalization.
   return normalized;
 }
 
@@ -177,42 +161,11 @@ export function assertRepositoryCommandInputAllowed(
   const command = assertRepositoryCommandStableHostIdentity(input);
   if (command.kind === 'shell') {
     assertRepositoryCommandAllowed(command.shellCommand!, options);
-    return command;
   }
-  const executableName = command.executable!.split(/[\\/]/).at(-1)?.toLowerCase() ?? '';
-  const args = command.args ?? [];
-  const shellFlag = args.some((arg) => ['-c', '-lc', '/c', '-Command'].includes(arg));
-  if (['bash', 'sh', 'zsh', 'fish', 'dash', 'cmd', 'powershell', 'pwsh'].includes(executableName) && shellFlag) {
-    if (!options.allowOpaqueLocalScript) {
-      throw new Error('COMMAND_POLICY_DENIED: nested shell execution is not allowed');
-    }
-    const shellPayloadIndex = args.findIndex((arg) => ['-c', '-lc', '/c', '-Command'].includes(arg));
-    const shellPayload = shellPayloadIndex >= 0 ? args[shellPayloadIndex + 1] : undefined;
-    if (typeof shellPayload === 'string') {
-      assertRepositoryCommandAllowed(shellPayload, options);
-    }
-  }
-  if (['node', 'nodejs', 'bun', 'deno', 'ruby', 'perl', 'python', 'python3'].includes(executableName)
-    && args.some((arg) => ['-c', '-e', '--eval'].includes(arg))) {
-    if (!options.allowOpaqueLocalScript) {
-      throw new Error('COMMAND_POLICY_DENIED: inline interpreter execution is not allowed');
-    }
-  }
-  if (args.some((arg) => /(?:^|[\\/])\.\.(?:[\\/]|$)|^(?:~|[A-Za-z]:[\\/])/.test(arg))) {
-    throw new Error('COMMAND_POLICY_DENIED: ambiguous parent/home/drive paths are not allowed; use repo-relative paths or an authorized absolute external path');
-  }
-  if (args.some((arg) => /(?:^|[\\/])(?:\.ssh|\.aws|\.gnupg|Library[\\/]Keychains|login\.keychain|\.config[\\/]gh[\\/]hosts\.yml)(?:[\\/]|$)/i.test(arg))) {
-    throw new Error('COMMAND_POLICY_DENIED: sensitive credential paths are not allowed');
-  }
-  if (executableName === 'git' && args.some((arg) => ['--git-dir', '--work-tree', '-C'].includes(arg))) {
-    throw new Error('COMMAND_POLICY_DENIED: Git repository scope overrides are not allowed');
-  }
-  if (executableName === 'git' && args[0] === 'config' && args.some((arg) => ['--global', '--system'].includes(arg))) {
-    throw new Error('COMMAND_POLICY_DENIED: global or system Git configuration changes are not allowed');
-  }
-  if (['env', 'printenv', 'curl', 'wget', 'scp', 'sftp', 'ftp', 'nc', 'ncat', 'netcat', 'socat', 'ssh'].includes(executableName)) {
-    throw new Error('COMMAND_POLICY_DENIED: credential or network inspection is not allowed');
-  }
+  // Do not infer execution permission from executable names, shell flags, inline
+  // interpreter flags, network utilities, or Git subcommands. Those rules are
+  // not complete enough to be an authority boundary. Real repository and
+  // external-filesystem scope is validated by assertCommandPathOperandsStayInRepository.
   return command;
 }
 
