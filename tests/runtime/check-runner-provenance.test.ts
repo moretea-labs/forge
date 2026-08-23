@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
 import {
@@ -143,6 +143,56 @@ describe('controller check provenance and failure classification', () => {
       hostServices: ['browser-live'],
     });
     expect(checks.find((entry) => entry.id === 'package:check:custom')?.effects).toBeUndefined();
+  });
+
+  test('prepares matching canonical dependencies before a linked-worktree package check', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-check-linked-dependencies-'));
+    roots.push(root);
+    const repoRoot = join(root, 'repository');
+    mkdirSync(repoRoot, { recursive: true });
+    expect(spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' }).status).toBe(0);
+    expect(spawnSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot, stdio: 'ignore' }).status).toBe(0);
+    expect(spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoRoot, stdio: 'ignore' }).status).toBe(0);
+    writeFileSync(join(repoRoot, '.gitignore'), 'node_modules/\n.ai/harness/\n');
+    writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({
+      name: 'linked-dependency-check-fixture',
+      private: true,
+      scripts: { 'check:type': 'node verify-deps.cjs' },
+    }));
+    writeFileSync(join(repoRoot, 'package-lock.json'), JSON.stringify({
+      name: 'linked-dependency-check-fixture',
+      lockfileVersion: 3,
+      requires: true,
+      packages: { '': { name: 'linked-dependency-check-fixture' } },
+    }));
+    writeFileSync(join(repoRoot, 'verify-deps.cjs'), [
+      "const fs = require('fs');",
+      "if (!fs.existsSync('node_modules/canonical-marker')) process.exit(19);",
+      "console.log('canonical-dependencies-ready');",
+      '',
+    ].join('\n'));
+    expect(spawnSync('git', ['add', '.'], { cwd: repoRoot, stdio: 'ignore' }).status).toBe(0);
+    expect(spawnSync('git', ['commit', '-m', 'fixture'], { cwd: repoRoot, stdio: 'ignore' }).status).toBe(0);
+    mkdirSync(join(repoRoot, 'node_modules'), { recursive: true });
+    writeFileSync(join(repoRoot, 'node_modules', 'canonical-marker'), 'ready\n');
+
+    const worktreeRoot = join(root, 'worktree');
+    expect(spawnSync('git', ['worktree', 'add', '-b', 'linked-dependency-check', worktreeRoot], {
+      cwd: repoRoot,
+      stdio: 'ignore',
+    }).status).toBe(0);
+    expect(existsSync(join(worktreeRoot, 'node_modules'))).toBe(false);
+
+    const result = await runControllerCheckAsync(worktreeRoot, 'package:check:type');
+    expect(result.ok).toBe(true);
+    expect(result.stdout).toContain('canonical-dependencies-ready');
+    expect(realpathSync(join(worktreeRoot, 'node_modules'))).toBe(realpathSync(join(repoRoot, 'node_modules')));
+    const trackedStatus = spawnSync('git', ['status', '--porcelain', '--untracked-files=no'], {
+      cwd: worktreeRoot,
+      encoding: 'utf8',
+    });
+    expect(trackedStatus.status).toBe(0);
+    expect(trackedStatus.stdout.trim()).toBe('');
   });
 
   test('exposes cache provenance, validated revision, and original execution time', async () => {

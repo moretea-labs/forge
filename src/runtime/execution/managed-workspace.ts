@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, realpathSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import type { RepositoryRecord } from '../../cli/repositories/types';
@@ -30,6 +30,12 @@ export interface ManagedWorkspaceDependencyBootstrap {
   packageManager: 'bun' | 'pnpm' | 'npm' | 'yarn';
   lockfile: string;
   command: string[];
+}
+
+export interface ManagedWorkspaceDependencyPreparation {
+  mode: 'already_ready' | 'canonical_reuse' | 'installed';
+  nodeModulesRoot: string;
+  canonicalRoot?: string;
 }
 
 export interface ManagedWorkspaceDependencies {
@@ -100,11 +106,87 @@ export function managedWorkspaceDependencyBootstrap(repoRoot: string): ManagedWo
   return { packageManager: detected[0], lockfile: detected[1], command: [...detected[2]] };
 }
 
-export function materializeManagedWorkspaceDependencies(repoRoot: string): void {
-  if (!existsSync(join(repoRoot, 'package.json')) || existsSync(join(repoRoot, 'node_modules'))) return;
+const DEPENDENCY_REUSE_CONFIG_PATHS = [
+  '.npmrc',
+  'bunfig.toml',
+  'pnpm-workspace.yaml',
+  '.yarnrc.yml',
+] as const;
+
+function dependencyInputMatches(leftRoot: string, rightRoot: string, path: string): boolean {
+  const left = join(leftRoot, path);
+  const right = join(rightRoot, path);
+  const leftExists = existsSync(left);
+  const rightExists = existsSync(right);
+  if (leftExists !== rightExists) return false;
+  return !leftExists || readFileSync(left).equals(readFileSync(right));
+}
+
+function linkedWorkspaceCanonicalRoot(repoRoot: string): string | undefined {
+  const common = runProcess(resolveGitExecutable(), ['-C', repoRoot, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+    timeoutMs: 15_000,
+    maxOutputBytes: 8 * 1024,
+  });
+  if (!common.ok || !common.stdout.trim()) return undefined;
+  const canonicalRoot = dirname(resolve(common.stdout.trim()));
+  if (!existsSync(canonicalRoot)) return undefined;
+  try {
+    if (realpathSync(canonicalRoot) === realpathSync(repoRoot)) return undefined;
+  } catch {
+    return undefined;
+  }
+  const topLevel = runProcess(resolveGitExecutable(), ['-C', canonicalRoot, 'rev-parse', '--show-toplevel'], {
+    timeoutMs: 15_000,
+    maxOutputBytes: 8 * 1024,
+  });
+  if (!topLevel.ok || !topLevel.stdout.trim()) return undefined;
+  try {
+    return realpathSync(topLevel.stdout.trim()) === realpathSync(canonicalRoot) ? canonicalRoot : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function resolveManagedWorkspaceCanonicalDependencies(repoRoot: string): {
+  canonicalRoot: string;
+  nodeModulesRoot: string;
+} | undefined {
+  const bootstrap = managedWorkspaceDependencyBootstrap(repoRoot);
+  if (!bootstrap) return undefined;
+  const canonicalRoot = linkedWorkspaceCanonicalRoot(repoRoot);
+  if (!canonicalRoot) return undefined;
+  const nodeModulesRoot = join(canonicalRoot, 'node_modules');
+  if (!existsSync(nodeModulesRoot)) return undefined;
+  const dependencyInputs = ['package.json', bootstrap.lockfile, ...DEPENDENCY_REUSE_CONFIG_PATHS];
+  if (!dependencyInputs.every((path) => dependencyInputMatches(repoRoot, canonicalRoot, path))) return undefined;
+  return { canonicalRoot, nodeModulesRoot: realpathSync(nodeModulesRoot) };
+}
+
+export function materializeManagedWorkspaceDependencies(repoRoot: string): ManagedWorkspaceDependencyPreparation | undefined {
+  if (!existsSync(join(repoRoot, 'package.json'))) return undefined;
+  const nodeModulesRoot = join(repoRoot, 'node_modules');
+  if (existsSync(nodeModulesRoot)) {
+    return { mode: 'already_ready', nodeModulesRoot: realpathSync(nodeModulesRoot) };
+  }
   const bootstrap = managedWorkspaceDependencyBootstrap(repoRoot);
   if (!bootstrap) {
     throw new Error('MANAGED_WORKSPACE_DEPENDENCY_LOCK_REQUIRED: package.json exists but no supported lockfile was found');
+  }
+  const reusable = resolveManagedWorkspaceCanonicalDependencies(repoRoot);
+  if (reusable) {
+    try {
+      symlinkSync(reusable.nodeModulesRoot, nodeModulesRoot, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (!existsSync(nodeModulesRoot)) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`MANAGED_WORKSPACE_DEPENDENCY_REUSE_FAILED: ${detail}`);
+      }
+    }
+    return {
+      mode: 'canonical_reuse',
+      nodeModulesRoot: realpathSync(nodeModulesRoot),
+      canonicalRoot: reusable.canonicalRoot,
+    };
   }
   const childEnv = repositoryChildProcessEnvironment();
   const executable = bootstrap.packageManager === 'bun'
@@ -120,9 +202,16 @@ export function materializeManagedWorkspaceDependencies(repoRoot: string): void 
     const detail = result.stderr || result.error || `exit ${result.status}`;
     throw new Error(`MANAGED_WORKSPACE_DEPENDENCY_INSTALL_FAILED: ${bootstrap.command.join(' ')}: ${detail}`);
   }
-  if (!existsSync(join(repoRoot, 'node_modules'))) {
+  if (!existsSync(nodeModulesRoot)) {
     throw new Error(`MANAGED_WORKSPACE_DEPENDENCY_INSTALL_INCOMPLETE: ${bootstrap.command.join(' ')} completed without node_modules`);
   }
+  return { mode: 'installed', nodeModulesRoot: realpathSync(nodeModulesRoot) };
+}
+
+export function materializeManagedWorkspaceCheckDependencies(repoRoot: string): ManagedWorkspaceDependencyPreparation | undefined {
+  if (!existsSync(join(repoRoot, 'package.json')) || existsSync(join(repoRoot, 'node_modules'))) return undefined;
+  if (!linkedWorkspaceCanonicalRoot(repoRoot)) return undefined;
+  return materializeManagedWorkspaceDependencies(repoRoot);
 }
 
 function existingWorkspace(path: string, branch: string): boolean {
