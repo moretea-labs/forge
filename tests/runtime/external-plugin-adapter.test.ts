@@ -129,6 +129,93 @@ describe('external plugin adapter', () => {
     expect(calls[1]?.params).toEqual({ action: 'desktop_status', arguments: {} });
   });
 
+  test('executes Forge-composed foreground pointer interaction atomically without requiring a provider-native composite action', async () => {
+    const base = registration();
+    const foregroundAction = {
+      ...base.actions[0]!,
+      actionId: 'desktop_foreground_pointer_click',
+      title: 'Foreground pointer click',
+      description: 'Composite action owned by Forge.',
+      readOnly: false,
+      risk: 'workspace_write' as const,
+      confirmation: 'authorization' as const,
+      scopes: ['desktop.interact', 'desktop.capture'],
+    };
+    const calls: ExternalUnixSocketCallOptions[] = [];
+    let statusReads = 0;
+    const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, foregroundAction] }), {
+      call: async (options) => {
+        calls.push(options);
+        if (options.method === 'manifest') {
+          return providerManifest({ actions: ['desktop_status', 'desktop_session_open', 'desktop_screenshot', 'desktop_pointer_click'] });
+        }
+        const params = options.params as { action?: string; arguments?: Record<string, unknown> } | undefined;
+        switch (params?.action) {
+          case 'desktop_status':
+            statusReads += 1;
+            return statusReads === 1
+              ? { sessions: [{ interactionId: 'desk-source', bundleIdentifier: 'com.google.Chrome', appName: 'Google Chrome' }], applications: [] }
+              : { sessions: [], applications: [{ active: true, terminated: false, bundle_id: 'com.google.Chrome', name: 'Google Chrome' }] };
+          case 'desktop_session_open':
+            expect(params.arguments).toEqual({ bundle_id: 'com.google.Chrome', launch: false, activate: true });
+            return { interactionId: 'desk-active' };
+          case 'desktop_screenshot':
+            expect(params.arguments).toMatchObject({ interaction_id: 'desk-active', scope: 'window', window_id: 4159 });
+            return { visual_revision: 7, windowId: 4159, artifactPath: '/tmp/shot.png' };
+          case 'desktop_pointer_click':
+            expect(params.arguments).toEqual({ interaction_id: 'desk-active', window_id: 4159, visual_revision: 7, x: 1663, y: 179 });
+            return { clicked: true };
+          default:
+            throw new Error(`unexpected provider action: ${String(params?.action)}`);
+        }
+      },
+    });
+
+    const result = await adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator',
+      actionId: 'desktop_foreground_pointer_click', requestId: 'foreground-click-1',
+      args: { interaction_id: 'desk-source', window_id: 4159, x: 1663, y: 179, label: 'bookmarks-organize' },
+      origin: { surface: 'mcp' },
+    });
+
+    expect(result).toMatchObject({ interactionId: 'desk-active', activationVerified: true, windowId: 4159, visualRevision: 7, click: { clicked: true } });
+    expect(calls.map((entry) => entry.method)).toEqual(['manifest', 'execute', 'execute', 'execute', 'execute', 'execute']);
+    expect(calls.slice(1).map((entry) => (entry.params as { action?: string } | undefined)?.action)).toEqual([
+      'desktop_status', 'desktop_session_open', 'desktop_status', 'desktop_screenshot', 'desktop_pointer_click',
+    ]);
+  });
+
+  test('fails activated desktop session open when the provider cannot prove the application became frontmost', async () => {
+    const base = registration();
+    const sessionOpenAction = {
+      ...base.actions[0]!,
+      actionId: 'desktop_session_open',
+      title: 'Open desktop session',
+      description: 'Open session.',
+      readOnly: false,
+      risk: 'workspace_write' as const,
+      confirmation: 'authorization' as const,
+      scopes: ['desktop.session'],
+    };
+    const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, sessionOpenAction] }), {
+      call: async (options) => {
+        if (options.method === 'manifest') return providerManifest({ actions: ['desktop_status', 'desktop_session_open'] });
+        const params = options.params as { action?: string } | undefined;
+        if (params?.action === 'desktop_session_open') return { interactionId: 'desk-new' };
+        if (params?.action === 'desktop_status') {
+          return { applications: [{ active: false, terminated: false, bundle_id: 'com.vivaldi.Vivaldi', name: 'Vivaldi' }] };
+        }
+        throw new Error(`unexpected provider action: ${String(params?.action)}`);
+      },
+    });
+
+    await expect(adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator',
+      actionId: 'desktop_session_open', requestId: 'activate-unconfirmed',
+      args: { bundle_id: 'com.vivaldi.Vivaldi', launch: false, activate: true }, origin: { surface: 'mcp' },
+    })).rejects.toThrow('DESKTOP_ACTIVATION_NOT_CONFIRMED');
+  });
+
   test('reuses same-call live provider identity proof without a duplicate manifest round trip', async () => {
     const calls: ExternalUnixSocketCallOptions[] = [];
     const adapter = createExternalPluginAdapter(registration(), {

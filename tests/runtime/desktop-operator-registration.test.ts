@@ -25,6 +25,7 @@ describe('Desktop Operator trusted external registration', () => {
     expect(input.capabilities.find((capability) => capability.capabilityId === 'desktop.interact')?.actions).toEqual([
       'desktop_press',
       'desktop_pointer_click',
+      'desktop_foreground_pointer_click',
       'desktop_type_text',
       'desktop_key',
       'desktop_open_url',
@@ -36,6 +37,7 @@ describe('Desktop Operator trusted external registration', () => {
       'desktop_observe',
       'desktop_press',
       'desktop_pointer_click',
+      'desktop_foreground_pointer_click',
       'desktop_type_text',
       'desktop_key',
       'desktop_clipboard_read',
@@ -50,7 +52,7 @@ describe('Desktop Operator trusted external registration', () => {
     for (const action of input.actions.filter((action) => action.readOnly)) {
       expect(action.risk).toBe('readonly');
     }
-    for (const action of input.actions.filter((action) => ['desktop_permissions_request', 'desktop_press', 'desktop_pointer_click', 'desktop_type_text', 'desktop_key', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_open_url', 'desktop_batch'].includes(action.actionId))) {
+    for (const action of input.actions.filter((action) => ['desktop_permissions_request', 'desktop_press', 'desktop_pointer_click', 'desktop_foreground_pointer_click', 'desktop_type_text', 'desktop_key', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_open_url', 'desktop_batch'].includes(action.actionId))) {
       expect(action.risk).toBe('workspace_write');
       expect(action.confirmation).toBe('authorization');
     }
@@ -63,6 +65,16 @@ describe('Desktop Operator trusted external registration', () => {
     expect(pointerClick?.argumentsSchema?.required).toEqual(['interaction_id', 'window_id', 'visual_revision', 'x', 'y']);
     expect(pointerClick?.description).toContain('fresh window screenshot visual revision');
     expect(pointerClick?.description).toContain('never activates or focuses');
+    const foregroundPointerClick = input.actions.find((action) => action.actionId === 'desktop_foreground_pointer_click');
+    expect(foregroundPointerClick).toMatchObject({
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      scopes: ['desktop.interact', 'desktop.capture'],
+    });
+    expect(foregroundPointerClick?.argumentsSchema?.required).toEqual(['interaction_id', 'window_id', 'x', 'y']);
+    expect(foregroundPointerClick?.description).toContain('Atomically reactivate');
+    expect(foregroundPointerClick?.description).toContain('fresh visual revision');
     const observe = input.actions.find((action) => action.actionId === 'desktop_observe');
     const observeSchema = observe?.argumentsSchema as { properties?: {
       root_selector?: { properties?: { ref?: { type?: string } } };

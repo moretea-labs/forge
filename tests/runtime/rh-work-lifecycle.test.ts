@@ -19,10 +19,13 @@ import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { bindChatgptWorkConversation } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
 import {
+  beginControllerRoundRelayAfterRelease,
   beginInitialControllerRoundDispatch,
   claimStalledControllerRoundRelays,
   finishControllerRoundRelayDispatch,
+  submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
+import { getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { runSchedulerControllerRoundRecovery } from '../../src/runtime/control-plane/global-scheduler/maintenance';
 import { createSchedule, getSchedule, listOccurrences, saveOccurrence, saveSchedule } from '../../src/runtime/workflow/schedules/store';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
@@ -2790,6 +2793,153 @@ describe('rh_work managed lifecycle closure', () => {
       data: { relay: { status: 'blocked', repeatedStateCount: 1 } },
     });
     expect(String(((blocked?.structuredContent as { data?: { relay?: { blockedReason?: string } } }).data?.relay?.blockedReason ?? ''))).toContain('repeated_state');
+  });
+
+  test('mechanically recovers a successfully dispatched ChatGPT round that never closes, then blocks repeated unchanged recovery', async () => {
+    const fx = fixture('controller-round-stalled-recovery');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Finish a controller goal even if one dispatched ChatGPT round silently stops',
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 1,
+      requires_recovery: true,
+      allowed_paths: ['README.md'],
+    });
+    expect(started?.isError, JSON.stringify(started?.structuredContent)).not.toBe(true);
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    const claimed = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'controller_claim',
+      work_id: workId,
+      controller_type: 'chatgpt',
+    });
+    expect(claimed?.isError, JSON.stringify(claimed?.structuredContent)).not.toBe(true);
+
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const owner = getControllerSession(store, workId);
+    expect(owner).toBeTruthy();
+    const submitted = submitControllerRoundDisposition(store, {
+      workId,
+      identity: {
+        controllerId: owner!.controllerId,
+        principalId: owner!.principalId ?? owner!.controllerId,
+        controllerInstanceId: owner!.controllerInstanceId ?? 'runtime-controller-round-stalled-recovery',
+        sessionId: owner!.sessionId,
+      },
+      disposition: 'continue_immediately',
+      relayScopeId: 'goal:stalled-recovery',
+      stateFingerprint: 'pre-dispatch-controller-state',
+      maxRounds: 4,
+      maxRepeatedState: 1,
+    });
+    expect(submitted.status).toBe('pending_release');
+    releaseControllerSession(store, workId, owner!.controllerId);
+    const dispatching = beginControllerRoundRelayAfterRelease(store, { workId, releasedSession: owner! });
+    expect(dispatching?.status).toBe('dispatching');
+    const dispatched = finishControllerRoundRelayDispatch(store, {
+      workId,
+      ok: true,
+      browserSessionId: 'forge-chatgpt-stalled-recovery',
+      conversationUrl: 'https://chatgpt.com/c/stalled-recovery',
+    });
+    expect(dispatched?.status).toBe('dispatched');
+
+    const prompts: string[] = [];
+    const firstRecovery = await runSchedulerControllerRoundRecovery({
+      controllerHome: fx.controllerHome,
+      nowMs: Date.parse(dispatched!.dispatchedAt!) + 11 * 60_000,
+      graceMs: 60_000,
+      maxRecoveries: 1,
+      repositories: [{ repoId: fx.repository.repoId }],
+      authorizeWake: () => undefined,
+      dispatchPrompt: async (input) => {
+        prompts.push(input.prompt);
+        return {
+          status: 'dispatched',
+          provider: 'controller-browser',
+          browserSessionId: 'forge-chatgpt-stalled-recovery-2',
+          conversationUrl: 'https://chatgpt.com/c/stalled-recovery',
+          resumedFromBinding: true,
+          model: 'gpt-5.6',
+          reasoning: 'high',
+          tabPolicy: 'auto',
+          executionPreferenceVerified: true,
+        };
+      },
+    });
+    expect(firstRecovery).toEqual({ claimed: 1, dispatched: 1, failed: 0 });
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain('did not submit an explicit disposition');
+    expect(prompts[0]).toContain('mechanical recovery only');
+
+    const secondRecovery = await runSchedulerControllerRoundRecovery({
+      controllerHome: fx.controllerHome,
+      nowMs: Date.now() + 11 * 60_000,
+      graceMs: 60_000,
+      maxRecoveries: 1,
+      repositories: [{ repoId: fx.repository.repoId }],
+      authorizeWake: () => undefined,
+      dispatchPrompt: async () => {
+        throw new Error('repeated unchanged state must be blocked before dispatch');
+      },
+    });
+    expect(secondRecovery).toEqual({ claimed: 0, dispatched: 0, failed: 0 });
+    expect(claimStalledControllerRoundRelays(store, { nowMs: Date.now() + 30 * 60_000, graceMs: 60_000 })).toEqual([]);
+  });
+
+  test('explicit wait and goal_complete dispositions never become stalled-round recovery dispatches', async () => {
+    const fx = fixture('controller-round-explicit-stop');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Respect explicit controller stop dispositions',
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 1,
+      requires_recovery: true,
+      allowed_paths: ['README.md'],
+    });
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    expect(workId).toBeTruthy();
+    await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId, controller_type: 'chatgpt' });
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    let owner = getControllerSession(store, workId)!;
+    const identity = () => ({
+      controllerId: owner.controllerId,
+      principalId: owner.principalId ?? owner.controllerId,
+      controllerInstanceId: owner.controllerInstanceId ?? 'runtime-controller-round-explicit-stop',
+      sessionId: owner.sessionId,
+    });
+    expect(submitControllerRoundDisposition(store, { workId, identity: identity(), disposition: 'wait', relayScopeId: 'goal:explicit-stop' }).status).toBe('waiting');
+    releaseControllerSession(store, workId, owner.controllerId);
+    let dispatchCalls = 0;
+    const noWaitWake = await runSchedulerControllerRoundRecovery({
+      controllerHome: fx.controllerHome,
+      nowMs: Date.now() + 60 * 60_000,
+      graceMs: 60_000,
+      repositories: [{ repoId: fx.repository.repoId }],
+      authorizeWake: () => undefined,
+      dispatchPrompt: async () => { dispatchCalls += 1; throw new Error('wait must not dispatch'); },
+    });
+    expect(noWaitWake).toEqual({ claimed: 0, dispatched: 0, failed: 0 });
+
+    const reclaimed = await callRuntimeTool(fx.ctx, 'rh_work', { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId, controller_type: 'chatgpt' });
+    expect(reclaimed?.isError, JSON.stringify(reclaimed?.structuredContent)).not.toBe(true);
+    owner = getControllerSession(store, workId)!;
+    expect(submitControllerRoundDisposition(store, { workId, identity: identity(), disposition: 'goal_complete', relayScopeId: 'goal:explicit-stop' }).status).toBe('goal_complete');
+    releaseControllerSession(store, workId, owner.controllerId);
+    const noCompleteWake = await runSchedulerControllerRoundRecovery({
+      controllerHome: fx.controllerHome,
+      nowMs: Date.now() + 60 * 60_000,
+      graceMs: 60_000,
+      repositories: [{ repoId: fx.repository.repoId }],
+      authorizeWake: () => undefined,
+      dispatchPrompt: async () => { dispatchCalls += 1; throw new Error('goal_complete must not dispatch'); },
+    });
+    expect(noCompleteWake).toEqual({ claimed: 0, dispatched: 0, failed: 0 });
+    expect(dispatchCalls).toBe(0);
   });
 
   test('initial ChatGPT launcher dispatch becomes a durable stale-round recovery obligation and terminal Work suppresses recovery', async () => {

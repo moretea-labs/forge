@@ -162,15 +162,59 @@ export function resolveManagedWorkspaceCanonicalDependencies(repoRoot: string): 
   return { canonicalRoot, nodeModulesRoot: realpathSync(nodeModulesRoot) };
 }
 
+function packageManifestRequiresDependencyMaterialization(repoRoot: string): boolean {
+  const packagePath = join(repoRoot, 'package.json');
+  if (!existsSync(packagePath)) return false;
+  let manifest: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(readFileSync(packagePath, 'utf8')) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return true;
+    manifest = parsed as Record<string, unknown>;
+  } catch {
+    // Preserve fail-closed dependency preparation for malformed manifests. The
+    // package manager remains the authority for the concrete parse error once a
+    // supported frozen lockfile is present.
+    return true;
+  }
+
+  const dependencyFields = [
+    'dependencies',
+    'devDependencies',
+    'optionalDependencies',
+    'peerDependencies',
+    'bundleDependencies',
+    'bundledDependencies',
+  ] as const;
+  if (dependencyFields.some((field) => {
+    const value = manifest[field];
+    return Array.isArray(value)
+      ? value.length > 0
+      : Boolean(value && typeof value === 'object' && Object.keys(value as Record<string, unknown>).length > 0);
+  })) return true;
+
+  const workspaces = manifest.workspaces;
+  if (Array.isArray(workspaces)) return workspaces.length > 0;
+  if (workspaces && typeof workspaces === 'object') {
+    const packages = (workspaces as Record<string, unknown>).packages;
+    if (Array.isArray(packages)) return packages.length > 0;
+    return Object.keys(workspaces as Record<string, unknown>).length > 0;
+  }
+  return false;
+}
+
 export function materializeManagedWorkspaceDependencies(repoRoot: string): ManagedWorkspaceDependencyPreparation | undefined {
   if (!existsSync(join(repoRoot, 'package.json'))) return undefined;
   const nodeModulesRoot = join(repoRoot, 'node_modules');
   if (existsSync(nodeModulesRoot)) {
     return { mode: 'already_ready', nodeModulesRoot: realpathSync(nodeModulesRoot) };
   }
+  // A package manifest can define dependency-free scripts (for example a
+  // built-in `node -e` check). Such checks do not need node_modules and must not
+  // be rejected merely because the repository intentionally has no lockfile.
+  if (!packageManifestRequiresDependencyMaterialization(repoRoot)) return undefined;
   const bootstrap = managedWorkspaceDependencyBootstrap(repoRoot);
   if (!bootstrap) {
-    throw new Error('MANAGED_WORKSPACE_DEPENDENCY_LOCK_REQUIRED: package.json exists but no supported lockfile was found');
+    throw new Error('MANAGED_WORKSPACE_DEPENDENCY_LOCK_REQUIRED: package.json declares dependencies but no supported lockfile was found');
   }
   const reusable = resolveManagedWorkspaceCanonicalDependencies(repoRoot);
   if (reusable) {

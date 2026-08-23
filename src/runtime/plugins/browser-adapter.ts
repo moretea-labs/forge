@@ -210,6 +210,8 @@ type PageLike = {
   locator?(selector: string): { screenshot(options?: Record<string, unknown>): Promise<Buffer> };
   on?(event: string, handler: (...args: unknown[]) => void): void;
   bringToFront?(): Promise<void>;
+  foregroundState?(): Promise<{ frontmost: boolean; active: boolean }>;
+  trustedInput?(input: Record<string, unknown>): Promise<void>;
   mouse?: {
     click(x: number, y: number, options?: { button?: 'left' | 'middle' | 'right'; clickCount?: number }): Promise<void>;
     move(x: number, y: number, options?: { steps?: number }): Promise<void>;
@@ -581,26 +583,63 @@ function loadSession(repoRoot: string, sessionId: string): BrowserSessionState {
   return state;
 }
 
-function normalizedUrl(value: unknown): string {
+function parsedAbsoluteUrl(value: unknown): { raw: string; parsed: URL } {
   const raw = stringValue(value);
   if (!raw) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'url is required.', { retryable: false });
-  let parsed: URL;
   try {
-    parsed = new URL(raw);
+    return { raw, parsed: new URL(raw) };
   } catch {
     throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'url must be absolute.', { retryable: false });
   }
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Only http and https URLs are supported; observed protocol: ${parsed.protocol}`, {
-      retryable: false,
-      details: {
-        observedProtocol: parsed.protocol,
-        inputType: typeof value,
-        inputLength: raw.length,
-      },
-    });
-  }
+}
+
+function unsupportedUrlProtocol(value: unknown, raw: string, protocol: string): never {
+  throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Only http and https URLs are supported; observed protocol: ${protocol}`, {
+    retryable: false,
+    details: {
+      observedProtocol: protocol,
+      inputType: typeof value,
+      inputLength: raw.length,
+    },
+  });
+}
+
+function normalizedUrl(value: unknown): string {
+  const { raw, parsed } = parsedAbsoluteUrl(value);
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') unsupportedUrlProtocol(value, raw, parsed.protocol);
   return parsed.toString();
+}
+
+function normalizedExplicitNativeAdoptionUrl(value: unknown): string {
+  const { raw, parsed } = parsedAbsoluteUrl(value);
+  if (!['https:', 'http:', 'chrome:', 'vivaldi:'].includes(parsed.protocol)) unsupportedUrlProtocol(value, raw, parsed.protocol);
+  return parsed.toString();
+}
+
+function browserInternalUrlProduct(value: unknown): MacOsBrowserProduct | undefined {
+  const { parsed } = parsedAbsoluteUrl(value);
+  return parsed.protocol === 'chrome:' ? 'chrome' : parsed.protocol === 'vivaldi:' ? 'vivaldi' : undefined;
+}
+
+function explicitNativeAdoptionUrlsMatch(requestedValue: unknown, observedValue: unknown, product: MacOsBrowserProduct): boolean {
+  const requestedUrl = normalizedExplicitNativeAdoptionUrl(requestedValue);
+  const observedUrl = normalizedExplicitNativeAdoptionUrl(observedValue);
+  if (comparableUrl(requestedUrl) === comparableUrl(observedUrl)) return true;
+  return product === 'vivaldi'
+    && requestedUrl === 'vivaldi:bookmarks'
+    && comparableUrl(observedUrl) === comparableUrl('chrome://bookmarks/');
+}
+
+function isExplicitNativeUserOwnedSession(session: BrowserSessionState): boolean {
+  return session.browser?.provider === 'macos-apple-events'
+    && session.browser.tab?.ownership === 'user_owned'
+    && (session.browser.browserProduct === 'chrome' || session.browser.browserProduct === 'vivaldi');
+}
+
+function normalizedSavedSessionUrl(session: BrowserSessionState): string {
+  return isExplicitNativeUserOwnedSession(session)
+    ? normalizedExplicitNativeAdoptionUrl(session.url)
+    : normalizedUrl(session.url);
 }
 
 
@@ -825,9 +864,10 @@ function resolveActionTarget(repoRoot: string, args: Record<string, unknown>): B
   }
   if (providedSessionId) {
     const existingSession = loadSession(repoRoot, providedSessionId);
-    const sessionUrl = normalizedUrl(existingSession.url);
+    const nativeUserOwned = isExplicitNativeUserOwnedSession(existingSession);
+    const sessionUrl = normalizedSavedSessionUrl(existingSession);
     if (directUrl) {
-      const explicitUrl = normalizedUrl(directUrl);
+      const explicitUrl = nativeUserOwned ? normalizedExplicitNativeAdoptionUrl(directUrl) : normalizedUrl(directUrl);
       if (explicitUrl !== sessionUrl) {
         throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'url does not match the saved session.', { retryable: false });
       }
@@ -1825,6 +1865,11 @@ async function openAttachedContext(
   return { attempts };
 }
 
+function nativeBackgroundNavigationRequiresReplacement(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT');
+}
+
 async function openNativeAttachedContext(
   repoRoot: string,
   config: BrowserPluginConfig,
@@ -1957,6 +2002,51 @@ async function openNativeAttachedContext(
   let activeAttachment = discovered.attachment;
 
   let createdThisCallRef: MacOsBrowserTabRef | undefined;
+  let navigationUsedReplacement = false;
+  const navigateNativePageWithReplacement = async (candidate: PageLike): Promise<PageLike> => {
+    const obsoleteRef = (candidate as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
+    try {
+      await candidate.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout });
+      return candidate;
+    } catch (error) {
+      if (!nativeBackgroundNavigationRequiresReplacement(error) || effectiveOwnership === 'user_owned' || !obsoleteRef) throw error;
+      const replacement = await createMacOsBrowserOwnedPage(activeAttachment, target.url, timeout) as unknown as PageLike;
+      const replacementRef = (replacement as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
+      if (!replacementRef) {
+        throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Native replacement tab did not return a stable plugin-owned tab reference.', { retryable: true });
+      }
+      try {
+        const identity = await (replacement as unknown as { identity: () => Promise<{ url: string; title: string }> }).identity();
+        if (comparableUrl(identity.url) !== comparableUrl(target.url)) {
+          throw new AssistantPluginError(
+            'PLUGIN_BROWSER_NATIVE_REPLACEMENT_MISMATCH',
+            'Native replacement tab did not reach the requested URL; preserving the original plugin-owned tab.',
+            { retryable: true, details: { expectedUrl: target.url, actualUrl: identity.url } },
+          );
+        }
+      } catch (replacementError) {
+        await closeMacOsBrowserOwnedTab(activeAttachment.metadata.product, replacementRef, timeout).catch(() => undefined);
+        throw replacementError;
+      }
+      try {
+        await closeMacOsBrowserOwnedTab(activeAttachment.metadata.product, obsoleteRef, timeout);
+      } catch (closeError) {
+        await closeMacOsBrowserOwnedTab(activeAttachment.metadata.product, replacementRef, timeout).catch(() => undefined);
+        throw closeError;
+      }
+      createdThisCallRef = replacementRef;
+      navigationUsedReplacement = true;
+      matchedBy = 'owned_token';
+      effectiveOwnership = 'plugin_owned';
+      sessionResume = {
+        sessionId: target.sessionId,
+        status: 'matched',
+        reason: 'Browser broker required replacement for background cross-URL navigation; created and verified a replacement plugin-owned tab before closing the obsolete tab.',
+        savedTab,
+      };
+      return replacement;
+    }
+  };
   try {
     if (!page && !savedTab && !stringValue(args.session_id)) {
       const inventory = await listMacOsBrowserTabs(activeAttachment.metadata.product, timeout);
@@ -2027,10 +2117,13 @@ async function openNativeAttachedContext(
       const liveIdentity = await (page as unknown as { identity?: () => Promise<{ url: string; title: string }> }).identity?.()
         .catch(() => undefined);
       if (!liveIdentity?.url || isBlankPage(liveIdentity.url) || comparableUrl(liveIdentity.url) !== comparableUrl(target.url)) {
-        await page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout });
+        page = await navigateNativePageWithReplacement(page);
       }
     }
-    if (comparableUrl(page.url()) !== comparableUrl(target.url)) {
+    const explicitUserOwnedUrlMatch = effectiveOwnership === 'user_owned'
+      && savedProduct
+      && explicitNativeAdoptionUrlsMatch(target.url, page.url(), savedProduct);
+    if (comparableUrl(page.url()) !== comparableUrl(target.url) && !explicitUserOwnedUrlMatch) {
       const currentRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
       if (effectiveOwnership === 'user_owned') {
         if (matchedBy === 'recovered_tab') {
@@ -2050,17 +2143,25 @@ async function openNativeAttachedContext(
       } else if (preserveOwnedSameOriginDrift) {
         sessionResume = { sessionId: target.sessionId, status: 'matched', reason: 'Plugin-owned tab navigated within the same origin; preserved the live tab and refreshed its session URL.', savedTab };
       } else {
-        await page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout });
-        if (currentRef) {
+        page = await navigateNativePageWithReplacement(page);
+        if (currentRef && !navigationUsedReplacement) {
           matchedBy = 'owned_token';
           sessionResume = { sessionId: target.sessionId, status: 'matched', reason: 'Navigated the existing plugin-owned tab in place and preserved its stable tab identity.', savedTab };
         }
       }
     }
-    if (matchedBy !== 'owned_token' && page.waitForLoadState) {
+    const explicitInternalUserSession = Boolean(
+      target.existingSession
+      && isExplicitNativeUserOwnedSession(target.existingSession)
+      && browserInternalUrlProduct(target.url) === savedProduct,
+    );
+    if (matchedBy !== 'owned_token' && page.waitForLoadState && !explicitInternalUserSession) {
       await page.waitForLoadState(waitUntil(args.wait_until), { timeout });
     }
-    const pageUrl = normalizedUrl(matchedBy === 'recovered_tab' && recoveredTabUrl ? recoveredTabUrl : page.url());
+    const observedPageUrl = matchedBy === 'recovered_tab' && recoveredTabUrl ? recoveredTabUrl : page.url();
+    const pageUrl = explicitInternalUserSession
+      ? normalizedExplicitNativeAdoptionUrl(observedPageUrl)
+      : normalizedUrl(observedPageUrl);
     const nativeRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
     if (!nativeRef) throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Native browser did not return a stable plugin-owned tab reference.', { retryable: true });
     const title = matchedBy === 'owned_token' ? (target.existingSession?.title ?? '') : matchedBy === 'recovered_tab' ? recoveredTabTitle : '';
@@ -2197,7 +2298,7 @@ async function withPage<T>(
       handle = await openBrowser(repoRoot, config, target, browserArgs);
       const result = await run(handle.page, handle.diagnostics, handle.connection);
       if (options.persistSession) {
-        const identity = await readPageIdentity(handle.page, handle.connection);
+        const identity = await readPageIdentity(handle.page, handle.connection, target.url);
         saveSession(repoRoot, sessionFromPage(target, identity.url, identity.title, handle.connection));
       }
       return result;
@@ -2846,12 +2947,24 @@ function verifyStateObservationScript(selector: string | undefined, textContains
   })()`;
 }
 
-async function readPageIdentity(page: PageLike, connection?: BrowserConnectionSummary): Promise<{ url: string; title: string }> {
+async function readPageIdentity(page: PageLike, connection?: BrowserConnectionSummary, expectedUrl?: string): Promise<{ url: string; title: string }> {
+  const normalizeObservedUrl = (value: unknown): string => {
+    const internalProduct = browserInternalUrlProduct(value);
+    if (connection?.provider === 'macos-apple-events' && connection.tab?.ownership === 'user_owned') {
+      if (connection.browserProduct && expectedUrl && explicitNativeAdoptionUrlsMatch(expectedUrl, value, connection.browserProduct)) {
+        return normalizedExplicitNativeAdoptionUrl(expectedUrl);
+      }
+      if (internalProduct && internalProduct === connection.browserProduct) {
+        return normalizedExplicitNativeAdoptionUrl(value);
+      }
+    }
+    return normalizedUrl(value);
+  };
   if (connection?.provider === 'macos-apple-events' && typeof page.identity === 'function') {
     const identity = await page.identity();
-    return { url: normalizedUrl(identity.url), title: identity.title };
+    return { url: normalizeObservedUrl(identity.url), title: identity.title };
   }
-  return { url: normalizedUrl(page.url()), title: await page.title() };
+  return { url: normalizeObservedUrl(page.url()), title: await page.title() };
 }
 
 async function finalizeInteractiveAction(
@@ -2865,13 +2978,13 @@ async function finalizeInteractiveAction(
   extra: Record<string, unknown> = {},
 ): Promise<Record<string, unknown>> {
   const warnings: string[] = [];
-  const identity = await readPageIdentity(page, connection);
+  const identity = await readPageIdentity(page, connection, target.url);
   const title = identity.title;
   const pageUrl = identity.url;
   const session = sessionFromPage(target, pageUrl, title, connection);
   saveSession(repoRoot, session);
   let screenshot: BrowserActionScreenshot | undefined;
-  const silentNativeEvidence = connection.provider === 'macos-apple-events' && connection.tab?.ownership === 'plugin_owned';
+  const silentNativeEvidence = connection.provider === 'macos-apple-events';
   if (!silentNativeEvidence) {
     try {
       screenshot = await captureActionScreenshot(page, repoRoot, actionId, session.sessionId, session.url);
@@ -3918,17 +4031,19 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       case 'create_session':
       case 'open_page':
       case 'navigate': {
-        const url = normalizedUrl(input.args.url);
-        const existingSessionId = stringValue(input.args.session_id);
-        const target: BrowserActionTarget = existingSessionId
-          ? { sessionId: existingSessionId, url, existingSession: findSession(input.repoRoot, existingSessionId) }
-          : { sessionId: sessionIdFor(url), url };
         const nativeProduct = stringValue(input.args.native_browser_product);
         const normalizedNativeProduct: MacOsBrowserProduct | undefined = nativeProduct === 'chrome' || nativeProduct === 'vivaldi' ? nativeProduct : undefined;
         const nativeWindowId = stringValue(input.args.native_window_id);
         const nativeTabId = stringValue(input.args.native_tab_id);
         const nativeActiveTab = input.args.native_active_tab === true;
         const hasNativeAdoption = Boolean(nativeProduct || nativeWindowId || nativeTabId || nativeActiveTab);
+        const url = hasNativeAdoption && input.actionId === 'create_session'
+          ? normalizedExplicitNativeAdoptionUrl(input.args.url)
+          : normalizedUrl(input.args.url);
+        const existingSessionId = stringValue(input.args.session_id);
+        const target: BrowserActionTarget = existingSessionId
+          ? { sessionId: existingSessionId, url, existingSession: findSession(input.repoRoot, existingSessionId) }
+          : { sessionId: sessionIdFor(url), url };
         if (hasNativeAdoption) {
           if (input.actionId !== 'create_session' || (nativeProduct && !normalizedNativeProduct)) {
             throw new AssistantPluginError(
@@ -3954,7 +4069,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             const discovered = await discoverMacOsBrowserAttachment(candidates, Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));
             const activeMetadata = discovered.attachment?.metadata;
             const requiresSystemFrontmost = !normalizedNativeProduct;
-            if (!activeMetadata || (requiresSystemFrontmost && !activeMetadata.frontmost) || !activeMetadata.windowId || !activeMetadata.tabId) {
+            if (!activeMetadata || (requiresSystemFrontmost && !activeMetadata.frontmost)) {
               throw new AssistantPluginError(
                 'PLUGIN_BROWSER_ACTIVE_TAB_UNAVAILABLE',
                 requiresSystemFrontmost
@@ -3964,7 +4079,36 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
               );
             }
             adoptedProduct = activeMetadata.product;
-            adoptedRef = { windowId: activeMetadata.windowId, tabId: activeMetadata.tabId };
+            if (activeMetadata.windowId && activeMetadata.tabId) {
+              adoptedRef = { windowId: activeMetadata.windowId, tabId: activeMetadata.tabId };
+            } else {
+              const inventory = await listMacOsBrowserTabs(adoptedProduct, Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));
+              const matchingActiveTabs = inventory.tabs.filter((candidate) => candidate.active
+                && comparableUrl(candidate.url) === comparableUrl(activeMetadata.url)
+                && (!activeMetadata.windowId || candidate.windowId === activeMetadata.windowId)
+                && (!activeMetadata.tabId || candidate.tabId === activeMetadata.tabId));
+              if (matchingActiveTabs.length !== 1) {
+                throw new AssistantPluginError(
+                  'PLUGIN_BROWSER_ACTIVE_TAB_UNAVAILABLE',
+                  'The explicitly selected native browser active tab metadata lacks a stable identity and tab inventory did not resolve exactly one matching active tab.',
+                  {
+                    retryable: true,
+                    details: {
+                      browserProduct: adoptedProduct,
+                      requiresSystemFrontmost,
+                      observedUrl: activeMetadata.url,
+                      observedTitle: activeMetadata.title,
+                      observedWindowId: activeMetadata.windowId,
+                      observedTabId: activeMetadata.tabId,
+                      matchingActiveTabCount: matchingActiveTabs.length,
+                      inventoryTruncated: inventory.truncated,
+                      attempts: discovered.attempts,
+                    },
+                  },
+                );
+              }
+              adoptedRef = { windowId: matchingActiveTabs[0]!.windowId, tabId: matchingActiveTabs[0]!.tabId };
+            }
           } else {
             if (!normalizedNativeProduct || !nativeWindowId || !nativeTabId) {
               throw new AssistantPluginError(
@@ -3978,12 +4122,22 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           }
           const adopted = await reattachMacOsBrowserOwnedPage(adoptedProduct, adoptedRef, timeout);
           const metadata = adopted.attachment.metadata;
-          const pageUrl = normalizedUrl(metadata.url);
-          if (comparableUrl(pageUrl) !== comparableUrl(url)) {
+          const pageUrl = normalizedExplicitNativeAdoptionUrl(metadata.url);
+          const requestedUrl = normalizedExplicitNativeAdoptionUrl(url);
+          const urlsMatch = explicitNativeAdoptionUrlsMatch(requestedUrl, pageUrl, adoptedProduct);
+          const pageProtocol = new URL(pageUrl).protocol;
+          if (((pageProtocol === 'chrome:' && adoptedProduct !== 'chrome') || (pageProtocol === 'vivaldi:' && adoptedProduct !== 'vivaldi')) && !urlsMatch) {
+            throw new AssistantPluginError(
+              'PLUGIN_BROWSER_ADOPTED_TAB_URL_MISMATCH',
+              'Explicitly adopted native tab uses an internal URL scheme that does not match the selected browser.',
+              { retryable: false, details: { actualUrl: pageUrl, browserProduct: adoptedProduct, windowId: adoptedRef.windowId, tabId: adoptedRef.tabId } },
+            );
+          }
+          if (!urlsMatch) {
             throw new AssistantPluginError(
               'PLUGIN_BROWSER_ADOPTED_TAB_URL_MISMATCH',
               'Explicitly adopted native tab URL does not match the requested session URL.',
-              { retryable: false, details: { requestedUrl: url, actualUrl: pageUrl, browserProduct: adoptedProduct, windowId: adoptedRef.windowId, tabId: adoptedRef.tabId } },
+              { retryable: false, details: { requestedUrl, actualUrl: pageUrl, browserProduct: adoptedProduct, windowId: adoptedRef.windowId, tabId: adoptedRef.tabId } },
             );
           }
           const title = metadata.title || '';
@@ -3994,15 +4148,15 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             attached: true,
             browserProduct: adoptedProduct,
             profile: { selectedProfilePath: `macos:${adoptedProduct}:user-tab` },
-            tabInventory: [{ index: 0, key: tabKey(pageUrl, title), url: pageUrl, title }],
+            tabInventory: [{ index: 0, key: tabKey(requestedUrl, title), url: requestedUrl, title }],
             sessionResume: { sessionId: target.sessionId, status: 'matched', reason: nativeActiveTab ? 'Explicitly adopted the matching frontmost user-owned native browser tab.' : 'Explicitly adopted an existing user-owned native browser tab.' },
-          }, pageUrl, title, 'saved_url', { ownership: 'user_owned', windowId: adoptedRef.windowId, tabId: adoptedRef.tabId });
-          const session = sessionFromPage(target, pageUrl, title, connection);
+          }, requestedUrl, title, 'saved_url', { ownership: 'user_owned', windowId: adoptedRef.windowId, tabId: adoptedRef.tabId });
+          const session = sessionFromPage(target, requestedUrl, title, connection);
           saveSession(input.repoRoot, session);
           return {
             provider: 'macos-apple-events',
             session,
-            navigation: { url: pageUrl },
+            navigation: { url: requestedUrl },
             browserConnection: { ...connection, tab: session.browser?.tab, sessionResume: session.browser?.sessionResume },
             ...(input.args.extract_text === true
               ? { text: await extractText(adopted.page as unknown as PageLike, undefined, positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS)) }
@@ -4010,7 +4164,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           };
         }
         return await withPage(input.repoRoot, current, target, input.args, async (page, diagnostics, connection) => {
-          const identity = await readPageIdentity(page, connection);
+          const identity = await readPageIdentity(page, connection, target.url);
           const session = sessionFromPage(target, identity.url, identity.title, connection);
           saveSession(input.repoRoot, session);
           return {
@@ -4313,6 +4467,16 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           }
           await page.bringToFront();
           await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          if (connection.provider === 'macos-apple-events' && page.foregroundState) {
+            const state = await page.foregroundState();
+            if (!state.frontmost || !state.active) {
+              throw new AssistantPluginError(
+                'PLUGIN_BROWSER_ACTIVATION_FAILED',
+                'Native browser activation did not make the exact saved tab authoritative foreground state.',
+                { retryable: true, details: { sessionId: target.sessionId, ...state } },
+              );
+            }
+          }
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'activate_page', 'Activated the exact saved browser page in the foreground.', {});
         });
       }
@@ -4443,9 +4607,15 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const values = Array.isArray(input.args.values) ? input.args.values.map(String) : [];
         if (values.length === 0) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'values is required.', { retryable: false });
         return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
-          if (page.selectOption) await page.selectOption(selector, values, { timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
+          if (!page.selectOption) {
+            throw new AssistantPluginError('PLUGIN_BROWSER_SELECT_OPTION_UNAVAILABLE', 'The active browser provider cannot select options safely.', { retryable: false });
+          }
+          const selectedValues = await page.selectOption(selector, values, { timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
+          if (!Array.isArray(selectedValues) || selectedValues.length === 0) {
+            throw new AssistantPluginError('PLUGIN_BROWSER_SELECT_OPTION_FAILED', 'The browser provider did not retain any requested option selection.', { retryable: true, details: { selector, requestedCount: values.length } });
+          }
           await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
-          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'select_option', `Selected ${values.length} option(s) on ${selector}.`, { selector, values });
+          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'select_option', `Selected ${values.length} option(s) on ${selector}.`, { selector, values, selectedValues });
         });
       }
       case 'press': {
@@ -4486,10 +4656,18 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'guard_selector is supported only for trusted_input click or drag.', { retryable: false });
         }
         return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
-          if (connection.provider === 'macos-apple-events' || !page.mouse || !page.keyboard) {
+          const nativeTrustedInput = connection.provider === 'macos-apple-events';
+          if (nativeTrustedInput && !page.trustedInput) {
             throw new AssistantPluginError(
               'PLUGIN_BROWSER_TRUSTED_INPUT_UNAVAILABLE',
-              'Trusted background input requires a Playwright/CDP-controlled page; native Apple Events sessions are never promoted to foreground or OS-level input as fallback.',
+              'Native browser provider does not expose the stable macOS trusted-input broker.',
+              { retryable: false, details: { provider: connection.provider, sessionId: target.sessionId } },
+            );
+          }
+          if (!nativeTrustedInput && (!page.mouse || !page.keyboard)) {
+            throw new AssistantPluginError(
+              'PLUGIN_BROWSER_TRUSTED_INPUT_UNAVAILABLE',
+              'Trusted browser input requires Playwright mouse/keyboard primitives or the stable native macOS trusted-input broker.',
               { retryable: false, details: { provider: connection.provider, sessionId: target.sessionId } },
             );
           }
@@ -4549,45 +4727,58 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             }
             guard = { selector: guardSelector, ...(selection.frame ? { frame: selection.frame } : {}), point, bounds, targetInViewport: true, pointInViewport: true, pointInsideTarget: true };
           }
+          let trustedRequest: Record<string, unknown>;
           if (kind === 'click') {
             const x = requiredFiniteNumber(input.args.x, 'x', 0);
             const y = requiredFiniteNumber(input.args.y, 'y', 0);
             const clickCount = Math.min(Math.max(positiveNumber(input.args.click_count, 1), 1), 3);
-            await page.mouse.click(x, y, { button, clickCount });
+            trustedRequest = { kind, x, y, button, clickCount };
+            if (!nativeTrustedInput) await page.mouse!.click(x, y, { button, clickCount });
           } else if (kind === 'move') {
             const x = requiredFiniteNumber(input.args.x, 'x', 0);
             const y = requiredFiniteNumber(input.args.y, 'y', 0);
             const steps = Math.min(Math.max(positiveNumber(input.args.steps, 1), 1), 100);
-            await page.mouse.move(x, y, { steps });
+            trustedRequest = { kind, x, y, steps };
+            if (!nativeTrustedInput) await page.mouse!.move(x, y, { steps });
           } else if (kind === 'wheel') {
             const deltaX = requiredFiniteNumber(input.args.delta_x, 'delta_x');
             const deltaY = requiredFiniteNumber(input.args.delta_y, 'delta_y');
-            await page.mouse.wheel(deltaX, deltaY);
+            trustedRequest = { kind, deltaX, deltaY };
+            if (!nativeTrustedInput) await page.mouse!.wheel(deltaX, deltaY);
           } else if (kind === 'drag') {
             const fromX = requiredFiniteNumber(input.args.from_x, 'from_x', 0);
             const fromY = requiredFiniteNumber(input.args.from_y, 'from_y', 0);
             const toX = requiredFiniteNumber(input.args.to_x, 'to_x', 0);
             const toY = requiredFiniteNumber(input.args.to_y, 'to_y', 0);
             const steps = Math.min(Math.max(positiveNumber(input.args.steps, 10), 1), 100);
-            await page.mouse.move(fromX, fromY);
-            await page.mouse.down({ button });
-            try {
-              await page.mouse.move(toX, toY, { steps });
-            } finally {
-              await page.mouse.up({ button });
+            trustedRequest = { kind, fromX, fromY, toX, toY, button, steps };
+            if (!nativeTrustedInput) {
+              await page.mouse!.move(fromX, fromY);
+              await page.mouse!.down({ button });
+              try {
+                await page.mouse!.move(toX, toY, { steps });
+              } finally {
+                await page.mouse!.up({ button });
+              }
             }
           } else if (kind === 'key') {
-            await page.keyboard.press(requiredString(input.args.key, 'key'));
+            const key = requiredString(input.args.key, 'key');
+            trustedRequest = { kind, key };
+            if (!nativeTrustedInput) await page.keyboard!.press(key);
           } else {
-            if (!page.keyboard.insertText) {
-              throw new AssistantPluginError('PLUGIN_BROWSER_TRUSTED_INPUT_UNAVAILABLE', 'This Playwright page does not expose trusted text insertion.', { retryable: false });
-            }
             const text = typeof input.args.text === 'string' ? input.args.text : undefined;
             if (text === undefined || text.length > 10_000) {
               throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'text is required and must be at most 10000 characters.', { retryable: false });
             }
-            await page.keyboard.insertText(text);
+            trustedRequest = { kind, text };
+            if (!nativeTrustedInput) {
+              if (!page.keyboard!.insertText) {
+                throw new AssistantPluginError('PLUGIN_BROWSER_TRUSTED_INPUT_UNAVAILABLE', 'This Playwright page does not expose trusted text insertion.', { retryable: false });
+              }
+              await page.keyboard!.insertText(text);
+            }
           }
+          if (nativeTrustedInput) await page.trustedInput!(trustedRequest);
           await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'trusted_input', `Sent trusted browser input (${kind}).`, { kind, ...(guard ? { guard } : {}) });
         });

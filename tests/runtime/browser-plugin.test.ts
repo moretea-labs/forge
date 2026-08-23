@@ -442,7 +442,7 @@ function mockManagedPersistentPlaywright() {
   } as never;
 }
 
-function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', options: { javaScriptEnabled?: boolean; targetTitleMetadataFails?: boolean; transitionalNewTabReads?: number; transitionalUrl?: string; frontmost?: boolean } = {}) {
+function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', options: { javaScriptEnabled?: boolean; targetTitleMetadataFails?: boolean; transitionalNewTabReads?: number; transitionalUrl?: string; frontmost?: boolean; activeMetadataStableIds?: boolean; targetedNavigateRequiresReplacement?: boolean } = {}) {
   const javaScriptEnabled = options.javaScriptEnabled !== false;
   const separator = '\x1e';
   const userTab: { id: string; url: string; title: string; ownerToken?: string } = { id: '501', url: 'https://example.com/user-work', title: 'User Work' };
@@ -460,6 +460,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
     localFileInput: undefined as { name: string; size: number } | undefined,
     localFileInputs: [] as Array<{ name: string; size: number }>,
     evaluatedJavaScript: [] as string[],
+    trustedInputs: [] as Array<Record<string, unknown>>,
     failCloseTabIds: new Set<string>(),
   };
   let nextTabId = 9001;
@@ -548,6 +549,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
         }
         if (script.includes('set URL of targetTab to targetUrl')) {
           assertWindowResolution(script);
+          if (options.targetedNavigateRequiresReplacement) throw new Error('BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT: create a replacement tab instead');
           const tabId = tabIdFromScript(script);
           const entry = tabId ? ownedTabs.get(tabId) : undefined;
           if (!tabId || !entry) throw new Error('missing owned tab');
@@ -588,6 +590,9 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
           if (source.includes("element.dispatchEvent(new Event('input'") && source.includes('Array.from(element.files || []).map')) {
             return JSON.stringify({ ok: true, value: events.localFileInputs });
           }
+          if (source.includes('const selected = new Set(') && source.includes('element.selectedOptions')) {
+            return JSON.stringify({ ok: true, value: ['selected-value'] });
+          }
           return JSON.stringify({ ok: true, value: true });
         }
         if (script.includes('set targetTabIndex to 1')) {
@@ -611,7 +616,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
           return metadata(tabId, entry.url, entry.title, events.activeTabId === tabId, false);
         }
         if (script.includes('set targetTab to active tab of targetWindow')) {
-          if (!script.includes('id of targetWindow') || !script.includes('id of targetTab')) {
+          if (options.activeMetadataStableIds === false || !script.includes('id of targetWindow') || !script.includes('id of targetTab')) {
             return `${options.frontmost === false ? 'false' : 'true'}${separator}${userTab.url}${separator}${userTab.title}${separator}0${separator}25${separator}1280${separator}925`;
           }
           return metadata(userTab.id, userTab.url, userTab.title, true, false);
@@ -621,6 +626,10 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
       captureRegion: async (_region: { x: number; y: number; width: number; height: number }, path: string) => {
         writeFileSync(path, 'png');
         return Buffer.from('png');
+      },
+      trustedInput: async (request: { ref: { tabId: string }; input: Record<string, unknown> }) => {
+        events.activeTabId = request.ref.tabId;
+        events.trustedInputs.push(request.input);
       },
     },
   };
@@ -965,6 +974,123 @@ describe('browser plugin', () => {
     expect(persisted.browserMode).toBe('managed_persistent');
     expect(persisted.cdpAttachFallback).toBeUndefined();
     expect(persisted.nativeAttachMode).toBeUndefined();
+  });
+
+  test('explicit native adoption can bind an already-open Chrome internal page while normal navigation remains HTTP(S)-only', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome', { activeMetadataStableIds: false });
+    native.setUserTab('chrome://bookmarks/', 'Bookmarks');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const created = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
+      requestId: 'browser-native-adopt-internal-bookmarks',
+      args: {
+        url: 'chrome://bookmarks/',
+        browser_mode: 'attach_preferred',
+        cdp_attach_fallback: 'fail_closed',
+        native_attach_mode: 'auto',
+        native_browser_candidates: ['chrome'],
+        native_active_tab: true,
+      },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const session = created.session as Record<string, unknown>;
+    const sessionId = String(session.sessionId);
+    expect(session.url).toBe('chrome://bookmarks/');
+    expect(created.browserConnection).toMatchObject({
+      provider: 'macos-apple-events',
+      tab: { ownership: 'user_owned', windowId: 'window-77', tabId: '501' },
+    });
+
+    const observed = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'browser-native-read-internal-bookmarks', args: { session_id: sessionId },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(observed.provider).toBe('macos-apple-events');
+    expect(observed.text).toBe('Native page text');
+    expect(native.events.navigated).toEqual([]);
+
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-open-internal-bookmarks-rejected', args: { url: 'chrome://bookmarks/' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('Only http and https URLs are supported');
+  });
+
+  test('explicit Vivaldi bookmarks adoption accepts the Chromium canonical bookmarks URL without widening internal navigation', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('vivaldi', { activeMetadataStableIds: false });
+    native.setUserTab('chrome://bookmarks/', 'Bookmarks');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const created = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
+      requestId: 'browser-native-adopt-vivaldi-bookmarks-alias',
+      args: {
+        url: 'vivaldi:bookmarks',
+        browser_mode: 'attach_preferred',
+        cdp_attach_fallback: 'fail_closed',
+        native_attach_mode: 'auto',
+        native_browser_candidates: ['vivaldi'],
+        native_active_tab: true,
+      },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const session = created.session as Record<string, unknown>;
+    const sessionId = String(session.sessionId);
+    expect(session.url).toBe('vivaldi:bookmarks');
+    expect(created.browserConnection).toMatchObject({
+      provider: 'macos-apple-events',
+      browserProduct: 'vivaldi',
+      tab: { ownership: 'user_owned', windowId: 'window-77', tabId: '501' },
+    });
+
+    const observed = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'browser-native-read-vivaldi-bookmarks-alias', args: { session_id: sessionId },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(observed.provider).toBe('macos-apple-events');
+    expect(observed.text).toBe('Native page text');
+    expect(native.events.navigated).toEqual([]);
+
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
+      requestId: 'browser-native-reject-unrelated-vivaldi-alias',
+      args: {
+        url: 'vivaldi:settings',
+        browser_mode: 'attach_preferred',
+        cdp_attach_fallback: 'fail_closed',
+        native_attach_mode: 'auto',
+        native_browser_candidates: ['vivaldi'],
+        native_active_tab: true,
+      },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('PLUGIN_BROWSER_ADOPTED_TAB_URL_MISMATCH');
+
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'browser-open-vivaldi-bookmarks-alias-rejected', args: { url: 'vivaldi:bookmarks' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('Only http and https URLs are supported');
   });
 
   test('existing native session inherits its saved per-action transport mode across later DOM actions', async () => {
@@ -1758,6 +1884,61 @@ describe('browser plugin', () => {
     });
   });
 
+  test('native option click selects through the parent select without passing an option value', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const adopted = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'create_session',
+      requestId: 'browser-native-option-click-create', args: { url: 'https://example.com/user-work', native_active_tab: true },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String((adopted.session as Record<string, unknown>).sessionId);
+    await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'click',
+      requestId: 'browser-native-option-click', args: { session_id: sessionId, selector: '#auth > option:nth-of-type(2)' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    const source = native.events.evaluatedJavaScript.find((entry) => entry.includes('element instanceof HTMLOptionElement')) ?? '';
+    expect(source).toContain('element instanceof HTMLOptionElement');
+    expect(source).toContain("Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set");
+    expect(source).toContain('valueSetter.call(selectElement, element.value)');
+    expect(source).toContain("selectElement.dispatchEvent(new Event('input', { bubbles: true }))");
+    expect(source).toContain("selectElement.dispatchEvent(new Event('change', { bubbles: true }))");
+    expect(source).toContain('Option selection did not persist.');
+  });
+
+  test('select_option fails closed when the active provider cannot perform selection', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+    });
+    const runtime = mockPlaywright();
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => runtime as never });
+
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'select_option',
+      requestId: 'browser-select-option-fail-closed', args: { url: 'https://example.com/form', selector: '#auth', values: ['OAuth'] },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('active browser provider cannot select options safely');
+  });
+
   test('default browser mode reuses the running Chrome tab before loading Playwright', async () => {
     const { repoRoot, controllerHome } = repoFixture();
     writeBrowserConfig(repoRoot, {
@@ -2519,6 +2700,38 @@ describe('browser plugin', () => {
     expect(second.browserConnection).toMatchObject({
       provider: 'macos-apple-events',
       tab: { ownership: 'plugin_owned', windowId: 'window-77', tabId: '9001', url: secondUrl },
+      sessionResume: { status: 'matched' },
+    });
+  });
+
+  test('sessionless native open_page replaces a plugin-owned background tab when the broker rejects cross-URL navigation', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome', { targetedNavigateRequiresReplacement: true });
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const firstUrl = 'https://www.google.com/search?q=avela+meds';
+    const secondUrl = 'https://www.google.com/search?q=medication+reminder+app';
+    const first = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'sessionless-replacement-first', args: { url: firstUrl }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const second = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'sessionless-replacement-second', args: { url: secondUrl }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(native.events.created).toEqual(['9001', '9002']);
+    expect(native.events.closed).toEqual(['9001']);
+    expect(native.events.navigated).toEqual([]);
+    expect((second.session as Record<string, unknown>).sessionId).toBe((first.session as Record<string, unknown>).sessionId);
+    expect(second.browserConnection).toMatchObject({
+      provider: 'macos-apple-events',
+      tab: { ownership: 'plugin_owned', windowId: 'window-77', tabId: '9002', url: secondUrl },
       sessionResume: { status: 'matched' },
     });
   });
@@ -3655,12 +3868,14 @@ describe('browser plugin', () => {
     expect(native.events.created).toEqual([]);
     expect(native.events.navigated).toEqual([]);
 
-    await expect(executeBrowserPluginAction({
+    const trusted = await executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'trusted_input',
-      requestId: 'browser-native-trusted-input-refused',
+      requestId: 'browser-native-trusted-input-routed',
       args: { session_id: adoptedSession.sessionId, kind: 'click', x: 12, y: 24, post_action_wait_ms: 1 },
       origin: { surface: 'local-ui', actor: 'test' },
-    })).rejects.toThrow('PLUGIN_BROWSER_TRUSTED_INPUT_UNAVAILABLE');
+    });
+    expect((trusted.action as Record<string, unknown>).actionId).toBe('trusted_input');
+    expect(native.events.trustedInputs).toEqual([{ kind: 'click', x: 12, y: 24, button: 'left', clickCount: 1 }]);
     expect(native.events.activeTabId).toBe('501');
     expect(native.events.created).toEqual([]);
     expect(native.events.navigated).toEqual([]);

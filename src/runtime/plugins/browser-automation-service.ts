@@ -15,6 +15,14 @@ export interface BrowserAutomationRegion {
   height: number;
 }
 
+export type BrowserAutomationTrustedInput =
+  | { kind: 'click'; x: number; y: number; button: 'left' | 'middle' | 'right'; clickCount: number }
+  | { kind: 'move'; x: number; y: number; steps: number }
+  | { kind: 'wheel'; deltaX: number; deltaY: number }
+  | { kind: 'drag'; fromX: number; fromY: number; toX: number; toY: number; button: 'left' | 'middle' | 'right'; steps: number }
+  | { kind: 'key'; key: string }
+  | { kind: 'text'; text: string };
+
 export type BrowserAutomationBrokerAction =
   | { action: 'metadata'; product: BrowserAutomationProduct; ref?: BrowserAutomationTabRef }
   | { action: 'list_tabs'; product: BrowserAutomationProduct }
@@ -24,6 +32,7 @@ export type BrowserAutomationBrokerAction =
   | { action: 'reload'; product: BrowserAutomationProduct; ref?: BrowserAutomationTabRef }
   | { action: 'execute_javascript'; product: BrowserAutomationProduct; ref?: BrowserAutomationTabRef; source: string }
   | { action: 'activate'; product: BrowserAutomationProduct; ref?: BrowserAutomationTabRef }
+  | { action: 'trusted_input'; product: BrowserAutomationProduct; ref: BrowserAutomationTabRef; input: BrowserAutomationTrustedInput }
   | { action: 'capture_region'; region: BrowserAutomationRegion };
 
 export async function callBrowserAutomationBroker(

@@ -60,7 +60,10 @@ function parseProviderManifest(value: Record<string, unknown>, registration: Ext
   if (manifest.protocolVersion !== registration.protocolVersion) throw providerError('EXTERNAL_PLUGIN_PROTOCOL_MISMATCH', `Expected provider protocol ${registration.protocolVersion}, received ${manifest.protocolVersion || 'unknown'}.`);
   if (manifest.scope !== registration.scope) throw providerError('EXTERNAL_PLUGIN_SCOPE_MISMATCH', `Expected provider scope ${registration.scope}, received ${manifest.scope || 'unknown'}.`);
   if (manifest.provider !== registration.provider) throw providerError('EXTERNAL_PLUGIN_PROVIDER_MISMATCH', `Expected provider ${registration.provider}, received ${manifest.provider || 'unknown'}.`);
-  const missingActions = registration.actions.map((action) => action.actionId).filter((actionId) => !manifest.actions.includes(actionId));
+  const missingActions = registration.actions
+    .map((action) => action.actionId)
+    .filter((actionId) => !(registration.pluginId === 'desktop_operator' && actionId === 'desktop_foreground_pointer_click'))
+    .filter((actionId) => !manifest.actions.includes(actionId));
   if (missingActions.length > 0) throw providerError('EXTERNAL_PLUGIN_ACTION_MISMATCH', `Provider is missing registered actions: ${missingActions.join(', ')}.`);
   return manifest;
 }
@@ -216,6 +219,41 @@ function desktopApplicationAuthorizationContext(
     },
     expiresInMinutes: 30 * 24 * 60,
   };
+}
+
+function recordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry))
+    : [];
+}
+
+function firstString(record: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+function firstNumber(record: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function desktopSession(status: Record<string, unknown>, interactionId: string): Record<string, unknown> | undefined {
+  return recordArray(status.sessions).find((session) => firstString(session, 'interactionId', 'interaction_id') === interactionId);
+}
+
+function desktopApplicationIsActive(status: Record<string, unknown>, bundleId: string, appName: string): boolean {
+  return recordArray(status.applications).some((application) => {
+    if (application.active !== true || application.terminated === true) return false;
+    const candidateBundleId = firstString(application, 'bundle_id', 'bundleIdentifier');
+    const candidateName = firstString(application, 'name', 'appName');
+    return bundleId ? candidateBundleId === bundleId : Boolean(appName) && candidateName === appName;
+  });
 }
 
 async function resolveExternalAuthorizationContext(
@@ -397,7 +435,106 @@ export function createExternalPluginAdapter(
         );
         parseProviderManifest(providerManifest, registration);
       }
-      return await callProvider(
+      if (registration.pluginId === 'desktop_operator' && input.actionId === 'desktop_foreground_pointer_click') {
+        const sourceInteractionId = typeof input.args.interaction_id === 'string' ? input.args.interaction_id.trim() : '';
+        const requestedWindowId = typeof input.args.window_id === 'number' && Number.isInteger(input.args.window_id) ? input.args.window_id : undefined;
+        const x = typeof input.args.x === 'number' && Number.isFinite(input.args.x) ? input.args.x : undefined;
+        const y = typeof input.args.y === 'number' && Number.isFinite(input.args.y) ? input.args.y : undefined;
+        if (!sourceInteractionId || !requestedWindowId || x === undefined || y === undefined) {
+          throw providerError('DESKTOP_FOREGROUND_POINTER_ARGUMENT_INVALID', 'desktop_foreground_pointer_click requires interaction_id, window_id, x, and y.');
+        }
+
+        const sourceStatus = await callProvider(
+          registration,
+          `${input.requestId}:source-status`,
+          'desktop_status',
+          { limit: 500 },
+          input.timeoutMs,
+          input.signal,
+          dependencies,
+        );
+        const sourceSession = desktopSession(sourceStatus, sourceInteractionId);
+        if (!sourceSession) {
+          throw providerError('DESKTOP_FOREGROUND_POINTER_SESSION_NOT_FOUND', `Desktop session ${sourceInteractionId} is no longer available.`, true);
+        }
+        const bundleId = firstString(sourceSession, 'bundleIdentifier', 'bundle_id');
+        const appName = firstString(sourceSession, 'appName', 'app_name');
+        if (!bundleId && !appName) {
+          throw providerError('DESKTOP_FOREGROUND_POINTER_TARGET_UNAVAILABLE', `Desktop session ${sourceInteractionId} has no stable application identity.`);
+        }
+
+        const activation = await callProvider(
+          registration,
+          `${input.requestId}:activate`,
+          'desktop_session_open',
+          { ...(bundleId ? { bundle_id: bundleId } : { app_name: appName }), launch: false, activate: true },
+          input.timeoutMs,
+          input.signal,
+          dependencies,
+        );
+        const activationInteractionId = firstString(activation, 'interactionId', 'interaction_id');
+        if (!activationInteractionId) {
+          throw providerError('DESKTOP_ACTIVATION_SESSION_MISSING', 'Desktop Operator activated the application without returning a bound interaction session.', true);
+        }
+        const activeStatus = await callProvider(
+          registration,
+          `${input.requestId}:active-status`,
+          'desktop_status',
+          { limit: 500 },
+          input.timeoutMs,
+          input.signal,
+          dependencies,
+        );
+        if (!desktopApplicationIsActive(activeStatus, bundleId, appName)) {
+          throw providerError('DESKTOP_ACTIVATION_NOT_CONFIRMED', `Desktop Operator did not confirm ${bundleId || appName} as the frontmost application after activation.`, true);
+        }
+
+        const screenshot = await callProvider(
+          registration,
+          `${input.requestId}:screenshot`,
+          'desktop_screenshot',
+          {
+            interaction_id: activationInteractionId,
+            scope: 'window',
+            window_id: requestedWindowId,
+            ...(typeof input.args.label === 'string' && input.args.label.trim() ? { label: input.args.label.trim() } : {}),
+          },
+          input.timeoutMs,
+          input.signal,
+          dependencies,
+        );
+        const visualRevision = firstNumber(screenshot, 'visual_revision', 'visualRevision');
+        const capturedWindowId = firstNumber(screenshot, 'windowId', 'window_id') ?? requestedWindowId;
+        if (!visualRevision || !capturedWindowId) {
+          throw providerError('DESKTOP_FOREGROUND_CAPTURE_INVALID', 'Desktop Operator did not return a fresh visual revision for the foreground window.', true);
+        }
+
+        const click = await callProvider(
+          registration,
+          `${input.requestId}:click`,
+          'desktop_pointer_click',
+          {
+            interaction_id: activationInteractionId,
+            window_id: capturedWindowId,
+            visual_revision: visualRevision,
+            x,
+            y,
+          },
+          input.timeoutMs,
+          input.signal,
+          dependencies,
+        );
+        return {
+          interactionId: activationInteractionId,
+          activationVerified: true,
+          windowId: capturedWindowId,
+          visualRevision,
+          screenshot,
+          click,
+        };
+      }
+
+      const result = await callProvider(
         registration,
         input.requestId,
         input.actionId,
@@ -406,6 +543,23 @@ export function createExternalPluginAdapter(
         input.signal,
         dependencies,
       );
+      if (registration.pluginId === 'desktop_operator' && input.actionId === 'desktop_session_open' && input.args.activate === true) {
+        const bundleId = typeof input.args.bundle_id === 'string' ? input.args.bundle_id.trim() : '';
+        const appName = typeof input.args.app_name === 'string' ? input.args.app_name.trim() : '';
+        const activeStatus = await callProvider(
+          registration,
+          `${input.requestId}:active-status`,
+          'desktop_status',
+          { limit: 500 },
+          input.timeoutMs,
+          input.signal,
+          dependencies,
+        );
+        if (!desktopApplicationIsActive(activeStatus, bundleId, appName)) {
+          throw providerError('DESKTOP_ACTIVATION_NOT_CONFIRMED', `Desktop Operator did not confirm ${bundleId || appName || 'the requested application'} as the frontmost application after activation.`, true);
+        }
+      }
+      return result;
     },
     shouldRefreshManifestAfterAction(actionId) {
       return EXTERNAL_PROVIDER_LIFECYCLE_ACTIONS.has(actionId);

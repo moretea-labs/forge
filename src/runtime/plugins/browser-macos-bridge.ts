@@ -6,6 +6,7 @@ import {
   callBrowserAutomationBroker,
   captureBrowserAutomationRegion,
   type BrowserAutomationBrokerAction,
+  type BrowserAutomationTrustedInput,
 } from './browser-automation-service';
 import { AssistantPluginError } from './errors';
 
@@ -90,6 +91,7 @@ interface MacOsBrowserRuntimeHooks {
   // Apple Events and screen capture are attributed to the stable helper process.
   runAppleScript?: (script: string, args: string[], timeoutMs: number) => Promise<string>;
   captureRegion?: (region: { x: number; y: number; width: number; height: number }, path: string, timeoutMs: number) => Promise<Buffer>;
+  trustedInput?: (request: Extract<BrowserAutomationBrokerAction, { action: 'trusted_input' }>, timeoutMs: number) => Promise<void>;
 }
 
 function execFileText(file: string, args: string[], timeoutMs: number): Promise<string> {
@@ -156,6 +158,24 @@ async function captureBrowserAutomation(
   const bytes = await captureBrowserAutomationRegion(region, timeoutMs);
   writeFileSync(path, bytes);
   return bytes;
+}
+
+async function sendBrowserTrustedInput(
+  request: Extract<BrowserAutomationBrokerAction, { action: 'trusted_input' }>,
+  timeoutMs: number,
+): Promise<void> {
+  if (runtimeHooks.trustedInput) {
+    await runtimeHooks.trustedInput(request, timeoutMs);
+    return;
+  }
+  const result = await callBrowserAutomationBroker(request, timeoutMs);
+  if (result.performed !== true) {
+    throw new AssistantPluginError(
+      'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
+      'Stable Forge macOS capability broker did not confirm trusted browser input.',
+      { retryable: true },
+    );
+  }
 }
 
 let runtimeHooks: MacOsBrowserRuntimeHooks = { ...defaultRuntimeHooks };
@@ -892,6 +912,19 @@ export class MacOsAppleEventsPage {
     }
   }
 
+  async foregroundState(): Promise<{ frontmost: boolean; active: boolean }> {
+    const metadata = await this.refreshMetadata();
+    return { frontmost: metadata.frontmost, active: metadata.active === true };
+  }
+
+  async trustedInput(input: BrowserAutomationTrustedInput): Promise<void> {
+    if (!this.targetRef) {
+      throw new AssistantPluginError('PLUGIN_BROWSER_TRUSTED_INPUT_UNAVAILABLE', 'Native trusted input requires an exact saved browser tab.', { retryable: false });
+    }
+    await sendBrowserTrustedInput({ action: 'trusted_input', product: this.browser.product, ref: this.targetRef, input }, this.timeoutMs);
+    await this.refreshMetadata();
+  }
+
   async screenshot(options: Record<string, unknown>): Promise<Buffer> {
     const path = typeof options.path === 'string' ? options.path : undefined;
     if (!path) throw new Error('Native browser screenshot requires an output path.');
@@ -907,6 +940,22 @@ export class MacOsAppleEventsPage {
 
   async click(selector: string): Promise<void> {
     await this.evaluate(selectorSource(selector, `
+      if (element instanceof HTMLOptionElement) {
+        const selectElement = element.closest('select');
+        if (!(selectElement instanceof HTMLSelectElement)) throw new Error('Option is not attached to a select.');
+        if (element.disabled || selectElement.disabled) throw new Error('Option is disabled.');
+        if (!selectElement.multiple) {
+          const valueSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+          if (valueSetter) valueSetter.call(selectElement, element.value);
+          else selectElement.value = element.value;
+        } else {
+          element.selected = true;
+        }
+        selectElement.dispatchEvent(new Event('input', { bubbles: true }));
+        selectElement.dispatchEvent(new Event('change', { bubbles: true }));
+        if (!Array.from(selectElement.selectedOptions).includes(element)) throw new Error('Option selection did not persist.');
+        return true;
+      }
       if (typeof element.click !== "function") throw new Error("Element is not clickable.");
       const rect = typeof element.getBoundingClientRect === 'function' ? element.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
       const clientX = Number(rect.left || 0) + Number(rect.width || 0) / 2;
@@ -966,10 +1015,20 @@ export class MacOsAppleEventsPage {
     return await this.evaluate(selectorSource(selector, `
       if (!(element instanceof HTMLSelectElement)) throw new Error('Element is not a select.');
       const selected = new Set(${JSON.stringify(normalized)});
-      for (const option of element.options) option.selected = selected.has(option.value) || selected.has(option.label);
+      let matched = 0;
+      for (const option of element.options) {
+        const shouldSelect = selected.has(option.value) || selected.has(option.label);
+        option.selected = shouldSelect;
+        if (shouldSelect) matched += 1;
+      }
+      if (matched === 0) throw new Error('Requested select option was not found.');
       element.dispatchEvent(new Event('input', { bubbles: true }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
-      return Array.from(element.selectedOptions).map((option) => option.value);
+      const actual = Array.from(element.selectedOptions);
+      if (!actual.some((option) => selected.has(option.value) || selected.has(option.label))) {
+        throw new Error('Requested select option did not persist.');
+      }
+      return actual.map((option) => option.value);
     `));
   }
 
