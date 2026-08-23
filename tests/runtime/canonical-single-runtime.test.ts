@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { spawnSync } from 'child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { inspectControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import { loadRuntimeReleaseManifest } from '../../src/runtime/root/release-manifest';
 import { readRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
 import {
   activateExclusiveWorkAdmission,
@@ -593,6 +594,29 @@ describe('canonical single Runtime', () => {
       p0.workId,
       { continuationPrompt: 'Continue the P0 migration.' },
     ).continuationPrompt).toContain('P0');
+  });
+
+  test('release manifest accepts a logical Controller Home symlink to the same physical directory', () => {
+    const fixture = createFixture();
+    const physicalControllerHome = join(fixture.root, 'controller-home.noindex');
+    const logicalControllerHome = join(fixture.root, 'controller-home');
+    mkdirSync(physicalControllerHome, { recursive: true });
+    symlinkSync(physicalControllerHome, logicalControllerHome, 'dir');
+    writeFileSync(fixture.manifestPath, JSON.stringify({
+      schemaVersion: 1,
+      releaseId: 'release-symlink-home',
+      artifactIdentity: 'sha256:test-artifact',
+      entrypoint: 'forge-runtime',
+      arguments: [],
+      configurationSchemaVersion: 1,
+      controllerHome: logicalControllerHome,
+      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+      workerProtocolVersion: 1,
+      createdAt: '2026-08-05T00:00:00.000Z',
+    }), 'utf8');
+
+    expect(loadRuntimeReleaseManifest(fixture.manifestPath, physicalControllerHome).controllerHome)
+      .toBe(resolve(logicalControllerHome));
   });
 
   test('missing explicit Runtime parameters fail closed', async () => {

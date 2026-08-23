@@ -1,4 +1,4 @@
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync, realpathSync } from 'fs';
 import { resolve } from 'path';
 import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlite-store';
 import type { RuntimeReleaseManifest } from './types';
@@ -6,6 +6,11 @@ import type { RuntimeReleaseManifest } from './types';
 function requireString(value: unknown, field: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`RELEASE_MANIFEST_INVALID: ${field} is required`);
   return value.trim();
+}
+
+function canonicalExistingPathIdentity(path: string): string {
+  const resolved = resolve(path);
+  return existsSync(resolved) ? realpathSync(resolved) : resolved;
 }
 
 export function loadRuntimeReleaseManifest(
@@ -31,7 +36,7 @@ export function loadRuntimeReleaseManifest(
     throw new Error('RELEASE_MANIFEST_INVALID: configurationSchemaVersion must be 1');
   }
   const controllerHome = resolve(requireString(value.controllerHome, 'controllerHome'));
-  if (controllerHome !== resolve(expectedControllerHome)) {
+  if (canonicalExistingPathIdentity(controllerHome) !== canonicalExistingPathIdentity(expectedControllerHome)) {
     throw new Error('RELEASE_MANIFEST_CONTROLLER_HOME_MISMATCH');
   }
   const compatibility = value.databaseSchemaCompatibility as Record<string, unknown> | undefined;
