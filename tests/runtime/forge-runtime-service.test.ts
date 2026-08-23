@@ -13,7 +13,14 @@ import {
   writeForgeRuntimeServiceConfig,
 } from '../../src/runtime/root/service';
 import { materializePackageRuntimeRelease } from '../../src/runtime/root/package-runtime-release';
-import { installPackageRuntimeService, renderForgeRuntimeSystemdUserUnit } from '../../src/runtime/root/package-runtime-service';
+import {
+  activateScheduledPackageRuntimeService,
+  installPackageRuntimeService,
+  readPackageRuntimeActivationReceipt,
+  renderPackageRuntimeActivationLaunchAgent,
+  renderForgeRuntimeSystemdUserUnit,
+  type PackageRuntimeActivationRequest,
+} from '../../src/runtime/root/package-runtime-service';
 import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { ensurePackageConnectorService, packageConnectorLaunchSpec, packageConnectorServicePaths, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit } from '../../src/runtime/root/package-connector-service';
 import { retireConflictingForgeLaunchAgents } from '../../src/cli/controller/launch-agents';
@@ -212,6 +219,91 @@ describe('Forge Runtime service', () => {
     expect(() => materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'immutable-repeat' }))
       .toThrow('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION');
     expect(readFileSync(release.manifestPath, 'utf8')).toBe(corrupted);
+  });
+
+  test('schedules launchd activation outside the installing Runtime lifecycle and persists the final receipt', async () => {
+    const fx = fixture(), packageRoot = join(fx.root, 'package-self-update');
+    for (const dir of ['src', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
+    writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 2;\n');
+    writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
+
+    let scheduled: PackageRuntimeActivationRequest | undefined;
+    let installAttempts = 0;
+    const result = await installPackageRuntimeService({
+      controllerHome: fx.home,
+      packageRoot,
+      authTokenFile: fx.token,
+      platform: 'darwin',
+      refreshConnector: false,
+    }, {
+      scheduleDarwinActivation: async (request) => {
+        scheduled = request;
+        return { label: 'com.moretea.forge.runtime-activation.test', servicePath: join(fx.root, 'activation.plist') };
+      },
+      installDarwinService: async () => {
+        installAttempts += 1;
+        return forgeRuntimeServicePaths(fx.home);
+      },
+    });
+
+    expect(result.status).toBe('activation_scheduled');
+    expect(installAttempts).toBe(0);
+    expect(scheduled).toBeDefined();
+    expect(readPackageRuntimeActivationReceipt(result.activation!.receiptPath)?.status).toBe('activation_scheduled');
+    const helperPlist = renderPackageRuntimeActivationLaunchAgent(scheduled!);
+    expect(helperPlist).toContain(`<string>${scheduled!.nodeExecutable}</string>`);
+    expect(helperPlist).toContain(`<string>${join(scheduled!.release.packageRoot, 'src', 'cli', 'index.ts')}</string>`);
+    expect(helperPlist).not.toContain(`${join(scheduled!.release.packageRoot, 'bin', 'forge.mjs')}</string>`);
+
+    await activateScheduledPackageRuntimeService(scheduled!, {
+      installDarwinService: async () => {
+        installAttempts += 1;
+        return forgeRuntimeServicePaths(fx.home);
+      },
+      waitForInstallerExit: async () => {},
+      cleanupActivationHelper: async () => {},
+    });
+
+    expect(installAttempts).toBe(1);
+    const receipt = readPackageRuntimeActivationReceipt(result.activation!.receiptPath);
+    expect(receipt?.status).toBe('activated');
+    expect(receipt?.releaseId).toBe(result.release.releaseId);
+  });
+
+  test('persists failed+rollback when detached activation fails after scheduling', async () => {
+    const fx = fixture(), packageRoot = join(fx.root, 'package-detached-failure');
+    for (const dir of ['src', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
+    writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 3;\n');
+    writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
+
+    let scheduled: PackageRuntimeActivationRequest | undefined;
+    const result = await installPackageRuntimeService({
+      controllerHome: fx.home,
+      packageRoot,
+      authTokenFile: fx.token,
+      platform: 'darwin',
+      refreshConnector: false,
+    }, {
+      scheduleDarwinActivation: async (request) => {
+        scheduled = request;
+        return { label: request.helperLabel, servicePath: request.helperInstalledPlistPath };
+      },
+      installDarwinService: async () => forgeRuntimeServicePaths(fx.home),
+    });
+
+    await expect(activateScheduledPackageRuntimeService(scheduled!, {
+      installDarwinService: async () => { throw new Error('synthetic detached activation failure'); },
+      waitForInstallerExit: async () => {},
+      cleanupActivationHelper: async () => {},
+    })).rejects.toThrow('FORGE_PACKAGE_RUNTIME_ACTIVATION_FAILED_ROLLED_BACK');
+
+    const receipt = readPackageRuntimeActivationReceipt(result.activation!.receiptPath);
+    expect(receipt?.status).toBe('failed+rollback');
+    expect(receipt?.rollbackSucceeded).toBe(true);
+    expect(receipt?.error).toContain('synthetic detached activation failure');
+    expect(readRuntimeReleaseAuthority(fx.home)).toBeUndefined();
   });
 
   test('removes a first package publication when service activation fails', async () => {

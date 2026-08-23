@@ -13,7 +13,7 @@ import { observeRuntimeStatus } from '../../runtime/root/status';
 import { readMcpServiceBearerToken } from '../mcp/auth';
 import { publishRuntimeRelease } from '../../runtime/root/release-store';
 import { installForgeRuntimeService } from '../../runtime/root/service';
-import { installPackageRuntimeService } from '../../runtime/root/package-runtime-service';
+import { activateScheduledPackageRuntimeServiceFromPath, installPackageRuntimeService, readPackageRuntimeActivationReceipt } from '../../runtime/root/package-runtime-service';
 import { assertRuntimeReleaseFiles, stageRuntimeReleaseFromCandidateSource } from '../../runtime/root/release-materialize';
 
 function output(value: unknown, json = true): void {
@@ -29,6 +29,22 @@ export function buildRuntimeCommand(): Command {
 
   const service = command.command('service')
     .description('Install or inspect the user-level Forge Runtime owner');
+
+  service.command('activate-package', { hidden: true })
+    .description('Internal one-shot activation helper for a staged package Runtime release')
+    .requiredOption('--request <path>', 'Activation request path')
+    .action(async (opts: { request: string }) => {
+      output(await activateScheduledPackageRuntimeServiceFromPath(opts.request));
+    });
+
+  service.command('activation-status')
+    .description('Read a durable package Runtime activation receipt')
+    .requiredOption('--receipt <path>', 'Activation receipt path returned by install-package')
+    .action((opts: { receipt: string }) => {
+      const receipt = readPackageRuntimeActivationReceipt(resolve(opts.receipt));
+      if (!receipt) throw new Error('RUNTIME_PACKAGE_ACTIVATION_RECEIPT_NOT_FOUND');
+      output(receipt);
+    });
 
   service.command('install-package')
     .description('Install the current packaged Forge Runtime without requiring a Git checkout, Bun compilation, CodeGraph, or Standalone Recovery')
@@ -75,8 +91,11 @@ export function buildRuntimeCommand(): Command {
         servicePath: result.servicePath,
         pid: result.pid,
         connector: result.connector,
+        activation: result.activation,
         warnings: result.warnings,
-        next: `forge runtime status --controller-home ${home}`,
+        next: result.activation
+          ? `forge runtime service activation-status --receipt ${result.activation.receiptPath}`
+          : `forge runtime status --controller-home ${home}`,
       });
     });
 
