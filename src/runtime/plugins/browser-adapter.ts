@@ -651,10 +651,15 @@ function parseNativeBrowserCandidatesInput(value: unknown): MacOsBrowserProduct[
   throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'native_browser_candidates must contain chrome and/or vivaldi.', { retryable: false });
 }
 
-function effectiveBrowserActionConfig(config: BrowserPluginConfig, args: Record<string, unknown>): BrowserPluginConfig {
+function effectiveBrowserActionConfig(
+  config: BrowserPluginConfig,
+  args: Record<string, unknown>,
+  existingSession?: BrowserSessionState,
+): BrowserPluginConfig {
+  const explicitBrowserMode = parseBrowserModeInput(args.browser_mode);
   return {
     ...config,
-    browserMode: parseBrowserModeInput(args.browser_mode) ?? config.browserMode,
+    browserMode: explicitBrowserMode ?? existingSession?.browser?.mode ?? config.browserMode,
     cdpAttachFallback: parseCdpAttachFallbackInput(args.cdp_attach_fallback) ?? config.cdpAttachFallback,
     nativeAttachMode: parseNativeAttachModeInput(args.native_attach_mode) ?? config.nativeAttachMode,
     nativeBrowserCandidates: parseNativeBrowserCandidatesInput(args.native_browser_candidates) ?? config.nativeBrowserCandidates,
