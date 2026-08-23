@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, w
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
+import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { McpOAuthTokenStore, createMcpOAuthProvider } from '../../src/cli/mcp/oauth';
 
 function fixture() {
@@ -22,6 +23,35 @@ function authInfo(token: string): AuthInfo {
     scopes: ['forge'],
     expiresAt: Math.floor(Date.now() / 1000) + 3600,
   };
+}
+
+function oauthClient(clientId = 'client-test'): OAuthClientInformationFull {
+  return {
+    client_id: clientId,
+    client_id_issued_at: 1,
+    client_name: clientId,
+    redirect_uris: ['http://127.0.0.1/callback'],
+    token_endpoint_auth_method: 'none',
+    grant_types: ['authorization_code', 'refresh_token'],
+    response_types: ['code'],
+  } as OAuthClientInformationFull;
+}
+
+async function issueAuthorizationCode(
+  provider: ReturnType<typeof createMcpOAuthProvider>,
+  client = oauthClient(),
+): Promise<string> {
+  let redirected = '';
+  await provider.authorize(client, {
+    redirectUri: 'http://127.0.0.1/callback',
+    codeChallenge: 'challenge-test',
+    state: 'state-test',
+  } as never, {
+    redirect: (_status: number, value: string) => { redirected = value; },
+  } as never);
+  const code = new URL(redirected).searchParams.get('code');
+  if (!code) throw new Error('authorization code missing from redirect');
+  return code;
 }
 
 describe('MCP OAuth durable state', () => {
@@ -92,6 +122,50 @@ describe('MCP OAuth durable state', () => {
       expect(reloaded.getRefreshToken('refresh-a')).toBeUndefined();
       expect(reloaded.getAccessToken('access-a')).toBeUndefined();
       expect(existsSync(fx.primary)).toBe(true);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('authorization codes expire and remain bound to the issuing client', async () => {
+    const fx = fixture();
+    let now = 1_000;
+    try {
+      const provider = createMcpOAuthProvider(new McpOAuthTokenStore(fx.primary), {
+        now: () => now,
+        authorizationCodeTtlSeconds: 30,
+      });
+      const client = oauthClient('client-a');
+      const code = await issueAuthorizationCode(provider, client);
+      expect(await provider.challengeForAuthorizationCode(client, code)).toBe('challenge-test');
+      await expect(provider.challengeForAuthorizationCode(oauthClient('client-b'), code)).rejects.toThrow('Invalid authorization code');
+
+      now = 1_031;
+      await expect(provider.challengeForAuthorizationCode(client, code)).rejects.toThrow('Invalid authorization code');
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  test('pending authorization codes are bounded per client and oldest abandoned codes are evicted', async () => {
+    const fx = fixture();
+    let now = 2_000;
+    try {
+      const provider = createMcpOAuthProvider(new McpOAuthTokenStore(fx.primary), {
+        now: () => now,
+        maxPendingAuthorizationCodesPerClient: 2,
+        maxPendingAuthorizationCodes: 8,
+      });
+      const client = oauthClient('client-a');
+      const first = await issueAuthorizationCode(provider, client);
+      now += 1;
+      const second = await issueAuthorizationCode(provider, client);
+      now += 1;
+      const third = await issueAuthorizationCode(provider, client);
+
+      await expect(provider.challengeForAuthorizationCode(client, first)).rejects.toThrow('Invalid authorization code');
+      expect(await provider.challengeForAuthorizationCode(client, second)).toBe('challenge-test');
+      expect(await provider.challengeForAuthorizationCode(client, third)).toBe('challenge-test');
     } finally {
       fx.cleanup();
     }
