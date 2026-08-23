@@ -200,8 +200,11 @@ describe('rh_work managed lifecycle closure', () => {
       operation: 'continue',
       work_id: workId,
     });
-    expect(continued?.isError).not.toBe(true);
-    expect(continued?.structuredContent).toMatchObject({ status: 'ok', data: { nextStep: 'finalize' } });
+    expect(continued?.isError).toBe(true);
+    expect(continued?.structuredContent).toMatchObject({
+      status: 'blocked',
+      data: { nextStep: 'execute', implementationEvidencePresent: false, workspaceChangedPaths: [] },
+    });
     const afterContinue = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
     const reconciled = afterContinue.checkRefs.find((record) => record.checkId === 'package:check:checkout' && record.outcome === 'valid_pass');
     expect(reconciled?.receipt).toMatchObject({
@@ -384,8 +387,11 @@ describe('rh_work managed lifecycle closure', () => {
       operation: 'continue',
       work_id: workId,
     });
-    expect(continued?.isError, JSON.stringify(continued?.structuredContent)).not.toBe(true);
-    expect(continued?.structuredContent).toMatchObject({ status: 'ok', data: { nextStep: 'finalize' } });
+    expect(continued?.isError, JSON.stringify(continued?.structuredContent)).toBe(true);
+    expect(continued?.structuredContent).toMatchObject({
+      status: 'blocked',
+      data: { nextStep: 'execute', implementationEvidencePresent: false, workspaceChangedPaths: [] },
+    });
     const reconciled = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)!;
     expect(reconciled.checkRefs).toHaveLength(1);
     expect(reconciled.checkRefs[0]).toMatchObject({
@@ -533,8 +539,12 @@ describe('rh_work managed lifecycle closure', () => {
       repoId: fx.repository.repoId,
       sourceRevision: verifiedRevision,
     }, { workId });
-    expect(currentEvidence.status).toBe('ok');
-    expect(currentEvidence.data).toMatchObject({ nextStep: 'finalize' });
+    expect(currentEvidence.status).toBe('blocked');
+    expect(currentEvidence.data).toMatchObject({
+      nextStep: 'execute',
+      implementationEvidencePresent: false,
+      workspaceChangedPaths: [],
+    });
 
     writeFileSync(join(initial.worktreeRef!, 'revision-drift.txt'), 'new revision\n');
     git(initial.worktreeRef!, ['add', 'revision-drift.txt']);
@@ -1105,7 +1115,7 @@ describe('rh_work managed lifecycle closure', () => {
     });
     expect(continued?.isError).toBe(true);
     expect(continued?.structuredContent).toMatchObject({ status: 'blocked', data: { ownershipResumed: true } });
-    expect(JSON.stringify(continued?.structuredContent)).toContain('Continue requires meaningful completion evidence');
+    expect(JSON.stringify(continued?.structuredContent)).toContain('Continue requires implementation before verification');
     const repaired = getWorkContract(store, 'work-placement-retry');
     expect(repaired?.workId).toBe('work-placement-retry');
     expect(repaired?.checkoutId).toBeTruthy();
@@ -2014,8 +2024,11 @@ describe('rh_work managed lifecycle closure', () => {
       operation: 'continue',
       work_id: workId,
     });
-    expect(continued?.isError, JSON.stringify(continued?.structuredContent)).not.toBe(true);
-    expect(continued?.structuredContent).toMatchObject({ status: 'ok', data: { nextStep: 'finalize' } });
+    expect(continued?.isError, JSON.stringify(continued?.structuredContent)).toBe(true);
+    expect(continued?.structuredContent).toMatchObject({
+      status: 'blocked',
+      data: { nextStep: 'execute', implementationEvidencePresent: false, workspaceChangedPaths: [] },
+    });
 
     const finalized = await callRuntimeTool(fx.ctx, 'rh_work', {
       repo_id: fx.repository.repoId,
