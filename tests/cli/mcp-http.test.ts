@@ -74,6 +74,7 @@ function isolatedMcpProcessEnv(
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of [
     'FORGE_MCP_PUBLIC_ORIGIN',
+    'FORGE_MCP_OAUTH_PUBLIC_ORIGIN',
     'FORGE_MCP_INSTANCE_ID',
     'FORGE_SUPERVISOR_PUBLIC_HEALTH_ENDPOINT',
     'FORGE_SUPERVISOR_CHILD',
@@ -429,6 +430,82 @@ describe('mcp http transport', () => {
           body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
         });
         expect(evicted.status).toBe(404);
+      });
+    } finally {
+      await stopMcpServerProcess(proc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('separates OAuth authorization origin from the MCP resource origin', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-oauth-origin-'));
+    const port = await freePort();
+    let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(port) });
+
+        proc = Bun.spawn(
+          [
+            'bun',
+            'src/cli/index.ts',
+            'mcp',
+            'serve',
+            '--repo',
+            repoRoot,
+            '--transport',
+            'http',
+            '--host',
+            '127.0.0.1',
+            '--port',
+            String(port),
+            '--profile',
+            'planner',
+          ],
+          {
+            cwd: process.cwd(),
+            stdout: 'ignore',
+            stderr: 'pipe',
+            env: isolatedMcpProcessEnv(controllerHome, {
+              FORGE_MCP_OAUTH_PUBLIC_ORIGIN: 'https://auth.example.test',
+            }),
+          },
+        );
+        await waitForHealth(port);
+
+        const metadata = await fetch(`http://127.0.0.1:${port}/.well-known/oauth-protected-resource/mcp`, {
+          headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'resource.example.test' },
+        });
+        expect(await metadata.json()).toMatchObject({
+          resource: 'https://resource.example.test/mcp',
+          authorization_servers: ['https://auth.example.test'],
+        });
+
+        const authMetadata = await fetch(`http://127.0.0.1:${port}/.well-known/oauth-authorization-server`, {
+          headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'resource.example.test' },
+        });
+        expect(await authMetadata.json()).toMatchObject({
+          issuer: 'https://auth.example.test',
+          authorization_endpoint: 'https://auth.example.test/authorize',
+          token_endpoint: 'https://auth.example.test/token',
+          registration_endpoint: 'https://auth.example.test/register',
+        });
+
+        const noAuth = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-forwarded-proto': 'https',
+            'x-forwarded-host': 'resource.example.test',
+          },
+          body: initializeBody(),
+        });
+        expect(noAuth.status).toBe(401);
+        expect(noAuth.headers.get('www-authenticate')).toContain(
+          'resource_metadata=\"https://resource.example.test/.well-known/oauth-protected-resource/mcp\"',
+        );
       });
     } finally {
       await stopMcpServerProcess(proc);

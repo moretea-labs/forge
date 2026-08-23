@@ -280,6 +280,18 @@ function getConfiguredPublicOrigin(config: McpLocalConfig | null): string | unde
   }
 }
 
+function getConfiguredOAuthPublicOrigin(fallbackOrigin: string | undefined): string | undefined {
+  const configured = process.env.FORGE_MCP_OAUTH_PUBLIC_ORIGIN?.trim();
+  if (configured) {
+    try {
+      return new URL(configured).origin;
+    } catch (_error) {
+      // Preserve the existing public-origin behavior when the override is invalid.
+    }
+  }
+  return fallbackOrigin;
+}
+
 function getPublicOrigin(req: Request, configuredOrigin: string | undefined): string {
   if (configuredOrigin) return configuredOrigin;
   const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? req.protocol ?? 'http';
@@ -932,6 +944,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   tokenStore?.load();
   const oauthProvider = tokenStore ? createMcpOAuthProvider(tokenStore) : null;
   const configuredPublicOrigin = getConfiguredPublicOrigin(serviceConfig);
+  const configuredOAuthPublicOrigin = getConfiguredOAuthPublicOrigin(configuredPublicOrigin);
   const sessionRegistry = new McpSessionRegistry<StreamableHTTPServerTransport, McpToolContext>({
     maximumSessions: MAX_MCP_SESSIONS,
     maximumSessionsPerPrincipal: MAX_MCP_SESSIONS_PER_PRINCIPAL,
@@ -1204,7 +1217,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     app.use('/register', oauthTraceMiddleware('register'));
     app.use('/register', clientRegistrationHandler({ clientsStore: oauthProvider.clientsStore, rateLimit: false }));
     app.get('/.well-known/oauth-authorization-server', (req, res) => {
-      const origin = getPublicOrigin(req, configuredPublicOrigin);
+      const origin = getPublicOrigin(req, configuredOAuthPublicOrigin);
       res.json({
         issuer: origin,
         authorization_endpoint: `${origin}/authorize`,
@@ -1219,7 +1232,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
       });
     });
     app.get('/.well-known/openid-configuration', (req, res) => {
-      const origin = getPublicOrigin(req, configuredPublicOrigin);
+      const origin = getPublicOrigin(req, configuredOAuthPublicOrigin);
       res.json({
         issuer: origin,
         authorization_endpoint: `${origin}/authorize`,
@@ -1233,10 +1246,11 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
       });
     });
     const protectedResourceMetadata = (resourcePath: '/mcp' | '/mcp-grok' | '/mcp-bearer') => (req: Request, res: Response): void => {
-      const origin = getPublicOrigin(req, configuredPublicOrigin);
+      const resourceOrigin = getPublicOrigin(req, configuredPublicOrigin);
+      const authorizationServerOrigin = configuredOAuthPublicOrigin ?? resourceOrigin;
       res.json({
-        resource: `${origin}${resourcePath}`,
-        authorization_servers: [origin],
+        resource: `${resourceOrigin}${resourcePath}`,
+        authorization_servers: [authorizationServerOrigin],
         scopes_supported: ['forge'],
         bearer_methods_supported: ['header'],
       });
