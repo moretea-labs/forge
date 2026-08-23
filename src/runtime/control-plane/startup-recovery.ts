@@ -1,5 +1,5 @@
 import { existsSync, realpathSync } from 'fs';
-import { join, resolve } from 'path';
+import { resolve } from 'path';
 import {
   consolidateRepositoryRegistry,
   listRepositories,
@@ -7,20 +7,18 @@ import {
   repositoryCheckoutLifecycle,
   repositoryCheckoutRootMatches,
 } from '../../cli/repositories/registry';
-import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import { listLocalBridgeJobs, reconcileLocalBridgeJobs } from '../../cli/local-bridge/job-store';
 import { listExecutionJobs, rebuildExecutionJobIndexes } from '../execution/jobs/store';
 import { reconcileExecutionJobs } from './global-scheduler/reconciliation';
 import { listActiveLeases } from '../resources/leases/store';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
-import { readRepositoryProjectionDirty } from '../projections/invalidation';
 import { CONTROLLER_SCOPE_REPO_ID } from '../../cli/repositories/controller-home';
 import { reconcileStaleWorkContracts } from './facade/work-contract-store';
 import { recoverManagedProcesses } from '../execution/process-runtime/runtime';
 
 export interface ControllerRecoveryError {
   repoId: string;
-  phase: 'registry' | 'checkouts' | 'execution-indexes' | 'execution-jobs' | 'local-jobs' | 'leases' | 'work-contracts' | 'projection';
+  phase: 'registry' | 'processes' | 'checkouts' | 'execution-indexes' | 'execution-jobs' | 'local-jobs' | 'leases' | 'work-contracts' | 'projection';
   code: string;
   message: string;
 }
@@ -28,6 +26,7 @@ export interface ControllerRecoveryError {
 export interface ControllerRecoveryRepositoryResult {
   repoId: string;
   degraded: boolean;
+  processes?: ReturnType<typeof recoverManagedProcesses>;
   archivedCheckoutIds?: string[];
   executionIndexesRebuilt?: boolean;
   executionJobs?: ReturnType<typeof reconcileExecutionJobs>;
@@ -61,19 +60,15 @@ function errorCode(error: unknown): string {
   return separator > 0 ? message.slice(0, separator) : 'RECOVERY_FAILED';
 }
 
-function persistedProjectionExists(controllerHome: string, repoId: string): boolean {
-  return existsSync(join(repositoryControllerRoot(controllerHome, repoId), 'projections', 'runtime.json'));
-}
-
-function projectionNeedsRebuild(controllerHome: string, repoId: string): boolean {
-  return !persistedProjectionExists(controllerHome, repoId)
-    || readRepositoryProjectionDirty(controllerHome, repoId) !== undefined;
-}
-
 /**
  * Synchronous, repository-isolated restart reconciliation. Every operation is
  * bounded by the underlying durable-store scans; one repository failure is
  * recorded and cannot prevent healthy repositories from becoming ready.
+ *
+ * Repository projections are rebuilt unconditionally on restart. A persisted
+ * dirty marker is an optimization for steady-state refresh, not correctness
+ * authority: losing the marker must not allow a stale projection to survive a
+ * Runtime replacement.
  */
 export function reconcileControllerStartup(controllerHome: string): ControllerStartupRecoveryResult {
   const recovered: ControllerRecoveryRepositoryResult[] = [];
@@ -88,18 +83,6 @@ export function reconcileControllerStartup(controllerHome: string): ControllerSt
       message: error instanceof Error ? error.message : String(error),
     });
   }
-  // Recover process leases / terminal receipts for every repository.
-  try {
-    for (const repository of listRepositories(controllerHome).filter((repo) => repo.enabled && !repo.removedAt)) {
-      try {
-        recoverManagedProcesses(controllerHome, repository.repoId);
-      } catch {
-        /* per-repo best-effort */
-      }
-    }
-  } catch {
-    /* process runtime optional in early fixtures */
-  }
   const repositories = listRepositories(controllerHome).filter((repo) => repo.enabled && !repo.removedAt);
   for (const repository of repositories) {
     const result: ControllerRecoveryRepositoryResult = { repoId: repository.repoId, degraded: false };
@@ -113,6 +96,11 @@ export function reconcileControllerStartup(controllerHome: string): ControllerSt
         return undefined;
       }
     };
+
+    // Process ownership, terminal receipts and pending lease release are a
+    // first-class recovery phase. A failure is isolated to this repository but
+    // must never be silently reinterpreted as clean startup recovery.
+    result.processes = run('processes', () => recoverManagedProcesses(controllerHome, repository.repoId));
 
     const checkoutReconciliation = run('checkouts', () =>
       reconcileRepositoryCheckouts(repository.repoId, controllerHome));
@@ -156,7 +144,6 @@ export function reconcileControllerStartup(controllerHome: string): ControllerSt
       );
     });
     result.projectionRebuilt = run('projection', () => {
-      if (!projectionNeedsRebuild(controllerHome, repository.repoId)) return false;
       rebuildRepositoryProjection(controllerHome, repository.repoId);
       return true;
     });
