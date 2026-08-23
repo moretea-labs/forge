@@ -16,7 +16,7 @@ export const DEFAULT_CHATGPT_AUTOMATION_REASONING = 'high';
 export const DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY = 'auto';
 export const DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge';
 const CHATGPT_PROMPT_SELECTOR = 'div#prompt-textarea[contenteditable="true"]';
-const CHATGPT_SEND_SELECTOR = '[data-testid="send-button"]';
+const CHATGPT_SEND_SELECTOR = '[data-testid="send-button"], button[aria-label*="Send"], button[data-testid*="send"]';
 const CHATGPT_INTELLIGENCE_CONTROL_SELECTORS = [
   'main button, main [role="button"]',
   'button, [role="button"]',
@@ -419,6 +419,16 @@ function resultUrl(result: Record<string, unknown>): string | undefined {
     ?? stringField((result.session as Record<string, unknown> | undefined)?.url);
 }
 
+function resultSessionId(result: Record<string, unknown>): string | undefined {
+  return stringField(result.session_id)
+    ?? stringField((result.session as Record<string, unknown> | undefined)?.sessionId);
+}
+
+function requiresNativeNavigationReplacement(error: unknown): boolean {
+  return error instanceof Error
+    && error.message.includes('BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT');
+}
+
 export function isChatgptConversationUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -436,26 +446,42 @@ async function navigateWorkConversation(
   browserSessionId: string,
   targetUrl: string,
   timeoutMs?: number,
-): Promise<{ submissionTargetUrl: string; recoveredFromStaleBinding: boolean }> {
-  const navigate = async (url: string) => controllerBrowserAction(controllerHome, workId, 'navigate', {
-    session_id: browserSessionId,
+): Promise<{ submissionTargetUrl: string; recoveredFromStaleBinding: boolean; browserSessionId: string }> {
+  const navigate = async (sessionId: string, url: string) => controllerBrowserAction(controllerHome, workId, 'navigate', {
+    session_id: sessionId,
     url,
     wait_until: 'domcontentloaded',
     timeout_ms: timeoutMs ?? 60_000,
     retries: 1,
   }, timeoutMs);
+  const openReplacement = async (url: string): Promise<string> => {
+    const opened = await controllerBrowserAction(controllerHome, workId, 'open_page', {
+      url,
+      wait_until: 'domcontentloaded',
+      timeout_ms: timeoutMs ?? 60_000,
+      retries: 1,
+    }, timeoutMs);
+    const replacementSessionId = resultSessionId(opened);
+    if (!replacementSessionId) throw new Error('CHATGPT_AUTOMATION_REPLACEMENT_SESSION_NOT_CONFIRMED');
+    return replacementSessionId;
+  };
   try {
-    await navigate(targetUrl);
-    return { submissionTargetUrl: targetUrl, recoveredFromStaleBinding: false };
+    await navigate(browserSessionId, targetUrl);
+    return { submissionTargetUrl: targetUrl, recoveredFromStaleBinding: false, browserSessionId };
   } catch (error) {
-    // A Work binding is machine transport context, not authority. If its exact
-    // ChatGPT conversation is no longer navigable, do not adopt any unrelated
-    // saved tab. Start from ChatGPT home, submit the same Work continuation,
-    // then let the existing compare-and-swap rebind accept only the conversation
-    // created/redirected by that verified submission.
+    if (requiresNativeNavigationReplacement(error)) {
+      const replacementSessionId = await openReplacement(targetUrl);
+      return { submissionTargetUrl: targetUrl, recoveredFromStaleBinding: false, browserSessionId: replacementSessionId };
+    }
     if (!isChatgptConversationUrl(targetUrl)) throw error;
-    await navigate('https://chatgpt.com/');
-    return { submissionTargetUrl: 'https://chatgpt.com/', recoveredFromStaleBinding: true };
+    try {
+      await navigate(browserSessionId, 'https://chatgpt.com/');
+      return { submissionTargetUrl: 'https://chatgpt.com/', recoveredFromStaleBinding: true, browserSessionId };
+    } catch (fallbackError) {
+      if (!requiresNativeNavigationReplacement(fallbackError)) throw fallbackError;
+      const replacementSessionId = await openReplacement('https://chatgpt.com/');
+      return { submissionTargetUrl: 'https://chatgpt.com/', recoveredFromStaleBinding: true, browserSessionId: replacementSessionId };
+    }
   }
 }
 
@@ -530,7 +556,7 @@ export async function runStandaloneChatgptPrompt(input: StandaloneChatgptPromptI
     const executionPreferenceVerified = await ensureChatgptExecutionPreference(
       input.controllerHome,
       browserScopeId,
-      sessionId,
+      navigation.browserSessionId,
       model,
       reasoning,
       input.timeoutMs,
@@ -538,7 +564,7 @@ export async function runStandaloneChatgptPrompt(input: StandaloneChatgptPromptI
     const observedUrl = await submitChatgptPrompt(
       input.controllerHome,
       browserScopeId,
-      sessionId,
+      navigation.browserSessionId,
       input.prompt,
       navigation.submissionTargetUrl,
       input.timeoutMs,
@@ -546,7 +572,7 @@ export async function runStandaloneChatgptPrompt(input: StandaloneChatgptPromptI
     return {
       status: 'dispatched',
       provider: 'controller-browser',
-      browserSessionId: sessionId,
+      browserSessionId: navigation.browserSessionId,
       conversationUrl: observedUrl,
       resumedFromBinding: false,
       model,
@@ -618,12 +644,12 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
     const executionPreferenceVerified = await ensureChatgptExecutionPreference(
       input.controllerHome,
       input.workId,
-      sessionId,
+      navigation.browserSessionId,
       model,
       reasoning,
       input.timeoutMs,
     );
-    const observedUrl = await submitChatgptPrompt(input.controllerHome, input.workId, sessionId, `${workflowToolAttributionInstruction(input.workId)}\n\n${input.prompt}`, navigation.submissionTargetUrl, input.timeoutMs);
+    const observedUrl = await submitChatgptPrompt(input.controllerHome, input.workId, navigation.browserSessionId, `${workflowToolAttributionInstruction(input.workId)}\n\n${input.prompt}`, navigation.submissionTargetUrl, input.timeoutMs);
     if (/\/c\/[^/?#]+/.test(observedUrl)) {
       const observedIdentity = parseChatgptConversationIdentity(observedUrl);
       binding = binding && binding.conversationId !== observedIdentity.conversationId
@@ -631,7 +657,7 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
           workId: input.workId,
           previousConversationId: binding.conversationId,
           conversationUrl: observedUrl,
-          latestBrowserSessionId: sessionId,
+          latestBrowserSessionId: navigation.browserSessionId,
           localAlias: binding.localAlias ?? input.title,
         })
         : bindChatgptWorkConversation(store, {
@@ -644,7 +670,7 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
     return {
       status: 'dispatched',
       provider: 'controller-browser',
-      browserSessionId: sessionId,
+      browserSessionId: navigation.browserSessionId,
       conversationUrl: binding?.conversationUrl ?? observedUrl,
       conversationId: binding?.conversationId,
       localAlias: binding?.localAlias,
