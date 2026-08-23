@@ -1825,6 +1825,11 @@ async function openAttachedContext(
   return { attempts };
 }
 
+function nativeBackgroundNavigationRequiresReplacement(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT');
+}
+
 async function openNativeAttachedContext(
   repoRoot: string,
   config: BrowserPluginConfig,
@@ -1957,6 +1962,51 @@ async function openNativeAttachedContext(
   let activeAttachment = discovered.attachment;
 
   let createdThisCallRef: MacOsBrowserTabRef | undefined;
+  let navigationUsedReplacement = false;
+  const navigateNativePageWithReplacement = async (candidate: PageLike): Promise<PageLike> => {
+    const obsoleteRef = (candidate as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
+    try {
+      await candidate.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout });
+      return candidate;
+    } catch (error) {
+      if (!nativeBackgroundNavigationRequiresReplacement(error) || effectiveOwnership === 'user_owned' || !obsoleteRef) throw error;
+      const replacement = await createMacOsBrowserOwnedPage(activeAttachment, target.url, timeout) as unknown as PageLike;
+      const replacementRef = (replacement as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
+      if (!replacementRef) {
+        throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Native replacement tab did not return a stable plugin-owned tab reference.', { retryable: true });
+      }
+      try {
+        const identity = await (replacement as unknown as { identity: () => Promise<{ url: string; title: string }> }).identity();
+        if (comparableUrl(identity.url) !== comparableUrl(target.url)) {
+          throw new AssistantPluginError(
+            'PLUGIN_BROWSER_NATIVE_REPLACEMENT_MISMATCH',
+            'Native replacement tab did not reach the requested URL; preserving the original plugin-owned tab.',
+            { retryable: true, details: { expectedUrl: target.url, actualUrl: identity.url } },
+          );
+        }
+      } catch (replacementError) {
+        await closeMacOsBrowserOwnedTab(activeAttachment.metadata.product, replacementRef, timeout).catch(() => undefined);
+        throw replacementError;
+      }
+      try {
+        await closeMacOsBrowserOwnedTab(activeAttachment.metadata.product, obsoleteRef, timeout);
+      } catch (closeError) {
+        await closeMacOsBrowserOwnedTab(activeAttachment.metadata.product, replacementRef, timeout).catch(() => undefined);
+        throw closeError;
+      }
+      createdThisCallRef = replacementRef;
+      navigationUsedReplacement = true;
+      matchedBy = 'owned_token';
+      effectiveOwnership = 'plugin_owned';
+      sessionResume = {
+        sessionId: target.sessionId,
+        status: 'matched',
+        reason: 'Browser broker required replacement for background cross-URL navigation; created and verified a replacement plugin-owned tab before closing the obsolete tab.',
+        savedTab,
+      };
+      return replacement;
+    }
+  };
   try {
     if (!page && !savedTab && !stringValue(args.session_id)) {
       const inventory = await listMacOsBrowserTabs(activeAttachment.metadata.product, timeout);
@@ -2027,7 +2077,7 @@ async function openNativeAttachedContext(
       const liveIdentity = await (page as unknown as { identity?: () => Promise<{ url: string; title: string }> }).identity?.()
         .catch(() => undefined);
       if (!liveIdentity?.url || isBlankPage(liveIdentity.url) || comparableUrl(liveIdentity.url) !== comparableUrl(target.url)) {
-        await page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout });
+        page = await navigateNativePageWithReplacement(page);
       }
     }
     if (comparableUrl(page.url()) !== comparableUrl(target.url)) {
@@ -2050,8 +2100,8 @@ async function openNativeAttachedContext(
       } else if (preserveOwnedSameOriginDrift) {
         sessionResume = { sessionId: target.sessionId, status: 'matched', reason: 'Plugin-owned tab navigated within the same origin; preserved the live tab and refreshed its session URL.', savedTab };
       } else {
-        await page.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout });
-        if (currentRef) {
+        page = await navigateNativePageWithReplacement(page);
+        if (currentRef && !navigationUsedReplacement) {
           matchedBy = 'owned_token';
           sessionResume = { sessionId: target.sessionId, status: 'matched', reason: 'Navigated the existing plugin-owned tab in place and preserved its stable tab identity.', savedTab };
         }

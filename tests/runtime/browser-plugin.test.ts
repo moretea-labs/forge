@@ -442,7 +442,7 @@ function mockManagedPersistentPlaywright() {
   } as never;
 }
 
-function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', options: { javaScriptEnabled?: boolean; targetTitleMetadataFails?: boolean; transitionalNewTabReads?: number; transitionalUrl?: string; frontmost?: boolean } = {}) {
+function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', options: { javaScriptEnabled?: boolean; targetTitleMetadataFails?: boolean; transitionalNewTabReads?: number; transitionalUrl?: string; frontmost?: boolean; targetedNavigateRequiresReplacement?: boolean } = {}) {
   const javaScriptEnabled = options.javaScriptEnabled !== false;
   const separator = '\x1e';
   const userTab: { id: string; url: string; title: string; ownerToken?: string } = { id: '501', url: 'https://example.com/user-work', title: 'User Work' };
@@ -548,6 +548,7 @@ function mockMacOsOwnedTabRuntime(product: 'chrome' | 'vivaldi' = 'vivaldi', opt
         }
         if (script.includes('set URL of targetTab to targetUrl')) {
           assertWindowResolution(script);
+          if (options.targetedNavigateRequiresReplacement) throw new Error('BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT: create a replacement tab instead');
           const tabId = tabIdFromScript(script);
           const entry = tabId ? ownedTabs.get(tabId) : undefined;
           if (!tabId || !entry) throw new Error('missing owned tab');
@@ -2519,6 +2520,38 @@ describe('browser plugin', () => {
     expect(second.browserConnection).toMatchObject({
       provider: 'macos-apple-events',
       tab: { ownership: 'plugin_owned', windowId: 'window-77', tabId: '9001', url: secondUrl },
+      sessionResume: { status: 'matched' },
+    });
+  });
+
+  test('sessionless native open_page replaces a plugin-owned background tab when the broker rejects cross-URL navigation', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const native = mockMacOsOwnedTabRuntime('chrome', { targetedNavigateRequiresReplacement: true });
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+
+    const firstUrl = 'https://www.google.com/search?q=avela+meds';
+    const secondUrl = 'https://www.google.com/search?q=medication+reminder+app';
+    const first = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'sessionless-replacement-first', args: { url: firstUrl }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const second = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
+      requestId: 'sessionless-replacement-second', args: { url: secondUrl }, origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(native.events.created).toEqual(['9001', '9002']);
+    expect(native.events.closed).toEqual(['9001']);
+    expect(native.events.navigated).toEqual([]);
+    expect((second.session as Record<string, unknown>).sessionId).toBe((first.session as Record<string, unknown>).sessionId);
+    expect(second.browserConnection).toMatchObject({
+      provider: 'macos-apple-events',
+      tab: { ownership: 'plugin_owned', windowId: 'window-77', tabId: '9002', url: secondUrl },
       sessionResume: { status: 'matched' },
     });
   });
