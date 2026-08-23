@@ -842,10 +842,8 @@ export async function verifyStableRuntime(
   return result;
 }
 /** Explicitly records evidence only after the full independent verification passed. */
-export async function attestKnownGood(config: RecoveryConfig): Promise<ReleaseEvidence> {
-  const locked = await withLock(config, { action: 'attest_known_good' }, async () => {
-    const verified = await verifyStableRuntime(config);
-    const authority = releaseAuthority(config);
+function persistVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult): ReleaseEvidence {
+  const authority = releaseAuthority(config);
     const active = verified.releases.active;
     if (
       !verified.ok
@@ -866,7 +864,10 @@ export async function attestKnownGood(config: RecoveryConfig): Promise<ReleaseEv
       attestedAt: new Date().toISOString(),
     };
     const store = knownGood(config);
-    const releases = [attested, ...store.releases.filter((entry) => entry.path !== active.path)].slice(0, 8);
+    const releases = [
+      attested,
+      ...store.releases.filter((entry) => entry.path !== active.path && existsSync(entry.path)),
+    ].slice(0, 8);
     writeJson(statePath(config), { schemaVersion: 1, releases, updatedAt: new Date().toISOString() } satisfies KnownGoodStore);
     audit(config, 'known_good_attested', {
       revision: active.revision,
@@ -874,8 +875,13 @@ export async function attestKnownGood(config: RecoveryConfig): Promise<ReleaseEv
       manifestSha256: active.manifestSha256,
       releaseAuthorityRevision: authority.revision,
     });
-    return attested;
-  });
+  return attested;
+}
+
+export async function attestKnownGood(config: RecoveryConfig): Promise<ReleaseEvidence> {
+  const locked = await withLock(config, { action: 'attest_known_good' }, async () => (
+    persistVerifiedKnownGood(config, await verifyStableRuntime(config))
+  ));
   if (!locked.acquired) throw new Error(recoveryBusyDetail(locked.owner));
   return locked.value;
 }
@@ -2589,6 +2595,18 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     && verified.probes.external_mcp_http?.ok === false,
   );
   if (primaryRuntimeHealthy && !primaryConnectorFailed && recoveryHealthy) {
+    if (fullVerificationPerformed && verified.ok && !matchingKnownGood(config, verified.releases.active)) {
+      try {
+        const attestation = await withLock(config, { action: 'attest_known_good' }, async () => persistVerifiedKnownGood(config, verified));
+        if (!attestation.acquired) {
+          audit(config, 'known_good_attestation_deferred', { reason: recoveryBusyDetail(attestation.owner) });
+        }
+      } catch (error) {
+        audit(config, 'known_good_attestation_deferred', {
+          reason: error instanceof Error ? error.message : 'watchdog known-good attestation failed',
+        });
+      }
+    }
     const stable = recordWatchdogRuntimeHealthy(
       scopeWatchdogStateToRuntimeRelease(scopedPrior, verified.releases.active),
       now,
