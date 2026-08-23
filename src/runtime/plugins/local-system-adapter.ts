@@ -15,6 +15,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { dirname, extname, join, resolve } from 'path';
+import { forgeRuntimeServicePaths } from '../root/service';
 import {
   WorkspaceTargetGrantError,
   authorizeWorkspaceTargetGrant,
@@ -466,7 +467,7 @@ function launchAgentObservedPid(observed: string): number | undefined {
   return Number.isInteger(pid) && pid > 0 ? pid : undefined;
 }
 
-export function restartVerifiedUserLaunchAgent(labelValue: unknown, expectedProgramValue: unknown): Record<string, unknown> {
+export function restartVerifiedUserLaunchAgent(labelValue: unknown, expectedProgramValue: unknown, controllerHome?: string): Record<string, unknown> {
   const identity = userLaunchAgentIdentity(labelValue, expectedProgramValue);
   const inspected = run('/bin/launchctl', ['print', identity.service], 15_000);
   if (!inspected.ok) {
@@ -477,9 +478,11 @@ export function restartVerifiedUserLaunchAgent(labelValue: unknown, expectedProg
   const observed = `${inspected.stdout}\n${inspected.stderr}`;
   assertLaunchAgentObservedIdentity(identity, observed);
   const observedPid = launchAgentObservedPid(observed);
-  if (observedPid === process.pid) {
+  const canonicalRuntimeLabel = controllerHome ? forgeRuntimeServicePaths(controllerHome).label : undefined;
+  const selfRuntimeTarget = identity.label === canonicalRuntimeLabel || observedPid === process.pid;
+  if (selfRuntimeTarget) {
     const helper = scheduleLaunchAgentRestart(identity.service);
-    return { restarted: true, restartScheduled: true, selfRestart: true, label: identity.label, service: identity.service, expectedProgramContains: identity.expectedProgram, observedPid, helperPid: helper.pid, inspectCommand: inspected.command };
+    return { restarted: true, restartScheduled: true, selfRestart: true, label: identity.label, service: identity.service, expectedProgramContains: identity.expectedProgram, observedPid, canonicalRuntimeLabel, helperPid: helper.pid, inspectCommand: inspected.command };
   }
   const restarted = run('/bin/launchctl', ['kickstart', '-k', identity.service], 30_000);
   if (!restarted.ok) {
@@ -649,7 +652,7 @@ export async function executeLocalSystemPluginAction(input: AssistantPluginActio
     case 'system_snapshot': return systemSnapshot();
     case 'process_detail': return processDetail(input.args.pid);
     case 'terminate_process': return terminateVerifiedProcess(input.args.pid, input.args.expected_command_contains);
-    case 'restart_user_launch_agent': return restartVerifiedUserLaunchAgent(input.args.label, input.args.expected_program_contains);
+    case 'restart_user_launch_agent': return restartVerifiedUserLaunchAgent(input.args.label, input.args.expected_program_contains, input.controllerHome);
     case 'stop_user_launch_agent': return stopVerifiedUserLaunchAgent(input.args.label, input.args.expected_program_contains);
     case 'start_user_launch_agent': return startVerifiedUserLaunchAgent(input.args.label, input.args.expected_program_contains);
     case 'open_application': {

@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
+import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { join, resolve } from 'path';
 import { controllerSystemRoot } from '../../src/cli/repositories/controller-home';
 import {
@@ -737,13 +738,13 @@ describe('local_system target adapter', () => {
     const controllerHome = temp('forge-local-system-self-restart-controller-');
     const commands: string[][] = [];
     const scheduled: string[] = [];
-    const label = 'com.moretea.forge.runtime.self-test';
+    const label = forgeRuntimeServicePaths(controllerHome).label;
     const program = '/opt/forge/runtime/service/active-forge-runtime';
     setLocalSystemPluginHooksForTest({
       runCommand: (command, args) => {
         commands.push([command, ...args]);
         if (args[0] === 'print') {
-          return { ok: true, status: 0, stdout: `program = ${program}\npid = ${process.pid}\n`, stderr: '', command: [command, ...args] };
+          return { ok: true, status: 0, stdout: `program = ${program}\npid = ${process.pid + 1000}\n`, stderr: '', command: [command, ...args] };
         }
         throw new Error(`unexpected synchronous command: ${[command, ...args].join(' ')}`);
       },
@@ -759,7 +760,7 @@ describe('local_system target adapter', () => {
       restartScheduled: true,
       selfRestart: true,
       label,
-      observedPid: process.pid,
+      observedPid: process.pid + 1000,
       helperPid: 424242,
     });
     expect(commands).toHaveLength(1);
