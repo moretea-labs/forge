@@ -152,11 +152,13 @@ describe('repository command execution lifecycle', () => {
         executionIdentity: executionIdentityForRepository(repository),
       });
       expect(shellForm.process).toBeDefined();
-      expect(shellForm.process?.completed).toBe(true);
-      expect(shellForm.process?.ok).toBe(true);
       expect(shellForm.process?.processId).toStartWith('lightweight:');
-      expect(shellForm.process?.stderr).not.toContain('runtime-authority@runtime-fence');
       expect(shellForm.executionMetrics).toMatchObject({ lane: 'lightweight_managed', durableWrites: 0, leaseOperations: 0 });
+      const shellTerminal = shellForm.process!.completed
+        ? shellForm.process!
+        : await waitRepositoryCommandProcess(controllerHome, repository.repoId, shellForm.process!.processId, { timeoutMs: 10_000 });
+      expect(shellTerminal).toMatchObject({ completed: true, ok: true });
+      expect(shellTerminal.stderr).not.toContain('runtime-authority@runtime-fence');
       expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
     } finally {
       owner.release();
@@ -266,7 +268,13 @@ describe('repository command execution lifecycle', () => {
       [['bun', '-e', "await Bun.write('inline-marker.txt', 'inline-lightweight\\n')"], 'inline-marker.txt', 'inline-lightweight\n'],
     ] as const) {
       const result = await executeRepositoryCommandViaProcessRuntime({ controllerHome, repository, command, timeoutMs: 10_000, executionIdentity: executionIdentityForRepository(repository) });
-      expect(result.ok).toBe(true); expect(result.executionMetrics).toMatchObject({ lane: 'lightweight_managed', durableWrites: 0, leaseOperations: 0 }); expect(readFileSync(join(repoRoot, marker), 'utf-8')).toBe(expected);
+      expect(result.process?.processId).toStartWith('lightweight:');
+      expect(result.executionMetrics).toMatchObject({ lane: 'lightweight_managed', durableWrites: 0, leaseOperations: 0 });
+      const terminal = result.process!.completed
+        ? result.process!
+        : await waitRepositoryCommandProcess(controllerHome, repository.repoId, result.process!.processId, { timeoutMs: 10_000 });
+      expect(terminal).toMatchObject({ completed: true, ok: true });
+      expect(readFileSync(join(repoRoot, marker), 'utf-8')).toBe(expected);
     }
     expect(listProcessRecords(controllerHome, repository.repoId)).toHaveLength(processCount); expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
   });
@@ -305,17 +313,21 @@ describe('repository command execution lifecycle', () => {
     persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
     git(remoteRoot, ['init', '--bare']);
     git(repoRoot, ['remote', 'add', 'origin', remoteRoot]);
+    const command = ['git', 'push', 'origin', 'HEAD:refs/heads/cloud-test'];
+    expect(classifyRepositoryCommandRoute(command)).toEqual({ route: 'process_managed', reason: 'effectful_command_managed' });
     const result = await executeRepositoryCommandViaProcessRuntime({
       controllerHome,
       repository,
-      command: ['git', 'push', 'origin', 'HEAD:refs/heads/cloud-test'],
+      command,
       timeoutMs: 10_000,
       executionIdentity: executionIdentityForRepository(repository),
     });
-    expect(result.route).toBe('process_direct');
-    expect(result.ok).toBe(true);
     expect(result.process?.processId).toBeTruthy();
     expect(result.executionMetrics).toMatchObject({ lane: 'durable_process' });
+    const terminal = result.process!.completed
+      ? result.process!
+      : await waitRepositoryCommandProcess(controllerHome, repository.repoId, result.process!.processId, { timeoutMs: 10_000 });
+    expect(terminal).toMatchObject({ completed: true, ok: true });
     expect(gitOutput(remoteRoot, ['rev-parse', 'refs/heads/cloud-test'])).toBe(gitOutput(repoRoot, ['rev-parse', 'HEAD']));
     expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
   });
