@@ -53,3 +53,10 @@
 - Mistake pattern: Treating one healthy probe or a Watchdog binary handoff as proof that a Runtime release earned a fresh recovery budget.
 - Prevention rule: Persist recovery accounting against the immutable Runtime release identity; preserve it across Watchdog restart; reset it only on a genuinely new release or a configured continuous-health window. Exhaustion must hand off or perform the single attested recovery path, never loop back to a new first attempt.
 - Where to apply next time: `src/runtime/standalone-recovery/**`, release activation, watchdog state migrations, and failure-injection/live-recovery acceptance.
+
+## Persistent service entrypoints must not depend on an interactive shell PATH
+- Date: 2026-08-22
+- Triggered by correction: A packaged Runtime launcher used `#!/usr/bin/env node`; launchd exposed only `/usr/bin:/bin:/usr/sbin:/sbin`, so the canonical Runtime exited 127 and the public Gateway returned 502 until Recovery activated a source-built release.
+- Mistake pattern: Verifying an executable from an interactive shell and assuming the same interpreter resolution exists for launchd/systemd persistence.
+- Prevention rule: Materialized script entrypoints for persistent services must pin the absolute, validated installer/runtime executable or declare an explicit interpreter in the service contract. Regression tests must execute with the service manager's minimal PATH, not the developer shell PATH.
+- Where to apply next time: package Runtime/Connector launchers, launchd and systemd service rendering, package install/update cutover, and whole-Runtime activation verification.
