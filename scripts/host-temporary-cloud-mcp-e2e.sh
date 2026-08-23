@@ -146,7 +146,7 @@ curl --fail --silent --show-error \
   --retry 30 --retry-delay 1 --retry-connrefused \
   "http://127.0.0.1:${RUNTIME_PORT}/ready" > "$TMP_ROOT/runtime-ready.json"
 
-FORGE_MCP_PUBLIC_ORIGIN="$AUTH_PUBLIC_ORIGIN" \
+FORGE_MCP_OAUTH_PUBLIC_ORIGIN="$AUTH_PUBLIC_ORIGIN" \
 FORGE_CONTROLLER_LIFECYCLE_OWNER=1 \
   "$BUN_BIN" bin/forge.mjs mcp serve \
   --repo "$ROOT" \
