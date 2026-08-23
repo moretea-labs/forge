@@ -39,6 +39,49 @@ Call `GET /health` on the local MCP endpoint. The response includes:
 
 A growing `rejectedOverload` value with no matching capacity-eviction or close activity means clients are submitting protected work faster than the Controller can accept it. A pool full of stream-only sessions should now self-recover. Retrying with backoff is preferable to increasing every limit.
 
+## Runtime Activation Failure Looks Like a 502 (2026-08-23 incident)
+
+When a new Runtime release activation fails, the public MCP path can return
+HTTP `500` on `initialize`, which the tunnel surfaces as a `502`-style
+connection failure. The chain observed on 2026-08-23:
+
+1. A Runtime release activation started a new `mcp serve` process while the
+   launchd gateway already owned `127.0.0.1:8767`. The new process failed to
+   bind (`Failed to start server. Is port 8767 in use?`) but did **not exit**;
+   it kept running as an orphan (`PPID 1`) spinning at ~98% CPU.
+2. The canonical Runtime (port 8765) failed to start for the new release
+   (`RUNTIME_RELEASE_AUTHORITY_MISMATCH` in
+   `runtime/service/logs/stderr.log`), so the gateway could not complete MCP
+   `initialize` and returned HTTP 500.
+3. `tunnel-client` posted the upstream error to the control plane
+   (`dispatcher received MCP upstream error`, `upstream_status=500`,
+   `rpc_method=initialize`), which the remote client saw as a failed
+   connection / 502.
+
+Diagnostic fingerprint:
+
+- `gateway.stderr.log` contains `Failed to start server. Is port 8767 in use?`
+- `runtime/service/logs/stderr.log` contains repeated
+  `RUNTIME_RELEASE_AUTHORITY_MISMATCH`
+- recovery watchdog log shows `restart_primary_runtime` attempts followed by
+  `action":"rollback"` restoring the previous release
+- a stray `bun ... mcp serve` process with `PPID 1` and high `%CPU`
+
+Remediation:
+
+- The standalone Recovery watchdog automatically rolls back after the bounded
+  restart budget is exhausted; wait for `action":"healthy"` in
+  `recovery/audit/watchdog.log` before doing anything else.
+- Kill the orphaned `mcp serve` child of the failed release (verify it holds no
+  listening sockets first); it only burns CPU after a failed port bind.
+- Verify the canonical Runtime answers `initialize` on its own port and that
+  the tunnel log shows no new `upstream_status=500` entries.
+
+Known code defect to fix: `mcp serve` should exit with a non-zero status when
+the requested port is already in use instead of staying alive in a hot loop,
+and the recovery rollback should also rewrite
+`runtime/connector-service/authority.json` back to the restored release.
+
 Call `GET /ready` separately. A 503 from `/ready` with `/health` still returning 200 means the Runtime is live but cannot safely admit another initialize. `sessionCapacity.recoveryRecommended=false` preserves active work and waits; `true` is evidence for standalone Recovery's bounded whole-Runtime restart policy after the configured stall limit.
 
 ## Diagnostic Order
