@@ -83,11 +83,11 @@ FORGE_CONTROLLER_LIFECYCLE_OWNER=1 \
   --host 127.0.0.1 \
   --port "$GATEWAY_PORT" \
   --profile controller \
-  --auth none > "$GATEWAY_LOG" 2>&1 &
+  --auth oauth > "$GATEWAY_LOG" 2>&1 &
 GATEWAY_PID=$!
 
 for _ in $(seq 1 30); do
-  if curl --silent --show-error --output /dev/null "http://127.0.0.1:${GATEWAY_PORT}/mcp" 2>/dev/null; then
+  if curl --fail --silent "http://127.0.0.1:${GATEWAY_PORT}/.well-known/oauth-authorization-server" > "$TMP_ROOT/local-oauth.json" 2>/dev/null; then
     break
   fi
   if ! kill -0 "$GATEWAY_PID" 2>/dev/null; then
@@ -96,7 +96,7 @@ for _ in $(seq 1 30); do
   fi
   sleep 1
 done
-kill -0 "$GATEWAY_PID" 2>/dev/null || { cat "$GATEWAY_LOG" >&2; exit 1; }
+test -s "$TMP_ROOT/local-oauth.json"
 
 mkdir -p "$TUNNEL_DIR"
 TUNNEL_CLIENT_ASSET="tunnel-client-${TUNNEL_CLIENT_VERSION}-linux-amd64.zip"
