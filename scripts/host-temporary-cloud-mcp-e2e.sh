@@ -101,9 +101,18 @@ if [[ -z "$PUBLIC_ORIGIN" ]]; then
   exit 1
 fi
 
-curl --fail --silent --show-error \
-  --retry 20 --retry-delay 1 \
-  "$PUBLIC_ORIGIN/.well-known/oauth-authorization-server" > "$TMP_ROOT/public-oauth.json"
+for _ in $(seq 1 60); do
+  if curl --fail --silent \
+    "$PUBLIC_ORIGIN/.well-known/oauth-authorization-server" > "$TMP_ROOT/public-oauth.json" 2>/dev/null; then
+    break
+  fi
+  if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+    cat "$TUNNEL_LOG" >&2
+    exit 1
+  fi
+  sleep 1
+done
+test -s "$TMP_ROOT/public-oauth.json"
 ISSUER="$(node -e "const x=require(process.argv[1]); if(typeof x.issuer!=='string') process.exit(2); process.stdout.write(x.issuer)" "$TMP_ROOT/public-oauth.json")"
 if [[ "$ISSUER" != "$PUBLIC_ORIGIN" ]]; then
   echo "PUBLIC_OAUTH_ISSUER_MISMATCH expected=$PUBLIC_ORIGIN actual=$ISSUER" >&2
