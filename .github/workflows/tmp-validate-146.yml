@@ -1,0 +1,58 @@
+name: tmp-validate-146
+on:
+  push:
+    branches: [fix/controller-home-global-setup]
+permissions:
+  contents: write
+jobs:
+  main-gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/controller-home-global-setup
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+      - run: bun install --frozen-lockfile
+      - name: Main gate
+        run: bun run check:main
+        env:
+          TEST_BASE_REF: origin/main
+  windows-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/controller-home-global-setup
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.10'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+      - run: bun install --frozen-lockfile
+      - shell: pwsh
+        run: .\install.ps1 -DryRun -Runtime auto
+      - run: bun run check:platform-support
+      - run: bun test tests/cli/install.test.ts tests/runtime/process-environment.test.ts tests/windows-paths.test.ts
+      - run: bun run test:node-smoke
+  cleanup:
+    needs: [main-gate, windows-smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/controller-home-global-setup
+          fetch-depth: 0
+      - run: |
+          rm .github/workflows/tmp-validate-146.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/tmp-validate-146.yml
+          git commit -m "ci: remove temporary validation workflow"
+          git push origin HEAD:fix/controller-home-global-setup
