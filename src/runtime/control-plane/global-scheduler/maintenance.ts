@@ -4,6 +4,13 @@ import type { reconcileTerminalWorkCleanups } from '../execution/work-terminal-c
 import type { gcTerminalProcesses } from '../../execution/process-runtime/gc';
 import type { reconcilePendingWorkValidations } from '../execution/work-validation-reconciler';
 import type { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
+import {
+  buildControllerRoundRelayPrompt,
+  claimStalledControllerRoundRelays,
+  finishControllerRoundRelayDispatch,
+} from '../facade/controller-round-relay';
+import { assertAutomatedOperationAllowed } from '../governance/external-effects';
+import { runStandaloneChatgptPrompt } from '../launcher/chatgpt-work-continuation';
 
 export async function runSchedulerPeriodicCleanup(input: {
   controllerHome: string;
@@ -56,4 +63,68 @@ export async function runSchedulerValidationReconciliation(input: {
       );
     }
   }
+}
+
+export async function runSchedulerControllerRoundRecovery(input: {
+  controllerHome: string;
+  nowMs: number;
+  repositories: readonly Pick<RepositoryRecord, 'repoId'>[];
+  graceMs?: number;
+  maxRecoveries?: number;
+  dispatchPrompt?: typeof runStandaloneChatgptPrompt;
+  authorizeWake?: typeof assertAutomatedOperationAllowed;
+}): Promise<{ claimed: number; dispatched: number; failed: number }> {
+  const dispatchPrompt = input.dispatchPrompt ?? runStandaloneChatgptPrompt;
+  const authorizeWake = input.authorizeWake ?? assertAutomatedOperationAllowed;
+  const maxRecoveries = Math.max(1, Math.min(Math.trunc(input.maxRecoveries ?? 2), 8));
+  let claimed = 0;
+  let dispatched = 0;
+  let failed = 0;
+
+  for (const repository of input.repositories) {
+    if (claimed >= maxRecoveries) break;
+    const store = { controllerHome: input.controllerHome, repoId: repository.repoId };
+    const records = claimStalledControllerRoundRelays(store, {
+      nowMs: input.nowMs,
+      graceMs: input.graceMs,
+      limit: maxRecoveries - claimed,
+    });
+    claimed += records.length;
+    for (const record of records) {
+      try {
+        authorizeWake('external_controller_wake', {
+          work_id: record.originWorkId,
+          controller_type: 'chatgpt',
+          relay_scope_id: record.relayScopeId,
+          recovery_reason: 'unclosed_dispatched_round',
+        });
+        const result = await dispatchPrompt({
+          controllerHome: input.controllerHome,
+          repoId: repository.repoId,
+          scopeId: `controller-relay:${record.relayScopeId}`,
+          prompt: buildControllerRoundRelayPrompt(store, record),
+          browserSessionId: record.browserSessionId,
+          conversationUrl: record.conversationUrl,
+          model: 'gpt-5.6',
+          reasoning: 'high',
+          tabPolicy: 'auto',
+          timeoutMs: 30_000,
+        });
+        if (result.status === 'failed') throw new Error(result.error?.message ?? 'CHATGPT_CONTROLLER_RELAY_RECOVERY_FAILED');
+        finishControllerRoundRelayDispatch(store, {
+          workId: record.originWorkId,
+          ok: true,
+          browserSessionId: result.browserSessionId,
+          conversationUrl: result.conversationUrl,
+        });
+        dispatched += 1;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        finishControllerRoundRelayDispatch(store, { workId: record.originWorkId, ok: false, error: reason });
+        failed += 1;
+        console.error(`[forge controller relay] stalled round recovery failed for ${record.relayScopeId}:`, reason);
+      }
+    }
+  }
+  return { claimed, dispatched, failed };
 }

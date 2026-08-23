@@ -25,6 +25,7 @@ import { reconcilePendingWorkValidations } from '../execution/work-validation-re
 import { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
 import { schedulerDispatchAllowed } from '../facade/work-admission-policy';
 import {
+  runSchedulerControllerRoundRecovery,
   runSchedulerPeriodicCleanup,
   runSchedulerValidationReconciliation,
 } from './maintenance';
@@ -440,6 +441,7 @@ export class GlobalScheduler {
     this.lastTickAt = this.lastHeartbeatAt;
     this.persistState();
     const repositories = this.repositoryList(this.controllerHome).filter((repo) => repo.enabled && !repo.removedAt);
+    let periodicCleanupRan = false;
     if (now - this.lastCleanupAt >= RUNTIME_CLEANUP_INTERVAL_MS) {
       // Advance the interval before cleanup so a failing pass cannot create a
       // tight retry loop on every scheduler tick.
@@ -454,6 +456,7 @@ export class GlobalScheduler {
         terminalWorkCleanup: this.terminalWorkCleanup,
         processGc: this.processGc,
       });
+      periodicCleanupRan = true;
     }
     if (now - this.lastReconcile >= 5_000) {
       await reconcileExecutionJobsAsync(this.controllerHome);
@@ -515,6 +518,13 @@ export class GlobalScheduler {
       this.lastHeartbeatAt = new Date().toISOString();
       this.persistState(true);
       return { activeJobs: activeJobSnapshot.length };
+    }
+    if (periodicCleanupRan) {
+      await runSchedulerControllerRoundRecovery({
+        controllerHome: this.controllerHome,
+        nowMs: now,
+        repositories,
+      });
     }
     const durableAdmission = await runSchedulerDurableAdmission({
       controllerHome: this.controllerHome,

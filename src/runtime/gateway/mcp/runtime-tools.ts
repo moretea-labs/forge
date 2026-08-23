@@ -204,6 +204,7 @@ import { runStandaloneChatgptPrompt, runWorkChatgptContinuation } from '../../co
 import { getChatgptWorkConversationBinding } from '../../control-plane/launcher/chatgpt-work-binding-store';
 import {
   beginControllerRoundRelayAfterRelease,
+  beginInitialControllerRoundDispatch,
   buildControllerRoundRelayPrompt,
   finishControllerRoundRelayDispatch,
   submitControllerRoundDisposition,
@@ -3984,33 +3985,62 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               const timeoutMs = timeoutValue === undefined ? undefined : Number(timeoutValue);
               if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) throw new Error(`CHATGPT_LAUNCH_TIMEOUT_INVALID: ${timeoutValue}`);
               const continuationPrompt = typeof args.continuation_prompt === 'string' ? args.continuation_prompt.trim() : '';
+              const relay = beginInitialControllerRoundDispatch(
+                { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+                {
+                  workId,
+                  identity: authenticatedFacadeControllerIdentity(ctx, args),
+                  requirementId: work.requirementId,
+                  browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
+                  conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
+                },
+              );
+              if (relay.status === 'blocked') {
+                throw new Error(`CONTROLLER_RELAY_LAUNCH_BLOCKED: ${relay.blockedReason ?? relay.relayScopeId}`);
+              }
               const prompt = [
                 `Continue Forge Work ${work.workId} in repo ${work.repoId}.`,
                 `Objective: ${work.objective}`,
                 `Acceptance: ${work.acceptanceCriteria.join('; ') || 'none declared'}`,
                 `Current status: ${work.status}`,
+                `Controller round: ${relay.relayScopeId}. launcher_start opened this durable round; dispatch success is not semantic completion.`,
                 handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
                 continuationPrompt ? `Continuation: ${continuationPrompt}` : '',
                 'Treat Forge Work/Plan/evidence as source of truth. Claim the exact Work before any mutation; if ownership cannot be established, do not mutate.',
+                `Before this ChatGPT round ends, submit exactly one rh_work controller_disposition for Work ${work.workId} and relay_scope_id=${relay.relayScopeId}: continue_immediately, wait, wait_for_user (with an active Handoff), or goal_complete. Ending the response without a disposition does not close the round and may trigger bounded mechanical recovery.`,
               ].filter(Boolean).join('\n');
-              const dispatched = await runWorkChatgptContinuation({
-                controllerHome: ctx.controllerHome,
-                repoId: repository.repoId,
-                repoRoot: repository.canonicalRoot,
-                workId,
-                prompt,
-                browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
-                conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
-                model: valueForFlag('--model') ?? 'gpt-5.6',
-                reasoning: reasoning as 'medium' | 'high' | 'xhigh',
-                tabPolicy: tabPolicy as 'auto' | 'reuse' | 'new',
-                timeoutMs,
-              });
-              if (dispatched.status === 'failed') throw new Error(dispatched.error?.message ?? 'CHATGPT_WORK_CONTINUATION_FAILED');
+              let dispatched: Awaited<ReturnType<typeof runWorkChatgptContinuation>>;
+              try {
+                dispatched = await runWorkChatgptContinuation({
+                  controllerHome: ctx.controllerHome,
+                  repoId: repository.repoId,
+                  repoRoot: repository.canonicalRoot,
+                  workId,
+                  prompt,
+                  browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
+                  conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
+                  model: valueForFlag('--model') ?? 'gpt-5.6',
+                  reasoning: reasoning as 'medium' | 'high' | 'xhigh',
+                  tabPolicy: tabPolicy as 'auto' | 'reuse' | 'new',
+                  timeoutMs,
+                });
+                if (dispatched.status === 'failed') throw new Error(dispatched.error?.message ?? 'CHATGPT_WORK_CONTINUATION_FAILED');
+              } catch (launchError) {
+                finishControllerRoundRelayDispatch(
+                  { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+                  { workId, ok: false, error: launchError instanceof Error ? launchError.message : String(launchError) },
+                );
+                throw launchError;
+              }
+              const completedRelay = finishControllerRoundRelayDispatch(
+                { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+                { workId, ok: true, browserSessionId: dispatched.browserSessionId, conversationUrl: dispatched.conversationUrl },
+              );
               return result(buildFacadeResult({
-                summary: 'ChatGPT continuation dispatched directly through controller browser.',
+                summary: 'ChatGPT continuation dispatched with a durable controller-round closure obligation.',
                 data: {
                   workId,
+                  relay: completedRelay,
                   browserSessionId: dispatched.browserSessionId,
                   conversationUrl: dispatched.conversationUrl,
                   executionPreferenceVerified: dispatched.executionPreferenceVerified,
