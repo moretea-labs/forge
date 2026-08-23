@@ -413,7 +413,7 @@ function normalizeConfig(raw: Partial<BrowserPluginConfig>): BrowserPluginConfig
     schemaVersion: 1,
     enabled: raw.enabled === true,
     provider: 'playwright',
-    browserMode: browserMode(raw.browserMode) ?? 'managed_persistent',
+    browserMode: browserMode(raw.browserMode) ?? 'attach_preferred',
     profileMode: browserProfileMode(raw.profileMode) ?? (normalizedProfileDir ? 'custom' : 'repo_local'),
     profileDir: normalizedProfileDir,
     profileDirectory: stringValue(raw.profileDirectory),
@@ -424,9 +424,9 @@ function normalizeConfig(raw: Partial<BrowserPluginConfig>): BrowserPluginConfig
     cdpDiscoveryTimeoutMs: typeof raw.cdpDiscoveryTimeoutMs === 'number'
       ? Math.min(positiveNumber(raw.cdpDiscoveryTimeoutMs, DEFAULT_CDP_DISCOVERY_TIMEOUT_MS), MAX_CDP_DISCOVERY_TIMEOUT_MS)
       : undefined,
-    cdpAttachFallback: browserCdpAttachFallback(raw.cdpAttachFallback) ?? 'fail_closed',
+    cdpAttachFallback: browserCdpAttachFallback(raw.cdpAttachFallback) ?? 'managed_persistent',
     nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'auto',
-    nativeBrowserCandidates: browserProductList(raw.nativeBrowserCandidates) ?? ['vivaldi', 'chrome'],
+    nativeBrowserCandidates: browserProductList(raw.nativeBrowserCandidates) ?? ['chrome', 'vivaldi'],
     defaultTimeoutMs: typeof raw.defaultTimeoutMs === 'number' ? positiveNumber(raw.defaultTimeoutMs, DEFAULT_TIMEOUT_MS) : undefined,
   };
 }

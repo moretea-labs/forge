@@ -633,6 +633,7 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
+      browserMode: 'managed_persistent',
     });
 
     setBrowserPluginRuntimeHooksForTest({
@@ -862,6 +863,7 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
+      browserMode: 'managed_persistent',
     });
 
         setBrowserPluginRuntimeHooksForTest({
@@ -1604,6 +1606,7 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
+      browserMode: 'managed_persistent',
     });
 
     setBrowserPluginRuntimeHooksForTest({
@@ -1637,6 +1640,7 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
+      browserMode: 'managed_persistent',
     });
 
     let moduleChecks = 0;
@@ -1661,6 +1665,7 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
+      browserMode: 'managed_persistent',
     });
 
     setBrowserPluginRuntimeHooksForTest({
@@ -1695,6 +1700,7 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
+      browserMode: 'managed_persistent',
     });
 
     await expect(executeBrowserPluginAction({
@@ -1720,6 +1726,7 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
+      browserMode: 'managed_persistent',
       profileMode: 'custom',
       profileDir: chromeProfile,
       browserChannel: 'chrome',
@@ -1751,15 +1758,53 @@ describe('browser plugin', () => {
     });
   });
 
-  test('attach_preferred falls back to managed persistent only when configured', async () => {
+  test('default browser mode reuses the running Chrome tab before loading Playwright', async () => {
+    const { repoRoot, controllerHome } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+    });
+    const native = mockMacOsOwnedTabRuntime('chrome');
+    setMacOsBrowserRuntimeHooksForTest(native.hooks);
+    let playwrightLoads = 0;
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => true,
+      loadPlaywright: () => {
+        playwrightLoads += 1;
+        return mockAttachPlaywright() as never;
+      },
+    });
+
+    const result = await executeBrowserPluginAction({
+      controllerHome,
+      repoId: 'repo',
+      repoRoot,
+      pluginId: 'browser',
+      actionId: 'open_page',
+      requestId: 'browser-default-reuse-running-chrome',
+      args: { url: 'https://example.com/user-work' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+
+    expect(playwrightLoads).toBe(0);
+    expect(native.events.created).toEqual([]);
+    expect(result.browserConnection).toMatchObject({
+      requestedMode: 'attach_preferred',
+      mode: 'attach_preferred',
+      provider: 'macos-apple-events',
+      browserProduct: 'chrome',
+      tab: { ownership: 'user_owned', tabId: '501' },
+    });
+  });
+
+  test('default attach-first mode falls back to managed persistent only after attach is unavailable', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
-      browserMode: 'attach_preferred',
       cdpEndpoint: 'ws://127.0.0.1:9222/devtools/browser/stale',
-      cdpAttachFallback: 'managed_persistent',
       nativeAttachMode: 'disabled',
     });
     const runtime = mockAttachPlaywright([], { connectError: 'ECONNREFUSED 127.0.0.1:9222' }) as unknown as {
@@ -2838,6 +2883,7 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
+      browserMode: 'managed_persistent',
     });
 
         setBrowserPluginRuntimeHooksForTest({
@@ -2874,6 +2920,7 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
+      browserMode: 'managed_persistent',
     });
     mkdirSync(join(repoRoot, '.forge/browser/sessions'), { recursive: true });
     writeFileSync(join(repoRoot, '.forge/browser/sessions/browser_saved.json'), JSON.stringify({
@@ -2935,6 +2982,7 @@ describe('browser plugin', () => {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
+      browserMode: 'managed_persistent',
     });
 
     const runtime = mockPlaywright({ title: 'Extracted' }) as unknown as { evaluatedExpressions: unknown[] };
@@ -3349,6 +3397,7 @@ describe('browser plugin', () => {
         schemaVersion: 1,
         enabled: true,
         provider: 'playwright',
+        browserMode: 'managed_persistent',
         browserChannel: 'chromium',
         defaultTimeoutMs: 15_000,
       });
@@ -3499,7 +3548,7 @@ describe('browser plugin', () => {
 
   test('rejects non-HTTP(S) open_page URLs before launch', async () => {
     const { repoRoot } = repoFixture();
-    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright' });
+    writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'managed_persistent' });
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => true, loadPlaywright: () => mockPlaywright() });
     await expect(executeBrowserPluginAction({
       controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'open_page',
