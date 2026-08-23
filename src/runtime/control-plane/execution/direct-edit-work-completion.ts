@@ -6,6 +6,7 @@ import { completeRequirementFromWork } from '../persistence/requirement-store';
 import { appendWorkEvidence, getWorkContract, recordWorkCompletionReceipt, updateWorkContract } from '../facade/work-contract-store';
 import { isDirectEditWorkCompletionReceipt, isTerminalWorkContractStatus, type DirectEditWorkCompletionReceipt, type WorkReconciliationRecord } from '../facade/types';
 import { effectiveVerificationEvidence } from './verification-evidence';
+import { readWorkHandle } from './work-handle-store';
 
 export interface DirectEditWorkCompletionReconciliation {
   completedWorkIds: string[];
@@ -209,7 +210,16 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
     }
     throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_WORK_TERMINAL: ${input.workId}`);
   }
-  if (isTerminalWorkContractStatus(work.status) || work.workKind !== 'repository_change') {
+  const failedHandle = work.status === 'failed'
+    ? readWorkHandle(input.controllerHome, input.repoId, input.workId)
+    : undefined;
+  const failedReviewedRecovery = work.workKind === 'repository_change'
+    && work.status === 'failed'
+    && failedHandle?.managedWorktree === false
+    && failedHandle.state === 'failed'
+    && failedHandle.finalization.validation === 'failed'
+    && String(failedHandle.finalization.lastError ?? failedHandle.failureReason ?? '').includes('WORK_HANDLE_HEAD_CHANGED');
+  if ((isTerminalWorkContractStatus(work.status) && !failedReviewedRecovery) || work.workKind !== 'repository_change') {
     throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_WORK_NOT_ELIGIBLE: ${input.workId}`);
   }
   if (!work.baseRevision?.trim()) throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_BASE_REVISION_MISSING');
@@ -226,7 +236,15 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
   }
 
   const comparedPaths = normalizedComparedPaths(input.comparedPaths);
-  const actualPaths = comparedRevisionPaths(input.repoRoot, baseRevision, targetRevision);
+  let comparisonBaseRevision = baseRevision;
+  if (failedReviewedRecovery) {
+    const targetParent = exactCommit(input.repoRoot, `${targetRevision}^`, 'TARGET_PARENT_REVISION');
+    if (!git(input.repoRoot, ['merge-base', '--is-ancestor', baseRevision, targetParent]).ok) {
+      throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_TARGET_PARENT_NOT_DESCENDANT');
+    }
+    comparisonBaseRevision = targetParent;
+  }
+  const actualPaths = comparedRevisionPaths(input.repoRoot, comparisonBaseRevision, targetRevision);
   if (comparedPaths.length !== actualPaths.length || comparedPaths.some((path, index) => path !== actualPaths[index])) {
     throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_PATH_COMPARISON_MISMATCH');
   }

@@ -1507,6 +1507,67 @@ describe('rh_work managed lifecycle closure', () => {
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toMatchObject({ status: 'completed', completionOutcome: 'completed_changed' });
   });
 
+  test('rh_work reviewed reconciliation can recover a failed Direct Edit after unrelated main advancement', async () => {
+    const fx = fixture('historical-direct-edit-head-drift');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Recover one Direct Edit after unrelated main advancement',
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 5,
+      requires_recovery: true,
+      allowed_paths: ['owned-after-drift.txt'],
+    });
+    expect(started?.isError).not.toBe(true);
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    expect(workId).toBeTruthy();
+
+    writeFileSync(join(fx.repoRoot, 'unrelated-main.txt'), 'other work\n');
+    git(fx.repoRoot, ['add', 'unrelated-main.txt']);
+    git(fx.repoRoot, ['commit', '-m', 'advance main outside direct edit']);
+    writeFileSync(join(fx.repoRoot, 'owned-after-drift.txt'), 'owned work\n');
+
+    const failed = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'finalize',
+      work_id: workId,
+      commit: true,
+      merge: false,
+    });
+    expect(failed).toBeTruthy();
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('failed');
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)).toMatchObject({
+      state: 'failed',
+      finalization: { validation: 'failed' },
+    });
+
+    git(fx.repoRoot, ['add', 'owned-after-drift.txt']);
+    git(fx.repoRoot, ['commit', '-m', 'commit exact recovered direct edit']);
+    const targetRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+
+    const reclaimed = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'controller_claim',
+      work_id: workId,
+      controller_type: 'chatgpt',
+    });
+    expect(reclaimed?.isError, JSON.stringify(reclaimed?.structuredContent)).not.toBe(true);
+    const reconciled = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'finalize',
+      work_id: workId,
+      reconcile_historical_delivery: true,
+      reconcile_target_revision: targetRevision,
+      reconcile_compared_paths: ['owned-after-drift.txt'],
+      reconcile_rationale: 'The exact recovered commit contains only the reviewed Work-owned path after unrelated main advancement.',
+      reconcile_cleanup_proof: 'Direct Edit used the current checkout and has no managed worktree or feature branch cleanup.',
+    });
+    expect(reconciled?.isError, JSON.stringify(reconciled?.structuredContent)).not.toBe(true);
+    expect(reconciled?.structuredContent).toMatchObject({ status: 'ok', data: { lifecycleClosed: true, completionReceipt: { targetRevision, changedPaths: ['owned-after-drift.txt'] } } });
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toMatchObject({ status: 'completed', completionOutcome: 'completed_changed' });
+  });
+
   test('rh_work finalize reconciles historically delivered managed Work only after durable managed cleanup is complete', async () => {
     const fx = fixture('historical-managed');
     const started = await callRuntimeTool(fx.ctx, 'rh_work', {
