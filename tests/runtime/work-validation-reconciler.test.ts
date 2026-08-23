@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
@@ -128,6 +128,54 @@ describe('Work validation receipt convergence', () => {
     expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'delivery', evidenceState: 'valid' });
   });
   test('verification snapshot metadata does not change Check content identity', () => { const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-controller-')); const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-repo-')); roots.push(controllerHome, repoRoot); writeFileSync(join(repoRoot, 'source.ts'), 'export const value = 1;\n'); execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot }); execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot }); execFileSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot }); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot }); const sourceIdentity = currentControllerCheckRevision(repoRoot); const snapshot = materializeWorkVerificationSnapshot({ controllerHome, repoId: 'repo-validation-snapshot', sourceRoot: repoRoot, scope: { workId: 'work-validation-snapshot', allowedPaths: ['**'], forbiddenPaths: [] } }); expect(existsSync(join(snapshot.root, '.ai/harness/controller/work-verification-snapshot.json'))).toBe(true); expect(currentControllerCheckRevision(snapshot.root)).toBe(sourceIdentity); });
+  test('verification snapshot treats empty allowed paths as an unfenced Work scope while preserving forbidden exclusions', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-unfenced-controller-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-unfenced-repo-'));
+    roots.push(controllerHome, repoRoot);
+    writeFileSync(join(repoRoot, 'owned.ts'), 'export const owned = 1;\n');
+    writeFileSync(join(repoRoot, 'forbidden.ts'), 'export const forbidden = 1;\n');
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot });
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'owned.ts'), 'export const owned = 2;\n');
+    writeFileSync(join(repoRoot, 'forbidden.ts'), 'export const forbidden = 2;\n');
+
+    const snapshot = materializeWorkVerificationSnapshot({
+      controllerHome,
+      repoId: 'repo-validation-unfenced',
+      sourceRoot: repoRoot,
+      scope: { workId: 'work-validation-unfenced', allowedPaths: [], forbiddenPaths: ['forbidden.ts'] },
+    });
+    expect(snapshot.includedPaths).toEqual(['owned.ts']);
+    expect(snapshot.excludedPaths).toEqual(['forbidden.ts']);
+    expect(readFileSync(join(snapshot.root, 'owned.ts'), 'utf8')).toContain('owned = 2');
+    expect(readFileSync(join(snapshot.root, 'forbidden.ts'), 'utf8')).toContain('forbidden = 1');
+  });
+
+  test('verification snapshot keeps explicit allowed paths as a positive ownership fence', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-fenced-controller-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-fenced-repo-'));
+    roots.push(controllerHome, repoRoot);
+    writeFileSync(join(repoRoot, 'owned.ts'), 'export const owned = 1;\n');
+    writeFileSync(join(repoRoot, 'outside.ts'), 'export const outside = 1;\n');
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot });
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'owned.ts'), 'export const owned = 2;\n');
+    writeFileSync(join(repoRoot, 'outside.ts'), 'export const outside = 2;\n');
+
+    expect(() => materializeWorkVerificationSnapshot({
+      controllerHome,
+      repoId: 'repo-validation-fenced',
+      sourceRoot: repoRoot,
+      scope: { workId: 'work-validation-fenced', allowedPaths: ['owned.ts'], forbiddenPaths: [] },
+    })).toThrow(/WORK_VERIFICATION_PATH_OWNERSHIP_AMBIGUOUS: outside\.ts/);
+  });
+
   test('verification snapshot safely reuses primary worktree dependencies only when dependency metadata is unchanged', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-deps-controller-'));
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-deps-repo-'));

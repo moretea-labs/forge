@@ -207,11 +207,11 @@ export function materializeWorkVerificationSnapshot(input: {
       excludedPaths.push(path);
       continue;
     }
-    if (input.scope.allowedPaths.length > 0 && matchesAny(input.scope.allowedPaths, path)) {
+    if (input.scope.allowedPaths.length === 0 || matchesAny(input.scope.allowedPaths, path)) {
       includedPaths.push(path);
       continue;
     }
-    throw new Error(`WORK_VERIFICATION_PATH_OWNERSHIP_AMBIGUOUS: ${path} is dirty but is neither allowed nor forbidden for ${input.scope.workId}`);
+    throw new Error(`WORK_VERIFICATION_PATH_OWNERSHIP_AMBIGUOUS: ${path} is dirty but is outside the allowed path fence for ${input.scope.workId}`);
   }
 
   const root = snapshotRoot(input.controllerHome, input.repoId, input.scope.workId);
