@@ -212,6 +212,23 @@ if ! bash scripts/architecture-queue.sh reindex --check >/dev/null; then
   exit 1
 fi
 
+if [[ -f "docs/architecture/current/README.md" ]]; then
+  if [[ ! -f "docs/architecture/CURRENT.md" ]]; then
+    echo "[ArchitectureSync] architecture baseline failed: missing required file docs/architecture/CURRENT.md" >&2
+    exit 1
+  fi
+
+  if ! grep -Fq "Runtime Authority" "docs/architecture/CURRENT.md"; then
+    echo "[ArchitectureSync] architecture baseline failed: docs/architecture/CURRENT.md must contain: Runtime Authority" >&2
+    exit 1
+  fi
+
+  if ! grep -Fq "Not Runtime Authority" "docs/architecture/current/README.md"; then
+    echo "[ArchitectureSync] architecture baseline failed: docs/architecture/current/README.md must contain: Not Runtime Authority" >&2
+    exit 1
+  fi
+fi
+
 if [[ "$mode" == "off" ]]; then
   case "$format" in
     json) printf '{"mode":"off","changed_capabilities":0,"blocking":0}\n' ;;
