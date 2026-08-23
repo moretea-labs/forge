@@ -82,6 +82,49 @@ the requested port is already in use instead of staying alive in a hot loop,
 and the recovery rollback should also rewrite
 `runtime/connector-service/authority.json` back to the restored release.
 
+## Session Continuation Fails With 404 MCP_TOOL_SURFACE_CHANGED (2026-08-23)
+
+Second incident on the same day, different failure mode. After a session is
+created, every follow-up (`notifications/initialized`, `tools/call`) returned
+HTTP 404 with:
+
+```json
+{"error":"session_not_found","code":"MCP_TOOL_SURFACE_CHANGED",
+ "message":"MCP Runtime tool surface changed; initialize a new session so tools/list is refreshed.",
+ "recoverable":true,"action":"reinitialize",
+ "previousFingerprint":"<session>","currentFingerprint":"<published>"}
+```
+
+Root cause: the Gateway session fence compares the **live** Runtime schema
+fingerprint captured at `initialize` (`readCanonicalRuntimeToolSchema` ->
+`proxy.listTools()`) against the **published** fingerprint in
+`runtime/status.json`. The Runtime publishes `status.json` once at startup and
+does not republish when its live tool surface changes at runtime (e.g. a
+plugin registers or code edits change the tool set). Once the two values
+diverge, every session continuation is rejected as a tool-surface change, so
+the tunnel/connector appears broken even though `/health` shows both
+fingerprints matching the published value.
+
+Diagnostic fingerprint:
+
+- Gateway `/health` shows `toolSurfaceFingerprint` equal to
+  `runtimeToolSurfaceFingerprint` (both read the published value), but a real
+  `initialize` session stores a different fingerprint.
+- Follow-up requests get the `MCP_TOOL_SURFACE_CHANGED` 404 with
+  `previousFingerprint != currentFingerprint`.
+
+Remediation:
+
+- Restart the canonical Runtime service
+  (`launchctl kickstart -k gui/$UID/com.moretea.forge.runtime.<suffix>`) so it
+  republishes `status.json` from its current surface, then verify
+  `initialize` -> `notifications/initialized` (202) -> `tools/call` (200) with
+  a valid OAuth token.
+- Known code defect to fix: the Runtime should republish `status.json`
+  whenever its live tool surface changes (tool list changed), and/or the
+  Gateway fence should prefer the live fingerprint for the current-schema
+  comparison instead of trusting a stale publication.
+
 Call `GET /ready` separately. A 503 from `/ready` with `/health` still returning 200 means the Runtime is live but cannot safely admit another initialize. `sessionCapacity.recoveryRecommended=false` preserves active work and waits; `true` is evidence for standalone Recovery's bounded whole-Runtime restart policy after the configured stall limit.
 
 ## Diagnostic Order
