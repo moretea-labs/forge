@@ -32,17 +32,26 @@ describe('Forge setup session', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  test('prefers an existing repo controller home when setup runs inside that repository', () => {
-    const root = temp('forge-setup-repo-controller-home-'); try {
+  test('keeps user-level Controller Home global when setup runs inside a repository', () => {
+    const root = temp('forge-setup-global-controller-home-');
+    const previousControllerHome = process.env.FORGE_CONTROLLER_HOME;
+    try {
       const setupRoot = join(root, 'setup-home');
-      const controllerHome = join(root, '_ops', 'controller-home');
+      const repoControllerHome = join(root, '_ops', 'controller-home');
+      const controllerHome = join(root, 'global-controller-home');
       const endpoint = 'https://forge.example.com/mcp';
+      mkdirSync(repoControllerHome, { recursive: true });
       const profile = configureSetupProfile({ setupRoot, controller: 'chatgpt', tunnel: 'existing', endpoint });
       runMcpSetupChatgpt({ controllerHome, userLevel: true, endpoint });
-      const session = openSetupSession({ cwd: root, setupRoot, accountHome: root, profile, report: report('none'), platform, uuid: () => 'repo-controller-home' });
+      process.env.FORGE_CONTROLLER_HOME = controllerHome;
+      const session = openSetupSession({ cwd: root, setupRoot, accountHome: root, profile, report: report('none'), platform, uuid: () => 'global-controller-home' });
       expect(session.nextAction).toMatchObject({ id: 'runtime.package.install', command: 'forge runtime service install-package' });
       expect(session.nextAction?.id).not.toBe('controller.chatgpt.configure');
-    } finally { rmSync(root, { recursive: true, force: true }); }
+    } finally {
+      if (previousControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+      else process.env.FORGE_CONTROLLER_HOME = previousControllerHome;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test('only explicitly configured local controllers enable their host-tooling checks', () => {
