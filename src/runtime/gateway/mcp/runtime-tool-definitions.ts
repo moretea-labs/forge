@@ -171,6 +171,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     initial_likely_paths: { type: 'array', items: { type: 'string' }, description: 'Non-authoritative first-pass discovery candidates. May expand after investigation; allowed_paths remains a policy fence only.' },
     additional_likely_paths: { type: 'array', items: { type: 'string' }, description: 'Non-authoritative candidates discovered after Work start. Valid for continue; does not widen allowed_paths.' },
     inspected_paths: { type: 'array', items: { type: 'string' }, description: 'Paths actually inspected during progressive discovery. Valid for continue; does not widen allowed_paths.' },
+    acceptance_failure_decision: { type: 'string', enum: ['repair', 'rescope'], description: 'Explicit Controller decision for operation=continue after a deterministic valid_fail. Bypasses acceptance-review handoff only for this bounded repair/re-scope decision; never inferred from free text.' },
     forbidden_paths: { type: 'array', items: { type: 'string' } },
     constraints: { type: 'object' },
     repair_operation: { type: 'string', enum: ['diagnose', 'repair', 'verify', 'handoff'] },

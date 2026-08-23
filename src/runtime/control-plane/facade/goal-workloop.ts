@@ -103,6 +103,8 @@ export interface GoalWorkloopContinueInput {
   checks?: string[];
   additionalLikelyPaths?: string[];
   inspectedPaths?: string[];
+  /** Explicit Controller decision after deterministic acceptance failure; never inferred from note text. */
+  acceptanceFailureDecision?: 'repair' | 'rescope';
 }
 
 export interface GoalWorkloopVerifyInput {
@@ -1051,11 +1053,44 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     currentCheckRefs.map((record) => ({ checkId: record.checkId, outcome: record.outcome, recordedAt: record.recordedAt })),
   );
 
-  // Ambiguous: acceptance failure present → ask once per distinct failure evidence.
-  // Repeated continue calls must not manufacture an unbounded handoff loop. A
-  // resolved handoff remains the decision authority until the same check records
-  // newer valid-fail evidence; an unresolved matching handoff is simply reused.
-  if (history.acceptanceFailures.length > 0 && work.recoveryPolicy.handoffOnAmbiguity) {
+  const explicitAcceptanceRepair = history.acceptanceFailures.length > 0
+    && (input.acceptanceFailureDecision === 'repair' || input.acceptanceFailureDecision === 'rescope');
+  if (explicitAcceptanceRepair) {
+    const decision = input.acceptanceFailureDecision!;
+    work = appendWorkEvidence(ctx.workStore, work.workId, {
+      title: 'Controller acceptance-failure continuation decision',
+      summary: `Controller explicitly chose bounded ${decision} after deterministic acceptance failure: ${history.acceptanceFailures.join(', ')}.`,
+      detailLevel: 'summary',
+    });
+    transitionWorkContractPhase(ctx.workStore, work.workId, {
+      status: 'running',
+      phase: 'implementation',
+      state: 'active',
+      summary: `Controller chose bounded ${decision} after acceptance failure; implementation may resume before re-verification.`,
+      evidenceRefs: work.evidenceRefs,
+    });
+    work = getWorkContract(ctx.workStore, work.workId) ?? work;
+    return buildFacadeResult({
+      status: 'ok',
+      summary: `Continue accepted explicit bounded ${decision} decision after acceptance failure; implementation may resume.`,
+      data: {
+        work: summarizeWorkContract(work),
+        acceptanceFailures: history.acceptanceFailures,
+        infrastructureIssues: history.infrastructureIssues,
+        backgroundCompleted: false,
+        nextStep: 'execute',
+        acceptanceFailureDecision: decision,
+      },
+      evidenceRefs: work.evidenceRefs.slice(0, 5),
+      suggestedNextActions: suggestedForWork(work),
+    });
+  }
+
+  // Ambiguous acceptance failure without an explicit bounded Controller decision →
+  // ask once per distinct failure evidence. Repeated continue calls must not
+  // manufacture an unbounded handoff loop. A resolved handoff remains the decision
+  // authority until newer valid-fail evidence; an unresolved matching handoff is reused.
+  if (history.acceptanceFailures.length > 0 && !explicitAcceptanceRepair && work.recoveryPolicy.handoffOnAmbiguity) {
     const failureReason = `Acceptance checks failed: ${history.acceptanceFailures.join(', ')}`;
     const latestFailureAt = work.checkRefs
       .filter((record) => record.outcome === 'valid_fail' && history.acceptanceFailures.includes(record.checkId))
@@ -1063,7 +1098,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
       .sort((left, right) => right.localeCompare(left))[0];
     const matchingHandoffs = listHandoffItems({ ...ctx.handoffStore, status: 'all', limit: 100 })
       .filter((item) => (
-        item.workId === work.workId
+        item.workId === input.workId
         && item.creationReason === 'ambiguous_outcome'
         && item.title === 'Acceptance failure needs review'
         && item.reason === failureReason
@@ -1163,6 +1198,30 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
         ],
       });
     }
+
+    transitionWorkContractPhase(ctx.workStore, work.workId, {
+      status: 'running',
+      phase: 'verification',
+      state: 'active',
+      summary: `Resolved acceptance-failure handoff ${resolvedHandoff.id} authorizes bounded continuation to re-verification.`,
+      evidenceRefs: work.evidenceRefs,
+    });
+    work = getWorkContract(ctx.workStore, work.workId) ?? work;
+    return buildFacadeResult({
+      status: 'ok',
+      summary: `Continue accepted resolved acceptance-failure handoff ${resolvedHandoff.id}; re-verification may resume.`,
+      data: {
+        work: summarizeWorkContract(work),
+        handoffId: resolvedHandoff.id,
+        acceptanceFailures: history.acceptanceFailures,
+        infrastructureIssues: history.infrastructureIssues,
+        backgroundCompleted: false,
+        nextStep: 'verify',
+        remainingChecks: history.acceptanceFailures,
+      },
+      evidenceRefs: work.evidenceRefs.slice(0, 5),
+      suggestedNextActions: suggestedForWork(work),
+    });
   }
 
   // Infrastructure issues: suggest self-healing, not acceptance failure.
@@ -1771,6 +1830,9 @@ export function runGoalWorkloop(
         checks: Array.isArray(args.check_ids) ? args.check_ids.map(String) : undefined,
         additionalLikelyPaths: Array.isArray(args.additional_likely_paths) ? args.additional_likely_paths.map(String) : undefined,
         inspectedPaths: Array.isArray(args.inspected_paths) ? args.inspected_paths.map(String) : undefined,
+        acceptanceFailureDecision: args.acceptance_failure_decision === 'repair' || args.acceptance_failure_decision === 'rescope'
+          ? args.acceptance_failure_decision
+          : undefined,
       });
     case 'verify':
       return verifyGoalWorkloop(ctx, {
