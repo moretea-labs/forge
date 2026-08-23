@@ -97,6 +97,7 @@ interface BrowserSessionConnectionState {
   endpoint?: string;
   browserVersion?: string;
   browserProduct?: MacOsBrowserProduct;
+  nativeBrowserCandidates?: MacOsBrowserProduct[];
   fallback?: BrowserConnectionFallback;
   tab?: BrowserTabResumeState;
   sessionResume?: BrowserSessionResumeDiagnostic;
@@ -486,10 +487,12 @@ export async function resolveBrowserPluginAuthorizationContext(
   const action = actions().find((entry) => entry.actionId === input.actionId);
   if (!action || action.confirmation !== 'authorization' || !action.scopes.includes('browser.interact')) return undefined;
 
-  const config = effectiveBrowserActionConfig(loadConfig(input.repoRoot), input.args);
+  const persistedConfig = loadConfig(input.repoRoot);
   const sessionId = stringValue(input.args.session_id);
-  if (!sessionId || config.browserMode === 'isolated') return undefined;
+  const authorizationBrowserMode = parseBrowserModeInput(input.args.browser_mode) ?? persistedConfig.browserMode;
+  if (!sessionId || authorizationBrowserMode === 'isolated') return undefined;
   const session = findSession(input.repoRoot, sessionId);
+  const config = effectiveBrowserActionConfig(persistedConfig, input.args, session);
   const connection = session?.browser;
   if (!session || !connection || connection.activeMode === 'isolated') return undefined;
 
@@ -657,12 +660,26 @@ function effectiveBrowserActionConfig(
   existingSession?: BrowserSessionState,
 ): BrowserPluginConfig {
   const explicitBrowserMode = parseBrowserModeInput(args.browser_mode);
+  const explicitNativeBrowserCandidates = parseNativeBrowserCandidatesInput(args.native_browser_candidates);
+  const existingNativeProduct = existingSession?.browser?.provider === 'macos-apple-events'
+    ? existingSession.browser.browserProduct
+    : undefined;
+  if (existingNativeProduct && explicitNativeBrowserCandidates && !explicitNativeBrowserCandidates.includes(existingNativeProduct)) {
+    throw new AssistantPluginError(
+      'PLUGIN_ACTION_ARGUMENT_INVALID',
+      'native_browser_candidates cannot switch browser products for an existing native browser session.',
+      { retryable: false, details: { sessionId: existingSession?.sessionId, browserProduct: existingNativeProduct, nativeBrowserCandidates: explicitNativeBrowserCandidates } },
+    );
+  }
+  const savedNativeBrowserCandidates = existingSession?.browser?.provider === 'macos-apple-events'
+    ? existingSession.browser.nativeBrowserCandidates ?? (existingNativeProduct ? [existingNativeProduct] : undefined)
+    : undefined;
   return {
     ...config,
     browserMode: explicitBrowserMode ?? existingSession?.browser?.mode ?? config.browserMode,
     cdpAttachFallback: parseCdpAttachFallbackInput(args.cdp_attach_fallback) ?? config.cdpAttachFallback,
     nativeAttachMode: parseNativeAttachModeInput(args.native_attach_mode) ?? config.nativeAttachMode,
-    nativeBrowserCandidates: parseNativeBrowserCandidatesInput(args.native_browser_candidates) ?? config.nativeBrowserCandidates,
+    nativeBrowserCandidates: explicitNativeBrowserCandidates ?? savedNativeBrowserCandidates ?? config.nativeBrowserCandidates,
   };
 }
 
@@ -977,6 +994,7 @@ interface BrowserConnectionSummary {
   endpoint?: string;
   browserVersion?: string;
   browserProduct?: MacOsBrowserProduct;
+  nativeBrowserCandidates?: MacOsBrowserProduct[];
   fallback?: BrowserConnectionFallback;
   profile: {
     profileMode?: BrowserProfileMode;
@@ -1330,6 +1348,7 @@ function sessionConnectionFromSummary(connection: BrowserConnectionSummary): Bro
     endpoint: connection.endpoint,
     browserVersion: connection.browserVersion,
     browserProduct: connection.browserProduct,
+    nativeBrowserCandidates: connection.nativeBrowserCandidates,
     fallback: connection.fallback,
     tab: connection.tab,
     sessionResume: connection.sessionResume,
@@ -1931,7 +1950,7 @@ async function openNativeAttachedContext(
   }
 
   if (!discovered?.attachment) {
-    const candidates = savedProduct ? [savedProduct, ...(config.nativeBrowserCandidates ?? ['vivaldi', 'chrome']).filter((product) => product !== savedProduct)] : (config.nativeBrowserCandidates ?? ['vivaldi', 'chrome']);
+    const candidates = savedProduct ? [savedProduct] : (config.nativeBrowserCandidates ?? ['vivaldi', 'chrome']);
     discovered = await discoverMacOsBrowserAttachment(candidates, Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));
   }
   if (!discovered.attachment) return { attempts: discovered.attempts };
@@ -2053,6 +2072,7 @@ async function openNativeAttachedContext(
       provider: 'macos-apple-events',
       attached: true,
       browserProduct: metadata.product,
+      nativeBrowserCandidates: config.nativeBrowserCandidates,
       profile: {
         profileMode: config.profileMode,
         profileDirectory: config.profileDirectory,

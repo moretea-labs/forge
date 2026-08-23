@@ -2313,6 +2313,77 @@ describe('browser plugin', () => {
     expect(native.events.activeTabId).toBe('501');
   });
 
+  test('native session keeps its Chrome product and candidate constraints across config refresh and stale-tab recovery', async () => {
+    const { repoRoot } = repoFixture();
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    });
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    const chrome = mockMacOsOwnedTabRuntime('chrome');
+    const vivaldi = mockMacOsOwnedTabRuntime('vivaldi');
+    let chromeRunning = true;
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async (processName) => processName === 'Google Chrome' ? chromeRunning : true,
+      runAppleScript: async (script, args = []) => script.includes('Google Chrome')
+        ? chrome.hooks.runAppleScript(script, args)
+        : vivaldi.hooks.runAppleScript(script, args),
+    });
+
+    const first = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'native-product-stickiness-first', args: { url: 'https://example.com/form-state' },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const sessionId = String(first.sessionId);
+    expect(first.browserConnection).toMatchObject({
+      provider: 'macos-apple-events',
+      browserProduct: 'chrome',
+      nativeBrowserCandidates: ['chrome'],
+      tab: { ownership: 'plugin_owned', windowId: 'window-77', tabId: '9001' },
+    });
+
+    writeBrowserConfig(repoRoot, {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['vivaldi'],
+    });
+
+    const repeated = await executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'native-product-stickiness-repeat', args: { session_id: sessionId },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    expect(repeated.browserConnection).toMatchObject({
+      provider: 'macos-apple-events',
+      browserProduct: 'chrome',
+      nativeBrowserCandidates: ['chrome'],
+      tab: { ownership: 'plugin_owned', windowId: 'window-77', tabId: '9001' },
+      sessionResume: { status: 'matched' },
+    });
+    expect(vivaldi.events.created).toEqual([]);
+
+    chrome.dropOwnedTab('9001');
+    chromeRunning = false;
+    await expect(executeBrowserPluginAction({
+      controllerHome: repoRoot, repoId: 'repo', repoRoot, pluginId: 'browser', actionId: 'get_text',
+      requestId: 'native-product-stickiness-stale', args: { session_id: sessionId },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toThrow('PLUGIN_BROWSER_SESSION_STATE_LOST');
+    expect(vivaldi.events.created).toEqual([]);
+  });
+
   test('native close_session retains metadata when an owned tab cannot be closed', async () => {
     const { repoRoot } = repoFixture();
     writeBrowserConfig(repoRoot, { schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'] });
