@@ -733,6 +733,40 @@ describe('local_system target adapter', () => {
     expect(commands[1][2]).toBe('-k');
   });
 
+  test('schedules a self-restart helper instead of synchronously killing the Runtime that serves the request', async () => {
+    const controllerHome = temp('forge-local-system-self-restart-controller-');
+    const commands: string[][] = [];
+    const scheduled: string[] = [];
+    const label = 'com.moretea.forge.runtime.self-test';
+    const program = '/opt/forge/runtime/service/active-forge-runtime';
+    setLocalSystemPluginHooksForTest({
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === 'print') {
+          return { ok: true, status: 0, stdout: `program = ${program}\npid = ${process.pid}\n`, stderr: '', command: [command, ...args] };
+        }
+        throw new Error(`unexpected synchronous command: ${[command, ...args].join(' ')}`);
+      },
+      scheduleLaunchAgentRestart: (service) => { scheduled.push(service); return { pid: 424242 }; },
+    });
+
+    const result = await executeLocalSystemPluginAction(input(controllerHome, 'restart_user_launch_agent', {
+      label,
+      expected_program_contains: 'active-forge-runtime',
+    }));
+    expect(result).toMatchObject({
+      restarted: true,
+      restartScheduled: true,
+      selfRestart: true,
+      label,
+      observedPid: process.pid,
+      helperPid: 424242,
+    });
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.[1]).toBe('print');
+    expect(scheduled).toEqual([`gui/${process.getuid!()}/${label}`]);
+  });
+
   test('stops and starts only a verified current-user LaunchAgent from its installed plist', async () => {
     const controllerHome = temp('forge-local-system-launchagent-lifecycle-controller-');
     const home = temp('forge-local-system-launchagent-home-');

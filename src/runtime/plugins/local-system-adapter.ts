@@ -1,4 +1,4 @@
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import {
   constants,
@@ -71,6 +71,7 @@ export interface LocalSystemPluginHooks {
   now?: () => Date;
   runCommand?: (command: string, args: string[], timeoutMs?: number) => CommandResult;
   signalProcess?: (pid: number, signal: NodeJS.Signals) => void;
+  scheduleLaunchAgentRestart?: (service: string) => { pid: number };
 }
 
 let hooks: LocalSystemPluginHooks = {};
@@ -450,6 +451,21 @@ function assertInstalledLaunchAgentIdentity(identity: ReturnType<typeof userLaun
   }
 }
 
+function scheduleLaunchAgentRestart(service: string): { pid: number } {
+  if (hooks.scheduleLaunchAgentRestart) return hooks.scheduleLaunchAgentRestart(service);
+  const helperSource = `const { spawnSync } = require('node:child_process'); setTimeout(() => { const result = spawnSync('/bin/launchctl', ['kickstart', '-k', ${JSON.stringify(service)}], { stdio: 'ignore' }); process.exit(result.status ?? 1); }, 750);`;
+  const helper = spawn(process.execPath, ['-e', helperSource], { detached: true, stdio: 'ignore', env: process.env });
+  if (!helper.pid) throw new AssistantPluginError('LOCAL_SYSTEM_LAUNCH_AGENT_RESTART_HELPER_FAILED', `Failed to schedule restart for ${service}.`, { retryable: true, details: { service } });
+  helper.unref();
+  return { pid: helper.pid };
+}
+
+function launchAgentObservedPid(observed: string): number | undefined {
+  const match = observed.match(/(?:^|\n)\s*pid = (\d+)\s*(?:\n|$)/);
+  const pid = match ? Number(match[1]) : NaN;
+  return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+}
+
 export function restartVerifiedUserLaunchAgent(labelValue: unknown, expectedProgramValue: unknown): Record<string, unknown> {
   const identity = userLaunchAgentIdentity(labelValue, expectedProgramValue);
   const inspected = run('/bin/launchctl', ['print', identity.service], 15_000);
@@ -458,14 +474,20 @@ export function restartVerifiedUserLaunchAgent(labelValue: unknown, expectedProg
       retryable: false, details: { label: identity.label, service: identity.service, stderr: bounded(inspected.stderr, 4096).content },
     });
   }
-  assertLaunchAgentObservedIdentity(identity, `${inspected.stdout}\n${inspected.stderr}`);
+  const observed = `${inspected.stdout}\n${inspected.stderr}`;
+  assertLaunchAgentObservedIdentity(identity, observed);
+  const observedPid = launchAgentObservedPid(observed);
+  if (observedPid === process.pid) {
+    const helper = scheduleLaunchAgentRestart(identity.service);
+    return { restarted: true, restartScheduled: true, selfRestart: true, label: identity.label, service: identity.service, expectedProgramContains: identity.expectedProgram, observedPid, helperPid: helper.pid, inspectCommand: inspected.command };
+  }
   const restarted = run('/bin/launchctl', ['kickstart', '-k', identity.service], 30_000);
   if (!restarted.ok) {
     throw new AssistantPluginError('LOCAL_SYSTEM_LAUNCH_AGENT_RESTART_FAILED', restarted.stderr.trim() || restarted.stdout.trim() || `Failed to restart ${identity.label}.`, {
-      retryable: true, details: { label: identity.label, service: identity.service, exitCode: restarted.status },
+      retryable: true, details: { label: identity.label, service: identity.service, exitCode: restarted.status, stdout: bounded(restarted.stdout, 4096).content, stderr: bounded(restarted.stderr, 4096).content },
     });
   }
-  return { restarted: true, label: identity.label, service: identity.service, expectedProgramContains: identity.expectedProgram, inspectCommand: inspected.command, restartCommand: restarted.command };
+  return { restarted: true, restartScheduled: false, selfRestart: false, label: identity.label, service: identity.service, expectedProgramContains: identity.expectedProgram, observedPid, inspectCommand: inspected.command, restartCommand: restarted.command };
 }
 
 export function stopVerifiedUserLaunchAgent(labelValue: unknown, expectedProgramValue: unknown): Record<string, unknown> {
