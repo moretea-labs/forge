@@ -136,3 +136,4 @@ NODE
   elapsed=$((elapsed + 60))
   printf 'FORGE_CLOUD_MCP_HEARTBEAT elapsed=%ss tunnel_id=%s\n' "$elapsed" "$TUNNEL_ID"
 done
+# fresh-run trigger after Actions secret provisioning
