@@ -17,6 +17,7 @@ import { acceptPlanStepEvidence, approvePlanContract, claimPlanStepForWork, comp
 import { createRequirement, readRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
+import { bindChatgptWorkConversation } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
 import { createSchedule, getSchedule, listOccurrences, saveOccurrence, saveSchedule } from '../../src/runtime/workflow/schedules/store';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
 import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
@@ -2379,6 +2380,112 @@ describe('rh_work managed lifecycle closure', () => {
     const fetchedSchedule = (fetched?.structuredContent as { data?: { schedule?: { enabled?: boolean; pausedReason?: string } } })?.data?.schedule;
     expect(fetchedSchedule?.enabled).toBe(false);
     expect(fetchedSchedule?.pausedReason).toContain('terminal');
+  });
+
+  test('records explicit ChatGPT round disposition, preserves the bound conversation, and fences repeated immediate relay before release', async () => {
+    const fx = fixture('controller-round-relay');
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Keep one ChatGPT goal moving across controller rounds',
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 1,
+      requires_recovery: true,
+      allowed_paths: ['README.md'],
+    });
+    expect(started?.isError, JSON.stringify(started?.structuredContent)).not.toBe(true);
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    expect(workId).toBeTruthy();
+
+    const claimed = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'controller_claim',
+      work_id: workId,
+      controller_type: 'chatgpt',
+    });
+    expect(claimed?.isError, JSON.stringify(claimed?.structuredContent)).not.toBe(true);
+
+    const otherSessionCtx = { ...fx.ctx, sessionId: 'mcp-lifecycle-controller-round-relay-other' };
+    const rejectedOtherSession = await callRuntimeTool(otherSessionCtx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'controller_disposition',
+      work_id: workId,
+      disposition: 'wait',
+      relay_scope_id: 'goal:stable-baseline',
+    });
+    expect(rejectedOtherSession?.isError).toBe(true);
+    expect(String((rejectedOtherSession?.structuredContent as { summary?: string })?.summary ?? '')).toContain('WORK_CONTROLLER_SESSION_MISMATCH');
+
+    bindChatgptWorkConversation({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      conversationUrl: 'https://chatgpt.com/c/relay-stability-master',
+      latestBrowserSessionId: 'forge-chatgpt-stability-master',
+    });
+
+    const waiting = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'controller_disposition',
+      work_id: workId,
+      disposition: 'wait',
+      relay_scope_id: 'goal:stable-baseline',
+      reason: 'Explicit controller wait decision.',
+    });
+    expect(waiting?.isError, JSON.stringify(waiting?.structuredContent)).not.toBe(true);
+    expect(waiting?.structuredContent).toMatchObject({
+      status: 'ok',
+      data: { relay: { disposition: 'wait', status: 'waiting', relayScopeId: 'goal:stable-baseline' } },
+    });
+
+    const first = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'controller_disposition',
+      work_id: workId,
+      disposition: 'continue_immediately',
+      relay_scope_id: 'goal:stable-baseline',
+      state_fingerprint: 'same-semantic-state',
+      max_rounds: 3,
+      max_repeated_state: 1,
+    });
+    expect(first?.isError, JSON.stringify(first?.structuredContent)).not.toBe(true);
+    expect(first?.structuredContent).toMatchObject({
+      status: 'ok',
+      data: {
+        relay: {
+          disposition: 'continue_immediately',
+          status: 'pending_release',
+          relayScopeId: 'goal:stable-baseline',
+          roundCount: 1,
+          repeatedStateCount: 0,
+          browserSessionId: 'forge-chatgpt-stability-master',
+          conversationUrl: 'https://chatgpt.com/c/relay-stability-master',
+        },
+      },
+    });
+
+    const ownerBeforeRelease = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'controller_get_owner',
+      work_id: workId,
+    });
+    expect((ownerBeforeRelease?.structuredContent as { data?: { owner?: { workId?: string } } }).data?.owner?.workId).toBe(workId);
+
+    const blocked = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'controller_disposition',
+      work_id: workId,
+      disposition: 'continue_immediately',
+      relay_scope_id: 'goal:stable-baseline',
+      state_fingerprint: 'same-semantic-state',
+      max_rounds: 3,
+      max_repeated_state: 1,
+    });
+    expect(blocked?.isError).toBe(true);
+    expect(blocked?.structuredContent).toMatchObject({
+      status: 'blocked',
+      data: { relay: { status: 'blocked', repeatedStateCount: 1 } },
+    });
+    expect(String(((blocked?.structuredContent as { data?: { relay?: { blockedReason?: string } } }).data?.relay?.blockedReason ?? ''))).toContain('repeated_state');
   });
 
   test('non-shadow continuation trigger reserves one launch while authenticated MCP retains Work ownership authority', async () => {
