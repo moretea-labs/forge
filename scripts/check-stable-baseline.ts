@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, renameSync, writeFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { mkdirSync, renameSync, writeFileSync } from 'fs';
+import { dirname, join } from 'path';
 import { resolveControllerHome } from '../src/cli/repositories/controller-home';
 import { recoveryConnectorDescriptor, verifyRecoveryConnector } from '../src/cli/commands/recovery';
 import { loadRecoveryConfig, verifyStableRuntime } from '../src/runtime/standalone-recovery/core';
@@ -27,12 +27,8 @@ function argValue(name: string): string | undefined {
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
-function stableJson(value: unknown): string {
-  return JSON.stringify(value, Object.keys(value as Record<string, unknown>).sort());
-}
-
 function atomicJson(path: string, value: unknown): void {
-  mkdirSync(resolve(path, '..'), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   renameSync(temporary, path);
@@ -58,16 +54,18 @@ export async function checkStableBaseline(controllerHomeInput?: string): Promise
   const identity = {
     schemaVersion: 1,
     controllerHome,
-    runtimeInstanceId: runtime.runtimeInstanceId,
+    runtimeInstanceId: runtime.snapshot?.runtimeInstanceId,
     runtimeRelease: runtimeVerify.releases.active?.revision,
     runtimeManifest: runtimeVerify.releases.active?.manifestSha256,
+    runtimeToolSurfaceFingerprint: runtime.snapshot?.toolSurfaceFingerprint,
+    runtimeEndpoint: runtime.snapshot?.endpoint,
     recoveryRelease: connector.currentRelease,
     recoveryUrl: connector.url,
     runtimeReady: runtime.ready,
     runtimeVerifyOk: runtimeVerify.ok,
     connectorVerifyOk: connectorVerify.ok,
   };
-  const receiptId = createHash('sha256').update(stableJson(identity)).digest('hex');
+  const receiptId = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
   const receipt: BaselineReceipt = {
     schemaVersion: 1,
     status: blockers.length === 0 ? 'passed' : 'failed',
