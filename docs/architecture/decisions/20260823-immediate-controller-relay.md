@@ -19,6 +19,8 @@ goal_complete
 
 `continue_immediately` creates a durable `controller_round_relay` record under the existing Controller Home SQLite authority. It does not create a second scheduler, daemon, lifecycle owner, or autonomous agent. The current ChatGPT controller must own the exact live Work lease when it submits the disposition. Dispatch begins only after that lease is explicitly released.
 
+A ChatGPT wake is a two-stage mechanical lifecycle: `dispatched -> claimed`. Browser prompt submission proves only transport dispatch. The round becomes `claimed` only when an authenticated ChatGPT Controller acquires the exact Work lease. Neither state is semantic acceptance. A claimed round must still end with an explicit ChatGPT disposition. If the lease disappears without a disposition, Forge may mechanically re-dispatch after the bounded liveness grace; it must not infer whether the Goal should continue or complete.
+
 The relay reuses the existing ChatGPT controller-browser launcher path. The originating Work's durable ChatGPT conversation binding is inherited automatically and then carried forward by stable relay scope, so later rounds and later Works under the same Requirement/Goal can reuse the same ChatGPT conversation without making chat history authoritative. Requirement, Work, Handoff and evidence state remain the source of truth.
 
 A Requirement-bound relay scope is `requirement:<requirementId>`. A Goal without a durable Requirement uses an explicit stable goal scope; the initial fallback is `goal:<originWorkId>`. The next ChatGPT round may select or create a different Work under the same semantic scope.

@@ -29,6 +29,7 @@ export type ControllerRoundRelayStatus =
   | 'pending_release'
   | 'dispatching'
   | 'dispatched'
+  | 'claimed'
   | 'waiting'
   | 'waiting_for_user'
   | 'goal_complete'
@@ -64,6 +65,7 @@ export interface ControllerRoundRelayRecord {
   submittedAt: string;
   updatedAt: string;
   dispatchedAt?: string;
+  claimedAt?: string;
 }
 
 export interface ControllerRoundRelayStoreOptions {
@@ -397,7 +399,7 @@ export function beginInitialControllerRoundDispatch(
       throw new Error(`CONTROLLER_RELAY_SCOPE_MISMATCH: Work ${work.workId} is already bound to ${existing.value.relayScopeId}`);
     }
     const previous = relayHistory(options, relayScopeId)[0];
-    if (previous && ['pending_release', 'dispatching', 'dispatched'].includes(previous.status)) {
+    if (previous && ['pending_release', 'dispatching', 'dispatched', 'claimed'].includes(previous.status)) {
       throw new Error(`CONTROLLER_RELAY_ROUND_ALREADY_OPEN: ${relayScopeId}`);
     }
     const requestedMaxRounds = boundedInteger(input.maxRounds, DEFAULT_MAX_ROUNDS, 1, 32);
@@ -535,6 +537,74 @@ export function finishControllerRoundRelayDispatch(
   });
 }
 
+export function acknowledgeControllerRoundClaim(
+  options: ControllerRoundRelayStoreOptions,
+  input: { workId: string; session: ControllerSession },
+): ControllerRoundRelayRecord | undefined {
+  const initial = readRelayRecord(options, input.workId);
+  if (!initial) return undefined;
+  if (initial.value.status === 'claimed') {
+    if (
+      initial.value.controllerId === input.session.controllerId
+      && initial.value.sessionId === input.session.sessionId
+      && initial.value.claimGeneration === input.session.claimGeneration
+    ) return initial.value;
+    throw new Error(`CONTROLLER_RELAY_CLAIM_CONFLICT: ${input.workId}`);
+  }
+  if (initial.value.status !== 'dispatched') return initial.value;
+  if (input.session.controllerType !== 'chatgpt') throw new Error(`CONTROLLER_RELAY_CHATGPT_CLAIM_REQUIRED: ${input.workId}`);
+
+  return relayLock(options, initial.value.relayScopeId, `controller-relay-claim:${input.session.controllerId}`, () => {
+    const current = readRelayRecord(options, input.workId);
+    if (!current) return undefined;
+    if (current.value.status === 'claimed') {
+      if (
+        current.value.controllerId === input.session.controllerId
+        && current.value.sessionId === input.session.sessionId
+        && current.value.claimGeneration === input.session.claimGeneration
+      ) return current.value;
+      throw new Error(`CONTROLLER_RELAY_CLAIM_CONFLICT: ${input.workId}`);
+    }
+    if (current.value.status !== 'dispatched') return current.value;
+    const owner = getControllerSession(options, input.workId);
+    if (!owner) throw new Error(`CONTROLLER_RELAY_ACTIVE_CLAIM_REQUIRED: ${input.workId}`);
+    if (
+      owner.controllerType !== 'chatgpt'
+      || owner.controllerId !== input.session.controllerId
+      || owner.sessionId !== input.session.sessionId
+      || owner.claimGeneration !== input.session.claimGeneration
+      || (owner.principalId?.trim() || owner.controllerId) !== (input.session.principalId?.trim() || input.session.controllerId)
+    ) throw new Error(`CONTROLLER_RELAY_CLAIM_IDENTITY_MISMATCH: ${input.workId}`);
+    if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) {
+      throw new Error(`CONTROLLER_RELAY_CLAIM_GENERATION_REQUIRED: ${input.workId}`);
+    }
+    const claimGeneration = owner.claimGeneration;
+    const at = nowIso(options);
+    const next: ControllerRoundRelayRecord = {
+      ...current.value,
+      status: 'claimed',
+      controllerId: owner.controllerId,
+      principalId: owner.principalId?.trim() || owner.controllerId,
+      controllerInstanceId: owner.controllerInstanceId?.trim() || current.value.controllerInstanceId,
+      sessionId: owner.sessionId,
+      claimGeneration,
+      claimedAt: at,
+      updatedAt: at,
+      lastError: undefined,
+    };
+    writeControlPlaneRecord(options.controllerHome, {
+      namespace: NAMESPACE,
+      scope: options.repoId,
+      key: input.workId,
+      schemaVersion: SCHEMA_VERSION,
+      value: next,
+      action: 'controller_round_relay_claim_acknowledged',
+      expectedRevision: current.revision,
+    });
+    return next;
+  });
+}
+
 export function claimStalledControllerRoundRelays(
   options: ControllerRoundRelayStoreOptions,
   input: { nowMs?: number; graceMs?: number; limit?: number } = {},
@@ -546,9 +616,9 @@ export function claimStalledControllerRoundRelays(
 
   for (const candidate of latestRelayRecordsByScope(options)) {
     if (claimed.length >= limit) break;
-    if (candidate.status !== 'dispatched') continue;
-    const dispatchedAtMs = Date.parse(candidate.dispatchedAt ?? candidate.updatedAt);
-    if (!Number.isFinite(dispatchedAtMs) || nowMs - dispatchedAtMs < graceMs) continue;
+    if (!['dispatched', 'claimed'].includes(candidate.status)) continue;
+    const roundOpenedAtMs = Date.parse(candidate.claimedAt ?? candidate.dispatchedAt ?? candidate.updatedAt);
+    if (!Number.isFinite(roundOpenedAtMs) || nowMs - roundOpenedAtMs < graceMs) continue;
     const requirement = requirementForRelay(options, candidate.requirementId);
     if (requirement && !['planned', 'active'].includes(requirement.state)) continue;
     const candidateWorks = relevantWork(options, candidate);
@@ -558,9 +628,9 @@ export function claimStalledControllerRoundRelays(
 
     const next = relayLock(options, candidate.relayScopeId, `controller-relay-recover:${candidate.originWorkId}`, () => {
       const latest = relayHistory(options, candidate.relayScopeId)[0];
-      if (!latest || latest.originWorkId !== candidate.originWorkId || latest.updatedAt !== candidate.updatedAt || latest.status !== 'dispatched') return undefined;
-      const latestDispatchedAtMs = Date.parse(latest.dispatchedAt ?? latest.updatedAt);
-      if (!Number.isFinite(latestDispatchedAtMs) || nowMs - latestDispatchedAtMs < graceMs) return undefined;
+      if (!latest || latest.originWorkId !== candidate.originWorkId || latest.updatedAt !== candidate.updatedAt || latest.status !== candidate.status) return undefined;
+      const latestRoundOpenedAtMs = Date.parse(latest.claimedAt ?? latest.dispatchedAt ?? latest.updatedAt);
+      if (!Number.isFinite(latestRoundOpenedAtMs) || nowMs - latestRoundOpenedAtMs < graceMs) return undefined;
       const latestRequirement = requirementForRelay(options, latest.requirementId);
       if (latestRequirement && !['planned', 'active'].includes(latestRequirement.state)) return undefined;
       const works = relevantWork(options, latest);
@@ -569,7 +639,7 @@ export function claimStalledControllerRoundRelays(
       if (activeWorks.some((work) => getControllerSession(options, work.workId))) return undefined;
 
       const currentRecord = readRelayRecord(options, latest.originWorkId);
-      if (!currentRecord || currentRecord.value.updatedAt !== latest.updatedAt || currentRecord.value.status !== 'dispatched') return undefined;
+      if (!currentRecord || currentRecord.value.updatedAt !== latest.updatedAt || currentRecord.value.status !== latest.status) return undefined;
       const fingerprintWork = activeWorks[0] ?? getWorkContract(options, latest.originWorkId);
       const stateFingerprint = fingerprintWork
         ? mechanicalStateFingerprint(options, fingerprintWork, latest.requirementId)
@@ -587,7 +657,8 @@ export function claimStalledControllerRoundRelays(
         stateFingerprint,
         roundCount,
         repeatedStateCount,
-        lastError: 'CONTROLLER_RELAY_ROUND_UNCLOSED',
+        lastError: latest.status === 'claimed' ? 'CONTROLLER_RELAY_CLAIMED_ROUND_UNCLOSED' : 'CONTROLLER_RELAY_ROUND_UNCLOSED',
+        claimedAt: undefined,
         ...(blockedReason ? { blockedReason } : { blockedReason: undefined }),
         updatedAt: at,
       };
@@ -634,8 +705,8 @@ export function buildControllerRoundRelayPrompt(
     `Active Handoff snapshot:\n${handoffLines}`,
     `Previous relay origin Work: ${record.originWorkId}. Do not assume the next action must continue that Work; select, start, or claim the appropriate Work from the latest semantic state.`,
     `Mechanical relay budget: round=${record.roundCount}/${record.maxRounds}; repeated_state=${record.repeatedStateCount}/${record.maxRepeatedState}; consecutive_failures=${record.consecutiveFailures}/${record.maxFailures}.`,
-    ...(record.lastError === 'CONTROLLER_RELAY_ROUND_UNCLOSED'
-      ? ['The previous successfully dispatched ChatGPT round did not submit an explicit disposition before its liveness grace elapsed. This wake is mechanical recovery only: reread durable state and close this round explicitly.']
+    ...(['CONTROLLER_RELAY_ROUND_UNCLOSED', 'CONTROLLER_RELAY_CLAIMED_ROUND_UNCLOSED'].includes(record.lastError ?? '')
+      ? ['The previous ChatGPT round did not submit an explicit disposition before its liveness grace elapsed. Forge is only recovering liveness: reread durable state, make the semantic decision in ChatGPT, and close this round explicitly.']
       : []),
     `If the overall Requirement/Goal still needs another controller round, explicitly submit rh_work controller_disposition=continue_immediately with relay_scope_id=${record.relayScopeId} before releasing the Work you own. Otherwise use wait, wait_for_user with an active Handoff, or goal_complete.`,
     'Forge must not infer the semantic next step. Existing Work ownership, Handoff authority, and external-effect authorization remain authoritative; claim the exact Work before any mutation.',

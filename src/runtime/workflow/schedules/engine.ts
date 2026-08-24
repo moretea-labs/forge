@@ -14,6 +14,11 @@ import { launchSuperController } from '../../control-plane/launcher/thin-launche
 import { getExternalControllerLaunchReservation } from '../../control-plane/launcher/launch-reservation-store';
 import { runStandaloneChatgptPrompt, runWorkChatgptContinuation } from '../../control-plane/launcher/chatgpt-work-continuation';
 import {
+  beginInitialControllerRoundDispatch,
+  buildControllerRoundRelayPrompt,
+  finishControllerRoundRelayDispatch,
+} from '../../control-plane/facade/controller-round-relay';
+import {
   getOccurrence,
   getSchedule,
   listActiveOccurrences,
@@ -432,35 +437,72 @@ async function executeExternalControllerWake(
     if (controllerType === 'chatgpt') {
       const reasoning = args.reasoning === 'medium' || args.reasoning === 'xhigh' ? args.reasoning : 'high';
       const tabPolicy = args.tab_policy === 'reuse' || args.tab_policy === 'new' ? args.tab_policy : 'auto';
-      const dispatched = await runWorkChatgptContinuation({
-        controllerHome,
-        repoId: schedule.repoId,
-        repoRoot: repository.canonicalRoot,
-        workId,
-        prompt: continuationPrompt,
-        title: schedule.name,
-        browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
-        conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
-        model: typeof args.model === 'string' ? args.model : 'gpt-5.6',
-        reasoning,
-        tabPolicy,
-        timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-      });
-      if (dispatched.status === 'failed') throw new Error(dispatched.error?.message ?? 'CHATGPT_WORK_CONTINUATION_FAILED');
-      const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
-      saveSchedule(controllerHome, {
-        ...latest,
-        lastTriggeredAt: timestamp,
-        lastOccurrenceId: occurrence.occurrenceId,
-        consecutiveFailures: 0,
-        nextEligibleAt: undefined,
-        pausedReason: undefined,
-      });
-      return saveOccurrence(controllerHome, {
-        ...wakeDecision,
-        status: 'succeeded',
-        reason: `ChatGPT Work continuation dispatched via ${dispatched.browserSessionId}; execution preference verified.`,
-      });
+      let relay;
+      try {
+        relay = beginInitialControllerRoundDispatch(workStore, {
+          workId,
+          identity: {
+            controllerId: `schedule:${schedule.scheduleId}`,
+            principalId: 'forge-scheduler',
+            controllerInstanceId: 'forge-runtime-scheduler',
+            sessionId: occurrence.occurrenceId,
+          },
+          requirementId: work.requirementId,
+          browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
+          conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
+        });
+        if (relay.status === 'blocked') throw new Error(`CONTROLLER_RELAY_LAUNCH_BLOCKED: ${relay.blockedReason ?? relay.relayScopeId}`);
+        const relayPrompt = `${buildControllerRoundRelayPrompt(workStore, relay)}\n\nScheduled continuation hint: ${continuationPrompt}`;
+        const dispatched = await runWorkChatgptContinuation({
+          controllerHome,
+          repoId: schedule.repoId,
+          repoRoot: repository.canonicalRoot,
+          workId,
+          prompt: relayPrompt,
+          title: schedule.name,
+          browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
+          conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
+          model: typeof args.model === 'string' ? args.model : 'gpt-5.6',
+          reasoning,
+          tabPolicy,
+          timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+        });
+        if (dispatched.status === 'failed') throw new Error(dispatched.error?.message ?? 'CHATGPT_WORK_CONTINUATION_FAILED');
+        const completedRelay = finishControllerRoundRelayDispatch(workStore, {
+          workId,
+          ok: true,
+          browserSessionId: dispatched.browserSessionId,
+          conversationUrl: dispatched.conversationUrl,
+        });
+        const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
+        saveSchedule(controllerHome, {
+          ...latest,
+          lastTriggeredAt: timestamp,
+          lastOccurrenceId: occurrence.occurrenceId,
+          consecutiveFailures: 0,
+          nextEligibleAt: undefined,
+          pausedReason: undefined,
+        });
+        return saveOccurrence(controllerHome, {
+          ...wakeDecision,
+          status: 'succeeded',
+          reason: `ChatGPT dispatch action succeeded via ${dispatched.browserSessionId}; relay ${completedRelay?.relayScopeId ?? relay.relayScopeId} remains dispatched until the new Controller claims Work ${workId}.`,
+        });
+      } catch (error) {
+        if (relay) {
+          finishControllerRoundRelayDispatch(workStore, {
+            workId,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        if (error instanceof Error && error.message.startsWith('CONTROLLER_RELAY_ROUND_ALREADY_OPEN:')) {
+          const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
+          saveSchedule(controllerHome, { ...latest, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
+          return decideOccurrence(controllerHome, schedule, wakeDecision, 'nothing_to_do', 'skipped', `Work ${workId} already has an open ChatGPT controller round awaiting claim or disposition.`);
+        }
+        throw error;
+      }
     }
     const launched = await launchSuperController({
       work: { controllerHome, repoId: schedule.repoId },

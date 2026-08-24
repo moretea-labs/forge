@@ -205,6 +205,7 @@ import { launchSuperController } from '../../control-plane/launcher/thin-launche
 import { runStandaloneChatgptPrompt, runWorkChatgptContinuation } from '../../control-plane/launcher/chatgpt-work-continuation';
 import { getChatgptWorkConversationBinding } from '../../control-plane/launcher/chatgpt-work-binding-store';
 import {
+  acknowledgeControllerRoundClaim,
   beginControllerRoundRelayAfterRelease,
   beginInitialControllerRoundDispatch,
   buildControllerRoundRelayPrompt,
@@ -4049,7 +4050,16 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               permissionSnapshotVersion,
               lastValidatedAt: new Date().toISOString(),
             });
-            return result(buildFacadeResult({ summary: `Controller ${session.controllerId} claimed ${session.workId}.`, data: { session } }) as unknown as Record<string, unknown>);
+            const relay = acknowledgeControllerRoundClaim(
+              { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+              { workId, session },
+            );
+            return result(buildFacadeResult({
+              summary: relay?.status === 'claimed'
+                ? `Controller ${session.controllerId} claimed ${session.workId}; the dispatched ChatGPT round is mechanically acknowledged and still requires an explicit semantic disposition.`
+                : `Controller ${session.controllerId} claimed ${session.workId}.`,
+              data: { session, relay },
+            }) as unknown as Record<string, unknown>);
           } catch (error) {
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller claim failed.', data: {} }) as unknown as Record<string, unknown>, true);
           }
@@ -4233,7 +4243,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 { workId, ok: true, browserSessionId: dispatched.browserSessionId, conversationUrl: dispatched.conversationUrl },
               );
               return result(buildFacadeResult({
-                summary: 'ChatGPT continuation dispatched with a durable controller-round closure obligation.',
+                summary: 'ChatGPT continuation dispatched; wake completion remains pending until the new ChatGPT Controller claims the Work, and semantic closure still requires an explicit disposition.',
                 data: {
                   workId,
                   relay: completedRelay,
