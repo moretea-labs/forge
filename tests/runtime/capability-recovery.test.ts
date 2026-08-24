@@ -22,6 +22,7 @@ import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { approvePlanContract, claimPlanStepForWork, createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { applyControllerHomeMigration } from '../../src/runtime/control-plane/persistence/controller-home-migration';
 import {
   applyExternalFilesystemGrant,
   buildWorkspaceAuthStatus,
@@ -313,6 +314,142 @@ describe('runtime maintenance executor', () => {
       sessionId: session.sessionId,
     };
   }
+
+  it('blocks false healthy readiness for retained Work left in a migrated Controller Home', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-retained-migration-'));
+    temporaryRoots.push(root);
+    const sourceHome = join(root, 'source-controller');
+    const controllerHome = join(root, 'current-controller');
+    const repoRoot = join(root, 'repo');
+    const retainedWorktree = join(root, '.forge', 'managed-worktrees', 'legacy-controller', 'repo-retained', 'work-retained');
+    mkdirSync(repoRoot, { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), '# retained\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
+    mkdirSync(join(root, '.forge', 'managed-worktrees', 'legacy-controller', 'repo-retained'), { recursive: true });
+    execFileSync('git', ['worktree', 'add', '-q', '-b', 'work/retained', retainedWorktree, 'HEAD'], { cwd: repoRoot });
+    writeFileSync(join(retainedWorktree, 'preserved.txt'), 'implementation in progress\n');
+
+    createWorkContract({ controllerHome: sourceHome, repoId: 'repo-retained' }, {
+      workId: 'work-retained-migrated', repoId: 'repo-retained', mode: 'goal_workloop',
+      objective: 'Preserved implementation that must remain reviewable after Controller Home migration.',
+      acceptanceCriteria: ['preserve implementation'], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'user', status: 'cancelled',
+      checkoutId: 'checkout-retained', worktreeRef: retainedWorktree,
+      continuationPrompt: 'Resume preserved implementation after migration.',
+    });
+    await applyControllerHomeMigration({ sourceHome, destinationHome: controllerHome });
+
+    const status = buildRuntimeMaintenanceStatus({ repoId: 'repo-retained', canonicalRoot: repoRoot }, controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
+    expect(status.readyForExecution).toBe(false);
+    expect(status.summary.retainedMigratedWork).toBe(1);
+    expect(status.candidates).toContainEqual(expect.objectContaining({
+      kind: 'retained_migrated_work',
+      id: 'work-retained-migrated',
+      path: retainedWorktree,
+      status: 'cancelled',
+      safe: false,
+      ownershipStatus: 'explicit',
+      disposition: 'resume_or_supersede_review',
+      continuationPrompt: 'Resume preserved implementation after migration.',
+    }));
+    expect(readFileSync(join(retainedWorktree, 'preserved.txt'), 'utf8')).toBe('implementation in progress\n');
+  });
+
+  it('does not block readiness for a migrated terminal Work whose worktreeRef is only an old repository root', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-retained-repo-root-'));
+    temporaryRoots.push(root);
+    const sourceHome = join(root, 'source-controller');
+    const controllerHome = join(root, 'current-controller');
+    const repoRoot = join(root, 'repo');
+    const oldRepositoryRoot = join(root, 'retired-repository-root');
+    mkdirSync(repoRoot, { recursive: true });
+    mkdirSync(oldRepositoryRoot, { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), '# current\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
+
+    createWorkContract({ controllerHome: sourceHome, repoId: 'repo-retained-root' }, {
+      workId: 'work-retained-repository-root', repoId: 'repo-retained-root', mode: 'goal_workloop',
+      objective: 'Historical terminal Work whose legacy worktreeRef was the repository root.',
+      acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'user', status: 'cancelled',
+      checkoutId: 'checkout-retained-root', worktreeRef: oldRepositoryRoot,
+    });
+    await applyControllerHomeMigration({ sourceHome, destinationHome: controllerHome });
+
+    const status = buildRuntimeMaintenanceStatus({ repoId: 'repo-retained-root', canonicalRoot: repoRoot }, controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
+    expect(status.summary.retainedMigratedWork).toBe(0);
+    expect(status.candidates).not.toContainEqual(expect.objectContaining({
+      kind: 'retained_migrated_work',
+      id: 'work-retained-repository-root',
+    }));
+  });
+
+  it('does not block readiness for an empty legacy managed-worktree directory with no Git marker', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-empty-managed-residue-'));
+    temporaryRoots.push(root);
+    const sourceHome = join(root, 'source-controller');
+    const controllerHome = join(root, 'current-controller');
+    const repoRoot = join(root, 'repo');
+    const emptyManagedResidue = join(root, '.repo-harness', 'managed-worktrees', 'legacy-controller', 'repo-retained', 'campaign-empty');
+    mkdirSync(repoRoot, { recursive: true });
+    mkdirSync(emptyManagedResidue, { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), '# current\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
+
+    createWorkContract({ controllerHome: sourceHome, repoId: 'repo-empty-managed-residue' }, {
+      workId: 'work-empty-managed-residue', repoId: 'repo-empty-managed-residue', mode: 'goal_workloop',
+      objective: 'Historical Work whose managed directory is already empty and detached from Git.',
+      acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'user', status: 'cancelled',
+      checkoutId: 'checkout-empty-residue', worktreeRef: emptyManagedResidue,
+    });
+    await applyControllerHomeMigration({ sourceHome, destinationHome: controllerHome });
+
+    const status = buildRuntimeMaintenanceStatus({ repoId: 'repo-empty-managed-residue', canonicalRoot: repoRoot }, controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
+    expect(status.summary.retainedMigratedWork).toBe(0);
+    expect(status.candidates).not.toContainEqual(expect.objectContaining({
+      kind: 'retained_migrated_work',
+      id: 'work-empty-managed-residue',
+    }));
+  });
+
+  it('does not flag a current Work-owned managed worktree as unowned lifecycle debt', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-owned-worktree-'));
+    temporaryRoots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    const worktree = join(root, '.forge', 'managed-worktrees', 'current-controller', 'repo-owned', 'work-owned');
+    mkdirSync(repoRoot, { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), '# owned\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
+    mkdirSync(join(root, '.forge', 'managed-worktrees', 'current-controller', 'repo-owned'), { recursive: true });
+    execFileSync('git', ['worktree', 'add', '-q', '-b', 'work/owned', worktree, 'HEAD'], { cwd: repoRoot });
+    createWorkContract({ controllerHome, repoId: 'repo-owned' }, {
+      workId: 'work-owned-current', repoId: 'repo-owned', mode: 'goal_workloop', objective: 'Current owned worktree',
+      acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'user', status: 'running', checkoutId: 'checkout-owned', worktreeRef: worktree,
+    });
+
+    const status = buildRuntimeMaintenanceStatus({ repoId: 'repo-owned', canonicalRoot: repoRoot }, controllerHome, { minAgeMinutes: 60, maxCandidates: 50 });
+    expect(status.candidates).not.toContainEqual(expect.objectContaining({ kind: 'unowned_managed_worktree', path: worktree }));
+    expect(status.candidates).not.toContainEqual(expect.objectContaining({ kind: 'retained_migrated_work', path: worktree }));
+  });
 
   it('terminalizes stale active Local Jobs without using Local Job tickets', () => {
     const { controllerHome, localJobs, repository } = tempRepo();

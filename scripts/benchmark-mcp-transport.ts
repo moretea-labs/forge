@@ -43,6 +43,38 @@ function readSamples(path: string): McpTransportLatencySample[] {
   return text.split(/\r?\n/).filter(Boolean).map((line) => normalizeMcpTransportLatencySample(JSON.parse(line)));
 }
 
+export function timingLedgerServerDuration(
+  path: string | undefined,
+  tool: string,
+  meta: Record<string, unknown>,
+): number | undefined {
+  if (!path) return undefined;
+  const traceId = typeof meta.traceId === 'string' ? meta.traceId : undefined;
+  const requestId = typeof meta.requestId === 'string' ? meta.requestId : undefined;
+  if (!traceId && !requestId) return undefined;
+  try {
+    const text = readFileSync(path, 'utf8').trim();
+    if (!text) return undefined;
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      let value: Record<string, unknown>;
+      try {
+        value = JSON.parse(lines[index]!) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      if (value.tool !== tool) continue;
+      if (traceId && value.traceId !== traceId) continue;
+      if (requestId && value.requestId !== requestId) continue;
+      const duration = value.totalToolDurationMs;
+      if (typeof duration === 'number' && Number.isFinite(duration) && duration >= 0) return duration;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
 async function probe(): Promise<McpTransportLatencySample[]> {
   const endpointRaw = option('--endpoint');
   if (!endpointRaw) throw new Error('--endpoint is required unless --input is used');
@@ -52,6 +84,7 @@ async function probe(): Promise<McpTransportLatencySample[]> {
   const iterations = positiveInteger('--iterations', 30);
   const warmup = integerAtLeast('--warmup', 3, 0);
   const timeoutMs = positiveInteger('--timeout-ms', 120_000);
+  const timingLog = option('--timing-log')?.trim();
   const includeConnect = process.argv.includes('--include-connect');
   const timingScope = includeConnect ? 'connect_and_tool_call' as const : 'tool_call' as const;
   const tokenEnv = option('--token-env')?.trim() || 'FORGE_MCP_BENCH_TOKEN';
@@ -95,10 +128,6 @@ async function probe(): Promise<McpTransportLatencySample[]> {
     for (let index = 0; index < warmup; index += 1) await call();
     for (let index = 0; index < iterations; index += 1) {
       const { response, totalMs } = await call();
-      const serverDurationMs = extractForgeServerDuration(response);
-      if (serverDurationMs === undefined) {
-        throw new Error('MCP_SERVER_DURATION_MISSING: target must return Forge responseMeta.serverDurationMs');
-      }
       const structured = response && typeof response === 'object' && !Array.isArray(response)
         ? (response as Record<string, unknown>).structuredContent
         : undefined;
@@ -108,6 +137,11 @@ async function probe(): Promise<McpTransportLatencySample[]> {
       const meta = responseMeta && typeof responseMeta === 'object' && !Array.isArray(responseMeta)
         ? responseMeta as Record<string, unknown>
         : {};
+      const serverDurationMs = extractForgeServerDuration(response)
+        ?? timingLedgerServerDuration(timingLog, tool, meta);
+      if (serverDurationMs === undefined) {
+        throw new Error('MCP_SERVER_DURATION_MISSING: target must return Forge responseMeta.serverDurationMs or expose a matching --timing-log ledger entry');
+      }
       samples.push({
         label,
         tool,
@@ -125,10 +159,12 @@ async function probe(): Promise<McpTransportLatencySample[]> {
   return samples;
 }
 
-const input = option('--input');
-const samples = input ? readSamples(input) : await probe();
-const report = aggregateMcpTransportLatencySamples(samples);
-console.log(JSON.stringify({
-  generatedAt: new Date().toISOString(),
-  ...report,
-}, null, 2));
+if (import.meta.main) {
+  const input = option('--input');
+  const samples = input ? readSamples(input) : await probe();
+  const report = aggregateMcpTransportLatencySamples(samples);
+  console.log(JSON.stringify({
+    generatedAt: new Date().toISOString(),
+    ...report,
+  }, null, 2));
+}
