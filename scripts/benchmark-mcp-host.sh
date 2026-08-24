@@ -37,7 +37,11 @@ cleanup() {
     done
     kill -9 "$RUNTIME_PID" 2>/dev/null || true
   fi
-  rm -rf "$TMP_ROOT"
+  for _ in $(seq 1 5); do
+    rm -rf "$TMP_ROOT" 2>/dev/null && return 0
+    sleep 0.1
+  done
+  rm -rf "$TMP_ROOT" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -68,7 +72,8 @@ curl --fail --silent --show-error \
   --repo-id "$REPO_ID" \
   --tool rh_status \
   --iterations "$ITERATIONS" \
-  --warmup 3 > "$STEADY_JSON"
+  --warmup 3 \
+  --timing-log "$CONTROLLER_HOME/audit/mcp-timings.jsonl" > "$STEADY_JSON"
 
 "$BUN_BIN" run benchmark:mcp-transport -- \
   --endpoint "http://127.0.0.1:${PORT}/mcp" \
@@ -77,7 +82,8 @@ curl --fail --silent --show-error \
   --tool rh_status \
   --iterations "$CONNECT_ITERATIONS" \
   --warmup 0 \
-  --include-connect > "$CONNECT_JSON"
+  --include-connect \
+  --timing-log "$CONTROLLER_HOME/audit/mcp-timings.jsonl" > "$CONNECT_JSON"
 
 node - "$STEADY_JSON" "$CONNECT_JSON" "$READY_JSON" <<'NODE'
 const fs = require('fs');

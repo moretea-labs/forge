@@ -1,4 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { timingLedgerServerDuration } from '../../scripts/benchmark-mcp-transport';
 import {
   aggregateMcpTransportLatencySamples,
   extractForgeServerDuration,
@@ -9,6 +13,24 @@ describe('MCP transport latency benchmark', () => {
   test('extracts Forge server duration from MCP structured content', () => {
     expect(extractForgeServerDuration({ structuredContent: { responseMeta: { serverDurationMs: 42.5 } } })).toBe(42.5);
     expect(extractForgeServerDuration({ structuredContent: {} })).toBeUndefined();
+  });
+
+  test('recovers server duration from the matching MCP timing ledger entry', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-mcp-timing-ledger-'));
+    const ledger = join(root, 'mcp-timings.jsonl');
+    try {
+      writeFileSync(ledger, [
+        JSON.stringify({ tool: 'rh_status', traceId: 'trace-a', requestId: 'request-a', totalToolDurationMs: 91.25 }),
+        JSON.stringify({ tool: 'rh_status', traceId: 'trace-b', requestId: 'request-b', totalToolDurationMs: 47.5 }),
+        '{malformed-latest-line',
+      ].join('\n'));
+      expect(timingLedgerServerDuration(ledger, 'rh_status', { traceId: 'trace-b', requestId: 'request-b' })).toBe(47.5);
+      expect(timingLedgerServerDuration(ledger, 'rh_status', { traceId: 'trace-a', requestId: 'request-a' })).toBe(91.25);
+      expect(timingLedgerServerDuration(ledger, 'rh_status', { traceId: 'missing' })).toBeUndefined();
+      expect(timingLedgerServerDuration(ledger, 'rh_work', { traceId: 'trace-b' })).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test('aggregates client, server, and external residual percentiles by transport and tool', () => {
