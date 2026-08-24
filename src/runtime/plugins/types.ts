@@ -4,6 +4,7 @@ export type AssistantPluginLifecycleState = 'enabled' | 'disabled' | 'degraded' 
 export type AssistantPluginHealthState = 'ready' | 'disabled' | 'degraded' | 'error';
 export type AssistantPluginActionRisk = 'readonly' | 'workspace_write' | 'remote_write' | 'destructive';
 export type AssistantPluginActionConfirmation = 'none' | 'authorization' | 'strong_confirmation';
+export type AssistantPluginForegroundEffect = 'none' | 'possible' | 'required';
 export type AssistantPluginResource = 'repo-state' | 'workspace' | 'remote' | 'git-refs' | 'provider-state';
 
 export interface AssistantPluginAuthorizationTarget {
@@ -54,6 +55,7 @@ export interface AssistantPluginActionDescriptor {
   cancellable: boolean;
   idempotent: boolean;
   executionMode?: 'runtime' | 'lightweight_process';
+  foregroundEffect?: AssistantPluginForegroundEffect;
   scopes: string[];
   resourceClaims: AssistantPluginActionResourceClaim[];
   argumentsSchema: Record<string, unknown>;

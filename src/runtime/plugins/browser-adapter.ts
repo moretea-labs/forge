@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { createRequire } from 'module';
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
+import { readBrowserBinding } from '../../cli/chatgpt-browser/binding';
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
@@ -13,6 +14,16 @@ import type {
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { executeBrowserActionThroughNode, shouldUseBrowserNodeBridge } from './browser-node-bridge';
+import {
+  currentBrowserSessionAuthorityContext,
+  DEFAULT_BROWSER_SESSION_LIST_LIMIT,
+  findBrowserSession as findBrowserSessionAuthority,
+  listAllBrowserSessionsForRepository,
+  MAX_BROWSER_SESSION_LIST_LIMIT,
+  saveBrowserSession as saveBrowserSessionAuthority,
+  tombstoneBrowserSession,
+  withBrowserSessionAuthorityContext,
+} from './browser-session-authority';
 import {
   closeMacOsBrowserOwnedTab,
   createMacOsBrowserOwnedPage,
@@ -427,7 +438,7 @@ function normalizeConfig(raw: Partial<BrowserPluginConfig>): BrowserPluginConfig
     cdpDiscoveryTimeoutMs: typeof raw.cdpDiscoveryTimeoutMs === 'number'
       ? Math.min(positiveNumber(raw.cdpDiscoveryTimeoutMs, DEFAULT_CDP_DISCOVERY_TIMEOUT_MS), MAX_CDP_DISCOVERY_TIMEOUT_MS)
       : undefined,
-    cdpAttachFallback: browserCdpAttachFallback(raw.cdpAttachFallback) ?? 'managed_persistent',
+    cdpAttachFallback: browserCdpAttachFallback(raw.cdpAttachFallback) ?? 'fail_closed',
     nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'auto',
     nativeBrowserCandidates: browserProductList(raw.nativeBrowserCandidates) ?? ['chrome', 'vivaldi'],
     defaultTimeoutMs: typeof raw.defaultTimeoutMs === 'number' ? positiveNumber(raw.defaultTimeoutMs, DEFAULT_TIMEOUT_MS) : undefined,
@@ -479,11 +490,29 @@ function readBrowserSessionJson(path: string): BrowserSessionState | undefined {
   }
 }
 
-function loadConfig(repoRoot: string): BrowserPluginConfig {
-  return normalizeConfig(readJson<Partial<BrowserPluginConfig>>(configPath(repoRoot)) ?? {});
+function legacyChatgptBindingConfig(repoRoot: string): Partial<BrowserPluginConfig> {
+  const binding = readBrowserBinding(repoRoot).binding;
+  if (!binding) return {};
+  return {
+    profileMode: 'custom',
+    profileDir: binding.profileDir,
+    profileDirectory: binding.profileDirectory,
+    browserChannel: browserChannel(binding.browserChannel) ?? 'chromium',
+  };
 }
 
-export async function resolveBrowserPluginAuthorizationContext(
+function loadConfig(repoRoot: string): BrowserPluginConfig {
+  const persisted = readJson<Partial<BrowserPluginConfig>>(configPath(repoRoot));
+  if (!persisted) return normalizeConfig(legacyChatgptBindingConfig(repoRoot));
+  const merged: Partial<BrowserPluginConfig> = { ...legacyChatgptBindingConfig(repoRoot), ...persisted };
+  if (browserProfileMode(persisted.profileMode) === 'repo_local') {
+    merged.profileDir = undefined;
+    merged.profileDirectory = undefined;
+  }
+  return normalizeConfig(merged);
+}
+
+async function resolveBrowserPluginAuthorizationContextInternal(
   input: AssistantPluginActionExecutionInput,
 ): Promise<AssistantPluginAuthorizationContext | undefined> {
   const action = actions().find((entry) => entry.actionId === input.actionId);
@@ -534,6 +563,15 @@ export async function resolveBrowserPluginAuthorizationContext(
   };
 }
 
+export async function resolveBrowserPluginAuthorizationContext(
+  input: AssistantPluginActionExecutionInput,
+): Promise<AssistantPluginAuthorizationContext | undefined> {
+  return await withBrowserSessionAuthorityContext(
+    { controllerHome: input.controllerHome, repoId: input.repoId },
+    () => resolveBrowserPluginAuthorizationContextInternal(input),
+  );
+}
+
 export function readBrowserPluginConfiguration(repoRoot: string): { enabled: boolean } {
   const config = loadConfig(repoRoot);
   return { enabled: config.enabled };
@@ -549,15 +587,35 @@ function sessionPath(repoRoot: string, sessionId: string): string {
   return join(stateDir(repoRoot, 'sessions'), `${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`);
 }
 
-function saveSession(repoRoot: string, session: BrowserSessionState): void {
-  writeAtomicJson(sessionPath(repoRoot, session.sessionId), session);
+function saveSession(repoRoot: string, session: BrowserSessionState): BrowserSessionState {
+  const authority = currentBrowserSessionAuthorityContext();
+  if (!authority) {
+    writeAtomicJson(sessionPath(repoRoot, session.sessionId), session);
+    return session;
+  }
+  const saved = saveBrowserSessionAuthority<BrowserSessionState>(authority.controllerHome, authority.repoId, repoRoot, session);
+  if (saved.sessionId === session.sessionId || !saved.browser?.sessionResume) return saved;
+  return {
+    ...saved,
+    browser: {
+      ...saved.browser,
+      sessionResume: { ...saved.browser.sessionResume, sessionId: saved.sessionId },
+    },
+  };
 }
 
 function findSession(repoRoot: string, sessionId: string): BrowserSessionState | undefined {
-  return readBrowserSessionJson(sessionPath(repoRoot, sessionId));
+  const authority = currentBrowserSessionAuthorityContext();
+  return authority
+    ? findBrowserSessionAuthority<BrowserSessionState>(authority.controllerHome, authority.repoId, repoRoot, sessionId)
+    : readBrowserSessionJson(sessionPath(repoRoot, sessionId));
 }
 
 function listSavedBrowserSessions(repoRoot: string): BrowserSessionState[] {
+  const authority = currentBrowserSessionAuthorityContext();
+  if (authority) {
+    return listAllBrowserSessionsForRepository<BrowserSessionState>(authority.controllerHome, authority.repoId, repoRoot);
+  }
   const root = stateDir(repoRoot, 'sessions');
   let names: string[];
   try {
@@ -573,6 +631,15 @@ function listSavedBrowserSessions(repoRoot: string): BrowserSessionState[] {
     .filter((name) => name.endsWith('.json'))
     .map((name) => readBrowserSessionJson(join(root, name)))
     .filter((session): session is BrowserSessionState => Boolean(session));
+}
+
+function removeSession(repoRoot: string, sessionId: string): void {
+  const authority = currentBrowserSessionAuthorityContext();
+  if (authority) {
+    tombstoneBrowserSession(authority.controllerHome, authority.repoId, repoRoot, sessionId);
+    return;
+  }
+  rmSync(sessionPath(repoRoot, sessionId), { force: true });
 }
 
 function loadSession(repoRoot: string, sessionId: string): BrowserSessionState {
@@ -2223,7 +2290,7 @@ async function openBrowser(
         throw new AssistantPluginError('PLUGIN_BROWSER_DEPENDENCY_UNAVAILABLE', 'Managed browser mode requires Playwright.', { retryable: false });
       }
       return openManagedContext(runtimeHooks.loadPlaywright(repoRoot), repoRoot, config, target, args, 'managed_persistent', requestedMode, {
-        policy: config.cdpAttachFallback ?? 'managed_persistent',
+        policy: config.cdpAttachFallback ?? 'fail_closed',
         from: 'attach_preferred',
         to: 'managed_persistent',
         reason: 'Reusing the existing managed fallback session without probing or creating a different browser resource.',
@@ -2241,7 +2308,7 @@ async function openBrowser(
       );
     }
 
-    const fallbackPolicy = config.cdpAttachFallback ?? 'managed_persistent';
+    const fallbackPolicy = config.cdpAttachFallback ?? 'fail_closed';
     const cdpReason = attached.attempts.map((attempt) => `${attempt.endpoint}: ${attempt.error ?? 'unavailable'}`).join('; ')
       || 'No CDP endpoint candidates were configured.';
     const nativeReason = native.attempts.map((attempt) => `${attempt.appName}: ${attempt.error ?? attempt.status}`).join('; ')
@@ -2308,7 +2375,7 @@ async function withPage<T>(
         && target.existingSession
         && error instanceof AssistantPluginError
         && error.code === 'PLUGIN_BROWSER_SESSION_STATE_LOST') {
-        rmSync(sessionPath(repoRoot, target.sessionId), { force: true });
+        removeSession(repoRoot, target.sessionId);
       }
       const message = error instanceof Error ? error.message : String(error);
       const transient = /timeout|net::|ERR_|Navigation failed|Target closed|Protocol error/i.test(message);
@@ -2396,7 +2463,7 @@ async function inspectNativeOwnedSessions(
     if (!live) {
       const pruned = options.pruneDead === true;
       if (pruned) {
-        for (const session of group) rmSync(sessionPath(repoRoot, session.sessionId), { force: true });
+        for (const session of group) removeSession(repoRoot, session.sessionId);
         prunedCount += group.length;
       }
       for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_missing', pruned });
@@ -2409,7 +2476,7 @@ async function inspectNativeOwnedSessions(
       if (options.pruneDead === true) {
         try {
           await closeMacOsBrowserOwnedTab(product, { windowId: tab.windowId!, tabId: tab.tabId! }, timeout);
-          for (const session of group) rmSync(sessionPath(repoRoot, session.sessionId), { force: true });
+          for (const session of group) removeSession(repoRoot, session.sessionId);
           prunedCount += group.length;
           closedInvalidCount += 1;
           for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_invalid_closed', pruned: true });
@@ -2528,7 +2595,7 @@ async function inspectSavedSessions(
       const pruned = options.pruneDead === true;
       if (pruned) {
         state.pagesBySession.delete(session.sessionId);
-        rmSync(sessionPath(repoRoot, session.sessionId), { force: true });
+        removeSession(repoRoot, session.sessionId);
         prunedSessionCount += 1;
       }
       sessions.push({ session, liveness: 'dead', evidence: 'runtime_bound_page_missing', pruned });
@@ -2981,8 +3048,7 @@ async function finalizeInteractiveAction(
   const identity = await readPageIdentity(page, connection, target.url);
   const title = identity.title;
   const pageUrl = identity.url;
-  const session = sessionFromPage(target, pageUrl, title, connection);
-  saveSession(repoRoot, session);
+  const session = saveSession(repoRoot, sessionFromPage(target, pageUrl, title, connection));
   let screenshot: BrowserActionScreenshot | undefined;
   const silentNativeEvidence = connection.provider === 'macos-apple-events';
   if (!silentNativeEvidence) {
@@ -3112,7 +3178,7 @@ function actions(): AssistantPluginActionDescriptor[] {
     { resource: 'remote' as const, mode: 'exclusive' as const },
     { resource: 'repo-state' as const, mode: 'write' as const },
   ];
-  return [
+  const descriptors: AssistantPluginActionDescriptor[] = [
     {
       actionId: 'configure',
       title: 'Configure browser plugin',
@@ -3173,7 +3239,14 @@ function actions(): AssistantPluginActionDescriptor[] {
       description: 'List saved browser session metadata without secrets or cookies.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true,
       scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'read' }],
-      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', minimum: 1, maximum: MAX_BROWSER_SESSION_LIST_LIMIT, default: DEFAULT_BROWSER_SESSION_LIST_LIMIT },
+          cursor: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
     },
     {
       actionId: 'reconcile_sessions',
@@ -3501,8 +3574,8 @@ function actions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'trusted_input',
-      title: 'Trusted background browser input',
-      description: 'Send bounded Playwright/CDP mouse, wheel, drag, key, or text input directly to the browser page without OS-level pointer movement. Native-only sessions fail closed.',
+      title: 'Trusted browser input',
+      description: 'Send bounded mouse, wheel, drag, key, or text input after authorization. Playwright/CDP uses page input primitives; native macOS sessions require the exact saved tab to already be foreground/active and use the stable Desktop Operator input broker without activating another tab.',
       readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
       argumentsSchema: interactSchema({
@@ -3572,6 +3645,21 @@ function actions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: { type: 'object', properties: { session_id: { type: 'string' } }, required: ['session_id'], additionalProperties: false },
     },
   ];
+  const foregroundRequired = new Set(['activate_page', 'request_human_handoff']);
+  const foregroundPossible = new Set([
+    'create_session', 'open_page', 'navigate', 'reload', 'go_back', 'resolve_handoff',
+    'click', 'click_text', 'double_click', 'hover', 'focus', 'type', 'fill', 'select_option',
+    'check', 'uncheck', 'press', 'keyboard_shortcut', 'trusted_input', 'dispatch_event',
+    'wait_for_selector', 'attach_local_file', 'await_file_transfer',
+  ]);
+  return descriptors.map((descriptor) => ({
+    ...descriptor,
+    foregroundEffect: foregroundRequired.has(descriptor.actionId)
+      ? 'required'
+      : foregroundPossible.has(descriptor.actionId)
+        ? 'possible'
+        : 'none',
+  }));
 }
 
 function browserUserFacingStatus(config: BrowserPluginConfig, ready: boolean, sessionCount = 0): string {
@@ -3585,7 +3673,8 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
   const dependencyReady = runtimeHooks.moduleAvailable('playwright', repoRoot);
   const configErrors = validateConfig(config);
   const warnings = configWarnings(config);
-  const savedSessionCount = repoRoot ? listSavedSessions(repoRoot).length : 0;
+  const authority = currentBrowserSessionAuthorityContext();
+  const savedSessionCount = repoRoot && authority ? listSavedBrowserSessions(repoRoot).length : 0;
   const activeHandoffCount = repoRoot
     ? listBrowserHandoffs(repoRoot).filter((entry) => ['starting', 'waiting_for_user', 'closing'].includes(entry.status)).length
     : 0;
@@ -3605,7 +3694,7 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
     nativeAttachSupported: macOsActiveBrowserAttachSupported(),
     windowMode: 'visible' as const,
     sessionCount: savedSessionCount,
-    sessionCountSemantics: 'saved_metadata' as const,
+    sessionCountSemantics: authority ? 'controller_authority' as const : 'controller_authority_unavailable' as const,
     savedSessionCount,
     activeHandoffCount,
     humanHandoffSupported: true,
@@ -3720,7 +3809,7 @@ export function buildBrowserPluginManifest(previousRevision = 0, previousUpdated
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
-      sourceOfTruth: ['repo-local:.forge/plugins/browser.json', 'repo-local:.forge/browser/'],
+      sourceOfTruth: ['repo-local:.forge/plugins/browser.json', 'controller-home:sqlite/browser_session', 'repo-local:.forge/browser/{screenshots,downloads,diagnostics}'],
     },
     enabled: config.enabled,
     lifecycle: {
@@ -3741,7 +3830,7 @@ export function buildBrowserPluginManifest(previousRevision = 0, previousUpdated
   };
 }
 
-export async function executeBrowserPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
+async function executeBrowserPluginActionInternal(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
   const persisted = loadConfig(input.repoRoot);
   const actionSessionId = input.actionId === 'configure' ? undefined : stringValue(input.args.session_id);
   const actionSession = actionSessionId ? findSession(input.repoRoot, actionSessionId) : undefined;
@@ -3807,9 +3896,23 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       }
       case 'list_sessions': {
         const inventory = await inspectSavedSessions(input.repoRoot, current);
+        const requestedLimit = Math.max(1, Math.min(Math.trunc(positiveNumber(input.args.limit, DEFAULT_BROWSER_SESSION_LIST_LIMIT)), MAX_BROWSER_SESSION_LIST_LIMIT));
+        let offset = 0;
+        const cursor = stringValue(input.args.cursor);
+        if (cursor) {
+          try {
+            const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { offset?: unknown };
+            if (!Number.isInteger(parsed.offset) || Number(parsed.offset) < 0) throw new Error('invalid offset');
+            offset = Number(parsed.offset);
+          } catch {
+            throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_CURSOR_INVALID', 'Browser session cursor is invalid or expired.', { retryable: false });
+          }
+        }
+        const page = inventory.sessions.slice(offset, offset + requestedLimit);
+        const nextOffset = offset + page.length;
         return {
           provider: 'playwright',
-          sessionCountSemantics: 'saved_metadata',
+          sessionCountSemantics: currentBrowserSessionAuthorityContext() ? 'controller_authority' : 'saved_metadata',
           scannedSessionCount: inventory.scannedSessionCount,
           savedSessionCount: inventory.savedSessionCount,
           liveManagedSessionCount: inventory.liveManagedSessionCount,
@@ -3817,7 +3920,10 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
           unverifiedSessionCount: inventory.unverifiedSessionCount,
           deadManagedSessionCount: inventory.deadManagedSessionCount,
           deadNativeSessionCount: inventory.deadNativeSessionCount,
-          sessions: inventory.sessions.map(({ session, liveness, evidence, cleanupError }) => ({
+          limit: requestedLimit,
+          totalCount: inventory.sessions.length,
+          ...(nextOffset < inventory.sessions.length ? { nextCursor: Buffer.from(JSON.stringify({ offset: nextOffset }), 'utf8').toString('base64url') } : {}),
+          sessions: page.map(({ session, liveness, evidence, cleanupError }) => ({
             sessionId: session.sessionId,
             url: session.url,
             title: session.title,
@@ -3858,7 +3964,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         const managedClosed = session ? await closeManagedSessionPage(input.repoRoot, current, session) : false;
         const nativeClose = session ? await closeTrackedNativeOwnedSession(session, current) : { resourceClosed: false, resourceAlreadyMissing: false };
         const closedSessionIds = session ? nativeOwnedAliasSessionIds(input.repoRoot, session) : [sessionId];
-        for (const closedSessionId of closedSessionIds) rmSync(sessionPath(input.repoRoot, closedSessionId), { force: true });
+        for (const closedSessionId of closedSessionIds) removeSession(input.repoRoot, closedSessionId);
         return {
           closed: true, sessionId,
           resourceClosed: managedClosed || nativeClose.resourceClosed,
@@ -3881,7 +3987,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             const nativeClose = await closeTrackedNativeOwnedSession(session, current);
             if (nativeClose.resourceClosed) resourceClosedCount += 1;
             if (nativeClose.resourceAlreadyMissing) resourceAlreadyMissingCount += 1;
-            rmSync(sessionPath(input.repoRoot, session.sessionId), { force: true });
+            removeSession(input.repoRoot, session.sessionId);
             removedCount += 1;
           } catch (error) {
             failedSessionIds.push(session.sessionId);
@@ -4151,8 +4257,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             tabInventory: [{ index: 0, key: tabKey(requestedUrl, title), url: requestedUrl, title }],
             sessionResume: { sessionId: target.sessionId, status: 'matched', reason: nativeActiveTab ? 'Explicitly adopted the matching frontmost user-owned native browser tab.' : 'Explicitly adopted an existing user-owned native browser tab.' },
           }, requestedUrl, title, 'saved_url', { ownership: 'user_owned', windowId: adoptedRef.windowId, tabId: adoptedRef.tabId });
-          const session = sessionFromPage(target, requestedUrl, title, connection);
-          saveSession(input.repoRoot, session);
+          const session = saveSession(input.repoRoot, sessionFromPage(target, requestedUrl, title, connection));
           return {
             provider: 'macos-apple-events',
             session,
@@ -4165,8 +4270,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
         }
         return await withPage(input.repoRoot, current, target, input.args, async (page, diagnostics, connection) => {
           const identity = await readPageIdentity(page, connection, target.url);
-          const session = sessionFromPage(target, identity.url, identity.title, connection);
-          saveSession(input.repoRoot, session);
+          const session = saveSession(input.repoRoot, sessionFromPage(target, identity.url, identity.title, connection));
           return {
             provider: browserResultProvider(connection.provider),
             session,
@@ -4198,8 +4302,7 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
             });
           }
           const identity = await readPageIdentity(page, connection);
-          const session = sessionFromPage(target, identity.url, identity.title, connection);
-          saveSession(input.repoRoot, session);
+          const session = saveSession(input.repoRoot, sessionFromPage(target, identity.url, identity.title, connection));
           return {
             provider: browserResultProvider(connection.provider),
             session,
@@ -4961,6 +5064,13 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
       },
     });
   }
+}
+
+export async function executeBrowserPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
+  return await withBrowserSessionAuthorityContext(
+    { controllerHome: input.controllerHome, repoId: input.repoId },
+    () => executeBrowserPluginActionInternal(input),
+  );
 }
 
 export const browserPluginAdapter = {
