@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -19,6 +20,8 @@ import {
   writeGlobalContextFiles,
 } from "../../src/cli/commands/init";
 import { configuredBrainRoot } from "../../src/cli/commands/brain-root";
+import { applyAdoptionPlan, rollbackAdoptionTransaction } from "../../src/effects/fs-transaction";
+import type { AdoptionPlan } from "../../src/core/adoption/operations";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const CLI = join(ROOT, "src/cli/index.ts");
@@ -422,6 +425,91 @@ describe("init command", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   }, 30000);
+
+  test("partial TypeScript adoption failure checkpoints applied work and rolls back without backup litter", () => {
+    const tmp = join(tmpdir(), `forge-adopt-partial-${Date.now()}`);
+    const target = join(tmp, "owned.txt");
+    const backupFiles = (): string[] => {
+      const root = join(tmp, ".ai", "harness", "backups", "fs-transaction");
+      if (!existsSync(root)) return [];
+      const visit = (path: string): string[] => readdirSync(path, { withFileTypes: true }).flatMap((entry) => {
+        const child = join(path, entry.name);
+        return entry.isDirectory() ? visit(child) : entry.name.endsWith(".bak") ? [child] : [];
+      });
+      return visit(root);
+    };
+    try {
+      mkdirSync(tmp, { recursive: true });
+      writeFileSync(target, "original\n");
+      const plan: AdoptionPlan = {
+        protocol: 1,
+        command: "adopt",
+        repoRoot: tmp,
+        mode: "standard",
+        apply: true,
+        operations: [
+          {
+            id: "update-owned",
+            kind: "appendManagedBlock",
+            path: "owned.txt",
+            marker: "forge partial test",
+            content: "managed",
+            reason: "exercise recoverable replacement",
+            risk: "low",
+            status: "planned",
+            rollback: { strategy: "restore-or-delete-file", backup: "runtime-fs-transaction", description: "restore original" },
+          },
+          {
+            id: "fail-outside-repo",
+            kind: "appendManagedBlock",
+            path: "../outside.txt",
+            marker: "forge partial test",
+            content: "must fail",
+            reason: "exercise partial failure",
+            risk: "low",
+            status: "planned",
+          },
+          {
+            id: "must-not-run",
+            kind: "writeFile",
+            path: "after-failure.txt",
+            content: "unexpected\n",
+            ifMissing: true,
+            reason: "prove fail-stop sequencing",
+            risk: "low",
+            status: "planned",
+          },
+        ],
+        summary: {
+          total: 3, byKind: {}, byStatus: {}, plannedTotal: 3, skippedTotal: 0, failedTotal: 0,
+          userOwnedFilesTouched: 1, generatedFiles: 1, forgeOwnedFiles: 0, requiresVerification: true,
+        },
+        warnings: [],
+      };
+
+      const applied = applyAdoptionPlan(plan);
+      expect(applied.ok).toBe(false);
+      expect(applied.transactionManifestPath).toBeTruthy();
+      expect(applied.results.map((result) => [result.id, result.status])).toEqual([
+        ["update-owned", "applied"],
+        ["fail-outside-repo", "failed"],
+      ]);
+      expect(existsSync(join(tmp, "after-failure.txt"))).toBe(false);
+      const manifest = JSON.parse(readFileSync(join(tmp, applied.transactionManifestPath!), "utf8"));
+      expect(manifest.operations.map((operation: { id: string; status: string }) => [operation.id, operation.status])).toEqual([
+        ["update-owned", "applied"],
+        ["fail-outside-repo", "failed"],
+      ]);
+      expect(backupFiles()).toHaveLength(1);
+
+      const rolledBack = rollbackAdoptionTransaction({ repoRoot: tmp, transaction: applied.transactionManifestPath! });
+      expect(rolledBack.ok).toBe(true);
+      expect(readFileSync(target, "utf8")).toBe("original\n");
+      expect(backupFiles()).toHaveLength(1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 
   test("CLI exposes adopt help for repo-local refresh", () => {
     const res = spawnSync("bun", [CLI, "adopt", "--help"], {

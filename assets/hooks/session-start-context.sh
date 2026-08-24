@@ -397,15 +397,70 @@ current_status_field() {
   ' "$file" | xargs
 }
 
+current_status_stale_after() {
+  local file="$1"
+  local value
+  value="$(current_status_field "$file" "Stale After" 2>/dev/null || true)"
+  if [[ -z "$value" ]]; then
+    value="$(sed -nE 's/^<!--[[:space:]]*stale_after:[[:space:]]*([^[:space:]]+)[[:space:]]*-->$/\1/p' "$file" 2>/dev/null | head -1)"
+  fi
+  printf '%s' "$value"
+}
+
+current_status_updated_epoch() {
+  local value="$1"
+  if date -d "$value" '+%s' >/dev/null 2>&1; then
+    date -d "$value" '+%s'
+    return 0
+  fi
+  date -j -f '%Y-%m-%dT%H:%M:%S%z' "$value" '+%s' 2>/dev/null
+}
+
+# Returns success when the declared freshness contract says the snapshot is
+# expired. A malformed timestamp/duration fails closed once stale_after exists.
+current_status_snapshot_is_stale() {
+  local updated="$1"
+  local stale_after="$2"
+  local amount unit multiplier updated_epoch now_epoch
+  [[ -n "$stale_after" ]] || return 1
+  if [[ ! "$stale_after" =~ ^([0-9]+)([smhd])$ ]]; then
+    return 0
+  fi
+  amount="${BASH_REMATCH[1]}"
+  unit="${BASH_REMATCH[2]}"
+  case "$unit" in
+    s) multiplier=1 ;;
+    m) multiplier=60 ;;
+    h) multiplier=3600 ;;
+    d) multiplier=86400 ;;
+  esac
+  updated_epoch="$(current_status_updated_epoch "$updated" || true)"
+  [[ "$updated_epoch" =~ ^[0-9]+$ ]] || return 0
+  now_epoch="${FORGE_CURRENT_STATUS_NOW_EPOCH:-$(date '+%s')}"
+  [[ "$now_epoch" =~ ^[0-9]+$ ]] || return 0
+  (( now_epoch - updated_epoch >= amount * multiplier ))
+}
+
 current_status_snapshot_context() {
   local current_file="tasks/current.md"
-  local target branch status updated source_commit target_status target_updated
+  local target branch status updated stale_after source_commit target_status target_updated
 
   target="$(workflow_target_branch)"
   branch="$(workflow_current_branch)"
   status="$(current_status_field "$current_file" "Status" 2>/dev/null || true)"
   updated="$(current_status_field "$current_file" "Updated At" 2>/dev/null || true)"
+  stale_after="$(current_status_stale_after "$current_file" 2>/dev/null || true)"
   source_commit="$(current_status_field "$current_file" "Source Commit" 2>/dev/null || true)"
+
+  if current_status_snapshot_is_stale "$updated" "$stale_after"; then
+    cat <<EOF_CONTEXT
+# Stale Current Status Snapshot
+
+- Ignored snapshot: `${current_file}` exceeded its declared freshness contract.
+- Rule: do not use its status, source commit, or focus as current truth; rebuild from active plans, workstreams, handoff, checks, and the target branch.
+EOF_CONTEXT
+    return 0
+  fi
 
   if [[ -z "$status" ]]; then
     if [[ "$branch" != "$target" ]] && git rev-parse --verify --quiet "$target" >/dev/null 2>&1 \

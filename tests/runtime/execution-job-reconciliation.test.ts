@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -135,6 +135,25 @@ describe('ExecutionJob reconciliation isolation', () => {
     rebuildExecutionJobIndexes(controllerHome, ['repo-test']);
     expect(listActiveExecutionJobs(controllerHome, 'repo-test')).toHaveLength(0);
   });
+
+  test('startup index rebuild preserves every active and request authority beyond the recent-history window', () => {
+    const controllerHome = tempControllerHome();
+    const records = join(executionJobRoot(controllerHome, 'repo-test'), 'records');
+    mkdirSync(records, { recursive: true });
+    for (let index = 0; index < 5_001; index += 1) {
+      const id = `large-history-${String(index).padStart(5, '0')}`;
+      const job = executionJob(id, 'queued');
+      writeFileSync(join(records, `${job.jobId}.json`), `${JSON.stringify(job)}\n`, 'utf8');
+    }
+
+    rebuildExecutionJobIndexes(controllerHome, ['repo-test']);
+
+    expect(listActiveExecutionJobs(controllerHome, 'repo-test')).toHaveLength(5_001);
+    const requestIndex = join(controllerHome, 'indexes', 'execution-jobs', 'requests');
+    expect(readdirSync(requestIndex).filter((name) => name.endsWith('.json'))).toHaveLength(5_001);
+    const recent = JSON.parse(readFileSync(join(controllerHome, 'indexes', 'execution-jobs', 'recent.json'), 'utf8'));
+    expect(recent.jobs).toHaveLength(5_000);
+  }, 30_000);
 
   test('scheduler reconciliation prunes terminal records left behind in the active index', async () => {
     const controllerHome = tempControllerHome();

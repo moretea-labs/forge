@@ -234,6 +234,26 @@ export function atomicWriteFile(
   });
 }
 
+/** Durable replacement for transaction metadata and rollback restores. Unlike
+ * atomicWriteFile, this intentionally does not create another recovery backup. */
+function replaceFileDurably(repoRoot: string, path: string, content: string, mode?: number): void {
+  const target = resolveInsideRepo(repoRoot, path);
+  if (!target.ok || !target.path) throw new Error(target.error ?? "invalid path");
+  const parentError = ensureParent(repoRoot, path);
+  if (parentError) throw new Error(parentError);
+  const targetPath = target.path;
+  withTargetLock(targetPath, () => {
+    const tempPath = resolve(dirname(targetPath), `.${basename(targetPath)}.${process.pid}.${Date.now()}.tmp`);
+    try {
+      writeFileDurably(tempPath, content, mode);
+      renameSync(tempPath, targetPath);
+      fsyncDirectory(dirname(targetPath));
+    } finally {
+      rmSync(tempPath, { force: true });
+    }
+  });
+}
+
 export function applyMkdirOperation(repoRoot: string, operation: MkdirOperation, dryRun = false): ApplyOperationResult {
   const target = resolveInsideRepo(repoRoot, operation.path);
   if (!target.ok || !target.path) return failure(operation, target.error ?? "invalid path");
@@ -311,12 +331,17 @@ export function applyAppendManagedBlockOperation(
   }
 }
 
-function writeTransactionManifest(plan: AdoptionPlan, transactionDir: string, results: readonly ApplyOperationResult[]): string {
+function writeTransactionManifest(
+  plan: AdoptionPlan,
+  transactionDir: string,
+  createdAt: string,
+  results: readonly ApplyOperationResult[],
+): string {
   const manifestPath = `${transactionDir}/manifest.json`;
   const manifest: FsTransactionManifest = {
     protocol: 1,
     command: "adopt",
-    createdAt: new Date().toISOString(),
+    createdAt,
     repoRoot: plan.repoRoot,
     mode: plan.mode,
     operations: results.map((result) => {
@@ -336,7 +361,7 @@ function writeTransactionManifest(plan: AdoptionPlan, transactionDir: string, re
       command: `forge adopt rollback --transaction ${manifestPath}`,
     },
   };
-  atomicWriteFile(plan.repoRoot, manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+  replaceFileDurably(plan.repoRoot, manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 0o600);
   return manifestPath;
 }
 
@@ -350,21 +375,64 @@ export function applyAdoptionPlan(plan: AdoptionPlan, dryRun = false): ApplyAdop
     };
   }
 
-  const transactionDir = dryRun ? undefined : transactionDirFor();
-  const results = plan.operations.map((operation) => {
-    switch (operation.kind) {
-      case "mkdir":
-        return applyMkdirOperation(plan.repoRoot, operation, dryRun);
-      case "writeFile":
-        return applyWriteFileOperation(plan.repoRoot, operation, dryRun, transactionDir);
-      case "appendManagedBlock":
-        return applyAppendManagedBlockOperation(plan.repoRoot, operation, dryRun, transactionDir);
-      default:
-        return failure(operation, `unsupported operation kind: ${operation.kind}`);
+  if (dryRun) {
+    const results = plan.operations.map((operation) => {
+      switch (operation.kind) {
+        case "mkdir": return applyMkdirOperation(plan.repoRoot, operation, true);
+        case "writeFile": return applyWriteFileOperation(plan.repoRoot, operation, true);
+        case "appendManagedBlock": return applyAppendManagedBlockOperation(plan.repoRoot, operation, true);
+        default: return failure(operation, `unsupported operation kind: ${operation.kind}`);
+      }
+    });
+    return { ok: results.every((result) => result.status !== "failed"), dryRun: true, results };
+  }
+
+  const transactionDir = transactionDirFor();
+  const createdAt = new Date().toISOString();
+  const results: ApplyOperationResult[] = [];
+  let transactionManifestPath: string;
+  try {
+    // Establish recovery evidence before the first adoption operation mutates
+    // repository state. Each completed/failed operation is checkpointed below.
+    transactionManifestPath = writeTransactionManifest(plan, transactionDir, createdAt, results);
+  } catch (error) {
+    return {
+      ok: false,
+      dryRun: false,
+      results: [{
+        id: "transaction-manifest",
+        kind: "runCheck",
+        status: "failed",
+        error: `failed to initialize transaction manifest: ${errorMessage(error)}`,
+      }],
+    };
+  }
+
+  for (const operation of plan.operations) {
+    const result = (() => {
+      switch (operation.kind) {
+        case "mkdir": return applyMkdirOperation(plan.repoRoot, operation, false);
+        case "writeFile": return applyWriteFileOperation(plan.repoRoot, operation, false, transactionDir);
+        case "appendManagedBlock": return applyAppendManagedBlockOperation(plan.repoRoot, operation, false, transactionDir);
+        default: return failure(operation, `unsupported operation kind: ${operation.kind}`);
+      }
+    })();
+    results.push(result);
+    try {
+      writeTransactionManifest(plan, transactionDir, createdAt, results);
+    } catch (error) {
+      results.push({
+        id: "transaction-manifest",
+        kind: "runCheck",
+        status: "failed",
+        error: `failed to checkpoint transaction manifest: ${errorMessage(error)}`,
+      });
+      break;
     }
-  });
+    if (result.status === "failed") break;
+  }
+
   const ok = results.every((result) => result.status !== "failed");
-  const transactionManifestPath = !dryRun && ok && transactionDir ? writeTransactionManifest(plan, transactionDir, results) : undefined;
 
   return {
     ok,
@@ -413,7 +481,7 @@ function rollbackFileOperation(repoRoot: string, operation: FsTransactionManifes
           return rollbackFailed(operation, "restore_backup", "current file hash differs from transaction content hash");
         }
       }
-      atomicWriteFile(repoRoot, operation.path, readFileSync(backup.path, "utf-8"));
+      replaceFileDurably(repoRoot, operation.path, readFileSync(backup.path, "utf-8"));
       return { id: operation.id, kind: operation.kind, path: operation.path, status: "rolled_back", action: "restore_backup" };
     } catch (error) {
       return rollbackFailed(operation, "restore_backup", errorMessage(error));
