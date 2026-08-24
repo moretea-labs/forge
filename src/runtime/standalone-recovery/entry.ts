@@ -347,9 +347,9 @@ function recoveryProtectedResourceMetadata(request: IncomingMessage, config: Pic
   };
 }
 
-function recoveryWwwAuthenticate(request: IncomingMessage, config: Pick<RecoveryConfig, 'recoveryPublicUrl'>): string {
+export function recoveryWwwAuthenticate(request: IncomingMessage, config: Pick<RecoveryConfig, 'recoveryPublicUrl'>): string {
   const metadata = `${publicOrigin(request, config)}/.well-known/oauth-protected-resource${resourcePathFromRequest(request)}`;
-  return `Bearer realm="forge-recovery", error="invalid_token", error_description="Missing or invalid Authorization header", resource_metadata="${metadata}", scope="${RECOVERY_OAUTH_SCOPE}"`;
+  return `Bearer error="invalid_token", error_description="Missing Authorization header", resource_metadata="${metadata}"`;
 }
 
 function parseUrlEncoded(input: string): URLSearchParams {

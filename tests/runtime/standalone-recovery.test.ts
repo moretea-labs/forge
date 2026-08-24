@@ -35,6 +35,7 @@ import {
   dispatchRecoveryTool,
   RECOVERY_CLI_COMMANDS,
   RECOVERY_TOOLS,
+  recoveryWwwAuthenticate,
   resetWatchdogStateForRecoveryRelease,
 } from '../../src/runtime/standalone-recovery/entry';
 import {
@@ -463,6 +464,16 @@ test('standalone Recovery stages only its configured Runtime source and hands a 
 });
 
 describe('standalone recovery on canonical Runtime', () => {
+  test('uses the same minimal OAuth bearer challenge shape as the primary MCP Gateway', () => {
+    const request = {
+      headers: { host: '127.0.0.1:8787' },
+      socket: { encrypted: false },
+      url: '/recovery/mcp',
+    } as unknown as IncomingMessage;
+    const challenge = recoveryWwwAuthenticate(request, { recoveryPublicUrl: 'https://recovery.example.test/recovery/mcp' });
+    expect(challenge).toBe('Bearer error="invalid_token", error_description="Missing Authorization header", resource_metadata="https://recovery.example.test/.well-known/oauth-protected-resource/recovery/mcp"');
+  });
+
   test('verifies and attests the single active whole-Runtime release', async () => {
     const home = controllerHome();
     const activeManifest = manifest(home, 'release-a', 'artifact-a');
