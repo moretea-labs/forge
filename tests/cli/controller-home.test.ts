@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 describe('repo-preferred controller home', () => {
-  test('uses repo _ops/controller-home when present and no explicit override exists', () => {
+  test('does not let a retired repo _ops/controller-home override the installed authority', () => {
     delete process.env.FORGE_CONTROLLER_HOME;
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-controller-home-'));
     roots.push(repoRoot);
@@ -30,7 +30,7 @@ describe('repo-preferred controller home', () => {
     mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
     writeFileSync(join(controllerHome, 'mcp', 'mcp.local.json'), '{}\n');
 
-    expect(resolveRepoPreferredControllerHome(repoRoot)).toBe(resolve(controllerHome));
+    expect(resolveRepoPreferredControllerHome(repoRoot)).not.toBe(resolve(controllerHome));
   });
 
   test('maps only macOS repo-local controller homes to .noindex physical storage', () => {
@@ -52,7 +52,7 @@ describe('repo-preferred controller home', () => {
     expect(ensureControllerHomeStorage(logical, 'darwin')).toBe(resolve(logical));
     expect(lstatSync(logical).isSymbolicLink()).toBe(true);
     expect(realpathSync(logical)).toBe(realpathSync(physical));
-    expect(resolveRepoPreferredControllerHome(repoRoot)).toBe(resolve(logical));
+    expect(resolveRepoPreferredControllerHome(repoRoot)).not.toBe(resolve(logical));
   });
 
   test('migrates an existing repo-local directory only through the stopped-runtime helper and can roll it back', () => {

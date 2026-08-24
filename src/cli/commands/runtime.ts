@@ -15,6 +15,11 @@ import { publishRuntimeRelease } from '../../runtime/root/release-store';
 import { installForgeRuntimeService } from '../../runtime/root/service';
 import { activateScheduledPackageRuntimeServiceFromPath, installPackageRuntimeService, readPackageRuntimeActivationReceipt } from '../../runtime/root/package-runtime-service';
 import { assertRuntimeReleaseFiles, stageRuntimeReleaseFromCandidateSource } from '../../runtime/root/release-materialize';
+import {
+  applyControllerHomeMigration,
+  previewControllerHomeMigration,
+  rollbackControllerHomeMigration,
+} from '../../runtime/control-plane/persistence/controller-home-migration';
 
 function output(value: unknown, json = true): void {
   console.log(json ? JSON.stringify(value, null, 2) : String(value));
@@ -182,6 +187,26 @@ export function buildRuntimeCommand(): Command {
         },
         next: `forge runtime status --controller-home ${home}`,
       });
+    });
+
+  command.command('migrate-controller-home')
+    .description('Preview or transactionally migrate non-terminal business state from an explicitly selected retired Controller Home')
+    .requiredOption('--source <path>', 'Retired Controller Home to inspect; repository presence never selects this implicitly')
+    .option('--destination <path>', 'Canonical Controller Home; defaults to the installed user-level authority')
+    .option('--apply', 'Apply the reviewed migration and freeze the source SQLite as a read-only archive')
+    .option('--rollback <migration-id>', 'Rollback one migration only when none of its imported records changed')
+    .action(async (opts: { source: string; destination?: string; apply?: boolean; rollback?: string }) => {
+      const destination = resolveControllerHome(opts.destination);
+      if (opts.rollback?.trim()) {
+        output(rollbackControllerHomeMigration({ destinationHome: destination, migrationId: opts.rollback.trim() }));
+        return;
+      }
+      const input = { sourceHome: resolve(opts.source), destinationHome: destination };
+      if (opts.apply === true) {
+        output(await applyControllerHomeMigration(input));
+        return;
+      }
+      output(await previewControllerHomeMigration(input));
     });
 
   command.command('status')

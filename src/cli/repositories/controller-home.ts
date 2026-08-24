@@ -12,20 +12,19 @@ export function resolveControllerHome(explicit?: string): string {
 }
 
 /**
- * Prefer env, then repo-local self-host layout (`_ops/controller-home`) used by
- * `forge runtime service install`, then the user-global default.
+ * Resolve the one installed Controller Home. A repository containing a retired
+ * `_ops/controller-home` is evidence for an explicit migration only; its mere
+ * presence must never redirect a package Runtime, CLI, or MCP caller away from
+ * the user-level authority.
+ *
+ * Repo-local storage remains available only through an explicit
+ * `--controller-home` argument or `FORGE_CONTROLLER_HOME` configuration.
  */
 export function resolveRepoPreferredControllerHome(repoRoot?: string, explicit?: string): string {
   const trimmedExplicit = explicit?.trim();
   if (trimmedExplicit) return resolveControllerHome(trimmedExplicit);
   const configured = process.env.FORGE_CONTROLLER_HOME?.trim();
   if (configured) return resolveControllerHome(configured);
-  if (repoRoot?.trim()) {
-    const opsHome = join(resolve(repoRoot.trim()), '_ops', 'controller-home');
-    if (existsSync(join(opsHome, 'mcp', 'mcp.local.json')) || existsSync(opsHome)) {
-      return resolve(opsHome);
-    }
-  }
   return resolveControllerHome();
 }
 
