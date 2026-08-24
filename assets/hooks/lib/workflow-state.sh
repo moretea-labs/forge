@@ -575,8 +575,14 @@ workflow_cleanup_candidate() {
     [[ -e "$metadata" ]] || continue
     slug="$(basename "$metadata" .json)"
     [[ -n "$slug" ]] || continue
-    printf '%s\t%s\t\n' "$slug" "${branch_prefix}${slug}"
-    return 0
+    branch="${branch_prefix}${slug}"
+    # Controller metadata can outlive a terminal worktree after a Home
+    # migration. It is not cleanup work unless a Git branch or worktree still
+    # exists; otherwise it must never keep a fresh resume packet stale.
+    if git show-ref --verify --quiet "refs/heads/${branch}"; then
+      printf '%s\t%s\t\n' "$slug" "$branch"
+      return 0
+    fi
   done
 
   return 1
