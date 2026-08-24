@@ -196,6 +196,14 @@ export async function resolveMcpSessionCurrentFingerprint(
   return await loadRuntimeFingerprint?.();
 }
 
+export function isMcpToolsListRequest(body: unknown): boolean {
+  const messages = Array.isArray(body) ? body : [body];
+  return messages.length > 0 && messages.every((message) => {
+    if (!message || typeof message !== 'object') return false;
+    return (message as { method?: unknown }).method === 'tools/list';
+  });
+}
+
 function toolCallOutsideSessionSchema(body: unknown, toolNames: readonly string[] | undefined): boolean {
   if (!toolNames) return false;
   const messages = Array.isArray(body) ? body : [body];
@@ -744,7 +752,7 @@ async function handleMcpPost(
         sessionId: `mcp_${randomUUID().replace(/-/g, '')}`,
         principalId,
       });
-      const runtimeSchema = await resolveRuntimeSchema?.(sessionContext);
+      let runtimeSchema = await resolveRuntimeSchema?.(sessionContext);
       let server: ReturnType<typeof createForgeMcpServerFromContext> | undefined;
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
@@ -759,6 +767,21 @@ async function handleMcpPost(
             toolSurfaceFingerprint: runtimeSchema?.fingerprint ?? currentToolSurfaceFingerprint(),
             toolNames: runtimeSchema?.toolNames,
             notifyToolListChanged: async () => { await server?.sendToolListChanged(); },
+            ...(runtimeSchema && resolveRuntimeSchema
+              ? {
+                  refreshToolSurface: async () => {
+                    const refreshed = await resolveRuntimeSchema(sessionContext);
+                    if (!refreshed || !runtimeSchema) return undefined;
+                    runtimeSchema.definitions = refreshed.definitions;
+                    runtimeSchema.toolNames = refreshed.toolNames;
+                    runtimeSchema.fingerprint = refreshed.fingerprint;
+                    return {
+                      toolSurfaceFingerprint: refreshed.fingerprint,
+                      toolNames: refreshed.toolNames,
+                    };
+                  },
+                }
+              : {}),
           });
           initializedSessionId = newSessionId;
         },
@@ -797,6 +820,17 @@ async function handleMcpPost(
             : undefined,
         );
         if (!mcpSessionToolSurfaceFingerprintIsCurrent(managed.toolSurfaceFingerprint, currentFingerprint)) {
+          // Standard MCP hot refresh: allow an explicitly requested tools/list
+          // to replace the live session's mutable Runtime schema snapshot. Hosts
+          // that ignore list_changed and call directly still hit the reset fence.
+          if (isMcpToolsListRequest(body)) {
+            const refreshed = await registry.refreshToolSurface(sessionId);
+            if (refreshed
+              && (!currentFingerprint || refreshed.toolSurfaceFingerprint === currentFingerprint)) {
+              await managed.transport.handleRequest(req, res, body);
+              return;
+            }
+          }
           // Keep the transport/session alive long enough for the host to observe
           // the recoverable reset and issue a replacement initialize request.
           // The initialize path explicitly supersedes this session afterward.

@@ -1,5 +1,16 @@
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'fs';
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { dirname } from 'path';
 import type { OAuthRegisteredClientsStore } from '@modelcontextprotocol/sdk/server/auth/clients.js';
 import { InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
@@ -25,6 +36,20 @@ function issueToken(): string {
   return randomUUID();
 }
 
+function fsyncFile(path: string): void {
+  const fd = openSync(path, 'r');
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+
+function fsyncDirectory(path: string): void {
+  try {
+    const fd = openSync(path, 'r');
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+  } catch {
+    // Directory fsync is unavailable on some supported platforms/filesystems.
+  }
+}
+
 export class McpOAuthTokenStore implements OAuthRegisteredClientsStore {
   private accessTokens = new Map<string, AuthInfo>();
   private refreshTokens = new Map<string, string>();
@@ -33,8 +58,12 @@ export class McpOAuthTokenStore implements OAuthRegisteredClientsStore {
   constructor(private readonly path: string, private readonly fallbackPaths: string[] = []) {}
 
   load(): void {
+    this.accessTokens.clear();
+    this.refreshTokens.clear();
+    this.clients.clear();
     let loaded = false;
     let mergedFallback = false;
+    let primaryCorrupt = false;
     for (const [index, path] of [this.path, ...this.fallbackPaths].entries()) {
       if (!existsSync(path)) continue;
       try {
@@ -59,22 +88,35 @@ export class McpOAuthTokenStore implements OAuthRegisteredClientsStore {
         }
         loaded = true;
       } catch (_error) {
-        // Corrupt local auth state should not prevent starting the server.
+        if (index === 0) primaryCorrupt = true;
       }
     }
-    if (loaded && mergedFallback) this.flush();
+    if (primaryCorrupt && !loaded) {
+      throw new Error('MCP_OAUTH_STORE_CORRUPT: primary OAuth state is unreadable and no valid fallback is available');
+    }
+    if (loaded && (mergedFallback || primaryCorrupt)) this.flush();
   }
 
   flush(): void {
-    mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
-    chmodSync(dirname(this.path), 0o700);
+    const directory = dirname(this.path);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    chmodSync(directory, 0o700);
     const data: TokenData = {
       accessTokens: Object.fromEntries(this.accessTokens),
       refreshTokens: Object.fromEntries(this.refreshTokens),
       clients: Object.fromEntries(this.clients),
     };
-    writeFileSync(this.path, `${JSON.stringify(data, null, 2)}\n`, { encoding: 'utf-8', mode: 0o600 });
-    chmodSync(this.path, 0o600);
+    const temporary = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(temporary, `${JSON.stringify(data, null, 2)}\n`, { encoding: 'utf-8', mode: 0o600 });
+      chmodSync(temporary, 0o600);
+      fsyncFile(temporary);
+      renameSync(temporary, this.path);
+      chmodSync(this.path, 0o600);
+      fsyncDirectory(directory);
+    } finally {
+      rmSync(temporary, { force: true });
+    }
   }
 
   getClient(clientId: string): OAuthClientInformationFull | undefined {
@@ -127,10 +169,115 @@ export class McpOAuthTokenStore implements OAuthRegisteredClientsStore {
     }
     return undefined;
   }
+
+  setTokenPair(accessToken: string, info: AuthInfo, refreshToken: string): void {
+    this.accessTokens.set(accessToken, info);
+    this.refreshTokens.set(refreshToken, accessToken);
+    this.flush();
+  }
+
+  rotateRefreshToken(
+    previousRefreshToken: string,
+    nextRefreshToken: string,
+    accessToken: string,
+    info: AuthInfo,
+  ): void {
+    this.refreshTokens.delete(previousRefreshToken);
+    this.accessTokens.set(accessToken, info);
+    this.refreshTokens.set(nextRefreshToken, accessToken);
+    this.flush();
+  }
+
+  revokeToken(token: string): void {
+    const linkedAccessToken = this.refreshTokens.get(token);
+    if (linkedAccessToken) {
+      this.refreshTokens.delete(token);
+      this.accessTokens.delete(linkedAccessToken);
+      for (const [refreshToken, accessToken] of this.refreshTokens) {
+        if (accessToken === linkedAccessToken) this.refreshTokens.delete(refreshToken);
+      }
+      this.flush();
+      return;
+    }
+
+    this.accessTokens.delete(token);
+    for (const [refreshToken, accessToken] of this.refreshTokens) {
+      if (accessToken === token) this.refreshTokens.delete(refreshToken);
+    }
+    this.flush();
+  }
 }
 
-export function createMcpOAuthProvider(store: McpOAuthTokenStore): OAuthServerProvider {
-  const authCodes = new Map<string, { challenge: string; clientId: string }>();
+interface PendingAuthorizationCode {
+  challenge: string;
+  clientId: string;
+  issuedAt: number;
+  expiresAt: number;
+}
+
+export interface McpOAuthProviderOptions {
+  now?: () => number;
+  authorizationCodeTtlSeconds?: number;
+  maxPendingAuthorizationCodes?: number;
+  maxPendingAuthorizationCodesPerClient?: number;
+}
+
+const DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS = 10 * 60;
+const DEFAULT_MAX_PENDING_AUTHORIZATION_CODES = 512;
+const DEFAULT_MAX_PENDING_AUTHORIZATION_CODES_PER_CLIENT = 32;
+
+export function createMcpOAuthProvider(
+  store: McpOAuthTokenStore,
+  options: McpOAuthProviderOptions = {},
+): OAuthServerProvider {
+  const authCodes = new Map<string, PendingAuthorizationCode>();
+  const currentTime = options.now ?? nowSeconds;
+  const ttlSeconds = Math.max(30, Math.trunc(options.authorizationCodeTtlSeconds ?? DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS));
+  const globalLimit = Math.max(8, Math.trunc(options.maxPendingAuthorizationCodes ?? DEFAULT_MAX_PENDING_AUTHORIZATION_CODES));
+  const clientLimit = Math.max(2, Math.min(globalLimit, Math.trunc(
+    options.maxPendingAuthorizationCodesPerClient ?? DEFAULT_MAX_PENDING_AUTHORIZATION_CODES_PER_CLIENT,
+  )));
+
+  const purgeExpiredCodes = (now = currentTime()): void => {
+    for (const [code, pending] of authCodes) {
+      if (pending.expiresAt <= now) authCodes.delete(code);
+    }
+  };
+
+  const evictOldest = (predicate: (entry: PendingAuthorizationCode) => boolean): boolean => {
+    let oldest: { code: string; issuedAt: number } | undefined;
+    for (const [code, pending] of authCodes) {
+      if (!predicate(pending)) continue;
+      if (!oldest || pending.issuedAt < oldest.issuedAt) oldest = { code, issuedAt: pending.issuedAt };
+    }
+    if (!oldest) return false;
+    authCodes.delete(oldest.code);
+    return true;
+  };
+
+  const reserveAuthorizationCodeCapacity = (clientId: string, now: number): void => {
+    purgeExpiredCodes(now);
+    while ([...authCodes.values()].filter((pending) => pending.clientId === clientId).length >= clientLimit) {
+      if (!evictOldest((pending) => pending.clientId === clientId)) break;
+    }
+    while (authCodes.size >= globalLimit) {
+      if (!evictOldest(() => true)) break;
+    }
+  };
+
+  const pendingAuthorizationCode = (
+    client: OAuthClientInformationFull,
+    authorizationCode: string,
+  ): PendingAuthorizationCode => {
+    const now = currentTime();
+    purgeExpiredCodes(now);
+    const stored = authCodes.get(authorizationCode);
+    if (!stored || stored.clientId !== client.client_id || stored.expiresAt <= now) {
+      if (stored?.expiresAt !== undefined && stored.expiresAt <= now) authCodes.delete(authorizationCode);
+      throw new InvalidGrantError('Invalid authorization code');
+    }
+    return stored;
+  };
 
   return {
     get clientsStore(): OAuthRegisteredClientsStore {
@@ -138,10 +285,14 @@ export function createMcpOAuthProvider(store: McpOAuthTokenStore): OAuthServerPr
     },
 
     async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res): Promise<void> {
+      const now = currentTime();
+      reserveAuthorizationCodeCapacity(client.client_id, now);
       const code = issueToken();
       authCodes.set(code, {
         challenge: params.codeChallenge,
         clientId: client.client_id,
+        issuedAt: now,
+        expiresAt: now + ttlSeconds,
       });
       const redirectUrl = new URL(params.redirectUri);
       redirectUrl.searchParams.set('code', code);
@@ -149,10 +300,8 @@ export function createMcpOAuthProvider(store: McpOAuthTokenStore): OAuthServerPr
       res.redirect(302, redirectUrl.toString());
     },
 
-    async challengeForAuthorizationCode(_client: OAuthClientInformationFull, authorizationCode: string): Promise<string> {
-      const stored = authCodes.get(authorizationCode);
-      if (!stored) throw new InvalidGrantError('Invalid authorization code');
-      return stored.challenge;
+    async challengeForAuthorizationCode(client: OAuthClientInformationFull, authorizationCode: string): Promise<string> {
+      return pendingAuthorizationCode(client, authorizationCode).challenge;
     },
 
     async exchangeAuthorizationCode(
@@ -160,22 +309,21 @@ export function createMcpOAuthProvider(store: McpOAuthTokenStore): OAuthServerPr
       authorizationCode: string,
       _codeVerifier?: string,
     ): Promise<OAuthTokens> {
-      const stored = authCodes.get(authorizationCode);
-      if (!stored || stored.clientId !== client.client_id) {
-        throw new InvalidGrantError('Invalid authorization code');
-      }
+      pendingAuthorizationCode(client, authorizationCode);
+      // Delete before issuing credentials. A failed downstream persistence is
+      // retried as a new OAuth flow rather than making an authorization code
+      // replayable after a partial token response.
       authCodes.delete(authorizationCode);
       const accessToken = issueToken();
       const refreshToken = issueToken();
       const expiresIn = 30 * 24 * 60 * 60;
       const expiresAt = nowSeconds() + expiresIn;
-      store.setAccessToken(accessToken, {
+      store.setTokenPair(accessToken, {
         token: accessToken,
         clientId: client.client_id,
         scopes: ['forge'],
         expiresAt,
-      });
-      store.setRefreshToken(refreshToken, accessToken);
+      }, refreshToken);
       return {
         access_token: accessToken,
         token_type: 'Bearer',
@@ -191,11 +339,14 @@ export function createMcpOAuthProvider(store: McpOAuthTokenStore): OAuthServerPr
       if (!accessToken || !existing || existing.clientId !== client.client_id) {
         throw new InvalidGrantError('Invalid refresh token');
       }
-      store.deleteRefreshToken(refreshToken);
       const nextRefreshToken = issueToken();
       const expiresIn = 30 * 24 * 60 * 60;
-      store.setAccessToken(accessToken, { ...existing, expiresAt: nowSeconds() + expiresIn });
-      store.setRefreshToken(nextRefreshToken, accessToken);
+      store.rotateRefreshToken(
+        refreshToken,
+        nextRefreshToken,
+        accessToken,
+        { ...existing, expiresAt: nowSeconds() + expiresIn },
+      );
       return {
         access_token: accessToken,
         token_type: 'Bearer',
@@ -218,9 +369,7 @@ export function createMcpOAuthProvider(store: McpOAuthTokenStore): OAuthServerPr
     },
 
     async revokeToken(_client: OAuthClientInformationFull, request: OAuthTokenRevocationRequest): Promise<void> {
-      store.deleteAccessToken(request.token);
-      const refreshToken = store.findRefreshTokenByAccessToken(request.token);
-      if (refreshToken) store.deleteRefreshToken(refreshToken);
+      store.revokeToken(request.token);
     },
   };
 }

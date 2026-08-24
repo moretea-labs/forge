@@ -206,7 +206,7 @@ export function detectSetupPlatform(options: { platform?: NodeJS.Platform; arch?
 }
 
 
-function isLoopbackMcpEndpoint(value: string | undefined): boolean {
+function isLoopbackMcpEndpoint(value: string | undefined): value is string {
   if (!value) return false;
   try {
     const parsed = new URL(value);
@@ -218,6 +218,11 @@ function isLoopbackMcpEndpoint(value: string | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+function tunnelRuntimeProfileTargetsEndpoint(profilePath: string | undefined, endpoint: string): boolean {
+  if (!profilePath) return false;
+  try { return readFileSync(profilePath, 'utf8').includes(endpoint); } catch { return false; }
 }
 
 export interface ControllerGuidance {
@@ -364,6 +369,15 @@ export function resolveTunnelGuidance(
         detail: 'Install the supported tunnel-client binary from OpenAI Platform Tunnels or the official openai/tunnel-client release. The runtime API key remains an environment/file reference owned by tunnel-client; Forge does not store it.',
       };
     }
+    const localConfig = loadMcpServiceLocalConfig(resolveControllerHome(options.controllerHome));
+    const localEndpoint = localConfig?.chatgpt?.localEndpoint;
+    if (!isLoopbackMcpEndpoint(localEndpoint)) {
+      return {
+        provider, ready: false, title: 'Prepare the local ChatGPT OAuth endpoint',
+        detail: 'Secure Tunnel must terminate at Forge’s loopback OAuth Gateway, not the bearer-only Canonical Runtime. Refresh the user-level ChatGPT MCP configuration first.',
+        command: `forge mcp setup chatgpt --user-level --controller-home ${JSON.stringify(resolveControllerHome(options.controllerHome))}`,
+      };
+    }
     const preferredAlias = 'forge';
     const configuredAliases: string[] = [];
     const listed = spawnSync('tunnel-client', ['runtimes', 'list', '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, env: options.env ?? process.env });
@@ -382,12 +396,13 @@ export function resolveTunnelGuidance(
       const status = spawnSync('tunnel-client', ['runtimes', 'status', alias, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, env: options.env ?? process.env });
       if (status.status !== 0) continue;
       try {
-        const value = JSON.parse(status.stdout || '{}') as { process_running?: boolean; healthy?: boolean; ready?: boolean; tunnel_id?: string };
+        const value = JSON.parse(status.stdout || '{}') as { process_running?: boolean; healthy?: boolean; ready?: boolean; tunnel_id?: string; profile_path?: string };
         if (value.process_running === true && value.healthy === true && value.ready === true
-          && (!value.tunnel_id || value.tunnel_id === profile.tunnel.tunnelId)) {
+          && value.tunnel_id === profile.tunnel.tunnelId
+          && tunnelRuntimeProfileTargetsEndpoint(value.profile_path, localEndpoint)) {
           return {
             provider, ready: true, title: 'OpenAI Secure MCP Tunnel',
-            detail: `Managed runtime ${alias} is running, healthy, and ready for ${profile.tunnel.tunnelId}.`,
+            detail: `Managed runtime ${alias} is running, healthy, and bound to ${profile.tunnel.tunnelId} -> ${localEndpoint}.`,
           };
         }
       } catch {
@@ -398,18 +413,9 @@ export function resolveTunnelGuidance(
     // alias instead of repointing the conventional `forge` alias, which may
     // legitimately refer to a different tunnel from an earlier setup.
     const alias = configuredAliases[0] ?? preferredAlias;
-    const localConfig = loadMcpServiceLocalConfig(resolveControllerHome(options.controllerHome));
-    const localEndpoint = localConfig?.chatgpt?.localEndpoint;
-    if (!isLoopbackMcpEndpoint(localEndpoint)) {
-      return {
-        provider, ready: false, title: 'Prepare the local ChatGPT OAuth endpoint',
-        detail: 'Secure Tunnel must terminate at Forge’s loopback OAuth Gateway, not the bearer-only Canonical Runtime. Refresh the user-level ChatGPT MCP configuration first.',
-        command: `forge mcp setup chatgpt --user-level --controller-home ${JSON.stringify(resolveControllerHome(options.controllerHome))}`,
-      };
-    }
     return {
       provider, ready: false, title: 'Connect OpenAI Secure MCP Tunnel',
-      detail: 'Create a supervised tunnel-client runtime and verify it with runtimes status. Keep the runtime API key in an environment or file reference owned by tunnel-client; Forge never reads or stores the key.',
+      detail: 'Create a supervised tunnel-client runtime and verify its tunnel id and MCP target with runtimes status. Keep the runtime API key in an environment or file reference owned by tunnel-client; Forge never reads or stores the key.',
       command: `tunnel-client runtimes connect --alias ${alias} --tunnel-id ${profile.tunnel.tunnelId} --runtime-api-key env:CONTROL_PLANE_API_KEY --mcp-server-url ${localEndpoint}`,
     };
   }

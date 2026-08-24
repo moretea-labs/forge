@@ -18,6 +18,11 @@ export interface ClosableMcpTransport {
   close(): Promise<void> | void;
 }
 
+export interface McpToolSurfaceRefresh {
+  toolSurfaceFingerprint: string;
+  toolNames?: string[];
+}
+
 export interface ManagedMcpSession<
   TTransport extends ClosableMcpTransport = ClosableMcpTransport,
   TContext = unknown,
@@ -33,6 +38,8 @@ export interface ManagedMcpSession<
   toolNames?: string[];
   /** Standard MCP tools/list_changed notification bound to this session's connected Server. */
   notifyToolListChanged?: () => Promise<void> | void;
+  /** Refreshes the mutable Runtime schema snapshot backing this live MCP session. */
+  refreshToolSurface?: () => Promise<McpToolSurfaceRefresh | undefined>;
   lastNotifiedToolSurfaceFingerprint?: string;
   createdAt: number;
   lastActivityAt: number;
@@ -92,6 +99,7 @@ interface RegisterMcpSession<TTransport extends ClosableMcpTransport, TContext> 
   toolSurfaceFingerprint?: string;
   toolNames?: string[];
   notifyToolListChanged?: () => Promise<void> | void;
+  refreshToolSurface?: () => Promise<McpToolSurfaceRefresh | undefined>;
   initialPost?: boolean;
 }
 
@@ -228,6 +236,18 @@ export class McpSessionRegistry<
       }
     }));
     return notified;
+  }
+
+  async refreshToolSurface(sessionId: string): Promise<McpToolSurfaceRefresh | undefined> {
+    const session = this.sessions.get(sessionId);
+    if (!session?.refreshToolSurface) return undefined;
+    const refreshed = await session.refreshToolSurface();
+    if (!refreshed?.toolSurfaceFingerprint) return undefined;
+    session.toolSurfaceFingerprint = refreshed.toolSurfaceFingerprint;
+    session.toolNames = refreshed.toolNames;
+    session.lastNotifiedToolSurfaceFingerprint = refreshed.toolSurfaceFingerprint;
+    session.lastActivityAt = this.now();
+    return refreshed;
   }
 
   beginPost(sessionId: string): ManagedMcpSession<TTransport, TContext> | undefined {

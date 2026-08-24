@@ -44,6 +44,7 @@ export interface CanonicalRuntimeDependencies {
   rotateRuntimeGeneration: typeof rotateRuntimeGeneration;
   stopLightweightProcesses(controllerHome: string): Promise<number>;
   stopContextReadHelpers(): Promise<void>;
+  computeToolSurfaceFingerprint: typeof runtimeGatewayToolSurfaceFingerprint;
 }
 
 async function defaultMcpProbe(endpoint: string, authToken: string): Promise<void> {
@@ -83,6 +84,7 @@ const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   rotateRuntimeGeneration,
   stopLightweightProcesses: cancelAllLightweightProcesses,
   stopContextReadHelpers: closeCodeGraphReadProviderSessions,
+  computeToolSurfaceFingerprint: runtimeGatewayToolSurfaceFingerprint,
 };
 
 export class CanonicalForgeRuntime {
@@ -147,6 +149,17 @@ export class CanonicalForgeRuntime {
       // Status is a read-only projection. Projection failure cannot become a
       // second Runtime readiness or lifecycle authority.
     }
+  }
+
+  private refreshToolSurfaceFingerprint(runtimeSourceRoot: string): void {
+    const next = this.dependencies.computeToolSurfaceFingerprint({
+      controllerHome: this.config.controllerHome,
+      runtimeInstanceId: this.runtimeInstanceId,
+      runtimeSourceRoot,
+    });
+    if (next === this.toolSurfaceFingerprint) return;
+    this.toolSurfaceFingerprint = next;
+    this.publishStatus();
   }
 
   endpoint(): string | undefined {
@@ -224,11 +237,7 @@ export class CanonicalForgeRuntime {
       });
 
       stage = 'transport';
-      this.toolSurfaceFingerprint = runtimeGatewayToolSurfaceFingerprint({
-        controllerHome: this.config.controllerHome,
-        runtimeInstanceId: this.runtimeInstanceId,
-        runtimeSourceRoot,
-      });
+      this.refreshToolSurfaceFingerprint(runtimeSourceRoot);
       this.transport = await this.dependencies.startTransport({
         host: this.config.host,
         port: this.config.port,
@@ -241,6 +250,7 @@ export class CanonicalForgeRuntime {
           sessionId,
           controllerType,
         }),
+        onToolSurfaceObservation: () => this.refreshToolSurfaceFingerprint(runtimeSourceRoot),
         onFatal: (error) => this.failCore('MCP_TRANSPORT_FAILED', error.message),
       });
       this.publishStatus();

@@ -29,6 +29,7 @@ import {
   type CanonicalRuntimeToolSchema,
 } from '../../src/cli/mcp/server';
 import {
+  isMcpToolsListRequest,
   mcpSessionToolSurfaceFingerprintIsCurrent,
   resolveMcpSessionCurrentFingerprint,
 } from '../../src/cli/mcp/transports/http';
@@ -402,6 +403,19 @@ describe('MCP canonical Runtime proxy routing', () => {
 });
 
 describe('MCP canonical Runtime schema fencing', () => {
+  test('recognizes only pure tools/list refresh requests', () => {
+    expect(isMcpToolsListRequest({ jsonrpc: '2.0', id: 1, method: 'tools/list' })).toBe(true);
+    expect(isMcpToolsListRequest([
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+    ])).toBe(true);
+    expect(isMcpToolsListRequest({ jsonrpc: '2.0', id: 1, method: 'tools/call' })).toBe(false);
+    expect(isMcpToolsListRequest([
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call' },
+    ])).toBe(false);
+  });
+
   test('changes only when the exposed schema changes, not when a release identity changes', () => {
     const surface = [{
       name: 'rh_work',
