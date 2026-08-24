@@ -12,6 +12,7 @@ import {
   buildRecoveryAuditRecord,
   buildRuntimeMaintenanceStatus,
   applyRuntimeMaintenance,
+  applyStaleWorkContractMaintenanceCandidate,
   classifyFailure,
   detectDirtyPathConflicts,
   recoveryActionById,
@@ -401,6 +402,41 @@ describe('runtime maintenance executor', () => {
       applied: true,
     }));
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-stale-ready')?.status).toBe('cancelled');
+  });
+
+  it('rechecks Work authority at apply time before cancelling a previously stale candidate', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-work-apply-authority-'));
+    temporaryRoots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    mkdirSync(controllerHome, { recursive: true });
+    mkdirSync(repoRoot, { recursive: true });
+    const repository = { repoId: 'repo-work-apply-authority', canonicalRoot: repoRoot };
+    const oldAt = '2026-01-01T00:00:00.000Z';
+    createWorkContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
+      workId: 'work-stale-then-claimed', repoId: repository.repoId, mode: 'goal_workloop', objective: 'stale before controller reclaim',
+      acceptanceCriteria: ['preserve late authority'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'ready',
+    });
+
+    const scanned = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
+    const candidate = scanned.candidates.find((entry) => entry.kind === 'stale_work_contract' && entry.id === 'work-stale-then-claimed');
+    expect(candidate).toBeTruthy();
+
+    claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+      workId: 'work-stale-then-claimed', controllerId: 'controller-late', controllerType: 'chatgpt', sessionId: 'mcp-late',
+      principalId: 'principal-late', controllerInstanceId: 'runtime-late', leaseMs: 60_000,
+    });
+    const fenced = applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate!);
+    expect(fenced.applied).toBe(false);
+    expect(fenced.result).toContain('work_authority_became_active:controller_session');
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-stale-then-claimed')?.status).toBe('ready');
+
+    releaseControllerSession({ controllerHome, repoId: repository.repoId }, 'work-stale-then-claimed', 'controller-late');
+    const cancelled = applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate!);
+    expect(cancelled.applied).toBe(true);
+    expect(cancelled.result).toBe('work_contract_cancelled_evidence_retained');
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-stale-then-claimed')?.status).toBe('cancelled');
   });
 
   it('does not classify an old Work as stale while an active Plan still owns it', () => {

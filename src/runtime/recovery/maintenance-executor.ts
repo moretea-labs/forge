@@ -459,6 +459,33 @@ function scanStaleWorkContractCandidates(
     }));
 }
 
+export function applyStaleWorkContractMaintenanceCandidate(
+  repository: RuntimeMaintenanceRepository,
+  controllerHome: string,
+  candidate: RuntimeMaintenanceCandidate,
+): RuntimeMaintenanceCandidate & { applied: boolean; result: string } {
+  const work = getWorkContract({ controllerHome, repoId: repository.repoId }, candidate.id);
+  if (!work || isTerminalWorkContractStatus(work.status)) {
+    return { ...candidate, applied: false, result: 'already_terminal' };
+  }
+  const authorityRefs = activeWorkAuthorityRefs(repository, controllerHome, work);
+  if (authorityRefs.length > 0) {
+    return {
+      ...candidate,
+      applied: false,
+      result: `work_authority_became_active:${authorityRefs.join(',')}`,
+    };
+  }
+  transitionWorkContractPhase({ controllerHome, repoId: repository.repoId }, work.workId, {
+    phase: 'cleanup',
+    status: 'cancelled',
+    state: 'skipped',
+    summary: 'Cancelled by explicit full maintenance stale Work cleanup; durable evidence retained.',
+    evidenceRefs: work.evidenceRefs,
+  });
+  return { ...candidate, applied: true, result: 'work_contract_cancelled_evidence_retained' };
+}
+
 function scanStaleEditSessionCandidates(
   repository: RuntimeMaintenanceRepository,
   controllerHome: string,
@@ -808,18 +835,7 @@ export function applyRuntimeMaintenance(
         };
       }
       if (candidate.kind === 'stale_work_contract') {
-        const work = getWorkContract({ controllerHome, repoId: repository.repoId }, candidate.id);
-        if (!work || isTerminalWorkContractStatus(work.status)) {
-          return { ...candidate, applied: false, result: 'already_terminal' };
-        }
-        transitionWorkContractPhase({ controllerHome, repoId: repository.repoId }, work.workId, {
-          phase: 'cleanup',
-          status: 'cancelled',
-          state: 'skipped',
-          summary: 'Cancelled by explicit full maintenance stale Work cleanup; durable evidence retained.',
-          evidenceRefs: work.evidenceRefs,
-        });
-        return { ...candidate, applied: true, result: 'work_contract_cancelled_evidence_retained' };
+        return applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate);
       }
       if (candidate.kind === 'stale_edit_session') {
         const cleaned = cleanupEditSession(repository.canonicalRoot, candidate.id, {
