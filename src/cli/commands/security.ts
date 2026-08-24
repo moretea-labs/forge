@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { MANAGED_TAG, type HookEntry } from '../installer/managed-entries';
+import { MANAGED_TAG, isLegacyRepoHarnessCommand, type HookEntry } from '../installer/managed-entries';
 
 export type SecurityStatus = 'ok' | 'warn' | 'fail';
 export type SecuritySeverity = 'warn' | 'high' | 'fail';
@@ -273,6 +273,17 @@ function scanHookConfig(
     if (!command) continue;
     const suspicious = suspiciousMatch(command);
     if (command.includes(MANAGED_TAG) && suspicious === null) continue;
+    if (isLegacyRepoHarnessCommand(command)) {
+      findings.push({
+        filePath,
+        ruleId: 'legacy-repo-harness-hook-adapter',
+        severity: 'warn',
+        summary: `${hostLabel} ${event} hook uses the retired repo-harness adapter`,
+        recommendation: 'Run forge install --target codex --location global to replace retired adapters with forge-hook.',
+        command,
+      });
+      continue;
+    }
     findings.push({
       filePath,
       ruleId: suspicious?.ruleId ?? 'unmanaged-hook-command',

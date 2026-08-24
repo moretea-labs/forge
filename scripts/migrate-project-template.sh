@@ -1,54 +1,36 @@
 #!/bin/bash
-# Delegate workflow migrations to the canonical upstream forge.
+# Run the canonical Forge adoption path without guessing a developer checkout.
 #
-# Generated projects keep installed workflow runtime state under .ai/. The
-# template source lives in AGENTIC_DEV_ROOT, AGENTIC_DEV_SKILL_ROOT, or
-# ~/Projects/forge. Retired legacy install paths are not
-# searched.
+# The self-host repository invokes this script directly, so delegating to a
+# discovered copy of this same filename used to recurse. Installed helper
+# copies use an explicit source root when one is supplied, otherwise the
+# installed `forge` CLI.
 
 set -euo pipefail
 
-resolve_agentic_dev_root() {
-  if [[ -n "${AGENTIC_DEV_ROOT:-}" ]]; then
-    printf '%s\n' "$AGENTIC_DEV_ROOT"
-    return 0
-  fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SELF_SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SOURCE_ROOT="${FORGE_SOURCE_ROOT:-${AGENTIC_DEV_ROOT:-${AGENTIC_DEV_SKILL_ROOT:-}}}"
 
-  if [[ -n "${AGENTIC_DEV_SKILL_ROOT:-}" ]]; then
-    printf '%s\n' "$AGENTIC_DEV_SKILL_ROOT"
-    return 0
-  fi
-
-  if [[ -n "${HOME:-}" ]]; then
-    local roots=(
-      "$HOME/Projects/forge"
-      "$HOME/.codex/skills/forge"
-      "$HOME/.claude/skills/forge"
-      "$HOME/.agents/skills/forge"
-    )
-
-    local root
-    for root in "${roots[@]}"; do
-      if [[ -d "$root" ]]; then
-        printf '%s\n' "$root"
-        return 0
-      fi
-    done
-
-    printf '%s\n' "${roots[0]}"
-    return 0
-  fi
-
-  printf '%s\n' ".forge/skills/forge"
+run_source_root() {
+  local root="$1"
+  shift
+  [[ -f "$root/src/cli/index.ts" ]] || return 1
+  command -v bun >/dev/null 2>&1 || {
+    echo "[migrate] bun is required to run Forge from source: $root" >&2
+    exit 1
+  }
+  exec bun "$root/src/cli/index.ts" adopt "$@" --no-codegraph --no-verify
 }
 
-UPSTREAM_ROOT="$(resolve_agentic_dev_root)"
-UPSTREAM_SCRIPT="$UPSTREAM_ROOT/scripts/migrate-project-template.sh"
-
-if [[ ! -f "$UPSTREAM_SCRIPT" ]]; then
-  echo "[migrate] Upstream forge migration script not found: $UPSTREAM_SCRIPT" >&2
-  echo "[migrate] Set AGENTIC_DEV_ROOT or AGENTIC_DEV_SKILL_ROOT to the skill root." >&2
-  exit 1
+run_source_root "$SELF_SOURCE_ROOT" "$@"
+if [[ -n "$SOURCE_ROOT" ]]; then
+  run_source_root "$SOURCE_ROOT" "$@"
 fi
 
-exec bash "$UPSTREAM_SCRIPT" "$@"
+if command -v forge >/dev/null 2>&1; then
+  exec forge adopt "$@" --no-codegraph --no-verify
+fi
+
+echo "[migrate] Missing Forge CLI; set FORGE_SOURCE_ROOT to a Forge source checkout." >&2
+exit 1

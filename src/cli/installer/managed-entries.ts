@@ -18,6 +18,7 @@
 import { ROUTES, type Route } from '../hook/route-registry';
 
 export const MANAGED_TAG = 'forge hook';
+const LEGACY_REPO_HARNESS_TAGS = ['repo-harness-hook', 'repo-harness hook'] as const;
 
 export interface HookCommand {
   type: 'command';
@@ -50,6 +51,19 @@ export function isManagedEntry(entry: HookEntry): boolean {
   return entry.hooks.some((h) => typeof h?.command === 'string' && h.command.includes(MANAGED_TAG));
 }
 
+/** Legacy adapters are installer-owned migration input, never user hooks. */
+export function isLegacyRepoHarnessEntry(entry: HookEntry): boolean {
+  if (!entry || !Array.isArray(entry.hooks)) return false;
+  return entry.hooks.some((hook) => (
+    typeof hook?.command === 'string'
+    && LEGACY_REPO_HARNESS_TAGS.some((tag) => hook.command.includes(tag))
+  ));
+}
+
+export function isLegacyRepoHarnessCommand(command: string): boolean {
+  return LEGACY_REPO_HARNESS_TAGS.some((tag) => command.includes(tag));
+}
+
 export function buildManagedHooks(host: HookHost): HooksByEvent {
   const out: HooksByEvent = {};
   for (const route of ROUTES) {
@@ -63,7 +77,7 @@ export function stripManagedEntries(existing: HooksByEvent | undefined): HooksBy
   if (!existing) return {};
   const out: HooksByEvent = {};
   for (const [event, entries] of Object.entries(existing)) {
-    const kept = (entries ?? []).filter((e) => !isManagedEntry(e));
+    const kept = (entries ?? []).filter((e) => !isManagedEntry(e) && !isLegacyRepoHarnessEntry(e));
     if (kept.length > 0) out[event] = kept;
   }
   return out;
