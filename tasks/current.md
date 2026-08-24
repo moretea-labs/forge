@@ -1,16 +1,16 @@
 # Current Status Snapshot
 
 <!-- generated-by: forge refresh-current-status v1 -->
-<!-- updated_at: 2026-08-24T11:58:52+0800 -->
+<!-- updated_at: 2026-08-24T12:03:30+0800 -->
 <!-- stale_after: 24h -->
 
 > **Status**: Idle
-> **Updated At**: 2026-08-24T11:58:52+0800
+> **Updated At**: 2026-08-24T12:03:30+0800
 > **Source Branch**: main
-> **Source Commit**: b4e5a058
+> **Source Commit**: 1910fb29
 > **Target Branch**: main
 > **Stale After**: 24h
-> **Reason**: all four restoration phases complete
+> **Reason**: canonical controller migration orphan archive complete
 > **Derived From**: active-plan, active-sprint, workstreams, handoff, checks, git status
 
 This file is a tracked mainline snapshot derived from repo artifacts. It is not a live lock, not a kanban board, and not an implementation gate. If it is stale, read the source artifacts below.
@@ -48,11 +48,10 @@ This file is a tracked mainline snapshot derived from repo artifacts. It is not 
 
 ## Git Status
 
-- Summary: 2 changed/untracked path(s)
+- Summary: clean
 
 ```
- M assets/hooks/lib/workflow-state.sh
- M tasks/current.md
+(none)
 ```
 
 ## Source Artifacts
