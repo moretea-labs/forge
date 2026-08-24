@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
@@ -203,6 +203,16 @@ describe('Work validation receipt convergence', () => {
     });
     expect(existsSync(join(reused.root, 'node_modules', 'fixture-dependency', 'marker.txt'))).toBe(true);
     expect(realpathSync(join(reused.root, 'node_modules'))).toBe(realpathSync(join(repoRoot, 'node_modules')));
+
+    symlinkSync(join(repoRoot, 'node_modules'), join(worktreeRoot, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
+    const reusedFromManagedLink = materializeWorkVerificationSnapshot({
+      controllerHome,
+      repoId: 'repo-validation-dependency-reuse',
+      sourceRoot: worktreeRoot,
+      scope: { workId: 'work-validation-dependency-reuse-linked', allowedPaths: ['**'], forbiddenPaths: [] },
+    });
+    expect(realpathSync(join(reusedFromManagedLink.root, 'node_modules'))).toBe(realpathSync(join(repoRoot, 'node_modules')));
+    rmSync(join(worktreeRoot, 'node_modules'), { recursive: true, force: true });
 
     writeFileSync(join(worktreeRoot, 'package.json'), '{\"name\":\"fixture\",\"private\":true,\"dependencies\":{\"new-package\":\"1.0.0\"}}\n');
     const changed = materializeWorkVerificationSnapshot({

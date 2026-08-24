@@ -180,7 +180,13 @@ function linkIgnoredNodeModules(sourceRoot: string, targetRoot: string, dirtyPat
     if (!sourceDigest || sourceDigest !== primaryDigest) return;
     source = primaryNodeModules;
   }
-  const ignored = spawnSync('git', ['-C', sourceRoot, 'check-ignore', '--quiet', '--', 'node_modules/.forge-verification-probe'], { stdio: 'ignore', timeout: 10_000 });
+  // An existing managed-worktree node_modules may itself be a symlink. Git
+  // rejects child pathspecs through symlinks, while an absent node_modules
+  // needs a virtual child path so directory-only ignore rules still match.
+  const ignoreProbe = existsSync(join(sourceRoot, 'node_modules'))
+    ? 'node_modules'
+    : 'node_modules/.forge-verification-probe';
+  const ignored = spawnSync('git', ['-C', sourceRoot, 'check-ignore', '--quiet', '--', ignoreProbe], { stdio: 'ignore', timeout: 10_000 });
   if (ignored.status !== 0) return;
   try {
     symlinkSync(source, target, process.platform === 'win32' ? 'junction' : 'dir');
