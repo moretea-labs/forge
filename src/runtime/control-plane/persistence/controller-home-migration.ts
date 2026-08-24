@@ -14,6 +14,7 @@ import {
   type ControlPlaneDatabaseInspection,
   type ControlPlaneRecord,
 } from './sqlite-store';
+import { listRepositories } from '../../../cli/repositories/registry';
 
 const MIGRATION_NAMESPACE = 'controller_home_migration';
 const MIGRATION_SCOPE = 'controller';
@@ -98,6 +99,52 @@ export interface AppliedControllerHomeMigration {
   preview: ControllerHomeMigrationPreview;
   migration: ControllerHomeMigrationRecord;
   reportPath: string;
+}
+
+/**
+ * Archives imported Work that cannot be routed because its repository was not
+ * migrated. This is a migration operation, not a Work execution transition:
+ * original payloads remain in the frozen source SQLite and each target record
+ * receives a new auditable terminal revision.
+ */
+export function archiveUnroutableMigratedWork(input: {
+  destinationHome: string;
+  migrationId: string;
+}): { migrationId: string; archivedWorkIds: string[]; archivedHandleIds: string[]; skipped: string[] } {
+  const destinationHome = resolve(input.destinationHome);
+  const migration = readControlPlaneRecord<ControllerHomeMigrationRecord>(destinationHome, MIGRATION_NAMESPACE, MIGRATION_SCOPE, input.migrationId);
+  if (!migration?.value || migration.value.status !== 'applied') throw new Error(`CONTROLLER_HOME_MIGRATION_NOT_APPLIED: ${input.migrationId}`);
+  const knownRepositories = new Set(listRepositories(destinationHome, { includeRemoved: false }).map((repository) => repository.repoId));
+  const imported = new Set(migration.value.imported.map((record) => recordIdentity({ namespace: record.namespace, scope: record.scope, key: record.key })));
+  const archivedWorkIds: string[] = [];
+  const archivedHandleIds: string[] = [];
+  const skipped: string[] = [];
+  withControlPlaneTransaction(destinationHome, (database) => {
+    for (const record of listControlPlaneRecords<unknown>(destinationHome, { namespace: 'work_contract', limit: 5_000 })) {
+      if (!imported.has(recordIdentity(record)) || knownRepositories.has(record.scope)) continue;
+      const value = record.value as Record<string, unknown>;
+      if (TERMINAL_WORK_STATUSES.has(String(value.status ?? ''))) { skipped.push(record.key); continue; }
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: record.namespace, scope: record.scope, key: record.key, schemaVersion: record.schemaVersion,
+        value: { ...value, status: 'cancelled', updatedAt: new Date().toISOString(), terminalReason: 'CONTROLLER_HOME_MIGRATION_UNROUTABLE_REPOSITORY_ARCHIVED' },
+        action: 'controller_home_migration_archive_unroutable_work', expectedRevision: record.revision,
+      });
+      archivedWorkIds.push(record.key);
+    }
+    for (const record of listControlPlaneRecords<unknown>(destinationHome, { namespace: 'execution_work_handle', limit: 5_000 })) {
+      if (!imported.has(recordIdentity(record)) || knownRepositories.has(record.scope)) continue;
+      const value = record.value as Record<string, unknown>;
+      if (String(value.state ?? '') === 'cleaned') { skipped.push(record.key); continue; }
+      const finalization = typeof value.finalization === 'object' && value.finalization ? value.finalization : {};
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: record.namespace, scope: record.scope, key: record.key, schemaVersion: record.schemaVersion,
+        value: { ...value, state: 'cleaned', updatedAt: new Date().toISOString(), failureReason: 'CONTROLLER_HOME_MIGRATION_UNROUTABLE_REPOSITORY_ARCHIVED', finalization: { ...finalization, validation: 'skipped', commit: 'skipped', merge: 'skipped', branchCleanup: 'skipped', worktreeCleanup: 'skipped' } },
+        action: 'controller_home_migration_archive_unroutable_handle', expectedRevision: record.revision,
+      });
+      archivedHandleIds.push(record.key);
+    }
+  });
+  return { migrationId: input.migrationId, archivedWorkIds, archivedHandleIds, skipped };
 }
 
 function databasePath(home: string): string {

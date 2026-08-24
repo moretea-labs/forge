@@ -19,6 +19,7 @@ import {
   applyControllerHomeMigration,
   previewControllerHomeMigration,
   rollbackControllerHomeMigration,
+  archiveUnroutableMigratedWork,
 } from '../../runtime/control-plane/persistence/controller-home-migration';
 
 function output(value: unknown, json = true): void {
@@ -195,8 +196,13 @@ export function buildRuntimeCommand(): Command {
     .option('--destination <path>', 'Canonical Controller Home; defaults to the installed user-level authority')
     .option('--apply', 'Apply the reviewed migration and freeze the source SQLite as a read-only archive')
     .option('--rollback <migration-id>', 'Rollback one migration only when none of its imported records changed')
-    .action(async (opts: { source: string; destination?: string; apply?: boolean; rollback?: string }) => {
+    .option('--archive-unroutable <migration-id>', 'Archive imported nonterminal Work whose repository is not registered in the canonical Home')
+    .action(async (opts: { source: string; destination?: string; apply?: boolean; rollback?: string; archiveUnroutable?: string }) => {
       const destination = resolveControllerHome(opts.destination);
+      if (opts.archiveUnroutable?.trim()) {
+        output(archiveUnroutableMigratedWork({ destinationHome: destination, migrationId: opts.archiveUnroutable.trim() }));
+        return;
+      }
       if (opts.rollback?.trim()) {
         output(rollbackControllerHomeMigration({ destinationHome: destination, migrationId: opts.rollback.trim() }));
         return;
