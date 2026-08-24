@@ -417,11 +417,16 @@ function terminalOutcomeForContract(contract: WorkContract): WorkTerminalOutcome
   return 'failed';
 }
 
-function cleanupRetainedByRequest(contract: WorkContract, _handle: WorkHandleState): boolean {
+function cleanupRetainedByRequest(contract: WorkContract, handle: WorkHandleState): boolean {
   // `skipped` in old WorkHandle finalization records was also used for legacy
   // no-op/error paths, so it is not sufficient proof of an explicit retention
-  // request. Only the completion receipt's dedicated maintenance warning is
-  // authoritative enough to suppress automatic reconciliation.
+  // request. New cancelled/terminal Work records persist an explicit physical
+  // resource disposition on the WorkHandle. Completed Work keeps the existing
+  // completion-receipt warning as the delivery authority.
+  if (
+    handle.terminalResourceDisposition?.mode === 'retained_by_request'
+    && handle.terminalResourceDisposition.retainWorktree === true
+  ) return true;
   const receipt = contract.completionReceipt;
   if (!receipt || !isRepositoryCompletionReceipt(receipt)) return false;
   return receipt.cleanup.warnings.some((warning) => warning.code === 'cleanup_retained_by_request');

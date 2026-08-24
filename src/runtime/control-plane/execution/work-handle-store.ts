@@ -161,6 +161,17 @@ export interface WorkHandleState {
     owner: 'work_finalizer';
     registeredAt: string;
   };
+  /**
+   * Explicit terminal resource disposition. This is separate from finalization
+   * stage `skipped`, which is too ambiguous in legacy records to prove that a
+   * controller intentionally retained a managed branch/worktree.
+   */
+  terminalResourceDisposition?: {
+    mode: 'retained_by_request';
+    retainWorktree: boolean;
+    retainBranch: boolean;
+    recordedAt: string;
+  };
   /** Durable terminal cleanup progress. It is intentionally independent from completion/verification receipts. */
   cleanupReceipt?: WorkCleanupReceipt;
 }
