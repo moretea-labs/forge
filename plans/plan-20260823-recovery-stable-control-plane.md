@@ -80,31 +80,31 @@ This connector is the recovery entry point when the primary Forge MCP namespace/
 - [ ] #108 incident defense 2: public Gateway must live-confirm a published/session fingerprint disagreement before returning `MCP_TOOL_SURFACE_CHANGED`.
 - [ ] Add plugin/tool registry in-process `tool_surface_changed` event; Runtime republishes immediately without introducing another watcher authority.
 - [ ] #129: remove cwd-driven user-level Controller Home authority split; preserve repo-local layout only as explicit compatibility/migration state.
-- [ ] Establish and verify the dedicated Recovery connector on the canonical user Controller Home.
+- [x] Establish and verify the dedicated Recovery connector on the canonical user Controller Home.
 
 ### Phase 1 — make Recovery capable of closing failures
 
-- [ ] #130: consume `/ready.sessionCapacity.recoveryRecommended` in Standalone Recovery under the existing release-scoped restart budget/cooldown.
+- [x] #130: consume `/ready.sessionCapacity.recoveryRecommended` in Standalone Recovery under the existing release-scoped restart budget/cooldown.
 - [ ] #131: startup projection reconstruction is unconditional or equivalently validated before readiness, even when dirty marker is lost.
 - [ ] #132: Managed Process recovery becomes an explicit per-repository phase; errors are recorded and mark recovery degraded instead of being swallowed.
 - [ ] #134: stale Work reconciliation correlates ownership to the candidate Work instead of repository-wide activity.
 
 ### Phase 2 — preserve idempotency under long history
 
-- [ ] #133: replace arbitrary ExecutionJob first-5000 recovery with complete active/request-id authority or paginated durable reconciliation.
-- [ ] #140: Local Bridge launch request ID receives its own durable binding independent of recent 500 history.
+- [x] #133: replace arbitrary ExecutionJob first-5000 recovery with complete active/request-id authority or paginated durable reconciliation.
+- [x] #140: closed as obsolete after Local Bridge launch request creation was retired; no second durable binding authority is introduced.
 - [ ] Prove all mutation admission paths reject conflicting reuse of one request ID.
 
 ### Phase 3 — harden public connectivity
 
-- [ ] #136: Secure Tunnel readiness binds alias + tunnel ID + current local MCP target; missing identity becomes unknown/not-ready, never false ready.
+- [x] #136: Secure Tunnel readiness binds alias + tunnel ID + current local MCP target; missing identity becomes unknown/not-ready, never false ready.
 - [ ] Primary and Recovery public paths expose distinct health/identity evidence.
 - [ ] Restart primary connector/tunnel while Recovery connector stays usable.
 
 ### Phase 4 — baseline and governance
 
-- [ ] #141: add `check:stable-baseline` separate from package `check:release`.
-- [ ] #135: enforce/label `tasks/current.md` `stale_after`; expired current status cannot silently enter agent context as current truth.
+- [x] #141: add `check:stable-baseline` separate from package `check:release`.
+- [x] #135: enforce/label `tasks/current.md` `stale_after`; expired current status cannot silently enter agent context as current truth.
 - [ ] #139: authorization-code TTL, one-time use, global/per-client bounds and bounded cleanup.
 
 ## Required failure-injection acceptance
