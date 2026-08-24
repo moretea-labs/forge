@@ -401,7 +401,14 @@ function isCurrentControllerManagedWorktree(
       controllerHome,
       listRepositories(controllerHome, { includeRemoved: true }),
     );
-    return managedPathInside(storageRoot, worktreePath);
+    if (managedPathInside(storageRoot, worktreePath)) return true;
+    // Older Controller releases used a namespaced sibling of controller/.
+    // Accept only this Home's deterministic namespace, then let the caller's
+    // Git common-dir, branch, cleanliness, and preservation checks prove the
+    // exact Work before any removal.
+    const legacyNamespace = createHash('sha256').update(resolve(controllerHome)).digest('hex').slice(0, 16);
+    const legacyRoot = join(dirname(resolve(controllerHome)), 'managed-worktrees', legacyNamespace);
+    return managedPathInside(legacyRoot, worktreePath);
   } catch {
     return false;
   }
