@@ -356,6 +356,19 @@ export function recoveryUnauthorizedBody(): { error: string; message: string } {
   return { error: 'invalid_token', message: 'Missing Authorization header' };
 }
 
+export type RecoveryMcpRequestClassification = 'not_mcp' | 'auth_required' | 'method_not_supported' | 'mcp';
+
+export function classifyRecoveryMcpRequest(
+  request: Pick<IncomingMessage, 'method' | 'url' | 'headers'>,
+  expectedToken: string | undefined,
+): RecoveryMcpRequestClassification {
+  if (!matchesAnyPath(request.url, ['/mcp', '/recovery/mcp'])) return 'not_mcp';
+  const supplied = request.headers.authorization?.replace(/^Bearer\s+/i, '').trim();
+  if (!expectedToken || !supplied || !secureEqual(supplied, expectedToken)) return 'auth_required';
+  if (request.method !== 'POST') return 'method_not_supported';
+  return 'mcp';
+}
+
 function parseUrlEncoded(input: string): URLSearchParams {
   return new URLSearchParams(input);
 }
@@ -683,10 +696,9 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
       });
       return;
     }
-    if (request.method !== 'POST' || !matchesAnyPath(request.url, ['/mcp', '/recovery/mcp'])) { json(response, 404, { error: 'NOT_FOUND' }); return; }
-    const expected = gatewayToken(config);
-    const supplied = request.headers.authorization?.replace(/^Bearer\s+/i, '').trim();
-    if (!expected || !supplied || !secureEqual(supplied, expected)) { response.setHeader('www-authenticate', recoveryWwwAuthenticate(request, config)); json(response, 401, recoveryUnauthorizedBody()); return; }
+    const mcpRequest = classifyRecoveryMcpRequest(request, gatewayToken(config));
+    if (mcpRequest === 'not_mcp' || mcpRequest === 'method_not_supported') { json(response, 404, { error: 'NOT_FOUND' }); return; }
+    if (mcpRequest === 'auth_required') { response.setHeader('www-authenticate', recoveryWwwAuthenticate(request, config)); json(response, 401, recoveryUnauthorizedBody()); return; }
     if (!/^application\/json(?:\s*;|$)/i.test(String(request.headers['content-type'] ?? ''))) { json(response, 415, { error: 'RECOVERY_CONTENT_TYPE_REQUIRED' }); return; }
     let message: { id?: unknown; method?: unknown; params?: { name?: unknown; arguments?: unknown } };
     try { message = JSON.parse(await readBody(request)) as typeof message; } catch { json(response, 400, rpcError(null, -32700, 'Invalid JSON.')); return; }

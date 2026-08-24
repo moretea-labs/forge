@@ -32,6 +32,7 @@ import {
   type VerifyResult,
 } from '../../src/runtime/standalone-recovery/core';
 import {
+  classifyRecoveryMcpRequest,
   dispatchRecoveryTool,
   RECOVERY_CLI_COMMANDS,
   RECOVERY_TOOLS,
@@ -474,6 +475,22 @@ describe('standalone recovery on canonical Runtime', () => {
     const challenge = recoveryWwwAuthenticate(request, { recoveryPublicUrl: 'https://recovery.example.test/recovery/mcp' });
     expect(challenge).toBe('Bearer error="invalid_token", error_description="Missing Authorization header", resource_metadata="https://recovery.example.test/.well-known/oauth-protected-resource/recovery/mcp"');
     expect(recoveryUnauthorizedBody()).toEqual({ error: 'invalid_token', message: 'Missing Authorization header' });
+  });
+
+  test('authenticates every MCP transport method before method dispatch', () => {
+    const request = (method: string, url: string, authorization?: string) => ({
+      method,
+      url,
+      headers: authorization ? { authorization } : {},
+    } as Pick<IncomingMessage, 'method' | 'url' | 'headers'>);
+    for (const path of ['/mcp', '/recovery/mcp']) {
+      expect(classifyRecoveryMcpRequest(request('GET', path), 'test-token')).toBe('auth_required');
+      expect(classifyRecoveryMcpRequest(request('DELETE', path), 'test-token')).toBe('auth_required');
+      expect(classifyRecoveryMcpRequest(request('POST', path), 'test-token')).toBe('auth_required');
+      expect(classifyRecoveryMcpRequest(request('GET', path, 'Bearer test-token'), 'test-token')).toBe('method_not_supported');
+      expect(classifyRecoveryMcpRequest(request('POST', path, 'Bearer test-token'), 'test-token')).toBe('mcp');
+    }
+    expect(classifyRecoveryMcpRequest(request('GET', '/recovery/health'), 'test-token')).toBe('not_mcp');
   });
 
   test('verifies and attests the single active whole-Runtime release', async () => {
