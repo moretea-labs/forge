@@ -69,10 +69,10 @@ const CHECKS: readonly CheckDefinition[] = [
     'tests/runtime/work-terminal-cleanup.test.ts',
     'tests/runtime/canonical-single-runtime.test.ts',
     'tests/cli/runtime-command.test.ts',
-    'tests/cli/mcp-controller.test.ts',
+    'tests/cli/mcp-http.test.ts',
   ].map((path) => ({
     id: `focused:runtime-architecture-replacement:${path}`,
-    args: ['test', '--max-concurrency', '1', path],
+    args: ['test', '--max-concurrency', '1', `./${path}`],
     timeoutMs: 5 * 60_000,
   })),
   { id: 'package:test:core', args: ['run', 'test:core'], timeoutMs: 30 * 60_000 },

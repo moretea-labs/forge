@@ -113,6 +113,9 @@ describe('runtime command surface', () => {
     const sourceBaseline = readFileSync(join(ROOT, 'scripts/activate-source-baseline.ts'), 'utf8');
     expect(sourceBaseline).toContain("['rev-parse', '--is-inside-work-tree']");
     expect(sourceBaseline).toContain("reason: 'WORKTREE_NOT_GIT_REPOSITORY'");
+    expect(sourceBaseline).toContain("args: ['test', '--max-concurrency', '1', `./${path}`]");
+    expect(sourceBaseline).toContain("'tests/cli/mcp-http.test.ts'");
+    expect(sourceBaseline).not.toContain("'tests/cli/mcp-controller.test.ts'");
     expect(mcpCommand).toContain('bindInheritedRuntimeWriteClaimFromEnvironment');
     expect(mcpCommand).toContain("from '../../runtime/root/write-fence'");
     expect(mcpCommand).not.toContain('stable-state/runtime-writer-context');
