@@ -1114,6 +1114,41 @@ describe('run_check Process Runtime facade', () => {
     expect(getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, started.handle.processId)).toMatchObject({ completed: true, cancelled: true });
   });
 
+  test('reattaches one request id after Runtime memory loss without replaying the command', async () => {
+    const fx = fixture();
+    const marker = join(fx.repoRoot, 'lightweight-request-count.txt');
+    const input = {
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      executable: 'node',
+      args: ['-e', `require('fs').appendFileSync(${JSON.stringify(marker)}, 'run\\n'); setTimeout(() => process.exit(0), 150)`],
+      cwd: fx.repoRoot,
+      timeoutMs: 5_000,
+      interactiveWaitMs: 5,
+      commandId: 'request-id-survives-runtime-restart',
+    };
+    const first = await startLightweightInternalProcess(input);
+    clearLightweightProcessMemoryForTest();
+    const attached = await startLightweightInternalProcess(input);
+    expect(attached.handle.processId).toBe(first.handle.processId);
+
+    const ctx = { controllerHome: fx.controllerHome, repo: fx.repoRoot } as unknown as MultiRepositoryMcpToolContext;
+    const got = await callProcessTool(ctx, 'process_get', {
+      repo_id: fx.repository.repoId,
+      process_id: first.handle.processId,
+    });
+    expect(got?.isError).not.toBe(true);
+    const waited = await callProcessTool(ctx, 'process_wait', {
+      repo_id: fx.repository.repoId,
+      process_id: first.handle.processId,
+      timeout_ms: 5_000,
+    });
+    expect(waited?.isError).not.toBe(true);
+    expect((waited?.structuredContent as { process?: { completed?: boolean } })?.process?.completed).toBe(true);
+    expect(readFileSync(marker, 'utf8')).toBe('run\n');
+    clearLightweightProcessMemoryForTest();
+  });
+
   test('redacts a bearer value split across active lightweight output chunks', async () => {
     const fx = fixture();
     const expectedBearer = ['synthetic-bearer-', 'value-0123456789'].join('');

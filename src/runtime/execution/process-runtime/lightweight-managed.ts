@@ -95,6 +95,8 @@ interface LightweightRunningReceipt {
   schemaVersion: 1;
   repoId: string;
   processId: string;
+  commandId?: string;
+  requestFingerprint?: string;
   updatedAt: string;
   handle: ProcessHandle;
   identity?: ExpectedProcessIdentity;
@@ -105,6 +107,8 @@ interface LightweightTerminalReceipt {
   schemaVersion: 1;
   repoId: string;
   processId: string;
+  commandId?: string;
+  requestFingerprint?: string;
   finishedAt: string;
   handle: ProcessHandle;
 }
@@ -174,6 +178,8 @@ function persistRunningReceipt(entry: LightweightEntry, force = false): void {
       schemaVersion: 1,
       repoId: entry.repoId,
       processId: entry.processId,
+      commandId: entry.commandId,
+      requestFingerprint: entry.requestFingerprint,
       updatedAt: new Date(now).toISOString(),
       handle: entryHandle(entry),
       ...(entry.identity ? { identity: entry.identity } : {}),
@@ -257,6 +263,8 @@ function persistTerminalReceipt(controllerHome: string, entry: LightweightEntry)
       schemaVersion: 1,
       repoId: entry.repoId,
       processId: entry.processId,
+      commandId: entry.commandId,
+      requestFingerprint: entry.requestFingerprint,
       finishedAt: new Date(entry.finishedAtMs).toISOString(),
       handle: terminalHandle(entry),
     };
@@ -285,6 +293,50 @@ function readTerminalReceipt(controllerHome: string, repoId: string, processId: 
   } catch {
     return undefined;
   }
+}
+
+function recoveredRequestMetrics(): LightweightCommandMetrics {
+  return {
+    lane: 'lightweight_managed',
+    interactiveReturnMs: 0,
+    durableWrites: 0,
+    leaseOperations: 0,
+  };
+}
+
+/**
+ * A request id is a durable attachment key, not permission to replay a command.
+ * Receipts written before this identity was added deliberately fail closed: a
+ * caller can use a fresh request id, but a Runtime restart cannot duplicate an
+ * operation whose original payload cannot be verified.
+ */
+function findPersistedHandleForCommand(
+  controllerHome: string,
+  repoId: string,
+  commandId: string,
+  requestFingerprint: string,
+): ProcessHandle | undefined {
+  const roots = [terminalReceiptRoot(controllerHome, repoId), runningReceiptRoot(controllerHome, repoId)];
+  for (const root of roots) {
+    if (!existsSync(root)) continue;
+    for (const file of readdirSync(root)) {
+      if (!file.endsWith('.json')) continue;
+      try {
+        const receipt = readJsonFile<LightweightRunningReceipt | LightweightTerminalReceipt>(join(root, file));
+        if (receipt.schemaVersion !== 1 || receipt.repoId !== repoId || !receipt.processId) continue;
+        const persistedCommandId = receipt.commandId ?? receipt.handle?.commandId;
+        if (persistedCommandId !== commandId) continue;
+        if (!receipt.requestFingerprint || receipt.requestFingerprint !== requestFingerprint) {
+          throw new Error(`PROCESS_REQUEST_CONFLICT: command id ${commandId} cannot be safely replayed after Runtime restart`);
+        }
+        return getLightweightProcessHandle(controllerHome, repoId, receipt.processId);
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith('PROCESS_REQUEST_CONFLICT:')) throw error;
+        // A corrupt or concurrently pruned receipt is not an execution result.
+      }
+    }
+  }
+  return undefined;
 }
 
 function recoveredRunningHandle(receipt: LightweightRunningReceipt, note?: string): ProcessHandle {
@@ -339,6 +391,8 @@ function persistRecoveredTerminalReceipt(
       schemaVersion: 1,
       repoId: receipt.repoId,
       processId: receipt.processId,
+      commandId: receipt.commandId,
+      requestFingerprint: receipt.requestFingerprint,
       finishedAt: new Date().toISOString(),
       handle,
     };
@@ -542,7 +596,9 @@ export async function startLightweightRepositoryCommand(
   });
   if (stableCommandId) {
     const existing = [...entries.values()].find((entry) => (
-      entry.repoId === input.repository.repoId && entry.commandId === stableCommandId
+      entry.controllerHome === input.controllerHome
+      && entry.repoId === input.repository.repoId
+      && entry.commandId === stableCommandId
     ));
     if (existing) {
       if (existing.requestFingerprint !== requestFingerprint) {
@@ -562,6 +618,13 @@ export async function startLightweightRepositoryCommand(
         },
       };
     }
+    const recovered = findPersistedHandleForCommand(
+      input.controllerHome,
+      input.repository.repoId,
+      stableCommandId,
+      requestFingerprint,
+    );
+    if (recovered) return { handle: recovered, metrics: recoveredRequestMetrics() };
   }
   if (input.reuseActiveEquivalent) {
     const existing = [...entries.values()].find((entry) => (
@@ -695,7 +758,9 @@ export async function startLightweightInternalProcess(
   });
   if (stableCommandId) {
     const existing = [...entries.values()].find((entry) => (
-      entry.repoId === input.repoId && entry.commandId === stableCommandId
+      entry.controllerHome === input.controllerHome
+      && entry.repoId === input.repoId
+      && entry.commandId === stableCommandId
     ));
     if (existing) {
       if (existing.requestFingerprint !== requestFingerprint) {
@@ -715,6 +780,13 @@ export async function startLightweightInternalProcess(
         },
       };
     }
+    const recovered = findPersistedHandleForCommand(
+      input.controllerHome,
+      input.repoId,
+      stableCommandId,
+      requestFingerprint,
+    );
+    if (recovered) return { handle: recovered, metrics: recoveredRequestMetrics() };
   }
 
   const processId = `lightweight:${randomUUID()}`;
@@ -811,7 +883,9 @@ export async function startLightweightControllerCheck(
   });
   if (stableCommandId) {
     const existing = [...entries.values()].find((entry) => (
-      entry.repoId === input.repoId && entry.commandId === stableCommandId
+      entry.controllerHome === input.controllerHome
+      && entry.repoId === input.repoId
+      && entry.commandId === stableCommandId
     ));
     if (existing) {
       if (existing.requestFingerprint !== requestFingerprint) {
@@ -831,6 +905,13 @@ export async function startLightweightControllerCheck(
         },
       };
     }
+    const recovered = findPersistedHandleForCommand(
+      input.controllerHome,
+      input.repoId,
+      stableCommandId,
+      requestFingerprint,
+    );
+    if (recovered) return { handle: recovered, metrics: recoveredRequestMetrics() };
   }
 
   const processId = `lightweight:${randomUUID()}`;
