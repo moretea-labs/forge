@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "fixture": "phase2-canonical-runtime-work",
+  "acceptance": "managed-worktree-prepare-verify-finalize-cleanup"
+}
