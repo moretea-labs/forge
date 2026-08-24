@@ -612,6 +612,59 @@ async function probeExternalMcp(transport: RecoveryHttpTransport, url: string): 
   } finally { clearTimeout(timer); }
 }
 
+function publicGatewayReadinessEndpoint(endpoint: string): string {
+  const url = new URL(endpoint);
+  url.pathname = '/ready';
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
+async function probePublicGatewayReadiness(
+  transport: RecoveryHttpTransport,
+  endpoint: string,
+): Promise<{ ok: boolean; detail: string; status?: number; value?: unknown }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort('RECOVERY_HTTP_TIMEOUT'), 4_000);
+  try {
+    const response = await transport.request({
+      url: publicGatewayReadinessEndpoint(endpoint),
+      headers: { accept: 'application/json' },
+      timeoutMs: 4_000,
+      signal: controller.signal,
+    });
+    let sessionCapacity: unknown;
+    try {
+      const payload = JSON.parse(response.body) as { sessionCapacity?: unknown };
+      sessionCapacity = payload.sessionCapacity;
+    } catch { /* malformed readiness payload remains a failed/opaque probe */ }
+    const recoveryRecommended = Boolean(
+      sessionCapacity
+      && typeof sessionCapacity === 'object'
+      && (sessionCapacity as { recoveryRecommended?: unknown }).recoveryRecommended === true,
+    );
+    return {
+      ok: response.ok && !recoveryRecommended,
+      detail: `HTTP ${response.status}${recoveryRecommended ? '; session capacity recommends Connector recovery' : ''}`,
+      status: response.status,
+      ...(sessionCapacity === undefined ? {} : { value: sessionCapacity }),
+    };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message.slice(0, 180) : 'request failed' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function connectorCapacityRecoveryRecommended(verified: VerifyResult): boolean {
+  const value = verified.probes.primary_connector_ready?.value;
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && (value as { recoveryRecommended?: unknown }).recoveryRecommended === true,
+  );
+}
+
 function mainToken(config: RecoveryConfig): string | undefined {
   const candidate = config.mainMcpTokenFile ?? join(config.controllerHome, 'mcp', 'mcp.tokens.json');
   const parsed = json<{ bearerToken?: unknown }>(candidate);
@@ -782,7 +835,10 @@ export async function verifyStableRuntime(
   probes.active_gateway = endpoint
     ? await probe(transport, runtimeHealthEndpoint(endpoint))
     : { ok: false, detail: 'canonical Runtime endpoint is unavailable' };
-  if (config.publicMcpUrl) probes.external_mcp_http = await probeExternalMcp(transport, config.publicMcpUrl);
+  if (config.publicMcpUrl) {
+    probes.external_mcp_http = await probeExternalMcp(transport, config.publicMcpUrl);
+    probes.primary_connector_ready = await probePublicGatewayReadiness(transport, config.publicMcpUrl);
+  }
   if (config.gateway) probes.recovery_gateway = await probe(transport, `http://${config.gateway.host}:${config.gateway.port}/health`);
   const watchdogHealth = observeRecoveryWatchdogHealth(config.controllerHome);
   probes.recovery_watchdog = {
@@ -958,7 +1014,9 @@ export async function reconnectMain(config: RecoveryConfig): Promise<{ ok: boole
   // intentionally a bounded health/reconnect observation, never a rollout.
   const verified = await verifyStableRuntime(config);
   const publicProbe = verified.probes.external_mcp_http;
-  const ok = verified.probes.active_gateway?.ok === true && (publicProbe?.ok === true || publicProbe?.status === 401);
+  const ok = verified.probes.active_gateway?.ok === true
+    && verified.probes.primary_connector_ready?.ok !== false
+    && (publicProbe?.ok === true || publicProbe?.status === 401);
   audit(config, 'reconnect_main', { ok, externalStatus: publicProbe?.status });
   return { ok, detail: ok ? 'canonical Runtime Gateway and primary endpoint are reachable; client session may refresh' : 'primary endpoint remains unavailable; recovery channel remains independent', verify: verified };
 }
@@ -2592,7 +2650,11 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   const primaryConnectorFailed = Boolean(
     primaryConnectorConfigured
     && primaryRuntimeHealthy
-    && verified.probes.external_mcp_http?.ok === false,
+    && (
+      verified.probes.external_mcp_http?.ok === false
+      || verified.probes.primary_connector_ready?.ok === false
+      || connectorCapacityRecoveryRecommended(verified)
+    ),
   );
   if (primaryRuntimeHealthy && !primaryConnectorFailed && recoveryHealthy) {
     if (fullVerificationPerformed && verified.ok && !matchingKnownGood(config, verified.releases.active)) {

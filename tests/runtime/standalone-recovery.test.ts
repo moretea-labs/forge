@@ -243,6 +243,51 @@ async function runtimeServer(options: { challengeUnauthenticatedMcp?: boolean } 
   return { port: address.port, endpoint: `http://127.0.0.1:${address.port}/mcp`, requests };
 }
 
+async function saturatedPublicGatewayServer(): Promise<{ endpoint: string; requests: RuntimeRequestRecord[] }> {
+  const requests: RuntimeRequestRecord[] = [];
+  const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+    requests.push({
+      method: request.method,
+      url: request.url,
+      authorizationPresent: typeof request.headers.authorization === 'string',
+      accept: request.headers.accept,
+      contentType: request.headers['content-type'],
+      body: '',
+    });
+    response.setHeader('content-type', 'application/json');
+    if (request.method === 'GET' && request.url === '/ready') {
+      response.statusCode = 503;
+      response.end(JSON.stringify({
+        status: 'saturated',
+        sessionCapacity: {
+          sessionCount: 8,
+          maximumSessions: 8,
+          admissibleSessionCount: 0,
+          oldestActivePostAgeMs: 65_000,
+          recoveryRecommended: true,
+        },
+      }));
+      return;
+    }
+    if (request.method === 'POST' && request.url === '/mcp') {
+      response.statusCode = 401;
+      response.setHeader('www-authenticate', 'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp"');
+      response.end(JSON.stringify({ error: 'invalid_token' }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: 'not_found' }));
+  });
+  servers.push(server);
+  await new Promise<void>((done, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => done());
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('public Gateway test server unavailable');
+  return { endpoint: `http://127.0.0.1:${address.port}/mcp`, requests };
+}
+
 function writeMainToken(home: string): void {
   const path = join(home, 'mcp', 'mcp.tokens.json');
   mkdirSync(dirname(path), { recursive: true });
@@ -640,6 +685,61 @@ describe('standalone recovery on canonical Runtime', () => {
       jsonrpc: '2.0',
       method: 'initialize',
     });
+  });
+
+  test('turns public Gateway session-capacity exhaustion into the existing bounded Connector recovery decision', async () => {
+    const home = controllerHome();
+    const activeManifest = manifest(home, 'release-capacity', 'artifact-capacity');
+    ensureActiveRuntimeRelease(home, activeManifest);
+    const runtime = await runtimeServer();
+    const gateway = await saturatedPublicGatewayServer();
+    writeMainToken(home);
+    startObservedRuntime(home, runtime.endpoint, 'release-capacity', 'artifact-capacity');
+    const config = createRecoveryConfig(home, {
+      publicMcpUrl: gateway.endpoint,
+      primaryConnectorService: {
+        platform: 'launchd',
+        label: 'com.moretea.forge.mcp-gateway',
+        minimumFailures: 2,
+        minimumFailureDurationMs: 5_000,
+        maximumRestartAttempts: 3,
+      },
+    });
+
+    const verified = await verifyStableRuntime(config, undefined, { probeMcpProtocol: false });
+    expect(verified.runtime.ok).toBe(true);
+    expect(verified.probes.external_mcp_http).toMatchObject({ ok: true, status: 401 });
+    expect(verified.probes.primary_connector_ready).toMatchObject({
+      ok: false,
+      status: 503,
+      value: { admissibleSessionCount: 0, recoveryRecommended: true },
+    });
+    expect(gateway.requests.some((request) => request.method === 'GET' && request.url === '/ready')).toBe(true);
+
+    const firstTick = await watchdogTick(config, {
+      failures: 0,
+      rollbackUsed: false,
+      lastFullVerifyAt: Date.now(),
+    });
+    expect(firstTick.decision.action).toBe('degraded');
+    expect(firstTick.state).toMatchObject({ failures: 1, primaryConnectorFailures: 1 });
+    expect(firstTick.state.runtimeRestartAttempts ?? 0).toBe(0);
+
+    const capacityFailed = (verified.probes.primary_connector_ready.value as { recoveryRecommended?: boolean }).recoveryRecommended === true;
+    expect(decideWatchdog({
+      failures: 2,
+      firstFailureAt: Date.now() - 6_000,
+      evidenceClasses: ['public_mcp'],
+      activeKnownGood: true,
+      previousKnownGood: true,
+      rollbackUsed: false,
+      primaryConnectorConfigured: true,
+      primaryConnectorFailed: capacityFailed,
+      primaryConnectorFailures: 2,
+      primaryConnectorFirstFailureAt: Date.now() - 6_000,
+      primaryConnectorRestartAttempts: 0,
+      primaryConnectorMaximumRestartAttempts: 3,
+    })).toMatchObject({ action: 'restart_primary_connector' });
   });
 
   test('restores only the attested previous whole-Runtime release while Runtime is stopped', async () => {

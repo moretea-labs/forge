@@ -615,6 +615,38 @@ describe("sprint projection", () => {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  test("session-start hook suppresses an expired current-status snapshot", () => {
+    const cwd = tmpWorkspace("session-start-stale-current");
+    try {
+      installHooks(cwd);
+      mkdirSync(join(cwd, "tasks"), { recursive: true });
+      writeFileSync(join(cwd, "tasks/current.md"), [
+        "# Current Status Snapshot",
+        "",
+        "<!-- stale_after: 24h -->",
+        "",
+        "> **Status**: Executing",
+        "> **Updated At**: 2026-08-20T00:00:00+0000",
+        "> **Source Commit**: must-not-leak",
+        "> **Stale After**: 24h",
+        "",
+      ].join("\n"));
+
+      const result = spawnSync("bash", [join(cwd, ".ai/hooks/session-start-context.sh")], {
+        cwd,
+        input: "{}",
+        encoding: "utf-8",
+        env: { ...process.env, FORGE_CURRENT_STATUS_NOW_EPOCH: String(Date.parse("2026-08-24T00:00:00Z") / 1000) },
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("Stale Current Status Snapshot");
+      expect(result.stdout).not.toContain("status=Executing");
+      expect(result.stdout).not.toContain("must-not-leak");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("sprint asset parity", () => {

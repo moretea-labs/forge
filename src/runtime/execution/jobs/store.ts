@@ -206,7 +206,9 @@ function writeActiveIndex(controllerHome: string, index: ActiveJobIndex): void {
   writeJsonAtomic(activeIndexPath(controllerHome), {
     schemaVersion: 1,
     updatedAt: now(),
-    jobs: [...deduped.values()].sort((a, b) => a.queuedAt.localeCompare(b.queuedAt)).slice(-5000),
+    // Active work is correctness state, not a presentation window. Dropping an
+    // entry here makes Scheduler/recovery reads forget a durable non-terminal Job.
+    jobs: [...deduped.values()].sort((a, b) => a.queuedAt.localeCompare(b.queuedAt)),
   } satisfies ActiveJobIndex);
 }
 
@@ -258,7 +260,9 @@ export function rebuildExecutionJobIndexes(controllerHome: string, repoIds: stri
     for (const repoId of targetRepos) {
       const records = join(executionJobRoot(controllerHome, repoId), 'records');
       let names: string[] = [];
-      try { names = readdirSync(records).filter((name) => name.endsWith('.json')).slice(0, 5000); } catch { continue; }
+      // Startup repair must rebuild every active and request authority. Only the
+      // recent-history projection below is intentionally bounded.
+      try { names = readdirSync(records).filter((name) => name.endsWith('.json')); } catch { continue; }
       for (const name of names) {
         try {
           const job = readJsonFile<ExecutionJob>(join(records, name));
