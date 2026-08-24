@@ -27,6 +27,7 @@ import type { ProjectionObservation, ProjectionSourceReconciliation } from '../h
 import { RUNTIME_HEALTH_THRESHOLDS } from '../health/evaluator';
 import { isProcessAlive } from '../shared/process-tree';
 import type { TaskLedgerProjection } from '../../cli/controller/task-ledger';
+import { collectWorkLifecycleAttention } from '../control-plane/execution/work-lifecycle-audit';
 
 export interface ProjectionMetadata {
   contentRevision: number;
@@ -158,6 +159,8 @@ function projectionWithExecutionIndexOverlay(
     ?.filter((job) => !job.finishedAt || activeJobIds.has(job.jobId))
     .map(attentionSummary)
     ?? base.currentAttention;
+  const repository = listRepositories(controllerHome, { includeRemoved: true }).find((entry) => entry.repoId === repoId);
+  const lifecycleAttention = repository ? collectWorkLifecycleAttention(controllerHome, repository) : [];
 
   return {
     ...base,
@@ -172,8 +175,8 @@ function projectionWithExecutionIndexOverlay(
     releaseFrozen: projectionLeases
       ? projectionLeases.some((lease) => lease.resourceKey.startsWith('release:'))
       : base.releaseFrozen,
-    currentAttention,
-    attention,
+    currentAttention: [...currentAttention, ...lifecycleAttention].slice(0, 100),
+    attention: [...attention, ...lifecycleAttention].slice(0, 100),
   };
 }
 
@@ -198,6 +201,7 @@ function buildRepositoryProjection(
   // active/unresolved records should influence "current readiness" decisions.
   const currentAttentionJobs = attentionJobs.filter((job) => !job.finishedAt || activeJobIds.has(job.jobId));
   const repository = listRepositories(controllerHome).find((entry) => entry.repoId === repoId);
+  const lifecycleAttention = repository ? collectWorkLifecycleAttention(controllerHome, repository) : [];
   const plugins = repository ? listAssistantPluginManifests(controllerHome, repository, {
     preferStored: true,
   }) : [];
@@ -225,10 +229,14 @@ function buildRepositoryProjection(
     queueDepth: activeJobs.filter((job) => job.status !== 'running' && job.status !== 'dispatched').length,
     runningWorkers: activeJobs.filter((job) => job.status === 'running').length,
     activeLeases: leases.length,
-    currentAttention: currentAttentionJobs
-      .map((job) => ({ jobId: job.jobId, status: job.status, message: job.error?.message })),
-    attention: attentionJobs
-      .map((job) => ({ jobId: job.jobId, status: job.status, message: job.error?.message })),
+    currentAttention: [
+      ...currentAttentionJobs.map((job) => ({ jobId: job.jobId, status: job.status, message: job.error?.message })),
+      ...lifecycleAttention,
+    ].slice(0, 100),
+    attention: [
+      ...attentionJobs.map((job) => ({ jobId: job.jobId, status: job.status, message: job.error?.message })),
+      ...lifecycleAttention,
+    ].slice(0, 100),
     plugins: {
       total: plugins.length,
       enabled: plugins.filter((plugin) => plugin.enabled).length,
@@ -620,7 +628,7 @@ export function readRepositoryProjectionSnapshot(
 
   if (!stale && persisted) {
     dirtyProjectionReadCache.delete(dirtyProjectionReadCacheKey(controllerHome, repoId));
-    return { projection: persisted, stale: false, persisted: true };
+    return { projection: projectionWithExecutionIndexOverlay(controllerHome, repoId, persisted), stale: false, persisted: true };
   }
 
   // A hot read must remain read-only and must not rebuild the full projection in

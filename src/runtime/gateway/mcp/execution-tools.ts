@@ -172,9 +172,13 @@ function initialStage(): WorkFinalizationStages {
   return { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' };
 }
 
+function gitRevision(root: string, revision: string): string | undefined {
+  const output = spawnSync('git', ['-C', root, 'rev-parse', '--verify', `${revision}^{commit}`], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000 });
+  return output.status === 0 && typeof output.stdout === 'string' && output.stdout.trim() ? output.stdout.trim() : undefined;
+}
+
 function gitHead(root: string): string | undefined {
-  const output = spawnSync('git', ['-C', root, 'rev-parse', '--verify', 'HEAD'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000 });
-  return output.status === 0 && typeof output.stdout === 'string' ? output.stdout.trim() : undefined;
+  return gitRevision(root, 'HEAD');
 }
 
 function gitCommit(root: string, revision: string, label: string): string {
@@ -288,8 +292,8 @@ function completionReceiptForFinalizedWork(
   const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
     ? args.target_branch.trim()
     : repository.defaultBranch || 'main';
-  const targetRevision = gitHead(target.canonicalRoot);
-  if (!targetRevision) throw new Error('WORK_COMPLETION_RECEIPT_TARGET_REQUIRED: target HEAD is unavailable');
+  const targetRevision = gitRevision(target.canonicalRoot, targetBranch);
+  if (!targetRevision) throw new Error(`WORK_COMPLETION_RECEIPT_TARGET_REQUIRED: target branch ${targetBranch} is unavailable`);
   const noChange = args.completion_outcome === 'completed_no_change';
   // Delivery authority is always the Work's own revision, never the target
   // branch's newest HEAD. The target may have advanced because of unrelated
@@ -309,8 +313,9 @@ function completionReceiptForFinalizedWork(
         ? completionReceiptChangedPaths(target.canonicalRoot, handle.baseCommit, deliveryRevision)
         : (() => { throw new Error('WORK_COMPLETION_RECEIPT_BASE_REQUIRED: Work base revision is unavailable'); })();
   const recordedAt = new Date().toISOString();
+  const retainsExplicitDeliveryBranch = args.merge !== true && targetBranch === handle.branch;
   const warnings = [
-    ...(handle.finalization.branchCleanup === 'skipped' ? [{ code: 'cleanup_retained_by_request' as const, message: 'Branch cleanup was skipped by the finalization request.', resourceKind: 'branch' as const, resourceId: handle.branch, recordedAt }] : []),
+    ...(handle.finalization.branchCleanup === 'skipped' && !retainsExplicitDeliveryBranch ? [{ code: 'cleanup_retained_by_request' as const, message: 'Branch cleanup was skipped by the finalization request.', resourceKind: 'branch' as const, resourceId: handle.branch, recordedAt }] : []),
     ...(handle.finalization.worktreeCleanup === 'skipped' && handle.managedWorktree ? [{ code: 'cleanup_retained_by_request' as const, message: 'Managed worktree cleanup was skipped by the finalization request.', resourceKind: 'worktree' as const, resourceId: handle.worktreePath, recordedAt }] : []),
   ];
   return {
@@ -322,7 +327,7 @@ function completionReceiptForFinalizedWork(
     workId: handle.workId,
     targetBranch,
     targetRevision,
-    sourceRevision: handle.baseCommit,
+    sourceRevision: deliveryRevision,
     baseRevision: handle.baseCommit,
     changedPaths,
     delivery: {
@@ -1778,6 +1783,13 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     throw new Error('WORK_NO_CHANGE_PROOF_REQUIRED: completed_no_change requires objective-specific evidence and forbids commit/merge');
   }
   const wants = requestedWants;
+  const explicitTargetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
+    ? args.target_branch.trim()
+    : undefined;
+  // With merge=false an explicitly selected Work branch is the delivery target,
+  // not a disposable feature branch. Keep the ref reachable for the receipt.
+  const retainExplicitWorkTargetBranch = !wants.merge && explicitTargetBranch === current.branch;
+  const deleteBranchRequested = args.delete_branch !== false && !retainExplicitWorkTargetBranch;
   const noChangeFastPath = requestedOutcome === 'completed_no_change'
     && !wants.commit
     && !wants.merge
@@ -1870,7 +1882,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
         validation: 'failed',
         commit: fresh.finalization.commit === 'pending' ? 'skipped' : fresh.finalization.commit,
         merge: fresh.finalization.merge === 'pending' ? 'skipped' : fresh.finalization.merge,
-        branchCleanup: args.delete_branch === false ? 'skipped' : fresh.finalization.branchCleanup,
+        branchCleanup: deleteBranchRequested ? fresh.finalization.branchCleanup : 'skipped',
         lastError: preservedFailure,
       },
     }));
@@ -1902,7 +1914,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       });
     }
 
-    if (args.delete_branch !== false && current.finalization.branchCleanup !== 'done') {
+    if (deleteBranchRequested && current.finalization.branchCleanup !== 'done') {
       const target = selectWorkFinalizationTarget(
         getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true }),
         current,
@@ -1956,14 +1968,14 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
         validation: 'failed',
         commit: fresh.finalization.commit === 'pending' ? 'skipped' : fresh.finalization.commit,
         merge: fresh.finalization.merge === 'pending' ? 'skipped' : fresh.finalization.merge,
-        branchCleanup: args.delete_branch === false ? 'skipped' : fresh.finalization.branchCleanup,
+        branchCleanup: deleteBranchRequested ? fresh.finalization.branchCleanup : 'skipped',
         worktreeCleanup: 'done',
         lastError: preservedFailure,
       },
     }));
     appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
       title: 'failed work cleanup completed',
-      summary: `Controller preserved the failed Work outcome while removing its unchanged clean managed worktree and ${args.delete_branch === false ? 'retaining' : 'removing'} the local branch after proving ${failedCleanupProof.currentHead} is contained in ${failedCleanupProof.targetBranch}.`,
+      summary: `Controller preserved the failed Work outcome while removing its unchanged clean managed worktree and ${deleteBranchRequested ? 'removing' : 'retaining'} the local branch after proving ${failedCleanupProof.currentHead} is contained in ${failedCleanupProof.targetBranch}.`,
       detailLevel: 'summary',
     });
     releasePreparedWorkOwnership(ctx, current);
@@ -2003,7 +2015,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
         validation: cleanupReconciliation.worktreeMissing ? 'done' : fresh.finalization.validation,
         commit: fresh.finalization.commit === 'pending' ? 'skipped' : fresh.finalization.commit,
         merge: 'done',
-        branchCleanup: args.delete_branch === false ? 'skipped' : 'pending',
+        branchCleanup: deleteBranchRequested ? 'pending' : 'skipped',
         lastError: undefined,
       },
     }));
@@ -2074,7 +2086,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       validation: 'done',
       commit: 'skipped',
       merge: 'skipped',
-      branchCleanup: wants.cleanup && args.delete_branch !== false ? 'pending' : 'skipped',
+      branchCleanup: wants.cleanup && deleteBranchRequested ? 'pending' : 'skipped',
       lastError: undefined,
     };
     // Collapse the no-op Git stages into the same durable lifecycle write used
@@ -2166,13 +2178,82 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     const contract = contractFor(ctx, current);
     if (contract?.constraints.allowMerge === false) throw new Error('WORK_MERGE_NOT_ALLOWED: WorkContract disallows merge');
     const target = selectWorkFinalizationTarget(getRepository(current.repositoryId, ctx.controllerHome), current);
-    const deleteAfterWorktreeCleanup = current.managedWorktree && args.delete_branch !== false;
-    const merged = repositoryGitFinishWorkflow(ctx.controllerHome, target, { featureBranch: current.branch, targetBranch: typeof args.target_branch === 'string' ? args.target_branch : undefined, deleteBranch: !deleteAfterWorktreeCleanup && args.delete_branch !== false, noFf: args.no_ff === true, authorizationDecision: gitAuthorization, sessionId: session.sessionId, principalId: session.principalId, workId: current.workId, goalId: current.goalId });
+    const deleteAfterWorktreeCleanup = current.managedWorktree && deleteBranchRequested;
+    const targetBranch = explicitTargetBranch ?? target.defaultBranch ?? 'main';
+    const activeMergeHead = retryStage === 'merge' ? gitRevision(target.canonicalRoot, 'MERGE_HEAD') : undefined;
+    let merged: ReturnType<typeof repositoryGitFinishWorkflow>;
+    if (activeMergeHead) {
+      const expectedMergeHead = current.expectedHead ? gitRevision(target.canonicalRoot, current.expectedHead) : undefined;
+      const featureHead = gitRevision(target.canonicalRoot, current.branch);
+      const currentBranchResult = spawnSync('git', ['-C', target.canonicalRoot, 'branch', '--show-current'], {
+        encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+      });
+      const currentBranchName = currentBranchResult.status === 0 && typeof currentBranchResult.stdout === 'string'
+        ? currentBranchResult.stdout.trim()
+        : '';
+      if (!expectedMergeHead || activeMergeHead !== expectedMergeHead || featureHead !== expectedMergeHead || currentBranchName !== targetBranch) {
+        return failStage(
+          'merge',
+          `WORK_MERGE_HEAD_OWNERSHIP_MISMATCH: retry may conclude only Work ${current.workId} merge head ${expectedMergeHead ?? 'unavailable'} from ${current.branch} while on ${targetBranch}; observed MERGE_HEAD ${activeMergeHead}, feature ${featureHead ?? 'unavailable'}, branch ${currentBranchName || 'unavailable'}`,
+        );
+      }
+      const unmerged = spawnSync('git', ['-C', target.canonicalRoot, 'diff', '--name-only', '--diff-filter=U'], {
+        encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+      });
+      if (unmerged.status !== 0 || unmerged.error || typeof unmerged.stdout !== 'string') {
+        return failStage('merge', 'WORK_MERGE_CONFLICT_STATE_UNAVAILABLE: unable to prove that the owned merge has no unmerged paths');
+      }
+      if (unmerged.stdout.trim()) {
+        return failStage('merge', `WORK_MERGE_CONFLICTS_UNRESOLVED: resolve and stage all paths before retrying finalize (${unmerged.stdout.trim().split('\n').filter(Boolean).join(', ')})`);
+      }
+      const beforeConclude = repositoryGitStatus(target);
+      const concluded = repositoryGitCommit(ctx.controllerHome, target, {
+        message: `Merge ${current.branch} into ${targetBranch}`,
+        allowEmpty: true,
+        authorizationDecision: gitAuthorization,
+        sessionId: session.sessionId,
+        principalId: session.principalId,
+        workId: current.workId,
+        goalId: current.goalId,
+      });
+      if (!concluded.committed || !concluded.commit) {
+        return failStage('merge', concluded.error?.message ?? 'WORK_MERGE_CONCLUDE_FAILED: git commit did not conclude the owned merge');
+      }
+      const concludedSecondParent = gitRevision(target.canonicalRoot, 'HEAD^2');
+      if (concludedSecondParent !== expectedMergeHead || gitRevision(target.canonicalRoot, 'MERGE_HEAD')) {
+        return failStage('merge', `WORK_MERGE_CONCLUSION_OWNERSHIP_MISMATCH: concluded merge must retain ${expectedMergeHead} as its second parent and clear MERGE_HEAD`);
+      }
+      const steps: ReturnType<typeof repositoryGitFinishWorkflow>['steps'] = [{ name: 'conclude_owned_merge', execution: concluded.commit }];
+      if (!deleteAfterWorktreeCleanup && deleteBranchRequested) {
+        const deleted = repositoryGitDeleteBranch(ctx.controllerHome, target, { branch: current.branch, authorizationDecision: gitAuthorization, sessionId: session.sessionId, principalId: session.principalId, workId: current.workId, goalId: current.goalId });
+        steps.push({ name: 'delete_feature_branch', execution: deleted.execution });
+        if (deleted.execution.status !== 'executed' || deleted.execution.ok !== true) {
+          return failStage('merge', deleted.execution.stderr || 'WORK_MERGE_BRANCH_CLEANUP_FAILED: owned merge concluded but feature branch deletion failed');
+        }
+      }
+      merged = {
+        repoId: target.repoId,
+        checkoutId: target.activeCheckoutId,
+        featureBranch: current.branch,
+        targetBranch,
+        before: beforeConclude,
+        steps,
+        after: repositoryGitStatus(target),
+        completed: true,
+      };
+      appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
+        title: 'owned resolved merge concluded',
+        summary: `Finalizer retry proved MERGE_HEAD ${activeMergeHead} belongs to the exact Work delivery head, found no unmerged paths, and concluded the existing merge instead of replaying git merge.`,
+        detailLevel: 'summary',
+      });
+    } else {
+      merged = repositoryGitFinishWorkflow(ctx.controllerHome, target, { featureBranch: current.branch, targetBranch: explicitTargetBranch, deleteBranch: !deleteAfterWorktreeCleanup && deleteBranchRequested, noFf: args.no_ff === true, authorizationDecision: gitAuthorization, sessionId: session.sessionId, principalId: session.principalId, workId: current.workId, goalId: current.goalId });
+    }
     const pendingAuthorization = merged.steps.find((step) => step.execution.authorizationDecision?.decision === 'user_confirmation_required')?.execution.authorizationDecision;
     if (pendingAuthorization) return { authorization: pendingAuthorization, work: compactHandle(current), stages: current.finalization };
     if (!merged.completed) return { ...failStage('merge', merged.error?.message ?? 'merge failed'), merge: merged };
     current = transact('merge-done', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, 'merged', {
-      finalization: { ...fresh.finalization, merge: 'done', branchCleanup: args.delete_branch === false ? 'skipped' : deleteAfterWorktreeCleanup ? 'pending' : 'done', lastError: undefined },
+      finalization: { ...fresh.finalization, merge: 'done', branchCleanup: !deleteBranchRequested ? 'skipped' : deleteAfterWorktreeCleanup ? 'pending' : 'done', lastError: undefined },
       failureReason: undefined,
     }));
   } else if (!wants.merge && current.finalization.merge === 'pending') {
@@ -2181,7 +2262,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       finalization: {
         ...fresh.finalization,
         merge: 'skipped',
-        branchCleanup: requestedOutcome === 'completed_no_change' && wants.cleanup && args.delete_branch !== false ? 'pending' : 'skipped',
+        branchCleanup: requestedOutcome === 'completed_no_change' && wants.cleanup && deleteBranchRequested ? 'pending' : 'skipped',
       },
     }));
   }

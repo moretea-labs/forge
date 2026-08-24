@@ -370,11 +370,25 @@ const EVIDENCE_TRANSITIONS: Readonly<Record<EvidenceState, readonly EvidenceStat
   failed: ['failed', 'partial', 'valid', 'contradictory'],
 };
 
-function validateWorkSemanticTransition(current: WorkContract, next: WorkContract): WorkContract {
+function validateWorkSemanticTransition(
+  current: WorkContract,
+  next: WorkContract,
+  options: { allowRetainedCancelledResume?: boolean } = {},
+): WorkContract {
   const retryingFailedWork = current.status === 'failed'
     && !current.completionOutcome
     && ['claimed', 'launching', 'running', 'blocked'].includes(next.dispatchState);
-  if (!retryingFailedWork && !DISPATCH_TRANSITIONS[current.dispatchState].includes(next.dispatchState)) {
+  const resumingRetainedCancelledWork = options.allowRetainedCancelledResume === true
+    && current.status === 'cancelled'
+    && current.dispatchState === 'terminal'
+    && current.phase === 'cleanup'
+    && current.phaseEvidence.cleanup.state === 'skipped'
+    && !current.completionReceipt
+    && !current.completionOutcome
+    && next.status === 'running'
+    && next.dispatchState === 'running'
+    && next.phase === 'implementation';
+  if (!retryingFailedWork && !resumingRetainedCancelledWork && !DISPATCH_TRANSITIONS[current.dispatchState].includes(next.dispatchState)) {
     throw new Error(`WORK_SEMANTICS_TRANSITION_INVALID: dispatch ${current.dispatchState} -> ${next.dispatchState}`);
   }
   if (!EVIDENCE_TRANSITIONS[current.evidenceState].includes(next.evidenceState)) {
@@ -947,6 +961,7 @@ function updateWorkContractInternal(
   patch: Partial<Omit<WorkContract, 'schemaVersion' | 'workId' | 'repoId' | 'createdAt'>>,
   allowCompletionWrite: boolean,
   allowPhaseWrite = false,
+  allowRetainedCancelledResume = false,
 ): WorkContract {
   return withWorkContractStoreWrite(options, () => {
     const sanitizedId = sanitizeFileComponent(workId);
@@ -1010,7 +1025,7 @@ function updateWorkContractInternal(
     reconciliations: (patch.reconciliations ?? current.reconciliations ?? []).slice(0, 20),
     objective: (patch.objective ?? current.objective).slice(0, 2_000),
     continuationPrompt: (patch.continuationPrompt ?? current.continuationPrompt)?.slice(0, 2_000),
-    }));
+    }), { allowRetainedCancelledResume });
     const contracts = [...store.contracts];
     contracts[index] = next;
     writeWorkContractStore(options, { schemaVersion: 2, updatedAt: at, contracts });
@@ -1024,6 +1039,62 @@ export function updateWorkContract(
   patch: Partial<Omit<WorkContract, 'schemaVersion' | 'workId' | 'repoId' | 'createdAt'>>,
 ): WorkContract {
   return updateWorkContractInternal(options, workId, patch, false);
+}
+
+/**
+ * Reopen one explicitly retained cancelled repository Work after the facade has
+ * reauthenticated the same principal and revalidated physical Work ownership.
+ * Generic mutation APIs intentionally cannot perform terminal -> running.
+ */
+export function resumeRetainedCancelledWorkContract(
+  options: WorkContractStoreOptions,
+  workId: string,
+  input: {
+    principalId: string;
+    controllerInstanceId: string;
+    summary: string;
+    checkoutId?: string;
+    worktreeRef?: string;
+  },
+): WorkContract {
+  const current = getWorkContract(options, workId);
+  if (!current) throw new Error(`work contract not found: ${workId}`);
+  if (current.status !== 'cancelled' || current.dispatchState !== 'terminal' || current.phase !== 'cleanup') {
+    throw new Error(`WORK_CANCELLED_RESUME_STATUS_INVALID: ${workId}`);
+  }
+  if (current.workKind !== 'repository_change') throw new Error(`WORK_CANCELLED_RESUME_KIND_INVALID: ${workId}`);
+  if (current.completionReceipt || current.completionOutcome) throw new Error(`WORK_CANCELLED_RESUME_COMPLETION_CONFLICT: ${workId}`);
+  if (current.phaseEvidence.cleanup.state !== 'skipped' || current.phaseEvidence.cleanup.source !== 'recorded') {
+    throw new Error(`WORK_CANCELLED_RESUME_HISTORY_AMBIGUOUS: ${workId}`);
+  }
+  const originalPrincipal = current.principalId?.trim();
+  if (!originalPrincipal || originalPrincipal !== input.principalId.trim()) {
+    throw new Error(`WORK_CANCELLED_RESUME_PRINCIPAL_MISMATCH: ${workId}`);
+  }
+  const at = nowIso(options);
+  const evidenceRefs = [...current.evidenceRefs, {
+    title: 'explicit current-user Work reauthorization',
+    summary: input.summary.trim().slice(0, 1_000),
+    detailLevel: 'summary' as const,
+  }].slice(-current.evidencePolicy.maxEvidenceRefs);
+  const phaseEvidence = transitionPhaseEvidence({ ...current, evidenceRefs }, 'implementation', {
+    status: 'running',
+    summary: input.summary,
+    evidenceRefs,
+    recordedAt: at,
+    source: 'recorded',
+  });
+  return updateWorkContractInternal(options, workId, {
+    status: 'running',
+    phase: 'implementation',
+    phaseEvidence,
+    dispatchState: 'running',
+    evidenceRefs,
+    checkoutId: input.checkoutId ?? current.checkoutId,
+    worktreeRef: input.worktreeRef ?? current.worktreeRef,
+    controllerInstanceId: input.controllerInstanceId,
+    continuationPrompt: input.summary,
+  }, false, true, true);
 }
 
 /** Merge non-authoritative discovery/change evidence without changing policy fences. */

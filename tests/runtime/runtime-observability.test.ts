@@ -26,6 +26,7 @@ import { writeJsonAtomic } from '../../src/runtime/shared/json-files';
 import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from '../../src/runtime/root/ownership';
 import { collectRuntimeSourceIdentity, rotateRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
+import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
 import { DEFAULT_CONTROLLER_TOOL_NAMES } from '../../src/cli/mcp/toolset-names';
 import { FORGE_VERSION } from '../../src/cli/controller/runtime-config';
 import {
@@ -176,6 +177,41 @@ function controllerFixture(): { controllerHome: string; repoRoot: string; owners
 }
 
 describe('runtime observability', () => {
+  test('derives lifecycle attention for dirty unregistered worktrees and unintegrated Work branches', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-lifecycle-audit-ch-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-lifecycle-audit-repo-'));
+    const worktreeRoot = join(tmpdir(), `forge-lifecycle-audit-worktree-${process.pid}-${Date.now()}`);
+    try {
+      spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot, stdio: 'ignore' });
+      writeFileSync(join(repoRoot, 'README.md'), 'base\n');
+      spawnSync('git', ['add', '.'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'base'], { cwd: repoRoot, stdio: 'ignore' });
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+      const added = spawnSync('git', ['worktree', 'add', '-b', 'work/orphan-audit', worktreeRoot], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+      });
+      expect(added.status).toBe(0);
+      writeFileSync(join(worktreeRoot, 'delivered.txt'), 'unique\n');
+      spawnSync('git', ['add', 'delivered.txt'], { cwd: worktreeRoot, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'unique work'], { cwd: worktreeRoot, stdio: 'ignore' });
+      writeFileSync(join(worktreeRoot, 'unfinished.txt'), 'dirty\n');
+
+      const findings = collectWorkLifecycleAttention(controllerHome, repository);
+      expect(findings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }),
+        expect.objectContaining({ status: 'work_branch_not_integrated' }),
+      ]));
+    } finally {
+      spawnSync('git', ['worktree', 'remove', '--force', worktreeRoot], { cwd: repoRoot, stdio: 'ignore' });
+      rmSync(worktreeRoot, { recursive: true, force: true });
+      rmSync(controllerHome, { recursive: true, force: true });
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   test('keeps readiness true while exposing an unknown external endpoint', () => {
     const health = evaluateRuntimeHealth(observations({
       externalReachability: { status: 'unknown', detail: 'public endpoint probe is not configured' },
