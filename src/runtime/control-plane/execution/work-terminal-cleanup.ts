@@ -15,6 +15,7 @@ import {
   selectRepositoryCheckout,
   setRepositoryCheckoutLifecycle,
 } from '../../../cli/repositories/registry';
+import { managedPathInside, managedWorktreeStorageRoot } from '../../../cli/repositories/worktree-storage';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { getWorkContract } from '../facade/work-contract-store';
 import { getControllerSession, releaseControllerSession } from '../facade/controller-session-store';
@@ -391,6 +392,21 @@ function selectTerminalCleanupTarget(repository: ReturnType<typeof getRepository
   return repository;
 }
 
+function isCurrentControllerManagedWorktree(
+  controllerHome: string,
+  worktreePath: string,
+): boolean {
+  try {
+    const storageRoot = managedWorktreeStorageRoot(
+      controllerHome,
+      listRepositories(controllerHome, { includeRemoved: true }),
+    );
+    return managedPathInside(storageRoot, worktreePath);
+  } catch {
+    return false;
+  }
+}
+
 export interface TerminalWorkCleanupReconcileOptions {
   nowMs?: number;
   minAgeMs?: number;
@@ -593,7 +609,10 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
     current = persist(input.controllerHome, current, receipt);
     return { handle: current, receipt };
   }
-  if (!registeredPath && existsSync(current.worktreePath)) {
+  const migratedManagedWorktree = !registeredPath
+    && existsSync(current.worktreePath)
+    && isCurrentControllerManagedWorktree(input.controllerHome, current.worktreePath);
+  if (!registeredPath && existsSync(current.worktreePath) && !migratedManagedWorktree) {
     addBlocker(receipt, 'CHECKOUT_NOT_CONTROLLER_REGISTERED');
     current = persist(input.controllerHome, current, receipt);
     return { handle: current, receipt };
@@ -690,6 +709,9 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
       receipt.checkoutRegistry.reason = error instanceof Error ? error.message : String(error);
       addBlocker(receipt, `CHECKOUT_REGISTRY_REMOVE_FAILED: ${receipt.checkoutRegistry.reason}`);
     }
+  }
+  if (!registeredPath && migratedManagedWorktree) {
+    receipt.checkoutRegistry.reason = 'Checkout metadata was absent after Controller Home migration; canonical managed-worktree and Git identity checks passed before cleanup.';
   }
 
   if (!deleteBranch) {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -251,6 +251,21 @@ describe('terminal Work cleanup', () => {
     expect(repeated.receipt.receiptId).toBe(first.receipt.receiptId);
     expect(repeated.receipt.complete).toBe(true);
     expect(worktreeCount(fx.repositoryRoot)).toBe(1);
+  });
+
+  test('cleans a migrated managed worktree whose checkout metadata was not transferred', async () => {
+    const fx = fixture('migrated-unregistered');
+    const registryPath = join(fx.controllerHome, 'repositories.json');
+    const registry = JSON.parse(readFileSync(registryPath, 'utf8')) as { repositories: Array<{ repoId: string; checkouts: Array<{ checkoutId: string }> }> };
+    const record = registry.repositories.find((candidate) => candidate.repoId === fx.repository.repoId)!;
+    record.checkouts = record.checkouts.filter((checkout) => checkout.checkoutId !== fx.workspace.checkoutId);
+    writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`);
+
+    const result = await cleanup(fx);
+    expect(result.handle.state).toBe('cleaned');
+    expect(result.receipt).toMatchObject({ complete: true, worktree: { status: 'removed' }, checkoutRegistry: { status: 'already_removed' } });
+    expect(result.receipt.checkoutRegistry.reason).toContain('Controller Home migration');
+    expect(existsSync(fx.workspace.root!)).toBe(false);
   });
 
   test('deletes a branch proven contained in targetBranch even when the cleanup checkout HEAD is stale', async () => {
