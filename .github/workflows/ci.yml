@@ -36,23 +36,6 @@ jobs:
       - name: Install dependencies from the committed Bun lockfile
         run: bun install --frozen-lockfile
 
-      - name: Run current-architecture MCP host benchmark
-        env:
-          FORGE_MCP_BENCH_LABEL: github-ubuntu-current-main
-          FORGE_MCP_BENCH_ITERATIONS: "50"
-          FORGE_MCP_BENCH_CONNECT_ITERATIONS: "30"
-          FORGE_MCP_BENCH_OUTPUT: ${{ github.workspace }}/mcp-host-benchmark.json
-        run: bun run benchmark:mcp-host
-
-      - name: Upload MCP host benchmark evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: mcp-host-benchmark-${{ github.run_id }}
-          path: mcp-host-benchmark.json
-          if-no-files-found: error
-          retention-days: 1
-
       - name: Run one content-addressed main gate
         env:
           TEST_BASE_REF: origin/${{ github.base_ref || 'main' }}
