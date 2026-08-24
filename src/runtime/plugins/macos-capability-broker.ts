@@ -6,6 +6,8 @@ import { AssistantPluginError } from './errors';
 
 const BROKER_PLUGIN_ID = 'desktop_operator';
 const BROKER_PROTOCOL_VERSION = '1.0';
+const BROWSER_AUTOMATION_CAPABILITY = 'macos_browser_automation.v1';
+const BROWSER_AUTOMATION_PROTOCOL_VERSION = 1;
 const MAX_RESPONSE_BYTES = 4 * 1_048_576;
 let testSocketPath: string | undefined;
 
@@ -34,7 +36,7 @@ function unavailable(error: AssistantPluginError, path: string): AssistantPlugin
   );
 }
 
-async function verifyBrokerIdentity(path: string, timeoutMs: number): Promise<void> {
+async function verifyBrokerIdentity(path: string, timeoutMs: number, requestedAction?: string): Promise<void> {
   const handshake = await callExternalUnixSocket({
     socketPath: path,
     requestId: `macos-broker-handshake:${randomUUID()}`,
@@ -49,6 +51,34 @@ async function verifyBrokerIdentity(path: string, timeoutMs: number): Promise<vo
       { retryable: false, details: { expectedPluginId: BROKER_PLUGIN_ID, expectedProtocolVersion: BROKER_PROTOCOL_VERSION } },
     );
   }
+  const capabilities = Array.isArray(handshake.internalCapabilities)
+    ? handshake.internalCapabilities.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+  const actions = Array.isArray(handshake.browserAutomationActions)
+    ? handshake.browserAutomationActions.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+  const browserProtocolVersion = handshake.browserAutomationProtocolVersion;
+  if (!capabilities.includes(BROWSER_AUTOMATION_CAPABILITY)
+    || browserProtocolVersion !== BROWSER_AUTOMATION_PROTOCOL_VERSION
+    || (requestedAction && !actions.includes(requestedAction))) {
+    throw new AssistantPluginError(
+      'PLUGIN_MACOS_CAPABILITY_BROKER_CAPABILITY_UNSUPPORTED',
+      requestedAction
+        ? `Installed Forge Desktop Operator does not declare required browser automation action ${requestedAction}.`
+        : 'Installed Forge Desktop Operator does not declare the required browser automation capability.',
+      {
+        retryable: false,
+        details: {
+          requiredCapability: BROWSER_AUTOMATION_CAPABILITY,
+          requiredBrowserAutomationProtocolVersion: BROWSER_AUTOMATION_PROTOCOL_VERSION,
+          ...(requestedAction ? { requiredAction: requestedAction } : {}),
+          declaredCapability: capabilities.includes(BROWSER_AUTOMATION_CAPABILITY),
+          declaredBrowserAutomationProtocolVersion: typeof browserProtocolVersion === 'number' ? browserProtocolVersion : null,
+          declaredActionCount: actions.length,
+        },
+      },
+    );
+  }
 }
 
 export async function callMacOsCapabilityBroker(
@@ -57,7 +87,8 @@ export async function callMacOsCapabilityBroker(
 ): Promise<Record<string, unknown>> {
   const path = socketPath();
   try {
-    await verifyBrokerIdentity(path, timeoutMs);
+    const requestedAction = typeof params.action === 'string' ? params.action : undefined;
+    await verifyBrokerIdentity(path, timeoutMs, requestedAction);
     return await callExternalUnixSocket({
       socketPath: path,
       requestId: `macos-broker:${randomUUID()}`,
