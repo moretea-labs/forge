@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { claimControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import {
   launchSuperController,
   resolveLauncherExecutable,
@@ -26,6 +27,23 @@ function temp(prefix: string): string {
   const root = mkdtempSync(join(tmpdir(), prefix));
   roots.push(root);
   return root;
+}
+
+function sleepingExecutable(root: string): string {
+  const executable = join(root, 'sleeping-controller');
+  writeFileSync(executable, '#!/bin/sh\nsleep 5\n', 'utf8');
+  chmodSync(executable, 0o755);
+  return executable;
+}
+
+function codexBootstrap() {
+  return {
+    url: 'http://127.0.0.1:9876/mcp',
+    bearerTokenEnvVar: 'FORGE_RUNTIME_MCP_TOKEN' as const,
+    principalId: 'external:codex:test-reservation',
+    sessionId: 'external-session:codex:test-reservation',
+    env: process.env,
+  };
 }
 
 function launcherFixture() {
@@ -103,5 +121,100 @@ describe('Thin Launcher startup observability', () => {
       reservationId: launched.reservationId,
       pid: launched.pid,
     });
+  });
+
+  test('does not report Codex started until the expected MCP identity claims the exact Work', async () => {
+    const fx = launcherFixture();
+    const bootstrap = codexBootstrap();
+    const claimTimer = setTimeout(() => {
+      claimControllerSession(fx.store, {
+        workId: fx.workId,
+        controllerId: bootstrap.principalId,
+        controllerType: 'codex',
+        sessionId: bootstrap.sessionId,
+        principalId: bootstrap.principalId,
+        controllerInstanceId: 'runtime-codex-launch-test',
+      });
+    }, 50);
+    try {
+      const launched = await launchSuperController({ work: fx.store, handoff: fx.store }, {
+        controllerType: 'codex',
+        executable: sleepingExecutable(fx.root),
+        workId: fx.workId,
+        cwd: fx.root,
+      }, {
+        resolveProviderMcpBootstrap: () => bootstrap,
+        claimTimeoutMs: 1_000,
+        claimPollIntervalMs: 10,
+      });
+      if (launched.pid) launchedPids.push(launched.pid);
+
+      expect(launched.pid).toBeGreaterThan(0);
+      expect(getExternalControllerLaunchReservation(fx.store, fx.workId)).toMatchObject({
+        reservationId: launched.reservationId,
+        pid: launched.pid,
+      });
+    } finally {
+      clearTimeout(claimTimer);
+    }
+  });
+
+  test('fails closed and releases the reservation when Codex stays alive without claiming the Work', async () => {
+    const fx = launcherFixture();
+    let message = '';
+    try {
+      await launchSuperController({ work: fx.store, handoff: fx.store }, {
+        controllerType: 'codex',
+        executable: sleepingExecutable(fx.root),
+        workId: fx.workId,
+        cwd: fx.root,
+      }, {
+        resolveProviderMcpBootstrap: () => codexBootstrap(),
+        claimTimeoutMs: 120,
+        claimPollIntervalMs: 10,
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).toContain('LAUNCHER_CLAIM_TIMEOUT');
+    expect(message).toContain(fx.workId);
+    expect(getExternalControllerLaunchReservation(fx.store, fx.workId)).toBeUndefined();
+  });
+
+  test('rejects a live claim from any identity other than the launched Codex MCP identity', async () => {
+    const fx = launcherFixture();
+    const bootstrap = codexBootstrap();
+    const claimTimer = setTimeout(() => {
+      claimControllerSession(fx.store, {
+        workId: fx.workId,
+        controllerId: 'external:codex:wrong-reservation',
+        controllerType: 'codex',
+        sessionId: 'external-session:codex:wrong-reservation',
+        principalId: 'external:codex:wrong-reservation',
+        controllerInstanceId: 'runtime-codex-launch-test',
+      });
+    }, 40);
+    let message = '';
+    try {
+      await launchSuperController({ work: fx.store, handoff: fx.store }, {
+        controllerType: 'codex',
+        executable: sleepingExecutable(fx.root),
+        workId: fx.workId,
+        cwd: fx.root,
+      }, {
+        resolveProviderMcpBootstrap: () => bootstrap,
+        claimTimeoutMs: 1_000,
+        claimPollIntervalMs: 10,
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    } finally {
+      clearTimeout(claimTimer);
+    }
+
+    expect(message).toContain('LAUNCHER_CLAIM_MISMATCH');
+    expect(message).toContain('wrong-reservation');
+    expect(getExternalControllerLaunchReservation(fx.store, fx.workId)).toBeUndefined();
   });
 });

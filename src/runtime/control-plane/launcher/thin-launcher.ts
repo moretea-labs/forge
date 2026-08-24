@@ -12,6 +12,7 @@ import {
   reserveExternalControllerLaunch,
 } from './launch-reservation-store';
 import type { ControllerType } from '../facade/types';
+import { getControllerSession } from '../facade/controller-session-store';
 import { codexMcpConfigArgs, resolveProviderMcpBootstrap, type ProviderMcpBootstrap } from './provider-mcp-bootstrap';
 import { getChatgptWorkConversationBinding } from './chatgpt-work-binding-store';
 import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
@@ -45,6 +46,21 @@ export interface ThinLauncherResult {
 }
 
 const LAUNCHER_STARTUP_GRACE_MS = 250;
+const CODEX_WORK_CLAIM_TIMEOUT_MS = 30_000;
+const CODEX_WORK_CLAIM_POLL_INTERVAL_MS = 100;
+
+interface ExternalControllerClaimExpectation {
+  controllerType: 'codex';
+  controllerId: string;
+  principalId: string;
+  sessionId: string;
+}
+
+export interface ThinLauncherDependencies {
+  resolveProviderMcpBootstrap?: typeof resolveProviderMcpBootstrap;
+  claimTimeoutMs?: number;
+  claimPollIntervalMs?: number;
+}
 
 function launcherProcessEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const repositoryEnv = repositoryChildProcessEnvironment(env);
@@ -85,20 +101,54 @@ async function awaitExternalControllerStartup(
   stores: { work: WorkContractStoreOptions & { controllerHome: string; repoId: string } },
   workId: string,
   reservationId: string,
+  claimExpectation?: ExternalControllerClaimExpectation,
+  options: { claimTimeoutMs?: number; claimPollIntervalMs?: number } = {},
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     let startupSettled = false;
-    const timer = setTimeout(() => {
-      startupSettled = true;
-      resolve();
-    }, LAUNCHER_STARTUP_GRACE_MS);
-
-    child.once('error', (error) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const clearTimer = () => {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+    };
+    const releaseFailure = (reason: string) => {
+      try {
+        releaseExternalControllerLaunchReservation(stores.work, workId, reservationId, reason);
+      } catch {
+        // Preserve the primary startup failure if diagnostic persistence itself races or fails.
+      }
+    };
+    const terminateUnclaimedChild = () => {
+      if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+      try { child.kill('SIGTERM'); } catch { /* process may already be exiting */ }
+    };
+    const fail = (error: Error, reason: string, terminate = false) => {
       if (startupSettled) return;
       startupSettled = true;
-      clearTimeout(timer);
-      releaseExternalControllerLaunchReservation(stores.work, workId, reservationId, `spawn_error:${error.message}`);
-      reject(new Error(`LAUNCHER_STARTUP_FAILED: ${error.message}`));
+      clearTimer();
+      if (terminate) terminateUnclaimedChild();
+      releaseFailure(reason);
+      reject(error);
+    };
+    const expectedClaimMatches = (): { matches: boolean; mismatch?: string } => {
+      if (!claimExpectation) return { matches: true };
+      const owner = getControllerSession(stores.work, workId);
+      if (!owner) return { matches: false };
+      const ownerPrincipal = owner.principalId?.trim() || owner.controllerId;
+      const matches = owner.controllerType === claimExpectation.controllerType
+        && owner.controllerId === claimExpectation.controllerId
+        && ownerPrincipal === claimExpectation.principalId
+        && owner.sessionId === claimExpectation.sessionId;
+      return matches
+        ? { matches: true }
+        : {
+          matches: false,
+          mismatch: `observed type=${owner.controllerType} controller=${owner.controllerId} principal=${ownerPrincipal} session=${owner.sessionId}`,
+        };
+    };
+
+    child.once('error', (error) => {
+      fail(new Error(`LAUNCHER_STARTUP_FAILED: ${error.message}`), `spawn_error:${error.message}`);
     });
 
     child.once('exit', (exitCode, signal) => {
@@ -112,9 +162,72 @@ async function awaitExternalControllerStartup(
       }
       if (startupSettled) return;
       startupSettled = true;
-      clearTimeout(timer);
-      reject(new Error(`LAUNCHER_STARTUP_FAILED: external Controller exited during startup grace (code=${String(exitCode ?? 'null')}, signal=${signal ?? 'none'})`));
+      clearTimer();
+      const phase = claimExpectation ? 'before exact Work claim became live' : 'during startup grace';
+      reject(new Error(`LAUNCHER_STARTUP_FAILED: external Controller exited ${phase} (code=${String(exitCode ?? 'null')}, signal=${signal ?? 'none'})`));
     });
+
+    if (!claimExpectation) {
+      timer = setTimeout(() => {
+        if (startupSettled) return;
+        startupSettled = true;
+        resolve();
+      }, LAUNCHER_STARTUP_GRACE_MS);
+      return;
+    }
+
+    const claimTimeoutMs = Math.max(100, Math.min(options.claimTimeoutMs ?? CODEX_WORK_CLAIM_TIMEOUT_MS, 60_000));
+    const claimPollIntervalMs = Math.max(10, Math.min(options.claimPollIntervalMs ?? CODEX_WORK_CLAIM_POLL_INTERVAL_MS, 1_000));
+    const claimDeadline = Date.now() + claimTimeoutMs;
+    const pollClaim = () => {
+      if (startupSettled) return;
+      let observation: ReturnType<typeof expectedClaimMatches>;
+      try {
+        observation = expectedClaimMatches();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        fail(new Error(`LAUNCHER_CLAIM_OBSERVATION_FAILED: ${message}`), `claim_observation_failed:${message}`, true);
+        return;
+      }
+      if (observation.mismatch) {
+        fail(
+          new Error(`LAUNCHER_CLAIM_MISMATCH: Work ${workId} expected type=${claimExpectation.controllerType} controller=${claimExpectation.controllerId} principal=${claimExpectation.principalId} session=${claimExpectation.sessionId}; ${observation.mismatch}`),
+          'claim_mismatch',
+          true,
+        );
+        return;
+      }
+      if (observation.matches) {
+        timer = setTimeout(() => {
+          if (startupSettled) return;
+          try {
+            const confirmation = expectedClaimMatches();
+            if (!confirmation.matches || confirmation.mismatch) {
+              fail(new Error(`LAUNCHER_CLAIM_LOST: Codex claim for exact Work ${workId} was not live after startup grace`), 'claim_lost', true);
+              return;
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            fail(new Error(`LAUNCHER_CLAIM_OBSERVATION_FAILED: ${message}`), `claim_observation_failed:${message}`, true);
+            return;
+          }
+          startupSettled = true;
+          timer = undefined;
+          resolve();
+        }, LAUNCHER_STARTUP_GRACE_MS);
+        return;
+      }
+      if (Date.now() >= claimDeadline) {
+        fail(
+          new Error(`LAUNCHER_CLAIM_TIMEOUT: Codex pid=${String(child.pid ?? 'unknown')} did not claim exact Work ${workId} through Forge MCP within ${claimTimeoutMs}ms`),
+          `claim_timeout:${claimTimeoutMs}ms`,
+          true,
+        );
+        return;
+      }
+      timer = setTimeout(pollClaim, claimPollIntervalMs);
+    };
+    pollClaim();
   });
 }
 
@@ -194,6 +307,7 @@ export async function launchSuperController(
     handoff: HandoffInboxStoreOptions;
   },
   request: ThinLauncherRequest,
+  dependencies: ThinLauncherDependencies = {},
 ): Promise<ThinLauncherResult> {
   const executable = resolveLauncherExecutable(request);
   const work = getWorkContract(stores.work, request.workId);
@@ -225,7 +339,7 @@ export async function launchSuperController(
     ].filter(Boolean).join('\n');
   try {
     const mcpBootstrap = request.controllerType === 'codex'
-      ? resolveProviderMcpBootstrap(stores.work.controllerHome, 'codex', reservation.reservationId)
+      ? (dependencies.resolveProviderMcpBootstrap ?? resolveProviderMcpBootstrap)(stores.work.controllerHome, 'codex', reservation.reservationId)
       : undefined;
     const invocation = buildSuperControllerInvocation({ ...request, controllerHome: stores.work.controllerHome, repoId: work.repoId }, executable, prompt, mcpBootstrap);
     const child = spawn(invocation.executable, invocation.args, {
@@ -235,7 +349,22 @@ export async function launchSuperController(
       env: launcherProcessEnvironment(mcpBootstrap?.env ?? process.env),
     });
     attachExternalControllerLaunchPid(stores.work, work.workId, reservation.reservationId, child.pid);
-    await awaitExternalControllerStartup(child, stores, work.workId, reservation.reservationId);
+    await awaitExternalControllerStartup(
+      child,
+      stores,
+      work.workId,
+      reservation.reservationId,
+      mcpBootstrap ? {
+        controllerType: 'codex',
+        controllerId: mcpBootstrap.principalId,
+        principalId: mcpBootstrap.principalId,
+        sessionId: mcpBootstrap.sessionId,
+      } : undefined,
+      {
+        claimTimeoutMs: dependencies.claimTimeoutMs,
+        claimPollIntervalMs: dependencies.claimPollIntervalMs,
+      },
+    );
     child.unref();
     return { controllerType: request.controllerType, reservationId: reservation.reservationId, pid: child.pid, prompt, executable };
   } catch (error) {
