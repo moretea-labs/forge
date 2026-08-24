@@ -26,6 +26,14 @@ export type TestModule = (typeof TEST_MODULES)[number];
 export type TestResource = (typeof TEST_RESOURCES)[number];
 export type TestGate = 'affected' | 'core' | 'integration' | 'infrastructure' | 'fault' | 'full';
 
+/**
+ * Acceptance evidence is the default. Tests must protect externally observable
+ * contracts, migrations/rollback, failure injection, security boundaries, or
+ * a recorded production incident. Do not add tests for private helpers,
+ * implementation payloads, copy, enum order, or mock-only lifecycles.
+ */
+export const TEST_GOVERNANCE_POLICY = 'acceptance-first-no-internal-unit-tests' as const;
+
 export interface TestManifestEntry {
   module: TestModule;
   resource: TestResource;

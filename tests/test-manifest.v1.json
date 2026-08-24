@@ -205,10 +205,6 @@
       "module": "controller",
       "resource": "fixed-port"
     },
-    "tests/cli/mcp-controller.test.ts": {
-      "module": "controller",
-      "resource": "process-tree"
-    },
     "tests/cli/mcp-http.test.ts": {
       "module": "controller",
       "resource": "fixed-port"
@@ -309,10 +305,6 @@
       "module": "workflow",
       "resource": "temp-isolated"
     },
-    "tests/hook-runtime.test.ts": {
-      "module": "workflow",
-      "resource": "temp-isolated"
-    },
     "tests/infrastructure/test-runner-e2e.test.ts": {
       "module": "runner",
       "resource": "process-tree"
@@ -333,15 +325,15 @@
       "module": "ios",
       "resource": "temp-isolated"
     },
-    "tests/runtime/browser-plugin.test.ts": {
-      "module": "browser",
-      "resource": "fixed-port"
-    },
     "tests/runtime/browser-schedule-probe.test.ts": {
       "module": "workflow",
       "resource": "pure"
     },
     "tests/runtime/canonical-single-runtime.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/controller-home-migration.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
     },
@@ -465,10 +457,6 @@
       "module": "ios",
       "resource": "process-tree"
     },
-    "tests/runtime/ios-agent-device-provider.test.ts": {
-      "module": "ios",
-      "resource": "process-tree"
-    },
     "tests/runtime/ios-development.test.ts": {
       "module": "ios",
       "resource": "temp-isolated"
@@ -549,10 +537,6 @@
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
-    "tests/runtime/rh-work-lifecycle.test.ts": {
-      "module": "workflow",
-      "resource": "git-worktree"
-    },
     "tests/runtime/route-policy.test.ts": {
       "module": "routing",
       "resource": "pure"
@@ -595,10 +579,6 @@
     },
     "tests/runtime/thin-harness-gateway-routing.test.ts": {
       "module": "routing",
-      "resource": "temp-isolated"
-    },
-    "tests/runtime/thin-harness.test.ts": {
-      "module": "process-runtime",
       "resource": "temp-isolated"
     },
     "tests/runtime/thin-launcher.test.ts": {

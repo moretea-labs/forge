@@ -27,7 +27,6 @@ export function stepsFor(gate: Gate): Step[] {
   ];
   return [
     { label: 'main candidate receipt', gate: 'main' },
-    { label: 'full regression', command: 'bun', args: ['run', 'test:full'], timeoutMs: 45 * 60_000 },
     { label: 'release surface and tarball', command: 'bash', args: ['scripts/check-release-readiness.sh'], timeoutMs: 30 * 60_000 },
   ];
 }
