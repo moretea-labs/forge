@@ -45,6 +45,7 @@ import type {
   SuggestedNextAction,
   VerificationRecord,
   WorkContract,
+  WorkKind,
   WorkRisk,
 } from './types';
 import { selectExecutionMode } from './types';
@@ -93,6 +94,8 @@ export interface GoalWorkloopStartInput {
   forceMode?: WorkContract['mode'];
   planId?: string;
   planStepId?: string;
+  /** Explicit technical evidence shape chosen by the semantic Controller. Never inferred from objective/check text. */
+  workKind?: Extract<WorkKind, 'repository_change' | 'completed_no_change' | 'investigation' | 'reconciliation'>;
 }
 
 export interface GoalWorkloopContinueInput {
@@ -868,7 +871,7 @@ export function startGoalWorkloop(
     risk: workRiskFor(input),
     workKind: input.modeInput.requiresExternalEffect === true && input.modeInput.remoteWrite === true
       ? 'remote_effect'
-      : undefined,
+      : input.workKind,
     status: 'running',
     phase: 'implementation',
     issueId: input.issueId,
@@ -1821,6 +1824,12 @@ export function runGoalWorkloop(
         requirementId: typeof args.requirement_id === 'string' ? args.requirement_id : undefined,
         planId: typeof args.plan_id === 'string' ? args.plan_id : undefined,
         planStepId: typeof args.plan_step_id === 'string' ? args.plan_step_id : undefined,
+        workKind: args.work_kind === 'repository_change'
+          || args.work_kind === 'completed_no_change'
+          || args.work_kind === 'investigation'
+          || args.work_kind === 'reconciliation'
+          ? args.work_kind
+          : undefined,
       });
     case 'continue':
       return continueGoalWorkloop(ctx, {

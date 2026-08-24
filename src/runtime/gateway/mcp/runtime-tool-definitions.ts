@@ -149,6 +149,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     expected_files: { type: 'number' },
     expected_changed_lines: { type: 'number' },
     mode: { type: 'string', enum: ['scale'], description: 'Explicit Scale coordination mode for start. Scale requires a bound approved PlanContract step and uses existing Work/Process/resource-claim authorities; it does not create an agent-swarm lifecycle.' },
+    work_kind: { type: 'string', enum: ['repository_change', 'completed_no_change', 'investigation', 'reconciliation'], description: 'Explicit technical Work evidence shape for operation=start. completed_no_change/investigation/reconciliation do not require a repository diff, but never imply semantic completion; ChatGPT must still explicitly finalize after reviewing evidence.' },
     scope_clear: { type: 'boolean' },
     requires_investigation: { type: 'boolean' },
     requires_long_running_checks: { type: 'boolean' },

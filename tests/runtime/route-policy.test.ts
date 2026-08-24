@@ -6,7 +6,7 @@ import { join } from 'path';
 import { assessWorkMode } from '../../src/cli/controller/work-mode';
 import { applyEditOperations, beginEditSession, finalizeEditSession } from '../../src/cli/editing/edit-session';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
-import { routeWorkStart } from '../../src/runtime/control-plane/facade/goal-workloop';
+import { continueGoalWorkloop, routeWorkStart } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { approvePlanContract, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { createWorkContract, getWorkContract, recordWorkScopeEvidence } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { selectExecutionMode } from '../../src/runtime/control-plane/facade/types';
@@ -542,6 +542,61 @@ describe('single Route Policy authority', () => {
     expect(decision).toMatchObject({ executionMode: 'direct_control', workMode: 'direct_edit', executionPath: 'fast', requiresWork: false });
     expect(decision.reasons.map((reason) => reason.code)).toContain('protected_path');
   });
+  test('lets ChatGPT explicitly run no-change verification without inventing a repository diff', () => {
+    const root = temp('route-no-change-verification-');
+    const workStore = { root: join(root, 'work') };
+    const context = {
+      workStore,
+      handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-a',
+      checkoutId: 'checkout-a',
+      sourceRevision: 'revision-a',
+      workspaceChangedPaths: [] as string[],
+      availableChecks: [{ id: 'check:baseline' }],
+    };
+    const started = routeWorkStart(context, {
+      objective: 'Verify the clean stable baseline without changing source',
+      workKind: 'completed_no_change',
+      checks: ['check:baseline'],
+      modeInput: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
+    });
+    const workId = (started.data as { work?: { workId?: string } }).work?.workId;
+    expect(workId).toBeTruthy();
+    expect(getWorkContract(workStore, workId!)).toMatchObject({
+      workKind: 'completed_no_change', status: 'running', phase: 'implementation',
+    });
+
+    const continued = continueGoalWorkloop(context, { workId: workId! });
+    expect(continued.status).toBe('ok');
+    expect(continued.data).toMatchObject({ nextStep: 'verify', remainingChecks: ['check:baseline'] });
+    expect(getWorkContract(workStore, workId!)).toMatchObject({ status: 'running', phase: 'verification' });
+  });
+
+  test('keeps the repository-change implementation gate strict when ChatGPT does not select no-change work', () => {
+    const root = temp('route-repository-change-evidence-');
+    const workStore = { root: join(root, 'work') };
+    const context = {
+      workStore,
+      handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-a',
+      checkoutId: 'checkout-a',
+      sourceRevision: 'revision-a',
+      workspaceChangedPaths: [] as string[],
+      availableChecks: [{ id: 'check:baseline' }],
+    };
+    const started = routeWorkStart(context, {
+      objective: 'Implement a repository change and verify it',
+      checks: ['check:baseline'],
+      modeInput: { scopeClear: true, mutation: true, requiresRecovery: true, risk: 'local_repo_write' },
+    });
+    const workId = (started.data as { work?: { workId?: string } }).work?.workId;
+    expect(workId).toBeTruthy();
+    const continued = continueGoalWorkloop(context, { workId: workId! });
+    expect(continued.status).toBe('blocked');
+    expect(continued.summary).toContain('no current net source changes');
+    expect(getWorkContract(workStore, workId!)).toMatchObject({ workKind: 'repository_change', status: 'running', phase: 'implementation' });
+  });
+
   test('produces a stable fingerprint independent of object insertion order', () => {
     const first = decideRoute(sharedInput());
     const second = decideRoute({
