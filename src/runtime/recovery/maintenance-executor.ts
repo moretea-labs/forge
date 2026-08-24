@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { basename, dirname, join, relative, resolve } from 'path';
 import { tmpdir } from 'os';
+import { runProcess } from '../../effects/process-runner';
 import { cleanupEditSession, getEditSession, listEditSessions, reconcileEditSession } from '../../cli/editing/edit-session';
 import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../cli/repositories/runtime-storage';
 import type { RepositoryRecord } from '../../cli/repositories/types';
@@ -9,6 +10,7 @@ import { getWorkContract, readWorkContractStore, transitionWorkContractPhase } f
 import { getControllerSession } from '../control-plane/facade/controller-session-store';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
+import { listControlPlaneRecords, type ControlPlaneRecord } from '../control-plane/persistence/sqlite-store';
 import { isTerminalWorkContractStatus, type WorkContract } from '../control-plane/facade/types';
 import { listSchedules } from '../workflow/schedules/store';
 import {
@@ -40,7 +42,9 @@ export type RuntimeMaintenanceCandidateKind =
   | 'runtime_storage_warning'
   | 'stale_runtime_temp_entry'
   | 'stale_work_contract'
-  | 'stale_edit_session';
+  | 'stale_edit_session'
+  | 'retained_migrated_work'
+  | 'unowned_managed_worktree';
 
 export interface RuntimeMaintenanceRepository {
   repoId: string;
@@ -83,6 +87,10 @@ export interface RuntimeMaintenanceCandidate {
   deadlineAt?: string;
   suggestedAction: RuntimeMaintenanceActionId;
   ownershipStatus?: 'explicit' | 'unknown';
+  sourceControllerHome?: string;
+  objective?: string;
+  continuationPrompt?: string;
+  disposition?: 'resume_or_supersede_review' | 'completion_reconciliation' | 'ownership_reconciliation';
 }
 
 export interface RuntimeMaintenanceSummary {
@@ -97,6 +105,8 @@ export interface RuntimeMaintenanceSummary {
   staleRuntimeTempEntries: number;
   staleWorkContracts: number;
   staleEditSessions: number;
+  retainedMigratedWork: number;
+  unownedManagedWorktrees: number;
 }
 
 export interface RuntimeMaintenanceStatus {
@@ -227,6 +237,8 @@ function summarize(candidates: RuntimeMaintenanceCandidate[]): RuntimeMaintenanc
     staleRuntimeTempEntries: candidates.filter((candidate) => candidate.kind === 'stale_runtime_temp_entry').length,
     staleWorkContracts: candidates.filter((candidate) => candidate.kind === 'stale_work_contract').length,
     staleEditSessions: candidates.filter((candidate) => candidate.kind === 'stale_edit_session').length,
+    retainedMigratedWork: candidates.filter((candidate) => candidate.kind === 'retained_migrated_work').length,
+    unownedManagedWorktrees: candidates.filter((candidate) => candidate.kind === 'unowned_managed_worktree').length,
   };
 }
 
@@ -391,6 +403,167 @@ function scanRuntimeTempCandidates(
       suggestedAction: 'full_maintenance_pass',
       ownershipStatus,
     }));
+}
+
+interface RetainedMigratedWork {
+  migrationId: string;
+  sourceHome: string;
+  work: WorkContract;
+}
+
+interface AppliedControllerHomeMigrationRecord {
+  migrationId: string;
+  status: 'applied' | 'rolled_back';
+  sourceHome: string;
+}
+
+function listRetainedMigratedWork(destinationHomeInput: string, repoId: string): RetainedMigratedWork[] {
+  const destinationHome = resolve(destinationHomeInput);
+  const destinationWorkIds = new Set(
+    listControlPlaneRecords<WorkContract>(destinationHome, { namespace: 'work_contract', scope: repoId, limit: 5_000 })
+      .map((record) => record.key),
+  );
+  const migrations = listControlPlaneRecords<AppliedControllerHomeMigrationRecord>(destinationHome, {
+    namespace: 'controller_home_migration',
+    scope: 'controller',
+    limit: 100,
+  });
+  const retained: RetainedMigratedWork[] = [];
+  for (const record of migrations) {
+    const migration = record.value;
+    if (migration.status !== 'applied') continue;
+    const sourceHome = resolve(migration.sourceHome);
+    if (!existsSync(join(sourceHome, 'control-plane.sqlite'))) continue;
+    let sourceWork: ControlPlaneRecord<WorkContract>[];
+    try {
+      sourceWork = listControlPlaneRecords<WorkContract>(sourceHome, { namespace: 'work_contract', limit: 5_000 });
+    } catch {
+      continue;
+    }
+    for (const source of sourceWork) {
+      const work = source.value;
+      if (work.repoId !== repoId || !isTerminalWorkContractStatus(work.status)) continue;
+      if (!work.worktreeRef?.trim() || !existsSync(work.worktreeRef)) continue;
+      if (destinationWorkIds.has(work.workId)) continue;
+      retained.push({ migrationId: migration.migrationId, sourceHome, work });
+    }
+  }
+  return retained.sort((left, right) => left.work.updatedAt.localeCompare(right.work.updatedAt));
+}
+
+function gitWorktreePaths(repoRoot: string): string[] {
+  const result = runProcess('git', ['worktree', 'list', '--porcelain'], {
+    cwd: repoRoot,
+    timeoutMs: 10_000,
+    maxOutputBytes: 500_000,
+  });
+  if (!result.ok) return [];
+  return result.stdout
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('worktree '))
+    .map((line) => resolve(line.slice('worktree '.length).trim()))
+    .filter(Boolean);
+}
+
+function looksLikeForgeManagedWorktree(path: string): boolean {
+  const normalized = resolve(path).replace(/\\/g, '/');
+  return normalized.includes('/.forge/managed-worktrees/')
+    || normalized.includes('/.forge/controller/managed-worktrees/')
+    || normalized.includes('/.repo-harness/managed-worktrees/')
+    || normalized.includes('/managed-worktrees/repo_');
+}
+
+function scanRetainedWorktreeCandidates(
+  repository: RuntimeMaintenanceRepository,
+  controllerHome: string,
+  maxCandidates: number,
+): RuntimeMaintenanceCandidate[] {
+  const worktreePaths = gitWorktreePaths(repository.canonicalRoot);
+  if (worktreePaths.length === 0) return [];
+  const normalizedInventory = new Set(worktreePaths.map((path) => resolve(path)));
+  const currentContracts = readWorkContractStore({ controllerHome, repoId: repository.repoId }).contracts;
+  const currentOwnedPaths = new Set(
+    currentContracts
+      .map((contract) => contract.worktreeRef?.trim())
+      .filter((path): path is string => Boolean(path))
+      .map((path) => resolve(path)),
+  );
+  const candidates: RuntimeMaintenanceCandidate[] = [];
+  const retained = listRetainedMigratedWork(controllerHome, repository.repoId);
+  const retainedByPath = new Map(retained.map((entry) => [resolve(entry.work.worktreeRef!), entry]));
+
+  for (const path of worktreePaths) {
+    const normalized = resolve(path);
+    if (normalized === resolve(repository.canonicalRoot) || currentOwnedPaths.has(normalized)) continue;
+    const migrated = retainedByPath.get(normalized);
+    if (migrated) {
+      const completed = migrated.work.status === 'completed';
+      candidates.push({
+        kind: 'retained_migrated_work',
+        id: migrated.work.workId,
+        path: normalized,
+        status: migrated.work.status,
+        safe: false,
+        reason: completed
+          ? 'A terminal Work from a retired Controller Home still owns a Git worktree and requires completion/cleanup reconciliation under the current Controller before lifecycle health can be reported.'
+          : 'A terminal Work from a retired Controller Home still owns preserved implementation state in a Git worktree. Review and explicitly resume or supersede it under current authority; automatic maintenance must not delete it.',
+        suggestedAction: 'full_maintenance_pass',
+        ownershipStatus: 'explicit',
+        sourceControllerHome: migrated.sourceHome,
+        objective: migrated.work.objective,
+        continuationPrompt: migrated.work.continuationPrompt,
+        disposition: completed ? 'completion_reconciliation' : 'resume_or_supersede_review',
+      });
+      continue;
+    }
+    if (!looksLikeForgeManagedWorktree(normalized)) continue;
+    candidates.push({
+      kind: 'unowned_managed_worktree',
+      id: `managed-worktree:${basename(normalized)}`,
+      path: normalized,
+      safe: false,
+      reason: 'Git reports a Forge-managed worktree for this repository, but the current Controller has no WorkContract ownership and no retained migration identity for it. Ownership must be reconciled before lifecycle health can be reported.',
+      suggestedAction: 'full_maintenance_pass',
+      ownershipStatus: 'unknown',
+      disposition: 'ownership_reconciliation',
+    });
+  }
+
+  // A retained migrated Work whose referenced path still exists but is no longer
+  // in Git inventory remains preservation debt rather than disappearing silently.
+  for (const migrated of retained) {
+    const normalized = resolve(migrated.work.worktreeRef!);
+    if (normalizedInventory.has(normalized) || currentOwnedPaths.has(normalized)) continue;
+    // Legacy WorkContract records sometimes stored the repository checkout/root
+    // in worktreeRef even though it was not a Controller-managed worktree. Such
+    // historical references remain audit evidence, but must not turn every old
+    // repository root into current lifecycle debt. Only known Forge/RepoHarness
+    // managed-worktree storage can represent preserved implementation here.
+    if (!looksLikeForgeManagedWorktree(normalized)) continue;
+    // A removed legacy campaign may leave an empty managed-storage directory
+    // behind after its Git metadata and contents are already gone. That is not
+    // preserved implementation and must not block lifecycle health. A retained
+    // path outside current Git inventory only remains lifecycle debt when its
+    // worktree .git marker still exists for manual reconciliation.
+    if (!existsSync(join(normalized, '.git'))) continue;
+    const completed = migrated.work.status === 'completed';
+    candidates.push({
+      kind: 'retained_migrated_work',
+      id: migrated.work.workId,
+      path: normalized,
+      status: migrated.work.status,
+      safe: false,
+      reason: 'A terminal Work retained by a migrated Controller Home still has preserved filesystem state, but Git no longer reports it as a registered worktree. Manual lifecycle reconciliation is required; automatic cleanup is forbidden.',
+      suggestedAction: 'full_maintenance_pass',
+      ownershipStatus: 'explicit',
+      sourceControllerHome: migrated.sourceHome,
+      objective: migrated.work.objective,
+      continuationPrompt: migrated.work.continuationPrompt,
+      disposition: completed ? 'completion_reconciliation' : 'resume_or_supersede_review',
+    });
+  }
+
+  return candidates.slice(0, maxCandidates);
 }
 
 function normalizedOptions(options: RuntimeMaintenanceOptions = {}): Required<RuntimeMaintenanceOptions> {
@@ -581,7 +754,8 @@ export function buildRuntimeMaintenanceStatus(
   const tempCandidates = scanRuntimeTempCandidates(repository, normalized.maxCandidates);
   const staleWorkCandidates = scanStaleWorkContractCandidates(repository, controllerHome, normalized);
   const staleEditCandidates = scanStaleEditSessionCandidates(repository, controllerHome, normalized);
-  const candidates = [...localJobCandidates, ...storageCandidates, ...staleWorkCandidates, ...staleEditCandidates, ...tempCandidates].slice(0, normalized.maxCandidates);
+  const retainedWorktreeCandidates = scanRetainedWorktreeCandidates(repository, controllerHome, normalized.maxCandidates);
+  const candidates = [...localJobCandidates, ...storageCandidates, ...staleWorkCandidates, ...staleEditCandidates, ...retainedWorktreeCandidates, ...tempCandidates].slice(0, normalized.maxCandidates);
   const summary = summarize(candidates);
   const blockingCandidates = candidates.filter((candidate) => candidate.kind !== 'stale_runtime_temp_entry');
   const readyForExecution = storage.report?.readyForExecution === true
@@ -617,6 +791,7 @@ export function buildRuntimeMaintenanceStatus(
       'Pending approvals are not cancelled unless cancel_pending_approvals is explicitly enabled.',
       'System temp cleanup only removes direct forge-prefixed children of approved temp roots after a 24-hour retention period and a fresh process-occupancy check.',
       'Runtime lifecycle changes and source repair are outside the runtime maintenance executor.',
+      'Retained or unowned managed worktrees are review-only lifecycle blockers. Runtime maintenance never deletes or modifies their preserved implementation state.',
     ],
   };
 }
