@@ -124,7 +124,10 @@ export function packageConnectorLaunchSpec(input: { release: PackageRuntimeRelea
   const nodeLoader = join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs');
   const isBun = Boolean(process.versions.bun) || /(?:^|[/\\-])bun(?:$|[/\\]|\.exe$)/i.test(basename(executable));
   const cliArgs = [
-    'mcp', 'serve', '--repo', packageRoot, '--controller-home', resolve(input.controllerHome),
+    // The package snapshot is executable code, never an adopted repository.
+    // Supplying it as --repo makes the Gateway try to register a non-Git
+    // directory and fail before it can proxy the Canonical Runtime.
+    'mcp', 'serve', '--controller-home', resolve(input.controllerHome),
     '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'controller', '--auth', 'oauth',
   ];
   return {

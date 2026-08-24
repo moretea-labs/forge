@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 import { ensureControllerHome } from '../../cli/repositories/controller-home';
 import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlite-store';
@@ -28,7 +28,11 @@ export interface PackageRuntimeRelease {
   authority: RuntimeReleaseAuthority;
 }
 
-const PACKAGE_RUNTIME_ROOTS = ['src', 'bin', 'assets', 'scripts'] as const;
+// A package Runtime is an immutable, independently launchable release.  Its
+// TypeScript entrypoints import production modules at runtime, so retaining
+// only source files creates a release that passes staging but cannot start
+// after the installed package moves or disappears.
+const PACKAGE_RUNTIME_ROOTS = ['src', 'bin', 'assets', 'scripts', 'node_modules'] as const;
 const PACKAGE_RUNTIME_FILES = ['package.json'] as const;
 
 function sha256(value: Buffer | string): string {
@@ -45,7 +49,15 @@ function atomicWrite(path: string, content: string, mode = 0o600): void {
 function walkRegularFiles(root: string, current: string, output: string[]): void {
   if (!existsSync(current)) return;
   const stat = lstatSync(current);
-  if (stat.isSymbolicLink()) return;
+  // Package managers such as Bun can materialize dependency files as
+  // symlinks. Follow file links while snapshotting their bytes, but never
+  // traverse a linked directory: the resulting release must contain only
+  // regular files beneath its own immutable package root.
+  if (stat.isSymbolicLink()) {
+    const target = statSync(current);
+    if (target.isFile()) output.push(relative(root, current).split('\\').join('/'));
+    return;
+  }
   if (stat.isFile()) {
     output.push(relative(root, current).split('\\').join('/'));
     return;
@@ -99,8 +111,9 @@ function stagePackageRuntimeSnapshot(sourceRoot: string, snapshotRoot: string, r
   mkdirSync(snapshotRoot, { recursive: false, mode: 0o700 });
   for (const record of records) {
     const source = join(sourceRoot, record.path);
-    const stat = lstatSync(source);
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`PACKAGE_RUNTIME_SOURCE_CHANGED_DURING_STAGE: ${record.path}`);
+    const link = lstatSync(source);
+    const stat = link.isSymbolicLink() ? statSync(source) : link;
+    if (!stat.isFile()) throw new Error(`PACKAGE_RUNTIME_SOURCE_CHANGED_DURING_STAGE: ${record.path}`);
     const bytes = readFileSync(source);
     if (bytes.length !== record.bytes || sha256(bytes) !== record.sha256) {
       throw new Error(`PACKAGE_RUNTIME_SOURCE_CHANGED_DURING_STAGE: ${record.path}`);

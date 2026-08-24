@@ -389,6 +389,7 @@ describe('Forge Runtime service', () => {
     const launch = packageConnectorLaunchSpec({ release, controllerHome: fx.home, endpoint: 'http://127.0.0.1:8767/mcp', executable: '/usr/local/bin/node' });
     expect(launch.port).toBe(8767);
     expect(launch.args.join(' ')).toContain('mcp serve');
+    expect(launch.args).not.toContain('--repo');
     expect(launch.args.join(' ')).toContain('--port 8767');
     expect(launch.args.join(' ')).toContain('--auth oauth');
     expect(launch.environment.FORGE_CONTROLLER_LIFECYCLE_OWNER).toBe('1');

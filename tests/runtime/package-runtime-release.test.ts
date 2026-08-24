@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -24,6 +24,10 @@ function fixture(): { home: string; packageRoot: string } {
   writeFileSync(join(packageRoot, 'src', 'runtime', 'root', 'entry.ts'), 'process.exit(0);\n');
   writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), 'export async function load(url, context, nextLoad) { return nextLoad(url, context); }\n');
   writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(99);\n');
+  mkdirSync(join(packageRoot, 'node_modules', 'runtime-dependency'), { recursive: true });
+  writeFileSync(join(packageRoot, 'node_modules', 'runtime-dependency', 'index.js'), 'export const dependency = 1;\n');
+  writeFileSync(join(packageRoot, 'node_modules', 'runtime-dependency', 'linked.js'), 'export const linked = 1;\n');
+  symlinkSync(join(packageRoot, 'node_modules', 'runtime-dependency', 'linked.js'), join(packageRoot, 'node_modules', 'runtime-dependency', 'linked-copy.js'));
   return { home, packageRoot };
 }
 
@@ -34,6 +38,8 @@ describe('package Runtime release immutability', () => {
 
     expect(release.packageRoot).toBe(join(release.releaseRoot, 'package'));
     expect(readFileSync(join(release.packageRoot, 'src', 'runtime.ts'), 'utf8')).toBe('export const runtime = 1;\n');
+    expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'index.js'), 'utf8')).toBe('export const dependency = 1;\n');
+    expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'linked-copy.js'), 'utf8')).toBe('export const linked = 1;\n');
 
     writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 2;\n');
     rmSync(packageRoot, { recursive: true, force: true });

@@ -1,11 +1,11 @@
 # Current Status Snapshot
 
-<!-- updated_at: 2026-08-22 -->
+<!-- updated_at: 2026-08-24 -->
 <!-- stale_after: 24h -->
 
-> **Status**: Architecture convergence source changes integrated on `main`; documentation synchronization is the final local convergence slice.
-> **Updated At**: 2026-08-22
-> **Source Branch**: main
+> **Status**: The Runtime 502 / Recovery split-brain incident is restored in the live Controller Home; the package Runtime and OAuth Gateway installer repair is validated on `codex/fix-runtime-recovery-502` and awaits normal integration.
+> **Updated At**: 2026-08-24
+> **Source Branch**: codex/fix-runtime-recovery-502
 > **Target Branch**: main
 > **Derived From**: Git history, `docs/architecture/CURRENT.md`, focused checks, and current working-tree state
 > **Stale After**: 24h
@@ -33,6 +33,7 @@ This file is an orientation snapshot, not an execution gate or lifecycle authori
 - Public documentation check passed again after the final documentation correction.
 - Recovery OAuth tunnel interoperability: the Bearer challenge now reports `invalid_token`, and configured public Recovery URLs remain the OAuth resource/issuer origin even when the local probe uses loopback. The focused Recovery suite passes 41/41, the public PKCE/MCP verification passes, and both OpenAI Secure MCP Tunnel runtimes report ready.
 - Package Runtime launchd recovery: a package release failed with exit 127 because its generated launcher used `#!/usr/bin/env node` under launchd's system-only PATH. Production was restored by atomically activating a rebuilt immutable `ab6b563d` release; whole-Runtime, public OAuth challenge, and authenticated MCP lifecycle verification passed. The package launcher now pins the absolute installer executable, with a minimal-launchd-PATH regression in `forge-runtime-service.test.ts`.
+- Runtime 502 / Recovery repair: the stale Recovery launch agents referenced an abandoned Controller Home and a package OAuth Gateway tried to register its immutable package snapshot as a Git repository. Live recovery now shares the current Controller Home and the public Runtime/Recovery OAuth-MCP verification passes. The pending source repair snapshots production dependencies as regular immutable files (including Bun-linked files), starts controller Gateways without an implicit repository, and has fixture plus real-package smoke evidence.
 
 ## Current architecture direction
 

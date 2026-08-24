@@ -27,39 +27,15 @@ The Package Runtime does not require a Forge Git checkout, Bun compilation, Code
 
 ## Local boundaries
 
-Forge keeps two MCP boundaries on loopback by default:
+Forge MCP remains loopback-only, normally at:
 
 ```text
-ChatGPT OAuth Gateway: http://127.0.0.1:8767/mcp
-Canonical Runtime:      http://127.0.0.1:8765/mcp
+http://127.0.0.1:8765/mcp
 ```
 
-The OAuth Gateway is the endpoint for Secure Tunnel or HTTPS connectors. It proxies authenticated controller traffic to the bearer-only Canonical Runtime; remote clients should never target the internal Runtime directly. `forge mcp setup chatgpt --user-level` records the actual OAuth endpoint, so custom ports remain supported.
-
-Fresh user-level setup keeps the repository-centric Utility Console disabled until a repository/workbench target is configured. When enabled later it uses a separate loopback port (normally 8766). Never expose it to the internet.
+The local Utility Console uses a separate loopback port (normally 8766). Never expose the Utility Console to the internet.
 
 Service-level MCP configuration lives below `Controller Home/mcp/`. OAuth credentials and bearer fallback tokens are local secrets and must not be pasted into chat or committed. Repository-specific `.forge/mcp.policy.json` can narrow access when a repository is later adopted.
-
-## App identity vs. transport
-
-The ChatGPT App/connector is the application identity and owns the visible Forge tool schema. **Secure MCP Tunnel is the transport.** Switching an existing Forge App from a public HTTPS/Cloudflare route to Tunnel changes how commands reach Forge; it does not create a second Forge tool schema.
-
-Default path:
-
-```text
-ChatGPT App -> OpenAI Secure MCP Tunnel -> tunnel-client
-            -> Forge loopback OAuth Gateway -> Canonical Runtime
-```
-
-A fresh chat is useful for isolated A/B testing, but Forge does not require a new conversation merely because transport changed when the same App is already connected and its tool schema is unchanged. If published tool definitions change, use ChatGPT's current app refresh/re-publish workflow.
-
-Upgrade existing Forge installs with:
-
-```bash
-npm install -g @moretea-labs/forge@latest
-forge --version
-forge setup next
-```
 
 ## Remote controller connection
 
@@ -71,7 +47,7 @@ The setup profile owns the connection choice. Supported paths are:
 4. **Existing HTTPS** — user-managed reverse proxy/tunnel ending in `/mcp`.
 5. **None** — local setup only; remote connectivity can be configured later.
 
-For OpenAI Secure MCP Tunnel, setup uses the official managed runtime surface and considers a matching local alias ready only when `tunnel-client` reports the configured `tunnel_id` running, healthy, and ready. Alias names are not tunnel identity.
+For OpenAI Secure MCP Tunnel, setup uses the official supervised runtime surface and considers it ready only when `tunnel-client runtimes status forge --json` reports the runtime running, healthy, and ready.
 
 For public HTTPS paths, the configured connector URL is:
 
@@ -96,47 +72,6 @@ ChatGPT developer-mode/MCP availability is controlled by the current ChatGPT pla
 - Refresh/scan tools after Forge tool definitions change.
 
 The bounded default surface intentionally exposes the preferred `rh_*` facade plus repository/source/check/process/plugin escape hatches. Do not switch to exhaustive compatibility mode merely to see more tool names.
-
-## Transport latency A/B benchmark
-
-Forge exposes `responseMeta.serverDurationMs` on tool results, so a client can separate server work from the time outside Forge. The transport benchmark calls the authenticated `/mcp-bearer` sibling route, measures client wall time, and reports:
-
-- client total p50/p95;
-- Forge server-duration p50/p95;
-- `max(0, clientTotalMs - serverDurationMs)` as the external transport/client residual;
-- the residual share of total latency and any server/client timing anomalies.
-
-Do not put the literal bearer credential in shell history, benchmark labels, output files, chat, or source control. On the Forge host, `--local-service-auth` reads the existing service credential inside the benchmark process without printing it. A same-host control run looks like:
-
-```bash
-bun run benchmark:mcp-transport -- \
-  --local-service-auth \
-  --endpoint http://127.0.0.1:8767/mcp-bearer \
-  --label loopback \
-  --repo-id <repo-id> \
-  --tool rh_status \
-  --iterations 50
-```
-
-For a Cloudflare Tunnel or another HTTPS route terminating at the same OAuth Gateway, keep `--local-service-auth`, the repo, host, tool, arguments, warmup, and iteration count unchanged and only replace the endpoint/label, for example `https://forge-bench.example.com/mcp-bearer` with label `cloudflare`. This isolates public transport from Forge execution without exposing the credential to the controller. Use a temporary, access-controlled route and remove it after the test if it exists only for benchmarking. For a benchmark launched away from the Forge host, omit `--local-service-auth` and populate `FORGE_MCP_BENCH_TOKEN` through that client's secret store instead.
-
-By default, `clientTotalMs` measures only the steady-state `tools/call`, after the MCP connection is established. Add `--include-connect` when comparing tunnel or cloud placement cold paths: every measured sample creates a fresh MCP client, includes connect/initialize plus the tool call in `clientTotalMs`, then closes that client. Reports group `timingScope=tool_call` and `timingScope=connect_and_tool_call` separately so cold connection cost is never mixed with steady-state calls. Use `--warmup 0` for a true first-call probe.
-
-OpenAI Secure MCP Tunnel is identified by a tunnel ID rather than a directly addressable HTTPS URL, so this script must not pretend that an ordinary HTTP probe measures that path. When client-observed Secure Tunnel samples are available, save them as JSONL/JSON with `label`, `tool`, `clientTotalMs`, and `serverDurationMs`, then aggregate them with:
-
-```bash
-bun run benchmark:mcp-transport -- --input secure-tunnel-samples.jsonl
-```
-
-That imported-sample path is also useful for comparing ChatGPT-observed timing with direct HTTPS probes without exposing credentials.
-
-For a provider-neutral machine-placement baseline, run an isolated temporary Runtime on the target host:
-
-```bash
-bun run benchmark:mcp-host
-```
-
-`benchmark:mcp-host` creates a temporary Controller Home and ephemeral bearer credential, registers only the current checkout, starts a non-persistent Runtime on port `18765`, waits on `/ready`, measures both steady-state and connect-inclusive `rh_status`, prints one combined JSON report, then terminates only that temporary Runtime and removes its temporary state. It does not reuse or restart the normal Forge service. The same command can run on local macOS, a GitHub-hosted Ubuntu runner, OCI, or GCP. Use `FORGE_MCP_BENCH_LABEL`, `FORGE_MCP_BENCH_PORT`, `FORGE_MCP_BENCH_ITERATIONS`, and `FORGE_MCP_BENCH_CONNECT_ITERATIONS` to keep labels and sample counts explicit when comparing hosts. Set `FORGE_MCP_BENCH_OUTPUT` when a CI system or a restarting controller needs the combined non-secret JSON report persisted outside the temporary Runtime directory.
 
 ## Verify
 

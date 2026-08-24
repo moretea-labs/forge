@@ -880,10 +880,15 @@ async function handleMcpDelete(req: Request, res: Response, registry: HttpSessio
 export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   const host = opts.host ?? '127.0.0.1';
   const port = opts.port ?? 8765;
-  const repoRoot = resolveMcpRepoRoot(opts.repo ?? '.');
   const controllerHome = resolveControllerHome(opts.controllerHome);
-  const serviceConfig = loadMcpServiceLocalConfig(controllerHome, repoRoot);
+  const serviceConfig = loadMcpServiceLocalConfig(controllerHome);
   const profile = opts.profile ?? serviceConfig?.profile ?? 'controller';
+  // A controller Gateway can serve registered repositories without selecting
+  // one at startup. Do not turn its launchd working directory into an
+  // implicit repository, especially for package Runtime snapshots.
+  const repoRoot = profile === 'controller' && !opts.repo?.trim()
+    ? undefined
+    : resolveMcpRepoRoot(opts.repo ?? '.');
   const authMode = parseMcpHttpAuthMode(opts.auth ?? serviceConfig?.auth?.mode);
   const authToken = opts.authToken ?? readMcpServiceBearerToken(controllerHome, repoRoot);
   const oauthPassphrase = authMode === 'oauth'
@@ -959,7 +964,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   const toolSurface = toolContext.policy.profile === 'controller' ? FORGE_TOOL_SURFACE : `${toolContext.policy.profile}-legacy-v1`;
   const toolSurfaceSchemaVersion = toolContext.policy.profile === 'controller' ? FORGE_MCP_SCHEMA_VERSION : 1;
   const forgeVersion = FORGE_VERSION;
-  const repoId = toolContext.policy.profile === 'controller' ? undefined : repositoryIdentity(repoRoot);
+  const repoId = toolContext.policy.profile === 'controller' || !repoRoot ? undefined : repositoryIdentity(repoRoot);
   const startedAt = new Date().toISOString();
   const localOrigin = `http://${host === '::' || host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`;
   const advertisedOrigin = configuredPublicOrigin ?? localOrigin;

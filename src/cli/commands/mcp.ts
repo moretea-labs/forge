@@ -161,7 +161,7 @@ export function buildMcpCommand(): Command {
   mcp
     .command('serve')
     .description('Start the forge MCP server')
-    .option('--repo <path>', 'Repository root to expose through the selected MCP profile', '.')
+    .option('--repo <path>', 'Repository root to expose through the selected MCP profile')
     .option('--controller-home <path>', 'Controller state root; defaults to repo _ops/controller-home when present')
     .option('--transport <transport>', 'Transport: stdio|http', 'stdio')
     .option('--host <host>', 'HTTP bind host', '127.0.0.1')
@@ -181,7 +181,11 @@ export function buildMcpCommand(): Command {
         const devRunnerMaxTimeoutMs = parsePositiveIntegerOption('dev-runner-max-timeout-ms', rawOpts.devRunnerMaxTimeoutMs);
         if (rawOpts.transport === 'stdio') {
           await startMcpStdio({
-            repo: rawOpts.repo,
+            // stdio preserves its historical current-directory default.
+            // The HTTP controller Gateway deliberately leaves this unset so
+            // it can serve Controller Home without registering a launchd
+            // working directory as a repository.
+            repo: rawOpts.repo ?? '.',
             controllerHome: rawOpts.controllerHome,
             profile: rawOpts.profile,
             toolset: rawOpts.toolset,

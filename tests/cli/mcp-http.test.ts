@@ -101,6 +101,31 @@ function isolatedMcpProcessEnv(
 }
 
 describe('mcp http transport', () => {
+  test('starts a controller Gateway without selecting or registering its launch directory as a repository', async () => {
+    const workingDirectory = mkdtempSync(join(tmpdir(), 'forge-mcp-controller-no-repo-'));
+    const port = await freePort();
+    let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    try {
+      await withTestControllerHome(workingDirectory, async (controllerHome) => {
+        runMcpSetupChatgpt({ repo: workingDirectory, port: String(port) });
+        proc = Bun.spawn(
+          ['bun', join(process.cwd(), 'src/cli/index.ts'), 'mcp', 'serve', '--controller-home', controllerHome, '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'controller', '--auth', 'bearer'],
+          {
+            cwd: workingDirectory,
+            stdout: 'ignore',
+            stderr: 'pipe',
+            env: isolatedMcpProcessEnv(controllerHome, { FORGE_CONTROLLER_LIFECYCLE_OWNER: '1' }),
+          },
+        );
+        await waitForHealth(port);
+        expect((await fetch(`http://127.0.0.1:${port}/health`)).status).toBe(200);
+      });
+    } finally {
+      await stopMcpServerProcess(proc);
+      rmSync(workingDirectory, { recursive: true, force: true });
+    }
+  });
+
   test('preserves existing proxy settings while bypassing direct Runtime endpoints', () => {
     const merged = mergeNoProxy('127.0.0.1,localhost', '.ts.net', '127.0.0.1');
     expect(merged.split(',')).toEqual(['127.0.0.1', 'localhost', '.ts.net']);
