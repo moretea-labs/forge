@@ -329,6 +329,14 @@
       "module": "workflow",
       "resource": "pure"
     },
+    "tests/runtime/browser-session-authority.test.ts": {
+      "module": "browser",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/macos-capability-broker.test.ts": {
+      "module": "browser",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/canonical-single-runtime.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
