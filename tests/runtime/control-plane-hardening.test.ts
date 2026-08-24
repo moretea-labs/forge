@@ -15,7 +15,14 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { createHandoffItem, getHandoffItem, listHandoffItems } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { getControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import {
+  acknowledgeControllerRoundClaim,
+  beginInitialControllerRoundDispatch,
+  claimStalledControllerRoundRelays,
+  finishControllerRoundRelayDispatch,
+  submitControllerRoundDisposition,
+} from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
 import { createSchedule, recordScheduleOccurrenceHandoff, saveOccurrence } from '../../src/runtime/workflow/schedules/store';
@@ -628,6 +635,102 @@ describe('control-plane hardening', () => {
 
 
 describe('scheduled external Controller wake', () => {
+  test('acknowledges a dispatched ChatGPT round only after an exact Work claim and only recovers liveness when that claimed round is abandoned', () => {
+    const root = temp('forge-controller-relay-claim-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'relay\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-claim' });
+    const workId = 'WORK-RELAY-CLAIM';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Collect evidence and let ChatGPT decide semantic acceptance.',
+      acceptanceCriteria: ['ChatGPT explicitly decides completion.'],
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const store = { controllerHome, repoId: repository.repoId };
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
+    });
+    expect(opened.status).toBe('dispatching');
+    const dispatched = finishControllerRoundRelayDispatch(store, {
+      workId,
+      ok: true,
+      browserSessionId: 'browser-test',
+      conversationUrl: 'https://chatgpt.com/c/relay-test',
+    });
+    expect(dispatched?.status).toBe('dispatched');
+
+    const session = claimControllerSession(store, {
+      workId,
+      controllerId: 'chatgpt-controller',
+      controllerType: 'chatgpt',
+      sessionId: 'chatgpt-session',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-test',
+      leaseMs: 5 * 60_000,
+    });
+    const claimed = acknowledgeControllerRoundClaim(store, { workId, session });
+    expect(claimed).toMatchObject({
+      status: 'claimed',
+      controllerId: 'chatgpt-controller',
+      sessionId: 'chatgpt-session',
+      claimGeneration: session.claimGeneration,
+    });
+    expect(claimed?.claimedAt).toBeTruthy();
+    expect(claimed?.status).not.toBe('goal_complete');
+    expect(acknowledgeControllerRoundClaim(store, { workId, session })?.claimedAt).toBe(claimed?.claimedAt);
+
+    const afterGrace = Date.parse(claimed!.claimedAt!) + 2 * 60_000;
+    expect(claimStalledControllerRoundRelays(store, { nowMs: afterGrace, graceMs: 60_000 })).toEqual([]);
+    releaseControllerSession(store, workId, session.controllerId);
+    const recovered = claimStalledControllerRoundRelays(store, { nowMs: afterGrace, graceMs: 60_000 });
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toMatchObject({
+      status: 'dispatching',
+      lastError: 'CONTROLLER_RELAY_CLAIMED_ROUND_UNCLOSED',
+    });
+    expect(recovered[0]?.claimedAt).toBeUndefined();
+    expect(recovered[0]?.status).not.toBe('goal_complete');
+
+    finishControllerRoundRelayDispatch(store, { workId, ok: true });
+    const nextSession = claimControllerSession(store, {
+      workId,
+      controllerId: 'chatgpt-controller',
+      controllerType: 'chatgpt',
+      sessionId: 'chatgpt-session-next',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-test',
+      leaseMs: 5 * 60_000,
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: nextSession })?.status).toBe('claimed');
+    const waiting = submitControllerRoundDisposition(store, {
+      workId,
+      identity: {
+        controllerId: nextSession.controllerId,
+        principalId: nextSession.principalId ?? nextSession.controllerId,
+        controllerInstanceId: nextSession.controllerInstanceId ?? 'runtime-test',
+        sessionId: nextSession.sessionId,
+      },
+      disposition: 'wait',
+      relayScopeId: recovered[0]!.relayScopeId,
+      reason: 'ChatGPT reviewed the evidence and explicitly chose to wait.',
+    });
+    expect(waiting.status).toBe('waiting');
+    expect(waiting.disposition).toBe('wait');
+    releaseControllerSession(store, workId, nextSession.controllerId);
+    expect(claimStalledControllerRoundRelays(store, { nowMs: afterGrace + 2 * 60_000, graceMs: 60_000 })).toEqual([]);
+  });
+
   test('scopes continuation stop conditions to the target Work instead of historical repository noise', async () => {
     const root = temp('forge-schedule-stop-scope-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });

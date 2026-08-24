@@ -6,7 +6,7 @@ This file is the sole maintained architecture authority for the current Forge ru
 
 ## Product model
 
-Forge is an executable AI harness for a semantic controller. The controller owns requirement interpretation, repository understanding, implementation decisions, review, and the decision to keep exploring. Forge supplies fast context retrieval, deterministic local execution, provider actions, bounded verification, evidence, and optional durable continuity.
+Forge is an executable AI harness for a semantic controller. The controller owns requirement interpretation, repository understanding, implementation decisions, review, and the decision to keep exploring. Forge supplies fast context retrieval, deterministic local execution, provider actions, bounded verification, evidence, and optional durable continuity. Forge verification and evidence are factual inputs, not semantic acceptance rules: only the semantic Controller decides whether acceptance criteria are satisfied, whether another round is needed, or whether a Goal is complete.
 
 ```text
 Semantic Controller
