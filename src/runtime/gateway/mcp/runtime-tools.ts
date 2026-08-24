@@ -2631,6 +2631,12 @@ async function runFacadeVerify(
       suggestedNextActions: normalizeCheckIds(checks.slice(0, 3).map((check) => check.id), checks).suggestedNextActions,
     }) as unknown as Record<string, unknown>, true);
   }
+  const workContract = workId ? getWorkContract(store, workId) : undefined;
+  if (workId && (!workContract || workContract.status === 'completed' || workContract.status === 'cancelled' || workContract.status === 'failed')) {
+    const facade = verifyGoalWorkloop(workloopCtx, { workId, checkId });
+    return result(facade as unknown as Record<string, unknown>, facade.status === 'failed');
+  }
+
   const classified = classifyVerificationOutcome({
     checkId,
     available: checks,
@@ -2692,8 +2698,6 @@ async function runFacadeVerify(
     const requestId = typeof args.request_id === 'string' && args.request_id.trim()
       ? args.request_id.trim()
       : undefined;
-    const workContract = workId ? getWorkContract(store, workId) : undefined;
-    if (workId && !workContract) throw new Error(`WORK_NOT_FOUND: ${workId}`);
     const verificationRepository = workContract?.checkoutId
       ? selectRepositoryCheckout(repository, workContract.checkoutId, { allowArchived: true })
       : repository;

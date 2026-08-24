@@ -1438,6 +1438,32 @@ export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
     checkFailed: input.checkFailed,
     skipped: input.skipped,
   });
+  if (work.status === 'completed' || work.status === 'cancelled' || work.status === 'failed') {
+    const resolvedCheckId = classified.normalizedCheckId ?? classified.checkId;
+    const existing = [...work.checkRefs].reverse().find((record) => record.checkId === resolvedCheckId);
+    const completed = work.status === 'completed';
+    return buildFacadeResult({
+      status: completed ? 'ok' : 'blocked',
+      summary: `WorkContract ${work.workId} is terminal (${work.status}); verification was not re-executed.`,
+      data: {
+        work: summarizeWorkContract(work),
+        verification: {
+          checkId: resolvedCheckId,
+          ...(existing ? { outcome: existing.outcome } : {}),
+          terminal: true,
+          idempotent: true,
+          reexecuted: false,
+          isAcceptanceFailure: existing?.outcome === 'valid_fail',
+          isInfrastructureIssue: existing?.outcome === 'invalid_check_id' || existing?.outcome === 'infrastructure_failure',
+          doesNotRequestTaskChanges: existing?.outcome !== 'valid_fail',
+        },
+        backgroundCompleted: false,
+      },
+      evidenceRefs: existing?.evidenceRef ? [existing.evidenceRef] : [],
+      warnings: classified.warnings,
+      suggestedNextActions: [{ label: 'Inspect work via context', tool: 'rh_context', operation: 'get', payload: { work_id: work.workId }, risk: 'readonly', confidence: 'high' }],
+    });
+  }
 
   const at = nowIso(ctx);
   const resolvedCheckId = classified.normalizedCheckId ?? classified.checkId;

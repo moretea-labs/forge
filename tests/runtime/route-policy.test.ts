@@ -6,9 +6,9 @@ import { join } from 'path';
 import { assessWorkMode } from '../../src/cli/controller/work-mode';
 import { applyEditOperations, beginEditSession, finalizeEditSession } from '../../src/cli/editing/edit-session';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
-import { continueGoalWorkloop, routeWorkStart } from '../../src/runtime/control-plane/facade/goal-workloop';
+import { continueGoalWorkloop, routeWorkStart, verifyGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { approvePlanContract, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
-import { createWorkContract, getWorkContract, recordWorkScopeEvidence } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkScopeEvidence } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { selectExecutionMode } from '../../src/runtime/control-plane/facade/types';
 import { decideRoute, type RoutePolicyInput } from '../../src/runtime/control-plane/routing/route-policy';
 const roots: string[] = [];
@@ -570,6 +570,59 @@ describe('single Route Policy authority', () => {
     expect(continued.status).toBe('ok');
     expect(continued.data).toMatchObject({ nextStep: 'verify', remainingChecks: ['check:baseline'] });
     expect(getWorkContract(workStore, workId!)).toMatchObject({ status: 'running', phase: 'verification' });
+  });
+
+  test('keeps terminal completed Work verification idempotent without appending late failure evidence', () => {
+    const root = temp('route-terminal-verify-');
+    const workStore = { root: join(root, 'work') };
+    const context = {
+      workStore,
+      handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-a',
+      checkoutId: 'checkout-removed',
+      sourceRevision: 'revision-a',
+      workspaceChangedPaths: [] as string[],
+      availableChecks: [{ id: 'check:baseline' }],
+    };
+    const work = createWorkContract(workStore, {
+      workId: 'work-terminal-verify',
+      repoId: 'repo-a',
+      checkoutId: 'checkout-removed',
+      mode: 'goal_workloop',
+      objective: 'Verify a completed no-change baseline',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      workKind: 'completed_no_change',
+      checks: [],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      requestedBy: 'chatgpt',
+    });
+    recordWorkCompletionReceipt(workStore, work.workId, {
+      schemaVersion: 1,
+      receiptId: 'receipt-terminal-verify',
+      source: 'controller_work',
+      issueId: 'issue-terminal-verify',
+      taskId: 'task-terminal-verify',
+      workId: work.workId,
+      targetBranch: 'main',
+      targetRevision: 'revision-a',
+      changedPaths: [],
+      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt: '2026-08-24T00:00:00.000Z' },
+      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt: '2026-08-24T00:00:00.000Z' },
+      verifiedAt: '2026-08-24T00:00:00.000Z',
+      recordedAt: '2026-08-24T00:00:00.000Z',
+    }, 'completed_no_change', 'completed_no_change');
+
+    const before = getWorkContract(workStore, work.workId)!;
+    const verified = verifyGoalWorkloop(context, { workId: work.workId, checkId: 'check:baseline', infrastructureFailed: true });
+    const after = getWorkContract(workStore, work.workId)!;
+    expect(verified.status).toBe('ok');
+    expect(verified.summary).toContain('verification was not re-executed');
+    expect(verified.data).toMatchObject({ verification: { terminal: true, idempotent: true, reexecuted: false } });
+    expect(after.status).toBe('completed');
+    expect(after.checkRefs).toEqual(before.checkRefs);
+    expect(after.evidenceRefs).toEqual(before.evidenceRefs);
   });
 
   test('keeps the repository-change implementation gate strict when ChatGPT does not select no-change work', () => {
