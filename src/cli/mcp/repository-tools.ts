@@ -24,7 +24,7 @@ import {
 } from '../repositories/registry';
 import { buildControllerWorkbench } from '../repositories/workbench';
 import { applySafePatch, buildSafePatchPlan } from '../repositories/safe-patch';
-import { getEditSessionDiff, type EditSessionBinding } from '../editing/edit-session';
+import { getEditSession, getEditSessionDiff, type EditSessionBinding } from '../editing/edit-session';
 import { buildSyncOperationDigest, classifyUserFacingError } from '../../runtime/control-plane/facade/operation-digest';
 import {
   repositoryGitCommit,
@@ -363,6 +363,22 @@ export function claimedSessionEditBinding(
     controllerInstanceId: caller.controllerInstanceId,
     routeDecisionFingerprint: work.routeDecisionFingerprint,
   };
+}
+
+function safePatchEditBinding(
+  controllerHome: string,
+  repository: ReturnType<typeof resolveRepositorySelection>,
+  caller: RepositoryToolCallerContext | undefined,
+  args: Record<string, unknown>,
+): EditSessionBinding | undefined {
+  const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+  if (explicitWorkId) return claimedSessionEditBinding(controllerHome, repository, caller, explicitWorkId);
+  const sessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
+  if (!sessionId) return undefined;
+  const existingWorkId = getEditSession(repository.canonicalRoot, sessionId).workId?.trim();
+  return existingWorkId
+    ? claimedSessionEditBinding(controllerHome, repository, caller, existingWorkId)
+    : undefined;
 }
 
 function resolveRepositorySelectionForClaimedWork(
@@ -954,7 +970,7 @@ export async function callRepositoryTool(
       }
       case 'repository_safe_patch_apply': {
         const repository = resolveRepositorySelectionForClaimedWork(controllerHome, args, repoIdValue, caller);
-        const binding = claimedSessionEditBinding(controllerHome, repository, caller, args.work_id);
+        const binding = safePatchEditBinding(controllerHome, repository, caller, args);
         const applied = withControllerLock(
           controllerHome,
           { scope: 'repository', repoId: repository.repoId },
@@ -1057,7 +1073,7 @@ export async function callRepositoryTool(
         const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
         const { repository, executionIdentity } = target;
         const deliveryWorkId = rawDefaultBranchMergeCommand(repository, args.command)
-          ? executionIdentity.workId ?? claimedSessionWorkId(controllerHome, repository, caller)
+          ? executionIdentity.workId
           : undefined;
         if (deliveryWorkId) {
           throw new Error(`WORK_DELIVERY_REQUIRES_FINALIZE: ${deliveryWorkId} must pass Work verification and use rh_work finalize before default-branch integration`);

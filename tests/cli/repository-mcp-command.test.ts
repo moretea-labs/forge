@@ -11,6 +11,8 @@ import { createMcpToolContext } from "../../src/cli/mcp/multi-repository";
 import { getLocalBridgeJob, readLocalBridgeJobOutput, readLocalBridgeJobOutputSnapshot } from "../../src/cli/local-bridge/job-store";
 import { routeDurableMcpCall } from "../../src/runtime/gateway/mcp/router";
 import { getExecutionJob, listExecutionJobs } from "../../src/runtime/execution/jobs/store";
+import { createWorkContract } from "../../src/runtime/control-plane/facade/work-contract-store";
+import { claimControllerSession } from "../../src/runtime/control-plane/facade/controller-session-store";
 import { applyExternalFilesystemGrant, previewExternalFilesystemGrant } from "../../src/runtime/safe-tooling/external-filesystem";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
 import { clearGitIdentityCacheForTest, clearGitSnapshotCacheForTest, gitSnapshot, gitSnapshotPerformanceSnapshot } from "../../src/cli/repository/inspector";
@@ -85,6 +87,97 @@ describe("repository MCP command tools", () => {
         recommendedOperation: "search",
       });
       expect(response.suggestedOperation).toBe("rh_context");
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("does not let an unrelated active Work monopolize default-branch delivery", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-unrelated-work-delivery-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "sample-repo");
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "README.md"), "base\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-m", "init"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
+
+      git(repoRoot, ["switch", "-c", "feature/completed"]);
+      writeFileSync(join(repoRoot, "completed.txt"), "done\n");
+      git(repoRoot, ["add", "completed.txt"]);
+      git(repoRoot, ["commit", "-m", "completed isolated work"]);
+      git(repoRoot, ["switch", "main"]);
+
+      const unrelatedWorkId = "WORK-UNRELATED-STABILIZATION";
+      createWorkContract({ controllerHome, repoId: repository.repoId }, {
+        workId: unrelatedWorkId,
+        repoId: repository.repoId,
+        mode: "goal_workloop",
+        objective: "Keep verifying an unrelated stabilization goal.",
+        acceptanceCriteria: ["verification continues independently"],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: "chatgpt",
+        status: "running",
+      });
+      claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+        workId: unrelatedWorkId,
+        controllerId: "controller-chatgpt",
+        controllerType: "chatgpt",
+        sessionId: "session-chatgpt",
+        principalId: "principal-chatgpt",
+        controllerInstanceId: "runtime-chatgpt",
+        leaseMs: 60_000,
+      });
+      const caller = { sessionId: "session-chatgpt", principalId: "principal-chatgpt", controllerInstanceId: "runtime-chatgpt" };
+
+      const unboundPatch = await json(callRepositoryTool(controllerHome, "repository_safe_patch_apply", {
+        repo_id: repository.repoId,
+        purpose: "independent direct edit",
+        operations: [{ type: "create", path: "direct-edit.txt", content: "independent\n" }],
+      }, caller));
+      expect(unboundPatch.status).toBe("applied");
+      expect(unboundPatch.session.workId).toBeUndefined();
+
+      const explicitlyBoundPatch = await json(callRepositoryTool(controllerHome, "repository_safe_patch_apply", {
+        repo_id: repository.repoId,
+        work_id: unrelatedWorkId,
+        purpose: "explicit Work edit",
+        operations: [{ type: "create", path: "work-edit.txt", content: "owned\n" }],
+      }, caller));
+      expect(explicitlyBoundPatch.status).toBe("applied");
+      expect(explicitlyBoundPatch.session.workId).toBe(unrelatedWorkId);
+
+      const merged = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        command: ["git", "merge", "feature/completed"],
+        request_id: "merge-completed-unrelated-work",
+      }, caller));
+      expect(merged.error?.code).not.toBe("WORK_DELIVERY_REQUIRES_FINALIZE");
+      expect(merged.exitCode).toBe(0);
+      expect(readFileSync(join(repoRoot, "completed.txt"), "utf8")).toBe("done\n");
+
+      git(repoRoot, ["switch", "-c", "feature/explicit-work"]);
+      writeFileSync(join(repoRoot, "explicit.txt"), "pending\n");
+      git(repoRoot, ["add", "explicit.txt"]);
+      git(repoRoot, ["commit", "-m", "explicit work branch"]);
+      git(repoRoot, ["switch", "main"]);
+      const explicitlyAttributed = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        work_id: unrelatedWorkId,
+        command: ["git", "merge", "feature/explicit-work"],
+        request_id: "merge-explicit-active-work",
+      }, caller));
+      expect(explicitlyAttributed.error).toMatchObject({ code: "WORK_DELIVERY_REQUIRES_FINALIZE" });
+      expect(existsSync(join(repoRoot, "explicit.txt"))).toBe(false);
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });
