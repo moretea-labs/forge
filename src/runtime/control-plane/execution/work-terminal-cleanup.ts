@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { dirname, join, resolve } from 'path';
-import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
+import { repoLocalNoIndexControllerHome, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import {
   getRepository,
   listRepositories,
@@ -17,6 +17,7 @@ import {
 } from '../../../cli/repositories/registry';
 import { managedPathInside, managedWorktreeStorageRoot } from '../../../cli/repositories/worktree-storage';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
+import { listControlPlaneRecords } from '../persistence/sqlite-store';
 import { getWorkContract } from '../facade/work-contract-store';
 import { getControllerSession, releaseControllerSession } from '../facade/controller-session-store';
 import { isRepositoryCompletionReceipt, isTerminalWorkContractStatus, type WorkContract } from '../facade/types';
@@ -403,12 +404,26 @@ function isCurrentControllerManagedWorktree(
     );
     if (managedPathInside(storageRoot, worktreePath)) return true;
     // Older Controller releases used a namespaced sibling of controller/.
-    // Accept only this Home's deterministic namespace, then let the caller's
-    // Git common-dir, branch, cleanliness, and preservation checks prove the
-    // exact Work before any removal.
-    const legacyNamespace = createHash('sha256').update(resolve(controllerHome)).digest('hex').slice(0, 16);
-    const legacyRoot = join(dirname(resolve(controllerHome)), 'managed-worktrees', legacyNamespace);
-    return managedPathInside(legacyRoot, worktreePath);
+    // Accept only namespaces whose source Home appears in this target's
+    // controlled migration receipt; then let the caller's Git common-dir,
+    // branch, cleanliness, and preservation checks prove the exact Work before
+    // any removal.
+    const sourceHomes = new Set<string>([resolve(controllerHome)]);
+    for (const record of listControlPlaneRecords<{ sourceHome?: unknown; status?: unknown }>(controllerHome, {
+      namespace: 'controller_home_migration',
+      limit: 1_000,
+    })) {
+      if (record.value.status !== 'applied' || typeof record.value.sourceHome !== 'string') continue;
+      const sourceHome = resolve(record.value.sourceHome);
+      sourceHomes.add(sourceHome);
+      const physical = repoLocalNoIndexControllerHome(sourceHome);
+      if (physical) sourceHomes.add(physical);
+    }
+    return [...sourceHomes].some((sourceHome) => {
+      const namespace = createHash('sha256').update(sourceHome).digest('hex').slice(0, 16);
+      const legacyRoot = join(dirname(resolve(controllerHome)), 'managed-worktrees', namespace);
+      return managedPathInside(legacyRoot, worktreePath);
+    });
   } catch {
     return false;
   }
