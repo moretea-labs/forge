@@ -109,6 +109,53 @@ async function cleanup(fx: ReturnType<typeof fixture>, handle: WorkHandleState =
 }
 
 describe('terminal Work cleanup', () => {
+  test('periodic reconciler never reclaims a cancelled Work explicitly retained by terminal resource disposition', async () => {
+    const fx = fixture('retained-cancelled');
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: fx.handle.workId,
+      repoId: fx.repository.repoId,
+      mode: 'direct_control',
+      objective: 'Explicitly retained cancelled Work must not be reclaimed by periodic cleanup.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'cancelled',
+      phase: 'cleanup',
+    });
+    const retained = writeWorkHandle(fx.controllerHome, {
+      ...fx.handle,
+      terminalResourceDisposition: {
+        mode: 'retained_by_request',
+        retainWorktree: true,
+        retainBranch: true,
+        recordedAt: new Date(Date.now() - 120_000).toISOString(),
+      },
+      finalization: {
+        validation: 'done',
+        commit: 'skipped',
+        merge: 'skipped',
+        branchCleanup: 'skipped',
+        worktreeCleanup: 'skipped',
+      },
+      updatedAt: new Date(Date.now() - 120_000).toISOString(),
+    });
+    expect(existsSync(retained.worktreePath)).toBe(true);
+
+    const report = await reconcileTerminalWorkCleanups(fx.controllerHome, {
+      nowMs: Date.now(),
+      minAgeMs: 60_000,
+      maxWork: 20,
+    });
+    expect(report.skippedRetained).toContain(retained.workId);
+    expect(report.cleaned).not.toContain(retained.workId);
+    expect(report.attempted).toBe(0);
+    expect(existsSync(retained.worktreePath)).toBe(true);
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, retained.workId)?.terminalResourceDisposition?.mode).toBe('retained_by_request');
+  });
+
   test('periodic reconciler closes a stale cancelled managed Work without a caller cleanup request', async () => {
     const fx = fixture('periodic-cancelled');
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {

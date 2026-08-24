@@ -163,6 +163,7 @@ function compactHandle(handle: WorkHandleState): Record<string, unknown> {
     createdAt: handle.createdAt, updatedAt: handle.updatedAt, finalization: handle.finalization,
     ...(handle.failureReason ? { failureReason: handle.failureReason } : {}),
     ...(handle.cleanupResponsibility ? { cleanupResponsibility: handle.cleanupResponsibility } : {}),
+    ...(handle.terminalResourceDisposition ? { terminalResourceDisposition: handle.terminalResourceDisposition } : {}),
     ...(handle.cleanupReceipt ? { cleanupReceipt: handle.cleanupReceipt } : {}),
   };
 }
@@ -1691,6 +1692,59 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     return await reconcileTerminalCleanup(ctx, session, current, args, terminalOutcome);
   }
   assertWorkControllerOwnership(ctx, session, current, args);
+  if (terminalOutcome && args.cleanup === false) {
+    const recordedAt = new Date().toISOString();
+    current = withControllerLock(
+      ctx.controllerHome,
+      { scope: 'worktree', repoId: current.repositoryId, worktreeId: current.checkoutId },
+      `work-finalize:${current.workId}:retain-terminal-resources`,
+      () => {
+        const fresh = readWorkHandle(ctx.controllerHome, current.repositoryId, current.workId) ?? current;
+        return writeWorkHandle(ctx.controllerHome, {
+          ...fresh,
+          finalization: {
+            ...fresh.finalization,
+            validation: fresh.finalization.validation === 'failed' ? 'failed' : 'done',
+            commit: fresh.finalization.commit === 'pending' ? 'skipped' : fresh.finalization.commit,
+            merge: fresh.finalization.merge === 'pending' ? 'skipped' : fresh.finalization.merge,
+            branchCleanup: 'skipped',
+            worktreeCleanup: 'skipped',
+            lastError: fresh.finalization.validation === 'failed' ? fresh.finalization.lastError : undefined,
+          },
+          terminalResourceDisposition: {
+            mode: 'retained_by_request',
+            retainWorktree: fresh.managedWorktree,
+            retainBranch: true,
+            recordedAt,
+          },
+        });
+      },
+      10_000,
+    );
+    appendWorkEvidence(
+      { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
+      current.workContractId ?? current.workId,
+      {
+        title: 'terminal resources retained by request',
+        summary: `Controller explicitly retained ${current.managedWorktree ? 'the managed worktree and ' : ''}local branch after terminal Work; automatic terminal cleanup must not reclaim them.`,
+        detailLevel: 'summary',
+      },
+    );
+    releasePreparedWorkOwnership(ctx, current);
+    updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
+      activeWorkId: undefined,
+      activeCheckoutId: current.sourceCheckoutId ?? session.activeCheckoutId,
+    });
+    return {
+      work: compactHandle(current),
+      stages: current.finalization,
+      completed: true,
+      cleanupCompleted: false,
+      cleanupRetained: true,
+      cleanupPending: false,
+      idempotent: true,
+    };
+  }
   if (current.state === 'cleaned') {
     const terminalContract = contractFor(ctx, current);
     if (

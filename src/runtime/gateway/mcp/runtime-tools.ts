@@ -4331,20 +4331,25 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             if (!physical) return result(facade as unknown as Record<string, unknown>);
             const cleanup = contextRecord(physical.structuredContent);
             const cleanupCompleted = cleanup.cleanupCompleted === true || contextRecord(cleanup.work).state === 'cleaned';
+            const cleanupRetained = cleanup.cleanupRetained === true;
+            const cleanupSettled = cleanupCompleted || cleanupRetained;
             const response = {
               ...facade,
-              status: cleanupCompleted ? 'ok' : 'blocked',
+              status: cleanupSettled ? 'ok' : 'blocked',
               summary: cleanupCompleted
                 ? `${facade.summary} Managed worktree and branch cleanup completed automatically.`
-                : `${facade.summary} Automatic managed-resource cleanup is incomplete and remains visible for retry.`,
+                : cleanupRetained
+                  ? `${facade.summary} Managed worktree and branch retention was recorded durably; automatic cleanup is disabled for this terminal Work.`
+                  : `${facade.summary} Automatic managed-resource cleanup is incomplete and remains visible for retry.`,
               data: {
                 ...(facade.data && typeof facade.data === 'object' ? facade.data : {}),
                 worktreeDeleted: cleanupCompleted,
-                cleanupPending: !cleanupCompleted,
+                cleanupPending: !cleanupSettled,
+                cleanupRetained,
                 lifecycleCleanup: cleanup,
               },
             };
-            return result(response as unknown as Record<string, unknown>, !cleanupCompleted || physical.isError === true);
+            return result(response as unknown as Record<string, unknown>, !cleanupSettled || physical.isError === true);
           } catch (error) {
             const response = {
               ...facade,

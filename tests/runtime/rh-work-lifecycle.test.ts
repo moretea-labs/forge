@@ -2361,6 +2361,54 @@ describe('rh_work managed lifecycle closure', () => {
     });
   });
 
+  test('stop cleanup=false records durable retention and does not report cleanup pending', async () => {
+    const fx = fixture('stop-retain');
+    const work = await prepareManagedWork(fx, 'Retained terminal Work');
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+
+    const stopped = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'stop',
+      work_id: work.workId,
+      reason: 'retain terminal workspace for explicit review',
+      cleanup: false,
+      delete_branch: false,
+    });
+    expect(stopped?.isError, JSON.stringify(stopped?.structuredContent)).not.toBe(true);
+    expect(stopped?.structuredContent).toMatchObject({
+      status: 'ok',
+      data: {
+        finalStatus: 'cancelled',
+        worktreeDeleted: false,
+        cleanupPending: false,
+        cleanupRetained: true,
+      },
+    });
+    expect(existsSync(work.worktreePath)).toBe(true);
+    const retained = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    expect(retained.terminalResourceDisposition).toMatchObject({
+      mode: 'retained_by_request',
+      retainWorktree: true,
+      retainBranch: true,
+    });
+    expect(getControllerSession(store, work.workId)).toBeUndefined();
+
+    const repeated = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'stop',
+      work_id: work.workId,
+      reason: 'repeat retained terminal stop',
+      cleanup: false,
+      delete_branch: false,
+    });
+    expect(repeated?.isError, JSON.stringify(repeated?.structuredContent)).not.toBe(true);
+    expect(repeated?.structuredContent).toMatchObject({
+      status: 'ok',
+      data: { cleanupPending: false, cleanupRetained: true, worktreeDeleted: false },
+    });
+    expect(existsSync(work.worktreePath)).toBe(true);
+  });
+
   test('stop cancels and automatically removes the managed worktree and branch', async () => {
     const fx = fixture('stop');
     const work = await prepareManagedWork(fx, 'Disposable no-change acceptance Work');
