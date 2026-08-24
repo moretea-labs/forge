@@ -381,7 +381,44 @@ describe('rh_work managed lifecycle closure', () => {
     expect(owner?.principalId).toBe(`principal-lifecycle-release-check-controller-claim`);
     expect(owner?.controllerInstanceId).toBe(`runtime-lifecycle-release-check-controller-claim`);
 
-    let verified = await callRuntimeTool(fx.ctx, 'rh_work', verifyArgs);
+    const rotatedCtx = createMcpToolContext({
+      controllerHome: fx.controllerHome,
+      profile: 'controller',
+      repo: fx.repoRoot,
+      sessionId: 'mcp-lifecycle-release-check-controller-claim-rotated',
+      principalId: 'principal-lifecycle-release-check-controller-claim',
+      controllerInstanceId: 'runtime-lifecycle-release-check-controller-claim',
+    });
+    const wrongPrincipalCtx = createMcpToolContext({
+      controllerHome: fx.controllerHome,
+      profile: 'controller',
+      repo: fx.repoRoot,
+      sessionId: 'mcp-lifecycle-release-check-controller-claim-wrong-principal',
+      principalId: 'principal-lifecycle-release-check-controller-claim-other',
+      controllerInstanceId: 'runtime-lifecycle-release-check-controller-claim',
+    });
+    const wrongEpochCtx = createMcpToolContext({
+      controllerHome: fx.controllerHome,
+      profile: 'controller',
+      repo: fx.repoRoot,
+      sessionId: 'mcp-lifecycle-release-check-controller-claim-wrong-epoch',
+      principalId: 'principal-lifecycle-release-check-controller-claim',
+      controllerInstanceId: 'runtime-lifecycle-release-check-controller-claim-next',
+    });
+    for (const [context, requestId] of [
+      [wrongPrincipalCtx, 'release-check-wrong-principal'],
+      [wrongEpochCtx, 'release-check-wrong-epoch'],
+    ] as const) {
+      const rejected = await callRuntimeTool(context, 'rh_work', { ...verifyArgs, request_id: requestId });
+      expect(rejected?.isError).toBe(true);
+      expect(rejected?.structuredContent).toMatchObject({
+        status: 'blocked',
+        data: { verification: { checkId: 'package:check:release', outcome: 'deferred' } },
+      });
+    }
+
+    const rotatedVerifyArgs = { ...verifyArgs, request_id: 'release-check-exact-controller-rotated-session' };
+    let verified = await callRuntimeTool(rotatedCtx, 'rh_work', rotatedVerifyArgs);
     let verification = (verified?.structuredContent as { data?: { verification?: { processId?: string; outcome?: string } } })?.data?.verification;
     expect(verification?.outcome).toBe('running');
     expect(verification?.processId).toBeTruthy();
@@ -393,7 +430,7 @@ describe('rh_work managed lifecycle closure', () => {
     expect(process?.origin?.checkId).toBe('package:check:release');
 
     await waitForProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 5_000 });
-    verified = await callRuntimeTool(fx.ctx, 'rh_work', verifyArgs);
+    verified = await callRuntimeTool(rotatedCtx, 'rh_work', rotatedVerifyArgs);
     verification = (verified?.structuredContent as { data?: { verification?: { processId?: string; outcome?: string } } })?.data?.verification;
     expect(verification?.outcome).toBe('valid_pass');
     expect(verification?.processId).toBe(processId);

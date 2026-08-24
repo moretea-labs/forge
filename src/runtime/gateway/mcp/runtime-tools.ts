@@ -2543,7 +2543,6 @@ async function runFacadeVerify(
           owner
           && owner.controllerId === identity.controllerId
           && ownerPrincipal === identity.principalId
-          && owner.sessionId === identity.sessionId
           && owner.controllerInstanceId === identity.controllerInstanceId,
         );
       } catch {
