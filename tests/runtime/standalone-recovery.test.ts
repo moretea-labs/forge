@@ -35,6 +35,7 @@ import {
   dispatchRecoveryTool,
   RECOVERY_CLI_COMMANDS,
   RECOVERY_TOOLS,
+  recoveryUnauthorizedBody,
   recoveryWwwAuthenticate,
   resetWatchdogStateForRecoveryRelease,
 } from '../../src/runtime/standalone-recovery/entry';
@@ -472,6 +473,7 @@ describe('standalone recovery on canonical Runtime', () => {
     } as unknown as IncomingMessage;
     const challenge = recoveryWwwAuthenticate(request, { recoveryPublicUrl: 'https://recovery.example.test/recovery/mcp' });
     expect(challenge).toBe('Bearer error="invalid_token", error_description="Missing Authorization header", resource_metadata="https://recovery.example.test/.well-known/oauth-protected-resource/recovery/mcp"');
+    expect(recoveryUnauthorizedBody()).toEqual({ error: 'invalid_token', message: 'Missing Authorization header' });
   });
 
   test('verifies and attests the single active whole-Runtime release', async () => {

@@ -352,6 +352,10 @@ export function recoveryWwwAuthenticate(request: IncomingMessage, config: Pick<R
   return `Bearer error="invalid_token", error_description="Missing Authorization header", resource_metadata="${metadata}"`;
 }
 
+export function recoveryUnauthorizedBody(): { error: string; message: string } {
+  return { error: 'invalid_token', message: 'Missing Authorization header' };
+}
+
 function parseUrlEncoded(input: string): URLSearchParams {
   return new URLSearchParams(input);
 }
@@ -682,7 +686,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
     if (request.method !== 'POST' || !matchesAnyPath(request.url, ['/mcp', '/recovery/mcp'])) { json(response, 404, { error: 'NOT_FOUND' }); return; }
     const expected = gatewayToken(config);
     const supplied = request.headers.authorization?.replace(/^Bearer\s+/i, '').trim();
-    if (!expected || !supplied || !secureEqual(supplied, expected)) { response.setHeader('www-authenticate', recoveryWwwAuthenticate(request, config)); json(response, 401, { error: 'RECOVERY_AUTH_REQUIRED' }); return; }
+    if (!expected || !supplied || !secureEqual(supplied, expected)) { response.setHeader('www-authenticate', recoveryWwwAuthenticate(request, config)); json(response, 401, recoveryUnauthorizedBody()); return; }
     if (!/^application\/json(?:\s*;|$)/i.test(String(request.headers['content-type'] ?? ''))) { json(response, 415, { error: 'RECOVERY_CONTENT_TYPE_REQUIRED' }); return; }
     let message: { id?: unknown; method?: unknown; params?: { name?: unknown; arguments?: unknown } };
     try { message = JSON.parse(await readBody(request)) as typeof message; } catch { json(response, 400, rpcError(null, -32700, 'Invalid JSON.')); return; }
