@@ -542,7 +542,7 @@ export function completeProcessFromEvidence(
     stdoutTail?: string;
     stderrTail?: string;
   },
-  options: { authority?: 'runtime_writer' | 'durable_exit_receipt' | 'durable_pre_spawn_abandonment' } = {},
+  options: { authority?: 'runtime_writer' | 'durable_exit_receipt' | 'durable_pre_spawn_abandonment' | 'durable_stale_active_reconciliation' } = {},
 ): ManagedProcessRecord | undefined {
   // Validated independent evidence may only perform the monotonic,
   // fence-token-bound terminal CAS below. It does not grant general writer
@@ -626,6 +626,45 @@ export function reconcileAbandonedPreSpawnProcess(
     finishedAt: new Date(nowMs).toISOString(),
     errorMessage: 'PROCESS_PRESPAWN_ABANDONED: no lease, descriptor, receipt, or PID after startup grace period',
   }, { authority: 'durable_pre_spawn_abandonment' });
+}
+
+/**
+ * Bounded maintenance reconciliation for stale active Process records that are
+ * no longer reachable through the v2 recovery index. This never deletes an
+ * active record and never re-executes a command: it first consumes any durable
+ * Runner receipt, preserves live monitors / matching process identities, and
+ * only then commits a monotonic terminal state for a provably dead identity.
+ */
+export function reconcileStaleManagedProcessForMaintenance(
+  controllerHome: string,
+  repoId: string,
+  processId: string,
+  options: { nowMs?: number; minAgeMs?: number } = {},
+): ManagedProcessRecord | undefined {
+  let record = getProcessRecord(controllerHome, repoId, processId);
+  if (!record || !isManagedProcessActive(record)) return record;
+
+  const nowMs = options.nowMs ?? Date.now();
+  const minAgeMs = Math.max(1_000, options.minAgeMs ?? DEFAULT_PRE_SPAWN_ABANDONMENT_MS);
+  const updatedAtMs = Date.parse(record.updatedAt || record.startedAt);
+  if (!Number.isFinite(updatedAtMs) || nowMs - updatedAtMs < minAgeMs) return record;
+
+  const fromReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, record);
+  if (fromReceipt) return fromReceipt;
+
+  if (record.status === 'starting' && !record.identity) {
+    return reconcileAbandonedPreSpawnProcess(controllerHome, repoId, processId, { nowMs, minAgeMs });
+  }
+
+  record = getProcessRecord(controllerHome, repoId, processId) ?? record;
+  if (!isManagedProcessActive(record) || liveMonitors.has(processId)) return record;
+  if (identityStillMatches(record.identity, record.identityUntrusted)) return record;
+
+  return completeProcessFromEvidence(controllerHome, repoId, processId, record.terminalFenceToken, {
+    status: 'completed_unknown',
+    finishedAt: new Date(nowMs).toISOString(),
+    errorMessage: 'PROCESS_STALE_ACTIVE_RECONCILED: stale active record has no live matching process identity or durable exit receipt',
+  }, { authority: 'durable_stale_active_reconciliation' });
 }
 
 async function killTree(child: ChildProcess): Promise<void> {

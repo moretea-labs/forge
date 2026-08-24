@@ -2270,6 +2270,72 @@ describe('Process Runtime real lease contention', () => {
     expect(listActiveProcessIds(fx.controllerHome, fx.repository.repoId)).not.toContain(processId);
   });
 
+  test('Process GC reconciles only bounded stale active records before terminal collection', () => {
+    const fx = fixture();
+    const old = new Date(Date.now() - 10 * 60_000).toISOString();
+    const staleStartingId = 'proc_gc_stale_starting';
+    const staleRunningId = 'proc_gc_stale_running';
+    const freshStartingId = 'proc_gc_fresh_starting';
+    const base = {
+      schemaVersion: 1 as const,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      controllerHome: fx.controllerHome,
+      route: 'direct' as const,
+      command: { kind: 'argv' as const, executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
+      resourceClaims: [],
+      interactiveWaitMs: 800,
+      timeoutMs: 30_000,
+      maxOutputBytes: 1_024,
+      terminalFenceToken: 1,
+    };
+    createProcessRecord({
+      ...base,
+      processId: staleStartingId,
+      status: 'starting',
+      startedAt: old,
+      updatedAt: old,
+      exitReceiptPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${staleStartingId}.exit.json`),
+      commandDescriptorPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${staleStartingId}.command.json`),
+    });
+    createProcessRecord({
+      ...base,
+      processId: staleRunningId,
+      status: 'running',
+      startedAt: old,
+      updatedAt: old,
+      identity: { pid: 999_999, processStartTime: 'Mon Jan  1 00:00:00 2001', executableFingerprint: 'dead-process' },
+      exitReceiptPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${staleRunningId}.exit.json`),
+    });
+    createProcessRecord({
+      ...base,
+      processId: freshStartingId,
+      status: 'starting',
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      exitReceiptPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${freshStartingId}.exit.json`),
+      commandDescriptorPath: join(processLogDir(fx.controllerHome, fx.repository.repoId), `${freshStartingId}.command.json`),
+    });
+
+    const gc = gcTerminalProcesses({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      maxTerminalRecords: 500,
+      maxAgeMs: 7 * 24 * 60 * 60_000,
+      staleActiveMinAgeMs: 5 * 60_000,
+      maxStaleReconciliations: 2,
+    });
+
+    expect(gc.ok).toBe(true);
+    expect(gc.reconciledStaleActive).toBe(2);
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, staleStartingId)).toMatchObject({ status: 'failed', terminalWritten: true });
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, staleRunningId)).toMatchObject({ status: 'completed_unknown', terminalWritten: true });
+    const fresh = getProcessRecord(fx.controllerHome, fx.repository.repoId, freshStartingId);
+    expect(fresh).toMatchObject({ status: 'starting' });
+    expect(fresh?.terminalWritten).not.toBe(true);
+    expect(gc.skippedActive).toBe(1);
+  });
+
   test('passive runtime cannot acquire process leases', () => {
     const fx = fixture();
     const activeRuntime = bindCanonicalRuntime(

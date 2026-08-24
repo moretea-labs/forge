@@ -9,8 +9,9 @@
 import { existsSync, readFileSync, readdirSync, unlinkSync, statSync } from 'fs';
 import { join } from 'path';
 import { ensureRepositoryControllerLayout, repositoryControllerRoot } from '../../../cli/repositories/controller-home';
-import { listActiveProcessIds } from './store';
-import type { ProcessRuntimeStatus } from './types';
+import { getProcessRecord, listActiveProcessIds } from './store';
+import { reconcileStaleManagedProcessForMaintenance } from './runtime';
+import { isManagedProcessActive, type ProcessRuntimeStatus } from './types';
 import { assertRuntimeMayWrite } from '../../root/write-fence';
 import { isProcessAlive } from '../../shared/process-tree';
 
@@ -21,6 +22,7 @@ const TERMINAL: ReadonlySet<ProcessRuntimeStatus> = new Set([
   'cancelled',
   'orphaned',
   'completed_unknown',
+  'unknown',
 ]);
 
 export interface ProcessGcOptions {
@@ -32,6 +34,10 @@ export interface ProcessGcOptions {
   maxTerminalRecords?: number;
   /** Also delete associated log/receipt files. */
   deleteLogs?: boolean;
+  /** Minimum age before an active record is eligible for evidence-based stale reconciliation (default 5m). */
+  staleActiveMinAgeMs?: number;
+  /** Max stale active records to reconcile in one selected-repository GC pass (default 100). */
+  maxStaleReconciliations?: number;
 }
 
 export interface ProcessGcResult {
@@ -39,6 +45,7 @@ export interface ProcessGcResult {
   removedRecords: number;
   removedLogs: number;
   skippedActive: number;
+  reconciledStaleActive: number;
   /** Legacy/corrupt records without enough terminal proof are preserved. */
   skippedInvalid?: number;
   error?: string;
@@ -125,28 +132,52 @@ export function gcTerminalProcesses(options: ProcessGcOptions): ProcessGcResult 
         removedRecords: 0,
         removedLogs: 0,
         skippedActive: 0,
+        reconciledStaleActive: 0,
         error: `writer_fenced:${fence.reason ?? 'denied'}`,
       };
     }
 
     const maxAgeMs = options.maxAgeMs ?? 7 * 24 * 60 * 60_000;
     const maxTerminal = options.maxTerminalRecords ?? 500;
+    const staleActiveMinAgeMs = Math.max(1_000, options.staleActiveMinAgeMs ?? 5 * 60_000);
+    const maxStaleReconciliations = Math.max(0, options.maxStaleReconciliations ?? 100);
     const root = processesDir(options.controllerHome, options.repoId);
     if (!existsSync(root)) {
-      return { ok: true, removedRecords: 0, removedLogs: 0, skippedActive: 0 };
+      return { ok: true, removedRecords: 0, removedLogs: 0, skippedActive: 0, reconciledStaleActive: 0 };
     }
 
     const active = new Set(listActiveProcessIds(options.controllerHome, options.repoId));
     const terminal: Array<{ processId: string; finishedAt: number; path: string; reusableCheckEvidence: boolean }> = [];
     let skippedActive = 0;
     let skippedInvalid = 0;
+    let reconciledStaleActive = 0;
+    const nowMs = Date.now();
 
     for (const name of readdirSync(root)) {
       if (!name.endsWith('.json') || name === 'active-index.json') continue;
       const processId = name.slice(0, -'.json'.length);
       if (active.has(processId)) {
-        skippedActive += 1;
-        continue;
+        let record = getProcessRecord(options.controllerHome, options.repoId, processId);
+        if (!record) {
+          skippedActive += 1;
+          continue;
+        }
+        if (isManagedProcessActive(record) && reconciledStaleActive < maxStaleReconciliations) {
+          const reconciled = reconcileStaleManagedProcessForMaintenance(
+            options.controllerHome,
+            options.repoId,
+            processId,
+            { nowMs, minAgeMs: staleActiveMinAgeMs },
+          );
+          if (reconciled) {
+            if (isManagedProcessActive(record) && !isManagedProcessActive(reconciled)) reconciledStaleActive += 1;
+            record = reconciled;
+          }
+        }
+        if (isManagedProcessActive(record)) {
+          skippedActive += 1;
+          continue;
+        }
       }
       const metadata = readProcessGcMetadata(join(root, name));
       if (!metadata?.status) {
@@ -194,13 +225,14 @@ export function gcTerminalProcesses(options: ProcessGcOptions): ProcessGcResult 
       }
     }
 
-    return { ok: true, removedRecords, removedLogs, skippedActive, skippedInvalid };
+    return { ok: true, removedRecords, removedLogs, skippedActive, reconciledStaleActive, skippedInvalid };
   } catch (error) {
     return {
       ok: false,
       removedRecords: 0,
       removedLogs: 0,
       skippedActive: 0,
+      reconciledStaleActive: 0,
       error: error instanceof Error ? error.message : String(error),
     };
   }
