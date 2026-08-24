@@ -18,7 +18,7 @@ import { repositoryControllerRoot } from '../../../cli/repositories/controller-h
 import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../execution/jobs/store';
 import { waitForExecutionJob } from '../../execution/jobs/wait';
 import type { ExecutionJob } from '../../execution/jobs/types';
-import { getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
+import { checkRequiresDurableWorkflow, getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
 import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../../execution/process-runtime/command-facade';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
@@ -2531,6 +2531,27 @@ async function runFacadeVerify(
       checkId: normalizedCheckId,
       requestedChecks,
     }) : undefined;
+    const registeredCheck = checks.find((entry) => entry.id === normalizedCheckId);
+    const durableClassCheck = checkRequiresDurableWorkflow(normalizedCheckId, registeredCheck);
+    let allowDurableCheckExecution = false;
+    if (durableClassCheck && workContract?.checks.includes(normalizedCheckId) && !workContract.completionReceipt && workContract.status === 'running') {
+      try {
+        const identity = authenticatedFacadeControllerIdentity(ctx, args);
+        const owner = getControllerSession(store, workId);
+        const ownerPrincipal = owner?.principalId?.trim() || owner?.controllerId;
+        allowDurableCheckExecution = Boolean(
+          owner
+          && owner.controllerId === identity.controllerId
+          && ownerPrincipal === identity.principalId
+          && owner.sessionId === identity.sessionId
+          && owner.controllerInstanceId === identity.controllerInstanceId,
+        );
+      } catch {
+        // Durable-class checks remain deferred when the authenticated claim cannot
+        // be proven exactly. The lower Process Runtime never infers authority.
+        allowDurableCheckExecution = false;
+      }
+    }
     const executed = await runPersistedCheckViaProcessRuntime({
       controllerHome: ctx.controllerHome,
       repoId: verificationRepository.repoId,
@@ -2555,6 +2576,7 @@ async function runFacadeVerify(
         allowedPaths: workContract.allowedPaths,
         forbiddenPaths: workContract.forbiddenPaths,
       } : undefined,
+      allowDurableCheckExecution,
     });
 
     if (executed.mode === 'durable') {

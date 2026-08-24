@@ -50,6 +50,8 @@ export interface RunCheckFacadeInput {
   commandId?: string;
   /** Force durable workflow (release / multi-phase). */
   forceDurable?: boolean;
+  /** Internal-only: allow an already-authorized external Work Controller to execute a durable-class check through persisted Process Runtime. */
+  allowDurableCheckExecution?: boolean;
   signal?: AbortSignal;
   /** Immutable resolved identity — required; never inferred from main/active/cwd. */
   executionIdentity: ResolvedExecutionIdentity;

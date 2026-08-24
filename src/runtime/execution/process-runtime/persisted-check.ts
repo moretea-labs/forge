@@ -186,7 +186,7 @@ export async function runPersistedCheckViaProcessRuntime(
       durableSideEffects: emptyEffects,
     };
   }
-  if (input.forceDurable || checkRequiresDurableWorkflow(input.checkId, check)) {
+  if (input.forceDurable || (checkRequiresDurableWorkflow(input.checkId, check) && input.allowDurableCheckExecution !== true)) {
     cleanupVerificationSnapshot();
     return {
       mode: 'durable',

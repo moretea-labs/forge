@@ -328,6 +328,79 @@ describe('rh_work managed lifecycle closure', () => {
     expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, String(verification?.processId))?.checkoutId).toBe(contract.checkoutId);
   });
 
+  test('executes a durable-class release check only for the exact active Work Controller claim', async () => {
+    const fx = fixture('release-check-controller-claim');
+    writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({
+      scripts: { 'check:release': 'node -e "process.exit(0)"' },
+    }, null, 2));
+    git(fx.repoRoot, ['add', 'package.json']);
+    git(fx.repoRoot, ['commit', '-m', 'add release check']);
+
+    const started = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'start',
+      objective: 'Run one explicitly authorized release verification',
+      scope_clear: true,
+      expected_files: 1,
+      expected_changed_lines: 1,
+      requires_recovery: true,
+      check_ids: ['package:check:release'],
+    });
+    const workId = String((started?.structuredContent as { data?: { work?: { workId?: string } } })?.data?.work?.workId ?? '');
+    expect(workId).toBeTruthy();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const initialOwner = getControllerSession(store, workId);
+    expect(initialOwner).toBeTruthy();
+    releaseControllerSession(store, workId, initialOwner!.controllerId);
+    expect(getControllerSession(store, workId)).toBeUndefined();
+
+    const verifyArgs = {
+      repo_id: fx.repository.repoId,
+      operation: 'verify' as const,
+      work_id: workId,
+      check_id: 'package:check:release',
+      request_id: 'release-check-exact-controller',
+    };
+    const deferred = await callRuntimeTool(fx.ctx, 'rh_work', verifyArgs);
+    expect(deferred?.isError).toBe(true);
+    expect(deferred?.structuredContent).toMatchObject({
+      status: 'blocked',
+      data: { verification: { checkId: 'package:check:release', outcome: 'deferred' } },
+    });
+    expect(getWorkContract(store, workId)?.checkRefs).toHaveLength(0);
+
+    const claimed = await callRuntimeTool(fx.ctx, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'controller_claim',
+      work_id: workId,
+      controller_type: 'chatgpt',
+    });
+    expect(claimed?.isError).not.toBe(true);
+    const owner = getControllerSession(store, workId);
+    expect(owner?.sessionId).toBe(`mcp-lifecycle-release-check-controller-claim`);
+    expect(owner?.principalId).toBe(`principal-lifecycle-release-check-controller-claim`);
+    expect(owner?.controllerInstanceId).toBe(`runtime-lifecycle-release-check-controller-claim`);
+
+    let verified = await callRuntimeTool(fx.ctx, 'rh_work', verifyArgs);
+    let verification = (verified?.structuredContent as { data?: { verification?: { processId?: string; outcome?: string } } })?.data?.verification;
+    expect(verification?.outcome).toBe('running');
+    expect(verification?.processId).toBeTruthy();
+    const processId = String(verification?.processId);
+    const process = getProcessRecord(fx.controllerHome, fx.repository.repoId, processId);
+    expect(process?.workId).toBe(workId);
+    expect(process?.checkoutId).toBe(getWorkContract(store, workId)?.checkoutId);
+    expect(process?.origin?.workVerificationSnapshot).toBe(true);
+    expect(process?.origin?.checkId).toBe('package:check:release');
+
+    await waitForProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 5_000 });
+    verified = await callRuntimeTool(fx.ctx, 'rh_work', verifyArgs);
+    verification = (verified?.structuredContent as { data?: { verification?: { processId?: string; outcome?: string } } })?.data?.verification;
+    expect(verification?.outcome).toBe('valid_pass');
+    expect(verification?.processId).toBe(processId);
+    const contract = getWorkContract(store, workId)!;
+    expect(contract.checkRefs.some((entry) => entry.checkId === 'package:check:release' && entry.outcome === 'valid_pass' && entry.receipt?.processId === processId)).toBe(true);
+  });
+
   test('rejects rh_work verify without check_id before recording verification evidence', async () => {
     const fx = fixture('verify-check-id-required');
     const started = await callRuntimeTool(fx.ctx, 'rh_work', {
