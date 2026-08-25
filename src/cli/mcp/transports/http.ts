@@ -630,6 +630,11 @@ function requireMcpHttpAuth(
   resourcePath = '/mcp',
 ) {
   return (req: Request, res: Response, next: NextFunction) => {
+    if (mode === 'none') {
+      next();
+      return;
+    }
+
     if (mode === 'bearer') {
       if (!isAuthorizedMcpHttpRequest(req, bearerToken)) {
         sendBearerUnauthorized(res, bearerToken ? 'Missing or invalid Authorization header' : 'Bearer token is not configured', Boolean(bearerToken));
@@ -1072,7 +1077,11 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
         defaultTimeoutMs: toolContext.policy.execution.runnerTimeoutMs,
         maxTimeoutMs: toolContext.policy.execution.runnerMaxTimeoutMs,
       },
-      auth: authMode === 'oauth' ? (oauthPassphrase ? 'oauth' : 'missing') : (authToken ? 'required' : 'missing'),
+      auth: authMode === 'oauth'
+        ? (oauthPassphrase ? 'oauth' : 'missing')
+        : authMode === 'bearer'
+          ? (authToken ? 'required' : 'missing')
+          : 'none',
       mcpEndpoint: `${advertisedOrigin}/mcp`,
       // Grok now completes standard OAuth dynamic registration + PKCE on the
       // canonical MCP resource. Keep /mcp-grok below only as a legacy alias.
@@ -1335,7 +1344,11 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   await new Promise<void>((resolve) => {
     httpServer.once('listening', resolve);
   });
-  const authLabel = authMode === 'oauth' ? (oauthPassphrase ? 'oauth' : 'oauth-missing') : (authToken ? 'bearer' : 'missing');
+  const authLabel = authMode === 'oauth'
+    ? (oauthPassphrase ? 'oauth' : 'oauth-missing')
+    : authMode === 'bearer'
+      ? (authToken ? 'bearer' : 'missing')
+      : 'none';
   console.error(
     `forge mcp http listening on http://${host}:${port}/mcp (auth: ${authLabel}), http://${host}:${port}/mcp-grok (auth: ${authLabel}), and http://${host}:${port}/mcp-bearer (auth: bearer)`,
   );
