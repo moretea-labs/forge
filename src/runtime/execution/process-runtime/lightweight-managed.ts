@@ -447,17 +447,17 @@ function completedObservedExitHandle(receipt: LightweightRunningReceipt): Proces
   };
 }
 
-function completedUnknownRecoveredHandle(receipt: LightweightRunningReceipt, reason: string): ProcessHandle {
-  const message = `PROCESS_RESULT_UNAVAILABLE_AFTER_RUNTIME_RESTART: ${reason}`;
+function deterministicRecoveryFailureHandle(receipt: LightweightRunningReceipt, reason: string): ProcessHandle {
+  const message = `PROCESS_RESULT_UNAVAILABLE_AFTER_RUNTIME_RESTART: ${reason}; command was not replayed`;
   const stderr = visibleOutput([receipt.handle.stderrTail, message].filter(Boolean).join('\n'), DEFAULT_MAX_OUTPUT_BYTES);
   return {
     ...receipt.handle,
-    status: 'completed_unknown',
-    contractStatus: 'unknown',
+    status: 'failed',
+    contractStatus: 'failed',
     route: 'direct',
     completed: true,
     ok: false,
-    exitCode: undefined,
+    exitCode: 1,
     timedOut: false,
     cancelled: false,
     stdout: receipt.handle.stdoutTail ?? '',
@@ -1036,7 +1036,7 @@ export function getLightweightProcessHandle(controllerHome: string, repoId: stri
   const inspection = inspectRecoveredRunningReceipt(running);
   const failureReason = recoveredInspectionFailureReason(inspection);
   if (failureReason) {
-    return persistRecoveredTerminalReceipt(controllerHome, running, completedUnknownRecoveredHandle(running, failureReason));
+    return persistRecoveredTerminalReceipt(controllerHome, running, deterministicRecoveryFailureHandle(running, failureReason));
   }
   return recoveredRunningHandle(running);
 }
@@ -1064,7 +1064,7 @@ export async function waitForLightweightProcess(
       const inspection = inspectRecoveredRunningReceipt(running);
       const failureReason = recoveredInspectionFailureReason(inspection);
       if (failureReason) {
-        return persistRecoveredTerminalReceipt(controllerHome, running, completedUnknownRecoveredHandle(running, failureReason));
+        return persistRecoveredTerminalReceipt(controllerHome, running, deterministicRecoveryFailureHandle(running, failureReason));
       }
       if (options.signal?.aborted || Date.now() >= deadline) {
         return recoveredRunningHandle(running);
@@ -1113,7 +1113,7 @@ export async function cancelLightweightProcess(controllerHome: string, repoId: s
     const inspection = inspectRecoveredRunningReceipt(running);
     const failureReason = recoveredInspectionFailureReason(inspection);
     if (failureReason) {
-      return persistRecoveredTerminalReceipt(controllerHome, running, completedUnknownRecoveredHandle(running, failureReason));
+      return persistRecoveredTerminalReceipt(controllerHome, running, deterministicRecoveryFailureHandle(running, failureReason));
     }
     const pid = running.handle.pid ?? running.identity?.pid;
     if (!pid) throw new Error(`PROCESS_IDENTITY_UNTRUSTED: refusing to signal ${processId}: pid missing`);

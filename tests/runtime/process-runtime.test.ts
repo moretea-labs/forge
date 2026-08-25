@@ -1182,7 +1182,7 @@ describe('run_check Process Runtime facade', () => {
     expect(JSON.stringify(getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, started.handle.processId))).not.toContain(expectedBearer);
   });
 
-  test('fails closed an identity-missing lightweight recovery without replaying the request', async () => {
+  test('fails deterministically for identity-missing lightweight recovery without replaying the request', async () => {
     const fx = fixture();
     const marker = join(fx.repoRoot, 'identity-missing-replay-marker.txt');
     const processId = 'lightweight:identity-missing-recovery';
@@ -1235,17 +1235,19 @@ describe('run_check Process Runtime facade', () => {
     const recovered = await startLightweightInternalProcess(input);
     expect(recovered.handle).toMatchObject({
       processId,
-      status: 'completed_unknown',
-      contractStatus: 'unknown',
+      status: 'failed',
+      contractStatus: 'failed',
       completed: true,
       ok: false,
+      exitCode: 1,
     });
     expect(recovered.handle.stderr).toContain('PROCESS_RESULT_UNAVAILABLE_AFTER_RUNTIME_RESTART: PROCESS_IDENTITY_UNTRUSTED: identity_missing');
+    expect(recovered.handle.stderr).toContain('command was not replayed');
     expect(existsSync(marker)).toBe(false);
 
     clearLightweightProcessMemoryForTest();
     const attached = await startLightweightInternalProcess(input);
-    expect(attached.handle).toMatchObject({ processId, status: 'completed_unknown', completed: true, ok: false });
+    expect(attached.handle).toMatchObject({ processId, status: 'failed', contractStatus: 'failed', completed: true, ok: false, exitCode: 1 });
     expect(existsSync(marker)).toBe(false);
   });
 
