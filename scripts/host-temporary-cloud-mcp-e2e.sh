@@ -10,6 +10,7 @@ TUNNEL_ID="${FORGE_CLOUD_TUNNEL_ID:-}"
 TUNNEL_ALIAS="${FORGE_CLOUD_TUNNEL_ALIAS:-forge-cloud-ci}"
 TUNNEL_CLIENT_VERSION="${FORGE_TUNNEL_CLIENT_VERSION:-v0.0.12}"
 MCP_AUTH_MODE="${FORGE_CLOUD_MCP_AUTH_MODE:-none}"
+MCP_TOOLSET="${FORGE_CLOUD_MCP_TOOLSET:-advanced}"
 RUNTIME_API_KEY="${FORGE_CLOUD_TUNNEL_RUNTIME_API_KEY:-}"
 
 if [[ -z "$TUNNEL_ID" ]]; then
@@ -24,6 +25,10 @@ if ! [[ "$HOLD_SECONDS" =~ ^[0-9]+$ ]]; then
   echo 'FORGE_CLOUD_MCP_HOLD_SECONDS must be a non-negative integer' >&2
   exit 2
 fi
+case "$MCP_TOOLSET" in
+  facade|core|advanced|full) ;;
+  *) echo 'FORGE_CLOUD_MCP_TOOLSET must be facade, core, advanced, or full' >&2; exit 2 ;;
+esac
 
 TMP_ROOT="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/forge-cloud-mcp-e2e.XXXXXX")"
 CONTROLLER_HOME="$TMP_ROOT/controller-home"
@@ -168,6 +173,7 @@ FORGE_CONTROLLER_LIFECYCLE_OWNER=1 \
   --host 127.0.0.1 \
   --port "$GATEWAY_PORT" \
   --profile controller \
+  --toolset "$MCP_TOOLSET" \
   --auth "$MCP_AUTH_MODE" > "$GATEWAY_LOG" 2>&1 &
 GATEWAY_PID=$!
 
