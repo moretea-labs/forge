@@ -6,6 +6,8 @@ import { spawnSync } from "child_process";
 import { getRepository, listRepositories, registerRepository } from "../../src/cli/repositories/registry";
 import { callMcpTool } from "../../src/cli/mcp/tools";
 import { callRepositoryTool, repositoryToolDefinitions } from "../../src/cli/mcp/repository-tools";
+import { repositoryGitMergeBranch } from "../../src/cli/repositories/structured-git";
+import { inspectWorkTargetAdvance } from "../../src/runtime/gateway/mcp/execution-tools";
 import { runtimeToolDefinitions } from "../../src/runtime/gateway/mcp/runtime-tools";
 import { createMcpToolContext } from "../../src/cli/mcp/multi-repository";
 import { getLocalBridgeJob, readLocalBridgeJobOutput, readLocalBridgeJobOutputSnapshot } from "../../src/cli/local-bridge/job-store";
@@ -1011,6 +1013,62 @@ describe("repository MCP command tools", () => {
       expect(finish.finish.completed).toBe(true);
       const branches = spawnSync("git", ["-C", repoRoot, "branch", "--list", "feature/structured-flow"], { encoding: "utf-8" });
       expect(branches.stdout.trim()).toBe("");
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("managed target-advance preflight distinguishes clean divergence and conflict while merge abort restores the isolated checkout", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-managed-target-advance-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "sample-repo");
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "README.md"), "base\n");
+      writeFileSync(join(repoRoot, "feature.txt"), "base\n");
+      writeFileSync(join(repoRoot, "target.txt"), "base\n");
+      git(repoRoot, ["add", "."]);
+      git(repoRoot, ["commit", "-m", "base"]);
+      const base = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
+
+      git(repoRoot, ["switch", "-c", "feature/clean"]);
+      writeFileSync(join(repoRoot, "feature.txt"), "feature\n");
+      git(repoRoot, ["add", "feature.txt"]);
+      git(repoRoot, ["commit", "-m", "feature clean"]);
+      const cleanCandidate = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      git(repoRoot, ["switch", "main"]);
+      writeFileSync(join(repoRoot, "target.txt"), "target\n");
+      git(repoRoot, ["add", "target.txt"]);
+      git(repoRoot, ["commit", "-m", "target clean"]);
+      const cleanTarget = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      expect(inspectWorkTargetAdvance(repoRoot, cleanCandidate, cleanTarget).relation).toBe("diverged_clean");
+
+      git(repoRoot, ["switch", "-c", "feature/conflict", base]);
+      writeFileSync(join(repoRoot, "README.md"), "feature-conflict\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-m", "feature conflict"]);
+      const conflictCandidate = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      git(repoRoot, ["switch", "main"]);
+      writeFileSync(join(repoRoot, "README.md"), "target-conflict\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-m", "target conflict"]);
+      const conflictTarget = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      expect(inspectWorkTargetAdvance(repoRoot, conflictCandidate, conflictTarget).relation).toBe("diverged_conflict");
+
+      git(repoRoot, ["switch", "feature/conflict"]);
+      const before = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const merge = repositoryGitMergeBranch(controllerHome, repository, { branch: "main", noFf: true, abortOnFailure: true });
+      expect(merge.execution.ok).toBe(false);
+      expect(merge.abort?.ok).toBe(true);
+      expect(merge.after.clean).toBe(true);
+      expect(spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()).toBe(before);
+      expect(spawnSync("git", ["-C", repoRoot, "rev-parse", "--verify", "MERGE_HEAD"], { encoding: "utf8" }).status).not.toBe(0);
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });

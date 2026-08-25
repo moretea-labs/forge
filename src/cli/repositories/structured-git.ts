@@ -186,12 +186,32 @@ export function repositoryGitSwitchBranch(controllerHome: string, repository: Re
   return { branch, execution: executeRepositoryGitCommand(controllerHome, repository, { args: ['switch', branch], authorization: 'explicit_user_request' }) };
 }
 
-export function repositoryGitMergeBranch(controllerHome: string, repository: RepositoryRecord, input: { branch: unknown; noFf?: unknown }): { branch: string; before: RepositoryGitStatusSnapshot; execution: RepositoryGitExecution; after: RepositoryGitStatusSnapshot } {
+export function repositoryGitMergeBranch(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  input: {
+    branch: unknown;
+    noFf?: unknown;
+    abortOnFailure?: unknown;
+    authorizationDecision?: AuthorizationDecision;
+    sessionId?: string;
+    principalId?: string;
+    workId?: string;
+    goalId?: string;
+  },
+): { branch: string; before: RepositoryGitStatusSnapshot; execution: RepositoryGitExecution; abort?: RepositoryGitExecution; after: RepositoryGitStatusSnapshot } {
   const branch = assertSafeBranchName(input.branch);
   const before = repositoryGitStatus(repository);
   const args = ['merge', ...(input.noFf === true ? ['--no-ff'] : ['--ff-only']), branch];
-  const execution = executeRepositoryGitCommand(controllerHome, repository, { args, authorization: 'explicit_user_request' });
-  return { branch, before, execution, after: repositoryGitStatus(repository) };
+  const execution = executeRepositoryGitCommand(controllerHome, repository, { args, authorization: 'explicit_user_request', ...input });
+  let abort: RepositoryGitExecution | undefined;
+  if ((execution.status !== 'executed' || execution.ok !== true) && input.abortOnFailure === true) {
+    const mergeHead = runGit(repository, ['rev-parse', '--verify', 'MERGE_HEAD'], 64 * 1024);
+    if (mergeHead.ok) {
+      abort = executeRepositoryGitCommand(controllerHome, repository, { args: ['merge', '--abort'], authorization: 'explicit_user_request', ...input });
+    }
+  }
+  return { branch, before, execution, ...(abort ? { abort } : {}), after: repositoryGitStatus(repository) };
 }
 
 export function repositoryGitDeleteBranch(controllerHome: string, repository: RepositoryRecord, input: { branch: unknown; force?: unknown; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; workId?: string; goalId?: string }): { branch: string; execution: RepositoryGitExecution } {

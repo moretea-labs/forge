@@ -14,7 +14,7 @@ import {
   setRepositoryCheckoutLifecycle,
 } from '../../../cli/repositories/registry';
 import { withControllerLock } from '../../../cli/repositories/locks';
-import { repositoryGitCommit, repositoryGitDeleteBranch, repositoryGitFinishWorkflow, repositoryGitStatus, repositoryGitDiff } from '../../../cli/repositories/structured-git';
+import { repositoryGitCommit, repositoryGitDeleteBranch, repositoryGitFinishWorkflow, repositoryGitMergeBranch, repositoryGitStatus, repositoryGitDiff } from '../../../cli/repositories/structured-git';
 import { previewRepositoryCommandExecution } from '../../../cli/repositories/command-executor';
 import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
 import { globMatches } from '../../../cli/mcp/paths';
@@ -209,6 +209,39 @@ function gitMergeBase(root: string, leftHead: string, rightHead: string): string
     throw new Error('WORK_HEAD_ADOPTION_SCOPE_BASE_UNAVAILABLE');
   }
   return output.stdout.trim();
+}
+
+function gitIsAncestor(root: string, ancestor: string, descendant: string): boolean {
+  const result = spawnSync('git', ['-C', root, 'merge-base', '--is-ancestor', ancestor, descendant], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  if (result.error || (result.status !== 0 && result.status !== 1)) {
+    throw new Error(`WORK_TARGET_ADVANCE_ANCESTRY_UNAVAILABLE: ${ancestor} -> ${descendant}`);
+  }
+  return result.status === 0;
+}
+
+export interface WorkTargetAdvanceInspection {
+  relation: 'candidate_contains_target' | 'target_contains_candidate' | 'diverged_clean' | 'diverged_conflict';
+  candidateHead: string;
+  targetHead: string;
+  detail?: string;
+}
+
+export function inspectWorkTargetAdvance(root: string, candidateRevision: string, targetRevision: string): WorkTargetAdvanceInspection {
+  const candidateHead = gitCommit(root, candidateRevision, 'TARGET_ADVANCE_CANDIDATE');
+  const targetHead = gitCommit(root, targetRevision, 'TARGET_ADVANCE_TARGET');
+  if (gitIsAncestor(root, targetHead, candidateHead)) return { relation: 'candidate_contains_target', candidateHead, targetHead };
+  if (gitIsAncestor(root, candidateHead, targetHead)) return { relation: 'target_contains_candidate', candidateHead, targetHead };
+  const preflight = spawnSync('git', ['-C', root, 'merge-tree', '--write-tree', candidateHead, targetHead], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000, maxBuffer: 512 * 1024,
+  });
+  if (preflight.error || (preflight.status !== 0 && preflight.status !== 1)) {
+    throw new Error(`WORK_TARGET_ADVANCE_PREFLIGHT_UNAVAILABLE: ${preflight.error?.message ?? preflight.stderr ?? 'merge-tree failed'}`);
+  }
+  if (preflight.status === 0) return { relation: 'diverged_clean', candidateHead, targetHead };
+  const detail = `${preflight.stdout ?? ''}\n${preflight.stderr ?? ''}`.trim().slice(0, 1_000);
+  return { relation: 'diverged_conflict', candidateHead, targetHead, ...(detail ? { detail } : {}) };
 }
 
 function normalizedRequiredString(args: Record<string, unknown>, key: string): string | undefined {
@@ -2181,6 +2214,116 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     const deleteAfterWorktreeCleanup = current.managedWorktree && deleteBranchRequested;
     const targetBranch = explicitTargetBranch ?? target.defaultBranch ?? 'main';
     const activeMergeHead = retryStage === 'merge' ? gitRevision(target.canonicalRoot, 'MERGE_HEAD') : undefined;
+    if (!activeMergeHead && current.managedWorktree && current.expectedHead) {
+      const targetHead = gitRevision(target.canonicalRoot, targetBranch);
+      if (targetHead) {
+        const advance = inspectWorkTargetAdvance(mergeValidated.worktreeRepository.canonicalRoot, current.expectedHead, targetHead);
+        if (advance.relation === 'diverged_conflict') {
+          if (contract) {
+            transitionWorkContractPhase(
+              { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
+              contract.workId,
+              {
+                phase: 'delivery',
+                status: 'blocked',
+                state: 'blocked',
+                summary: `Target branch ${targetBranch} advanced to ${advance.targetHead} and conflicts with candidate ${advance.candidateHead}; canonical target was not mutated.`,
+              },
+            );
+          }
+          return {
+            work: compactHandle(current),
+            stages: current.finalization,
+            completed: false,
+            blocked: true,
+            recoverable: true,
+            error: {
+              code: 'WORK_TARGET_ADVANCE_CONFLICT',
+              message: `Target branch ${targetBranch} advanced and cannot be integrated cleanly into the isolated Work candidate. Canonical target was left unchanged.${advance.detail ? ` ${advance.detail}` : ''}`,
+            },
+            continuation: 'WORK_TARGET_ADVANCE_REVIEW_REQUIRED: inspect the target/candidate conflict, repair only inside the managed Work checkout, then revalidate before retrying finalize.',
+          };
+        }
+        if (advance.relation === 'diverged_clean') {
+          const integrated = repositoryGitMergeBranch(ctx.controllerHome, mergeValidated.worktreeRepository, {
+            branch: targetBranch,
+            noFf: true,
+            abortOnFailure: true,
+            authorizationDecision: gitAuthorization,
+            sessionId: session.sessionId,
+            principalId: session.principalId,
+            workId: current.workId,
+            goalId: current.goalId,
+          });
+          if (integrated.execution.status !== 'executed' || integrated.execution.ok !== true) {
+            if (contract) {
+              transitionWorkContractPhase(
+                { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
+                contract.workId,
+                {
+                  phase: 'delivery',
+                  status: 'blocked',
+                  state: 'blocked',
+                  summary: `Target-advance integration failed inside the isolated Work checkout; canonical ${targetBranch} was not mutated.`,
+                },
+              );
+            }
+            return {
+              work: compactHandle(current),
+              stages: current.finalization,
+              completed: false,
+              blocked: true,
+              recoverable: true,
+              error: {
+                code: 'WORK_TARGET_ADVANCE_INTEGRATION_FAILED',
+                message: integrated.abort && (integrated.abort.status !== 'executed' || integrated.abort.ok !== true)
+                  ? 'Target integration failed and merge abort could not be proven; inspect the managed Work checkout before retrying.'
+                  : 'Target integration failed inside the managed Work checkout and was aborted; canonical target was left unchanged.',
+              },
+              continuation: 'WORK_TARGET_ADVANCE_REVIEW_REQUIRED: inspect the isolated Work checkout and retry only after it is clean.',
+            };
+          }
+          const integratedHead = gitHead(mergeValidated.worktreeRepository.canonicalRoot);
+          const firstParent = integratedHead ? gitRevision(mergeValidated.worktreeRepository.canonicalRoot, `${integratedHead}^1`) : undefined;
+          if (!integratedHead || firstParent !== advance.candidateHead) {
+            return failStage('merge', `WORK_TARGET_ADVANCE_INTEGRATION_OWNERSHIP_MISMATCH: expected first parent ${advance.candidateHead}, found ${firstParent ?? 'unavailable'}`);
+          }
+          const checks = contract?.checks ?? [];
+          const integratedInput = currentWorkValidationInput(
+            mergeValidated.worktreeRepository,
+            { ...current, expectedHead: integratedHead },
+            checks,
+          );
+          current = transact('target-advance-integrated', (fresh) => transitionWorkHandle(
+            ctx.controllerHome,
+            fresh,
+            checks.length > 0 ? 'validating' : 'committed',
+            {
+              expectedHead: integratedHead,
+              failureReason: undefined,
+              finalization: { ...fresh.finalization, validation: checks.length > 0 ? 'pending' : 'done', merge: 'pending', lastError: undefined },
+              validationRun: undefined,
+              validatedInputFingerprint: checks.length > 0 ? undefined : integratedInput.fingerprint,
+            },
+          ));
+          appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
+            title: 'target advancement integrated into isolated Work candidate',
+            summary: `Canonical ${targetBranch} at ${advance.targetHead} advanced independently. Forge merged it into Work candidate ${advance.candidateHead} as ${integratedHead} inside checkout ${current.checkoutId}; canonical target remained unchanged and prior validation authority was invalidated.`,
+            detailLevel: 'summary',
+          });
+          if (checks.length > 0) {
+            markWorkValidationPending(ctx.controllerHome, current);
+            return {
+              work: compactHandle(current),
+              stages: current.finalization,
+              completed: false,
+              continuation: `WORK_COMMITTED_REVALIDATION_REQUIRED: target branch ${targetBranch} advanced; integrated candidate ${integratedHead} must pass fresh Work-bound validation before ff-only delivery`,
+            };
+          }
+          projectWorkValidationOutcome(ctx.controllerHome, current, 'passed', 'Target advancement was integrated into the isolated Work candidate and no validation checks were required.');
+        }
+      }
+    }
     let merged: ReturnType<typeof repositoryGitFinishWorkflow>;
     if (activeMergeHead) {
       const expectedMergeHead = current.expectedHead ? gitRevision(target.canonicalRoot, current.expectedHead) : undefined;
