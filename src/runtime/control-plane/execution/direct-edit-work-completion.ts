@@ -257,13 +257,16 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
 
   let verifiedAt = new Date().toISOString();
   for (const checkId of work.checks) {
-    const current = effectiveVerificationEvidence(work.checkRefs, {
-      sourceRevision: targetRevision,
-      checkId,
-      requestedChecks: work.checks,
-    }).find((entry) => entry.current && entry.record.outcome === 'valid_pass');
+    const current = work.checkRefs
+      .filter((record) => record.checkId === checkId && record.outcome === 'valid_pass' && record.sourceRevision === targetRevision)
+      .find((record) => effectiveVerificationEvidence([record], {
+        sourceRevision: targetRevision,
+        workspaceFingerprint: record.workspaceFingerprint,
+        checkId,
+        requestedChecks: work.checks,
+      }).some((entry) => entry.current));
     if (!current) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CHECK_EVIDENCE_STALE: ${checkId}`);
-    verifiedAt = current.record.completedAt ?? current.record.recordedAt ?? verifiedAt;
+    verifiedAt = current.completedAt ?? current.recordedAt ?? verifiedAt;
   }
 
   const reviewer = input.reviewer.trim();

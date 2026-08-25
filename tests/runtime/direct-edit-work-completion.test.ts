@@ -6,14 +6,15 @@ import { join } from 'path';
 import { applyEditOperations, beginEditSession, finalizeEditSession } from '../../src/cli/editing/edit-session';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { acceptReviewedDirectEditWorkReconciliation, reconcileFinalizedDirectEditWorksAfterCommit } from '../../src/runtime/control-plane/execution/direct-edit-work-completion';
-import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { verificationInputFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
+import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(requirementId?: string) {
+function fixture(requirementId?: string, checks: string[] = []) {
   const repoRoot = mkdtempSync(join(tmpdir(), 'forge-direct-edit-work-repo-'));
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-direct-edit-work-home-'));
   roots.push(repoRoot, controllerHome);
@@ -38,7 +39,7 @@ function fixture(requirementId?: string) {
     acceptanceCriteria: [],
     allowedPaths: ['src/**'],
     forbiddenPaths: [],
-    checks: [],
+    checks,
     constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
     ...(requirementId ? { requirementId } : {}),
@@ -123,6 +124,99 @@ describe('standalone Direct Edit Work completion', () => {
     const completed = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId);
     expect(completed).toMatchObject({ status: 'completed', completionOutcome: 'completed_changed' });
     expect(completed?.evidenceRefs.some((evidence) => evidence.title === 'requirement completion projection pending' && (evidence.summary ?? '').includes('REQUIREMENT_NOT_FOUND'))).toBe(true);
+  });
+
+  test('uses exact target-revision check evidence even when a later same-check pass exists', () => {
+    const checkId = 'package:check:type';
+    const checks = [checkId];
+    const fx = fixture(undefined, checks);
+    commitExample(fx.repoRoot);
+    const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const targetWorkspaceFingerprint = 'workspace-at-target';
+
+    writeFileSync(join(fx.repoRoot, 'README.md'), '# Later head\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'later unrelated head'], { cwd: fx.repoRoot });
+    const newerRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const newerWorkspaceFingerprint = 'workspace-at-newer-head';
+
+    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      checkRefs: [
+        {
+          checkId,
+          outcome: 'valid_pass',
+          summary: 'later pass',
+          recordedAt: '2026-08-25T00:02:00.000Z',
+          sourceRevision: newerRevision,
+          workspaceFingerprint: newerWorkspaceFingerprint,
+          verificationInputFingerprint: verificationInputFingerprint({ sourceRevision: newerRevision, workspaceFingerprint: newerWorkspaceFingerprint, checkId, requestedChecks: checks }),
+        },
+        {
+          checkId,
+          outcome: 'valid_pass',
+          summary: 'accepted target pass',
+          recordedAt: '2026-08-25T00:01:00.000Z',
+          sourceRevision: targetRevision,
+          workspaceFingerprint: targetWorkspaceFingerprint,
+          verificationInputFingerprint: verificationInputFingerprint({ sourceRevision: targetRevision, workspaceFingerprint: targetWorkspaceFingerprint, checkId, requestedChecks: checks }),
+        },
+      ],
+    });
+
+    const result = acceptReviewedDirectEditWorkReconciliation({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repoId,
+      checkoutId: fx.checkoutId,
+      repoRoot: fx.repoRoot,
+      workId: fx.workId,
+      targetBranch: 'main',
+      targetRevision,
+      comparedPaths: ['src/example.ts'],
+      reviewer: 'reviewer-test',
+      rationale: 'Use the immutable required-check receipt bound to the accepted target revision.',
+      cleanupOwnershipProof: 'No managed cleanup remains.',
+    });
+
+    expect(result.receipt).toMatchObject({ targetRevision, verifiedAt: '2026-08-25T00:01:00.000Z' });
+  });
+
+  test('rejects reviewed reconciliation when required check evidence exists only on a newer revision', () => {
+    const checkId = 'package:check:type';
+    const checks = [checkId];
+    const fx = fixture(undefined, checks);
+    commitExample(fx.repoRoot);
+    const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    writeFileSync(join(fx.repoRoot, 'README.md'), '# Later head\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'later unrelated head'], { cwd: fx.repoRoot });
+    const newerRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const newerWorkspaceFingerprint = 'workspace-at-newer-head';
+    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      checkRefs: [{
+        checkId,
+        outcome: 'valid_pass',
+        summary: 'later pass only',
+        recordedAt: '2026-08-25T00:02:00.000Z',
+        sourceRevision: newerRevision,
+        workspaceFingerprint: newerWorkspaceFingerprint,
+        verificationInputFingerprint: verificationInputFingerprint({ sourceRevision: newerRevision, workspaceFingerprint: newerWorkspaceFingerprint, checkId, requestedChecks: checks }),
+      }],
+    });
+
+    expect(() => acceptReviewedDirectEditWorkReconciliation({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repoId,
+      checkoutId: fx.checkoutId,
+      repoRoot: fx.repoRoot,
+      workId: fx.workId,
+      targetBranch: 'main',
+      targetRevision,
+      comparedPaths: ['src/example.ts'],
+      reviewer: 'reviewer-test',
+      rationale: 'The accepted revision must have its own required-check receipt.',
+      cleanupOwnershipProof: 'No managed cleanup remains.',
+    })).toThrow(`DIRECT_EDIT_WORK_RECONCILIATION_CHECK_EVIDENCE_STALE: ${checkId}`);
   });
 
   test('rejects reviewed reconciliation unless the supplied path set is exact', () => {
