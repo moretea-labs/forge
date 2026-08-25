@@ -25,7 +25,7 @@ export interface McpLocalConfig {
     localEndpoint?: string;
   };
   profile?: string;
-  toolset?: 'core' | 'advanced' | 'full';
+  toolset?: 'facade' | 'core' | 'advanced' | 'full';
   /** Compatibility marker retained for previously persisted toolset choices. */
   toolsetExplicit?: boolean;
   accessMode?: AccessMode;
@@ -88,7 +88,7 @@ export interface McpRuntimeState {
     forgeVersion?: string;
     toolSurfaceFingerprint?: string;
     runtimeToolSurfaceFingerprint?: string;
-    toolset?: 'core' | 'advanced' | 'full';
+    toolset?: 'facade' | 'core' | 'advanced' | 'full';
     configuredAccessMode?: AccessMode;
     effectiveAccessMode?: AccessMode;
     effectiveToolset?: McpToolset;

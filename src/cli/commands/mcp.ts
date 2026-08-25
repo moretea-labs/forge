@@ -28,7 +28,7 @@ export interface McpServeOptions {
   devRunnerAgents?: string;
   devRunnerTimeoutMs?: string;
   devRunnerMaxTimeoutMs?: string;
-  toolset?: 'core' | 'advanced' | 'full';
+  toolset?: 'facade' | 'core' | 'advanced' | 'full';
 }
 
 interface McpAccessOptions {
@@ -167,7 +167,7 @@ export function buildMcpCommand(): Command {
     .option('--host <host>', 'HTTP bind host', '127.0.0.1')
     .option('--port <port>', 'HTTP bind port', '8765')
     .option('--profile <profile>', 'MCP profile: planner|executor|orchestrator|controller', 'controller')
-    .option('--toolset <toolset>', 'Controller toolset: core|advanced|full (default core; advanced/full are explicit compatibility profiles)')
+    .option('--toolset <toolset>', 'Controller toolset: facade|core|advanced|full (default advanced; facade is an explicit five-tool ChatGPT surface)')
     .option('--auth <mode>', 'HTTP auth mode: oauth|bearer|none', 'oauth')
     .option('--enable-chatgpt-browser', 'Expose tools that operate the user logged-in ChatGPT Web browser session')
     .option('--enable-dev-runner', 'Enable local Codex/Claude task runners for controller or orchestrator profiles')
