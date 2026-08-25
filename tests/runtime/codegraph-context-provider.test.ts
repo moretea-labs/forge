@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS, buildControllerContextPack, buildControllerContextPackAsync } from '../../src/cli/controller/context-pack';
@@ -74,6 +74,22 @@ describe('CodeGraph read provider', () => {
     expect(runtime.sidecarPath).toEndWith('codegraph-sidecar.cjs');
     expect(runtime.libraryPath).toContain('@colbymchenry/codegraph-');
     expect(runtime.source).toBe('dependency');
+  });
+
+  test('publishes supported CodeGraph platform bundles as optional runtime dependencies', () => {
+    const manifest = JSON.parse(readFileSync(join(import.meta.dir, '../..', 'package.json'), 'utf8')) as {
+      optionalDependencies?: Record<string, string>;
+    };
+    for (const target of [
+      'darwin-arm64',
+      'darwin-x64',
+      'linux-arm64',
+      'linux-x64',
+      'win32-arm64',
+      'win32-x64',
+    ]) {
+      expect(manifest.optionalDependencies?.[`@colbymchenry/codegraph-${target}`]).toBe('1.0.1');
+    }
   });
 
   test('prefers one complete co-located immutable-release CodeGraph runtime', () => {
