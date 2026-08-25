@@ -195,7 +195,7 @@ import {
 } from '../../control-plane/facade';
 import { currentControllerInstanceId, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../control-plane/execution/session-store';
 import { changedPaths as workChangedPaths } from '../../control-plane/execution/work-task-receipt';
-import { readRequirement } from '../../control-plane/persistence/requirement-store';
+import { createRequirement, readRequirement } from '../../control-plane/persistence/requirement-store';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { currentPermissionSnapshotVersion } from '../../control-plane/execution/validation';
 import { observeRuntimeStatus } from '../../root/status';
@@ -4341,6 +4341,62 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             return { checkoutId: workspace.checkoutId, root: workspace.root, baseRevision: workspace.baseRevision, managed: true as const };
           },
         };
+
+        if (operation === 'requirement_create') {
+          const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
+          const title = typeof args.requirement_title === 'string' ? args.requirement_title.trim().slice(0, 500) : '';
+          const outcomeStatement = typeof args.requirement_outcome === 'string' ? args.requirement_outcome.trim().slice(0, 2_000) : '';
+          const acceptanceCriteria = Array.isArray(args.requirement_acceptance_criteria)
+            ? args.requirement_acceptance_criteria.map((value) => String(value).trim()).filter(Boolean).slice(0, 50).map((value) => value.slice(0, 500))
+            : [];
+          const requiredDeliveryReferences = Array.isArray(args.requirement_delivery_references)
+            ? args.requirement_delivery_references.map((value) => String(value).trim()).filter(Boolean).slice(0, 50).map((value) => value.slice(0, 500))
+            : [];
+          const legacyAliases = Array.isArray(args.requirement_legacy_aliases)
+            ? args.requirement_legacy_aliases.map((value) => String(value).trim()).filter(Boolean).slice(0, 20).map((value) => value.slice(0, 160))
+            : [];
+          if (!requirementId || !title || !outcomeStatement) {
+            return result(buildFacadeResult({
+              status: 'blocked',
+              summary: 'REQUIREMENT_CREATE_INPUT_REQUIRED: requirement_id, requirement_title, and requirement_outcome are required.',
+              data: { requirementCreated: false },
+            }) as unknown as Record<string, unknown>, true);
+          }
+          const existing = readRequirement({ controllerHome: ctx.controllerHome }, requirementId)?.value;
+          if (existing) {
+            const identical = existing.title === title
+              && existing.outcomeStatement === outcomeStatement
+              && JSON.stringify(existing.acceptanceCriteria) === JSON.stringify(acceptanceCriteria)
+              && JSON.stringify(existing.requiredDeliveryReferences) === JSON.stringify(requiredDeliveryReferences)
+              && JSON.stringify(existing.legacyAliases) === JSON.stringify(legacyAliases);
+            if (!identical) {
+              return result(buildFacadeResult({
+                status: 'blocked',
+                summary: `REQUIREMENT_ALREADY_EXISTS_CONFLICT: ${requirementId}. Existing Requirement authority was not changed.`,
+                data: { requirement: existing, requirementCreated: false, admissionDecision: 'existing_conflict' },
+                suggestedNextActions: [],
+              }) as unknown as Record<string, unknown>, true);
+            }
+            return result(buildFacadeResult({
+              summary: `REQUIREMENT_AUTHORITY_REUSED: ${requirementId}.`,
+              data: { requirement: existing, requirementCreated: false, admissionDecision: 'reuse_existing' },
+              suggestedNextActions: [{ label: 'Create Plan', tool: 'rh_work', operation: 'plan_create', payload: { requirement_id: requirementId }, risk: 'readonly', confidence: 'high' }],
+            }) as unknown as Record<string, unknown>);
+          }
+          const requirement = createRequirement({ controllerHome: ctx.controllerHome }, {
+            requirementId,
+            title,
+            outcomeStatement,
+            acceptanceCriteria,
+            requiredDeliveryReferences,
+            legacyAliases,
+          });
+          return result(buildFacadeResult({
+            summary: `Requirement ${requirementId} created.`,
+            data: { requirement, requirementCreated: true, admissionDecision: 'created' },
+            suggestedNextActions: [{ label: 'Create Plan', tool: 'rh_work', operation: 'plan_create', payload: { requirement_id: requirementId }, risk: 'readonly', confidence: 'high' }],
+          }) as unknown as Record<string, unknown>);
+        }
 
         if (operation.startsWith('plan_')) {
           try {
