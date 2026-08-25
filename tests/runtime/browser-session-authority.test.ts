@@ -2,7 +2,17 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { buildBrowserPluginManifest, executeBrowserPluginAction, resolveBrowserPluginAuthorizationContext } from '../../src/runtime/plugins/browser-adapter';
+import {
+  buildBrowserPluginManifest,
+  executeBrowserPluginAction,
+  resetBrowserPluginRuntimeHooksForTest,
+  resolveBrowserPluginAuthorizationContext,
+  setBrowserPluginRuntimeHooksForTest,
+} from '../../src/runtime/plugins/browser-adapter';
+import {
+  resetMacOsBrowserRuntimeHooksForTest,
+  setMacOsBrowserRuntimeHooksForTest,
+} from '../../src/runtime/plugins/browser-macos-bridge';
 import {
   ensureLegacyBrowserSessionsImported,
   findBrowserSession,
@@ -13,6 +23,8 @@ import {
 
 const roots: string[] = [];
 afterEach(() => {
+  resetBrowserPluginRuntimeHooksForTest();
+  resetMacOsBrowserRuntimeHooksForTest();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -29,7 +41,7 @@ function fixture() {
 function session(
   sessionId: string,
   updatedAt: string,
-  options: { native?: boolean; windowId?: string; tabId?: string; repoMarker?: string } = {},
+  options: { native?: boolean; windowId?: string; tabId?: string; repoMarker?: string; product?: 'chrome' | 'vivaldi' } = {},
 ) {
   return {
     schemaVersion: 1 as const,
@@ -42,7 +54,7 @@ function session(
       mode: 'attach_preferred',
       activeMode: 'attach_preferred',
       provider: 'macos-apple-events',
-      browserProduct: 'chrome',
+      browserProduct: options.product ?? 'chrome',
       tab: {
         key: sessionId,
         index: 0,
@@ -155,6 +167,146 @@ describe('browser session controller authority', () => {
     });
     expect(auth?.target.kind).toBe('browser-origin');
     expect(auth?.target.id).toBe('chrome@https://example.com');
+  });
+
+  test('native active-tab adoption distinguishes browser-active from authoritative system foreground', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    }));
+
+    const separator = String.fromCharCode(30);
+    const url = 'https://example.com/native-adoption';
+    const metadata = [
+      'false', url, 'Native Adoption', '0', '0', '1200', '800', '7', '9', 'true', 'false',
+    ].join(separator);
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async () => metadata,
+    });
+
+    const baseInput = {
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      requestId: 'native-adoption',
+      origin: { surface: 'mcp' as const, actor: 'test' },
+    };
+    const explicit = await executeBrowserPluginAction({
+      ...baseInput,
+      actionId: 'create_session',
+      args: { url, native_active_tab: true, native_browser_product: 'chrome' },
+    });
+    const connection = explicit.browserConnection as { sessionResume?: { reason?: string } };
+    expect(connection.sessionResume?.reason).toContain('system-frontmost authority was not established');
+
+    await expect(executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'native-adoption-strict',
+      actionId: 'create_session',
+      args: { url, native_active_tab: true },
+    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_ACTIVE_TAB_UNAVAILABLE' });
+  });
+
+  test('activate_page recovers system foreground through Desktop Operator and preserves exact native tab for trusted input', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome', 'vivaldi'],
+    }));
+
+    const separator = String.fromCharCode(30);
+    const fieldSeparator = String.fromCharCode(31);
+    const url = 'https://example.com/native-foreground';
+    let frontmost = false;
+    const activations: string[] = [];
+    const trustedRefs: Array<{ product?: string; windowId?: string; tabId?: string }> = [];
+    const metadata = () => [
+      frontmost ? 'true' : 'false', url, 'Native Foreground', '0', '0', '1200', '800', '7', '9', 'true', 'false',
+    ].join(separator);
+    const inventory = () => `false${separator}7${fieldSeparator}9${fieldSeparator}true${fieldSeparator}${url}${fieldSeparator}Native Foreground`;
+
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => false,
+      activateNativeBrowserApplication: async (_input, product) => {
+        activations.push(product);
+        frontmost = true;
+      },
+    });
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script) => {
+        if (script.includes('set outputText to "false"')) return inventory();
+        if (script.includes('set active tab index of targetWindow')) return '';
+        if (script.includes('execute targetTab javascript')) {
+          return JSON.stringify({ ok: true, value: { url, title: 'Native Foreground' } });
+        }
+        return metadata();
+      },
+      trustedInput: async (request) => {
+        trustedRefs.push({
+          product: request.product,
+          windowId: request.ref.windowId,
+          tabId: request.ref.tabId,
+        });
+      },
+    });
+
+    saveBrowserSession(controllerHome, 'repo-a', repoA, {
+      ...session('native-foreground', '2026-08-24T04:00:00.000Z', { native: true, windowId: '7', tabId: '9' }),
+      url,
+      title: 'Native Foreground',
+      browser: {
+        ...session('native-foreground', '2026-08-24T04:00:00.000Z', { native: true, windowId: '7', tabId: '9' }).browser,
+        tab: {
+          key: 'native-foreground', index: 0, url, title: 'Native Foreground', matchedBy: 'saved_url', inventoryCount: 1,
+          capturedAt: '2026-08-24T04:00:00.000Z', ownership: 'user_owned', windowId: '7', tabId: '9',
+        },
+      },
+    });
+
+    const baseInput = {
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      origin: { surface: 'mcp' as const, actor: 'test' },
+    };
+    const activated = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'native-foreground-activate',
+      actionId: 'activate_page',
+      args: { session_id: 'native-foreground', post_action_wait_ms: 1 },
+    });
+    expect((activated.action as { summary?: string }).summary).toContain('authoritative foreground');
+    expect(activations).toEqual(['chrome']);
+
+    await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'native-foreground-trusted-input',
+      actionId: 'trusted_input',
+      args: { session_id: 'native-foreground', kind: 'click', x: 10, y: 20, post_action_wait_ms: 1 },
+    });
+    expect(trustedRefs).toEqual([{ product: 'chrome', windowId: '7', tabId: '9' }]);
   });
 
   test('browser defaults fail closed and declares foreground effects per action', () => {

@@ -14,6 +14,7 @@ import type {
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { executeBrowserActionThroughNode, shouldUseBrowserNodeBridge } from './browser-node-bridge';
+import { getExternalPluginAdapter } from './external-adapter';
 import {
   currentBrowserSessionAuthorityContext,
   DEFAULT_BROWSER_SESSION_LIST_LIMIT,
@@ -247,6 +248,40 @@ interface BrowserPluginRuntimeHooks {
   moduleAvailable(name: string, repoRoot?: string): boolean;
   loadPlaywright(repoRoot?: string): PlaywrightRuntime;
   fetchJson(url: string, timeoutMs: number): Promise<unknown>;
+  activateNativeBrowserApplication(input: AssistantPluginActionExecutionInput, product: MacOsBrowserProduct): Promise<void>;
+}
+
+const NATIVE_BROWSER_BUNDLE_IDS: Record<MacOsBrowserProduct, string> = {
+  chrome: 'com.google.Chrome',
+  vivaldi: 'com.vivaldi.Vivaldi',
+};
+
+async function activateNativeBrowserApplicationViaDesktopOperator(
+  input: AssistantPluginActionExecutionInput,
+  product: MacOsBrowserProduct,
+): Promise<void> {
+  const desktopOperator = getExternalPluginAdapter(input.controllerHome, 'desktop_operator');
+  if (!desktopOperator) {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_NATIVE_FOREGROUND_ACTIVATOR_UNAVAILABLE',
+      'Native browser foreground activation requires the registered Forge Desktop Operator.',
+      { retryable: true, details: { browserProduct: product } },
+    );
+  }
+  await desktopOperator.executeAction({
+    controllerHome: input.controllerHome,
+    repoId: input.repoId,
+    repoRoot: input.repoRoot,
+    pluginId: 'desktop_operator',
+    actionId: 'desktop_session_open',
+    requestId: `${input.requestId}:native-browser-foreground:${product}`,
+    args: { bundle_id: NATIVE_BROWSER_BUNDLE_IDS[product], launch: false, activate: true },
+    origin: input.origin,
+    jobId: input.jobId,
+    timeoutMs: input.timeoutMs,
+    signal: input.signal,
+    deadlineAtMs: input.deadlineAtMs,
+  });
 }
 
 const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
@@ -289,6 +324,7 @@ const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
       clearTimeout(timer);
     }
   },
+  activateNativeBrowserApplication: activateNativeBrowserApplicationViaDesktopOperator,
 };
 
 let runtimeHooks: BrowserPluginRuntimeHooks = { ...defaultRuntimeHooks };
@@ -1111,6 +1147,62 @@ interface BrowserConnectionSummary {
   tab?: BrowserTabResumeState;
   tabInventory?: BrowserTabInventoryEntry[];
   sessionResume?: BrowserSessionResumeDiagnostic;
+}
+
+async function establishAuthoritativeNativeForeground(
+  input: AssistantPluginActionExecutionInput,
+  page: PageLike,
+  connection: BrowserConnectionSummary,
+  target: BrowserActionTarget,
+  waitMs: number,
+): Promise<{ frontmost: boolean; active: boolean }> {
+  if (!page.bringToFront || !page.foregroundState) {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_ACTIVATION_UNSUPPORTED',
+      'The native browser provider cannot verify exact-tab foreground authority.',
+      { retryable: false, details: { sessionId: target.sessionId, browserProduct: connection.browserProduct } },
+    );
+  }
+
+  await page.bringToFront();
+  await delay(waitMs);
+  let state = await page.foregroundState();
+  if (state.frontmost && state.active) return state;
+
+  const product = connection.browserProduct;
+  if (!product) {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_ACTIVATION_FAILED',
+      'Native browser activation could not identify the browser product for system foreground recovery.',
+      { retryable: true, details: { sessionId: target.sessionId, ...state } },
+    );
+  }
+
+  try {
+    await runtimeHooks.activateNativeBrowserApplication(input, product);
+  } catch (error) {
+    const causeCode = error instanceof AssistantPluginError ? error.code : undefined;
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_ACTIVATION_FAILED',
+      'Native browser exact-tab activation could not establish macOS system foreground authority through Forge Desktop Operator.',
+      { retryable: true, details: { sessionId: target.sessionId, browserProduct: product, ...state, ...(causeCode ? { causeCode } : {}), cause: cause.slice(0, 500) } },
+    );
+  }
+
+  // App-level activation is intentionally separate from tab selection. Re-assert the exact
+  // saved tab after the app becomes frontmost, then verify both authorities together.
+  await page.bringToFront();
+  await delay(waitMs);
+  state = await page.foregroundState();
+  if (!state.frontmost || !state.active) {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_ACTIVATION_FAILED',
+      'Native browser activation did not make the exact saved tab authoritative system foreground state.',
+      { retryable: true, details: { sessionId: target.sessionId, browserProduct: product, ...state } },
+    );
+  }
+  return state;
 }
 
 interface BrowserOpenHandle {
@@ -4161,6 +4253,7 @@ async function executeBrowserPluginActionInternal(input: AssistantPluginActionEx
           const timeout = positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
           let adoptedProduct: MacOsBrowserProduct;
           let adoptedRef: MacOsBrowserTabRef;
+          let adoptedSystemFrontmost = false;
           if (nativeActiveTab) {
             if (nativeWindowId || nativeTabId) {
               throw new AssistantPluginError(
@@ -4175,15 +4268,16 @@ async function executeBrowserPluginActionInternal(input: AssistantPluginActionEx
             const discovered = await discoverMacOsBrowserAttachment(candidates, Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));
             const activeMetadata = discovered.attachment?.metadata;
             const requiresSystemFrontmost = !normalizedNativeProduct;
-            if (!activeMetadata || (requiresSystemFrontmost && !activeMetadata.frontmost)) {
+            if (!activeMetadata || (requiresSystemFrontmost && (!activeMetadata.frontmost || activeMetadata.active !== true))) {
               throw new AssistantPluginError(
                 'PLUGIN_BROWSER_ACTIVE_TAB_UNAVAILABLE',
                 requiresSystemFrontmost
-                  ? 'No frontmost native browser tab with a stable native identity is available for adoption.'
+                  ? 'No system-frontmost active native browser tab with a stable native identity is available for adoption.'
                   : 'The explicitly selected native browser does not expose an active tab with a stable native identity.',
                 { retryable: true, details: { browserProduct: nativeProduct, requiresSystemFrontmost, attempts: discovered.attempts } },
               );
             }
+            adoptedSystemFrontmost = activeMetadata.frontmost && activeMetadata.active === true;
             adoptedProduct = activeMetadata.product;
             if (activeMetadata.windowId && activeMetadata.tabId) {
               adoptedRef = { windowId: activeMetadata.windowId, tabId: activeMetadata.tabId };
@@ -4255,7 +4349,15 @@ async function executeBrowserPluginActionInternal(input: AssistantPluginActionEx
             browserProduct: adoptedProduct,
             profile: { selectedProfilePath: `macos:${adoptedProduct}:user-tab` },
             tabInventory: [{ index: 0, key: tabKey(requestedUrl, title), url: requestedUrl, title }],
-            sessionResume: { sessionId: target.sessionId, status: 'matched', reason: nativeActiveTab ? 'Explicitly adopted the matching frontmost user-owned native browser tab.' : 'Explicitly adopted an existing user-owned native browser tab.' },
+            sessionResume: {
+              sessionId: target.sessionId,
+              status: 'matched',
+              reason: nativeActiveTab && adoptedSystemFrontmost
+                ? 'Explicitly adopted the matching system-frontmost active user-owned native browser tab.'
+                : nativeActiveTab
+                  ? 'Explicitly adopted the selected browser active tab; system-frontmost authority was not established.'
+                  : 'Explicitly adopted an existing user-owned native browser tab.',
+            },
           }, requestedUrl, title, 'saved_url', { ownership: 'user_owned', windowId: adoptedRef.windowId, tabId: adoptedRef.tabId });
           const session = saveSession(input.repoRoot, sessionFromPage(target, requestedUrl, title, connection));
           return {
@@ -4565,22 +4667,17 @@ async function executeBrowserPluginActionInternal(input: AssistantPluginActionEx
       case 'activate_page': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
-          if (!page.bringToFront) {
-            throw new AssistantPluginError('PLUGIN_BROWSER_ACTIVATION_UNSUPPORTED', 'The selected browser provider cannot bring the saved page to the foreground.', { retryable: false });
-          }
-          await page.bringToFront();
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
-          if (connection.provider === 'macos-apple-events' && page.foregroundState) {
-            const state = await page.foregroundState();
-            if (!state.frontmost || !state.active) {
-              throw new AssistantPluginError(
-                'PLUGIN_BROWSER_ACTIVATION_FAILED',
-                'Native browser activation did not make the exact saved tab authoritative foreground state.',
-                { retryable: true, details: { sessionId: target.sessionId, ...state } },
-              );
+          const waitMs = positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS);
+          if (connection.provider === 'macos-apple-events') {
+            await establishAuthoritativeNativeForeground(input, page, connection, target, waitMs);
+          } else {
+            if (!page.bringToFront) {
+              throw new AssistantPluginError('PLUGIN_BROWSER_ACTIVATION_UNSUPPORTED', 'The selected browser provider cannot bring the saved page to the foreground.', { retryable: false });
             }
+            await page.bringToFront();
+            await delay(waitMs);
           }
-          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'activate_page', 'Activated the exact saved browser page in the foreground.', {});
+          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'activate_page', 'Activated the exact saved browser page in authoritative foreground state.', {});
         });
       }
       case 'click_text': {
