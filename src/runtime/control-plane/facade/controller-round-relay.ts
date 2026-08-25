@@ -342,12 +342,11 @@ export function submitControllerRoundDisposition(
           if (!principalId || !controllerInstanceId || !sessionId) throw new Error(`CONTROLLER_RELAY_TERMINAL_AUTHORITY_REQUIRED: ${work.workId}`);
           if (existing.value.controllerId !== input.identity.controllerId) throw new Error(`CONTROLLER_RELAY_CLAIM_CONTROLLER_MISMATCH: ${work.workId}`);
           if (existing.value.principalId !== principalId) throw new Error(`CONTROLLER_RELAY_CLAIM_PRINCIPAL_MISMATCH: ${work.workId}`);
-          if (existing.value.controllerInstanceId !== controllerInstanceId) throw new Error(`CONTROLLER_RELAY_CLAIM_INSTANCE_MISMATCH: ${work.workId}`);
           if (existing.value.claimGeneration < 1) throw new Error(`CONTROLLER_RELAY_CLAIM_GENERATION_REQUIRED: ${work.workId}`);
           return {
             controllerId: existing.value.controllerId,
             principalId: existing.value.principalId,
-            controllerInstanceId: existing.value.controllerInstanceId,
+            controllerInstanceId,
             sessionId,
             claimGeneration: existing.value.claimGeneration,
           };
@@ -358,11 +357,15 @@ export function submitControllerRoundDisposition(
     if (existing.value.principalId !== authority.principalId) {
       throw new Error(`CONTROLLER_RELAY_CLAIM_PRINCIPAL_MISMATCH: ${work.workId}`);
     }
-    const terminalActiveClaimMigration = terminal && Boolean(liveOwner);
-    if (!terminalActiveClaimMigration && existing.value.controllerInstanceId !== authority.controllerInstanceId) {
+    // A completed Work may have already released its live controller session before
+    // the prompt-required terminal disposition arrives. At that point the exact
+    // authenticated controller/principal + Work + relay scope remain the lineage
+    // fence; MCP session and canonical Runtime instance are allowed to rotate.
+    const terminalLineageMigration = terminal;
+    if (!terminalLineageMigration && existing.value.controllerInstanceId !== authority.controllerInstanceId) {
       throw new Error(`CONTROLLER_RELAY_CLAIM_INSTANCE_MISMATCH: ${work.workId}`);
     }
-    if (!terminalActiveClaimMigration && existing.value.claimGeneration !== authority.claimGeneration) {
+    if (!terminalLineageMigration && existing.value.claimGeneration !== authority.claimGeneration) {
       throw new Error(`CONTROLLER_RELAY_CLAIM_GENERATION_MISMATCH: ${work.workId}`);
     }
     const previous = relayHistory(options, relayScopeId)[0];
