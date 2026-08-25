@@ -13,14 +13,15 @@ import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
-import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { createHandoffItem, getHandoffItem, listHandoffItems } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { claimControllerSession, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import {
   acknowledgeControllerRoundClaim,
   beginInitialControllerRoundDispatch,
   claimStalledControllerRoundRelays,
   finishControllerRoundRelayDispatch,
+  parseControllerDispositionCompatibilityCapability,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
@@ -731,6 +732,142 @@ describe('scheduled external Controller wake', () => {
     expect(claimStalledControllerRoundRelays(store, { nowMs: afterGrace + 2 * 60_000, graceMs: 60_000 })).toEqual([]);
   });
 
+  test('parses only the fenced frozen-schema controller disposition compatibility capability', () => {
+    expect(parseControllerDispositionCompatibilityCapability(
+      'repair',
+      'controller.disposition:continue_immediately:goal:work-compat',
+    )).toEqual({ disposition: 'continue_immediately', relayScopeId: 'goal:work-compat' });
+    expect(parseControllerDispositionCompatibilityCapability('continue', 'controller.disposition:wait:goal:work-compat')).toBeUndefined();
+    expect(parseControllerDispositionCompatibilityCapability('repair', 'schedule.delete:SCH-1')).toBeUndefined();
+    expect(() => parseControllerDispositionCompatibilityCapability('repair', 'controller.disposition:invalid:goal:work-compat')).toThrow(/CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_INVALID/);
+    expect(() => parseControllerDispositionCompatibilityCapability('repair', 'controller.disposition:goal_complete:')).toThrow(/CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_INVALID/);
+  });
+
+  test('allows only the exact claimed ChatGPT round to reconcile terminal completion as goal_complete after an authenticated session rotation', () => {
+    const root = temp('forge-controller-relay-terminal-disposition-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'relay terminal\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-terminal-disposition' });
+    const workId = 'WORK-RELAY-TERMINAL-DISPOSITION';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Finalize physical Work before the controller records semantic completion.',
+      acceptanceCriteria: ['The same claimed controller round can still record goal_complete.'],
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'completed_no_change',
+      status: 'running',
+    });
+    const store = { controllerHome, repoId: repository.repoId };
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true });
+    const session = claimControllerSession(store, {
+      workId,
+      controllerId: 'chatgpt-controller',
+      controllerType: 'chatgpt',
+      sessionId: 'chatgpt-session-original',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-test',
+      leaseMs: 5 * 60_000,
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session })?.status).toBe('claimed');
+    const rotated = resumeControllerSession(store, {
+      workId,
+      controllerId: session.controllerId,
+      controllerType: 'chatgpt',
+      sessionId: 'chatgpt-session-rotated',
+      principalId: session.principalId ?? session.controllerId,
+      controllerInstanceId: session.controllerInstanceId ?? 'runtime-test',
+      expectedClaimGeneration: session.claimGeneration,
+      leaseMs: 5 * 60_000,
+    });
+    expect(rotated.claimGeneration).toBe(session.claimGeneration);
+
+    const recordedAt = '2026-08-24T09:00:00.000Z';
+    recordWorkCompletionReceipt(store, workId, {
+      schemaVersion: 1,
+      receiptId: 'receipt-relay-terminal-disposition',
+      source: 'controller_work',
+      issueId: 'relay-terminal',
+      taskId: workId,
+      workId,
+      targetBranch: 'main',
+      targetRevision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim(),
+      changedPaths: [],
+      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
+      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
+      verifiedAt: recordedAt,
+      recordedAt,
+    }, 'completed_no_change', 'completed_no_change');
+    releaseControllerSession(store, workId, rotated.controllerId);
+    expect(getControllerSession(store, workId)).toBeUndefined();
+
+    expect(() => submitControllerRoundDisposition(store, {
+      workId,
+      identity: {
+        controllerId: rotated.controllerId,
+        principalId: 'different-principal',
+        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-test',
+        sessionId: 'transport-after-finalize',
+      },
+      disposition: 'goal_complete',
+      relayScopeId: opened.relayScopeId,
+    })).toThrow(/CONTROLLER_RELAY_CLAIM_PRINCIPAL_MISMATCH/);
+    expect(() => submitControllerRoundDisposition(store, {
+      workId,
+      identity: {
+        controllerId: rotated.controllerId,
+        principalId: rotated.principalId ?? rotated.controllerId,
+        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-test',
+        sessionId: 'transport-after-finalize',
+      },
+      disposition: 'wait',
+      relayScopeId: opened.relayScopeId,
+    })).toThrow(/CONTROLLER_RELAY_WORK_TERMINAL: completed/);
+
+    const completed = submitControllerRoundDisposition(store, {
+      workId,
+      identity: {
+        controllerId: rotated.controllerId,
+        principalId: rotated.principalId ?? rotated.controllerId,
+        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-test',
+        sessionId: 'transport-after-finalize',
+      },
+      disposition: 'goal_complete',
+      relayScopeId: opened.relayScopeId,
+      reason: 'Physical finalization completed before semantic round disposition.',
+    });
+    expect(completed).toMatchObject({
+      status: 'goal_complete',
+      disposition: 'goal_complete',
+      relayScopeId: opened.relayScopeId,
+      controllerId: rotated.controllerId,
+      sessionId: 'transport-after-finalize',
+      claimGeneration: session.claimGeneration,
+    });
+    expect(() => submitControllerRoundDisposition(store, {
+      workId,
+      identity: {
+        controllerId: rotated.controllerId,
+        principalId: rotated.principalId ?? rotated.controllerId,
+        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-test',
+        sessionId: 'transport-after-finalize',
+      },
+      disposition: 'goal_complete',
+      relayScopeId: opened.relayScopeId,
+    })).toThrow(/CONTROLLER_RELAY_ROUND_NOT_CLAIMED: goal_complete/);
+  });
+
   test('scopes continuation stop conditions to the target Work instead of historical repository noise', async () => {
     const root = temp('forge-schedule-stop-scope-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
@@ -810,7 +947,7 @@ describe('scheduled external Controller wake', () => {
     expect(getHandoffItem({ controllerHome, repoId: repository.repoId }, distinct.handoffId!)?.status).toBe('resolved');
   });
 
-  test('launches one bounded Work and suppresses duplicate active ownership', async () => {
+  test('fails a scheduled external Controller wake that exits before exact Work claim and releases its reservation', async () => {
     const root = temp('forge-schedule-wake-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
     const runtimeOwner = acquireRuntimeOwnership(controllerHome, 'runtime-schedule-wake');
@@ -834,11 +971,12 @@ describe('scheduled external Controller wake', () => {
     writeFileSync(fakeController, '#!/bin/sh\nsleep 2\n'); chmodSync(fakeController, 0o755);
     createWorkContract({ controllerHome, repoId: repository.repoId }, { workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop', objective: 'Continue a bounded goal from a scheduled external Controller wake.', acceptanceCriteria: ['external controller was launched'], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running' });
     const schedule = createSchedule(controllerHome, { requestId: 'schedule-wake-request', repoId: repository.repoId, name: 'continue bounded work', enabled: true, trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: false }, action: { operation: 'external_controller_wake', target: 'runtime', arguments: { work_id: workId, controller_type: 'codex', executable: fakeController } }, stopConditions: [] });
-    expect(await evaluateSchedule(controllerHome, schedule, true, { source: 'manual' })).toMatchObject({ status: 'succeeded', decision: 'execute' });
+    const failedWake = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual' });
+    expect(failedWake).toMatchObject({ status: 'failed', decision: 'execute' });
+    expect(failedWake?.reason).toContain('external Controller exited before exact Work claim became live');
     expect(getControllerSession({ controllerHome, repoId: repository.repoId }, workId)).toBeUndefined();
-    expect(getExternalControllerLaunchReservation({ controllerHome, repoId: repository.repoId }, workId)?.controllerType).toBe('codex');
-    expect(await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'duplicate-wake' })).toMatchObject({ decision: 'nothing_to_do', status: 'skipped' });
-    const duplicate = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'second' }); expect(duplicate).toMatchObject({ decision: 'nothing_to_do' }); expect(duplicate?.reason).toContain('pending external Controller launch');
+    expect(getExternalControllerLaunchReservation({ controllerHome, repoId: repository.repoId }, workId)).toBeUndefined();
+    expect(failedWake?.handoffId).toBeTruthy();
     runtimeOwner.release();
   });
 });

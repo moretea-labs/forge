@@ -210,6 +210,7 @@ import {
   beginInitialControllerRoundDispatch,
   buildControllerRoundRelayPrompt,
   finishControllerRoundRelayDispatch,
+  parseControllerDispositionCompatibilityCapability,
   submitControllerRoundDisposition,
   type ControllerRoundDisposition,
 } from '../../control-plane/facade/controller-round-relay';
@@ -3906,7 +3907,19 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const frozenScheduleDeleteId = requestedOperation === 'repair' && typeof args.capability_id === 'string' && args.capability_id.startsWith('schedule.delete:')
           ? args.capability_id.slice('schedule.delete:'.length).trim()
           : '';
-        const operation = frozenScheduleDeleteId ? 'schedule_delete' : requestedOperation;
+        let frozenControllerDisposition: ReturnType<typeof parseControllerDispositionCompatibilityCapability>;
+        try {
+          frozenControllerDisposition = parseControllerDispositionCompatibilityCapability(requestedOperation, args.capability_id);
+        } catch (error) {
+          return result(buildFacadeResult({
+            status: 'blocked',
+            summary: error instanceof Error ? error.message : 'Controller disposition compatibility input is invalid.',
+            data: {},
+          }) as unknown as Record<string, unknown>, true);
+        }
+        const operation = frozenControllerDisposition
+          ? 'controller_disposition'
+          : frozenScheduleDeleteId ? 'schedule_delete' : requestedOperation;
         if (!allowedFacadeOperations('rh_work').includes(operation)) {
           return invalidFacadeOperation('rh_work', operation);
         }
@@ -4071,17 +4084,49 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         if (operation === 'controller_disposition') {
           try {
             const workId = String(args.work_id ?? '').trim();
-            const disposition = String(args.disposition ?? '').trim();
+            const disposition = frozenControllerDisposition?.disposition ?? String(args.disposition ?? '').trim();
             if (!['continue_immediately', 'wait', 'wait_for_user', 'goal_complete'].includes(disposition)) {
               throw new Error('CONTROLLER_RELAY_DISPOSITION_INVALID');
             }
             const identity = authenticatedFacadeControllerIdentity(ctx, args);
+            const work = getWorkContract(store, workId);
+            if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
+            const terminalGoalComplete = work.status === 'completed' && disposition === 'goal_complete';
+            const currentOwner = getControllerSession(store, workId);
+            if (!currentOwner && !terminalGoalComplete) {
+              if (work.status === 'failed' || work.status === 'cancelled' || work.status === 'completed') {
+                throw new Error(`CONTROLLER_RELAY_WORK_TERMINAL: ${work.status}`);
+              }
+              throw new Error(`CONTROLLER_RELAY_ACTIVE_CLAIM_REQUIRED: ${workId}`);
+            }
+            if (currentOwner) {
+              if (currentOwner.controllerType !== 'chatgpt') throw new Error(`CONTROLLER_RELAY_CHATGPT_ONLY: ${workId}`);
+              if (currentOwner.controllerId !== identity.controllerId) throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workId}`);
+              if ((currentOwner.principalId?.trim() || currentOwner.controllerId) !== identity.principalId) {
+                throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${workId}`);
+              }
+              if (!currentOwner.controllerInstanceId?.trim() || currentOwner.controllerInstanceId.trim() !== identity.controllerInstanceId) {
+                throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
+              }
+              if (currentOwner.sessionId !== identity.sessionId) {
+                resumeControllerSession(store, {
+                  workId,
+                  controllerId: identity.controllerId,
+                  controllerType: 'chatgpt',
+                  sessionId: identity.sessionId,
+                  principalId: identity.principalId,
+                  controllerInstanceId: identity.controllerInstanceId,
+                  expectedClaimGeneration: currentOwner.claimGeneration,
+                  leaseMs: 3_600_000,
+                });
+              }
+            }
             const chatgptBinding = getChatgptWorkConversationBinding(store, workId);
             const relay = submitControllerRoundDisposition({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, {
               workId,
               identity,
               disposition: disposition as ControllerRoundDisposition,
-              relayScopeId: typeof args.relay_scope_id === 'string' ? args.relay_scope_id : undefined,
+              relayScopeId: frozenControllerDisposition?.relayScopeId ?? (typeof args.relay_scope_id === 'string' ? args.relay_scope_id : undefined),
               requirementId: typeof args.requirement_id === 'string' ? args.requirement_id : undefined,
               handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
               stateFingerprint: typeof args.state_fingerprint === 'string' ? args.state_fingerprint : undefined,
@@ -4217,7 +4262,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
                 continuationPrompt ? `Continuation: ${continuationPrompt}` : '',
                 'Treat Forge Work/Plan/evidence as source of truth. Claim the exact Work before any mutation; if ownership cannot be established, do not mutate.',
-                `Before this ChatGPT round ends, submit exactly one rh_work controller_disposition for Work ${work.workId} and relay_scope_id=${relay.relayScopeId}: continue_immediately, wait, wait_for_user (with an active Handoff), or goal_complete. Ending the response without a disposition does not close the round and may trigger bounded mechanical recovery.`,
+                `Before this ChatGPT round ends, submit exactly one rh_work controller_disposition for Work ${work.workId} and relay_scope_id=${relay.relayScopeId}: continue_immediately, wait, wait_for_user (with an active Handoff), or goal_complete. If this client schema is frozen and omits controller_disposition, use rh_work operation=repair with capability_id=controller.disposition:<disposition>:${relay.relayScopeId}; it is mapped to the same canonical disposition path. Ending the response without a disposition does not close the round and may trigger bounded mechanical recovery.`,
               ].filter(Boolean).join('\n');
               let dispatched: Awaited<ReturnType<typeof runWorkChatgptContinuation>>;
               try {

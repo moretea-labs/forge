@@ -5,6 +5,7 @@ import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/polic
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
 import { buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
+import { runtimeToolDefinitions } from '../../src/runtime/gateway/mcp/runtime-tool-definitions';
 import {
   FACADE_TOOLS,
   HANDOFF_STATUSES,
@@ -17,6 +18,15 @@ import {
 describe('handoff and facade contracts', () => {
   test('keeps the ChatGPT-facing facade small and stable', () => {
     expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']);
+  });
+
+  test('keeps controller round disposition in the exposed rh_work schema and facade operation contract', () => {
+    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
+    const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
+    expect(properties?.operation?.enum).toContain('controller_disposition');
+    expect(properties).toHaveProperty('disposition');
+    expect(properties).toHaveProperty('relay_scope_id');
+    expect(allowedFacadeOperations('rh_work')).toContain('controller_disposition');
   });
 
   test('keeps Work continuation scheduling inside rh_work instead of expanding the tool surface', () => {

@@ -25,6 +25,26 @@ export const CONTROLLER_ROUND_DISPOSITIONS = [
 ] as const;
 export type ControllerRoundDisposition = (typeof CONTROLLER_ROUND_DISPOSITIONS)[number];
 
+const CONTROLLER_DISPOSITION_COMPATIBILITY_PREFIX = 'controller.disposition:';
+
+export function parseControllerDispositionCompatibilityCapability(
+  operation: string,
+  capabilityId: unknown,
+): { disposition: ControllerRoundDisposition; relayScopeId: string } | undefined {
+  if (operation !== 'repair' || typeof capabilityId !== 'string') return undefined;
+  const normalized = capabilityId.trim();
+  if (!normalized.startsWith(CONTROLLER_DISPOSITION_COMPATIBILITY_PREFIX)) return undefined;
+  const payload = normalized.slice(CONTROLLER_DISPOSITION_COMPATIBILITY_PREFIX.length);
+  const separator = payload.indexOf(':');
+  if (separator <= 0) throw new Error('CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_INVALID');
+  const disposition = payload.slice(0, separator) as ControllerRoundDisposition;
+  const relayScopeId = payload.slice(separator + 1).trim();
+  if (!CONTROLLER_ROUND_DISPOSITIONS.includes(disposition) || !relayScopeId) {
+    throw new Error('CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_INVALID');
+  }
+  return { disposition, relayScopeId };
+}
+
 export type ControllerRoundRelayStatus =
   | 'pending_release'
   | 'dispatching'
@@ -285,15 +305,64 @@ export function submitControllerRoundDisposition(
   if (!CONTROLLER_ROUND_DISPOSITIONS.includes(input.disposition)) throw new Error('CONTROLLER_RELAY_DISPOSITION_INVALID');
   const work = getWorkContract(options, input.workId);
   if (!work) throw new Error(`WORK_NOT_FOUND: ${input.workId}`);
-  if (isTerminalWorkContractStatus(work.status)) throw new Error(`CONTROLLER_RELAY_WORK_TERMINAL: ${work.status}`);
-  const owner = assertChatgptOwner(options, work.workId, input.identity);
   const requirementId = resolveRequirementId(options, work, input.requirementId);
   const relayScopeId = resolveRelayScope(work, requirementId, input.relayScopeId);
+  const terminal = isTerminalWorkContractStatus(work.status);
 
   return relayLock(options, relayScopeId, `controller-relay-submit:${input.identity.controllerId}`, () => {
     const existing = readRelayRecord(options, work.workId);
-    if (existing && existing.value.relayScopeId !== relayScopeId) {
+    if (!existing) throw new Error(`CONTROLLER_RELAY_ROUND_NOT_OPEN: ${work.workId}`);
+    if (existing.value.relayScopeId !== relayScopeId) {
       throw new Error(`CONTROLLER_RELAY_SCOPE_MISMATCH: Work ${work.workId} is already bound to ${existing.value.relayScopeId}`);
+    }
+    if (existing.value.status !== 'claimed') {
+      throw new Error(`CONTROLLER_RELAY_ROUND_NOT_CLAIMED: ${existing.value.status}`);
+    }
+    if (terminal && (work.status !== 'completed' || input.disposition !== 'goal_complete')) {
+      throw new Error(`CONTROLLER_RELAY_WORK_TERMINAL: ${work.status}`);
+    }
+
+    const liveOwner = getControllerSession(options, work.workId);
+    const authority = liveOwner
+      ? (() => {
+          const owner = assertChatgptOwner(options, work.workId, input.identity);
+          return {
+            controllerId: owner.controllerId,
+            principalId: owner.principalId?.trim() || owner.controllerId,
+            controllerInstanceId: owner.controllerInstanceId?.trim() || '',
+            sessionId: owner.sessionId,
+            claimGeneration: owner.claimGeneration,
+          };
+        })()
+      : (() => {
+          if (!terminal) throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${work.workId}`);
+          const principalId = input.identity.principalId.trim();
+          const controllerInstanceId = input.identity.controllerInstanceId.trim();
+          const sessionId = input.identity.sessionId.trim();
+          if (!principalId || !controllerInstanceId || !sessionId) throw new Error(`CONTROLLER_RELAY_TERMINAL_AUTHORITY_REQUIRED: ${work.workId}`);
+          if (existing.value.controllerId !== input.identity.controllerId) throw new Error(`CONTROLLER_RELAY_CLAIM_CONTROLLER_MISMATCH: ${work.workId}`);
+          if (existing.value.principalId !== principalId) throw new Error(`CONTROLLER_RELAY_CLAIM_PRINCIPAL_MISMATCH: ${work.workId}`);
+          if (existing.value.controllerInstanceId !== controllerInstanceId) throw new Error(`CONTROLLER_RELAY_CLAIM_INSTANCE_MISMATCH: ${work.workId}`);
+          if (existing.value.claimGeneration < 1) throw new Error(`CONTROLLER_RELAY_CLAIM_GENERATION_REQUIRED: ${work.workId}`);
+          return {
+            controllerId: existing.value.controllerId,
+            principalId: existing.value.principalId,
+            controllerInstanceId: existing.value.controllerInstanceId,
+            sessionId,
+            claimGeneration: existing.value.claimGeneration,
+          };
+        })();
+    if (existing.value.controllerId !== authority.controllerId) {
+      throw new Error(`CONTROLLER_RELAY_CLAIM_CONTROLLER_MISMATCH: ${work.workId}`);
+    }
+    if (existing.value.principalId !== authority.principalId) {
+      throw new Error(`CONTROLLER_RELAY_CLAIM_PRINCIPAL_MISMATCH: ${work.workId}`);
+    }
+    if (existing.value.controllerInstanceId !== authority.controllerInstanceId) {
+      throw new Error(`CONTROLLER_RELAY_CLAIM_INSTANCE_MISMATCH: ${work.workId}`);
+    }
+    if (existing.value.claimGeneration !== authority.claimGeneration) {
+      throw new Error(`CONTROLLER_RELAY_CLAIM_GENERATION_MISMATCH: ${work.workId}`);
     }
     const previous = relayHistory(options, relayScopeId)[0];
     const requestedMaxRounds = boundedInteger(input.maxRounds, DEFAULT_MAX_ROUNDS, 1, 32);
@@ -346,11 +415,11 @@ export function submitControllerRoundDisposition(
       ...(requirementId ? { requirementId } : {}),
       disposition: input.disposition,
       status,
-      controllerId: owner.controllerId,
-      principalId: owner.principalId?.trim() || input.identity.principalId.trim(),
-      controllerInstanceId: owner.controllerInstanceId?.trim() || input.identity.controllerInstanceId.trim(),
-      sessionId: owner.sessionId,
-      claimGeneration: owner.claimGeneration,
+      controllerId: authority.controllerId,
+      principalId: authority.principalId,
+      controllerInstanceId: authority.controllerInstanceId,
+      sessionId: authority.sessionId,
+      claimGeneration: authority.claimGeneration,
       stateFingerprint,
       roundCount,
       repeatedStateCount,
@@ -708,7 +777,7 @@ export function buildControllerRoundRelayPrompt(
     ...(['CONTROLLER_RELAY_ROUND_UNCLOSED', 'CONTROLLER_RELAY_CLAIMED_ROUND_UNCLOSED'].includes(record.lastError ?? '')
       ? ['The previous ChatGPT round did not submit an explicit disposition before its liveness grace elapsed. Forge is only recovering liveness: reread durable state, make the semantic decision in ChatGPT, and close this round explicitly.']
       : []),
-    `If the overall Requirement/Goal still needs another controller round, explicitly submit rh_work controller_disposition=continue_immediately with relay_scope_id=${record.relayScopeId} before releasing the Work you own. Otherwise use wait, wait_for_user with an active Handoff, or goal_complete.`,
+    `If the overall Requirement/Goal still needs another controller round, explicitly submit rh_work controller_disposition=continue_immediately with relay_scope_id=${record.relayScopeId} before releasing the Work you own. Otherwise use wait, wait_for_user with an active Handoff, or goal_complete. If a frozen client schema does not expose controller_disposition, use rh_work operation=repair with capability_id=controller.disposition:<disposition>:${record.relayScopeId}; Forge maps that compatibility call to the same canonical disposition path and fences it identically.`,
     'Forge must not infer the semantic next step. Existing Work ownership, Handoff authority, and external-effect authorization remain authoritative; claim the exact Work before any mutation.',
   ].join('\n');
 }
