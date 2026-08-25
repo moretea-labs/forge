@@ -209,6 +209,58 @@ describe('controller Work Task completion receipt', () => {
     expect(completed?.evidenceRefs.some((evidence) => evidence.title === 'requirement completion projection pending' && (evidence.summary ?? '').includes('REQUIREMENT_NOT_FOUND'))).toBe(true);
   });
 
+  test('keeps audited successor paths as immutable Work delivery scope when target history also contains unrelated changes', () => {
+    const fx = fixture({ changed: false });
+    writeFileSync(join(fx.repoRoot, 'unrelated.txt'), 'other work\n');
+    git(fx.repoRoot, ['add', 'unrelated.txt']);
+    git(fx.repoRoot, ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'unrelated target advance']);
+    const priorTargetHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+
+    writeFileSync(join(fx.repoRoot, 'feature.txt'), 'implemented\n');
+    git(fx.repoRoot, ['add', 'feature.txt']);
+    git(fx.repoRoot, ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'adopted work successor']);
+    const targetRevision = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    expect(git(fx.repoRoot, ['diff', '--name-only', fx.baseCommit, targetRevision]).split('\n').sort()).toEqual(['feature.txt', 'unrelated.txt']);
+
+    const task = getIssue(fx.repoRoot, fx.issueId).tasks.find((entry) => entry.id === 'T1')!;
+    updateTask(fx.repoRoot, fx.issueId, 'T1', {
+      verification: { ...task.verification!, integratedRevision: targetRevision },
+    });
+    writeWorkHandle(fx.controllerHome, { ...fx.handle, expectedHead: targetRevision });
+    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      reconciliations: [{
+        schemaVersion: 1,
+        reconciliationId: 'RECNC-successor-scope',
+        originalExpectedRevision: priorTargetHead,
+        observedTargetRevision: targetRevision,
+        baseRevision: fx.baseCommit,
+        targetBranch: 'main',
+        reachable: true,
+        method: 'exact_commit',
+        comparedPaths: ['feature.txt'],
+        reviewer: 'test reviewer',
+        reviewedAt: '2026-08-25T00:00:00.000Z',
+        unrecoverableStages: [],
+        cleanupOwnershipProof: 'Managed cleanup remains owned by the Work finalizer.',
+        rationale: 'The audited successor delta contains only the Work-owned feature path.',
+        outcome: 'accepted_equivalence',
+      }],
+    });
+
+    const result = acceptVerifiedTaskFromControllerWork({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repoId,
+      repoRoot: fx.repoRoot,
+      issueId: fx.issueId,
+      taskId: 'T1',
+      workId: fx.workId,
+    });
+    expect(result.receipt.changedPaths).toEqual(['feature.txt']);
+    expect(result.receipt.changedPaths).not.toContain('unrelated.txt');
+    const completed = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
+    expect(completed.scopeEvidence?.actualChangedPaths).toEqual(['feature.txt']);
+  });
+
   test('treats a Work-bound Task status and contract fields as a derived compatibility projection', () => {
     const fx = fixture();
     bindTaskToWork(fx.repoRoot, fx.issueId, 'T1', fx.workId, fx.repoId);

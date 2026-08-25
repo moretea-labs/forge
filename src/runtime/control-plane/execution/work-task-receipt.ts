@@ -39,6 +39,22 @@ export function changedPaths(repoRoot: string, baseRevision: string, targetRevis
   return [...new Set(result.stdout.split('\0').filter(Boolean))].sort();
 }
 
+
+function completionReceiptChangedPaths(
+  contract: NonNullable<ReturnType<typeof getWorkContract>>,
+  repoRoot: string,
+  baseRevision: string,
+  targetRevision: string,
+): string[] {
+  const reconciled = contract.reconciliations.find((entry) =>
+    entry.outcome === 'accepted_equivalence'
+    && entry.reachable
+    && entry.baseRevision === baseRevision
+    && entry.observedTargetRevision === targetRevision);
+  if (!reconciled) return changedPaths(repoRoot, baseRevision, targetRevision);
+  return [...new Set(reconciled.comparedPaths.map((path) => path.trim()).filter(Boolean))].sort();
+}
+
 function assertWorkNotBoundElsewhere(repoRoot: string, workId: string, issueId: string, taskId: string): void {
   for (const issue of listIssues(repoRoot)) {
     for (const task of issue.tasks) {
@@ -374,7 +390,7 @@ export function acceptVerifiedTaskFromControllerWork(input: ControllerWorkTaskRe
   }
   assertCurrentRequiredChecks(contract, targetRevision);
   const baseRevision = commitRevision(input.repoRoot, handle.baseCommit, 'BASE_REVISION');
-  const receiptChangedPaths = changedPaths(input.repoRoot, baseRevision, targetRevision);
+  const receiptChangedPaths = completionReceiptChangedPaths(contract, input.repoRoot, baseRevision, targetRevision);
   if (noChange && receiptChangedPaths.length > 0) {
     throw new Error(`CONTROLLER_WORK_RECEIPT_NO_CHANGE_DIRTY: ${input.workId}`);
   }
