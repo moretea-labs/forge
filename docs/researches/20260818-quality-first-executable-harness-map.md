@@ -170,3 +170,36 @@ Each candidate requires caller search, current MCP schema evidence, migration de
 5. Trace and reduce duplicate mutable authorities/compatibility projections.
 6. Decompose the largest mixed-responsibility files, beginning with modules changed by phases 1–5 and preserving browser/device behavior.
 7. Run a fresh requirement/changed-symbol impact pass, focused gates, required Forge checks, latency benchmarks, and line-count comparison.
+
+## 10. Future quality-gated performance backlog
+
+This is follow-up work after the current source-stabilization cycle. It is deliberately recorded as backlog rather than an active Work or Plan.
+
+### Optimization objective and hard gates
+
+Reducing model turns, MCP calls, or controller round trips is **not** a performance KPI by itself. A controller checkpoint that adds material repository evidence, changes a diagnosis, reviews a diff, or makes a semantic acceptance decision is useful work and must not be removed merely to lower a call count.
+
+Every performance experiment is quality-gated first. The candidate must preserve or improve:
+
+- functional correctness and acceptance-criteria satisfaction;
+- semantic scope accuracy and critical-file discovery;
+- regression and escaped-defect rate;
+- review rework and first-diagnosis quality;
+- factual evidence fidelity, including recoverable raw evidence when a bounded summary is insufficient.
+
+Only after those gates hold should the experiment optimize secondary measures such as end-to-end wall time, Connector/transport latency, local CPU and interactive load, schema/token cost, and **mechanically redundant** tool calls or handoffs. Semantic checkpoints and mechanical round trips should be measured separately.
+
+### Candidate experiments
+
+- Continue the ChatGPT facade A/B as an experiment; do not migrate the default surface unless end-to-end correctness and semantic review quality remain at least at the baseline.
+- Increase `rh_context` evidence fan-in, cache reuse, exact/symbol materialization, and explicit coverage so fewer follow-up calls are needed only when no information is lost.
+- Keep facade evidence bounded but lossless/recoverable through coverage, omission/truncation metadata, source/result identity, and raw evidence references. A summary is not semantic authority.
+- Consolidate purely mechanical process lifecycle operations such as attach/wait/log collection where the next action is already determined, while preserving controller checkpoints when new evidence can change the decision.
+- Improve exact-input check reuse/coalescing and resource-compatible check waves; never trade verification coverage for apparent latency.
+- Continue background overlap: let long checks run while the controller performs genuinely independent repository review, then join once at the real dependency boundary.
+- Keep TypeScript/CodeGraph/check-runner paths warm where measurements justify it, without adding another lifecycle or recovery authority.
+- Evaluate optional remote verification only after local improvements are measured. A remote compute provider may execute an already-selected immutable check/snapshot and return factual evidence; it must not become a second Work, Scheduler, repository, or semantic-decision authority.
+
+### Source-maintenance deployment direction
+
+After local `main` is stabilized and pushed, evaluate maintaining the Forge source repository from a Cloud Forge maintainer running a verified stable Forge release. Git remote `main` remains source authority; stable Forge N may develop and verify Forge N+1. The local packaged Forge App can then focus on local repositories, Xcode/iOS, Browser/Desktop, devices, and other locality-bound work. Platform-specific macOS/iOS validation may remain a verification provider without becoming source-maintenance authority. Do not switch either local or Cloud stable runtime merely to follow source HEAD; promote only a separately verified release baseline.
