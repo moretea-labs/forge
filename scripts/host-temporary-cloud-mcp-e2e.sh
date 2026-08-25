@@ -61,6 +61,23 @@ cd "$ROOT"
   --local-controller-port $((RUNTIME_PORT + 1)) \
   --connector-port "$GATEWAY_PORT" > "$SETUP_LOG"
 
+# Package Runtime normally materializes its own persistent OAuth Connector from
+# chatgpt.localEndpoint. This temporary Secure Tunnel benchmark owns the
+# connector port itself with the explicit MCP_AUTH_MODE below, so suppress the
+# package connector in this disposable Controller Home before installation.
+MCP_LOCAL_CONFIG="$CONTROLLER_HOME/mcp/mcp.local.json"
+node - "$MCP_LOCAL_CONFIG" <<'NODE'
+const fs = require('node:fs');
+const path = process.argv[2];
+const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+if (!config.chatgpt || typeof config.chatgpt.localEndpoint !== 'string') {
+  console.error('FORGE_CLOUD_MCP_SETUP_LOCAL_ENDPOINT_MISSING');
+  process.exit(1);
+}
+delete config.chatgpt.localEndpoint;
+fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+NODE
+
 "$BUN_BIN" bin/forge.mjs repo register "$ROOT" \
   --controller-home "$CONTROLLER_HOME" \
   --json > "$TMP_ROOT/repository.json"

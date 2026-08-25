@@ -180,6 +180,12 @@ describe('mcp http transport', () => {
 
   test('cloud tunnel host uses MCP initialize readiness for none instead of OAuth metadata', () => {
     const script = readFileSync(join(process.cwd(), 'scripts/host-temporary-cloud-mcp-e2e.sh'), 'utf8');
+    const setupIndex = script.indexOf('mcp setup chatgpt');
+    const suppressPackageConnectorIndex = script.indexOf('delete config.chatgpt.localEndpoint');
+    const installPackageIndex = script.indexOf('runtime service install-package');
+    expect(setupIndex).toBeGreaterThanOrEqual(0);
+    expect(suppressPackageConnectorIndex).toBeGreaterThan(setupIndex);
+    expect(installPackageIndex).toBeGreaterThan(suppressPackageConnectorIndex);
     const authGate = script.slice(script.indexOf('case \"$MCP_AUTH_MODE\" in'), script.indexOf('mkdir -p \"$TUNNEL_DIR\"'));
     expect(authGate).toContain('oauth)');
     expect(authGate).toContain('/.well-known/oauth-authorization-server');
