@@ -1182,6 +1182,73 @@ describe('run_check Process Runtime facade', () => {
     expect(JSON.stringify(getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, started.handle.processId))).not.toContain(expectedBearer);
   });
 
+  test('fails closed an identity-missing lightweight recovery without replaying the request', async () => {
+    const fx = fixture();
+    const marker = join(fx.repoRoot, 'identity-missing-replay-marker.txt');
+    const processId = 'lightweight:identity-missing-recovery';
+    const commandId = 'identity-missing-recovery';
+    const args = ['-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'replayed\n')`];
+    const input = {
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      executable: 'node',
+      args,
+      cwd: fx.repoRoot,
+      timeoutMs: 5_000,
+      interactiveWaitMs: 5,
+      commandId,
+    };
+    const requestFingerprint = JSON.stringify({
+      repoId: input.repoId,
+      executable: input.executable,
+      args: input.args,
+      cwd: input.cwd,
+      timeoutMs: input.timeoutMs,
+    });
+    const startedAt = new Date().toISOString();
+    const runningRoot = join(repositoryControllerRoot(fx.controllerHome, fx.repository.repoId), 'process-runtime', 'lightweight-running');
+    mkdirSync(runningRoot, { recursive: true });
+    writeFileSync(join(runningRoot, `${sanitizeFileComponent(processId)}.json`), `${JSON.stringify({
+      schemaVersion: 1,
+      repoId: fx.repository.repoId,
+      processId,
+      commandId,
+      requestFingerprint,
+      updatedAt: startedAt,
+      handle: {
+        processId,
+        commandId,
+        status: 'running',
+        contractStatus: 'running',
+        route: 'managed',
+        startedAt,
+        interactiveWaitMs: input.interactiveWaitMs,
+        timeoutMs: input.timeoutMs,
+        completed: false,
+        stdoutTail: '',
+        stderrTail: '',
+        durableSideEffects: { executionJobCount: 0, localJobCount: 0, workerSpawnCount: 0, projectionUpdateCount: 0 },
+      },
+    }, null, 2)}\n`);
+
+    clearLightweightProcessMemoryForTest();
+    const recovered = await startLightweightInternalProcess(input);
+    expect(recovered.handle).toMatchObject({
+      processId,
+      status: 'completed_unknown',
+      contractStatus: 'unknown',
+      completed: true,
+      ok: false,
+    });
+    expect(recovered.handle.stderr).toContain('PROCESS_RESULT_UNAVAILABLE_AFTER_RUNTIME_RESTART: PROCESS_IDENTITY_UNTRUSTED: identity_missing');
+    expect(existsSync(marker)).toBe(false);
+
+    clearLightweightProcessMemoryForTest();
+    const attached = await startLightweightInternalProcess(input);
+    expect(attached.handle).toMatchObject({ processId, status: 'completed_unknown', completed: true, ok: false });
+    expect(existsSync(marker)).toBe(false);
+  });
+
   test('publishes the exact child exit observation before command completion returns', async () => {
     const fx = fixture();
     let observed: Awaited<ReturnType<typeof runCanonicalCommand>> | undefined;
