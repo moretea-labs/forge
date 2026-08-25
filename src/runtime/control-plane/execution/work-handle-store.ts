@@ -146,6 +146,8 @@ export interface WorkHandleState {
   managedWorktree: boolean;
   workContractId?: string;
   baseCommit?: string;
+  /** Latest canonical target HEAD incorporated into this Work candidate. Legacy records fall back to baseCommit. */
+  deliveryBaseCommit?: string;
   expectedHead?: string;
   permissionSnapshotVersion: number;
   state: WorkHandleStateName;
@@ -174,6 +176,12 @@ export interface WorkHandleState {
   };
   /** Durable terminal cleanup progress. It is intentionally independent from completion/verification receipts. */
   cleanupReceipt?: WorkCleanupReceipt;
+}
+
+export function workDeliveryBaseRevision(
+  handle: Pick<WorkHandleState, 'baseCommit' | 'deliveryBaseCommit'>,
+): string | undefined {
+  return handle.deliveryBaseCommit?.trim() || handle.baseCommit?.trim() || undefined;
 }
 
 function workHandlePath(controllerHome: string, handle: Pick<WorkHandleState, 'repositoryId' | 'workId'>): string {
@@ -341,7 +349,7 @@ export function transitionWorkHandle(
   controllerHome: string,
   handle: WorkHandleState,
   nextState: WorkHandleStateName,
-  patch: Partial<Pick<WorkHandleState, 'failureReason' | 'expectedHead' | 'finalization' | 'validationRun' | 'validatedInputFingerprint' | 'cleanupReceipt'>> = {},
+  patch: Partial<Pick<WorkHandleState, 'failureReason' | 'deliveryBaseCommit' | 'expectedHead' | 'finalization' | 'validationRun' | 'validatedInputFingerprint' | 'cleanupReceipt'>> = {},
 ): WorkHandleState {
   if (handle.state !== nextState && !TRANSITIONS[handle.state].includes(nextState)) {
     throw new Error(`WORK_HANDLE_LIFECYCLE_INVALID: cannot transition ${handle.state} -> ${nextState}`);

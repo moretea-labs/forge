@@ -21,7 +21,7 @@ import type { ExecutionJob } from '../../execution/jobs/types';
 import { checkRequiresDurableWorkflow, getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
 import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../../execution/process-runtime/command-facade';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
-import { readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
+import { readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
 import { gitCommitAtRef, gitWorktreeSnapshot } from '../../control-plane/execution/work-lifecycle-audit';
 import { executionIdentityForRepository } from '../../control-plane/execution/execution-identity';
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from '../../control-plane/execution/verification-evidence';
@@ -1152,6 +1152,7 @@ function ensureFacadeWorkHandle(
     managedWorktree,
     workContractId: contract.workId,
     baseCommit: contract.baseRevision ?? status.head ?? undefined,
+    deliveryBaseCommit: contract.baseRevision ?? status.head ?? undefined,
     expectedHead: status.head ?? contract.baseRevision,
     permissionSnapshotVersion: currentPermissionSnapshotVersion(ctx.controllerHome, repository.repoId),
     state: 'prepared',
@@ -1343,6 +1344,7 @@ function reauthorizeCancelledFacadeWork(
     sourceCheckoutId: repository.activeCheckoutId,
     managedWorktree: true,
     baseCommit: baseRevision,
+    deliveryBaseCommit: baseRevision,
     expectedHead: baseRevision,
     state: 'prepared',
     validatedInputFingerprint: undefined,
@@ -2486,8 +2488,12 @@ function reconcileTerminalFacadeWorkVerifications(
   const verificationStatus = repositoryGitStatus(verificationRepository);
   const sourceRevision = verificationStatus.head ?? undefined;
   if (!sourceRevision) return { reconciledProcessIds: [] };
-  const committedPaths = workContract.baseRevision
-    ? workChangedPaths(verificationRepository.canonicalRoot, workContract.baseRevision, sourceRevision)
+  const verificationHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
+  const deliveryBaseRevision = verificationHandle
+    ? workDeliveryBaseRevision(verificationHandle)
+    : workContract.baseRevision;
+  const committedPaths = deliveryBaseRevision
+    ? workChangedPaths(verificationRepository.canonicalRoot, deliveryBaseRevision, sourceRevision)
     : [];
   const workspaceChangedPaths = [...new Set([
     ...committedPaths,

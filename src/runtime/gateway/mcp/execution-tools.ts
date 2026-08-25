@@ -31,7 +31,7 @@ import { currentPermissionSnapshotVersion, validateWorkHandle } from '../../cont
 import { commandFingerprint, effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from '../../control-plane/execution/verification-evidence';
 import { assertExecutionIdentity, executionIdentityForWork, executionIdentityFromCoordinates, resolveLegacyWorkContractIdentity } from '../../control-plane/execution/execution-identity';
 import { withWorkPrepareRequest } from '../../control-plane/execution/work-prepare-request-store';
-import { markWorkHandleFailed, newWorkId, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState, type WorkTerminalOutcome } from '../../control-plane/execution/work-handle-store';
+import { markWorkHandleFailed, newWorkId, readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState, type WorkTerminalOutcome } from '../../control-plane/execution/work-handle-store';
 import { cleanupTerminalWork } from '../../control-plane/execution/work-terminal-cleanup';
 import { assertResolvedAuthorization, createGoalDelegation, decideAuthorization, resolveAuthorizationRequest, type AuthorizationDecision, type AuthorizationRiskClass } from '../../control-plane/governance/authorization';
 import { readControllerResult, searchControllerResult, writeControllerResult } from '../../evidence/result-store';
@@ -158,7 +158,7 @@ function compactHandle(handle: WorkHandleState): Record<string, unknown> {
   return {
     workId: handle.workId, sessionId: handle.sessionId, repoId: handle.repositoryId, checkoutId: handle.checkoutId,
     worktreePath: handle.worktreePath, branch: handle.branch, sourceCheckoutId: handle.sourceCheckoutId, goalId: handle.goalId, delegationVersion: handle.delegationVersion,
-    workContractId: handle.workContractId, baseCommit: handle.baseCommit, expectedHead: handle.expectedHead,
+    workContractId: handle.workContractId, baseCommit: handle.baseCommit, deliveryBaseCommit: handle.deliveryBaseCommit, expectedHead: handle.expectedHead,
     permissionSnapshotVersion: handle.permissionSnapshotVersion, state: handle.state, managedWorktree: handle.managedWorktree,
     createdAt: handle.createdAt, updatedAt: handle.updatedAt, finalization: handle.finalization,
     ...(handle.failureReason ? { failureReason: handle.failureReason } : {}),
@@ -352,7 +352,7 @@ function workOwnedDirtyPaths(
   return { dirtyPaths, ownedPaths };
 }
 
-function completionReceiptChangedPaths(repoRoot: string, baseRevision: string, deliveryRevision: string): string[] {
+export function completionReceiptChangedPaths(repoRoot: string, baseRevision: string, deliveryRevision: string): string[] {
   const result = spawnSync('git', ['-C', repoRoot, 'diff', '--name-only', `${baseRevision}..${deliveryRevision}`], {
     encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
   });
@@ -387,13 +387,14 @@ function completionReceiptForFinalizedWork(
     encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
   }).status === 0;
   if (!reachable) throw new Error(`WORK_COMPLETION_RECEIPT_DELIVERY_NOT_PROVEN: ${deliveryRevision} is not reachable from ${targetBranch}`);
+  const deliveryBaseRevision = workDeliveryBaseRevision(handle);
   const changedPaths = noChange
     ? []
     : !handle.managedWorktree && handle.finalization.commit === 'done'
       ? exactCommitChangedPaths(target.canonicalRoot, deliveryRevision)
-      : handle.baseCommit
-        ? completionReceiptChangedPaths(target.canonicalRoot, handle.baseCommit, deliveryRevision)
-        : (() => { throw new Error('WORK_COMPLETION_RECEIPT_BASE_REQUIRED: Work base revision is unavailable'); })();
+      : deliveryBaseRevision
+        ? completionReceiptChangedPaths(target.canonicalRoot, deliveryBaseRevision, deliveryRevision)
+        : (() => { throw new Error('WORK_COMPLETION_RECEIPT_BASE_REQUIRED: Work delivery provenance base is unavailable'); })();
   const recordedAt = new Date().toISOString();
   const retainsExplicitDeliveryBranch = args.merge !== true && targetBranch === handle.branch;
   const warnings = [
@@ -755,6 +756,7 @@ function adoptExistingWorkHead(
   };
 
   const adopted = transitionWorkHandle(ctx.controllerHome, handle, 'editing', {
+    deliveryBaseCommit: scopeBaseHead,
     expectedHead: candidateHead,
     failureReason: undefined,
     finalization: initialStage(),
@@ -1062,7 +1064,7 @@ function prepareWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
         schemaVersion: 1, workId: createdWorkId, sessionId: session.sessionId, principalId: session.principalId,
         repositoryId: repository.repoId, checkoutId: checkout.activeCheckoutId, worktreePath: checkout.canonicalRoot, branch,
         sourceCheckoutId: baseCheckoutId, managedWorktree: workspace.managed, workContractId: contract.workId, goalId, delegationVersion: delegation.version,
-        baseCommit: workspace.baseRevision ?? head, expectedHead: head, permissionSnapshotVersion: policy.revision,
+        baseCommit: workspace.baseRevision ?? head, deliveryBaseCommit: workspace.baseRevision ?? head, expectedHead: head, permissionSnapshotVersion: policy.revision,
         state: 'prepared', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), finalization: initialStage(),
         cleanupResponsibility: { owner: 'work_finalizer', registeredAt: new Date().toISOString() },
       };
@@ -2362,6 +2364,12 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
             continuation: 'WORK_TARGET_ADVANCE_REVIEW_REQUIRED: inspect the target/candidate conflict, repair only inside the managed Work checkout, then revalidate before retrying finalize.',
           };
         }
+        if (advance.relation === 'candidate_contains_target') {
+          current = transact('target-advance-provenance-confirmed', (fresh) => writeWorkHandle(ctx.controllerHome, {
+            ...fresh,
+            deliveryBaseCommit: advance.targetHead,
+          }));
+        }
         if (advance.relation === 'diverged_clean') {
           const integrated = repositoryGitMergeBranch(ctx.controllerHome, mergeValidated.worktreeRepository, {
             branch: targetBranch,
@@ -2417,6 +2425,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
             fresh,
             checks.length > 0 ? 'validating' : 'committed',
             {
+              deliveryBaseCommit: advance.targetHead,
               expectedHead: integratedHead,
               failureReason: undefined,
               finalization: { ...fresh.finalization, validation: checks.length > 0 ? 'pending' : 'done', merge: 'pending', lastError: undefined },

@@ -7,7 +7,7 @@ import { getRepository, listRepositories, registerRepository } from "../../src/c
 import { callMcpTool } from "../../src/cli/mcp/tools";
 import { callRepositoryTool, repositoryToolDefinitions } from "../../src/cli/mcp/repository-tools";
 import { repositoryGitMergeBranch } from "../../src/cli/repositories/structured-git";
-import { inspectDirectTargetDelivery, inspectWorkTargetAdvance } from "../../src/runtime/gateway/mcp/execution-tools";
+import { completionReceiptChangedPaths, inspectDirectTargetDelivery, inspectWorkTargetAdvance } from "../../src/runtime/gateway/mcp/execution-tools";
 import { runtimeToolDefinitions } from "../../src/runtime/gateway/mcp/runtime-tools";
 import { createMcpToolContext } from "../../src/cli/mcp/multi-repository";
 import { getLocalBridgeJob, readLocalBridgeJobOutput, readLocalBridgeJobOutputSnapshot } from "../../src/cli/local-bridge/job-store";
@@ -1104,6 +1104,10 @@ describe("repository MCP command tools", () => {
       git(repoRoot, ["commit", "-m", "target clean"]);
       const cleanTarget = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
       expect(inspectWorkTargetAdvance(repoRoot, cleanCandidate, cleanTarget).relation).toBe("diverged_clean");
+      git(repoRoot, ["switch", "feature/clean"]);
+      git(repoRoot, ["merge", "--no-ff", "main", "-m", "integrate target advance"]);
+      const integratedCandidate = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      expect(completionReceiptChangedPaths(repoRoot, cleanTarget, integratedCandidate)).toEqual(["feature.txt"]);
 
       git(repoRoot, ["switch", "-c", "feature/conflict", base]);
       writeFileSync(join(repoRoot, "README.md"), "feature-conflict\n");
