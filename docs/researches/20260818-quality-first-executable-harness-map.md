@@ -203,3 +203,11 @@ Only after those gates hold should the experiment optimize secondary measures su
 ### Source-maintenance deployment direction
 
 After local `main` is stabilized and pushed, evaluate maintaining the Forge source repository from a Cloud Forge maintainer running a verified stable Forge release. Git remote `main` remains source authority; stable Forge N may develop and verify Forge N+1. The local packaged Forge App can then focus on local repositories, Xcode/iOS, Browser/Desktop, devices, and other locality-bound work. Platform-specific macOS/iOS validation may remain a verification provider without becoming source-maintenance authority. Do not switch either local or Cloud stable runtime merely to follow source HEAD; promote only a separately verified release baseline.
+
+### Cloud maintainer operational follow-up backlog
+
+- Treat a selected Forge Cloud connector/app binding as routing evidence; plain `@Forge Cloud` text is not proof that the MCP call is cloud-bound. Keep the `/Users/...` versus Linux cloud-path identity gate before source writes.
+- After ChatGPT browser automation successfully sends a bounded prompt and no continuation needs the page, close the plugin-owned tab instead of accumulating finished tabs.
+- Prefer creating maintenance conversations inside the intended ChatGPT Project, and persist the selected Project/conversation identity so continuations return to the same project rather than ordinary chat history.
+- During the GitHub-hosted transition, auto-renew the dedicated Cloud Forge tunnel on a recurring workflow. Treat this as availability scaffolding, not permanent hosting; do not assume simultaneous takeover of one tunnel id is safe until measured.
+- Move the long-lived Cloud Source Maintainer to persistent VM/system-service hosting once available, while retaining GitHub Actions for CI/verification rather than using hosted Actions as the permanent server.
