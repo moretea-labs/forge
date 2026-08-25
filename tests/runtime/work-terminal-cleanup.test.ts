@@ -110,6 +110,12 @@ async function cleanup(fx: ReturnType<typeof fixture>, handle: WorkHandleState =
 
 describe('terminal Work cleanup', () => {
 
+  test('runtime architecture gate tracks the canonical finalization reset helper', () => {
+    const gate = readFileSync(join(import.meta.dir, '../../scripts/check-runtime-architecture.mjs'), 'utf8');
+    expect(gate).toContain("requireText('src/runtime/gateway/mcp/execution-tools.ts', 'resetFinalizationStagesForRequest');");
+    expect(gate).not.toContain("requireText('src/runtime/gateway/mcp/execution-tools.ts', 'resetFailedFinalizationStages');");
+  });
+
   test('late cleanup re-arms only retained managed cleanup stages', () => {
     const retained = {
       validation: 'done',
@@ -147,6 +153,18 @@ describe('terminal Work cleanup', () => {
       { commit: true, merge: true, cleanup: true },
       { managedWorktree: true, deleteBranchRequested: true, retainedByRequest: false },
     )).toEqual(retained);
+
+    expect(resetFinalizationStagesForRequest(
+      { ...retained, branchCleanup: 'pending', worktreeCleanup: 'failed', lastError: 'managed worktree is dirty; cleanup preserved it' },
+      { commit: true, merge: true, cleanup: true },
+      { managedWorktree: true, deleteBranchRequested: true, retainedByRequest: false, workspaceDirty: true },
+    )).toEqual({
+      validation: 'done',
+      commit: 'pending',
+      merge: 'pending',
+      branchCleanup: 'pending',
+      worktreeCleanup: 'pending',
+    });
   });
   test('periodic reconciler never reclaims a cancelled Work explicitly retained by terminal resource disposition', async () => {
     const fx = fixture('retained-cancelled');

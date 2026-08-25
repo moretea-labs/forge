@@ -558,7 +558,7 @@ forbidBetween(
 requireText('src/runtime/control-plane/execution/session-store.ts', 'lastValidatedAt: now');
 requireText('src/runtime/control-plane/execution/validation.ts', 'warnings.push');
 requireText('src/runtime/control-plane/execution/work-handle-store.ts', "failed: ['validating', 'editing', 'committed', 'merged', 'cleaned', 'failed_terminal_cleanup']");
-requireText('src/runtime/gateway/mcp/execution-tools.ts', 'resetFailedFinalizationStages');
+requireText('src/runtime/gateway/mcp/execution-tools.ts', 'resetFinalizationStagesForRequest');
 requireText('src/runtime/gateway/mcp/execution-tools.ts', 'finalizationComplete');
 forbidBetween(
   'src/runtime/gateway/mcp/execution-tools.ts',

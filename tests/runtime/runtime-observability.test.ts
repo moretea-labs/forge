@@ -32,7 +32,7 @@ import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
 import { createWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
-import { DEFAULT_CONTROLLER_TOOL_NAMES } from '../../src/cli/mcp/toolset-names';
+import { DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '../../src/cli/mcp/toolset-names';
 import { FORGE_VERSION } from '../../src/cli/controller/runtime-config';
 import {
   PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG,
@@ -635,7 +635,7 @@ describe('runtime observability', () => {
 
   test('serves the bounded default tools/list and retains explicit Advanced compatibility plus full fallback', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-core-tools-'));
-    const listNames = async (toolset?: 'core' | 'advanced') => {
+    const listNames = async (toolset?: 'facade' | 'core' | 'advanced') => {
       const server = createForgeMcpServer({ controllerHome, profile: 'controller', ...(toolset ? { toolset } : {}) });
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
       await server.connect(serverTransport);
@@ -662,6 +662,12 @@ describe('runtime observability', () => {
       expect(defaultNames).toContain('repository_command_execute');
       expect(defaultNames).not.toContain('repository_git_status');
       expect(defaultNames).not.toContain('git_commit_paths');
+
+      const facadeNames = await listNames('facade');
+      expect(facadeNames).toEqual([...PREFERRED_FACADE_TOOL_NAMES]);
+      expect(facadeNames).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']);
+      expect(facadeNames).not.toContain('repository_command_execute');
+      expect(facadeNames).not.toContain('run_check');
 
       const coreNames = await listNames('core');
       expect(coreNames).toEqual(defaultNames);
