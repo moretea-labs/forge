@@ -32,6 +32,7 @@ import {
 import { getProcessRecord, listProcessRecords } from '../../execution/process-runtime/store';
 import {
   listWorkHandles,
+  readWorkHandle,
   transitionWorkHandle,
   writeWorkHandle,
   type WorkCleanupReceipt,
@@ -455,6 +456,71 @@ function terminalOutcomeForContract(contract: WorkContract): WorkTerminalOutcome
   return 'failed';
 }
 
+export function recoverTerminalWorkHandle(
+  controllerHome: string,
+  repositoryId: string,
+  workId: string,
+): WorkHandleState | undefined {
+  const existing = readWorkHandle(controllerHome, repositoryId, workId);
+  if (existing) return existing;
+  const contract = getWorkContract({ controllerHome, repoId: repositoryId }, workId);
+  if (!contract || !isTerminalWorkContractStatus(contract.status)) return undefined;
+  const worktreePath = contract.worktreeRef?.trim();
+  const checkoutId = contract.checkoutId?.trim();
+  if (!worktreePath || !checkoutId || !existsSync(worktreePath)) return undefined;
+  if (!isCurrentControllerManagedWorktree(controllerHome, worktreePath)) return undefined;
+
+  const repository = getRepository(repositoryId, controllerHome, { includeRemoved: true });
+  // Reconstruct physical cleanup authority from the recorded checkout entry itself.
+  // selectRepositoryCheckout returns a RepositoryRecord view rooted at a checkout,
+  // not the checkout entry (and terminal cleanup must also tolerate an already
+  // archived/removed registry lifecycle while the physical worktree still exists).
+  const checkout = repository.checkouts.find((candidate) => candidate.checkoutId === checkoutId);
+  if (!checkout || checkout.worktree !== true || resolve(checkout.canonicalRoot) !== resolve(worktreePath)) return undefined;
+  const branch = checkout.branch?.trim();
+  if (!branch) return undefined;
+
+  const head = git(worktreePath, ['rev-parse', 'HEAD']);
+  if (!head.ok || !head.stdout) return undefined;
+  const targetBranch = repository.defaultBranch || 'main';
+  const targetExists = branchExists(repository.canonicalRoot, targetBranch);
+  const contained = targetExists
+    ? git(repository.canonicalRoot, ['merge-base', '--is-ancestor', head.stdout, `refs/heads/${targetBranch}`]).ok
+    : false;
+  const delivered = contract.status === 'completed' && contained;
+  const session = getControllerSession({ controllerHome, repoId: repositoryId }, workId);
+  const recordedAt = nowIso();
+  return writeWorkHandle(controllerHome, {
+    schemaVersion: 1,
+    workId,
+    workContractId: workId,
+    sessionId: session?.sessionId ?? `terminal-recovery:${workId}`,
+    principalId: contract.principalId?.trim() || session?.principalId || 'terminal-recovery',
+    repositoryId,
+    checkoutId,
+    sourceCheckoutId: repository.activeCheckoutId,
+    worktreePath,
+    branch,
+    managedWorktree: true,
+    baseCommit: contract.baseRevision,
+    expectedHead: head.stdout,
+    permissionSnapshotVersion: 1,
+    state: delivered ? 'merged' : 'failed_terminal_cleanup',
+    failureReason: delivered ? undefined : 'Recovered terminal Work ownership for cleanup; target-branch containment was not proven.',
+    createdAt: contract.createdAt || recordedAt,
+    updatedAt: recordedAt,
+    cleanupResponsibility: { owner: 'work_finalizer', registeredAt: recordedAt },
+    finalization: {
+      validation: contract.status === 'failed' ? 'failed' : 'done',
+      commit: 'skipped',
+      merge: delivered ? 'done' : 'skipped',
+      branchCleanup: 'pending',
+      worktreeCleanup: 'pending',
+      ...(contract.status === 'failed' ? { lastError: 'Recovered failed terminal Work for cleanup.' } : {}),
+    },
+  });
+}
+
 function cleanupRetainedByRequest(contract: WorkContract, handle: WorkHandleState): boolean {
   // `skipped` in old WorkHandle finalization records was also used for legacy
   // no-op/error paths, so it is not sufficient proof of an explicit retention
@@ -838,8 +904,24 @@ export async function reconcileTerminalWorkCleanups(
   const repositories = listRepositories(controllerHome).filter((repository) => repository.enabled && !repository.removedAt);
   outer: for (const repository of repositories) {
     const handles = listWorkHandles(controllerHome, repository.repoId, 10_000)
-      .filter((handle) => handle.managedWorktree)
-      .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
+      .filter((handle) => handle.managedWorktree);
+    const knownWorkIds = new Set(handles.map((handle) => handle.workId));
+    const recoveredWorkIds = new Set<string>();
+    for (const record of listControlPlaneRecords<WorkContract>(controllerHome, {
+      namespace: 'work_contract',
+      scope: repository.repoId,
+      limit: 10_000,
+    })) {
+      const contract = record.value;
+      if (knownWorkIds.has(contract.workId) || !isTerminalWorkContractStatus(contract.status)) continue;
+      if (!contract.worktreeRef?.trim() || !existsSync(contract.worktreeRef)) continue;
+      const recovered = recoverTerminalWorkHandle(controllerHome, repository.repoId, contract.workId);
+      if (!recovered) continue;
+      handles.push(recovered);
+      knownWorkIds.add(recovered.workId);
+      recoveredWorkIds.add(recovered.workId);
+    }
+    handles.sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
     for (const originalHandle of handles) {
       report.scanned += 1;
       const contract = getWorkContract({ controllerHome, repoId: repository.repoId }, originalHandle.workContractId ?? originalHandle.workId);
@@ -852,7 +934,11 @@ export async function reconcileTerminalWorkCleanups(
         report.skippedRetained.push(originalHandle.workId);
         continue;
       }
-      const terminalAt = Math.max(Date.parse(contract.updatedAt) || 0, Date.parse(originalHandle.updatedAt) || 0);
+      // Reconstructing a missing handle is metadata recovery, not new Work activity.
+      // Do not let that write reset the terminal-age grace period indefinitely.
+      const terminalAt = recoveredWorkIds.has(originalHandle.workId)
+        ? (Date.parse(contract.updatedAt) || 0)
+        : Math.max(Date.parse(contract.updatedAt) || 0, Date.parse(originalHandle.updatedAt) || 0);
       if (terminalAt > 0 && nowMs - terminalAt < minAgeMs) {
         report.skippedRecent.push(originalHandle.workId);
         continue;

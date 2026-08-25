@@ -238,6 +238,68 @@ describe('terminal Work cleanup', () => {
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)?.state).toBe('cleaned');
   });
 
+  test('periodic reconciler reconstructs missing physical ownership from a completed WorkContract', async () => {
+    const fx = fixture('missing-handle-contract');
+    const workId = 'work-terminal-cleanup-missing-handle-contract-only';
+    const branch = 'work/terminal-cleanup-missing-handle-contract-only';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, getRepository(fx.repository.repoId, fx.controllerHome), {
+      requestId: 'terminal-cleanup-missing-handle-contract-only',
+      title: 'Terminal Cleanup Missing Handle Contract Only',
+      branchName: branch,
+    });
+    const revision = workspace.baseRevision!;
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      repoId: fx.repository.repoId,
+      mode: 'goal_workloop',
+      objective: 'Completed WorkContract must remain sufficient physical cleanup authority when its WorkHandle is missing.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+      phase: 'delivery',
+      checkoutId: workspace.checkoutId,
+      worktreeRef: workspace.root,
+      baseRevision: revision,
+    });
+    const now = new Date().toISOString();
+    recordWorkCompletionReceipt(
+      { controllerHome: fx.controllerHome, repoId: fx.repository.repoId },
+      workId,
+      {
+        schemaVersion: 1,
+        receiptId: 'receipt-missing-handle-contract-only',
+        source: 'controller_work',
+        issueId: 'work',
+        taskId: workId,
+        workId,
+        targetBranch: 'main',
+        targetRevision: revision,
+        sourceRevision: revision,
+        baseRevision: revision,
+        changedPaths: [],
+        delivery: { kind: 'commit', status: 'integrated', strategy: 'already_integrated', reachable: true, recordedAt: now },
+        cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt: now },
+        verifiedAt: now,
+        recordedAt: now,
+      },
+      'completed_changed',
+      'repository_change',
+    );
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)).toBeUndefined();
+    expect(existsSync(workspace.root!)).toBe(true);
+
+    const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 10 });
+    expect(report.cleaned).toContain(workId);
+    expect(report.errors).toEqual([]);
+    expect(existsSync(workspace.root!)).toBe(false);
+    expect(branchExists(fx.repositoryRoot, branch)).toBe(false);
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)?.state).toBe('cleaned');
+  });
+
   test('periodic reconciler repairs only clean zero-unique-commit legacy branch drift before cleanup', async () => {
     const fx = fixture('periodic-branch-drift');
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
