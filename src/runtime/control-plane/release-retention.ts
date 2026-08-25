@@ -147,11 +147,14 @@ function loadRecoveryKnownGoodReleaseProtection(controllerHome: string, releases
       basename(manifestPath) !== 'manifest.json'
       || basename(releaseRoot) !== releaseId
       || !directChild(releasesRoot, releaseRoot)
-      || !existsSync(manifestPath)
-      || !existsSync(releaseRoot)
     ) {
-      throw new Error('standalone recovery known-good release is outside runtime releases or missing');
+      throw new Error('standalone recovery known-good release is outside runtime releases');
     }
+    // Known-good history is append-only recovery evidence. A historical record
+    // may legitimately outlive the retained release directory after a bounded
+    // cleanup pass. Missing historical artifacts therefore protect nothing and
+    // must not disable retention for the remaining authoritative releases.
+    if (!existsSync(manifestPath) || !existsSync(releaseRoot)) continue;
     protectedPaths.add(canonical(releaseRoot));
   }
   return protectedPaths;
