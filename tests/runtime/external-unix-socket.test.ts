@@ -130,6 +130,21 @@ describe('external Unix socket provider transport', () => {
     expect(resolveExternalPluginProbeRuntime(runtimePath, { HOME: home }, home)).not.toBe(runtimePath);
   });
 
+  test('source-hosted Runtime resolves the probe from the configured immutable release', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-external-probe-configured-release-'));
+    roots.push(root);
+    const releaseRoot = join(root, 'release');
+    mkdirSync(releaseRoot, { recursive: true });
+    const sidecarPath = join(releaseRoot, 'external-unix-socket-probe.cjs');
+    writeFileSync(sidecarPath, 'probe-sidecar');
+
+    expect(resolveExternalPluginProbeSidecarPath(
+      join(root, 'bun'),
+      'file:///missing/external-unix-socket.ts',
+      { FORGE_RELEASE_PATH: releaseRoot },
+    )).toBe(sidecarPath);
+  });
+
   test('synchronous probe uses a separate bounded sidecar and preserves the response envelope', async () => {
     if (process.platform === 'win32') return;
     const { root, socketPath } = socketFixture();

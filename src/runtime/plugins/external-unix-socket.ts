@@ -1,7 +1,7 @@
 import { spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import { createConnection, type Socket } from 'net';
-import { dirname, isAbsolute, join } from 'path';
+import { dirname, isAbsolute, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { resolveBunExecutable } from '../shared/process-environment';
 import { AssistantPluginError } from './errors';
@@ -178,7 +178,13 @@ export async function callExternalUnixSocket(
 export function resolveExternalPluginProbeSidecarPath(
   execPath: string = process.execPath,
   moduleUrl: string = import.meta.url,
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
+  const configuredReleaseRoot = env.FORGE_RELEASE_PATH?.trim();
+  if (configuredReleaseRoot) {
+    const releaseSidecar = join(resolve(configuredReleaseRoot), 'external-unix-socket-probe.cjs');
+    if (existsSync(releaseSidecar)) return releaseSidecar;
+  }
   const releaseSibling = join(dirname(execPath), 'external-unix-socket-probe.cjs');
   if (existsSync(releaseSibling)) return releaseSibling;
   const moduleSibling = fileURLToPath(new URL('./external-unix-socket-probe.cjs', moduleUrl));
