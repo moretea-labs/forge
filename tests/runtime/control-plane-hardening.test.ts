@@ -15,7 +15,7 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
 import { createWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { createHandoffItem, getHandoffItem, listHandoffItems } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { claimControllerSession, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import {
   acknowledgeControllerRoundClaim,
   beginInitialControllerRoundDispatch,
@@ -730,6 +730,91 @@ describe('scheduled external Controller wake', () => {
     expect(waiting.disposition).toBe('wait');
     releaseControllerSession(store, workId, nextSession.controllerId);
     expect(claimStalledControllerRoundRelays(store, { nowMs: afterGrace + 2 * 60_000, graceMs: 60_000 })).toEqual([]);
+  });
+
+  test('migrates a claimed ChatGPT relay only to the exact live same-principal controller session after runtime rotation', () => {
+    const root = temp('forge-controller-relay-runtime-migration-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'relay migration\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-runtime-migration' });
+    const workId = 'WORK-RELAY-RUNTIME-MIGRATION';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Continue one claimed ChatGPT round across a canonical Runtime restart.',
+      acceptanceCriteria: ['Only the exact live same-principal controller lease can migrate the relay claim.'],
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const store = { controllerHome, repoId: repository.repoId };
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-a', sessionId: 'occurrence-test' },
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true });
+    const original = claimControllerSession(store, {
+      workId,
+      controllerId: 'chatgpt-controller',
+      controllerType: 'chatgpt',
+      sessionId: 'chatgpt-session-a',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-a',
+      leaseMs: 5 * 60_000,
+    });
+    const claimed = acknowledgeControllerRoundClaim(store, { workId, session: original });
+    expect(claimed).toMatchObject({ status: 'claimed', sessionId: 'chatgpt-session-a', controllerInstanceId: 'runtime-a' });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: original })?.claimedAt).toBe(claimed?.claimedAt);
+
+    const rotated = resumeControllerSession(store, {
+      workId,
+      controllerId: original.controllerId,
+      controllerType: 'chatgpt',
+      sessionId: 'chatgpt-session-b',
+      principalId: original.principalId ?? original.controllerId,
+      controllerInstanceId: 'runtime-b',
+      expectedClaimGeneration: original.claimGeneration,
+      leaseMs: 5 * 60_000,
+    });
+    expect(() => acknowledgeControllerRoundClaim(store, {
+      workId,
+      session: { ...rotated, principalId: 'different-principal' },
+    })).toThrow(/CONTROLLER_RELAY_CLAIM_IDENTITY_MISMATCH/);
+    expect(() => acknowledgeControllerRoundClaim(store, {
+      workId,
+      session: { ...rotated, controllerId: 'different-controller' },
+    })).toThrow(/CONTROLLER_RELAY_CLAIM_IDENTITY_MISMATCH/);
+
+    const migrated = acknowledgeControllerRoundClaim(store, { workId, session: rotated });
+    expect(migrated).toMatchObject({
+      status: 'claimed',
+      controllerId: original.controllerId,
+      principalId: original.principalId,
+      controllerInstanceId: 'runtime-b',
+      sessionId: 'chatgpt-session-b',
+      claimGeneration: rotated.claimGeneration,
+    });
+    expect(migrated?.claimedAt).not.toBe(claimed?.claimedAt);
+
+    const waiting = submitControllerRoundDisposition(store, {
+      workId,
+      identity: {
+        controllerId: rotated.controllerId,
+        principalId: rotated.principalId ?? rotated.controllerId,
+        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-b',
+        sessionId: rotated.sessionId,
+      },
+      disposition: 'wait',
+      relayScopeId: opened.relayScopeId,
+      reason: 'Same principal continued on the new canonical Runtime.',
+    });
+    expect(waiting).toMatchObject({ status: 'waiting', disposition: 'wait', controllerInstanceId: 'runtime-b', sessionId: 'chatgpt-session-b' });
   });
 
   test('parses only the fenced frozen-schema controller disposition compatibility capability', () => {

@@ -619,9 +619,7 @@ export function acknowledgeControllerRoundClaim(
       && initial.value.sessionId === input.session.sessionId
       && initial.value.claimGeneration === input.session.claimGeneration
     ) return initial.value;
-    throw new Error(`CONTROLLER_RELAY_CLAIM_CONFLICT: ${input.workId}`);
-  }
-  if (initial.value.status !== 'dispatched') return initial.value;
+  } else if (initial.value.status !== 'dispatched') return initial.value;
   if (input.session.controllerType !== 'chatgpt') throw new Error(`CONTROLLER_RELAY_CHATGPT_CLAIM_REQUIRED: ${input.workId}`);
 
   return relayLock(options, initial.value.relayScopeId, `controller-relay-claim:${input.session.controllerId}`, () => {
@@ -633,7 +631,47 @@ export function acknowledgeControllerRoundClaim(
         && current.value.sessionId === input.session.sessionId
         && current.value.claimGeneration === input.session.claimGeneration
       ) return current.value;
-      throw new Error(`CONTROLLER_RELAY_CLAIM_CONFLICT: ${input.workId}`);
+
+      const owner = getControllerSession(options, input.workId);
+      const ownerPrincipal = owner?.principalId?.trim() || owner?.controllerId;
+      const sessionPrincipal = input.session.principalId?.trim() || input.session.controllerId;
+      if (
+        !owner
+        || owner.controllerType !== 'chatgpt'
+        || owner.controllerId !== input.session.controllerId
+        || owner.sessionId !== input.session.sessionId
+        || owner.claimGeneration !== input.session.claimGeneration
+        || ownerPrincipal !== sessionPrincipal
+        || (owner.controllerInstanceId?.trim() || '') !== (input.session.controllerInstanceId?.trim() || '')
+      ) throw new Error(`CONTROLLER_RELAY_CLAIM_IDENTITY_MISMATCH: ${input.workId}`);
+      if (current.value.controllerId !== owner.controllerId || current.value.principalId !== ownerPrincipal) {
+        throw new Error(`CONTROLLER_RELAY_CLAIM_CONFLICT: ${input.workId}`);
+      }
+      if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) {
+        throw new Error(`CONTROLLER_RELAY_CLAIM_GENERATION_REQUIRED: ${input.workId}`);
+      }
+      const controllerInstanceId = owner.controllerInstanceId?.trim();
+      if (!controllerInstanceId) throw new Error(`CONTROLLER_RELAY_CLAIM_INSTANCE_REQUIRED: ${input.workId}`);
+      const at = nowIso(options);
+      const migrated: ControllerRoundRelayRecord = {
+        ...current.value,
+        controllerInstanceId,
+        sessionId: owner.sessionId,
+        claimGeneration: owner.claimGeneration,
+        claimedAt: at,
+        updatedAt: at,
+        lastError: undefined,
+      };
+      writeControlPlaneRecord(options.controllerHome, {
+        namespace: NAMESPACE,
+        scope: options.repoId,
+        key: input.workId,
+        schemaVersion: SCHEMA_VERSION,
+        value: migrated,
+        action: 'controller_round_relay_claim_migrated',
+        expectedRevision: current.revision,
+      });
+      return migrated;
     }
     if (current.value.status !== 'dispatched') return current.value;
     const owner = getControllerSession(options, input.workId);
