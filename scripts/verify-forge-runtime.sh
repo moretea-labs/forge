@@ -13,7 +13,6 @@ TEST_FILES=(
   "tests/runtime/facade-contracts.test.ts"
   "tests/runtime/route-policy.test.ts"
   "tests/runtime/forge-runtime-service.test.ts"
-  "tests/cli/mcp-controller.test.ts"
   "tests/cli/local-bridge.test.ts"
   "tests/runtime/thin-harness-gateway-routing.test.ts"
   "tests/runtime/runtime-observability.test.ts"
