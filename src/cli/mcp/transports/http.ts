@@ -681,7 +681,7 @@ function positiveIntegerEnv(name: string, fallback: number): number {
 }
 
 const MAX_MCP_SESSIONS = positiveIntegerEnv('FORGE_MCP_MAX_SESSIONS', 64);
-const MAX_MCP_SESSIONS_PER_PRINCIPAL = positiveIntegerEnv('FORGE_MCP_MAX_SESSIONS_PER_PRINCIPAL', 8);
+const MAX_MCP_SESSIONS_PER_PRINCIPAL = positiveIntegerEnv('FORGE_MCP_MAX_SESSIONS_PER_PRINCIPAL', MAX_MCP_SESSIONS);
 const MAX_INITIALIZING_SESSIONS = positiveIntegerEnv('FORGE_MCP_MAX_INITIALIZING_SESSIONS', 8);
 const MAX_POSTS_PER_SESSION = positiveIntegerEnv('FORGE_MCP_MAX_POSTS_PER_SESSION', 4);
 const MAX_ACTIVE_POSTS = positiveIntegerEnv('FORGE_MCP_MAX_ACTIVE_POSTS', 32);
