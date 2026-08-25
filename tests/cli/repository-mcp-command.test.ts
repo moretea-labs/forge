@@ -58,7 +58,7 @@ describe("repository MCP command tools", () => {
     const command = repositoryToolDefinitions.find((tool) => tool.name === "repository_command_execute");
     expect(rhContext?.description).toContain("default repository code-discovery/read path");
     expect(rhContext?.description).toContain("fallback-only");
-    expect(rhWork?.description).toContain("Do not create a Plan merely because work is complex");
+    expect(rhWork?.description).toContain("Requirement and Plan are not universal prerequisites");
     expect(command?.description).toContain("Use rh_context for routine code discovery/reading");
     for (const retired of ["repository_goal_list", "repository_goal_upsert", "repository_stuck_diagnose", "repository_goal_run", "repository_goal_runs"]) {
       expect(repositoryToolDefinitions.some((tool) => tool.name === retired)).toBe(false);
