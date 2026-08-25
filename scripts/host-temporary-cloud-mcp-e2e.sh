@@ -87,17 +87,55 @@ FORGE_CONTROLLER_LIFECYCLE_OWNER=1 \
   --auth "$MCP_AUTH_MODE" > "$GATEWAY_LOG" 2>&1 &
 GATEWAY_PID=$!
 
-for _ in $(seq 1 30); do
-  if curl --fail --silent "http://127.0.0.1:${GATEWAY_PORT}/.well-known/oauth-authorization-server" > "$TMP_ROOT/local-oauth.json" 2>/dev/null; then
-    break
-  fi
-  if ! kill -0 "$GATEWAY_PID" 2>/dev/null; then
-    cat "$GATEWAY_LOG" >&2
-    exit 1
-  fi
-  sleep 1
-done
-test -s "$TMP_ROOT/local-oauth.json"
+case "$MCP_AUTH_MODE" in
+  oauth)
+    for _ in $(seq 1 30); do
+      if curl --fail --silent "http://127.0.0.1:${GATEWAY_PORT}/.well-known/oauth-authorization-server" > "$TMP_ROOT/local-oauth.json" 2>/dev/null; then
+        break
+      fi
+      if ! kill -0 "$GATEWAY_PID" 2>/dev/null; then
+        cat "$GATEWAY_LOG" >&2
+        exit 1
+      fi
+      sleep 1
+    done
+    test -s "$TMP_ROOT/local-oauth.json"
+    ;;
+  none)
+    MCP_INITIALIZE_HEADERS="$TMP_ROOT/mcp-initialize.headers"
+    MCP_INITIALIZE_BODY="$TMP_ROOT/mcp-initialize.body"
+    MCP_INITIALIZE_PAYLOAD='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"forge-cloud-readiness","version":"1"}}}'
+    for _ in $(seq 1 30); do
+      if curl --fail --silent --show-error \
+        --dump-header "$MCP_INITIALIZE_HEADERS" \
+        --output "$MCP_INITIALIZE_BODY" \
+        --request POST \
+        --header 'content-type: application/json' \
+        --header 'accept: application/json, text/event-stream' \
+        --data "$MCP_INITIALIZE_PAYLOAD" \
+        "http://127.0.0.1:${GATEWAY_PORT}/mcp" 2>/dev/null \
+        && grep -Eiq '^mcp-session-id:[[:space:]]*[^[:space:]]+' "$MCP_INITIALIZE_HEADERS" \
+        && grep -q 'forge-mcp' "$MCP_INITIALIZE_BODY"; then
+        break
+      fi
+      if ! kill -0 "$GATEWAY_PID" 2>/dev/null; then
+        cat "$GATEWAY_LOG" >&2
+        exit 1
+      fi
+      sleep 1
+    done
+    grep -Eiq '^mcp-session-id:[[:space:]]*[^[:space:]]+' "$MCP_INITIALIZE_HEADERS"
+    grep -q 'forge-mcp' "$MCP_INITIALIZE_BODY"
+    ;;
+  bearer)
+    echo 'FORGE_CLOUD_MCP_AUTH_MODE=bearer is not supported by the unauthenticated Secure Tunnel connector path; use oauth or none.' >&2
+    exit 2
+    ;;
+  *)
+    echo "unsupported FORGE_CLOUD_MCP_AUTH_MODE: $MCP_AUTH_MODE" >&2
+    exit 2
+    ;;
+esac
 
 mkdir -p "$TUNNEL_DIR"
 TUNNEL_CLIENT_ASSET="tunnel-client-${TUNNEL_CLIENT_VERSION}-linux-amd64.zip"
