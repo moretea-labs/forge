@@ -7,7 +7,7 @@ import { getRepository, listRepositories, registerRepository } from "../../src/c
 import { callMcpTool } from "../../src/cli/mcp/tools";
 import { callRepositoryTool, repositoryToolDefinitions } from "../../src/cli/mcp/repository-tools";
 import { repositoryGitMergeBranch } from "../../src/cli/repositories/structured-git";
-import { inspectWorkTargetAdvance } from "../../src/runtime/gateway/mcp/execution-tools";
+import { inspectDirectTargetDelivery, inspectWorkTargetAdvance } from "../../src/runtime/gateway/mcp/execution-tools";
 import { runtimeToolDefinitions } from "../../src/runtime/gateway/mcp/runtime-tools";
 import { createMcpToolContext } from "../../src/cli/mcp/multi-repository";
 import { getLocalBridgeJob, readLocalBridgeJobOutput, readLocalBridgeJobOutputSnapshot } from "../../src/cli/local-bridge/job-store";
@@ -965,6 +965,62 @@ describe("repository MCP command tools", () => {
       expect(failed.failures[0].context.focus).toContain("alpha-1");
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("proves direct-target Work delivery without self-merging and preserves the original delivery revision after target advance", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-direct-target-delivery-"));
+    const repoRoot = join(workspace, "sample-repo");
+    try {
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Direct Target Test"]);
+      git(repoRoot, ["config", "user.email", "direct-target@example.test"]);
+      writeFileSync(join(repoRoot, "owned.txt"), "owned-v1\n");
+      git(repoRoot, ["add", "owned.txt"]);
+      git(repoRoot, ["commit", "-m", "owned delivery"]);
+      const delivered = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+
+      expect(inspectDirectTargetDelivery(repoRoot, repoRoot, false, "main", "main", delivered)).toMatchObject({
+        integrated: true,
+        reason: "integrated",
+        expectedHead: delivered,
+        targetHead: delivered,
+      });
+      expect(inspectDirectTargetDelivery(repoRoot, repoRoot, true, "main", "main", delivered).reason).toBe("not_direct_target");
+      expect(inspectDirectTargetDelivery(repoRoot, repoRoot, false, "feature/work", "main", delivered).reason).toBe("not_direct_target");
+
+      writeFileSync(join(repoRoot, "advance.txt"), "independent target advance\n");
+      git(repoRoot, ["add", "advance.txt"]);
+      git(repoRoot, ["commit", "-m", "advance target"]);
+      const advanced = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      expect(advanced).not.toBe(delivered);
+      expect(inspectDirectTargetDelivery(repoRoot, repoRoot, false, "main", "main", delivered)).toMatchObject({
+        integrated: true,
+        reason: "integrated",
+        expectedHead: delivered,
+        targetHead: advanced,
+      });
+
+      writeFileSync(join(repoRoot, "dirty.txt"), "uncommitted\n");
+      expect(inspectDirectTargetDelivery(repoRoot, repoRoot, false, "main", "main", delivered).reason).toBe("dirty");
+      rmSync(join(repoRoot, "dirty.txt"));
+
+      git(repoRoot, ["switch", "-c", "unreachable"]);
+      writeFileSync(join(repoRoot, "unreachable.txt"), "unique\n");
+      git(repoRoot, ["add", "unreachable.txt"]);
+      git(repoRoot, ["commit", "-m", "unreachable"]);
+      const unreachable = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      git(repoRoot, ["switch", "main"]);
+      expect(inspectDirectTargetDelivery(repoRoot, repoRoot, false, "main", "main", unreachable)).toMatchObject({
+        integrated: false,
+        reason: "not_reachable",
+        expectedHead: unreachable,
+        targetHead: advanced,
+      });
+    } finally {
+      await cleanupWorkspace([workspace, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });
     }
   });

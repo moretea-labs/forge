@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, realpathSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { basename, isAbsolute, relative, resolve } from 'path';
 import type { McpToolDefinition, CallToolResult } from '../../../cli/mcp/tools';
@@ -242,6 +242,55 @@ export function inspectWorkTargetAdvance(root: string, candidateRevision: string
   if (preflight.status === 0) return { relation: 'diverged_clean', candidateHead, targetHead };
   const detail = `${preflight.stdout ?? ''}\n${preflight.stderr ?? ''}`.trim().slice(0, 1_000);
   return { relation: 'diverged_conflict', candidateHead, targetHead, ...(detail ? { detail } : {}) };
+}
+
+export interface DirectTargetDeliveryInspection {
+  integrated: boolean;
+  reason: 'not_direct_target' | 'path_mismatch' | 'branch_mismatch' | 'dirty' | 'revision_unavailable' | 'not_reachable' | 'integrated';
+  expectedHead?: string;
+  targetHead?: string;
+}
+
+/**
+ * Direct-edit Work may already be executing on the delivery branch. In that
+ * case Git merge is not a delivery operation at all: the Work commit is
+ * integrated once its exact expected revision remains reachable from the
+ * target branch. Keep this proof deliberately strict so a feature Work or a
+ * dirty/mismatched checkout still follows the normal fail-closed merge path.
+ */
+export function inspectDirectTargetDelivery(
+  root: string,
+  worktreePath: string,
+  managedWorktree: boolean,
+  workBranch: string,
+  targetBranch: string,
+  expectedRevision: string | undefined,
+): DirectTargetDeliveryInspection {
+  if (managedWorktree || workBranch !== targetBranch) return { integrated: false, reason: 'not_direct_target' };
+  try {
+    if (realpathSync(root) !== realpathSync(worktreePath)) return { integrated: false, reason: 'path_mismatch' };
+  } catch {
+    return { integrated: false, reason: 'path_mismatch' };
+  }
+  const branch = spawnSync('git', ['-C', root, 'branch', '--show-current'], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  if (branch.status !== 0 || typeof branch.stdout !== 'string' || branch.stdout.trim() !== targetBranch) {
+    return { integrated: false, reason: 'branch_mismatch' };
+  }
+  const status = spawnSync('git', ['-C', root, 'status', '--porcelain'], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  if (status.status !== 0 || typeof status.stdout !== 'string' || status.stdout.trim()) {
+    return { integrated: false, reason: 'dirty' };
+  }
+  const expectedHead = expectedRevision ? gitRevision(root, expectedRevision) : undefined;
+  const targetHead = gitRevision(root, targetBranch);
+  if (!expectedHead || !targetHead) return { integrated: false, reason: 'revision_unavailable' };
+  if (!gitIsAncestor(root, expectedHead, targetHead)) {
+    return { integrated: false, reason: 'not_reachable', expectedHead, targetHead };
+  }
+  return { integrated: true, reason: 'integrated', expectedHead, targetHead };
 }
 
 function normalizedRequiredString(args: Record<string, unknown>, key: string): string | undefined {
@@ -2197,6 +2246,31 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     }
   } else if (!wants.commit && current.finalization.commit === 'pending') {
     current = transact('commit-skipped', (fresh) => writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, commit: 'skipped' } }));
+  }
+
+  if (wants.merge && current.finalization.merge === 'pending' && current.finalization.commit === 'done') {
+    const repository = getRepository(current.repositoryId, ctx.controllerHome);
+    const target = selectWorkFinalizationTarget(repository, current);
+    const targetBranch = explicitTargetBranch ?? repository.defaultBranch ?? 'main';
+    const directTarget = inspectDirectTargetDelivery(
+      target.canonicalRoot,
+      current.worktreePath,
+      current.managedWorktree,
+      current.branch,
+      targetBranch,
+      current.expectedHead,
+    );
+    if (directTarget.integrated) {
+      current = transact('direct-target-delivery-integrated', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, 'merged', {
+        finalization: { ...fresh.finalization, merge: 'done', branchCleanup: 'skipped', lastError: undefined },
+        failureReason: undefined,
+      }));
+      appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
+        title: 'direct target delivery already integrated',
+        summary: `Work ${current.workId} runs directly on ${targetBranch}; exact delivery revision ${directTarget.expectedHead} is reachable from current target ${directTarget.targetHead}, so no self-merge or target-branch deletion is required.`,
+        detailLevel: 'summary',
+      });
+    }
   }
 
   if (wants.merge && current.finalization.merge === 'pending') {
