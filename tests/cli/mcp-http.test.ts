@@ -197,6 +197,19 @@ describe('mcp http transport', () => {
     expect(noneGate).not.toContain('/.well-known/oauth-authorization-server');
   });
 
+  test('cloud tunnel host bounds readiness races and cleanup teardown', () => {
+    const script = readFileSync(join(process.cwd(), 'scripts/host-temporary-cloud-mcp-e2e.sh'), 'utf8');
+    expect(script).toContain('wait_for_tunnel_ready()');
+    expect(script).toContain('if ! wait_for_tunnel_ready 30; then');
+    expect(script).toContain('FORGE_CLOUD_TUNNEL_STATUS process_running=');
+    expect(script).toContain('if ! wait_for_tunnel_ready 5; then');
+    expect(script).toContain('stop_pid()');
+    expect(script).toContain('stop_pid "$GATEWAY_PID"');
+    expect(script).toContain('stop_pid "$RUNTIME_PID"');
+    expect(script).toContain('FORGE_CLOUD_MCP_CLEANUP_FAILED');
+    expect(script).toContain('for _ in $(seq 1 20); do');
+  });
+
   test('preserves existing proxy settings while bypassing direct Runtime endpoints', () => {
     const merged = mergeNoProxy('127.0.0.1,localhost', '.ts.net', '127.0.0.1');
     expect(merged.split(',')).toEqual(['127.0.0.1', 'localhost', '.ts.net']);
