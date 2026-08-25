@@ -5,7 +5,7 @@ import { runProcess } from '../../../effects/process-runner';
 import { completeRequirementFromWork } from '../persistence/requirement-store';
 import { appendWorkEvidence, getWorkContract, recordWorkCompletionReceipt, updateWorkContract } from '../facade/work-contract-store';
 import { isDirectEditWorkCompletionReceipt, isTerminalWorkContractStatus, type DirectEditWorkCompletionReceipt, type WorkReconciliationRecord } from '../facade/types';
-import { effectiveVerificationEvidence } from './verification-evidence';
+import { historicalVerificationEvidenceAtRevision } from './verification-evidence';
 import { readWorkHandle } from './work-handle-store';
 
 export interface DirectEditWorkCompletionReconciliation {
@@ -257,16 +257,19 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
 
   let verifiedAt = new Date().toISOString();
   for (const checkId of work.checks) {
-    const current = work.checkRefs
-      .filter((record) => record.checkId === checkId && record.outcome === 'valid_pass' && record.sourceRevision === targetRevision)
-      .find((record) => effectiveVerificationEvidence([record], {
-        sourceRevision: targetRevision,
-        workspaceFingerprint: record.workspaceFingerprint,
-        checkId,
-        requestedChecks: work.checks,
-      }).some((entry) => entry.current));
-    if (!current) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CHECK_EVIDENCE_STALE: ${checkId}`);
-    verifiedAt = current.completedAt ?? current.recordedAt ?? verifiedAt;
+    const candidates = historicalVerificationEvidenceAtRevision(work.checkRefs, {
+      sourceRevision: targetRevision,
+      repoId: input.repoId,
+      workId: work.workId,
+      checkoutId: work.checkoutId,
+      checkId,
+      requestedChecks: work.checks,
+    }).filter((entry) => entry.current && entry.record.outcome === 'valid_pass');
+    const distinctReceipts = new Map(candidates.map((entry) => [entry.record.receipt!.receiptId, entry]));
+    if (distinctReceipts.size === 0) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CHECK_EVIDENCE_STALE: ${checkId}`);
+    if (distinctReceipts.size > 1) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CHECK_EVIDENCE_AMBIGUOUS: ${checkId}`);
+    const current = [...distinctReceipts.values()][0]!;
+    verifiedAt = current.record.completedAt ?? current.record.recordedAt ?? verifiedAt;
   }
 
   const reviewer = input.reviewer.trim();
