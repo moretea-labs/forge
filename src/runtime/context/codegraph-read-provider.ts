@@ -134,7 +134,8 @@ export function resolveCodeGraphBundledRuntime(options: { runtimeRoot?: string }
 } {
   const target = `${process.platform}-${process.arch}`;
   const platformPackage = `@colbymchenry/codegraph-${target}`;
-  const runtimeRoot = options.runtimeRoot ?? dirname(process.execPath);
+  const configuredReleaseRoot = process.env.FORGE_RELEASE_PATH?.trim();
+  const runtimeRoot = options.runtimeRoot ?? (configuredReleaseRoot ? resolve(configuredReleaseRoot) : dirname(process.execPath));
   const releaseNode = join(runtimeRoot, 'codegraph-node');
   const releaseSidecar = join(runtimeRoot, 'codegraph-sidecar.cjs');
   const releaseLibrary = join(runtimeRoot, 'codegraph-lib', 'dist', 'index.js');
