@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { join } from 'path';
 import { listActiveExecutionJobs, listExecutionJobs } from '../execution/jobs/store';
-import type { ExecutionJob } from '../execution/jobs/types';
+import { TERMINAL_JOB_STATUSES, type ExecutionJob } from '../execution/jobs/types';
 import { listActiveLeases } from '../resources/leases/store';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
@@ -126,6 +126,15 @@ function attentionSummary(job: ExecutionJob): RepositoryRuntimeProjection['atten
   return { jobId: job.jobId, status: job.status, message: job.error?.message };
 }
 
+function executionAttentionIsCurrent(job: ExecutionJob, activeJobIds: ReadonlySet<string>): boolean {
+  // Status is the durable lifecycle authority. Legacy/migrated terminal records may
+  // lack finishedAt, but that omission must not resurrect terminal attention as a
+  // current release blocker. If a future attention status is non-terminal, retain
+  // the legacy timestamp/index fallback for that genuinely active state.
+  if (TERMINAL_JOB_STATUSES.has(job.status)) return false;
+  return !job.finishedAt || activeJobIds.has(job.jobId);
+}
+
 function projectionVisibleLeases(leases: ReturnType<typeof listActiveLeases>) {
   // Ephemeral leases protect fast-path Process execution from conflicting writes,
   // but by contract they do not represent Scheduler/Worker durable activity.
@@ -156,7 +165,7 @@ function projectionWithExecutionIndexOverlay(
   const attentionJobs = recentJobs?.filter((job) => ATTENTION_JOB_STATUSES.has(job.status));
   const attention = attentionJobs?.map(attentionSummary) ?? base.attention;
   const currentAttention = attentionJobs
-    ?.filter((job) => !job.finishedAt || activeJobIds.has(job.jobId))
+    ?.filter((job) => executionAttentionIsCurrent(job, activeJobIds))
     .map(attentionSummary)
     ?? base.currentAttention;
   const repository = listRepositories(controllerHome, { includeRemoved: true }).find((entry) => entry.repoId === repoId);
@@ -199,7 +208,8 @@ function buildRepositoryProjection(
     .filter((job) => ATTENTION_JOB_STATUSES.has(job.status));
   // Terminal attention records remain in history for diagnosis and audit, but only
   // active/unresolved records should influence "current readiness" decisions.
-  const currentAttentionJobs = attentionJobs.filter((job) => !job.finishedAt || activeJobIds.has(job.jobId));
+  // Terminal status wins over a missing legacy finishedAt timestamp.
+  const currentAttentionJobs = attentionJobs.filter((job) => executionAttentionIsCurrent(job, activeJobIds));
   const repository = listRepositories(controllerHome).find((entry) => entry.repoId === repoId);
   const lifecycleAttention = repository ? collectWorkLifecycleAttention(controllerHome, repository) : [];
   const plugins = repository ? listAssistantPluginManifests(controllerHome, repository, {

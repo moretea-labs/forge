@@ -11,9 +11,12 @@ import { classifyRuntimeReadinessSemantics, evaluateRuntimeHealth, type RuntimeH
 import {
   projectionBlocksReadiness,
   projectionObservation,
+  readRepositoryProjectionSnapshot,
   reconcileProjectionWithTaskLedger,
   type RepositoryRuntimeProjectionSnapshot,
 } from '../../src/runtime/projections/materialized-view';
+import { executionJobRoot, rebuildExecutionJobIndexes } from '../../src/runtime/execution/jobs/store';
+import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
 import type { TaskLedgerProjection } from '../../src/cli/controller/task-ledger';
 import { recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostics/mcp-timing';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
@@ -177,6 +180,59 @@ function controllerFixture(): { controllerHome: string; repoRoot: string; owners
 }
 
 describe('runtime observability', () => {
+  test('keeps legacy terminal execution attention in history without resurrecting it as a current release blocker', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-terminal-attention-ch-'));
+    const repoId = 'repo-terminal-attention';
+    try {
+      const timestamp = new Date().toISOString();
+      const legacy: ExecutionJob = {
+        schemaVersion: 1,
+        revision: 1,
+        jobId: 'legacy-human-attention',
+        repoId,
+        type: 'check',
+        status: 'human_attention_required',
+        priority: 'P2',
+        requestId: 'request-legacy-human-attention',
+        semanticKey: 'test:legacy-human-attention',
+        payload: { operation: 'run_check', target: 'mcp-tool' },
+        origin: { surface: 'system', actor: 'test' },
+        resourceClaims: [],
+        dependencies: [],
+        leaseRefs: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        queuedAt: timestamp,
+        attempt: 1,
+        maxAttempts: 1,
+        evidenceIds: [],
+        error: { code: 'LEGACY_ATTENTION', message: 'legacy terminal record intentionally omits finishedAt', retryable: false },
+      };
+      const records = join(executionJobRoot(controllerHome, repoId), 'records');
+      mkdirSync(records, { recursive: true });
+      writeFileSync(join(records, `${legacy.jobId}.json`), `${JSON.stringify(legacy)}\n`, 'utf8');
+      rebuildExecutionJobIndexes(controllerHome, [repoId]);
+
+      const snapshot = readRepositoryProjectionSnapshot(controllerHome, repoId);
+      expect(snapshot.projection.attention).toContainEqual(expect.objectContaining({
+        jobId: legacy.jobId,
+        status: 'human_attention_required',
+      }));
+      expect(snapshot.projection.currentAttention).not.toContainEqual(expect.objectContaining({ jobId: legacy.jobId }));
+      const health = evaluateRuntimeHealth(observations({
+        workers: {
+          queueDepth: snapshot.projection.queueDepth,
+          runningWorkers: snapshot.projection.runningWorkers,
+          activeLeases: snapshot.projection.activeLeases,
+          activeAttentionCount: snapshot.projection.currentAttention.length,
+        },
+      }));
+      expect(health.activeBlockers.map((item) => item.code)).not.toContain('ACTIVE_JOB_ATTENTION_REQUIRED');
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('derives lifecycle attention for dirty unregistered worktrees and unintegrated Work branches', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-lifecycle-audit-ch-'));
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-lifecycle-audit-repo-'));
@@ -204,6 +260,20 @@ describe('runtime observability', () => {
         expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }),
         expect.objectContaining({ status: 'work_branch_not_integrated' }),
       ]));
+      const projection = readRepositoryProjectionSnapshot(controllerHome, repository.repoId).projection;
+      expect(projection.currentAttention).toEqual(expect.arrayContaining([
+        expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }),
+        expect.objectContaining({ status: 'work_branch_not_integrated' }),
+      ]));
+      const health = evaluateRuntimeHealth(observations({
+        workers: {
+          queueDepth: projection.queueDepth,
+          runningWorkers: projection.runningWorkers,
+          activeLeases: projection.activeLeases,
+          activeAttentionCount: projection.currentAttention.length,
+        },
+      }));
+      expect(health.activeBlockers.map((item) => item.code)).toContain('ACTIVE_JOB_ATTENTION_REQUIRED');
     } finally {
       spawnSync('git', ['worktree', 'remove', '--force', worktreeRoot], { cwd: repoRoot, stdio: 'ignore' });
       rmSync(worktreeRoot, { recursive: true, force: true });
