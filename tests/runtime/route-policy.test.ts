@@ -310,6 +310,42 @@ describe('single Route Policy authority', () => {
     expect(result.summary).not.toContain('PLAN_REQUIRED');
     expect(result.data).toMatchObject({ workContractCreated: true });
   });
+  test('allows Requirement-bound durable Work without forcing a Plan', () => {
+    const root = temp('route-requirement-workloop-');
+    const workStore = { root: join(root, 'work') };
+    const result = routeWorkStart({
+      workStore,
+      handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-a',
+      checkoutId: 'checkout-a',
+      principalId: 'principal-a',
+      controllerInstanceId: 'controller-a',
+      sourceRevision: 'revision-a',
+    }, {
+      objective: 'Implement one durable slice under an existing Requirement',
+      requirementId: 'REQ-route-a',
+      acceptanceCriteria: ['Requirement slice is complete'],
+      allowedPaths: ['src/runtime/control-plane/**'],
+      checks: [],
+      modeInput: {
+        scopeClear: true,
+        mutation: true,
+        expectedFiles: 4,
+        expectedChangedLines: 200,
+        requiresRecovery: true,
+        risk: 'local_repo_write',
+      },
+    });
+    const workId = (result.data as { work?: { workId?: string } }).work?.workId;
+    expect(result.status).toBe('ok');
+    expect(result.summary).toContain('Goal workloop started');
+    expect(result.summary).not.toContain('PLAN_REQUIRED');
+    expect(result.data).toMatchObject({ workContractCreated: true });
+    expect(workId).toBeTruthy();
+    expect(getWorkContract(workStore, workId!)).toMatchObject({ requirementId: 'REQ-route-a' });
+    expect(getWorkContract(workStore, workId!)?.planId).toBeUndefined();
+  });
+
   test('persists semantic ownership before placement when another durable Work is active', () => {
     const root = temp('route-work-admission-');
     let materializationCount = 0;
@@ -437,12 +473,21 @@ describe('single Route Policy authority', () => {
         acceptanceCriteria: ['One route authority'],
       }],
     });
-    approvePlanContract(planStore, 'plan-a');
     const context = {
       workStore: { root: join(root, 'work') }, handoffStore: { root: join(root, 'handoff') }, planStore,
       repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a', controllerInstanceId: 'controller-a',
       sourceRevision: 'revision-a', availableChecks: [{ id: 'package:check:type' }],
     };
+    const draftAttempt = routeWorkStart(context, {
+      objective: 'Implement the approved route policy', planId: 'plan-a', planStepId: 'step-a',
+      modeInput: { scopeClear: true, mutation: true, expectedFiles: 8, expectedChangedLines: 500, requiresRecovery: true, risk: 'local_repo_write' },
+    });
+    expect(draftAttempt.status).toBe('blocked');
+    expect(draftAttempt.summary).toContain('PLAN_NOT_EXECUTABLE');
+    expect(draftAttempt.data).toMatchObject({ executionStarted: false, planId: 'plan-a' });
+    expect((draftAttempt.data as { work?: unknown }).work).toBeUndefined();
+
+    approvePlanContract(planStore, 'plan-a');
     const requirementMismatch = routeWorkStart(context, {
       objective: 'Implement the approved route policy', planId: 'plan-a', planStepId: 'step-a', requirementId: 'REQ-other',
       modeInput: { scopeClear: true, mutation: true, expectedFiles: 8, expectedChangedLines: 500, requiresRecovery: true, risk: 'local_repo_write' },

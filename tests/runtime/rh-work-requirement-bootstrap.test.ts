@@ -57,7 +57,7 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 }
 
 describe('rh_work Requirement bootstrap', () => {
-  test('creates Requirement authority idempotently and then permits Plan creation', async () => {
+  test('creates Requirement authority idempotently without implying Plan and still permits explicit Plan creation', async () => {
     const repoRoot = tempRoot('forge-requirement-repo-');
     const controllerHome = tempRoot('forge-requirement-home-');
     const sourceRevision = initRepo(repoRoot);
@@ -77,12 +77,16 @@ describe('rh_work Requirement bootstrap', () => {
     const created = structured(await callRuntimeTool(ctx, 'rh_work', requirementArgs));
     expect(created.status).toBe('ok');
     expect(created.data.requirementCreated).toBe(true);
+    expect(created.summary).toContain('does not imply a Plan');
+    expect(created.suggestedNextActions ?? []).toEqual([]);
     expect(readRequirement({ controllerHome }, 'REQ-ANDROID-NATIVE-V1')?.value.title).toBe('Android native delivery');
 
     const retried = structured(await callRuntimeTool(ctx, 'rh_work', requirementArgs));
     expect(retried.status).toBe('ok');
     expect(retried.data.requirementCreated).toBe(false);
     expect(retried.data.admissionDecision).toBe('reuse_existing');
+    expect(retried.summary).toContain('does not imply a Plan');
+    expect(retried.suggestedNextActions ?? []).toEqual([]);
 
     const conflict = structured(await callRuntimeTool(ctx, 'rh_work', {
       ...requirementArgs,

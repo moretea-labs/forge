@@ -4378,9 +4378,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               }) as unknown as Record<string, unknown>, true);
             }
             return result(buildFacadeResult({
-              summary: `REQUIREMENT_AUTHORITY_REUSED: ${requirementId}.`,
+              summary: `REQUIREMENT_AUTHORITY_REUSED: ${requirementId}. Requirement authority does not imply a Plan; Controller chooses the next action.`,
               data: { requirement: existing, requirementCreated: false, admissionDecision: 'reuse_existing' },
-              suggestedNextActions: [{ label: 'Create Plan', tool: 'rh_work', operation: 'plan_create', payload: { requirement_id: requirementId }, risk: 'readonly', confidence: 'high' }],
+              suggestedNextActions: [],
             }) as unknown as Record<string, unknown>);
           }
           const requirement = createRequirement({ controllerHome: ctx.controllerHome }, {
@@ -4392,9 +4392,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             legacyAliases,
           });
           return result(buildFacadeResult({
-            summary: `Requirement ${requirementId} created.`,
+            summary: `Requirement ${requirementId} created. Requirement authority does not imply a Plan; Controller chooses the next action.`,
             data: { requirement, requirementCreated: true, admissionDecision: 'created' },
-            suggestedNextActions: [{ label: 'Create Plan', tool: 'rh_work', operation: 'plan_create', payload: { requirement_id: requirementId }, risk: 'readonly', confidence: 'high' }],
+            suggestedNextActions: [],
           }) as unknown as Record<string, unknown>);
         }
 
