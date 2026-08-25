@@ -22,6 +22,12 @@ export interface EffectiveVerificationEvidence {
   staleReason?: string;
 }
 
+export interface HistoricalVerificationEvidenceIdentity extends Omit<VerificationEvidenceIdentity, 'workspaceFingerprint'> {
+  repoId: string;
+  workId: string;
+  checkoutId?: string;
+}
+
 function decodeGitQuotedPath(rawPath: string): string {
   if (!rawPath.startsWith('"') && !rawPath.endsWith('"')) return rawPath;
   if (!rawPath.startsWith('"') || !rawPath.endsWith('"')) {
@@ -157,6 +163,57 @@ export function verificationInputFingerprint(input: VerificationEvidenceIdentity
 
 export function commandFingerprint(checkId: string, commandId: string | undefined): string {
   return createHash('sha256').update(JSON.stringify({ checkId, commandId: commandId ?? null })).digest('hex');
+}
+
+/**
+ * Selects immutable Work-bound verification evidence for an explicit historical
+ * revision. Unlike current-workspace reuse, the historical workspace identity
+ * comes from each durable receipt record and is verified against the record's
+ * persisted semantic and command fingerprints.
+ */
+export function historicalVerificationEvidenceAtRevision(
+  records: VerificationRecord[],
+  expected: HistoricalVerificationEvidenceIdentity,
+): EffectiveVerificationEvidence[] {
+  return records
+    .filter((record) => record.checkId === expected.checkId)
+    .map((record) => {
+      if (record.supersedes || record.outcome === 'superseded') {
+        return { record, current: false, staleReason: 'superseded' };
+      }
+      if (!record.sourceRevision || !record.workspaceFingerprint || !record.verificationInputFingerprint || !record.commandFingerprint) {
+        return { record, current: false, staleReason: 'historical evidence has no exact input identity' };
+      }
+      if (record.sourceRevision !== expected.sourceRevision) {
+        return { record, current: false, staleReason: `source revision changed: ${record.sourceRevision} -> ${expected.sourceRevision}` };
+      }
+      const receipt = record.receipt;
+      if (
+        !receipt
+        || receipt.repoId !== expected.repoId
+        || receipt.workId !== expected.workId
+        || receipt.checkId !== expected.checkId
+        || (expected.checkoutId !== undefined && receipt.checkoutId !== expected.checkoutId)
+      ) {
+        return { record, current: false, staleReason: 'historical receipt identity changed' };
+      }
+      if (receipt.status !== 'passed' || receipt.runtimeStatus !== 'succeeded' || !receipt.ok || receipt.timedOut || receipt.cancelled) {
+        return { record, current: false, staleReason: 'historical receipt is not a valid pass' };
+      }
+      const expectedFingerprint = verificationInputFingerprint({
+        sourceRevision: expected.sourceRevision,
+        workspaceFingerprint: record.workspaceFingerprint,
+        checkId: expected.checkId,
+        requestedChecks: expected.requestedChecks,
+      });
+      if (record.verificationInputFingerprint !== expectedFingerprint) {
+        return { record, current: false, staleReason: 'verification inputs changed' };
+      }
+      if (record.commandFingerprint !== commandFingerprint(record.checkId, receipt.commandId)) {
+        return { record, current: false, staleReason: 'check command identity changed' };
+      }
+      return { record, current: true };
+    });
 }
 
 /**

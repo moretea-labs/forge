@@ -6,7 +6,9 @@ import { join } from 'path';
 import { applyEditOperations, beginEditSession, finalizeEditSession } from '../../src/cli/editing/edit-session';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { acceptReviewedDirectEditWorkReconciliation, reconcileFinalizedDirectEditWorksAfterCommit } from '../../src/runtime/control-plane/execution/direct-edit-work-completion';
-import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
+import { commandFingerprint, verificationInputFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -67,6 +69,79 @@ function commitExample(repoRoot: string, content?: string) {
   execFileSync('git', ['commit', '-qm', 'direct edit'], { cwd: repoRoot });
 }
 
+function verificationRecord(input: {
+  repoId: string;
+  checkoutId: string;
+  workId: string;
+  checkId: string;
+  requestedChecks: string[];
+  sourceRevision: string;
+  workspaceFingerprint: string;
+  receiptId: string;
+  commandId: string;
+  recordedAt: string;
+  outcome?: VerificationRecord['outcome'];
+  verificationInputFingerprintOverride?: string;
+  commandFingerprintOverride?: string;
+}): VerificationRecord {
+  const outcome = input.outcome ?? 'valid_pass';
+  const passed = outcome === 'valid_pass';
+  return {
+    checkId: input.checkId,
+    outcome,
+    summary: `fixture ${outcome}`,
+    recordedAt: input.recordedAt,
+    sourceRevision: input.sourceRevision,
+    workspaceFingerprint: input.workspaceFingerprint,
+    verificationInputFingerprint: input.verificationInputFingerprintOverride ?? verificationInputFingerprint({
+      sourceRevision: input.sourceRevision,
+      workspaceFingerprint: input.workspaceFingerprint,
+      checkId: input.checkId,
+      requestedChecks: input.requestedChecks,
+    }),
+    commandFingerprint: input.commandFingerprintOverride ?? commandFingerprint(input.checkId, input.commandId),
+    startedAt: input.recordedAt,
+    completedAt: input.recordedAt,
+    receipt: {
+      schemaVersion: 1,
+      receiptId: input.receiptId,
+      resultDigest: `digest-${input.receiptId}`,
+      repoId: input.repoId,
+      checkoutId: input.checkoutId,
+      workId: input.workId,
+      checkId: input.checkId,
+      processId: `process-${input.receiptId}`,
+      commandId: input.commandId,
+      status: passed ? 'passed' : 'failed',
+      runtimeStatus: passed ? 'succeeded' : 'failed',
+      ok: passed,
+      exitCode: passed ? 0 : 1,
+      timedOut: false,
+      cancelled: false,
+      artifactPath: `.ai/harness/checks/${input.receiptId}.json`,
+      summary: `fixture ${outcome}`,
+      startedAt: input.recordedAt,
+      finishedAt: input.recordedAt,
+    },
+  };
+}
+
+function reconciliationInput(fx: ReturnType<typeof fixture>, targetRevision: string) {
+  return {
+    controllerHome: fx.controllerHome,
+    repoId: fx.repoId,
+    checkoutId: fx.checkoutId,
+    repoRoot: fx.repoRoot,
+    workId: fx.workId,
+    targetBranch: 'main',
+    targetRevision,
+    comparedPaths: ['src/example.ts'],
+    reviewer: 'reviewer-test',
+    rationale: 'The exact owned path tree is already integrated at the accepted target revision.',
+    cleanupOwnershipProof: 'This current-checkout Work owns no managed branch or worktree cleanup.',
+  };
+}
+
 describe('standalone Direct Edit Work completion', () => {
   test('records an exact Work completion receipt after the finalized edit is committed', () => {
     const fx = fixture();
@@ -123,6 +198,116 @@ describe('standalone Direct Edit Work completion', () => {
     const completed = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId);
     expect(completed).toMatchObject({ status: 'completed', completionOutcome: 'completed_changed' });
     expect(completed?.evidenceRefs.some((evidence) => evidence.title === 'requirement completion projection pending' && (evidence.summary ?? '').includes('REQUIREMENT_NOT_FOUND'))).toBe(true);
+  });
+
+  test('selects exact historical verification receipts even when newer same-check receipts exist', () => {
+    const fx = fixture();
+    commitExample(fx.repoRoot);
+    const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    writeFileSync(join(fx.repoRoot, 'README.md'), '# Test\nlater main change\n');
+    execFileSync('git', ['add', '--', 'README.md'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'later main'], { cwd: fx.repoRoot });
+    const laterRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const checks = ['package:check:type', 'package:check:task'];
+    const historicalWorkspace = 'workspace-historical';
+    const laterWorkspace = 'workspace-later';
+    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      checks,
+      checkRefs: [
+        verificationRecord({ repoId: fx.repoId, checkoutId: fx.checkoutId, workId: fx.workId, checkId: checks[1]!, requestedChecks: checks, sourceRevision: laterRevision, workspaceFingerprint: laterWorkspace, receiptId: 'later-task', commandId: 'later-task-command', recordedAt: '2026-08-25T02:00:00.000Z' }),
+        verificationRecord({ repoId: fx.repoId, checkoutId: fx.checkoutId, workId: fx.workId, checkId: checks[0]!, requestedChecks: checks, sourceRevision: laterRevision, workspaceFingerprint: laterWorkspace, receiptId: 'later-type', commandId: 'later-type-command', recordedAt: '2026-08-25T01:59:00.000Z' }),
+        verificationRecord({ repoId: fx.repoId, checkoutId: fx.checkoutId, workId: fx.workId, checkId: checks[1]!, requestedChecks: checks, sourceRevision: targetRevision, workspaceFingerprint: historicalWorkspace, receiptId: 'historical-task', commandId: 'historical-task-command', recordedAt: '2026-08-25T01:01:00.000Z' }),
+        verificationRecord({ repoId: fx.repoId, checkoutId: fx.checkoutId, workId: fx.workId, checkId: checks[0]!, requestedChecks: checks, sourceRevision: targetRevision, workspaceFingerprint: historicalWorkspace, receiptId: 'historical-type', commandId: 'historical-type-command', recordedAt: '2026-08-25T01:00:00.000Z' }),
+      ],
+    });
+
+    const result = acceptReviewedDirectEditWorkReconciliation(reconciliationInput(fx, targetRevision));
+
+    expect(result.receipt.targetRevision).toBe(targetRevision);
+    expect(result.receipt.verifiedAt).toBe('2026-08-25T01:01:00.000Z');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.status).toBe('completed');
+  });
+
+  test('rejects historical verification evidence from the wrong revision or a failed/superseded result', () => {
+    for (const variant of ['wrong_revision', 'valid_fail', 'superseded'] as const) {
+      const fx = fixture();
+      commitExample(fx.repoRoot);
+      const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+      const checks = ['package:check:type'];
+      const baseRevision = execFileSync('git', ['rev-parse', `${targetRevision}^`], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+      updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+        checks,
+        checkRefs: [verificationRecord({
+          repoId: fx.repoId,
+          checkoutId: fx.checkoutId,
+          workId: fx.workId,
+          checkId: checks[0]!,
+          requestedChecks: checks,
+          sourceRevision: variant === 'wrong_revision' ? baseRevision : targetRevision,
+          workspaceFingerprint: 'workspace-historical',
+          receiptId: `receipt-${variant}`,
+          commandId: `command-${variant}`,
+          recordedAt: '2026-08-25T01:00:00.000Z',
+          outcome: variant === 'wrong_revision' ? 'valid_pass' : variant,
+        })],
+      });
+
+      expect(() => acceptReviewedDirectEditWorkReconciliation(reconciliationInput(fx, targetRevision)))
+        .toThrow('DIRECT_EDIT_WORK_RECONCILIATION_CHECK_EVIDENCE_STALE');
+    }
+  });
+
+  test('rejects historical evidence when persisted verification or command identity no longer matches', () => {
+    for (const variant of ['verification', 'command'] as const) {
+      const fx = fixture();
+      commitExample(fx.repoRoot);
+      const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+      const checks = ['package:check:type'];
+      updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+        checks,
+        checkRefs: [verificationRecord({
+          repoId: fx.repoId,
+          checkoutId: fx.checkoutId,
+          workId: fx.workId,
+          checkId: checks[0]!,
+          requestedChecks: checks,
+          sourceRevision: targetRevision,
+          workspaceFingerprint: 'workspace-historical',
+          receiptId: `receipt-${variant}`,
+          commandId: `command-${variant}`,
+          recordedAt: '2026-08-25T01:00:00.000Z',
+          ...(variant === 'verification' ? { verificationInputFingerprintOverride: 'changed-verification-inputs' } : { commandFingerprintOverride: 'changed-command-identity' }),
+        })],
+      });
+
+      expect(() => acceptReviewedDirectEditWorkReconciliation(reconciliationInput(fx, targetRevision)))
+        .toThrow('DIRECT_EDIT_WORK_RECONCILIATION_CHECK_EVIDENCE_STALE');
+    }
+  });
+
+  test('rejects ambiguous distinct valid historical receipts for the same check and revision', () => {
+    const fx = fixture();
+    commitExample(fx.repoRoot);
+    const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const checks = ['package:check:type'];
+    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      checks,
+      checkRefs: ['first', 'second'].map((suffix) => verificationRecord({
+        repoId: fx.repoId,
+        checkoutId: fx.checkoutId,
+        workId: fx.workId,
+        checkId: checks[0]!,
+        requestedChecks: checks,
+        sourceRevision: targetRevision,
+        workspaceFingerprint: 'workspace-historical',
+        receiptId: `receipt-${suffix}`,
+        commandId: `command-${suffix}`,
+        recordedAt: '2026-08-25T01:00:00.000Z',
+      })),
+    });
+
+    expect(() => acceptReviewedDirectEditWorkReconciliation(reconciliationInput(fx, targetRevision)))
+      .toThrow('DIRECT_EDIT_WORK_RECONCILIATION_CHECK_EVIDENCE_AMBIGUOUS');
   });
 
   test('rejects reviewed reconciliation unless the supplied path set is exact', () => {

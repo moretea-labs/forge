@@ -5,7 +5,7 @@ import { runProcess } from '../../../effects/process-runner';
 import { completeRequirementFromWork } from '../persistence/requirement-store';
 import { appendWorkEvidence, getWorkContract, recordWorkCompletionReceipt, updateWorkContract } from '../facade/work-contract-store';
 import { isDirectEditWorkCompletionReceipt, isTerminalWorkContractStatus, type DirectEditWorkCompletionReceipt, type WorkReconciliationRecord } from '../facade/types';
-import { effectiveVerificationEvidence } from './verification-evidence';
+import { historicalVerificationEvidenceAtRevision } from './verification-evidence';
 import { readWorkHandle } from './work-handle-store';
 
 export interface DirectEditWorkCompletionReconciliation {
@@ -257,12 +257,18 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
 
   let verifiedAt = new Date().toISOString();
   for (const checkId of work.checks) {
-    const current = effectiveVerificationEvidence(work.checkRefs, {
+    const candidates = historicalVerificationEvidenceAtRevision(work.checkRefs, {
       sourceRevision: targetRevision,
+      repoId: input.repoId,
+      workId: work.workId,
+      checkoutId: work.checkoutId,
       checkId,
       requestedChecks: work.checks,
-    }).find((entry) => entry.current && entry.record.outcome === 'valid_pass');
-    if (!current) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CHECK_EVIDENCE_STALE: ${checkId}`);
+    }).filter((entry) => entry.current && entry.record.outcome === 'valid_pass');
+    const distinctReceipts = new Map(candidates.map((entry) => [entry.record.receipt!.receiptId, entry]));
+    if (distinctReceipts.size === 0) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CHECK_EVIDENCE_STALE: ${checkId}`);
+    if (distinctReceipts.size > 1) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CHECK_EVIDENCE_AMBIGUOUS: ${checkId}`);
+    const current = [...distinctReceipts.values()][0]!;
     verifiedAt = current.record.completedAt ?? current.record.recordedAt ?? verifiedAt;
   }
 
