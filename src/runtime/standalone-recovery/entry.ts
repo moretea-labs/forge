@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
-import { basename, resolve } from 'path';
+import { basename, join, resolve } from 'path';
 import { pathToFileURL } from 'url';
 import { readMcpServiceOAuthPassphrase } from '../../cli/mcp/auth';
 import { FORGE_VERSION } from '../../version';
@@ -255,7 +255,7 @@ export const RECOVERY_TOOLS = [
   { name: 'restart_primary_runtime', description: 'Restart the installed canonical Forge Runtime service and require whole-Runtime verification.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'restart_primary_connector', description: 'Restart the explicitly configured primary OAuth/Connector launchd service only after local Canonical Runtime verification succeeds.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'recover_primary_runtime', description: 'Stop the canonical Runtime, restore the attested previous whole release and SQLite backup, restart it, and require verification.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
-  { name: 'activate_runtime_release', description: 'Activate an already staged immutable Runtime release only if the caller-observed active release/authority revision are still current. Reverse activation of current.previous is rejected; use rollback_previous/recover_primary_runtime instead.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 }, release_path: { type: 'string', minLength: 8, maxLength: 1024 }, expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 }, expected_authority_revision: { type: 'integer', minimum: 1 } }, required: ['request_id', 'release_path', 'expected_active_release_id', 'expected_authority_revision'], additionalProperties: false } },
+  { name: 'activate_runtime_release', description: 'Activate an already staged immutable Runtime release only if the caller-observed active release/authority revision are still current. Reverse activation of current.previous is rejected; use rollback_previous/recover_primary_runtime instead.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 }, release_path: { type: 'string', minLength: 8, maxLength: 1024, description: 'Absolute path to the staged immutable Runtime release directory.' }, expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 }, expected_authority_revision: { type: 'integer', minimum: 1 } }, required: ['request_id', 'release_path', 'expected_active_release_id', 'expected_authority_revision'], additionalProperties: false } },
   { name: 'stage_and_activate_runtime_release', description: 'Build one immutable Runtime release from the fixed Recovery-configured source root, then activate it transactionally with rollback protection. No arbitrary source path is accepted.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'restart_public_tunnel', description: 'Restart the explicitly configured public tunnel only after local runtime verification succeeds and the external endpoint is unavailable.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
   { name: 'reconnect_primary_connector', description: 'Check canonical Runtime Gateway and primary MCP reconnection readiness without publishing a release.', inputSchema: { type: 'object', additionalProperties: false } },
@@ -519,7 +519,9 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
       if (typeof args.release_path !== 'string' || !args.release_path.trim()) throw new Error('RECOVERY_RELEASE_PATH_REQUIRED');
       if (typeof args.expected_active_release_id !== 'string' || !args.expected_active_release_id.trim()) throw new Error('RECOVERY_EXPECTED_ACTIVE_RELEASE_REQUIRED');
       if (!Number.isInteger(args.expected_authority_revision) || Number(args.expected_authority_revision) < 1) throw new Error('RECOVERY_EXPECTED_AUTHORITY_REVISION_REQUIRED');
-      return activateRuntimeRelease(config, args.release_path.trim(), {}, {
+      const releasePath = args.release_path.trim();
+      const manifestPath = basename(releasePath) === 'manifest.json' ? releasePath : join(releasePath, 'manifest.json');
+      return activateRuntimeRelease(config, manifestPath, {}, {
         requestId: `recovery-gateway:${args.request_id}`,
         expectedActiveReleaseId: args.expected_active_release_id.trim(),
         expectedAuthorityRevision: Number(args.expected_authority_revision),

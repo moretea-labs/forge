@@ -6,6 +6,7 @@ import { spawn, spawnSync } from 'child_process';
 import { executionIdentityForRepository, executionIdentityFromCoordinates } from '../../src/runtime/control-plane/execution/execution-identity';
 import {
   __resetLiveMonitorsForTests,
+  DEFAULT_WORK_CHECK_LEASE_WAIT_MS,
   cancelProcess,
   claimProcessCheckExecution,
   claimProcessInvocation,
@@ -1714,6 +1715,77 @@ describe('getProcessHandle after completion', () => {
 describe('Process Runtime real lease contention', () => {
   afterEach(() => {
     clearRuntimeWriteClaimForTests();
+  });
+
+  test('cross-Work build-cache checks serialize within the bounded verification budget and still expose true admission timeout', async () => {
+    expect(DEFAULT_WORK_CHECK_LEASE_WAIT_MS).toBe(30_000);
+    const fx = fixture();
+    const buildCacheClaim = { resourceKey: `build-cache:${fx.repository.repoId}`, mode: 'write' as const };
+    const holder = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      workId: 'work-build-cache-holder',
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'setTimeout(() => process.exit(0), 700)'],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims: [buildCacheClaim],
+      interactiveWaitMs: 0,
+      timeoutMs: 10_000,
+      returnHandleImmediately: true,
+    });
+    expect(holder.completed).toBe(false);
+    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toContainEqual(expect.objectContaining({
+      ownerJobId: `process:${holder.processId}`,
+      resourceKey: buildCacheClaim.resourceKey,
+      workId: 'work-build-cache-holder',
+    }));
+
+    const boundedOut = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      workId: 'work-build-cache-short-budget',
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'process.exit(0)'],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims: [buildCacheClaim],
+      leaseWaitMs: 100,
+      interactiveWaitMs: 1_000,
+      timeoutMs: 10_000,
+    });
+    expect(boundedOut.completed).toBe(true);
+    expect(boundedOut.ok).not.toBe(true);
+    expect(String(boundedOut.stderr ?? '')).toContain('PROCESS_LEASE_CONFLICT');
+
+    const serialized = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      workId: 'work-build-cache-waiter',
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'process.exit(0)'],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims: [buildCacheClaim],
+      leaseWaitMs: 2_000,
+      interactiveWaitMs: 2_000,
+      timeoutMs: 10_000,
+    });
+    expect(serialized).toMatchObject({ completed: true, ok: true, status: 'succeeded' });
+    expect(await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 5_000 }))
+      .toMatchObject({ completed: true, ok: true, status: 'succeeded' });
   });
 
   test('write claim blocks concurrent write; multiple reads may run', async () => {

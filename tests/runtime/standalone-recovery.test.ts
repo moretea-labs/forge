@@ -462,6 +462,26 @@ test('standalone Recovery refuses a no-op when another process owns the configur
   expect(commands.some(([name]) => name === 'lsof')).toBe(true);
 });
 
+test('Recovery activate_runtime_release resolves release_path as an immutable release directory', async () => {
+  const home = controllerHome();
+  const candidate = verifiedManifest(home, 'release-directory-contract');
+  for (const [requestId, releasePath] of [
+    ['activate-directory-contract', dirname(candidate.path)],
+    ['activate-manifest-compat', candidate.path],
+  ] as const) {
+    const result = await dispatchRecoveryTool(createRecoveryConfig(home), 'activate_runtime_release', {
+      request_id: requestId,
+      release_path: releasePath,
+      expected_active_release_id: 'release-baseline',
+      expected_authority_revision: 1,
+    }) as { attempted?: boolean; noOp?: boolean; detail?: string };
+
+    expect(result).toMatchObject({ attempted: false, noOp: true });
+    expect(result.detail).not.toContain('EISDIR');
+    expect(result.detail).not.toContain('RELEASE_MANIFEST_INVALID');
+  }
+});
+
 test('standalone Recovery stages only its configured Runtime source and hands a first-generation future sidecar release to activation', async () => {
   const home = controllerHome();
   const sourceRoot = join(home, 'source');
@@ -594,6 +614,9 @@ describe('standalone recovery on canonical Runtime', () => {
       'expected_active_release_id',
       'expected_authority_revision',
     ]));
+    expect(activateTool?.inputSchema.properties.release_path).toMatchObject({
+      description: 'Absolute path to the staged immutable Runtime release directory.',
+    });
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).not.toContain('supervisor_status');
     expect(RECOVERY_CLI_COMMANDS).toContain('list-releases');
     expect(RECOVERY_CLI_COMMANDS).toContain('restart-primary-runtime');
