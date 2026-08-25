@@ -17,7 +17,7 @@ import { cleanupTerminalWork, reconcileTerminalWorkCleanups } from '../../src/ru
 import { processLogDir } from '../../src/runtime/execution/process-runtime';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
-import { selectDefaultWorkValidationChecks } from '../../src/runtime/gateway/mcp/execution-tools';
+import { resetFinalizationStagesForRequest, selectDefaultWorkValidationChecks } from '../../src/runtime/gateway/mcp/execution-tools';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 
 const roots: string[] = [];
@@ -109,6 +109,45 @@ async function cleanup(fx: ReturnType<typeof fixture>, handle: WorkHandleState =
 }
 
 describe('terminal Work cleanup', () => {
+
+  test('late cleanup re-arms only retained managed cleanup stages', () => {
+    const retained = {
+      validation: 'done',
+      commit: 'done',
+      merge: 'done',
+      branchCleanup: 'skipped',
+      worktreeCleanup: 'skipped',
+    } as const;
+    expect(resetFinalizationStagesForRequest(
+      retained,
+      { commit: true, merge: true, cleanup: true },
+      { managedWorktree: true, deleteBranchRequested: true, retainedByRequest: true },
+    )).toEqual({
+      validation: 'done',
+      commit: 'done',
+      merge: 'done',
+      branchCleanup: 'pending',
+      worktreeCleanup: 'pending',
+    });
+
+    expect(resetFinalizationStagesForRequest(
+      retained,
+      { commit: true, merge: true, cleanup: true },
+      { managedWorktree: true, deleteBranchRequested: false, retainedByRequest: true },
+    )).toEqual({ ...retained, worktreeCleanup: 'pending' });
+
+    expect(resetFinalizationStagesForRequest(
+      retained,
+      { commit: true, merge: true, cleanup: true },
+      { managedWorktree: false, deleteBranchRequested: true, retainedByRequest: true },
+    )).toEqual(retained);
+
+    expect(resetFinalizationStagesForRequest(
+      retained,
+      { commit: true, merge: true, cleanup: true },
+      { managedWorktree: true, deleteBranchRequested: true, retainedByRequest: false },
+    )).toEqual(retained);
+  });
   test('periodic reconciler never reclaims a cancelled Work explicitly retained by terminal resource disposition', async () => {
     const fx = fixture('retained-cancelled');
     createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {

@@ -131,7 +131,7 @@ export interface McpRuntimeState {
   }>;
 }
 
-export type McpHttpAuthMode = 'oauth' | 'bearer';
+export type McpHttpAuthMode = 'oauth' | 'bearer' | 'none';
 
 export function mcpLocalConfigPath(repoRoot: string): string {
   return join(repoRoot, '.forge', 'mcp.local.json');
@@ -356,8 +356,8 @@ export function syncMcpControllerHomeBearerToken(
 
 export function parseMcpHttpAuthMode(value: string | undefined): McpHttpAuthMode {
   const mode = (value ?? 'oauth').trim().toLowerCase();
-  if (mode === 'oauth' || mode === 'bearer') return mode;
-  throw new Error(`invalid --auth "${value}" (expected: oauth, bearer)`);
+  if (mode === 'oauth' || mode === 'bearer' || mode === 'none') return mode;
+  throw new Error(`invalid --auth "${value}" (expected: oauth, bearer, none)`);
 }
 
 export function readMcpOAuthPassphrase(repoRoot: string): string | null {

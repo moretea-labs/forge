@@ -167,6 +167,9 @@ function removeRunningReceipt(controllerHome: string, repoId: string, processId:
 
 function persistRunningReceipt(entry: LightweightEntry, force = false): void {
   if (entry.result) return;
+  if (!entry.identity && entry.pid && !entry.exitObservation) {
+    entry.identity = captureProcessIdentity(entry.pid);
+  }
   const now = Date.now();
   if (!force && entry.runningReceiptUpdatedAtMs !== undefined
     && now - entry.runningReceiptUpdatedAtMs < RUNNING_RECEIPT_PERSIST_INTERVAL_MS) return;
@@ -371,6 +374,16 @@ function inspectRecoveredRunningReceipt(receipt: LightweightRunningReceipt): { s
   if (result.matches) return { state: 'running' };
   if (result.reason === 'identity_probe_unavailable') return { state: 'unsafe', reason: result.reason };
   return { state: 'dead', reason: result.reason ?? 'identity_mismatch' };
+}
+
+function recoveredInspectionFailureReason(
+  inspection: ReturnType<typeof inspectRecoveredRunningReceipt>,
+): string | undefined {
+  if (inspection.state === 'running') return undefined;
+  if (inspection.state === 'unsafe') {
+    return `PROCESS_IDENTITY_UNTRUSTED: ${inspection.reason ?? 'unknown'}`;
+  }
+  return inspection.reason ?? 'process_dead';
 }
 
 function persistRecoveredTerminalReceipt(
@@ -1021,13 +1034,11 @@ export function getLightweightProcessHandle(controllerHome: string, repoId: stri
     return persistRecoveredTerminalReceipt(controllerHome, running, completedObservedExitHandle(running));
   }
   const inspection = inspectRecoveredRunningReceipt(running);
-  if (inspection.state === 'dead') {
-    return persistRecoveredTerminalReceipt(controllerHome, running, completedUnknownRecoveredHandle(running, inspection.reason ?? 'process_dead'));
+  const failureReason = recoveredInspectionFailureReason(inspection);
+  if (failureReason) {
+    return persistRecoveredTerminalReceipt(controllerHome, running, completedUnknownRecoveredHandle(running, failureReason));
   }
-  return recoveredRunningHandle(
-    running,
-    inspection.state === 'unsafe' ? `PROCESS_IDENTITY_UNTRUSTED: ${inspection.reason ?? 'unknown'}` : undefined,
-  );
+  return recoveredRunningHandle(running);
 }
 
 export async function waitForLightweightProcess(
@@ -1051,14 +1062,12 @@ export async function waitForLightweightProcess(
         return persistRecoveredTerminalReceipt(controllerHome, running, completedObservedExitHandle(running));
       }
       const inspection = inspectRecoveredRunningReceipt(running);
-      if (inspection.state === 'dead') {
-        return persistRecoveredTerminalReceipt(controllerHome, running, completedUnknownRecoveredHandle(running, inspection.reason ?? 'process_dead'));
+      const failureReason = recoveredInspectionFailureReason(inspection);
+      if (failureReason) {
+        return persistRecoveredTerminalReceipt(controllerHome, running, completedUnknownRecoveredHandle(running, failureReason));
       }
       if (options.signal?.aborted || Date.now() >= deadline) {
-        return recoveredRunningHandle(
-          running,
-          inspection.state === 'unsafe' ? `PROCESS_IDENTITY_UNTRUSTED: ${inspection.reason ?? 'unknown'}` : undefined,
-        );
+        return recoveredRunningHandle(running);
       }
       await new Promise<void>((resolve) => {
         const timer = setTimeout(resolve, Math.min(50, Math.max(1, deadline - Date.now())));
@@ -1102,11 +1111,9 @@ export async function cancelLightweightProcess(controllerHome: string, repoId: s
       return persistRecoveredTerminalReceipt(controllerHome, running, completedObservedExitHandle(running));
     }
     const inspection = inspectRecoveredRunningReceipt(running);
-    if (inspection.state === 'dead') {
-      return persistRecoveredTerminalReceipt(controllerHome, running, completedUnknownRecoveredHandle(running, inspection.reason ?? 'process_dead'));
-    }
-    if (inspection.state === 'unsafe') {
-      throw new Error(`PROCESS_IDENTITY_UNTRUSTED: refusing to signal ${processId}: ${inspection.reason ?? 'unknown'}`);
+    const failureReason = recoveredInspectionFailureReason(inspection);
+    if (failureReason) {
+      return persistRecoveredTerminalReceipt(controllerHome, running, completedUnknownRecoveredHandle(running, failureReason));
     }
     const pid = running.handle.pid ?? running.identity?.pid;
     if (!pid) throw new Error(`PROCESS_IDENTITY_UNTRUSTED: refusing to signal ${processId}: pid missing`);

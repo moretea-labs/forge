@@ -126,6 +126,90 @@ describe('mcp http transport', () => {
     }
   });
 
+  test('allows explicit no-auth MCP behind an external secure tunnel boundary', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-http-none-'));
+    const port = await freePort();
+    let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(port) });
+        proc = Bun.spawn(
+          [
+            'bun',
+            'src/cli/index.ts',
+            'mcp',
+            'serve',
+            '--repo',
+            repoRoot,
+            '--transport',
+            'http',
+            '--host',
+            '127.0.0.1',
+            '--port',
+            String(port),
+            '--profile',
+            'planner',
+            '--auth',
+            'none',
+          ],
+          { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
+        );
+        await waitForHealth(port);
+        const health = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
+        expect(health.auth).toBe('none');
+
+        const initialized = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+          },
+          body: initializeBody(),
+        });
+        expect(initialized.status).toBe(200);
+        expect(initialized.headers.get('mcp-session-id')).toBeTruthy();
+        expect(await initialized.text()).toContain('forge-mcp');
+      });
+    } finally {
+      await stopMcpServerProcess(proc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('cloud tunnel host uses MCP initialize readiness for none instead of OAuth metadata', () => {
+    const script = readFileSync(join(process.cwd(), 'scripts/host-temporary-cloud-mcp-e2e.sh'), 'utf8');
+    const setupIndex = script.indexOf('mcp setup chatgpt');
+    const suppressPackageConnectorIndex = script.indexOf('delete config.chatgpt.localEndpoint');
+    const installPackageIndex = script.indexOf('runtime service install-package');
+    expect(setupIndex).toBeGreaterThanOrEqual(0);
+    expect(suppressPackageConnectorIndex).toBeGreaterThan(setupIndex);
+    expect(installPackageIndex).toBeGreaterThan(suppressPackageConnectorIndex);
+    const authGate = script.slice(script.indexOf('case \"$MCP_AUTH_MODE\" in'), script.indexOf('mkdir -p \"$TUNNEL_DIR\"'));
+    expect(authGate).toContain('oauth)');
+    expect(authGate).toContain('/.well-known/oauth-authorization-server');
+    expect(authGate).toContain('none)');
+    expect(authGate).toContain('\"method\":\"initialize\"');
+    expect(authGate).toContain('mcp-session-id:');
+    expect(authGate).toContain('\"http://127.0.0.1:${GATEWAY_PORT}/mcp\"');
+    const noneGate = authGate.slice(authGate.indexOf('none)'), authGate.indexOf('bearer)'));
+    expect(noneGate).not.toContain('/.well-known/oauth-authorization-server');
+  });
+
+  test('cloud tunnel host bounds readiness races and cleanup teardown', () => {
+    const script = readFileSync(join(process.cwd(), 'scripts/host-temporary-cloud-mcp-e2e.sh'), 'utf8');
+    expect(script).toContain('wait_for_tunnel_ready()');
+    expect(script).toContain('if ! wait_for_tunnel_ready 30; then');
+    expect(script).toContain('FORGE_CLOUD_TUNNEL_STATUS process_running=');
+    expect(script).toContain('if ! wait_for_tunnel_ready 5; then');
+    expect(script).toContain('stop_pid()');
+    expect(script).toContain('stop_pid "$GATEWAY_PID"');
+    expect(script).toContain('stop_pid "$RUNTIME_PID"');
+    expect(script).toContain('FORGE_CLOUD_MCP_CLEANUP_FAILED');
+    expect(script).toContain('for _ in $(seq 1 20); do');
+  });
+
   test('preserves existing proxy settings while bypassing direct Runtime endpoints', () => {
     const merged = mergeNoProxy('127.0.0.1,localhost', '.ts.net', '127.0.0.1');
     expect(merged.split(',')).toEqual(['127.0.0.1', 'localhost', '.ts.net']);

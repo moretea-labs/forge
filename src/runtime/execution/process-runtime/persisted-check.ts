@@ -83,7 +83,7 @@ export function resolvePersistedCheckRuntimeExecutable(
   entryExists: (path: string) => boolean = existsSync,
 ): string {
   if (cliTarget.runtimeKind !== 'compiled_bun_release') return runtimeExecutable;
-  const checkRunner = resolve(dirname(runtimeExecutable), 'forge-check-runner');
+  const checkRunner = resolve(cliTarget.cwd, 'forge-check-runner');
   if (!entryExists(checkRunner)) {
     throw new Error(`PERSISTED_CHECK_RUNNER_MISSING: ${checkRunner}`);
   }

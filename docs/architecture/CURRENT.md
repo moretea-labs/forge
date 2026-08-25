@@ -66,7 +66,7 @@ Explicit **Scale** is the opt-in coordination form of this existing model, not a
 - Validation results own check evidence for the exact inputs they verified.
 - Work owns durable continuity only when continuity is actually required.
 - Durable Process owns persisted command/check lifecycle only when the selected lane is durable.
-- Runtime release/recovery state owns Forge service availability and immutable release activation; it is separate from ordinary command recovery.
+- Runtime release/recovery state owns Forge service availability and immutable release activation; it is separate from ordinary command recovery. The canonical OS service executes an atomic byte-identical mirror of the selected signed Runtime entrypoint from the fixed physical `runtime/service/active-forge-runtime` path, while release resources and identity remain manifest-bound. The stable physical path prevents macOS TCC from treating every immutable release directory as a new responsible-process principal.
 - Historical Issue/Task/Local Job and compatibility projections must not become second mutable authorities.
 
 ## Runtime and MCP boundary

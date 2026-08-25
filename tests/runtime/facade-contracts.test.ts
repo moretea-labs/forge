@@ -29,6 +29,17 @@ describe('handoff and facade contracts', () => {
     expect(allowedFacadeOperations('rh_work')).toContain('controller_disposition');
   });
 
+  test('exposes explicit Requirement bootstrap through rh_work without expanding the tool surface', () => {
+    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
+    const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
+    expect(properties?.operation?.enum).toContain('requirement_create');
+    expect(properties).toHaveProperty('requirement_title');
+    expect(properties).toHaveProperty('requirement_outcome');
+    expect(properties).toHaveProperty('requirement_acceptance_criteria');
+    expect(allowedFacadeOperations('rh_work')).toContain('requirement_create');
+    expect(FACADE_TOOLS).toHaveLength(5);
+  });
+
   test('keeps Work continuation scheduling inside rh_work instead of expanding the tool surface', () => {
     expect(allowedFacadeOperations('rh_work')).toEqual(expect.arrayContaining([
       'schedule_create',

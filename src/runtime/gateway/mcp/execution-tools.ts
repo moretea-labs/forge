@@ -1686,7 +1686,11 @@ function retryHandleStateForFinalization(stages: WorkFinalizationStages): WorkHa
   return 'validating';
 }
 
-function resetFailedFinalizationStages(stages: WorkFinalizationStages, wants: { commit: boolean; merge: boolean; cleanup: boolean }): WorkFinalizationStages {
+export function resetFinalizationStagesForRequest(
+  stages: WorkFinalizationStages,
+  wants: { commit: boolean; merge: boolean; cleanup: boolean },
+  options: { managedWorktree?: boolean; deleteBranchRequested?: boolean; retainedByRequest?: boolean } = {},
+): WorkFinalizationStages {
   const next = { ...stages };
   let reset = false;
   if (next.validation === 'failed') {
@@ -1706,6 +1710,19 @@ function resetFailedFinalizationStages(stages: WorkFinalizationStages, wants: { 
     reset = true;
   }
   if (wants.cleanup && next.branchCleanup === 'failed') {
+    next.branchCleanup = 'pending';
+    reset = true;
+  }
+  // A prior finalize(cleanup=false) intentionally records managed resources as
+  // skipped/retained. A later explicit cleanup=true is a new resource-disposal
+  // request, not an idempotent replay of the earlier retention decision. Re-arm
+  // only cleanup stages that are applicable to this managed Work; commit/merge
+  // skipped states keep their original delivery semantics.
+  if (wants.cleanup && options.retainedByRequest === true && options.managedWorktree === true && next.worktreeCleanup === 'skipped') {
+    next.worktreeCleanup = 'pending';
+    reset = true;
+  }
+  if (wants.cleanup && options.retainedByRequest === true && options.managedWorktree === true && options.deleteBranchRequested === true && next.branchCleanup === 'skipped') {
     next.branchCleanup = 'pending';
     reset = true;
   }
@@ -1925,7 +1942,12 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       ...fresh,
       state: fresh.state === 'failed' ? retryHandleStateForFinalization(fresh.finalization) : fresh.state,
       failureReason: undefined,
-      finalization: resetFailedFinalizationStages(fresh.finalization, wants),
+      finalization: resetFinalizationStagesForRequest(fresh.finalization, wants, {
+        managedWorktree: fresh.managedWorktree,
+        deleteBranchRequested,
+        retainedByRequest: fresh.terminalResourceDisposition?.mode === 'retained_by_request',
+      }),
+      ...(wants.cleanup && fresh.terminalResourceDisposition?.mode === 'retained_by_request' ? { terminalResourceDisposition: undefined } : {}),
     }));
   }
 

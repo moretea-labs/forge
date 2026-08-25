@@ -68,7 +68,7 @@ A release change is performed only as an explicitly authorized whole-Runtime ope
 1. validate one immutable release manifest, configuration, database compatibility range, and Worker protocol;
 2. quiesce admission and stop the complete Runtime;
 3. atomically select the candidate as the one active whole release;
-4. let the single Forge Runtime service start `forge-runtime` from that complete release;
+4. atomically mirror the selected release's signed `forge-runtime` entrypoint to the fixed physical service path `runtime/service/active-forge-runtime`, then let the single Forge Runtime service start that stable path with the selected release manifest/environment;
 5. require binary whole-Runtime readiness;
 6. on failure, stop the service, restore the previous release and its bound local SQLite backup, then start and verify the complete previous Runtime.
 

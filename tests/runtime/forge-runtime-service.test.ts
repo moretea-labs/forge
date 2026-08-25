@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -124,7 +124,10 @@ describe('Forge Runtime service', () => {
     expect(activeRuntimeEntrypoint(fx.home)).toBe(entry);
     const synced = syncForgeRuntimeActiveEntrypoint(fx.home);
     expect(synced.target).toBe(entry);
-    expect(readlinkSync(paths.activeEntrypointPath)).toBe(entry);
+    expect(lstatSync(paths.activeEntrypointPath).isSymbolicLink()).toBe(false);
+    expect(lstatSync(paths.activeEntrypointPath).isFile()).toBe(true);
+    expect(readFileSync(paths.activeEntrypointPath, 'utf8')).toBe(readFileSync(entry, 'utf8'));
+    expect(syncForgeRuntimeActiveEntrypoint(fx.home).changed).toBe(false);
     const ensured = ensureForgeRuntimeLaunchAgentContract({ controllerHome: fx.home });
     expect(ensured.mode).toBe('release');
     expect(existsSync(paths.installedPlistPath)).toBe(false);
@@ -154,6 +157,57 @@ describe('Forge Runtime service', () => {
     expect(plist).toContain('<string>source-a</string>');
     expect(plist).not.toContain('<string>--config</string>');
     expect(plist).not.toContain('forge-runtime-service.mjs');
+  });
+
+  test('migrates the legacy symlink and keeps one physical Runtime path across release switches', () => {
+    const fx = fixture();
+    const paths = forgeRuntimeServicePaths(fx.home);
+    const releasesRoot = join(fx.home, 'runtime', 'releases');
+    const authorityPath = join(releasesRoot, 'authority.json');
+    const activate = (releaseId: string, bytes: string) => {
+      const releaseRoot = join(releasesRoot, releaseId);
+      const entry = join(releaseRoot, 'forge-runtime');
+      const manifestPath = join(releaseRoot, 'manifest.json');
+      mkdirSync(releaseRoot, { recursive: true });
+      writeFileSync(entry, bytes, { mode: 0o755 });
+      writeFileSync(manifestPath, `${JSON.stringify({
+        schemaVersion: 1,
+        releaseId,
+        entrypoint: 'forge-runtime',
+        controllerHome: fx.home,
+        artifactIdentity: `sha256:${releaseId}`,
+        arguments: [],
+      })}\n`);
+      writeFileSync(authorityPath, `${JSON.stringify({
+        schemaVersion: 1,
+        status: 'committed',
+        active: { releaseId, manifestPath, artifactIdentity: `sha256:${releaseId}` },
+      })}\n`);
+      return entry;
+    };
+
+    const releaseA = activate('release-a', 'runtime-a');
+    mkdirSync(paths.serviceRoot, { recursive: true });
+    symlinkSync(releaseA, paths.activeEntrypointPath);
+    expect(lstatSync(paths.activeEntrypointPath).isSymbolicLink()).toBe(true);
+
+    const migrated = syncForgeRuntimeActiveEntrypoint(fx.home);
+    expect(migrated).toEqual({ path: paths.activeEntrypointPath, target: releaseA, changed: true });
+    expect(lstatSync(paths.activeEntrypointPath).isFile()).toBe(true);
+    expect(lstatSync(paths.activeEntrypointPath).isSymbolicLink()).toBe(false);
+    expect(readFileSync(paths.activeEntrypointPath, 'utf8')).toBe('runtime-a');
+    expect(syncForgeRuntimeActiveEntrypoint(fx.home).changed).toBe(false);
+
+    const releaseB = activate('release-b', 'runtime-b');
+    const switched = syncForgeRuntimeActiveEntrypoint(fx.home);
+    expect(switched).toEqual({ path: paths.activeEntrypointPath, target: releaseB, changed: true });
+    expect(lstatSync(paths.activeEntrypointPath).isSymbolicLink()).toBe(false);
+    expect(readFileSync(paths.activeEntrypointPath, 'utf8')).toBe('runtime-b');
+
+    rmSync(authorityPath, { force: true });
+    expect(syncForgeRuntimeActiveEntrypoint(fx.home)).toEqual({ path: paths.activeEntrypointPath, changed: true });
+    expect(existsSync(paths.activeEntrypointPath)).toBe(false);
+    expect(syncForgeRuntimeActiveEntrypoint(fx.home)).toEqual({ path: paths.activeEntrypointPath, changed: false });
   });
 
   test('does not materialize or reconcile a standalone Browser Automation helper from legacy manifest fields', () => {
@@ -375,6 +429,9 @@ describe('Forge Runtime service', () => {
     expect(authority?.active.releaseId).toBe(priorRelease.releaseId);
     expect(authority?.previous?.releaseId).not.toBe(priorRelease.releaseId);
     expect(activeRuntimeEntrypoint(fx.home)).toBe(priorRelease.entrypointPath);
+    expect(lstatSync(paths.activeEntrypointPath).isSymbolicLink()).toBe(false);
+    expect(lstatSync(paths.activeEntrypointPath).isFile()).toBe(true);
+    expect(readFileSync(paths.activeEntrypointPath)).toEqual(readFileSync(priorRelease.entrypointPath));
     expect(readFileSync(paths.configPath, 'utf8')).toBe(priorConfigBytes);
   });
 

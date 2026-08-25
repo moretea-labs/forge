@@ -50,7 +50,7 @@ describe('typed CLI child invocation', () => {
     });
   });
 
-  test('persisted checks use a dedicated immutable check runner instead of the Runtime daemon or diagnostic CLI', () => {
+  test('persisted checks use the release-bound immutable check runner even when the Runtime daemon has a stable service path', () => {
     const cliTarget = {
       entry: '/opt/releases/release-123/forge-runtime',
       cwd: '/opt/releases/release-123',
@@ -61,12 +61,12 @@ describe('typed CLI child invocation', () => {
     };
     const executable = resolvePersistedCheckRuntimeExecutable(
       cliTarget,
-      '/opt/releases/release-123/forge-runtime',
+      '/opt/runtime/service/active-forge-runtime',
       (path) => path === '/opt/releases/release-123/forge-check-runner',
     );
     expect(executable).toBe('/opt/releases/release-123/forge-check-runner');
     expect(resolvePersistedCheckProcessInvocation(cliTarget, diagnosticArgs, {
-      runtimeExecutable: '/opt/releases/release-123/forge-runtime',
+      runtimeExecutable: '/opt/runtime/service/active-forge-runtime',
       entryExists: (path) => path === '/opt/releases/release-123/forge-check-runner',
     })).toEqual({ executable, args: diagnosticArgs });
   });
