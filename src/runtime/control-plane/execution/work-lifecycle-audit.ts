@@ -1,5 +1,5 @@
 import { spawnSync } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, realpathSync } from 'fs';
 import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { listWorkContracts } from '../facade/work-contract-store';
@@ -68,8 +68,13 @@ function dirty(path: string): boolean | undefined {
   return status === undefined ? undefined : status.length > 0;
 }
 
-function branchIntegrated(repositoryRoot: string, branch: string, targetBranch: string): boolean | undefined {
-  const result = spawnSync('git', ['-C', repositoryRoot, 'merge-base', '--is-ancestor', branch, targetBranch], {
+function canonicalPath(path: string): string {
+  try { return realpathSync.native(path); }
+  catch { return resolve(path); }
+}
+
+function refReachableFromTarget(repositoryRoot: string, ref: string, targetBranch: string): boolean | undefined {
+  const result = spawnSync('git', ['-C', repositoryRoot, 'merge-base', '--is-ancestor', ref, targetBranch], {
     encoding: 'utf8',
     stdio: ['ignore', 'ignore', 'ignore'],
     timeout: 10_000,
@@ -77,6 +82,22 @@ function branchIntegrated(repositoryRoot: string, branch: string, targetBranch: 
   if (result.status === 0) return true;
   if (result.status === 1) return false;
   return undefined;
+}
+
+function branchIntegrated(repositoryRoot: string, branch: string, targetBranch: string): boolean | undefined {
+  const reachable = refReachableFromTarget(repositoryRoot, branch, targetBranch);
+  if (reachable !== false) return reachable;
+
+  // Rebase/cherry-pick delivery can preserve every patch while changing ancestry.
+  // Treat the branch as integrated only when Git proves it has no unique patches.
+  const cherry = spawnSync('git', ['-C', repositoryRoot, 'cherry', targetBranch, branch], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 10_000,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  if (cherry.status !== 0 || typeof cherry.stdout !== 'string') return false;
+  return !cherry.stdout.split('\n').some((line) => line.startsWith('+ '));
 }
 
 function attention(code: string, identity: string, message: string): WorkLifecycleAttention {
@@ -102,6 +123,7 @@ export function collectWorkLifecycleAttention(
   const contractsByWork = new Map(contracts.map((contract) => [contract.workId, contract]));
   const handlesByWork = new Map(handles.map((handle) => [handle.workContractId ?? handle.workId, handle]));
   const findings: WorkLifecycleAttention[] = [];
+  const targetBranch = repository.defaultBranch || 'main';
 
   for (const contract of contracts) {
     const handle = handlesByWork.get(contract.workId);
@@ -136,22 +158,26 @@ export function collectWorkLifecycleAttention(
         `Completed Work ${contract.workId} has no Completion Receipt.`,
       ));
     }
-    if (
-      contract.completionReceipt?.source === 'controller_work'
-      && handle?.expectedHead
-      && contract.completionReceipt.sourceRevision !== handle.expectedHead
-    ) {
-      findings.push(attention(
-        'completion_receipt_source_mismatch',
-        contract.workId,
-        `Work ${contract.workId} receipt source ${contract.completionReceipt.sourceRevision ?? 'missing'} does not match delivered head ${handle.expectedHead}.`,
-      ));
+    if (contract.status === 'completed' && contract.completionReceipt?.source === 'controller_work') {
+      const receiptTargetRevision = contract.completionReceipt.targetRevision?.trim();
+      const receiptTargetBranch = contract.completionReceipt.targetBranch?.trim() || targetBranch;
+      if (!receiptTargetRevision || refReachableFromTarget(repository.canonicalRoot, receiptTargetRevision, receiptTargetBranch) !== true) {
+        findings.push(attention(
+          'completion_receipt_target_not_integrated',
+          contract.workId,
+          `Work ${contract.workId} receipt target ${receiptTargetRevision || 'missing'} is not reachable from ${receiptTargetBranch}.`,
+        ));
+      }
     }
     if (!handle || handle.terminalResourceDisposition?.mode === 'retained_by_request') continue;
-    const cleanupUnsettled = handle.finalization.branchCleanup === 'pending'
-      || handle.finalization.branchCleanup === 'failed'
-      || handle.finalization.worktreeCleanup === 'pending'
+    const cleanupFailed = handle.finalization.branchCleanup === 'failed'
       || handle.finalization.worktreeCleanup === 'failed';
+    const cleanupPending = handle.finalization.branchCleanup === 'pending'
+      || handle.finalization.worktreeCleanup === 'pending';
+    const repositoryOwnedCanonicalCheckout = !handle.managedWorktree
+      && canonicalPath(handle.worktreePath) === canonicalPath(repository.canonicalRoot)
+      && handle.branch === targetBranch;
+    const cleanupUnsettled = cleanupFailed || (cleanupPending && !repositoryOwnedCanonicalCheckout);
     if (cleanupUnsettled) {
       findings.push(attention(
         'terminal_work_cleanup_unsettled',
@@ -184,9 +210,9 @@ export function collectWorkLifecycleAttention(
   const activeRegistryRoots = new Set(
     repository.checkouts
       .filter((checkout) => (checkout.lifecycle ?? 'active') === 'active')
-      .map((checkout) => resolve(checkout.canonicalRoot)),
+      .map((checkout) => canonicalPath(checkout.canonicalRoot)),
   );
-  const handleRoots = new Map(handles.map((handle) => [resolve(handle.worktreePath), handle]));
+  const handleRoots = new Map(handles.map((handle) => [canonicalPath(handle.worktreePath), handle]));
 
   for (const checkout of repository.checkouts) {
     if ((checkout.lifecycle ?? 'active') === 'active' && !existsSync(checkout.canonicalRoot)) {
@@ -200,7 +226,7 @@ export function collectWorkLifecycleAttention(
 
   const linked = linkedWorktrees(repository.canonicalRoot);
   for (const worktree of linked) {
-    const root = resolve(worktree.path);
+    const root = canonicalPath(worktree.path);
     if (activeRegistryRoots.has(root)) continue;
     const isDirty = dirty(root);
     const handle = handleRoots.get(root);
@@ -212,7 +238,6 @@ export function collectWorkLifecycleAttention(
     ));
   }
 
-  const targetBranch = repository.defaultBranch || 'main';
   const branches = git(repository.canonicalRoot, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/work', 'refs/heads/codex'])
     ?.split('\n')
     .map((branch) => branch.trim())

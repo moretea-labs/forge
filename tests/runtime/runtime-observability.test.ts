@@ -30,6 +30,8 @@ import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from '../../src/
 import { collectRuntimeSourceIdentity, rotateRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
+import { createWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { DEFAULT_CONTROLLER_TOOL_NAMES } from '../../src/cli/mcp/toolset-names';
 import { FORGE_VERSION } from '../../src/cli/controller/runtime-config';
 import {
@@ -277,6 +279,175 @@ describe('runtime observability', () => {
     } finally {
       spawnSync('git', ['worktree', 'remove', '--force', worktreeRoot], { cwd: repoRoot, stdio: 'ignore' });
       rmSync(worktreeRoot, { recursive: true, force: true });
+      rmSync(controllerHome, { recursive: true, force: true });
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('audits immutable completion delivery and repository-owned legacy cleanup without false blockers', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-lifecycle-receipt-ch-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-lifecycle-receipt-repo-'));
+    try {
+      spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot, stdio: 'ignore' });
+      writeFileSync(join(repoRoot, 'README.md'), 'base\n');
+      spawnSync('git', ['add', '.'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'base'], { cwd: repoRoot, stdio: 'ignore' });
+      const mainRevision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+      const checkoutId = repository.checkouts[0]!.checkoutId;
+      const now = new Date().toISOString();
+      const store = { controllerHome, repoId: repository.repoId };
+
+      const baseWork = (workId: string, status: 'ready' | 'cancelled' = 'ready') => createWorkContract(store, {
+        workId,
+        repoId: repository.repoId,
+        checkoutId,
+        mode: 'direct_control',
+        objective: `audit fixture ${workId}`,
+        acceptanceCriteria: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: 'system',
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: [],
+        status,
+      });
+      const handle = (workId: string, finalization: WorkHandleState['finalization']): WorkHandleState => ({
+        schemaVersion: 1,
+        workId,
+        sessionId: `session-${workId}`,
+        principalId: 'test',
+        repositoryId: repository.repoId,
+        checkoutId,
+        worktreePath: repoRoot,
+        branch: 'main',
+        managedWorktree: false,
+        workContractId: workId,
+        baseCommit: mainRevision,
+        expectedHead: mainRevision,
+        permissionSnapshotVersion: 1,
+        state: 'prepared',
+        createdAt: now,
+        updatedAt: now,
+        finalization,
+      });
+      const receipt = (workId: string, targetRevision: string) => ({
+        schemaVersion: 1 as const,
+        receiptId: `receipt-${workId}`,
+        source: 'controller_work' as const,
+        issueId: 'work',
+        taskId: workId,
+        workId,
+        targetBranch: 'main',
+        targetRevision,
+        sourceRevision: 'legacy-source-revision-that-is-not-the-delivered-head',
+        baseRevision: mainRevision,
+        changedPaths: [],
+        delivery: {
+          kind: 'commit' as const,
+          status: 'integrated' as const,
+          strategy: 'already_integrated' as const,
+          reachable: true,
+          recordedAt: now,
+        },
+        cleanup: { status: 'complete' as const, warnings: [], blockers: [], recordedAt: now },
+        verifiedAt: now,
+        recordedAt: now,
+      });
+
+      const completedWorkId = 'work-completed-audit-fixture';
+      baseWork(completedWorkId);
+      writeWorkHandle(controllerHome, handle(completedWorkId, {
+        validation: 'pending',
+        commit: 'pending',
+        merge: 'pending',
+        branchCleanup: 'pending',
+        worktreeCleanup: 'pending',
+      }));
+      recordWorkCompletionReceipt(store, completedWorkId, receipt(completedWorkId, mainRevision), 'completed_changed');
+
+      spawnSync('git', ['switch', '-c', 'receipt-unreachable'], { cwd: repoRoot, stdio: 'ignore' });
+      writeFileSync(join(repoRoot, 'unreachable.txt'), 'unique\n');
+      spawnSync('git', ['add', 'unreachable.txt'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'unreachable receipt'], { cwd: repoRoot, stdio: 'ignore' });
+      const unreachableRevision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
+      spawnSync('git', ['switch', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      const unreachableWorkId = 'work-unreachable-receipt-fixture';
+      baseWork(unreachableWorkId);
+      writeWorkHandle(controllerHome, handle(unreachableWorkId, {
+        validation: 'done',
+        commit: 'done',
+        merge: 'done',
+        branchCleanup: 'done',
+        worktreeCleanup: 'done',
+      }));
+      recordWorkCompletionReceipt(store, unreachableWorkId, receipt(unreachableWorkId, unreachableRevision), 'completed_changed');
+
+      const failedCleanupWorkId = 'work-failed-cleanup-fixture';
+      baseWork(failedCleanupWorkId, 'cancelled');
+      writeWorkHandle(controllerHome, handle(failedCleanupWorkId, {
+        validation: 'pending',
+        commit: 'pending',
+        merge: 'pending',
+        branchCleanup: 'failed',
+        worktreeCleanup: 'pending',
+      }));
+
+      const findings = collectWorkLifecycleAttention(controllerHome, repository);
+      expect(findings).not.toContainEqual(expect.objectContaining({
+        jobId: `lifecycle:completion_receipt_source_mismatch:${completedWorkId}`,
+      }));
+      expect(findings).not.toContainEqual(expect.objectContaining({
+        jobId: `lifecycle:terminal_work_cleanup_unsettled:${completedWorkId}`,
+      }));
+      expect(findings).toContainEqual(expect.objectContaining({
+        jobId: `lifecycle:completion_receipt_target_not_integrated:${unreachableWorkId}`,
+      }));
+      expect(findings).toContainEqual(expect.objectContaining({
+        jobId: `lifecycle:terminal_work_cleanup_unsettled:${failedCleanupWorkId}`,
+      }));
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('treats patch-equivalent orphan Work branches as integrated while keeping unique patches blocking', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-lifecycle-cherry-ch-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-lifecycle-cherry-repo-'));
+    try {
+      spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot, stdio: 'ignore' });
+      writeFileSync(join(repoRoot, 'README.md'), 'base\n');
+      spawnSync('git', ['add', '.'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'base'], { cwd: repoRoot, stdio: 'ignore' });
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+
+      spawnSync('git', ['switch', '-c', 'work/patch-equivalent'], { cwd: repoRoot, stdio: 'ignore' });
+      writeFileSync(join(repoRoot, 'delivered.txt'), 'delivered\n');
+      spawnSync('git', ['add', 'delivered.txt'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'delivered patch'], { cwd: repoRoot, stdio: 'ignore' });
+      const deliveredCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
+      spawnSync('git', ['switch', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['cherry-pick', deliveredCommit], { cwd: repoRoot, stdio: 'ignore' });
+
+      spawnSync('git', ['switch', '-c', 'work/unique-patch'], { cwd: repoRoot, stdio: 'ignore' });
+      writeFileSync(join(repoRoot, 'unique.txt'), 'unique\n');
+      spawnSync('git', ['add', 'unique.txt'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'unique patch'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['switch', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+
+      const findings = collectWorkLifecycleAttention(controllerHome, repository);
+      expect(findings).not.toContainEqual(expect.objectContaining({
+        jobId: 'lifecycle:work_branch_not_integrated:work/patch-equivalent',
+      }));
+      expect(findings).toContainEqual(expect.objectContaining({
+        jobId: 'lifecycle:work_branch_not_integrated:work/unique-patch',
+      }));
+    } finally {
       rmSync(controllerHome, { recursive: true, force: true });
       rmSync(repoRoot, { recursive: true, force: true });
     }
