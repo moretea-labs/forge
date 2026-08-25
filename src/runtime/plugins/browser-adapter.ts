@@ -4161,6 +4161,7 @@ async function executeBrowserPluginActionInternal(input: AssistantPluginActionEx
           const timeout = positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
           let adoptedProduct: MacOsBrowserProduct;
           let adoptedRef: MacOsBrowserTabRef;
+          let adoptedSystemFrontmost = false;
           if (nativeActiveTab) {
             if (nativeWindowId || nativeTabId) {
               throw new AssistantPluginError(
@@ -4175,15 +4176,16 @@ async function executeBrowserPluginActionInternal(input: AssistantPluginActionEx
             const discovered = await discoverMacOsBrowserAttachment(candidates, Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));
             const activeMetadata = discovered.attachment?.metadata;
             const requiresSystemFrontmost = !normalizedNativeProduct;
-            if (!activeMetadata || (requiresSystemFrontmost && !activeMetadata.frontmost)) {
+            if (!activeMetadata || (requiresSystemFrontmost && (!activeMetadata.frontmost || activeMetadata.active !== true))) {
               throw new AssistantPluginError(
                 'PLUGIN_BROWSER_ACTIVE_TAB_UNAVAILABLE',
                 requiresSystemFrontmost
-                  ? 'No frontmost native browser tab with a stable native identity is available for adoption.'
+                  ? 'No system-frontmost active native browser tab with a stable native identity is available for adoption.'
                   : 'The explicitly selected native browser does not expose an active tab with a stable native identity.',
                 { retryable: true, details: { browserProduct: nativeProduct, requiresSystemFrontmost, attempts: discovered.attempts } },
               );
             }
+            adoptedSystemFrontmost = activeMetadata.frontmost === true && activeMetadata.active === true;
             adoptedProduct = activeMetadata.product;
             if (activeMetadata.windowId && activeMetadata.tabId) {
               adoptedRef = { windowId: activeMetadata.windowId, tabId: activeMetadata.tabId };
@@ -4255,7 +4257,15 @@ async function executeBrowserPluginActionInternal(input: AssistantPluginActionEx
             browserProduct: adoptedProduct,
             profile: { selectedProfilePath: `macos:${adoptedProduct}:user-tab` },
             tabInventory: [{ index: 0, key: tabKey(requestedUrl, title), url: requestedUrl, title }],
-            sessionResume: { sessionId: target.sessionId, status: 'matched', reason: nativeActiveTab ? 'Explicitly adopted the matching frontmost user-owned native browser tab.' : 'Explicitly adopted an existing user-owned native browser tab.' },
+            sessionResume: {
+              sessionId: target.sessionId,
+              status: 'matched',
+              reason: nativeActiveTab && adoptedSystemFrontmost
+                ? 'Explicitly adopted the matching system-frontmost active user-owned native browser tab.'
+                : nativeActiveTab
+                  ? 'Explicitly adopted the selected browser active tab; system-frontmost authority was not established.'
+                  : 'Explicitly adopted an existing user-owned native browser tab.',
+            },
           }, requestedUrl, title, 'saved_url', { ownership: 'user_owned', windowId: adoptedRef.windowId, tabId: adoptedRef.tabId });
           const session = saveSession(input.repoRoot, sessionFromPage(target, requestedUrl, title, connection));
           return {
