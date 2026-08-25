@@ -13,9 +13,11 @@ permissions:
 
 concurrency:
   # Never intentionally run two writers against the dedicated tunnel until
-  # overlapping-runtime takeover is explicitly proven safe.
+  # overlapping-runtime takeover is explicitly proven safe. Queue the next
+  # scheduled host instead of cancelling the healthy incumbent; the queued run
+  # starts as soon as the incumbent exits and reconnects the same remote tunnel.
   group: forge-cloud-maintainer-dedicated-tunnel
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   host-cloud-forge:
