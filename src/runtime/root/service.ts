@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
@@ -210,29 +210,66 @@ export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLa
   };
 }
 
-function atomicSymlink(path: string, target: string): void {
+function pathEntryExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stableRuntimeEntrypointMatches(path: string, target: string): boolean {
+  try {
+    const current = lstatSync(path);
+    const desired = statSync(target);
+    if (!current.isFile() || current.isSymbolicLink() || !desired.isFile()) return false;
+    if (current.size !== desired.size || (current.mode & 0o777) !== (desired.mode & 0o777)) return false;
+    return readFileSync(path).equals(readFileSync(target));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Keep the Runtime process at one physical path on macOS. TCC resolves symlinks
+ * before assigning the responsible process, so a stable symlink to an immutable
+ * release still creates a new permission principal for every release directory.
+ * The executable is Developer-ID signed with a stable designated requirement;
+ * atomically mirroring those exact signed bytes to this fixed service path keeps
+ * TCC identity stable while release assets/rollback remain bound by manifest/env.
+ */
+function atomicMirrorRuntimeEntrypoint(path: string, target: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-  rmSync(temporary, { force: true });
-  symlinkSync(target, temporary);
-  renameSync(temporary, path);
+  rmSync(temporary, { force: true, recursive: true });
+  try {
+    copyFileSync(target, temporary);
+    chmodSync(temporary, statSync(target).mode & 0o777);
+    try {
+      if (lstatSync(path).isDirectory()) rmSync(path, { force: true, recursive: true });
+    } catch {}
+    renameSync(temporary, path);
+  } finally {
+    rmSync(temporary, { force: true, recursive: true });
+  }
 }
 
 export function syncForgeRuntimeActiveEntrypoint(controllerHome: string): { path: string; target?: string; changed: boolean } {
   const paths = forgeRuntimeServicePaths(controllerHome);
   const target = activeRuntimeEntrypoint(controllerHome);
   if (!target) {
-    const existed = existsSync(paths.activeEntrypointPath);
+    const existed = pathEntryExists(paths.activeEntrypointPath);
     if (existed) rmSync(paths.activeEntrypointPath, { force: true, recursive: true });
     return { path: paths.activeEntrypointPath, changed: existed };
   }
-  let current: string | undefined;
-  try {
-    if (lstatSync(paths.activeEntrypointPath).isSymbolicLink()) current = resolve(dirname(paths.activeEntrypointPath), readlinkSync(paths.activeEntrypointPath));
-  } catch {}
-  if (current === target) return { path: paths.activeEntrypointPath, target, changed: false };
-  rmSync(paths.activeEntrypointPath, { force: true, recursive: true });
-  atomicSymlink(paths.activeEntrypointPath, target);
+  if (stableRuntimeEntrypointMatches(paths.activeEntrypointPath, target)) {
+    return { path: paths.activeEntrypointPath, target, changed: false };
+  }
+  atomicMirrorRuntimeEntrypoint(paths.activeEntrypointPath, target);
+  if (!stableRuntimeEntrypointMatches(paths.activeEntrypointPath, target)) {
+    throw new Error('FORGE_RUNTIME_STABLE_ENTRYPOINT_MIRROR_FAILED');
+  }
   return { path: paths.activeEntrypointPath, target, changed: true };
 }
 
