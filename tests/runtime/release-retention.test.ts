@@ -149,6 +149,42 @@ describe('controller release retention', () => {
     expect(report.removedPaths).toContain('recovery/releases/stale-release');
   });
 
+  test('ignores stale missing recovery known-good history while preserving extant known-good releases', () => {
+    const home = controllerHome();
+    const active = runtimeRelease(home, 'active-release');
+    const previous = runtimeRelease(home, 'previous-release');
+    const knownGood = runtimeRelease(home, 'known-good-release');
+    const stale = runtimeRelease(home, 'stale-release');
+    const backups = join(home, 'runtime', 'releases', 'backups');
+    mkdirSync(backups, { recursive: true });
+    const referencedBackup = join(backups, 'referenced.sqlite');
+    writeFileSync(referencedBackup, 'referenced', 'utf8');
+    writeRuntimeAuthority(home, 'active-release', 'previous-release', referencedBackup);
+    mkdirSync(join(home, 'recovery', 'state'), { recursive: true });
+    writeFileSync(join(home, 'recovery', 'state', 'known-good.json'), `${JSON.stringify({
+      schemaVersion: 1,
+      releases: [
+        { revision: 'known-good-release', path: join(knownGood, 'manifest.json') },
+        { revision: 'already-pruned-release', path: join(home, 'runtime', 'releases', 'already-pruned-release', 'manifest.json') },
+      ],
+    }, null, 2)}\n`, 'utf8');
+    age(stale);
+
+    const report = cleanupControllerReleaseHistory(home, {
+      nowMs: NOW,
+      graceMs: 0,
+      maxRemovals: 20,
+    });
+
+    expect(existsSync(active)).toBe(true);
+    expect(existsSync(previous)).toBe(true);
+    expect(existsSync(knownGood)).toBe(true);
+    expect(existsSync(stale)).toBe(false);
+    expect(report.errors).toEqual([]);
+    expect(report.removedPaths).toContain('runtime/releases/stale-release');
+    expect(report.skippedByReason.release_authority).toBe(3);
+  });
+
   test('fails closed when runtime release authority is malformed', () => {
     const home = controllerHome();
     const stale = runtimeRelease(home, 'stale-release');

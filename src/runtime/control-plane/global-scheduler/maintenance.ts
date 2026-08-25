@@ -1,4 +1,5 @@
 import type { RepositoryRecord } from '../../../cli/repositories/types';
+import { cleanupGeneratedRepositoryCaches, cleanupIdleXCTestDevices } from '../generated-cache-retention';
 import type { cleanupControllerRuntimeState } from '../runtime-cleanup';
 import type { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanup';
 import type { gcTerminalProcesses } from '../../execution/process-runtime/gc';
@@ -17,7 +18,7 @@ export async function runSchedulerPeriodicCleanup(input: {
   controllerPid: number;
   nowMs: number;
   cleanupIntervalMs: number;
-  repositories: readonly Pick<RepositoryRecord, 'repoId'>[];
+  repositories: readonly RepositoryRecord[];
   runtimeCleanup: typeof cleanupControllerRuntimeState;
   terminalWorkCleanup: typeof reconcileTerminalWorkCleanups;
   processGc: typeof gcTerminalProcesses;
@@ -36,9 +37,23 @@ export async function runSchedulerPeriodicCleanup(input: {
   } catch (error) {
     console.error('[forge cleanup] terminal Work cleanup failed:', error);
   }
+  try {
+    const xctestCleanup = cleanupIdleXCTestDevices(input.controllerHome);
+    if (xctestCleanup.error) console.error('[forge cleanup] XCTest device cleanup failed:', xctestCleanup.error);
+  } catch (error) {
+    console.error('[forge cleanup] XCTest device cleanup failed:', error);
+  }
   if (input.repositories.length === 0) return;
   const slot = Math.floor(input.nowMs / input.cleanupIntervalMs) % input.repositories.length;
   const repo = input.repositories[slot]!;
+  try {
+    const generated = cleanupGeneratedRepositoryCaches(repo.canonicalRoot, { nowMs: input.nowMs });
+    if (generated.errors.length > 0) {
+      console.error(`[forge cleanup] generated-cache retention reported ${generated.errors.length} error(s) for ${repo.repoId}`);
+    }
+  } catch (error) {
+    console.error(`[forge cleanup] generated-cache retention failed for ${repo.repoId}:`, error);
+  }
   const result = input.processGc({ controllerHome: input.controllerHome, repoId: repo.repoId });
   if (!result.ok) console.error('[forge cleanup] Process GC failed:', result.error ?? 'unknown error');
 }
