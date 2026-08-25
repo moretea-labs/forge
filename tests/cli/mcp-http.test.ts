@@ -178,6 +178,19 @@ describe('mcp http transport', () => {
     }
   });
 
+  test('cloud tunnel host uses MCP initialize readiness for none instead of OAuth metadata', () => {
+    const script = readFileSync(join(process.cwd(), 'scripts/host-temporary-cloud-mcp-e2e.sh'), 'utf8');
+    const authGate = script.slice(script.indexOf('case \"$MCP_AUTH_MODE\" in'), script.indexOf('mkdir -p \"$TUNNEL_DIR\"'));
+    expect(authGate).toContain('oauth)');
+    expect(authGate).toContain('/.well-known/oauth-authorization-server');
+    expect(authGate).toContain('none)');
+    expect(authGate).toContain('\"method\":\"initialize\"');
+    expect(authGate).toContain('mcp-session-id:');
+    expect(authGate).toContain('\"http://127.0.0.1:${GATEWAY_PORT}/mcp\"');
+    const noneGate = authGate.slice(authGate.indexOf('none)'), authGate.indexOf('bearer)'));
+    expect(noneGate).not.toContain('/.well-known/oauth-authorization-server');
+  });
+
   test('preserves existing proxy settings while bypassing direct Runtime endpoints', () => {
     const merged = mergeNoProxy('127.0.0.1,localhost', '.ts.net', '127.0.0.1');
     expect(merged.split(',')).toEqual(['127.0.0.1', 'localhost', '.ts.net']);
