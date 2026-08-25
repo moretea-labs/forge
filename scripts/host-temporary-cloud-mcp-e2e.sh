@@ -9,6 +9,7 @@ HOLD_SECONDS="${FORGE_CLOUD_MCP_HOLD_SECONDS:-1500}"
 TUNNEL_ID="${FORGE_CLOUD_TUNNEL_ID:-}"
 TUNNEL_ALIAS="${FORGE_CLOUD_TUNNEL_ALIAS:-forge-cloud-ci}"
 TUNNEL_CLIENT_VERSION="${FORGE_TUNNEL_CLIENT_VERSION:-v0.0.12}"
+MCP_AUTH_MODE="${FORGE_CLOUD_MCP_AUTH_MODE:-none}"
 RUNTIME_API_KEY="${FORGE_CLOUD_TUNNEL_RUNTIME_API_KEY:-}"
 
 if [[ -z "$TUNNEL_ID" ]]; then
@@ -83,7 +84,7 @@ FORGE_CONTROLLER_LIFECYCLE_OWNER=1 \
   --host 127.0.0.1 \
   --port "$GATEWAY_PORT" \
   --profile controller \
-  --auth oauth > "$GATEWAY_LOG" 2>&1 &
+  --auth "$MCP_AUTH_MODE" > "$GATEWAY_LOG" 2>&1 &
 GATEWAY_PID=$!
 
 for _ in $(seq 1 30); do
@@ -131,6 +132,7 @@ printf 'FORGE_CLOUD_TUNNEL_ALIAS=%s\n' "$TUNNEL_ALIAS"
 printf 'FORGE_CLOUD_MCP_RUN_ID=%s\n' "${GITHUB_RUN_ID:-unknown}"
 printf 'FORGE_CLOUD_MCP_RUNNER_OS=%s\n' "${RUNNER_OS:-unknown}"
 printf 'FORGE_CLOUD_MCP_RUNNER_ARCH=%s\n' "${RUNNER_ARCH:-unknown}"
+printf 'FORGE_CLOUD_MCP_AUTH_MODE=%s\n' "$MCP_AUTH_MODE"
 
 elapsed=0
 while (( elapsed < HOLD_SECONDS )); do
