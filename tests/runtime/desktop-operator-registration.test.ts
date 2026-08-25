@@ -57,8 +57,10 @@ describe('Desktop Operator trusted external registration', () => {
       expect(action.confirmation).toBe('authorization');
     }
     const press = input.actions.find((action) => action.actionId === 'desktop_press');
-    const pressSchema = press?.argumentsSchema as { properties?: Record<string, unknown> } | undefined;
+    const pressSchema = press?.argumentsSchema as { properties?: Record<string, { enum?: string[] } | undefined> } | undefined;
+    expect(pressSchema?.properties?.semantic_action?.enum).toEqual(['press', 'show_menu', 'pick', 'open', 'confirm']);
     expect(pressSchema?.properties?.force_coordinate).toBeUndefined();
+    expect(pressSchema?.properties?.coordinate_fallback).toBeUndefined();
     expect(press?.description).toContain('pointer/coordinate fallback is intentionally unavailable');
     const pointerClick = input.actions.find((action) => action.actionId === 'desktop_pointer_click');
     expect(pointerClick).toMatchObject({ readOnly: false, risk: 'workspace_write', confirmation: 'authorization', scopes: ['desktop.interact'] });

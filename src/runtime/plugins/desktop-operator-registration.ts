@@ -133,6 +133,11 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
         properties: {
           interaction_id: { type: 'string' },
           selector: SELECTOR_SCHEMA,
+          semantic_action: {
+            type: 'string',
+            enum: ['press', 'show_menu', 'pick', 'open', 'confirm'],
+            description: 'Bounded Accessibility action supported by the trusted Desktop Operator provider; defaults to press when omitted.',
+          },
         },
         required: ['interaction_id', 'selector'],
         additionalProperties: false,
