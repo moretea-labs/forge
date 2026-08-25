@@ -37,17 +37,84 @@ TUNNEL_STATUS_JSON="$TMP_ROOT/tunnel-status.json"
 RUNTIME_PID=''
 GATEWAY_PID=''
 
-cleanup() {
-  if [[ -x "$TUNNEL_CLIENT" ]]; then
-    "$TUNNEL_CLIENT" runtimes stop "$TUNNEL_ALIAS" --json >/dev/null 2>&1 || true
-  fi
-  for pid in "$GATEWAY_PID" "$RUNTIME_PID"; do
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null || true
-    fi
+stop_pid() {
+  local pid="$1"
+  [[ -n "$pid" ]] || return 0
+  kill -0 "$pid" 2>/dev/null || return 0
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 40); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.25
   done
+  kill -KILL "$pid" 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+tunnel_status_ready() {
+  "$TUNNEL_CLIENT" runtimes status "$TUNNEL_ALIAS" --json > "$TUNNEL_STATUS_JSON" 2>/dev/null || return 1
+  node - "$TUNNEL_STATUS_JSON" <<'NODE'
+const fs = require('node:fs');
+const status = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+process.exit(status.process_running === true && status.healthy === true && status.ready === true ? 0 : 1);
+NODE
+}
+
+print_tunnel_status_summary() {
+  if [[ ! -s "$TUNNEL_STATUS_JSON" ]]; then
+    printf 'FORGE_CLOUD_TUNNEL_STATUS unavailable\n' >&2
+    return
+  fi
+  node - "$TUNNEL_STATUS_JSON" <<'NODE'
+const fs = require('node:fs');
+try {
+  const status = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+  const flag = (name) => status[name] === true ? 'true' : status[name] === false ? 'false' : 'unknown';
+  console.error(`FORGE_CLOUD_TUNNEL_STATUS process_running=${flag('process_running')} healthy=${flag('healthy')} ready=${flag('ready')}`);
+} catch {
+  console.error('FORGE_CLOUD_TUNNEL_STATUS unreadable');
+}
+NODE
+}
+
+wait_for_tunnel_ready() {
+  local attempts="$1"
+  for _ in $(seq 1 "$attempts"); do
+    if tunnel_status_ready; then
+      return 0
+    fi
+    sleep 1
+  done
+  print_tunnel_status_summary
+  return 1
+}
+
+cleanup() {
+  local original_status=$?
+  local cleanup_failed=0
+  trap - EXIT INT TERM
+  if [[ -x "$TUNNEL_CLIENT" ]]; then
+    "$TUNNEL_CLIENT" runtimes stop "$TUNNEL_ALIAS" --json >/dev/null 2>&1 || cleanup_failed=1
+  fi
+  stop_pid "$GATEWAY_PID" || cleanup_failed=1
+  stop_pid "$RUNTIME_PID" || cleanup_failed=1
   unset RUNTIME_API_KEY
-  rm -rf "$TMP_ROOT"
+  for _ in $(seq 1 20); do
+    rm -rf "$TMP_ROOT" 2>/dev/null || true
+    [[ ! -e "$TMP_ROOT" ]] && break
+    sleep 0.25
+  done
+  if [[ -e "$TMP_ROOT" ]]; then
+    echo 'FORGE_CLOUD_MCP_CLEANUP_FAILED: temporary root remained after bounded teardown' >&2
+    cleanup_failed=1
+  fi
+  if (( cleanup_failed != 0 )); then
+    exit 1
+  fi
+  exit "$original_status"
 }
 trap cleanup EXIT INT TERM
 
@@ -172,15 +239,10 @@ FORGE_RUNTIME_API_KEY="$RUNTIME_API_KEY" \
   --profile-dir "$TMP_ROOT/tunnel-profiles" \
   --json > "$TMP_ROOT/tunnel-connect.json"
 
-"$TUNNEL_CLIENT" runtimes status "$TUNNEL_ALIAS" --json > "$TUNNEL_STATUS_JSON"
-node - "$TUNNEL_STATUS_JSON" <<'NODE'
-const fs = require('node:fs');
-const status = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-if (status.process_running !== true || status.healthy !== true || status.ready !== true) {
-  console.error('FORGE_CLOUD_TUNNEL_NOT_READY');
-  process.exit(1);
-}
-NODE
+if ! wait_for_tunnel_ready 30; then
+  echo 'FORGE_CLOUD_TUNNEL_NOT_READY' >&2
+  exit 1
+fi
 
 printf 'FORGE_CLOUD_TUNNEL_ID=%s\n' "$TUNNEL_ID"
 printf 'FORGE_CLOUD_TUNNEL_ALIAS=%s\n' "$TUNNEL_ALIAS"
@@ -193,12 +255,10 @@ elapsed=0
 while (( elapsed < HOLD_SECONDS )); do
   kill -0 "$RUNTIME_PID" 2>/dev/null || { echo 'runtime exited' >&2; exit 1; }
   kill -0 "$GATEWAY_PID" 2>/dev/null || { cat "$GATEWAY_LOG" >&2; exit 1; }
-  "$TUNNEL_CLIENT" runtimes status "$TUNNEL_ALIAS" --json > "$TUNNEL_STATUS_JSON"
-  node - "$TUNNEL_STATUS_JSON" <<'NODE'
-const fs = require('node:fs');
-const status = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-if (status.process_running !== true || status.healthy !== true || status.ready !== true) process.exit(1);
-NODE
+  if ! wait_for_tunnel_ready 5; then
+    echo 'FORGE_CLOUD_TUNNEL_LOST_READINESS' >&2
+    exit 1
+  fi
   sleep 60
   elapsed=$((elapsed + 60))
   printf 'FORGE_CLOUD_MCP_HEARTBEAT elapsed=%ss tunnel_id=%s\n' "$elapsed" "$TUNNEL_ID"
