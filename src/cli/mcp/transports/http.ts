@@ -38,6 +38,7 @@ import {
   controllerExposureSnapshot,
 } from '../toolset';
 import { readForgeRuntimeStatus } from '../../../runtime/control-plane/runtime-status-client';
+import { invalidateExecutionSession } from '../../../runtime/control-plane/execution/session-store';
 import { runtimeIdentitySnapshot } from '../../../runtime/gateway/mcp/runtime-tools';
 import { projectionBlocksReadiness, readRepositoryProjectionSnapshot } from '../../../runtime/projections/materialized-view';
 import { readRuntimeGeneration } from '../../../runtime/control-plane/runtime-generation';
@@ -949,6 +950,17 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     streamLeaseMs: MCP_STREAM_LEASE_MS,
     absoluteLifetimeMs: MCP_SESSION_ABSOLUTE_LIFETIME_MS,
     activePostStallMs: MCP_ACTIVE_POST_STALL_MS,
+    onSessionClosed: (session, reason) => {
+      const context = session.toolContext;
+      if (!('controllerHome' in context) || typeof context.controllerHome !== 'string') return;
+      const executionSessionId = typeof context.sessionId === 'string' ? context.sessionId.trim() : '';
+      if (!executionSessionId) return;
+      invalidateExecutionSession(
+        context.controllerHome,
+        executionSessionId,
+        `mcp_transport_${reason}`,
+      );
+    },
   });
   const runtimeStats: McpRuntimeStats = { initializing: 0, activePosts: 0, rejectedOverload: 0 };
   const toolContext = createMcpToolContext({ ...opts, repo: repoRoot, controllerHome, profile });

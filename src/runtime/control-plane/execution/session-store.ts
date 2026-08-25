@@ -163,6 +163,24 @@ export function updateExecutionSession(
   return updated;
 }
 
+export function invalidateExecutionSession(
+  controllerHome: string,
+  sessionId: string,
+  reason: string,
+): ExecutionSessionContext | undefined {
+  const current = peekExecutionSession(controllerHome, sessionId);
+  if (!current || current.invalidatedAt) return current;
+  const at = now();
+  const invalidated: ExecutionSessionContext = {
+    ...current,
+    updatedAt: at,
+    invalidatedAt: at,
+    invalidationReason: reason.trim().slice(0, 512) || 'transport session closed',
+  };
+  writeExecutionSession(controllerHome, invalidated, 'session_invalidated');
+  return invalidated;
+}
+
 function writeExecutionSession(controllerHome: string, session: ExecutionSessionContext, action: string): void {
   writeControlPlaneRecord(controllerHome, {
     namespace: 'execution_session',

@@ -79,7 +79,10 @@ export interface McpSessionSnapshot {
   closed: McpSessionCloseCounters;
 }
 
-export interface McpSessionRegistryOptions {
+export interface McpSessionRegistryOptions<
+  TTransport extends ClosableMcpTransport = ClosableMcpTransport,
+  TContext = unknown,
+> {
   maximumSessions?: number;
   maximumSessionsPerPrincipal?: number;
   idleTtlMs?: number;
@@ -87,6 +90,7 @@ export interface McpSessionRegistryOptions {
   absoluteLifetimeMs?: number;
   activePostStallMs?: number;
   now?: () => number;
+  onSessionClosed?: (session: ManagedMcpSession<TTransport, TContext>, reason: McpSessionCloseReason) => void;
 }
 
 interface RegisterMcpSession<TTransport extends ClosableMcpTransport, TContext> {
@@ -169,12 +173,13 @@ export class McpSessionRegistry<
   private readonly absoluteLifetimeMs: number;
   private readonly activePostStallMs: number;
   private readonly now: () => number;
+  private readonly onSessionClosed?: (session: ManagedMcpSession<TTransport, TContext>, reason: McpSessionCloseReason) => void;
   private readonly closeCounters = emptyCloseCounters();
   private readonly initializeReservations = new Map<string, InitializeReservation>();
   private admissionQueue: Promise<void> = Promise.resolve();
   private nextReservationId = 0;
 
-  constructor(options: McpSessionRegistryOptions = {}) {
+  constructor(options: McpSessionRegistryOptions<TTransport, TContext> = {}) {
     this.maximumSessions = positiveInteger(options.maximumSessions, DEFAULT_MAXIMUM_SESSIONS);
     this.maximumSessionsPerPrincipal = Math.min(
       this.maximumSessions,
@@ -185,6 +190,7 @@ export class McpSessionRegistry<
     this.absoluteLifetimeMs = positiveInteger(options.absoluteLifetimeMs, DEFAULT_ABSOLUTE_LIFETIME_MS);
     this.activePostStallMs = positiveInteger(options.activePostStallMs, DEFAULT_ACTIVE_POST_STALL_MS);
     this.now = options.now ?? Date.now;
+    this.onSessionClosed = options.onSessionClosed;
   }
 
   get size(): number {
@@ -294,9 +300,11 @@ export class McpSessionRegistry<
   detach(sessionId: string, reason: McpSessionCloseReason = 'transport_close'): boolean {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
+    const closeReason = session.pendingCloseReason ?? reason;
     this.sessions.delete(sessionId);
     clearSessionCachesForSession(sessionId);
-    this.incrementCloseCounter(session.pendingCloseReason ?? reason);
+    this.incrementCloseCounter(closeReason);
+    this.observeSessionClosed(session, closeReason);
     return true;
   }
 
@@ -307,6 +315,7 @@ export class McpSessionRegistry<
     clearSessionCachesForSession(sessionId);
     session.pendingCloseReason = reason;
     this.incrementCloseCounter(reason);
+    this.observeSessionClosed(session, reason);
     try {
       await session.transport.close();
     } catch {
@@ -314,6 +323,15 @@ export class McpSessionRegistry<
       // released before awaiting transport cleanup so reconnect can proceed.
     }
     return true;
+  }
+
+  private observeSessionClosed(session: ManagedMcpSession<TTransport, TContext>, reason: McpSessionCloseReason): void {
+    try {
+      this.onSessionClosed?.(session, reason);
+    } catch {
+      // Session close must remain available even if liveness evidence cannot be recorded.
+      // The controller lease then expires normally instead of being released unsafely.
+    }
   }
 
   async reserveForInitialize(request: InitializeCapacityRequest): Promise<string | undefined> {

@@ -48,9 +48,28 @@ function write(options: ControllerSessionStoreOptions, store: ControllerSessionS
   });
 }
 
+const DEFAULT_CONTROLLER_RECOVERY_GRACE_MS = 10 * 60_000;
+const MAX_CONTROLLER_RECOVERY_GRACE_MS = 60 * 60_000;
+
 function activeSession(store: ControllerSessionStore, workId: string): ControllerSession | undefined {
   const at = Date.now();
   return store.sessions.find((session) => session.workId === workId && Date.parse(session.leaseExpiresAt) > at);
+}
+
+export function controllerSessionBlocksRecovery(
+  options: ControllerSessionStoreOptions,
+  workId: string,
+  input: { nowMs?: number; graceMs?: number } = {},
+): boolean {
+  const owner = activeSession(read(options), workId);
+  if (!owner) return false;
+  const execution = peekExecutionSession(options.controllerHome, owner.sessionId);
+  if (!execution?.invalidatedAt) return true;
+  const invalidatedAtMs = Date.parse(execution.invalidatedAt);
+  if (!Number.isFinite(invalidatedAtMs)) return true;
+  const nowMs = input.nowMs ?? Date.now();
+  const graceMs = Math.max(60_000, Math.min(input.graceMs ?? DEFAULT_CONTROLLER_RECOVERY_GRACE_MS, MAX_CONTROLLER_RECOVERY_GRACE_MS));
+  return nowMs - invalidatedAtMs < graceMs;
 }
 
 function assertIdentity(input: ControllerSessionClaimInput): void {

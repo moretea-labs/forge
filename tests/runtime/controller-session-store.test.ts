@@ -4,9 +4,11 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   claimControllerSession,
+  controllerSessionBlocksRecovery,
+  getControllerSession,
   resumeControllerSession,
 } from '../../src/runtime/control-plane/facade/controller-session-store';
-import { startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
+import { invalidateExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -61,6 +63,22 @@ describe('controller Work ownership fencing', () => {
     });
     expect(resumed.sessionId).toBe('session-b');
     expect(resumed.claimGeneration).toBe(first.claimGeneration);
+  });
+
+  test('preserves principal ownership after MCP invalidation while allowing recovery only after the invalidation grace', () => {
+    const home = controllerHome();
+    startExecutionSession(home, { sessionId: 'session-a', principalId: 'principal-a', controllerInstanceId: 'instance-a' });
+    const store = { controllerHome: home, repoId: 'repo-a' };
+    const claimed = claimControllerSession(store, claimInput('session-a', 'principal-a', 'instance-a'));
+
+    expect(getControllerSession(store, claimed.workId)?.sessionId).toBe('session-a');
+    const invalidated = invalidateExecutionSession(home, 'session-a', 'mcp_transport_client_delete');
+    expect(invalidated?.invalidatedAt).toBeTruthy();
+    expect(getControllerSession(store, claimed.workId)?.sessionId).toBe('session-a');
+    const invalidatedAtMs = Date.parse(invalidated!.invalidatedAt!);
+    expect(controllerSessionBlocksRecovery(store, claimed.workId, { nowMs: invalidatedAtMs + 30_000, graceMs: 60_000 })).toBe(true);
+    expect(controllerSessionBlocksRecovery(store, claimed.workId, { nowMs: invalidatedAtMs + 2 * 60_000, graceMs: 60_000 })).toBe(false);
+    expect(() => claimControllerSession(store, claimInput('session-b', 'principal-b', 'instance-b'))).toThrow(/WORK_ALREADY_CLAIMED/);
   });
 
   test('rejects another principal and stale recovery generation', () => {

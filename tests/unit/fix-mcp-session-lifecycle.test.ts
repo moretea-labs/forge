@@ -65,6 +65,33 @@ describe('MCP session lifecycle registry', () => {
     )).toBe(true);
   });
 
+  test('reports the exact managed session and close reason once for explicit close and transport detach', async () => {
+    const observed: Array<{ sessionId: string; reason: string; marker?: string }> = [];
+    const registry = new McpSessionRegistry<FakeTransport, { marker?: string }>({
+      onSessionClosed: (session, reason) => observed.push({
+        sessionId: session.sessionId,
+        reason,
+        marker: session.toolContext.marker,
+      }),
+    });
+    const first = new FakeTransport();
+    registry.register({
+      sessionId: 'explicit-close', transport: first, toolContext: { marker: 'first' }, route: '/mcp', principalId: 'principal-a', clientIdentity: 'client-a',
+    });
+    const second = new FakeTransport();
+    registry.register({
+      sessionId: 'transport-close', transport: second, toolContext: { marker: 'second' }, route: '/mcp', principalId: 'principal-a', clientIdentity: 'client-b',
+    });
+
+    expect(await registry.close('explicit-close', 'client_delete')).toBe(true);
+    expect(registry.detach('explicit-close')).toBe(false);
+    expect(registry.detach('transport-close', 'transport_close')).toBe(true);
+    expect(observed).toEqual([
+      { sessionId: 'explicit-close', reason: 'client_delete', marker: 'first' },
+      { sessionId: 'transport-close', reason: 'transport_close', marker: 'second' },
+    ]);
+  });
+
   test('survives 500 initialize and client-close cycles without consuming capacity', async () => {
     const registry = new McpSessionRegistry({ maximumSessions: 4 });
 

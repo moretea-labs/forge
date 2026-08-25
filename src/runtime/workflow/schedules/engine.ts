@@ -9,7 +9,7 @@ import {
   previewAutomaticRuntimeMaintenance,
   type RuntimeMaintenanceActionId,
 } from '../../recovery/maintenance-executor';
-import { getControllerSession, getWorkContract, isTerminalWorkContractStatus, listHandoffItems } from '../../control-plane/facade';
+import { controllerSessionBlocksRecovery, getControllerSession, getWorkContract, isTerminalWorkContractStatus, listHandoffItems } from '../../control-plane/facade';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
 import { getExternalControllerLaunchReservation } from '../../control-plane/launcher/launch-reservation-store';
 import { runStandaloneChatgptPrompt, runWorkChatgptContinuation } from '../../control-plane/launcher/chatgpt-work-continuation';
@@ -401,7 +401,10 @@ async function executeExternalControllerWake(
     return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} is terminal (${work.status}); automatic continuation stopped.`);
   }
   const existingOwner = getControllerSession(workStore, workId);
-  if (existingOwner) {
+  const occurrenceNowMs = Date.parse(timestamp);
+  if (existingOwner && controllerSessionBlocksRecovery(workStore, workId, {
+    nowMs: Number.isFinite(occurrenceNowMs) ? occurrenceNowMs : Date.now(),
+  })) {
     saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
     return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} already has an active Controller ${existingOwner.controllerId}.`);
   }

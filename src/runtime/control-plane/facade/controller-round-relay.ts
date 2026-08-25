@@ -7,7 +7,7 @@ import {
   writeControlPlaneRecord,
   type ControlPlaneRecord,
 } from '../persistence/sqlite-store';
-import { getControllerSession } from './controller-session-store';
+import { controllerSessionBlocksRecovery, getControllerSession } from './controller-session-store';
 import { getHandoffItem, listHandoffItems } from './handoff-inbox-store';
 import { getWorkContract, readWorkContractStore } from './work-contract-store';
 import {
@@ -215,8 +215,7 @@ function relevantWork(options: ControllerRoundRelayStoreOptions, record: Pick<Co
   ]);
   return all
     .filter((work) => record.requirementId ? work.requirementId === record.requirementId : linkedWorkIds.has(work.workId))
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-    .slice(0, 8);
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
 function mechanicalStateFingerprint(
@@ -724,7 +723,7 @@ export function claimStalledControllerRoundRelays(
 
   for (const candidate of latestRelayRecordsByScope(options)) {
     if (claimed.length >= limit) break;
-    if (!['dispatched', 'claimed'].includes(candidate.status)) continue;
+    if (!['pending_release', 'dispatching', 'dispatched', 'claimed'].includes(candidate.status)) continue;
     const roundOpenedAtMs = Date.parse(candidate.claimedAt ?? candidate.dispatchedAt ?? candidate.updatedAt);
     if (!Number.isFinite(roundOpenedAtMs) || nowMs - roundOpenedAtMs < graceMs) continue;
     const requirement = requirementForRelay(options, candidate.requirementId);
@@ -732,7 +731,7 @@ export function claimStalledControllerRoundRelays(
     const candidateWorks = relevantWork(options, candidate);
     const activeCandidateWorks = candidateWorks.filter((work) => !isTerminalWorkContractStatus(work.status));
     if (activeCandidateWorks.length === 0) continue;
-    if (activeCandidateWorks.some((work) => getControllerSession(options, work.workId))) continue;
+    if (activeCandidateWorks.some((work) => controllerSessionBlocksRecovery(options, work.workId, { nowMs, graceMs }))) continue;
 
     const next = relayLock(options, candidate.relayScopeId, `controller-relay-recover:${candidate.originWorkId}`, () => {
       const latest = relayHistory(options, candidate.relayScopeId)[0];
@@ -744,7 +743,7 @@ export function claimStalledControllerRoundRelays(
       const works = relevantWork(options, latest);
       const activeWorks = works.filter((work) => !isTerminalWorkContractStatus(work.status));
       if (activeWorks.length === 0) return undefined;
-      if (activeWorks.some((work) => getControllerSession(options, work.workId))) return undefined;
+      if (activeWorks.some((work) => controllerSessionBlocksRecovery(options, work.workId, { nowMs, graceMs }))) return undefined;
 
       const currentRecord = readRelayRecord(options, latest.originWorkId);
       if (!currentRecord || currentRecord.value.updatedAt !== latest.updatedAt || currentRecord.value.status !== latest.status) return undefined;
@@ -752,8 +751,11 @@ export function claimStalledControllerRoundRelays(
       const stateFingerprint = fingerprintWork
         ? mechanicalStateFingerprint(options, fingerprintWork, latest.requirementId)
         : latest.stateFingerprint;
-      const roundCount = latest.roundCount + 1;
-      const repeatedStateCount = latest.stateFingerprint === stateFingerprint ? latest.repeatedStateCount + 1 : 0;
+      const resumesUndispatchedRound = latest.status === 'pending_release' || latest.status === 'dispatching';
+      const roundCount = latest.roundCount + (resumesUndispatchedRound ? 0 : 1);
+      const repeatedStateCount = resumesUndispatchedRound
+        ? latest.repeatedStateCount
+        : latest.stateFingerprint === stateFingerprint ? latest.repeatedStateCount + 1 : 0;
       let blockedReason: string | undefined;
       if (roundCount > latest.maxRounds) blockedReason = `round_budget_exhausted:${roundCount}>${latest.maxRounds}`;
       else if (repeatedStateCount >= latest.maxRepeatedState) blockedReason = `repeated_state:${repeatedStateCount}>=${latest.maxRepeatedState}`;
@@ -765,7 +767,11 @@ export function claimStalledControllerRoundRelays(
         stateFingerprint,
         roundCount,
         repeatedStateCount,
-        lastError: latest.status === 'claimed' ? 'CONTROLLER_RELAY_CLAIMED_ROUND_UNCLOSED' : 'CONTROLLER_RELAY_ROUND_UNCLOSED',
+        lastError: latest.status === 'pending_release'
+          ? 'CONTROLLER_RELAY_RELEASE_TRANSITION_INCOMPLETE'
+          : latest.status === 'dispatching'
+            ? 'CONTROLLER_RELAY_DISPATCH_TRANSITION_INCOMPLETE'
+            : latest.status === 'claimed' ? 'CONTROLLER_RELAY_CLAIMED_ROUND_UNCLOSED' : 'CONTROLLER_RELAY_ROUND_UNCLOSED',
         claimedAt: undefined,
         ...(blockedReason ? { blockedReason } : { blockedReason: undefined }),
         updatedAt: at,
@@ -791,8 +797,9 @@ export function buildControllerRoundRelayPrompt(
   record: ControllerRoundRelayRecord,
 ): string {
   const requirement = requirementForRelay(options, record.requirementId);
-  const works = relevantWork(options, record);
-  const workIds = new Set(works.map((work) => work.workId));
+  const relevantWorks = relevantWork(options, record);
+  const works = relevantWorks.slice(0, 8);
+  const workIds = new Set(relevantWorks.map((work) => work.workId));
   const handoffs = listHandoffItems({ controllerHome: options.controllerHome, repoId: options.repoId, status: 'active', limit: 100 })
     .filter((handoff) => !handoff.workId || workIds.has(handoff.workId))
     .slice(0, 8);

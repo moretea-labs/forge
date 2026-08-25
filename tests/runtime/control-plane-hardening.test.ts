@@ -14,8 +14,10 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import { registerRepository } from '../../src/cli/repositories/registry';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
 import { createWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { createHandoffItem, getHandoffItem, listHandoffItems } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { claimControllerSession, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { invalidateExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import {
   acknowledgeControllerRoundClaim,
   beginInitialControllerRoundDispatch,
@@ -671,6 +673,11 @@ describe('scheduled external Controller wake', () => {
     });
     expect(dispatched?.status).toBe('dispatched');
 
+    startExecutionSession(controllerHome, {
+      sessionId: 'chatgpt-session',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-test',
+    });
     const session = claimControllerSession(store, {
       workId,
       controllerId: 'chatgpt-controller',
@@ -693,7 +700,9 @@ describe('scheduled external Controller wake', () => {
 
     const afterGrace = Date.parse(claimed!.claimedAt!) + 2 * 60_000;
     expect(claimStalledControllerRoundRelays(store, { nowMs: afterGrace, graceMs: 60_000 })).toEqual([]);
-    releaseControllerSession(store, workId, session.controllerId);
+    expect(Date.parse(session.leaseExpiresAt)).toBeGreaterThan(afterGrace);
+    invalidateExecutionSession(controllerHome, session.sessionId, 'mcp_transport_transport_close');
+    expect(getControllerSession(store, workId)?.sessionId).toBe(session.sessionId);
     const recovered = claimStalledControllerRoundRelays(store, { nowMs: afterGrace, graceMs: 60_000 });
     expect(recovered).toHaveLength(1);
     expect(recovered[0]).toMatchObject({
@@ -704,7 +713,12 @@ describe('scheduled external Controller wake', () => {
     expect(recovered[0]?.status).not.toBe('goal_complete');
 
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
-    const nextSession = claimControllerSession(store, {
+    startExecutionSession(controllerHome, {
+      sessionId: 'chatgpt-session-next',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-test',
+    });
+    const nextSession = resumeControllerSession(store, {
       workId,
       controllerId: 'chatgpt-controller',
       controllerType: 'chatgpt',
@@ -730,6 +744,169 @@ describe('scheduled external Controller wake', () => {
     expect(waiting.disposition).toBe('wait');
     releaseControllerSession(store, workId, nextSession.controllerId);
     expect(claimStalledControllerRoundRelays(store, { nowMs: afterGrace + 2 * 60_000, graceMs: 60_000 })).toEqual([]);
+  });
+
+  test('recovers continue_immediately when the controller lease is released before pending_release can enter dispatching', () => {
+    const root = temp('forge-controller-relay-release-gap-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'relay release gap\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-release-gap' });
+    const workId = 'WORK-RELAY-RELEASE-GAP';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Continue across a crash between controller lease release and relay dispatch transition.',
+      acceptanceCriteria: ['A durable continue_immediately disposition remains recoverable after lease release.'],
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const store = { controllerHome, repoId: repository.repoId };
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true });
+    startExecutionSession(controllerHome, {
+      sessionId: 'chatgpt-session',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-test',
+    });
+    const session = claimControllerSession(store, {
+      workId,
+      controllerId: 'chatgpt-controller',
+      controllerType: 'chatgpt',
+      sessionId: 'chatgpt-session',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-test',
+      leaseMs: 5 * 60_000,
+    });
+    acknowledgeControllerRoundClaim(store, { workId, session });
+    const pending = submitControllerRoundDisposition(store, {
+      workId,
+      identity: {
+        controllerId: session.controllerId,
+        principalId: session.principalId ?? session.controllerId,
+        controllerInstanceId: session.controllerInstanceId ?? 'runtime-test',
+        sessionId: session.sessionId,
+      },
+      disposition: 'continue_immediately',
+      relayScopeId: opened.relayScopeId,
+    });
+    expect(pending.status).toBe('pending_release');
+    const afterGrace = Date.parse(pending.updatedAt) + 2 * 60_000;
+    expect(Date.parse(session.leaseExpiresAt)).toBeGreaterThan(afterGrace);
+    invalidateExecutionSession(controllerHome, session.sessionId, 'mcp_transport_transport_close');
+    expect(getControllerSession(store, workId)?.sessionId).toBe(session.sessionId);
+    const recovered = claimStalledControllerRoundRelays(store, { nowMs: afterGrace, graceMs: 60_000 });
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toMatchObject({
+      status: 'dispatching',
+      roundCount: pending.roundCount,
+      repeatedStateCount: pending.repeatedStateCount,
+      lastError: 'CONTROLLER_RELAY_RELEASE_TRANSITION_INCOMPLETE',
+    });
+  });
+
+  test('recovers a dispatching relay after the launcher transition stalls without consuming another round budget', () => {
+    const root = temp('forge-controller-relay-dispatch-gap-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'relay dispatch gap\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-dispatch-gap' });
+    const workId = 'WORK-RELAY-DISPATCH-GAP';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Recover a controller round when Runtime stalls after marking launcher dispatch in progress.',
+      acceptanceCriteria: ['Recovery reuses the already-budgeted controller round.'],
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const store = { controllerHome, repoId: repository.repoId };
+    const dispatching = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
+    });
+    expect(dispatching.status).toBe('dispatching');
+    const afterGrace = Date.parse(dispatching.updatedAt) + 2 * 60_000;
+    const recovered = claimStalledControllerRoundRelays(store, { nowMs: afterGrace, graceMs: 60_000 });
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toMatchObject({
+      status: 'dispatching',
+      roundCount: dispatching.roundCount,
+      repeatedStateCount: dispatching.repeatedStateCount,
+      lastError: 'CONTROLLER_RELAY_DISPATCH_TRANSITION_INCOMPLETE',
+    });
+  });
+
+  test('does not recover a Requirement relay while any linked active Work still has a controller owner beyond the prompt snapshot limit', () => {
+    const root = temp('forge-controller-relay-requirement-owner-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'relay requirement owner\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-requirement-owner' });
+    const requirementId = 'REQ-RELAY-OWNER-BEYOND-SNAPSHOT';
+    createRequirement({ controllerHome, now: () => '2026-08-25T00:00:00.000Z' }, {
+      requirementId,
+      title: 'Requirement relay owner fencing',
+      outcomeStatement: 'A relay must not recover while any linked active Work still has a live controller owner.',
+    });
+    const workIds = Array.from({ length: 9 }, (_, index) => `WORK-RELAY-REQ-${index + 1}`);
+    for (const [index, workId] of workIds.entries()) {
+      createWorkContract({
+        controllerHome,
+        repoId: repository.repoId,
+        now: () => `2026-08-25T00:00:${String(index).padStart(2, '0')}.000Z`,
+      }, {
+        workId,
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        requirementId,
+        mode: 'goal_workloop',
+        objective: `Requirement relay Work ${index + 1}.`,
+        acceptanceCriteria: ['Preserve Requirement-wide controller ownership fencing.'],
+        allowedPaths: ['**/*'],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+        requestedBy: 'chatgpt',
+        status: 'running',
+      });
+    }
+    const store = { controllerHome, repoId: repository.repoId };
+    const originWorkId = workIds.at(-1)!;
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId: originWorkId,
+      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
+    });
+    const dispatched = finishControllerRoundRelayDispatch(store, { workId: originWorkId, ok: true });
+    expect(dispatched?.status).toBe('dispatched');
+    claimControllerSession(store, {
+      workId: workIds[0]!,
+      controllerId: 'chatgpt-controller',
+      controllerType: 'chatgpt',
+      sessionId: 'chatgpt-session-existing',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-test',
+      leaseMs: 5 * 60_000,
+    });
+
+    const afterGrace = Date.parse(dispatched!.dispatchedAt!) + 2 * 60_000;
+    expect(opened.relayScopeId).toBe(`requirement:${requirementId}`);
+    expect(claimStalledControllerRoundRelays(store, { nowMs: afterGrace, graceMs: 60_000 })).toEqual([]);
   });
 
   test('migrates a claimed ChatGPT relay only to the exact live same-principal controller session after runtime rotation', () => {
