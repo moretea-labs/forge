@@ -1689,7 +1689,7 @@ function retryHandleStateForFinalization(stages: WorkFinalizationStages): WorkHa
 export function resetFinalizationStagesForRequest(
   stages: WorkFinalizationStages,
   wants: { commit: boolean; merge: boolean; cleanup: boolean },
-  options: { managedWorktree?: boolean; deleteBranchRequested?: boolean; retainedByRequest?: boolean } = {},
+  options: { managedWorktree?: boolean; deleteBranchRequested?: boolean; retainedByRequest?: boolean; workspaceDirty?: boolean } = {},
 ): WorkFinalizationStages {
   const next = { ...stages };
   let reset = false;
@@ -1712,6 +1712,15 @@ export function resetFinalizationStagesForRequest(
   if (wants.cleanup && next.branchCleanup === 'failed') {
     next.branchCleanup = 'pending';
     reset = true;
+  }
+  // A Work may be semantically repaired and revalidated after an earlier delivery
+  // attempt already marked commit/merge done. Exact validation of a dirty current
+  // workspace proves there is new Work-owned content still requiring delivery;
+  // re-arm only the requested Git stages instead of letting cleanup discard it.
+  if (options.workspaceDirty === true && wants.commit && next.commit === 'done') {
+    next.commit = 'pending';
+    reset = true;
+    if (wants.merge && next.merge === 'done') next.merge = 'pending';
   }
   // A prior finalize(cleanup=false) intentionally records managed resources as
   // skipped/retained. A later explicit cleanup=true is a new resource-disposal
@@ -2176,7 +2185,20 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       markWorkValidationPending(ctx.controllerHome, current);
       throw new Error('WORK_VALIDATION_REQUIRED: run work_validate against the exact current workspace before finalization');
     }
-    if (wants.merge && !wants.commit && current.finalization.commit !== 'done' && !validationInput.clean) {
+    if (!validationInput.clean && wants.commit && current.finalization.commit === 'done') {
+      current = transact('rearm-delivery-after-validated-repair', (fresh) => writeWorkHandle(ctx.controllerHome, {
+        ...fresh,
+        state: 'validating',
+        failureReason: undefined,
+        finalization: resetFinalizationStagesForRequest(fresh.finalization, wants, {
+          managedWorktree: fresh.managedWorktree,
+          deleteBranchRequested,
+          retainedByRequest: fresh.terminalResourceDisposition?.mode === 'retained_by_request',
+          workspaceDirty: true,
+        }),
+      }));
+    }
+    if (wants.merge && !wants.commit && !validationInput.clean) {
       throw new Error('WORK_MERGE_UNCOMMITTED_CHANGES: commit the validated workspace before merging');
     }
   }
