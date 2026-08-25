@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { existsSync, lstatSync, readdirSync, rmSync } from 'fs';
+import { existsSync, lstatSync, readdirSync, rmSync, statfsSync } from 'fs';
 import { tmpdir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
 
@@ -46,6 +46,7 @@ export interface RuntimePerformanceDiagnostics {
   };
   processes: RuntimeProcessSample[];
   temp: { scannedRoots: string[]; totalEntries: number; cleanupCandidates: number; entries: RuntimeTempEntry[] };
+  storage: { availableBytes?: number; availableGiB?: number; pressure: 'normal' | 'warning' | 'critical' | 'unknown'; managedCacheRoots: string[] };
   cleanupPreview?: { safeToTerminate: RuntimeProcessSample[]; safeToRemoveTempEntries: RuntimeTempEntry[]; requiresConfirmation: true };
   truncated: {
     summary: boolean;
@@ -322,7 +323,27 @@ export function collectRuntimePerformanceDiagnostics(input: DiagnosticsInput): R
   const temp = input.includeTempDirs === false
     ? { roots: [] as string[], entries: [] as RuntimeTempEntry[] }
     : scanRuntimeTempEntries(processes);
+  let availableBytes: number | undefined;
+  try {
+    const fs = statfsSync(input.repoRoot);
+    availableBytes = Number(fs.bavail) * Number(fs.bsize);
+  } catch {}
+  const availableGiB = availableBytes === undefined ? undefined : Math.round((availableBytes / (1024 ** 3)) * 10) / 10;
+  const storagePressure: RuntimePerformanceDiagnostics['storage']['pressure'] = availableGiB === undefined
+    ? 'unknown'
+    : availableGiB < 30
+      ? 'critical'
+      : availableGiB < 50
+        ? 'warning'
+        : 'normal';
+  const managedCacheRoots = [
+    join(input.repoRoot, '.forge', 'ios', 'DerivedData'),
+    join(input.repoRoot, '.ai', 'harness'),
+    join(input.repoRoot, '.repo-harness'),
+  ].filter((path) => existsSync(path));
   const findings: RuntimePerformanceDiagnostics['findings'] = [];
+  if (storagePressure === 'critical') findings.push({ severity: 'critical', code: 'LOW_DISK_SPACE', message: `Only ${availableGiB} GiB of repository volume space is available.` });
+  else if (storagePressure === 'warning') findings.push({ severity: 'warning', code: 'LOW_DISK_SPACE', message: `Repository volume free space is ${availableGiB} GiB.` });
   if (orphanWorkers.length > 0) findings.push({ severity: orphanWorkers.length >= 3 ? 'critical' : 'warning', code: 'ORPHAN_WORKERS', message: 'Detected ' + orphanWorkers.length + ' orphan worker process(es).' });
   const totalCpu = Math.round(repoProcesses.reduce((sum, process) => sum + process.cpu, 0) * 10) / 10;
   if (totalCpu >= 100 || highCpu.length >= 3) findings.push({ severity: 'warning', code: 'HIGH_FORGE_CPU', message: 'Forge-related CPU is ' + totalCpu + '%.' });
@@ -341,6 +362,7 @@ export function collectRuntimePerformanceDiagnostics(input: DiagnosticsInput): R
     ...(orphanWorkers.length ? ['Terminate orphan workers only after reviewing cleanupPreview.safeToTerminate.'] : []),
     ...(tempCleanupCandidates.length ? ['Remove stale temp entries through runtime_maintenance_apply after reviewing cleanupPreview.safeToRemoveTempEntries.'] : []),
     ...(highCpu.length ? ['Inspect highCpuProcesses before restarting the controller stack.'] : []),
+    ...(storagePressure === 'critical' ? ['Allow Forge generated-cache retention to reclaim stale DerivedData before starting another heavy iOS verification.'] : []),
   ];
   return {
     schemaVersion: 1,
@@ -358,6 +380,7 @@ export function collectRuntimePerformanceDiagnostics(input: DiagnosticsInput): R
       cleanupCandidates: tempCleanupCandidates.length,
       entries: temp.entries.slice(0, MAX_DIAGNOSTIC_TEMP_ENTRIES),
     },
+    storage: { availableBytes, availableGiB, pressure: storagePressure, managedCacheRoots },
     cleanupPreview: input.cleanupPreview === true
       ? {
         safeToTerminate: rawCleanupProcesses,
