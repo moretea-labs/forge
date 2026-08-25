@@ -1078,60 +1078,49 @@ describe('scheduled external Controller wake', () => {
       recordedAt,
     }, 'completed_no_change', 'completed_no_change');
     expect(getControllerSession(store, workId)?.controllerInstanceId).toBe('runtime-rotated');
+    releaseControllerSession(store, workId, rotated.controllerId);
+    expect(getControllerSession(store, workId)).toBeUndefined();
+    const postFinalizeIdentity = {
+      controllerId: rotated.controllerId,
+      principalId: rotated.principalId ?? rotated.controllerId,
+      controllerInstanceId: 'runtime-after-finalize',
+      sessionId: 'chatgpt-session-after-finalize',
+    };
 
     expect(() => submitControllerRoundDisposition(store, {
       workId: 'WORK-RELAY-TERMINAL-DIFFERENT',
-      identity: {
-        controllerId: rotated.controllerId,
-        principalId: rotated.principalId ?? rotated.controllerId,
-        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-rotated',
-        sessionId: rotated.sessionId,
-      },
+      identity: postFinalizeIdentity,
       disposition: 'goal_complete',
       relayScopeId: opened.relayScopeId,
     })).toThrow(/WORK_NOT_FOUND/);
     expect(() => submitControllerRoundDisposition(store, {
       workId,
-      identity: {
-        controllerId: rotated.controllerId,
-        principalId: rotated.principalId ?? rotated.controllerId,
-        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-rotated',
-        sessionId: rotated.sessionId,
-      },
+      identity: postFinalizeIdentity,
       disposition: 'goal_complete',
       relayScopeId: 'goal:different-work',
     })).toThrow(/CONTROLLER_RELAY_SCOPE_MISMATCH/);
     expect(() => submitControllerRoundDisposition(store, {
       workId,
-      identity: {
-        controllerId: rotated.controllerId,
-        principalId: 'different-principal',
-        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-rotated',
-        sessionId: rotated.sessionId,
-      },
+      identity: { ...postFinalizeIdentity, controllerId: 'different-controller' },
       disposition: 'goal_complete',
       relayScopeId: opened.relayScopeId,
-    })).toThrow(/WORK_CONTROLLER_PRINCIPAL_MISMATCH/);
+    })).toThrow(/CONTROLLER_RELAY_CLAIM_CONTROLLER_MISMATCH/);
     expect(() => submitControllerRoundDisposition(store, {
       workId,
-      identity: {
-        controllerId: rotated.controllerId,
-        principalId: rotated.principalId ?? rotated.controllerId,
-        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-rotated',
-        sessionId: rotated.sessionId,
-      },
+      identity: { ...postFinalizeIdentity, principalId: 'different-principal' },
+      disposition: 'goal_complete',
+      relayScopeId: opened.relayScopeId,
+    })).toThrow(/CONTROLLER_RELAY_CLAIM_PRINCIPAL_MISMATCH/);
+    expect(() => submitControllerRoundDisposition(store, {
+      workId,
+      identity: postFinalizeIdentity,
       disposition: 'wait',
       relayScopeId: opened.relayScopeId,
     })).toThrow(/CONTROLLER_RELAY_WORK_TERMINAL: completed/);
 
     const completed = submitControllerRoundDisposition(store, {
       workId,
-      identity: {
-        controllerId: rotated.controllerId,
-        principalId: rotated.principalId ?? rotated.controllerId,
-        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-rotated',
-        sessionId: rotated.sessionId,
-      },
+      identity: postFinalizeIdentity,
       disposition: 'goal_complete',
       relayScopeId: opened.relayScopeId,
       reason: 'Physical finalization completed before semantic round disposition after Runtime rotation.',
@@ -1142,8 +1131,8 @@ describe('scheduled external Controller wake', () => {
       relayScopeId: opened.relayScopeId,
       controllerId: rotated.controllerId,
       principalId: rotated.principalId ?? rotated.controllerId,
-      controllerInstanceId: 'runtime-rotated',
-      sessionId: rotated.sessionId,
+      controllerInstanceId: 'runtime-after-finalize',
+      sessionId: 'chatgpt-session-after-finalize',
       claimGeneration: rotated.claimGeneration,
     });
     expect(() => submitControllerRoundDisposition(store, {

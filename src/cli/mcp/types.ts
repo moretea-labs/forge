@@ -2,11 +2,11 @@ export type McpProfileName = 'planner' | 'executor' | 'orchestrator' | 'controll
 export type McpPathIntent = 'read' | 'write';
 export type McpAgentRunnerName = 'codex' | 'claude';
 /** Controller MCP tools/list exposure profile.
- * - core (default): facade + repository bootstrap/selection only
- * - advanced: supervised controller surface (former large core set)
+ * - facade: explicit five-tool ChatGPT orchestration surface
+ * - core/advanced (default compatibility labels): bounded stable controller surface
  * - full: compatibility mode — all legacy + runtime tools
  */
-export type McpToolset = 'core' | 'advanced' | 'full';
+export type McpToolset = 'facade' | 'core' | 'advanced' | 'full';
 
 export interface McpPolicy {
   profile: McpProfileName;

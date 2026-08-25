@@ -8,12 +8,25 @@ import type { RuntimeReadiness } from './types';
 
 interface ManagedSession {
   transport: StreamableHTTPServerTransport;
+  lastActivityAt: number;
+  activePosts: number;
+  activeStreams: number;
+}
+
+export interface RuntimeMcpSessionSnapshot {
+  active: number;
+  maximum: number;
+  initializing: number;
+  protected: number;
+  capacityAvailable: number;
+  capacityEvictions: number;
 }
 
 export interface RuntimeMcpTransportHandle {
   endpoint: string;
   host: string;
   port: number;
+  sessionSnapshot?(): RuntimeMcpSessionSnapshot;
   close(): Promise<void>;
 }
 
@@ -32,6 +45,8 @@ export interface StartRuntimeMcpTransportOptions {
    */
   onToolSurfaceObservation?: () => void;
   onFatal?: (error: Error) => void;
+  /** Internal Runtime sessions are bounded even if a Gateway dies without DELETE. */
+  maximumSessions?: number;
 }
 
 function authorized(request: Request, configuredToken: string): boolean {
@@ -81,6 +96,12 @@ function authMiddleware(token: string) {
 
 const SESSION_CLOSE_TIMEOUT_MS = 1_000;
 const REQUEST_DRAIN_TIMEOUT_MS = 250;
+export const DEFAULT_RUNTIME_MCP_MAX_SESSIONS = 64;
+
+function boundedRuntimeMcpMaximumSessions(value: number | undefined): number {
+  if (!Number.isInteger(value) || (value ?? 0) < 1) return DEFAULT_RUNTIME_MCP_MAX_SESSIONS;
+  return Math.min(value!, DEFAULT_RUNTIME_MCP_MAX_SESSIONS);
+}
 
 function closeServer(server: NodeHttpServer): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -127,7 +148,50 @@ export async function startRuntimeMcpTransport(
 ): Promise<RuntimeMcpTransportHandle> {
   if (!options.authToken.trim()) throw new Error('MCP_AUTH_TOKEN_REQUIRED');
   const sessions = new Map<string, ManagedSession>();
+  const maximumSessions = boundedRuntimeMcpMaximumSessions(options.maximumSessions);
+  let initializingSessions = 0;
+  let capacityEvictions = 0;
   let activeRequests = 0;
+
+  const sessionSnapshot = (): RuntimeMcpSessionSnapshot => ({
+    active: sessions.size,
+    maximum: maximumSessions,
+    initializing: initializingSessions,
+    protected: [...sessions.values()].filter((session) => session.activePosts > 0).length,
+    capacityAvailable: Math.max(0, maximumSessions - sessions.size - initializingSessions),
+    capacityEvictions,
+  });
+
+  const reserveInitialize = async (): Promise<boolean> => {
+    while (sessions.size + initializingSessions >= maximumSessions) {
+      const victim = [...sessions.entries()]
+        .filter(([, session]) => session.activePosts === 0)
+        .sort((left, right) => left[1].lastActivityAt - right[1].lastActivityAt)[0];
+      if (!victim) return false;
+      sessions.delete(victim[0]);
+      capacityEvictions += 1;
+      await victim[1].transport.close().catch(() => undefined);
+    }
+    initializingSessions += 1;
+    return true;
+  };
+
+  const withManagedSessionRequest = async <T>(
+    managed: ManagedSession,
+    kind: 'post' | 'stream',
+    action: () => Promise<T>,
+  ): Promise<T> => {
+    if (kind === 'post') managed.activePosts += 1;
+    else managed.activeStreams += 1;
+    managed.lastActivityAt = Date.now();
+    try {
+      return await action();
+    } finally {
+      if (kind === 'post') managed.activePosts = Math.max(0, managed.activePosts - 1);
+      else managed.activeStreams = Math.max(0, managed.activeStreams - 1);
+      managed.lastActivityAt = Date.now();
+    }
+  };
   const requestDrainWaiters = new Set<() => void>();
   const app = express();
   app.disable('x-powered-by');
@@ -167,7 +231,12 @@ export async function startRuntimeMcpTransport(
       const requestedSessionId = req.headers['mcp-session-id'];
       const sessionId = typeof requestedSessionId === 'string' ? requestedSessionId : undefined;
       if (isInitialize(body)) {
+        if (!await reserveInitialize()) {
+          res.status(503).json({ error: 'mcp_session_capacity_exhausted' });
+          return;
+        }
         let transport: StreamableHTTPServerTransport;
+        let committedSessionId: string | undefined;
         const forwardedPrincipalId = typeof req.headers['x-forge-forwarded-principal-id'] === 'string'
           ? req.headers['x-forge-forwarded-principal-id'].trim().slice(0, 512)
           : '';
@@ -185,7 +254,15 @@ export async function startRuntimeMcpTransport(
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (createdSessionId) => {
-            sessions.set(createdSessionId, { transport });
+            committedSessionId = createdSessionId;
+            initializingSessions = Math.max(0, initializingSessions - 1);
+            sessions.set(createdSessionId, {
+              transport,
+              lastActivityAt: Date.now(),
+              // Initialize is a POST and must not be reclaimed before it settles.
+              activePosts: 1,
+              activeStreams: 0,
+            });
           },
         });
         transport.onclose = () => {
@@ -198,6 +275,16 @@ export async function startRuntimeMcpTransport(
           await transport.close().catch(() => undefined);
           if (!res.headersSent) res.status(500).json({ error: 'mcp_initialize_failed' });
           throw error;
+        } finally {
+          if (committedSessionId) {
+            const committed = sessions.get(committedSessionId);
+            if (committed) {
+              committed.activePosts = Math.max(0, committed.activePosts - 1);
+              committed.lastActivityAt = Date.now();
+            }
+          } else {
+            initializingSessions = Math.max(0, initializingSessions - 1);
+          }
         }
         return;
       }
@@ -206,7 +293,7 @@ export async function startRuntimeMcpTransport(
         res.status(404).json({ error: 'mcp_session_not_found' });
         return;
       }
-      await managed.transport.handleRequest(req, res, body);
+      await withManagedSessionRequest(managed, 'post', async () => await managed.transport.handleRequest(req, res, body));
     })().catch((error: unknown) => {
       if (!res.headersSent) res.status(500).json({ error: 'mcp_request_failed' });
       console.error('[forge-runtime mcp] request failed:', error);
@@ -221,7 +308,7 @@ export async function startRuntimeMcpTransport(
         res.status(404).json({ error: 'mcp_session_not_found' });
         return;
       }
-      await managed.transport.handleRequest(req, res);
+      await withManagedSessionRequest(managed, 'stream', async () => await managed.transport.handleRequest(req, res));
     })().catch((error: unknown) => {
       if (!res.headersSent) res.status(500).json({ error: 'mcp_request_failed' });
       console.error('[forge-runtime mcp] stream request failed:', error);
@@ -236,8 +323,10 @@ export async function startRuntimeMcpTransport(
         res.status(404).json({ error: 'mcp_session_not_found' });
         return;
       }
-      await managed.transport.handleRequest(req, res);
-      await managed.transport.close();
+      await withManagedSessionRequest(managed, 'post', async () => {
+        await managed.transport.handleRequest(req, res);
+        await managed.transport.close();
+      });
       sessions.delete(sessionId!);
     })().catch((error: unknown) => {
       if (!res.headersSent) res.status(500).json({ error: 'mcp_request_failed' });
@@ -268,6 +357,7 @@ export async function startRuntimeMcpTransport(
     endpoint,
     host: options.host,
     port: address.port,
+    sessionSnapshot,
     close: async () => {
       await closeRuntimeMcpTransportResources({
         closeListener: async () => await closeServer(httpServer),

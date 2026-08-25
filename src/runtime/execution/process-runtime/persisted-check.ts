@@ -28,6 +28,14 @@ import { getProcessHandle, spawnManagedProcess } from './runtime';
 import { getProcessRecord, getProcessRequestBinding } from './store';
 import { allocatePersistedCheckResultReceiptPath } from './check-result';
 import { durationAwareInteractiveWaitMs } from './interactive-admission';
+
+/**
+ * Work verification may overlap another Work's repository-wide build cache.
+ * Wait through one ordinary sibling check, but never past Process Runtime's
+ * bounded lease-admission ceiling; explicit callers may still choose less.
+ */
+export const DEFAULT_WORK_CHECK_LEASE_WAIT_MS = 30_000;
+
 const PERSISTED_CHECK_SOURCE_ENTRY = 'src/runtime/execution/process-runtime/check-runner-sidecar.ts';
 
 export function resolvePersistedCheckCliInvocation(
@@ -201,7 +209,8 @@ export async function runPersistedCheckViaProcessRuntime(
   }
 
   const interactiveWaitMs = durationAwareInteractiveWaitMs(check.command, input.interactiveWaitMs);
-  const leaseWaitMs = input.leaseWaitMs;
+  const leaseWaitMs = input.leaseWaitMs
+    ?? (input.workId?.trim() ? DEFAULT_WORK_CHECK_LEASE_WAIT_MS : undefined);
   const timeoutMs = Math.min(
     check.timeoutMs,
     typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)

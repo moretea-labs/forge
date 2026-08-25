@@ -18,10 +18,11 @@ import { repositoryControllerRoot } from '../../../cli/repositories/controller-h
 import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../execution/jobs/store';
 import { waitForExecutionJob } from '../../execution/jobs/wait';
 import type { ExecutionJob } from '../../execution/jobs/types';
-import { checkRequiresDurableWorkflow, getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
+import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS, checkRequiresDurableWorkflow, getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
 import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../../execution/process-runtime/command-facade';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
+import { recoverTerminalWorkHandle } from '../../control-plane/execution/work-terminal-cleanup';
 import { gitCommitAtRef, gitWorktreeSnapshot } from '../../control-plane/execution/work-lifecycle-audit';
 import { executionIdentityForRepository } from '../../control-plane/execution/execution-identity';
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from '../../control-plane/execution/verification-evidence';
@@ -589,7 +590,7 @@ async function callStandaloneRecoveryTool(
   }
 }
 
-export const RH_WORK_VERIFY_LEASE_WAIT_MS = 8_000;
+export const RH_WORK_VERIFY_LEASE_WAIT_MS = DEFAULT_WORK_CHECK_LEASE_WAIT_MS;
 
 type TerminalCheckEvidenceState = 'matched' | 'process_runtime_failed_before_result' | 'missing' | 'mismatch';
 
@@ -1415,7 +1416,8 @@ async function finalizeFacadeWorkHandle(
 ): Promise<CallToolResult | undefined> {
   const workId = String(args.work_id ?? '').trim();
   if (!workId) return undefined;
-  let handle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
+  let handle = readWorkHandle(ctx.controllerHome, repository.repoId, workId)
+    ?? recoverTerminalWorkHandle(ctx.controllerHome, repository.repoId, workId);
   if (!handle) return undefined;
   const session = bindFacadeExecutionSession(ctx, repository, handle, args);
   const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
@@ -4708,7 +4710,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               return result(blocked as unknown as Record<string, unknown>, true);
             }
           }
-          if (before && !before.completionReceipt) {
+          const completedCleanupPending = Boolean(
+            before?.completionReceipt
+            && args.cleanup !== false
+            && before.worktreeRef?.trim()
+            && existsSync(before.worktreeRef),
+          );
+          if (before && (!before.completionReceipt || completedCleanupPending)) {
             try {
               const physical = await finalizeFacadeWorkHandle(ctx, repository, args, 'finalize');
               if (physical?.isError === true) return physical;

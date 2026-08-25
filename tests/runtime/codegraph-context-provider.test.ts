@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS, buildControllerContextPack, buildControllerContextPackAsync } from '../../src/cli/controller/context-pack';
@@ -68,12 +68,51 @@ function structuralResponse(overrides: Partial<CodeGraphReadProviderResponse> = 
 
 describe('CodeGraph read provider', () => {
   test('resolves the matching self-contained CodeGraph runtime without using the Forge Node baseline', () => {
-    const runtime = resolveCodeGraphBundledRuntime();
+    const runtime = resolveCodeGraphBundledRuntime({ runtimeRoot: join(tmpdir(), 'forge-codegraph-no-release') });
     expect(runtime.platformPackage).toBe(`@colbymchenry/codegraph-${process.platform}-${process.arch}`);
     expect(runtime.nodeExecutable).toContain('@colbymchenry/codegraph-');
     expect(runtime.sidecarPath).toEndWith('codegraph-sidecar.cjs');
     expect(runtime.libraryPath).toContain('@colbymchenry/codegraph-');
     expect(runtime.source).toBe('dependency');
+  });
+
+  test('uses the Runtime-authority release path for a co-located CodeGraph runtime', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-codegraph-release-env-'));
+    roots.push(root);
+    writeFileSync(join(root, 'codegraph-node'), 'node');
+    chmodSync(join(root, 'codegraph-node'), 0o700);
+    writeFileSync(join(root, 'codegraph-sidecar.cjs'), 'sidecar');
+    mkdirSync(join(root, 'codegraph-lib', 'dist'), { recursive: true });
+    writeFileSync(join(root, 'codegraph-lib', 'dist', 'index.js'), 'library');
+    const previous = process.env.FORGE_RELEASE_PATH;
+    process.env.FORGE_RELEASE_PATH = root;
+    try {
+      expect(resolveCodeGraphBundledRuntime()).toMatchObject({
+        nodeExecutable: join(root, 'codegraph-node'),
+        sidecarPath: join(root, 'codegraph-sidecar.cjs'),
+        libraryPath: join(root, 'codegraph-lib', 'dist', 'index.js'),
+        source: 'release',
+      });
+    } finally {
+      if (previous === undefined) delete process.env.FORGE_RELEASE_PATH;
+      else process.env.FORGE_RELEASE_PATH = previous;
+    }
+  });
+
+  test('publishes supported CodeGraph platform bundles as optional runtime dependencies', () => {
+    const manifest = JSON.parse(readFileSync(join(import.meta.dir, '../..', 'package.json'), 'utf8')) as {
+      optionalDependencies?: Record<string, string>;
+    };
+    for (const target of [
+      'darwin-arm64',
+      'darwin-x64',
+      'linux-arm64',
+      'linux-x64',
+      'win32-arm64',
+      'win32-x64',
+    ]) {
+      expect(manifest.optionalDependencies?.[`@colbymchenry/codegraph-${target}`]).toBe('1.0.1');
+    }
   });
 
   test('prefers one complete co-located immutable-release CodeGraph runtime', () => {

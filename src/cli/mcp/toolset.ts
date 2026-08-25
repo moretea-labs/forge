@@ -17,7 +17,7 @@ import type { McpToolset } from './types';
 import { forgeToolSurfaceFingerprint } from '../controller/runtime-config';
 
 export type ToolExposureClass = 'facade' | 'advanced' | 'internal' | 'compatibility';
-export type ControllerToolProfile = 'core' | 'advanced' | 'full';
+export type ControllerToolProfile = 'facade' | 'core' | 'advanced' | 'full';
 
 export interface ControllerToolInventoryEntry {
   name: string;
@@ -100,7 +100,7 @@ function pruneStaticExposureCache(): void {
 }
 
 export function normalizeMcpToolset(value: unknown): McpToolset {
-  if (value === 'full' || value === 'advanced' || value === 'core') return value;
+  if (value === 'full' || value === 'advanced' || value === 'core' || value === 'facade') return value;
   return 'advanced';
 }
 
@@ -113,6 +113,7 @@ export function controllerToolNamesForToolset(
   _ctx?: MultiRepositoryMcpToolContext,
 ): readonly string[] | null {
   if (toolset === 'full') return null;
+  if (toolset === 'facade') return PREFERRED_FACADE_TOOL_NAMES;
   return DEFAULT_CONTROLLER_TOOL_NAMES;
 }
 
@@ -248,7 +249,7 @@ function capabilityForToolName(name: string): string {
 }
 
 function profileForToolset(toolset: McpToolset): ControllerToolProfile {
-  return toolset === 'full' ? 'full' : toolset === 'core' ? 'core' : 'advanced';
+  return toolset === 'full' ? 'full' : toolset === 'facade' ? 'facade' : toolset === 'core' ? 'core' : 'advanced';
 }
 
 export function controllerToolInventory(

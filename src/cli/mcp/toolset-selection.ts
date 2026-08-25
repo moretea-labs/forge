@@ -8,7 +8,7 @@ export interface ControllerToolsetSelection {
 }
 
 export function normalizeConfiguredMcpToolset(value: unknown): McpToolset | undefined {
-  return value === 'core' || value === 'advanced' || value === 'full' ? value : undefined;
+  return value === 'facade' || value === 'core' || value === 'advanced' || value === 'full' ? value : undefined;
 }
 
 /** Persisted Core and Advanced are compatibility-equivalent stable profiles. */

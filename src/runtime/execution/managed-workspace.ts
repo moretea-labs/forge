@@ -202,6 +202,25 @@ function packageManifestRequiresDependencyMaterialization(repoRoot: string): boo
   return false;
 }
 
+function reuseManagedWorkspaceCanonicalDependencies(repoRoot: string): ManagedWorkspaceDependencyPreparation | undefined {
+  const nodeModulesRoot = join(repoRoot, 'node_modules');
+  const reusable = resolveManagedWorkspaceCanonicalDependencies(repoRoot);
+  if (!reusable) return undefined;
+  try {
+    symlinkSync(reusable.nodeModulesRoot, nodeModulesRoot, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (error) {
+    if (!existsSync(nodeModulesRoot)) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`MANAGED_WORKSPACE_DEPENDENCY_REUSE_FAILED: ${detail}`);
+    }
+  }
+  return {
+    mode: 'canonical_reuse',
+    nodeModulesRoot: realpathSync(nodeModulesRoot),
+    canonicalRoot: reusable.canonicalRoot,
+  };
+}
+
 export function materializeManagedWorkspaceDependencies(repoRoot: string): ManagedWorkspaceDependencyPreparation | undefined {
   if (!existsSync(join(repoRoot, 'package.json'))) return undefined;
   const nodeModulesRoot = join(repoRoot, 'node_modules');
@@ -211,22 +230,8 @@ export function materializeManagedWorkspaceDependencies(repoRoot: string): Manag
   // A linked worktree may safely reuse canonical dependencies even when the
   // package manifest itself declares no dependencies. The supported lockfile
   // and dependency-reuse inputs remain the authority for proving equivalence.
-  const reusable = resolveManagedWorkspaceCanonicalDependencies(repoRoot);
-  if (reusable) {
-    try {
-      symlinkSync(reusable.nodeModulesRoot, nodeModulesRoot, process.platform === 'win32' ? 'junction' : 'dir');
-    } catch (error) {
-      if (!existsSync(nodeModulesRoot)) {
-        const detail = error instanceof Error ? error.message : String(error);
-        throw new Error(`MANAGED_WORKSPACE_DEPENDENCY_REUSE_FAILED: ${detail}`);
-      }
-    }
-    return {
-      mode: 'canonical_reuse',
-      nodeModulesRoot: realpathSync(nodeModulesRoot),
-      canonicalRoot: reusable.canonicalRoot,
-    };
-  }
+  const reused = reuseManagedWorkspaceCanonicalDependencies(repoRoot);
+  if (reused) return reused;
   // A package manifest can define dependency-free scripts (for example a
   // built-in `node -e` check). Such checks do not need node_modules and must not
   // be rejected merely because the repository intentionally has no lockfile.
@@ -350,6 +355,11 @@ export function ensureManagedWorkspace(
       }
       if (input.prepareDependencies === true) {
         (dependencies.materializeDependencies ?? materializeManagedWorkspaceDependencies)(path);
+      } else {
+        // Reusing a byte-equivalent canonical dependency tree is cheap and
+        // deterministic, so isolated Work checkouts should get it even when a
+        // full package-manager install was not explicitly requested.
+        reuseManagedWorkspaceCanonicalDependencies(path);
       }
 
       const record = addRepositoryCheckout({

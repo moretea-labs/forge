@@ -659,6 +659,28 @@ describe('mcp http transport', () => {
         const tokenJson = await token.json() as { access_token: string; token_type: string };
         expect(tokenJson.token_type).toBe('Bearer');
 
+        // A single authenticated developer may have many concurrent ChatGPT
+        // conversations. The default principal limit must therefore inherit the
+        // globally bounded session capacity instead of making the ninth client
+        // evict an otherwise healthy peer and trigger a reconnect feedback loop.
+        for (let index = 0; index < 10; index += 1) {
+          const initialized = await fetch(`http://127.0.0.1:${port}/mcp`, {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${tokenJson.access_token}`,
+              'content-type': 'application/json',
+              accept: 'application/json, text/event-stream',
+            },
+            body: initializeBody(`parallel-chatgpt-${index}`),
+          });
+          expect(initialized.status).toBe(200);
+          expect(initialized.headers.get('mcp-session-id')).toBeTruthy();
+          await initialized.body?.cancel().catch(() => undefined);
+        }
+        const parallelHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
+        expect(parallelHealth.sessions.active).toBe(10);
+        expect(parallelHealth.sessions.closed.principalCapacity).toBe(0);
+
         const noAuth = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },

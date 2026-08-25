@@ -827,6 +827,7 @@ function terminalCleanupOutcome(
   if (handle.cleanupReceipt) return handle.cleanupReceipt.terminalOutcome;
   const contract = contractFor(ctx, handle);
   if (contract?.status === 'cancelled') return 'cancelled';
+  if (contract?.status === 'completed') return 'completed_cleanup';
   const reason = `${handle.failureReason ?? ''} ${handle.finalization.lastError ?? ''}`.toLowerCase();
   if (contract?.status === 'blocked' && reason.includes('terminal')) return 'blocked_terminal';
   // `failed` is a retryable execution-handle state (its transition table allows
