@@ -358,10 +358,11 @@ export function submitControllerRoundDisposition(
     if (existing.value.principalId !== authority.principalId) {
       throw new Error(`CONTROLLER_RELAY_CLAIM_PRINCIPAL_MISMATCH: ${work.workId}`);
     }
-    if (existing.value.controllerInstanceId !== authority.controllerInstanceId) {
+    const terminalActiveClaimMigration = terminal && Boolean(liveOwner);
+    if (!terminalActiveClaimMigration && existing.value.controllerInstanceId !== authority.controllerInstanceId) {
       throw new Error(`CONTROLLER_RELAY_CLAIM_INSTANCE_MISMATCH: ${work.workId}`);
     }
-    if (existing.value.claimGeneration !== authority.claimGeneration) {
+    if (!terminalActiveClaimMigration && existing.value.claimGeneration !== authority.claimGeneration) {
       throw new Error(`CONTROLLER_RELAY_CLAIM_GENERATION_MISMATCH: ${work.workId}`);
     }
     const previous = relayHistory(options, relayScopeId)[0];

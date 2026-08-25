@@ -15,7 +15,7 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
 import { createWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { createHandoffItem, getHandoffItem, listHandoffItems } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { claimControllerSession, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import {
   acknowledgeControllerRoundClaim,
   beginInitialControllerRoundDispatch,
@@ -743,7 +743,7 @@ describe('scheduled external Controller wake', () => {
     expect(() => parseControllerDispositionCompatibilityCapability('repair', 'controller.disposition:goal_complete:')).toThrow(/CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_INVALID/);
   });
 
-  test('allows only the exact claimed ChatGPT round to reconcile terminal completion as goal_complete after an authenticated session rotation', () => {
+  test('allows only the exact same-principal ChatGPT authority to record goal_complete after release/reclaim runtime rotation', () => {
     const root = temp('forge-controller-relay-terminal-disposition-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
     for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
@@ -781,17 +781,23 @@ describe('scheduled external Controller wake', () => {
       leaseMs: 5 * 60_000,
     });
     expect(acknowledgeControllerRoundClaim(store, { workId, session })?.status).toBe('claimed');
-    const rotated = resumeControllerSession(store, {
+    releaseControllerSession(store, workId, session.controllerId);
+    const rotated = claimControllerSession(store, {
       workId,
       controllerId: session.controllerId,
       controllerType: 'chatgpt',
       sessionId: 'chatgpt-session-rotated',
       principalId: session.principalId ?? session.controllerId,
-      controllerInstanceId: session.controllerInstanceId ?? 'runtime-test',
-      expectedClaimGeneration: session.claimGeneration,
+      controllerInstanceId: 'runtime-rotated',
       leaseMs: 5 * 60_000,
     });
     expect(rotated.claimGeneration).toBe(session.claimGeneration);
+    expect(getControllerSession(store, workId)).toMatchObject({
+      controllerId: session.controllerId,
+      principalId: session.principalId,
+      controllerInstanceId: 'runtime-rotated',
+      sessionId: 'chatgpt-session-rotated',
+    });
 
     const recordedAt = '2026-08-24T09:00:00.000Z';
     recordWorkCompletionReceipt(store, workId, {
@@ -809,27 +815,48 @@ describe('scheduled external Controller wake', () => {
       verifiedAt: recordedAt,
       recordedAt,
     }, 'completed_no_change', 'completed_no_change');
-    releaseControllerSession(store, workId, rotated.controllerId);
-    expect(getControllerSession(store, workId)).toBeUndefined();
+    expect(getControllerSession(store, workId)?.controllerInstanceId).toBe('runtime-rotated');
 
     expect(() => submitControllerRoundDisposition(store, {
-      workId,
+      workId: 'WORK-RELAY-TERMINAL-DIFFERENT',
       identity: {
         controllerId: rotated.controllerId,
-        principalId: 'different-principal',
-        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-test',
-        sessionId: 'transport-after-finalize',
+        principalId: rotated.principalId ?? rotated.controllerId,
+        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-rotated',
+        sessionId: rotated.sessionId,
       },
       disposition: 'goal_complete',
       relayScopeId: opened.relayScopeId,
-    })).toThrow(/CONTROLLER_RELAY_CLAIM_PRINCIPAL_MISMATCH/);
+    })).toThrow(/WORK_NOT_FOUND/);
     expect(() => submitControllerRoundDisposition(store, {
       workId,
       identity: {
         controllerId: rotated.controllerId,
         principalId: rotated.principalId ?? rotated.controllerId,
-        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-test',
-        sessionId: 'transport-after-finalize',
+        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-rotated',
+        sessionId: rotated.sessionId,
+      },
+      disposition: 'goal_complete',
+      relayScopeId: 'goal:different-work',
+    })).toThrow(/CONTROLLER_RELAY_SCOPE_MISMATCH/);
+    expect(() => submitControllerRoundDisposition(store, {
+      workId,
+      identity: {
+        controllerId: rotated.controllerId,
+        principalId: 'different-principal',
+        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-rotated',
+        sessionId: rotated.sessionId,
+      },
+      disposition: 'goal_complete',
+      relayScopeId: opened.relayScopeId,
+    })).toThrow(/WORK_CONTROLLER_PRINCIPAL_MISMATCH/);
+    expect(() => submitControllerRoundDisposition(store, {
+      workId,
+      identity: {
+        controllerId: rotated.controllerId,
+        principalId: rotated.principalId ?? rotated.controllerId,
+        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-rotated',
+        sessionId: rotated.sessionId,
       },
       disposition: 'wait',
       relayScopeId: opened.relayScopeId,
@@ -840,28 +867,30 @@ describe('scheduled external Controller wake', () => {
       identity: {
         controllerId: rotated.controllerId,
         principalId: rotated.principalId ?? rotated.controllerId,
-        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-test',
-        sessionId: 'transport-after-finalize',
+        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-rotated',
+        sessionId: rotated.sessionId,
       },
       disposition: 'goal_complete',
       relayScopeId: opened.relayScopeId,
-      reason: 'Physical finalization completed before semantic round disposition.',
+      reason: 'Physical finalization completed before semantic round disposition after Runtime rotation.',
     });
     expect(completed).toMatchObject({
       status: 'goal_complete',
       disposition: 'goal_complete',
       relayScopeId: opened.relayScopeId,
       controllerId: rotated.controllerId,
-      sessionId: 'transport-after-finalize',
-      claimGeneration: session.claimGeneration,
+      principalId: rotated.principalId ?? rotated.controllerId,
+      controllerInstanceId: 'runtime-rotated',
+      sessionId: rotated.sessionId,
+      claimGeneration: rotated.claimGeneration,
     });
     expect(() => submitControllerRoundDisposition(store, {
       workId,
       identity: {
         controllerId: rotated.controllerId,
         principalId: rotated.principalId ?? rotated.controllerId,
-        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-test',
-        sessionId: 'transport-after-finalize',
+        controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-rotated',
+        sessionId: rotated.sessionId,
       },
       disposition: 'goal_complete',
       relayScopeId: opened.relayScopeId,
