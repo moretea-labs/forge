@@ -421,6 +421,10 @@
       "module": "controller",
       "resource": "process-tree"
     },
+    "tests/runtime/generated-cache-retention.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/facade-contracts.test.ts": {
       "module": "workflow",
       "resource": "pure"
