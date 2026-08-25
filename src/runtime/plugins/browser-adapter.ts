@@ -4277,7 +4277,7 @@ async function executeBrowserPluginActionInternal(input: AssistantPluginActionEx
                 { retryable: true, details: { browserProduct: nativeProduct, requiresSystemFrontmost, attempts: discovered.attempts } },
               );
             }
-            adoptedSystemFrontmost = activeMetadata.frontmost && activeMetadata.active === true;
+            adoptedSystemFrontmost = activeMetadata.frontmost === true && activeMetadata.active === true;
             adoptedProduct = activeMetadata.product;
             if (activeMetadata.windowId && activeMetadata.tabId) {
               adoptedRef = { windowId: activeMetadata.windowId, tabId: activeMetadata.tabId };
