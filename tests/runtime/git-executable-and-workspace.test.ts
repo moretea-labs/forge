@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { isAbsolute, join } from 'path';
 import { spawnSync } from 'child_process';
@@ -113,6 +113,38 @@ describe('Git executable and managed workspace guards', () => {
       materializeDependencies: () => { unexpectedInstall = true; },
     });
     expect(unexpectedInstall).toBe(false);
+  });
+
+  test('reuses equivalent canonical Node dependencies without requiring install opt-in', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-git-runtime-reuse-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    ensureControllerHome(controllerHome);
+    const repositoryRoot = join(root, 'repository');
+    initGitRepo(repositoryRoot);
+    writeFileSync(join(repositoryRoot, 'package.json'), '{"name":"fixture","private":true,"dependencies":{"commander":"^14.0.3"}}\n');
+    writeFileSync(join(repositoryRoot, 'bun.lock'), '# fixture lock\n');
+    const git = resolveGitExecutable();
+    expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'package.json', 'bun.lock']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'add node fixture']).status).toBe(0);
+    mkdirSync(join(repositoryRoot, 'node_modules', 'commander'), { recursive: true });
+    writeFileSync(join(repositoryRoot, 'node_modules', 'commander', 'package.json'), '{"name":"commander","version":"14.0.3"}\n');
+    const repository = registerRepository({ path: repositoryRoot, controllerHome, displayName: 'git-runtime-reuse-fixture' });
+
+    let unexpectedInstall = false;
+    const prepared = ensureManagedWorkspace(controllerHome, repository, {
+      requestId: 'git-runtime-reuse-workspace',
+      title: 'Git Runtime Reuse Workspace',
+      branchName: 'work/git-runtime-reuse-workspace',
+      prepareDependencies: false,
+    }, {
+      materializeDependencies: () => { unexpectedInstall = true; },
+    });
+
+    expect(unexpectedInstall).toBe(false);
+    expect(prepared.root).toBeTruthy();
+    expect(existsSync(join(prepared.root!, 'node_modules', 'commander', 'package.json'))).toBe(true);
+    expect(realpathSync(join(prepared.root!, 'node_modules'))).toBe(realpathSync(join(repositoryRoot, 'node_modules')));
   });
 
   test('creates and validates a same-repository managed worktree', () => {
