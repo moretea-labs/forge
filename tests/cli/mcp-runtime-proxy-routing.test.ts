@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -241,6 +242,138 @@ describe('MCP canonical Runtime proxy routing', () => {
       await proxy.close();
       await runtimeTransport.close();
       rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('bounds orphanable root Runtime sessions and evicts the least-recent idle session', async () => {
+    const runtimeToken = 'runtime-session-capacity-fixture';
+    const runtimeTransport = await startRuntimeMcpTransport({
+      host: '127.0.0.1',
+      port: 0,
+      authToken: runtimeToken,
+      maximumSessions: 2,
+      readiness: () => ({
+        ready: true,
+        reasonCodes: [],
+        observedAt: new Date().toISOString(),
+        diagnostics: {
+          database: { outcome: 'pass' },
+          scheduler: { outcome: 'pass' },
+          releaseCoherence: { outcome: 'pass' },
+          mcpEndToEnd: { outcome: 'pass' },
+        },
+      }),
+      createServer: () => {
+        const server = new Server(
+          { name: 'fixture-runtime-capacity', version: '1.0.0' },
+          { capabilities: { tools: { listChanged: false } } },
+        );
+        server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [] }));
+        return server;
+      },
+    });
+    const clients: Client[] = [];
+    const connect = async (name: string): Promise<Client> => {
+      const transport = new StreamableHTTPClientTransport(new URL(runtimeTransport.endpoint), {
+        requestInit: { headers: { Authorization: `Bearer ${runtimeToken}` } },
+      });
+      const client = new Client({ name, version: '1.0.0' }, { capabilities: {} });
+      await client.connect(transport);
+      clients.push(client);
+      return client;
+    };
+
+    try {
+      const first = await connect('capacity-first');
+      await Bun.sleep(2);
+      const second = await connect('capacity-second');
+      expect(runtimeTransport.sessionSnapshot!()).toMatchObject({
+        active: 2,
+        maximum: 2,
+        initializing: 0,
+        capacityAvailable: 0,
+        capacityEvictions: 0,
+      });
+
+      const third = await connect('capacity-third');
+      expect(runtimeTransport.sessionSnapshot!()).toMatchObject({
+        active: 2,
+        maximum: 2,
+        initializing: 0,
+        capacityAvailable: 0,
+        capacityEvictions: 1,
+      });
+      await expect(first.listTools()).rejects.toThrow();
+      await expect(second.listTools()).resolves.toMatchObject({ tools: [] });
+      await expect(third.listTools()).resolves.toMatchObject({ tools: [] });
+    } finally {
+      await Promise.allSettled(clients.map(async (client) => await client.close()));
+      await runtimeTransport.close();
+    }
+  });
+
+  test('never evicts a root Runtime session while its request is in flight', async () => {
+    const runtimeToken = 'runtime-session-protection-fixture';
+    let releaseCall!: () => void;
+    let markCallStarted!: () => void;
+    const callStarted = new Promise<void>((resolve) => { markCallStarted = resolve; });
+    const callReleased = new Promise<void>((resolve) => { releaseCall = resolve; });
+    const runtimeTransport = await startRuntimeMcpTransport({
+      host: '127.0.0.1',
+      port: 0,
+      authToken: runtimeToken,
+      maximumSessions: 1,
+      readiness: () => ({
+        ready: true,
+        reasonCodes: [],
+        observedAt: new Date().toISOString(),
+        diagnostics: {
+          database: { outcome: 'pass' },
+          scheduler: { outcome: 'pass' },
+          releaseCoherence: { outcome: 'pass' },
+          mcpEndToEnd: { outcome: 'pass' },
+        },
+      }),
+      createServer: () => {
+        const server = new Server(
+          { name: 'fixture-runtime-protected', version: '1.0.0' },
+          { capabilities: { tools: { listChanged: false } } },
+        );
+        server.setRequestHandler(CallToolRequestSchema, async () => {
+          markCallStarted();
+          await callReleased;
+          return { content: [{ type: 'text', text: 'ok' }] };
+        });
+        return server;
+      },
+    });
+    const transport = new StreamableHTTPClientTransport(new URL(runtimeTransport.endpoint), {
+      requestInit: { headers: { Authorization: `Bearer ${runtimeToken}` } },
+    });
+    const client = new Client({ name: 'protected-client', version: '1.0.0' }, { capabilities: {} });
+    await client.connect(transport);
+
+    try {
+      const activeCall = client.callTool({ name: 'block', arguments: {} });
+      await callStarted;
+      expect(runtimeTransport.sessionSnapshot!()).toMatchObject({ active: 1, protected: 1, capacityEvictions: 0 });
+      const initializeAttempt = await fetch(runtimeTransport.endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${runtimeToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 'capacity-probe', method: 'initialize', params: {} }),
+      });
+      expect(initializeAttempt.status).toBe(503);
+      expect(await initializeAttempt.json()).toEqual({ error: 'mcp_session_capacity_exhausted' });
+      expect(runtimeTransport.sessionSnapshot!()).toMatchObject({ active: 1, protected: 1, capacityEvictions: 0 });
+      releaseCall();
+      await activeCall;
+    } finally {
+      releaseCall();
+      await client.close().catch(() => undefined);
+      await runtimeTransport.close();
     }
   });
 
