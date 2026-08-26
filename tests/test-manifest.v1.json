@@ -589,6 +589,10 @@
       "module": "process-runtime",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/semantic-navigation-provider.test.ts": {
+      "module": "controller",
+      "resource": "process-tree"
+    },
     "tests/runtime/standalone-recovery.test.ts": {
       "module": "process-runtime",
       "resource": "process-tree"
