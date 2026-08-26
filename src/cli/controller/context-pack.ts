@@ -785,14 +785,32 @@ export async function buildControllerContextPackAsync(
   }
   const prefetchStartedAt = performance.now();
   const retrievalMode = options.retrievalMode ?? 'implementation';
-  const maxFiles = clamp(options.maxFiles, DEFAULT_MAX_FILES, 1, 30);
+  const requestedMaxFiles = clamp(options.maxFiles, DEFAULT_MAX_FILES, 1, 30);
   const knownPaths = cleanList(options.knownPaths);
-  const includeGlobs = cleanList([...(options.includeGlobs ?? []), ...knownPaths.filter(looksLikeGlob)]);
+  const knownGlobs = knownPaths.filter(looksLikeGlob);
+  const explicitKnownPaths = knownPaths.filter((path) => !looksLikeGlob(path));
+  const includeGlobs = cleanList([...(options.includeGlobs ?? []), ...knownGlobs]);
   const excludeGlobs = cleanList([...DEFAULT_SEARCH_EXCLUDE_GLOBS, ...(options.excludeGlobs ?? [])]);
   const terms = cleanList([...(options.searchTerms ?? []), ...textTokens(options.description ?? '')]).slice(0, 14);
   const impactDomains = cleanList(options.impactDomains)
     .filter((domain): domain is ControllerContextImpactDomain => CONTROLLER_CONTEXT_IMPACT_DOMAINS.includes(domain as ControllerContextImpactDomain))
     .slice(0, 6);
+  const exactKnownFiles: string[] = [];
+  let exactKnownFileScope = explicitKnownPaths.length > 0;
+  for (const path of explicitKnownPaths) {
+    const expanded = expandKnownPath(repoRoot, policy, path, Math.max(requestedMaxFiles * 4, 40));
+    if (!expanded.directory && expanded.files.length === 1 && expanded.denied.length === 0 && !expanded.truncated) {
+      exactKnownFiles.push(expanded.files[0]!);
+    } else {
+      exactKnownFileScope = false;
+    }
+  }
+  const maxFiles = Math.min(30, Math.max(requestedMaxFiles, exactKnownFiles.length));
+  const scopedExactKnownFileSearch = exactKnownFileScope
+    && retrievalMode === 'implementation'
+    && structuralMode === 'off'
+    && impactDomains.length === 0
+    && includeGlobs.length === 0;
   const searchQueries = cleanList([
     ...(terms[0] ? [terms[0]] : []),
     ...impactDomains.flatMap((domain) => IMPACT_DOMAIN_TERMS[domain]),
@@ -823,16 +841,19 @@ export async function buildControllerContextPackAsync(
         const git = gitSnapshot(repoRoot, options.session);
         return {
           queries: searchQueries,
-          includeGlobs,
+          files: scopedExactKnownFileSearch ? exactKnownFiles : undefined,
+          includeGlobs: scopedExactKnownFileSearch ? undefined : includeGlobs,
           excludeGlobs,
           maxResultsPerQuery: Math.max(maxFiles * 4, 12),
-          maxFiles: MAX_TOTAL_SEARCHED_FILES,
+          maxFiles: scopedExactKnownFileSearch ? exactKnownFiles.length : MAX_TOTAL_SEARCHED_FILES,
           caseSensitive: false,
           cacheKey: JSON.stringify({ head: git.head, status: git.status, diffStat: git.diffStat }),
-          completionMode: 'discovery' as const,
-          discoveryTargetFiles: Math.max(maxFiles * 2, 12),
-          discoveryMinQueryCoverage: Math.min(3, searchQueries.length),
-          requiredQueries: requiredSearchQueries,
+          ...(!scopedExactKnownFileSearch ? {
+            completionMode: 'discovery' as const,
+            discoveryTargetFiles: Math.max(maxFiles * 2, 12),
+            discoveryMinQueryCoverage: Math.min(3, searchQueries.length),
+            requiredQueries: requiredSearchQueries,
+          } : {}),
         };
       })()
     : undefined;

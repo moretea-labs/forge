@@ -239,6 +239,25 @@ describe('CodeGraph read provider', () => {
     expect(pack.search.scannedFiles).toBe(2); // one known-path expansion + one targeted lexical read
   });
 
+  test('keeps async first-pass lexical prefetch scoped to exact known implementation files', async () => {
+    const root = contextRepo();
+    for (let index = 0; index < 200; index += 1) {
+      writeFileSync(join(root, `src/async-decoy-${index}.ts`), `export const runServiceAsyncDecoy${index} = true;\n`);
+    }
+    const pack = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), {
+      searchTerms: ['runService'],
+      knownPaths: ['src/service.ts'],
+      structuralContext: 'off',
+      retrievalMode: 'implementation',
+      session: { sessionId: 'async-exact-known-scope', repoId: 'repo-a', checkoutId: 'checkout-a' },
+    });
+    expect(pack.timingsMs.parallelFirstPass).toBe(true);
+    expect(pack.files[0]?.path).toBe('src/service.ts');
+    expect(pack.files[0]?.reasons).toEqual(expect.arrayContaining(['explicit-known-path', 'search:runService']));
+    expect(pack.search.scannedFiles).toBe(2); // one known-path expansion + one targeted lexical read
+    expect(pack.search.cacheHit).toBe(true); // sync materialization consumes the targeted async prefetch result
+  });
+
   test('resolves root-to-nearest AGENTS.md and CLAUDE.md guidance without consuming exact source budget', () => {
     const root = contextRepo();
     mkdirSync(join(root, 'src/feature'), { recursive: true });
