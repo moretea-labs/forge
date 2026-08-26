@@ -171,7 +171,9 @@ export function buildControllerContextPack(
     }
     structuralCacheMisses += 1;
     const response = queryCodeGraph(queryRoot, request);
-    repositorySessionCache?.putStructural(key, response);
+    if (response.error?.code !== CODEGRAPH_PREFETCH_DEFERRED_CODE) {
+      repositorySessionCache?.putStructural(key, response);
+    }
     return response;
   };
 
@@ -717,11 +719,59 @@ export function buildControllerContextPack(
 }
 
 /**
- * Broad first-call fan-in for the canonical rh_context path. CodeGraph runs in
- * its sidecar while broad lexical retrieval performs bounded async file I/O;
- * the sync builder then consumes the warmed session cache/evidence.
+ * Broad first-call fan-in for the canonical rh_context path. Lexical retrieval
+ * remains required evidence. Auto CodeGraph is opportunistic enrichment: it may
+ * finish inside the first-call latency budget, otherwise the request returns
+ * bounded lexical/raw evidence while the same source-bound structural request
+ * continues warming the session cache. Required structural mode still waits.
  */
+export const AUTO_STRUCTURAL_PREFETCH_BUDGET_MS = 100;
 export const AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS = 1_000;
+const CODEGRAPH_PREFETCH_DEFERRED_CODE = 'CODEGRAPH_PREFETCH_DEFERRED';
+const structuralPrefetchInflight = new Map<string, Promise<CodeGraphReadProviderResponse>>();
+
+function codeGraphPrefetchDeferredResponse(elapsedMs: number): CodeGraphReadProviderResponse {
+  return {
+    schemaVersion: 1,
+    provider: 'codegraph',
+    operation: 'context',
+    ok: false,
+    status: 'degraded',
+    error: {
+      code: CODEGRAPH_PREFETCH_DEFERRED_CODE,
+      message: `Optional CodeGraph enrichment exceeded the ${AUTO_STRUCTURAL_PREFETCH_BUDGET_MS}ms first-call budget and continues warming the source-bound session cache.`,
+    },
+    timingsMs: { total: Math.round(elapsedMs * 100) / 100 },
+  };
+}
+
+async function settleWithinBudget<T>(promise: Promise<T>, budgetMs: number): Promise<{ settled: true; value: T } | { settled: false }> {
+  if (budgetMs <= 0) return { settled: false };
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise.then((value) => ({ settled: true as const, value })),
+      new Promise<{ settled: false }>((resolveBudget) => {
+        timer = setTimeout(() => resolveBudget({ settled: false }), budgetMs);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function cacheDeferredStructuralResult(
+  sessionCache: ReturnType<typeof getRepositoryReadSessionCache>,
+  structuralCacheKey: string,
+  sourceIdentity: string | undefined,
+  response: CodeGraphReadProviderResponse,
+): void {
+  if (!sessionCache || !sourceIdentity) return;
+  if (response.error?.code === 'CODEGRAPH_TIMEOUT' || response.error?.code === CODEGRAPH_PREFETCH_DEFERRED_CODE) return;
+  if (JSON.stringify(sessionCache.currentIdentity()) !== sourceIdentity) return;
+  sessionCache.putStructural(structuralCacheKey, response);
+}
 
 export async function buildControllerContextPackAsync(
   repoRoot: string,
@@ -730,7 +780,7 @@ export async function buildControllerContextPackAsync(
   dependencies: ControllerContextPackDependencies = {},
 ): Promise<ControllerContextPackProjection> {
   const structuralMode = options.structuralContext ?? 'off';
-  if (dependencies.queryCodeGraph || !options.session || options.issueId || options.taskId) {
+  if ((dependencies.queryCodeGraph && !dependencies.queryCodeGraphAsync) || !options.session || options.issueId || options.taskId) {
     return buildControllerContextPack(repoRoot, policy, options, dependencies);
   }
   const prefetchStartedAt = performance.now();
@@ -764,6 +814,7 @@ export async function buildControllerContextPackAsync(
   };
   const structuralCacheKey = JSON.stringify({ queryRoot: structuralIndexRoot, request: structuralRequest });
   const sessionCache = getRepositoryReadSessionCache(repoRoot, options.session);
+  const structuralSourceIdentity = sessionCache ? JSON.stringify(sessionCache.currentIdentity()) : undefined;
   const cachedStructural = structuralQuery
     ? sessionCache?.peekStructural(structuralCacheKey) as CodeGraphReadProviderResponse | undefined
     : undefined;
@@ -793,20 +844,50 @@ export async function buildControllerContextPackAsync(
     const pack = buildControllerContextPack(repoRoot, policy, options, dependencies);
     pack.timingsMs.parallelFirstPass = false;
     pack.timingsMs.parallelPrefetch = 0;
+    pack.timingsMs.structuralPrefetchBudgetMs = structuralMode === 'auto' && structuralQuery ? AUTO_STRUCTURAL_PREFETCH_BUDGET_MS : 0;
+    pack.timingsMs.structuralPrefetchDeferred = false;
+    pack.timingsMs.structuralPrefetchReusedInFlight = false;
     return pack;
   }
-  const structuralPromise = cachedStructural
+
+  const noStructuralResponse: CodeGraphReadProviderResponse = {
+    schemaVersion: 1,
+    provider: 'codegraph',
+    operation: 'context',
+    ok: false,
+    status: 'degraded',
+    error: { code: 'CODEGRAPH_QUERY_REQUIRED', message: 'No context query was provided.' },
+    timingsMs: { total: 0 },
+  };
+  let structuralSettled = Boolean(cachedStructural) || !structuralQuery;
+  let structuralSettledValue: CodeGraphReadProviderResponse | undefined = cachedStructural || (!structuralQuery ? noStructuralResponse : undefined);
+  const queryCodeGraphAsync = dependencies.queryCodeGraphAsync ?? queryCodeGraphReadProviderAsync;
+  const structuralInflightKey = structuralQuery && structuralSourceIdentity
+    ? JSON.stringify({ structuralCacheKey, sourceIdentity: structuralSourceIdentity, structuralMode })
+    : undefined;
+  const existingStructuralInflight = structuralInflightKey ? structuralPrefetchInflight.get(structuralInflightKey) : undefined;
+  const structuralPrefetchReusedInFlight = Boolean(existingStructuralInflight);
+  const launchedStructuralPromise = cachedStructural
     ? Promise.resolve(cachedStructural)
     : structuralQuery
-      ? queryCodeGraphReadProviderAsync(
+      ? existingStructuralInflight ?? queryCodeGraphAsync(
           structuralIndexRoot,
           structuralRequest,
           structuralMode === 'auto' ? { timeoutMs: AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS } : {},
         )
-      : Promise.resolve<CodeGraphReadProviderResponse>({
-          schemaVersion: 1, provider: 'codegraph', operation: 'context', ok: false, status: 'degraded',
-          error: { code: 'CODEGRAPH_QUERY_REQUIRED', message: 'No context query was provided.' }, timingsMs: { total: 0 },
-        });
+      : Promise.resolve(noStructuralResponse);
+  if (structuralInflightKey && structuralQuery && !cachedStructural && !existingStructuralInflight) {
+    structuralPrefetchInflight.set(structuralInflightKey, launchedStructuralPromise);
+    void launchedStructuralPromise.then(
+      () => { if (structuralPrefetchInflight.get(structuralInflightKey) === launchedStructuralPromise) structuralPrefetchInflight.delete(structuralInflightKey); },
+      () => { if (structuralPrefetchInflight.get(structuralInflightKey) === launchedStructuralPromise) structuralPrefetchInflight.delete(structuralInflightKey); },
+    );
+  }
+  const structuralPromise = launchedStructuralPromise.then((response) => {
+    structuralSettled = true;
+    structuralSettledValue = response;
+    return response;
+  });
   const lexicalPromise = lexicalOptions && lexicalIdentity && !cachedLexical?.result
     ? searchRepositoryManyAsync(repoRoot, policy, lexicalOptions).then((result) => {
         sessionCache?.putSearch({
@@ -818,13 +899,55 @@ export async function buildControllerContextPackAsync(
         return result;
       })
     : Promise.resolve(cachedLexical?.result);
-  const [prefetched] = await Promise.all([structuralPromise, lexicalPromise]);
+
+  // Lexical/raw discovery is required first-call evidence. Auto structural work is
+  // allowed to consume only the remainder of its budget measured from the start
+  // of the parallel prefetch, so a slow lexical pass never gains an extra 100ms
+  // structural tax after it completes.
+  await lexicalPromise;
+  let prefetched = structuralSettledValue ?? noStructuralResponse;
+  let structuralPrefetchDeferred = false;
+  if (structuralQuery && !cachedStructural) {
+    if (structuralMode === 'required') {
+      prefetched = await structuralPromise;
+    } else if (structuralSettled && structuralSettledValue) {
+      prefetched = structuralSettledValue;
+    } else {
+      const elapsedMs = performance.now() - prefetchStartedAt;
+      // Reusing an already-deferred in-flight request should be effectively free:
+      // do not make a progressive follow-up repay the first call's latency budget.
+      const remainingBudgetMs = structuralPrefetchReusedInFlight
+        ? 0
+        : Math.max(0, AUTO_STRUCTURAL_PREFETCH_BUDGET_MS - elapsedMs);
+      const outcome = await settleWithinBudget(structuralPromise, remainingBudgetMs);
+      if (outcome.settled) {
+        prefetched = outcome.value;
+      } else {
+        structuralPrefetchDeferred = true;
+        prefetched = codeGraphPrefetchDeferredResponse(performance.now() - prefetchStartedAt);
+      }
+    }
+  }
+
+  const fallbackQueryCodeGraph = dependencies.queryCodeGraph ?? queryCodeGraphReadProvider;
   const pack = buildControllerContextPack(repoRoot, policy, options, {
     queryCodeGraph: (queryRoot, request) => request.operation === 'context' && queryRoot === structuralIndexRoot
       ? prefetched
-      : queryCodeGraphReadProvider(queryRoot, request),
+      : fallbackQueryCodeGraph(queryRoot, request),
   });
   pack.timingsMs.parallelFirstPass = true;
   pack.timingsMs.parallelPrefetch = Math.round((performance.now() - prefetchStartedAt) * 100) / 100;
+  pack.timingsMs.structuralPrefetchBudgetMs = structuralMode === 'auto' && structuralQuery ? AUTO_STRUCTURAL_PREFETCH_BUDGET_MS : 0;
+  pack.timingsMs.structuralPrefetchDeferred = structuralPrefetchDeferred;
+  pack.timingsMs.structuralPrefetchReusedInFlight = structuralPrefetchReusedInFlight;
+
+  if (structuralPrefetchDeferred) {
+    // The provider request is intentionally not cancelled. Cache only if the
+    // repository source identity still matches the request that launched it;
+    // a mutation must never let late structural evidence attach to newer source.
+    void structuralPromise
+      .then((response) => cacheDeferredStructuralResult(sessionCache, structuralCacheKey, structuralSourceIdentity, response))
+      .catch(() => undefined);
+  }
   return pack;
 }
