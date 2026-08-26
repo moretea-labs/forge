@@ -558,6 +558,8 @@ export interface StartLightweightCommandInput {
   deferStart?: boolean;
   /** Reuse an equivalent active local build/test even when a later caller has a different request id. */
   reuseActiveEquivalent?: boolean;
+  /** Same-call lifecycle settlement after a repository command reaches a terminal result. */
+  onCompleted?: (result: LightweightExecutionResult) => void;
 }
 
 export interface LightweightCommandMetrics {
@@ -719,6 +721,7 @@ export async function startLightweightRepositoryCommand(
     entry.result = result;
     entry.finishedAtMs = Date.now();
     input.execution.signal?.removeEventListener('abort', onCallerAbort);
+    input.onCompleted?.(result);
     persistTerminalReceipt(input.controllerHome, entry);
     return result;
   });

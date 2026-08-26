@@ -20,7 +20,8 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-actions';
 import { acquireControllerLock, releaseControllerLock } from '../../src/cli/repositories/locks';
 import { persistControllerAccessMode } from '../../src/cli/mcp/access-mode';
-import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
+import { executionIdentityForRepository, executionIdentityForWork } from '../../src/runtime/control-plane/execution/execution-identity';
+import { readWorkHandle, writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { classifyRepositoryCommandRoute, executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { getExecutionJob, updateExecutionJob } from '../../src/runtime/execution/jobs/store';
@@ -65,6 +66,36 @@ function seedRepo(controllerHome: string, repoRoot: string) {
   git(repoRoot, ['add', 'README.md']);
   git(repoRoot, ['commit', '-m', 'init']);
   return registerRepository({ path: repoRoot, controllerHome });
+}
+
+function seedWorkHandle(controllerHome: string, repository: ReturnType<typeof seedRepo>, workId: string): WorkHandleState {
+  const now = new Date().toISOString();
+  const head = gitOutput(repository.canonicalRoot, ['rev-parse', 'HEAD']);
+  return writeWorkHandle(controllerHome, {
+    schemaVersion: 1,
+    workId,
+    sessionId: `session-${workId}`,
+    principalId: 'principal-test',
+    repositoryId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
+    worktreePath: repository.canonicalRoot,
+    branch: 'main',
+    managedWorktree: false,
+    baseCommit: head,
+    deliveryBaseCommit: head,
+    expectedHead: head,
+    permissionSnapshotVersion: 1,
+    state: 'editing',
+    createdAt: now,
+    updatedAt: now,
+    finalization: {
+      validation: 'pending',
+      commit: 'pending',
+      merge: 'pending',
+      branchCleanup: 'pending',
+      worktreeCleanup: 'pending',
+    },
+  });
 }
 
 function listLocalJobIds(repoRoot: string): string[] {
@@ -163,6 +194,110 @@ describe('repository command execution lifecycle', () => {
     } finally {
       owner.release();
     }
+  });
+
+  test('settles WorkHandle expectedHead after a successful Work-attributed git commit', async () => {
+    const controllerHome = tempRoot('forge-cmd-work-head-home-');
+    const repoRoot = tempRoot('forge-cmd-work-head-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    const handle = seedWorkHandle(controllerHome, repository, 'work-head-sync');
+    const previousHead = handle.expectedHead;
+    writeFileSync(join(repoRoot, 'README.md'), 'changed by work\n');
+
+    const execution = await executeRepositoryCommandViaProcessRuntime({
+      controllerHome,
+      repository,
+      command: ['git', 'commit', '--only', '-m', 'work head sync', '--', 'README.md'],
+      timeoutMs: 10_000,
+      workId: handle.workId,
+      executionIdentity: executionIdentityForWork(repository, handle),
+    });
+    const terminal = execution.process?.completed
+      ? execution.process
+      : execution.process
+        ? await waitRepositoryCommandProcess(controllerHome, repository.repoId, execution.process.processId, { timeoutMs: 10_000 })
+        : undefined;
+    expect(terminal?.ok ?? execution.ok).toBe(true);
+    const currentHead = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
+    expect(currentHead).not.toBe(previousHead);
+    expect(readWorkHandle(controllerHome, repository.repoId, handle.workId)?.expectedHead).toBe(currentHead);
+  });
+
+  test('settles WorkHandle expectedHead when a lightweight managed commit completes after the caller returns', async () => {
+    const controllerHome = tempRoot('forge-cmd-work-head-async-home-');
+    const repoRoot = tempRoot('forge-cmd-work-head-async-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    const handle = seedWorkHandle(controllerHome, repository, 'work-head-async');
+    writeFileSync(join(repoRoot, 'README.md'), 'changed asynchronously\n');
+    writeFileSync(join(repoRoot, 'commit-later.sh'), "#!/usr/bin/env bash\nsleep 0.15\ngit commit --only -m 'work head async' -- README.md\n");
+
+    const execution = await executeRepositoryCommandViaProcessRuntime({
+      controllerHome,
+      repository,
+      command: ['bash', 'commit-later.sh'],
+      timeoutMs: 10_000,
+      interactiveWaitMs: 0,
+      returnHandleImmediately: true,
+      workId: handle.workId,
+      executionIdentity: executionIdentityForWork(repository, handle),
+    });
+    expect(execution.route).toBe('process_managed');
+    expect(execution.process?.completed).toBe(false);
+    const terminal = await waitRepositoryCommandProcess(controllerHome, repository.repoId, execution.process!.processId, { timeoutMs: 10_000 });
+    expect(terminal).toMatchObject({ completed: true, ok: true });
+    expect(readWorkHandle(controllerHome, repository.repoId, handle.workId)?.expectedHead).toBe(gitOutput(repoRoot, ['rev-parse', 'HEAD']));
+  });
+
+  test('does not settle WorkHandle expectedHead after a failed command or branch drift', async () => {
+    const controllerHome = tempRoot('forge-cmd-work-head-fence-home-');
+    const repoRoot = tempRoot('forge-cmd-work-head-fence-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    const failed = seedWorkHandle(controllerHome, repository, 'work-head-failed');
+    const failedHead = failed.expectedHead;
+    writeFileSync(join(repoRoot, 'README.md'), 'commit then fail\n');
+    writeFileSync(join(repoRoot, 'commit-then-fail.sh'), "#!/usr/bin/env bash\ngit commit --only -m 'commit then fail' -- README.md\nexit 1\n");
+
+    const failedExecution = await executeRepositoryCommandViaProcessRuntime({
+      controllerHome,
+      repository,
+      command: ['bash', 'commit-then-fail.sh'],
+      timeoutMs: 10_000,
+      workId: failed.workId,
+      executionIdentity: executionIdentityForWork(repository, failed),
+    });
+    const failedTerminal = failedExecution.process?.completed
+      ? failedExecution.process
+      : failedExecution.process
+        ? await waitRepositoryCommandProcess(controllerHome, repository.repoId, failedExecution.process.processId, { timeoutMs: 10_000 })
+        : undefined;
+    expect(failedTerminal?.ok ?? failedExecution.ok).toBe(false);
+    expect(readWorkHandle(controllerHome, repository.repoId, failed.workId)?.expectedHead).toBe(failedHead);
+
+    const newHead = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
+    const drift = writeWorkHandle(controllerHome, {
+      ...readWorkHandle(controllerHome, repository.repoId, failed.workId)!,
+      workId: 'work-head-branch-drift',
+      sessionId: 'session-work-head-branch-drift',
+      expectedHead: newHead,
+      baseCommit: newHead,
+      deliveryBaseCommit: newHead,
+      recordRevision: undefined,
+    });
+    const driftExecution = await executeRepositoryCommandViaProcessRuntime({
+      controllerHome,
+      repository,
+      command: ['git', 'switch', '-c', 'drift-branch'],
+      timeoutMs: 10_000,
+      workId: drift.workId,
+      executionIdentity: executionIdentityForWork(repository, drift),
+    });
+    const driftTerminal = driftExecution.process?.completed
+      ? driftExecution.process
+      : driftExecution.process
+        ? await waitRepositoryCommandProcess(controllerHome, repository.repoId, driftExecution.process.processId, { timeoutMs: 10_000 })
+        : undefined;
+    expect(driftTerminal?.ok ?? driftExecution.ok).toBe(true);
+    expect(readWorkHandle(controllerHome, repository.repoId, drift.workId)?.expectedHead).toBe(newHead);
   });
 
   test('raw git commits require explicit path scope and selected-path commits keep unrelated staged work isolated', () => {

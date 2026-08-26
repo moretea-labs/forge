@@ -9,6 +9,7 @@
  */
 
 import type { RepositoryRecord } from '../../../cli/repositories/types';
+import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { classifyRepositoryCommand, fixedShellWrapperCommand } from '../../../cli/repositories/command-classifier';
 import {
   executeRepositoryCommandAsync,
@@ -33,6 +34,7 @@ import { DEFAULT_INTERACTIVE_WAIT_MS } from './types';
 import { durationAwareInteractiveWaitMs } from './interactive-admission';
 import { isFocusedCheckCommand } from '../thin-harness/execution-router';
 import { assertExecutionIdentity, type ResolvedExecutionIdentity } from '../../control-plane/execution/execution-identity';
+import { readWorkHandle, transitionWorkHandle } from '../../control-plane/execution/work-handle-store';
 import {
   cancelLightweightProcess,
   getLightweightProcessHandle,
@@ -111,6 +113,77 @@ const emptyEffects = {
   workerSpawnCount: 0,
   projectionUpdateCount: 0,
 };
+
+export type WorkHeadSettlementReason =
+  | 'settled'
+  | 'no_work'
+  | 'command_not_successful'
+  | 'work_handle_missing'
+  | 'identity_mismatch'
+  | 'terminal_handle'
+  | 'branch_changed'
+  | 'head_unavailable'
+  | 'head_unchanged'
+  | 'concurrent_lifecycle_write';
+
+export interface WorkHeadSettlementResult {
+  settled: boolean;
+  reason: WorkHeadSettlementReason;
+  previousHead?: string;
+  currentHead?: string;
+}
+
+/**
+ * Settle the one legitimate post-command Work HEAD transition without weakening
+ * the pre-command execution identity fence. The command has already been
+ * admitted only if repo/checkout/branch/expectedHead matched the WorkHandle.
+ * After success, adopt the exact current HEAD only while the same checkout and
+ * branch still own the Work. CAS failure is a bounded no-op: finalization keeps
+ * failing closed instead of accepting a concurrent lifecycle writer.
+ */
+export function settleWorkHandleExpectedHeadAfterRepositoryCommand(input: {
+  controllerHome: string;
+  repository: RepositoryRecord;
+  executionIdentity: ResolvedExecutionIdentity;
+  workId?: string;
+  ok?: boolean;
+  cancelled?: boolean;
+  timedOut?: boolean;
+}): WorkHeadSettlementResult {
+  const workId = input.workId?.trim();
+  if (!workId) return { settled: false, reason: 'no_work' };
+  if (input.ok !== true || input.cancelled === true || input.timedOut === true) {
+    return { settled: false, reason: 'command_not_successful' };
+  }
+  const handle = readWorkHandle(input.controllerHome, input.repository.repoId, workId);
+  if (!handle) return { settled: false, reason: 'work_handle_missing' };
+  if (
+    handle.repositoryId !== input.executionIdentity.repositoryId
+    || handle.checkoutId !== input.executionIdentity.checkoutId
+    || handle.workId !== input.executionIdentity.workId
+  ) return { settled: false, reason: 'identity_mismatch' };
+  if (handle.state === 'merged' || handle.state === 'cleaned' || handle.state === 'failed_terminal_cleanup') {
+    return { settled: false, reason: 'terminal_handle' };
+  }
+  const status = repositoryGitStatus(input.repository);
+  if (!status.branch || status.branch !== handle.branch) {
+    return { settled: false, reason: 'branch_changed', previousHead: handle.expectedHead, currentHead: status.head ?? undefined };
+  }
+  const currentHead = status.head?.trim();
+  if (!currentHead) return { settled: false, reason: 'head_unavailable', previousHead: handle.expectedHead };
+  if (currentHead === handle.expectedHead) {
+    return { settled: false, reason: 'head_unchanged', previousHead: handle.expectedHead, currentHead };
+  }
+  try {
+    transitionWorkHandle(input.controllerHome, handle, handle.state, { expectedHead: currentHead });
+    return { settled: true, reason: 'settled', previousHead: handle.expectedHead, currentHead };
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('CONTROL_PLANE_REVISION_CONFLICT')) {
+      return { settled: false, reason: 'concurrent_lifecycle_write', previousHead: handle.expectedHead, currentHead };
+    }
+    throw error;
+  }
+}
 
 const STANDALONE_RECOVERY_LIFECYCLE_COMMANDS = new Set([
   'restart-runtime',
@@ -380,6 +453,17 @@ export async function executeRepositoryCommandViaProcessRuntime(
         commandId: input.commandId ?? input.requestId,
         deferStart: deferLongPreparation,
         reuseActiveEquivalent: deferLongPreparation,
+        onCompleted: (result) => {
+          settleWorkHandleExpectedHeadAfterRepositoryCommand({
+            controllerHome: input.controllerHome,
+            repository: input.repository,
+            executionIdentity,
+            workId: input.workId,
+            ok: result.ok,
+            cancelled: result.cancelled,
+            timedOut: result.timedOut,
+          });
+        },
       });
       const handle = lightweight.handle;
       return {
