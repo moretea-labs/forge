@@ -33,6 +33,7 @@ import { assertExecutionIdentity, executionIdentityForWork, executionIdentityFro
 import { withWorkPrepareRequest } from '../../control-plane/execution/work-prepare-request-store';
 import { markWorkHandleFailed, newWorkId, readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState, type WorkTerminalOutcome } from '../../control-plane/execution/work-handle-store';
 import { cleanupTerminalWork } from '../../control-plane/execution/work-terminal-cleanup';
+import { pushExactWorkRemoteDelivery, type WorkRemoteDeliveryReceipt } from '../../control-plane/execution/work-remote-delivery';
 import { assertResolvedAuthorization, createGoalDelegation, decideAuthorization, resolveAuthorizationRequest, type AuthorizationDecision, type AuthorizationRiskClass } from '../../control-plane/governance/authorization';
 import { readControllerResult, searchControllerResult, writeControllerResult } from '../../evidence/result-store';
 import { resumeExecutionJobAfterApproval } from '../../execution/jobs/store';
@@ -77,7 +78,7 @@ export const executionToolDefinitions: McpToolDefinition[] = [
     session_id: sessionId, controller_id: { type: 'string', description: 'Controller identity that holds the Work lease. Defaults to the authenticated principal.' }, repo_id: repoId, work_id: workId, check_ids: { type: 'array', items: { type: 'string' } }, commands: { type: 'array', items: { type: 'object' } },
   }, ['work_id'], false),
   definition('work_finalize', 'Idempotently validate, commit, merge, clean a managed worktree, and complete the existing WorkContract in independently recorded stages.', {
-    session_id: sessionId, controller_id: { type: 'string', description: 'Controller identity that holds the Work lease. Defaults to the authenticated principal.' }, repo_id: repoId, work_id: workId, commit: { type: 'boolean' }, message: { type: 'string' }, merge: { type: 'boolean' }, target_branch: { type: 'string' }, delete_branch: { type: 'boolean' }, cleanup: { type: 'boolean' }, no_ff: { type: 'boolean' }, approval_request_id: { type: 'string' },
+    session_id: sessionId, controller_id: { type: 'string', description: 'Controller identity that holds the Work lease. Defaults to the authenticated principal.' }, repo_id: repoId, work_id: workId, commit: { type: 'boolean' }, message: { type: 'string' }, merge: { type: 'boolean' }, target_branch: { type: 'string' }, remote_write: { type: 'boolean', description: 'When true, push the exact locally integrated target revision to origin before cleanup and Work terminalization.' }, delete_branch: { type: 'boolean' }, cleanup: { type: 'boolean' }, no_ff: { type: 'boolean' }, approval_request_id: { type: 'string' },
     completion_outcome: { type: 'string', enum: ['completed_changed', 'completed_no_change'] }, no_change_evidence: { type: 'string', description: 'Objective-specific proof that the requested state already holds; required for completed_no_change.' },
   }, ['work_id'], false, true),
   definition('approval_resolve', 'Resolve a controller approval request from the current conversation; GUI approval is optional and not required for continuation.', { session_id: sessionId, repo_id: repoId, work_id: workId, approval_request_id: { type: 'string' }, confirm_authorization: { type: 'boolean' } }, ['approval_request_id', 'confirm_authorization'], false),
@@ -2835,6 +2836,34 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     }));
   }
 
+  let remoteDelivery: WorkRemoteDeliveryReceipt | undefined;
+  if (args.remote_write === true && requestedOutcome !== 'completed_no_change') {
+    const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
+    const target = selectWorkFinalizationTarget(repository, current);
+    const targetBranch = explicitTargetBranch ?? repository.defaultBranch ?? 'main';
+    const targetRevision = gitRevision(target.canonicalRoot, targetBranch);
+    if (!targetRevision) throw new Error(`WORK_REMOTE_DELIVERY_TARGET_REQUIRED: target branch ${targetBranch} is unavailable`);
+    const authorityRepository = selectRepositoryCheckout(repository, current.checkoutId, { allowArchived: true });
+    remoteDelivery = await pushExactWorkRemoteDelivery({
+      controllerHome: ctx.controllerHome,
+      repository: authorityRepository,
+      workId: current.workId,
+      targetBranch,
+      targetRevision,
+    });
+    appendWorkEvidence(
+      { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
+      current.workContractId ?? current.workId,
+      {
+        title: 'remote delivery verified before Work terminalization',
+        summary: remoteDelivery.pushed
+          ? `Exact integrated revision ${remoteDelivery.targetRevision} was pushed to origin/${targetBranch} while Work ${current.workId} still held active delivery authority.`
+          : `origin/${targetBranch} already contained exact integrated revision ${remoteDelivery.targetRevision}; remote delivery was verified idempotently before Work terminalization.`,
+        detailLevel: 'summary',
+      },
+    );
+  }
+
   if (
     requestedOutcome === 'completed_no_change'
     && current.finalization.validation === 'done'
@@ -2992,7 +3021,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       activeCheckoutId: current.sourceCheckoutId ?? session.activeCheckoutId,
     });
   }
-  return { work: compactHandle(current), stages: current.finalization, completed: complete, idempotent: !wants.commit && !wants.merge && !wants.cleanup && current.finalization.validation === 'done' };
+  return { work: compactHandle(current), stages: current.finalization, completed: complete, ...(remoteDelivery ? { remoteDelivery } : {}), idempotent: !wants.commit && !wants.merge && !wants.cleanup && current.finalization.validation === 'done' };
 }
 
 export async function callExecutionTool(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {

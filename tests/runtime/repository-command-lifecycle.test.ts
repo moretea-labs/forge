@@ -22,6 +22,9 @@ import { acquireControllerLock, releaseControllerLock } from '../../src/cli/repo
 import { persistControllerAccessMode } from '../../src/cli/mcp/access-mode';
 import { executionIdentityForRepository, executionIdentityForWork } from '../../src/runtime/control-plane/execution/execution-identity';
 import { readWorkHandle, writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { pushExactWorkRemoteDelivery } from '../../src/runtime/control-plane/execution/work-remote-delivery';
+import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { classifyRepositoryCommandRoute, executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { getExecutionJob, updateExecutionJob } from '../../src/runtime/execution/jobs/store';
@@ -465,6 +468,146 @@ describe('repository command execution lifecycle', () => {
     expect(terminal).toMatchObject({ completed: true, ok: true });
     expect(gitOutput(remoteRoot, ['rev-parse', 'refs/heads/cloud-test'])).toBe(gitOutput(repoRoot, ['rev-parse', 'HEAD']));
     expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
+  });
+
+  test('keeps repository-change Work identity when source work also requests remote delivery', () => {
+    const controllerHome = tempRoot('forge-work-remote-kind-home-');
+    const repoRoot = tempRoot('forge-work-remote-kind-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    const started = startGoalWorkloop({
+      workStore: { controllerHome, repoId: repository.repoId },
+      handoffStore: { controllerHome, repoId: repository.repoId },
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+    }, {
+      objective: 'Modify source and deliver the exact integrated revision to origin.',
+      acceptanceCriteria: ['Repository change remains authoritative through remote delivery.'],
+      allowedPaths: ['src/**'],
+      initialLikelyPaths: ['src/example.ts'],
+      forbiddenPaths: [],
+      checks: [],
+      modeInput: {
+        scopeClear: true,
+        mutation: true,
+        requiresExternalEffect: true,
+        remoteWrite: true,
+        risk: 'remote_write',
+        requiresRecovery: false,
+        requiresWorker: false,
+        requiresApproval: false,
+      },
+    });
+    const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
+    expect(workId).toBeTruthy();
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.workKind).toBe('repository_change');
+  });
+
+  test('pushes the exact Work delivery revision without carrying later unrelated local commits', async () => {
+    const controllerHome = tempRoot('forge-work-remote-delivery-home-');
+    const repoRoot = tempRoot('forge-work-remote-delivery-repo-');
+    const remoteRoot = tempRoot('forge-work-remote-delivery-remote-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    git(remoteRoot, ['init', '--bare']);
+    git(repoRoot, ['remote', 'add', 'origin', remoteRoot]);
+    git(repoRoot, ['push', 'origin', 'HEAD:refs/heads/main']);
+    const remoteBase = gitOutput(remoteRoot, ['rev-parse', 'refs/heads/main']);
+
+    writeFileSync(join(repoRoot, 'delivery.txt'), 'delivery\n');
+    git(repoRoot, ['add', 'delivery.txt']);
+    git(repoRoot, ['commit', '-m', 'delivery']);
+    const deliveryRevision = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
+    writeFileSync(join(repoRoot, 'later.txt'), 'unrelated later local commit\n');
+    git(repoRoot, ['add', 'later.txt']);
+    git(repoRoot, ['commit', '-m', 'later unrelated']);
+    const laterRevision = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
+
+    const workId = 'WORK-REMOTE-DELIVERY-EXACT';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Push exactly the delivered revision before terminalization.',
+      acceptanceCriteria: ['Only the exact delivery revision reaches origin/main.'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+
+    const delivered = await pushExactWorkRemoteDelivery({
+      controllerHome,
+      repository,
+      workId,
+      targetBranch: 'main',
+      targetRevision: deliveryRevision,
+      timeoutMs: 10_000,
+    });
+    expect(delivered).toMatchObject({
+      targetRevision: deliveryRevision,
+      remoteRevisionBefore: remoteBase,
+      remoteRevisionAfter: deliveryRevision,
+      pushed: true,
+    });
+    expect(gitOutput(remoteRoot, ['rev-parse', 'refs/heads/main'])).toBe(deliveryRevision);
+    expect(gitOutput(repoRoot, ['rev-parse', 'HEAD'])).toBe(laterRevision);
+
+    const replay = await pushExactWorkRemoteDelivery({
+      controllerHome,
+      repository,
+      workId,
+      targetBranch: 'main',
+      targetRevision: deliveryRevision,
+      timeoutMs: 10_000,
+    });
+    expect(replay.pushed).toBe(false);
+    expect(replay.remoteRevisionAfter).toBe(deliveryRevision);
+  });
+
+  test('terminal Work cannot be reused as authority for a post-finalize remote push', async () => {
+    const controllerHome = tempRoot('forge-work-remote-terminal-home-');
+    const repoRoot = tempRoot('forge-work-remote-terminal-repo-');
+    const remoteRoot = tempRoot('forge-work-remote-terminal-remote-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    git(remoteRoot, ['init', '--bare']);
+    git(repoRoot, ['remote', 'add', 'origin', remoteRoot]);
+    git(repoRoot, ['push', 'origin', 'HEAD:refs/heads/main']);
+    const remoteBase = gitOutput(remoteRoot, ['rev-parse', 'refs/heads/main']);
+
+    writeFileSync(join(repoRoot, 'terminal-delivery.txt'), 'must not be pushed by terminal Work\n');
+    git(repoRoot, ['add', 'terminal-delivery.txt']);
+    git(repoRoot, ['commit', '-m', 'terminal delivery']);
+    const deliveryRevision = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
+    const workId = 'WORK-REMOTE-DELIVERY-TERMINAL';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Fence post-finalize remote delivery.',
+      acceptanceCriteria: ['Terminal Work cannot mutate origin.'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    updateWorkContract({ controllerHome, repoId: repository.repoId }, workId, { status: 'cancelled' });
+
+    await expect(pushExactWorkRemoteDelivery({
+      controllerHome,
+      repository,
+      workId,
+      targetBranch: 'main',
+      targetRevision: deliveryRevision,
+      timeoutMs: 10_000,
+    })).rejects.toThrow(`WORK_REMOTE_DELIVERY_ACTIVE_AUTHORITY_REQUIRED: ${workId}`);
+    expect(gitOutput(remoteRoot, ['rev-parse', 'refs/heads/main'])).toBe(remoteBase);
   });
 
 });

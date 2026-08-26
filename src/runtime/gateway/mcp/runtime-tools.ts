@@ -1500,6 +1500,7 @@ async function finalizeFacadeWorkHandle(
     commit,
     merge,
     no_ff: args.no_ff === true,
+    remote_write: args.remote_write === true,
     completion_outcome: completionOutcome,
     ...(noChangeEvidence ? { no_change_evidence: noChangeEvidence } : {}),
   };
@@ -4808,7 +4809,15 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               return result(blocked as unknown as Record<string, unknown>, true);
             }
           }
-          if (before?.workKind === 'remote_effect' && !before.completionReceipt) {
+          // Legacy callers could classify repository mutation + Git remote delivery
+          // as remote_effect. A physical WorkHandle proves this is repository delivery,
+          // so keep it on work_finalize instead of demanding a plugin action receipt.
+          // Pure plugin remote effects have no repository WorkHandle and retain the
+          // action-receipt finalization contract.
+          const repositoryDeliveryHandle = workId
+            ? readWorkHandle(ctx.controllerHome, repository.repoId, workId)
+            : undefined;
+          if (before?.workKind === 'remote_effect' && !before.completionReceipt && !repositoryDeliveryHandle) {
             try {
               before = finalizeRemoteEffectWorkFromActionReceipt(ctx.controllerHome, repository.repoId, workId);
             } catch (error) {
