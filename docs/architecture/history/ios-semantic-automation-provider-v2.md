@@ -1,7 +1,11 @@
 # iOS Semantic Automation Provider v2
 
-Status: implementation in progress  
-Issue: `ISS-20260720-66E25D` / `T5`
+Status: **Historical Design Evidence — Not Runtime Authority**
+
+Archived after the still-current physical-device ownership, capability-negotiation, failure-disposition, and evidence invariants were folded into [`../CURRENT.md`](../CURRENT.md) from current source. The original implementation-stage terminology and legacy product identity below are retained only as historical rationale.
+
+Historical snapshot status: implementation in progress
+Historical issue: `ISS-20260720-66E25D` / `T5`
 
 ## Why this redesign exists
 

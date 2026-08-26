@@ -3,6 +3,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { readJsonFile, sanitizeFileComponent } from '../../shared/json-files';
+import type { ProcessCheckExecutionIdentity } from '../../execution/process-runtime/types';
 import { listControlPlaneRecords, mutateControlPlaneRecord, readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
 
 export const WORK_HANDLE_STATES = [
@@ -99,7 +100,12 @@ export interface WorkValidationRunState {
   workspaceFingerprint: string;
   requestedChecks: string[];
   resumeState: WorkHandleStateName;
-  processes: Record<string, { processId: string; requestId: string }>;
+  processes: Record<string, {
+    processId: string;
+    requestId: string;
+    /** Exact producer-side Check identity for this Work verification snapshot. */
+    checkExecution?: ProcessCheckExecutionIdentity;
+  }>;
 }
 
 interface WorkValidationIndex {

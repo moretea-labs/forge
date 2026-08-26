@@ -166,27 +166,35 @@ export function reconcileWorkValidation(
     }
 
     try {
-      const currentIdentity = record.checkExecution
-        ? controllerCheckExecutionIdentity(handle.worktreePath, checkId, record.checkExecution.timeoutMs)
-        : undefined;
+      if (binding.checkExecution && binding.checkExecution.checkId !== checkId) {
+        throw new Error(
+          `PROCESS_CHECK_RECEIPT_IDENTITY_MISMATCH: bound check ${binding.checkExecution.checkId} != ${checkId}`,
+        );
+      }
+      const expectedCheckExecution = binding.checkExecution
+        ?? (record.checkExecution
+          ? controllerCheckExecutionIdentity(handle.worktreePath, checkId, record.checkExecution.timeoutMs)
+          : undefined);
       const receipt = processCheckCompletionReceipt(record, {
         repoId: handle.repositoryId,
         checkoutId: handle.checkoutId,
         workId: handle.workId,
         checkId,
         processId: binding.processId,
-        ...(currentIdentity ? {
+        ...(expectedCheckExecution ? {
           checkExecution: {
-            cacheKey: currentIdentity.cacheKey,
-            revision: currentIdentity.revision,
-            definitionDigest: currentIdentity.definitionDigest,
-            environmentFingerprint: currentIdentity.environmentFingerprint,
-            timeoutMs: currentIdentity.timeoutMs,
-            scopeKey: processCheckSemanticScopeKey({
-              checkoutId: handle.checkoutId,
-              workId: handle.workId,
-              verificationBinding: { executionSessionId: handle.sessionId },
-            }, currentIdentity.reuseScope),
+            cacheKey: expectedCheckExecution.cacheKey,
+            revision: expectedCheckExecution.revision,
+            definitionDigest: expectedCheckExecution.definitionDigest,
+            environmentFingerprint: expectedCheckExecution.environmentFingerprint,
+            timeoutMs: expectedCheckExecution.timeoutMs,
+            scopeKey: binding.checkExecution
+              ? binding.checkExecution.scopeKey
+              : processCheckSemanticScopeKey({
+                  checkoutId: handle.checkoutId,
+                  workId: handle.workId,
+                  verificationBinding: { executionSessionId: handle.sessionId },
+                }, expectedCheckExecution.reuseScope),
           },
         } : {}),
       });

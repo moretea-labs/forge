@@ -1,6 +1,6 @@
 import type { RepositoryReadSession } from '../../repository/inspector';
 import type { CodeGraphIndexMetadata, CodeGraphNodeSummary, CodeGraphReadProviderResponse } from '../../../runtime/context/codegraph-read-provider';
-import type { queryCodeGraphReadProvider } from '../../../runtime/context/codegraph-read-provider';
+import type { queryCodeGraphReadProvider, queryCodeGraphReadProviderAsync } from '../../../runtime/context/codegraph-read-provider';
 import type { MaterializedSourceSnippet } from './source-materializer';
 
 export const CONTEXT_PACK_SCHEMA_VERSION = 9;
@@ -36,6 +36,7 @@ export interface ControllerContextPackOptions {
 
 export interface ControllerContextPackDependencies {
   queryCodeGraph?: typeof queryCodeGraphReadProvider;
+  queryCodeGraphAsync?: typeof queryCodeGraphReadProviderAsync;
 }
 
 export type ControllerContextPackSnippet = MaterializedSourceSnippet;
@@ -213,6 +214,9 @@ export interface ControllerContextPackProjection {
     total: number;
     parallelFirstPass?: boolean;
     parallelPrefetch?: number;
+    structuralPrefetchBudgetMs?: number;
+    structuralPrefetchDeferred?: boolean;
+    structuralPrefetchReusedInFlight?: boolean;
   };
   deniedPaths: Array<{ path: string; reason: string }>;
   omitted: Array<{ path: string; reason: string }>;

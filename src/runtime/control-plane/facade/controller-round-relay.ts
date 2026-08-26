@@ -213,8 +213,30 @@ function relevantWork(options: ControllerRoundRelayStoreOptions, record: Pick<Co
     record.originWorkId,
     ...relayHistory(options, record.relayScopeId).map((entry) => entry.originWorkId),
   ]);
+  if (record.requirementId) {
+    for (const work of all) {
+      if (work.requirementId === record.requirementId) linkedWorkIds.add(work.workId);
+    }
+  }
+  let expanded = true;
+  while (expanded) {
+    expanded = false;
+    for (const work of all) {
+      if (linkedWorkIds.has(work.workId)) {
+        if (work.parentWorkId && !linkedWorkIds.has(work.parentWorkId)) {
+          linkedWorkIds.add(work.parentWorkId);
+          expanded = true;
+        }
+        continue;
+      }
+      if (work.parentWorkId && linkedWorkIds.has(work.parentWorkId)) {
+        linkedWorkIds.add(work.workId);
+        expanded = true;
+      }
+    }
+  }
   return all
-    .filter((work) => record.requirementId ? work.requirementId === record.requirementId : linkedWorkIds.has(work.workId))
+    .filter((work) => linkedWorkIds.has(work.workId))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
@@ -222,10 +244,24 @@ function mechanicalStateFingerprint(
   options: ControllerRoundRelayStoreOptions,
   work: WorkContract,
   requirementId: string | undefined,
+  relayScopeId: string,
 ): string {
   const requirement = requirementForRelay(options, requirementId);
+  const works = relevantWork(options, { relayScopeId, originWorkId: work.workId, requirementId })
+    .map((entry) => ({
+      workId: entry.workId,
+      parentWorkId: entry.parentWorkId,
+      status: entry.status,
+      phase: entry.phase,
+      dispatchState: entry.dispatchState,
+      evidenceState: entry.evidenceState,
+      completionOutcome: entry.completionOutcome,
+      updatedAt: entry.updatedAt,
+    }))
+    .sort((left, right) => left.workId.localeCompare(right.workId));
+  const linkedWorkIds = new Set(works.map((entry) => entry.workId));
   const handoffs = listHandoffItems({ controllerHome: options.controllerHome, repoId: options.repoId, status: 'active', limit: 100 })
-    .filter((handoff) => !handoff.workId || handoff.workId === work.workId)
+    .filter((handoff) => !handoff.workId || linkedWorkIds.has(handoff.workId))
     .map((handoff) => ({ id: handoff.id, status: handoff.status, updatedAt: handoff.updatedAt }));
   return createHash('sha256').update(JSON.stringify({
     requirement: requirement ? {
@@ -234,14 +270,7 @@ function mechanicalStateFingerprint(
       revision: requirement.revision,
       updatedAt: requirement.updatedAt,
     } : undefined,
-    work: {
-      workId: work.workId,
-      status: work.status,
-      phase: work.phase,
-      dispatchState: work.dispatchState,
-      evidenceState: work.evidenceState,
-      updatedAt: work.updatedAt,
-    },
+    works,
     handoffs,
   })).digest('hex');
 }
@@ -374,7 +403,7 @@ export function submitControllerRoundDisposition(
     const maxRounds = previous ? Math.min(previous.maxRounds, requestedMaxRounds) : requestedMaxRounds;
     const maxRepeatedState = previous ? Math.min(previous.maxRepeatedState, requestedMaxRepeatedState) : requestedMaxRepeatedState;
     const maxFailures = previous ? Math.min(previous.maxFailures, requestedMaxFailures) : requestedMaxFailures;
-    const stateFingerprint = bounded(input.stateFingerprint, 256) ?? mechanicalStateFingerprint(options, work, requirementId);
+    const stateFingerprint = bounded(input.stateFingerprint, 256) ?? mechanicalStateFingerprint(options, work, requirementId, relayScopeId);
     const continuing = input.disposition === 'continue_immediately';
     const roundCount = (previous?.roundCount ?? 0) + (continuing ? 1 : 0);
     const repeatedStateCount = continuing
@@ -480,7 +509,7 @@ export function beginInitialControllerRoundDispatch(
     const maxRounds = previous ? Math.min(previous.maxRounds, requestedMaxRounds) : requestedMaxRounds;
     const maxRepeatedState = previous ? Math.min(previous.maxRepeatedState, requestedMaxRepeatedState) : requestedMaxRepeatedState;
     const maxFailures = previous ? Math.min(previous.maxFailures, requestedMaxFailures) : requestedMaxFailures;
-    const stateFingerprint = mechanicalStateFingerprint(options, work, requirementId);
+    const stateFingerprint = mechanicalStateFingerprint(options, work, requirementId, relayScopeId);
     // beginInitialControllerRoundDispatch is entered only for a fresh external
     // wake after any prior round has closed. Mechanical round/repeated-state
     // budgets fence one immediate relay chain; carrying them across an explicit
@@ -626,6 +655,8 @@ export function acknowledgeControllerRoundClaim(
       && initial.value.sessionId === input.session.sessionId
       && initial.value.claimGeneration === input.session.claimGeneration
     ) return initial.value;
+  } else if (initial.value.status === 'blocked') {
+    if (!initial.value.blockedReason?.startsWith('repeated_state:')) return initial.value;
   } else if (initial.value.status !== 'dispatched') return initial.value;
   if (input.session.controllerType !== 'chatgpt') throw new Error(`CONTROLLER_RELAY_CHATGPT_CLAIM_REQUIRED: ${input.workId}`);
 
@@ -679,6 +710,62 @@ export function acknowledgeControllerRoundClaim(
         expectedRevision: current.revision,
       });
       return migrated;
+    }
+    if (current.value.status === 'blocked') {
+      if (!current.value.blockedReason?.startsWith('repeated_state:')) return current.value;
+      if (current.value.roundCount > current.value.maxRounds || current.value.consecutiveFailures >= current.value.maxFailures) {
+        return current.value;
+      }
+      const work = getWorkContract(options, input.workId);
+      if (!work || isTerminalWorkContractStatus(work.status)) return current.value;
+      const owner = getControllerSession(options, input.workId);
+      const ownerPrincipal = owner?.principalId?.trim() || owner?.controllerId;
+      const sessionPrincipal = input.session.principalId?.trim() || input.session.controllerId;
+      if (
+        !owner
+        || owner.controllerType !== 'chatgpt'
+        || owner.controllerId !== input.session.controllerId
+        || owner.sessionId !== input.session.sessionId
+        || owner.claimGeneration !== input.session.claimGeneration
+        || ownerPrincipal !== sessionPrincipal
+        || (owner.controllerInstanceId?.trim() || '') !== (input.session.controllerInstanceId?.trim() || '')
+      ) throw new Error(`CONTROLLER_RELAY_CLAIM_IDENTITY_MISMATCH: ${input.workId}`);
+      if (current.value.controllerId !== owner.controllerId || current.value.principalId !== ownerPrincipal) {
+        throw new Error(`CONTROLLER_RELAY_CLAIM_CONFLICT: ${input.workId}`);
+      }
+      if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) {
+        throw new Error(`CONTROLLER_RELAY_CLAIM_GENERATION_REQUIRED: ${input.workId}`);
+      }
+      const controllerInstanceId = owner.controllerInstanceId?.trim();
+      if (!controllerInstanceId) throw new Error(`CONTROLLER_RELAY_CLAIM_INSTANCE_REQUIRED: ${input.workId}`);
+      const stateFingerprint = mechanicalStateFingerprint(options, work, current.value.requirementId, current.value.relayScopeId);
+      if (stateFingerprint === current.value.stateFingerprint) return current.value;
+      const at = nowIso(options);
+      const rearmed: ControllerRoundRelayRecord = {
+        ...current.value,
+        status: 'claimed',
+        controllerId: owner.controllerId,
+        principalId: ownerPrincipal,
+        controllerInstanceId,
+        sessionId: owner.sessionId,
+        claimGeneration: owner.claimGeneration,
+        stateFingerprint,
+        repeatedStateCount: 0,
+        blockedReason: undefined,
+        lastError: undefined,
+        claimedAt: at,
+        updatedAt: at,
+      };
+      writeControlPlaneRecord(options.controllerHome, {
+        namespace: NAMESPACE,
+        scope: options.repoId,
+        key: input.workId,
+        schemaVersion: SCHEMA_VERSION,
+        value: rearmed,
+        action: 'controller_round_relay_claim_rearmed_after_state_change',
+        expectedRevision: current.revision,
+      });
+      return rearmed;
     }
     if (current.value.status !== 'dispatched') return current.value;
     const owner = getControllerSession(options, input.workId);
@@ -757,7 +844,7 @@ export function claimStalledControllerRoundRelays(
       if (!currentRecord || currentRecord.value.updatedAt !== latest.updatedAt || currentRecord.value.status !== latest.status) return undefined;
       const fingerprintWork = activeWorks[0] ?? getWorkContract(options, latest.originWorkId);
       const stateFingerprint = fingerprintWork
-        ? mechanicalStateFingerprint(options, fingerprintWork, latest.requirementId)
+        ? mechanicalStateFingerprint(options, fingerprintWork, latest.requirementId, latest.relayScopeId)
         : latest.stateFingerprint;
       const resumesUndispatchedRound = latest.status === 'pending_release' || latest.status === 'dispatching';
       const roundCount = latest.roundCount + (resumesUndispatchedRound ? 0 : 1);

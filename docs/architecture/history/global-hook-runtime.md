@@ -1,6 +1,10 @@
 # Global Hook Runtime
 
-> **Status**: Phase 0 — Operational Smoke (data filled 2026-05-28; manual-only items still pending)
+Status: **Historical Evidence — Not Runtime Authority**
+
+Archived after the still-current host-hook ownership invariants were folded into [`../CURRENT.md`](../CURRENT.md). The snapshot below preserves 2026-05-28 operational evidence only; its phase labels, personal-machine paths, host-version observations, and unfinished manual probes are not current Forge requirements.
+
+> **Historical snapshot status**: Phase 0 — Operational Smoke (data filled 2026-05-28; manual-only items still pending)
 > **Plan**: `plans/plan-20260528-1436-hook-global-runtime.md`
 > **Contract**: `tasks/contracts/hook-global-runtime.contract.md`
 > **Notes**: `tasks/notes/hook-global-runtime.notes.md`

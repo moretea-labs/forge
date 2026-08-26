@@ -14,6 +14,12 @@ import type {
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { executeBrowserActionThroughNode, shouldUseBrowserNodeBridge } from './browser-node-bridge';
+import { BrowserProviderUnavailableBeforeActionError } from './browser-provider-registry';
+import {
+  ALL_BROWSER_PROVIDER_CAPABILITIES,
+  executeBrowserRuntimeAction,
+  invalidateBrowserRuntime,
+} from './browser-runtime';
 import { getExternalPluginAdapter } from './external-adapter';
 import {
   currentBrowserSessionAuthorityContext,
@@ -30,6 +36,9 @@ import {
   createMacOsBrowserOwnedPage,
   reattachMacOsBrowserOwnedPage,
   discoverMacOsBrowserAttachment,
+  invalidateMacOsBrowserPageHandle,
+  invalidateMacOsBrowserPageHandles,
+  macOsBrowserPageHandleStale,
   getMacOsBrowserAttachObservation,
   listMacOsBrowserTabs,
   macOsActiveBrowserAttachSupported,
@@ -2463,6 +2472,19 @@ async function withPage<T>(
       return result;
     } catch (error) {
       lastError = error;
+      const nativeTab = handle?.connection.provider === 'macos-apple-events' ? handle.connection.tab : undefined;
+      if (handle?.connection.provider === 'macos-apple-events'
+        && handle.connection.browserProduct
+        && nativeTab?.windowId
+        && nativeTab.tabId
+        && macOsBrowserPageHandleStale(error)) {
+        // Do not replay the current action. Evict only so the next independent action must
+        // reattach/recover through the existing cold-path identity checks.
+        invalidateMacOsBrowserPageHandle(handle.connection.browserProduct, {
+          windowId: nativeTab.windowId,
+          tabId: nativeTab.tabId,
+        });
+      }
       if (options.pruneStaleSessionMetadata
         && target.existingSession
         && error instanceof AssistantPluginError
@@ -3922,7 +3944,21 @@ export function buildBrowserPluginManifest(previousRevision = 0, previousUpdated
   };
 }
 
-async function executeBrowserPluginActionInternal(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
+const NODE_BRIDGE_PRE_ACTION_FAILURE_CODES = new Set([
+  'PLUGIN_BROWSER_NODE_UNAVAILABLE',
+  'PLUGIN_BROWSER_NODE_HOST_UNAVAILABLE',
+  'PLUGIN_BROWSER_NODE_REQUEST_TOO_LARGE',
+  'PLUGIN_BROWSER_NODE_START_FAILED',
+]);
+
+function browserRuntimeKey(input: AssistantPluginActionExecutionInput): string {
+  return `${input.controllerHome}:${input.repoId}`;
+}
+
+async function executeBrowserPluginActionInternal(
+  input: AssistantPluginActionExecutionInput,
+  runtimeAlreadyRouted = false,
+): Promise<Record<string, unknown>> {
   const persisted = loadConfig(input.repoRoot);
   const actionSessionId = input.actionId === 'configure' ? undefined : stringValue(input.args.session_id);
   const actionSession = actionSessionId ? findSession(input.repoRoot, actionSessionId) : undefined;
@@ -3936,8 +3972,54 @@ async function executeBrowserPluginActionInternal(input: AssistantPluginActionEx
       throw new AssistantPluginError('PLUGIN_CONFIGURATION_INVALID', configErrors[0], { retryable: false });
     }
   }
-  if (shouldUseBrowserNodeBridge(input.actionId, current.browserMode, runtimeHooksCustomized, cdpEndpoints(current).length > 0)) {
-    return await executeBrowserActionThroughNode(input);
+  if (!runtimeAlreadyRouted) {
+    const runtimeKey = browserRuntimeKey(input);
+    const nodeBridgeEligible = shouldUseBrowserNodeBridge(
+      input.actionId,
+      current.browserMode,
+      runtimeHooksCustomized,
+      cdpEndpoints(current).length > 0,
+    );
+    const result = await executeBrowserRuntimeAction({
+      runtimeKey,
+      input,
+      providers: [
+        ...(nodeBridgeEligible ? [{
+          providerId: 'browser.node_bridge',
+          capabilities: ALL_BROWSER_PROVIDER_CAPABILITIES.filter((capability) => capability !== 'browser.persistent_handle'),
+          foreground: 'none' as const,
+          verifiesPostconditions: true,
+          persistentHandle: false,
+          priority: 10,
+          supportsInput: () => true,
+          execute: async (routedInput: AssistantPluginActionExecutionInput) => {
+            try {
+              return await executeBrowserActionThroughNode(routedInput);
+            } catch (error) {
+              if (error instanceof AssistantPluginError && NODE_BRIDGE_PRE_ACTION_FAILURE_CODES.has(error.code)) {
+                throw new BrowserProviderUnavailableBeforeActionError('browser.node_bridge', error.code);
+              }
+              throw error;
+            }
+          },
+        }] : []),
+        {
+          providerId: 'browser.local',
+          capabilities: ALL_BROWSER_PROVIDER_CAPABILITIES,
+          foreground: 'none' as const,
+          verifiesPostconditions: true,
+          persistentHandle: true,
+          priority: 20,
+          supportsInput: () => true,
+          execute: async (routedInput: AssistantPluginActionExecutionInput) => executeBrowserPluginActionInternal(routedInput, true),
+        },
+      ],
+    });
+    if (input.actionId === 'configure') {
+      invalidateBrowserRuntime(runtimeKey, 'configuration_changed');
+      invalidateMacOsBrowserPageHandles();
+    }
+    return result;
   }
   try {
     switch (input.actionId) {

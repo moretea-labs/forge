@@ -261,6 +261,58 @@ describe('runtime maintenance executor', () => {
     return { root, controllerHome, localJobs, repository: { repoId: 'repo-test', canonicalRoot: root } };
   }
 
+  function staleManagedWorkFixture(source: 'clean' | 'dirty' | 'committed') {
+    const root = mkdtempSync(join(tmpdir(), `forge-maintenance-stale-managed-${source}-`));
+    temporaryRoots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    const repoId = `repo-stale-managed-${source}`;
+    const workId = `work-stale-managed-${source}`;
+    const worktree = join(root, '.forge', 'controller', 'managed-worktrees', repoId, `work-${source}`);
+    mkdirSync(controllerHome, { recursive: true });
+    mkdirSync(repoRoot, { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), '# stale managed work\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+    mkdirSync(join(root, '.forge', 'controller', 'managed-worktrees', repoId), { recursive: true });
+    execFileSync('git', ['worktree', 'add', '-q', '-b', `work/${source}`, worktree, 'HEAD'], { cwd: repoRoot });
+    createWorkContract({ controllerHome, repoId, now: () => '2026-01-01T00:00:00.000Z' }, {
+      workId,
+      repoId,
+      mode: 'goal_workloop',
+      objective: `stale managed ${source} work`,
+      acceptanceCriteria: ['preserve unique source'],
+      allowedPaths: ['**'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'ready',
+      checkoutId: `checkout-${source}`,
+      worktreeRef: worktree,
+      baseRevision,
+    });
+    if (source === 'dirty') {
+      mkdirSync(join(worktree, 'docs', 'architecture'), { recursive: true });
+      writeFileSync(join(worktree, 'docs', 'architecture', 'global-hook-runtime.md'), '# recent successful write\n');
+    } else if (source === 'committed') {
+      writeFileSync(join(worktree, 'unique.txt'), 'unique commit\n');
+      execFileSync('git', ['add', 'unique.txt'], { cwd: worktree });
+      execFileSync('git', ['commit', '-qm', 'unique stale work source'], { cwd: worktree });
+    }
+    return {
+      controllerHome,
+      repoRoot,
+      repository: { repoId, canonicalRoot: repoRoot, defaultBranch: 'main' },
+      workId,
+      worktree,
+    };
+  }
+
   function editFixture(input: { workStatus?: 'cancelled' | 'running'; createWork?: boolean; applyEdit?: boolean; contractFree?: boolean } = {}) {
     const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-edit-session-'));
     temporaryRoots.push(root);
@@ -539,6 +591,106 @@ describe('runtime maintenance executor', () => {
       applied: true,
     }));
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-stale-ready')?.status).toBe('cancelled');
+  });
+
+  it('protects a stale no-authority Work when a recent successful write left dirty managed-worktree source', () => {
+    const { controllerHome, repository, workId, worktree } = staleManagedWorkFixture('dirty');
+    const writtenPath = join(worktree, 'docs', 'architecture', 'global-hook-runtime.md');
+
+    const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
+    expect(status.summary.staleWorkContracts).toBe(1);
+    expect(status.candidates).toContainEqual(expect.objectContaining({
+      kind: 'stale_work_contract',
+      id: workId,
+      path: worktree,
+      safe: false,
+      sourceState: 'dirty_worktree',
+      disposition: 'source_preservation_required',
+    }));
+    expect(status.candidates.find((candidate) => candidate.id === workId)?.reason).toContain('durable metadata/process evidence is not a substitute');
+
+    const applied = applyRuntimeMaintenance(repository, controllerHome, {
+      actionId: 'full_maintenance_pass',
+      confirmMaintenance: true,
+      minAgeMinutes: 1,
+      maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(expect.objectContaining({
+      kind: 'stale_work_contract',
+      id: workId,
+      applied: false,
+      result: 'not_selected',
+    }));
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.status).toBe('ready');
+    expect(existsSync(worktree)).toBe(true);
+    expect(readFileSync(writtenPath, 'utf8')).toBe('# recent successful write\n');
+    expect(execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: repository.canonicalRoot, encoding: 'utf8' })).toContain(worktree);
+  });
+
+  it('protects clean stale managed-worktree commits that are not integrated into the target branch', () => {
+    const { controllerHome, repository, workId, worktree } = staleManagedWorkFixture('committed');
+    const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
+    expect(status.candidates).toContainEqual(expect.objectContaining({
+      kind: 'stale_work_contract',
+      id: workId,
+      path: worktree,
+      safe: false,
+      sourceState: 'unintegrated_commits',
+      disposition: 'source_preservation_required',
+    }));
+
+    applyRuntimeMaintenance(repository, controllerHome, {
+      actionId: 'full_maintenance_pass',
+      confirmMaintenance: true,
+      minAgeMinutes: 1,
+      maxCandidates: 50,
+    });
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.status).toBe('ready');
+    expect(existsSync(join(worktree, 'unique.txt'))).toBe(true);
+  });
+
+  it('keeps a true stale no-delta managed Work mechanically cleanable', () => {
+    const { controllerHome, repository, workId } = staleManagedWorkFixture('clean');
+    const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
+    expect(status.candidates).toContainEqual(expect.objectContaining({
+      kind: 'stale_work_contract',
+      id: workId,
+      safe: true,
+      sourceState: 'clean_integrated',
+    }));
+
+    const applied = applyRuntimeMaintenance(repository, controllerHome, {
+      actionId: 'full_maintenance_pass',
+      confirmMaintenance: true,
+      minAgeMinutes: 1,
+      maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(expect.objectContaining({
+      kind: 'stale_work_contract',
+      id: workId,
+      applied: true,
+      result: 'work_contract_cancelled_evidence_retained',
+    }));
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.status).toBe('cancelled');
+  });
+
+  it('rechecks managed-worktree source at apply time before stale cancellation', () => {
+    const { controllerHome, repository, workId, worktree } = staleManagedWorkFixture('clean');
+    const scanned = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
+    const candidate = scanned.candidates.find((entry) => entry.kind === 'stale_work_contract' && entry.id === workId);
+    expect(candidate).toMatchObject({ safe: true, sourceState: 'clean_integrated' });
+
+    writeFileSync(join(worktree, 'late-write.txt'), 'written after maintenance scan\n');
+    const fenced = applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate!);
+    expect(fenced).toMatchObject({
+      applied: false,
+      safe: false,
+      result: 'work_source_preserved:dirty_worktree',
+      sourceState: 'dirty_worktree',
+      disposition: 'source_preservation_required',
+    });
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.status).toBe('ready');
+    expect(readFileSync(join(worktree, 'late-write.txt'), 'utf8')).toBe('written after maintenance scan\n');
   });
 
   it('rechecks Work authority at apply time before cancelling a previously stale candidate', () => {

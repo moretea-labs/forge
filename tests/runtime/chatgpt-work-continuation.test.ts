@@ -1,8 +1,19 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { registerRepository } from '../../src/cli/repositories/registry';
+import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import {
+  acknowledgeControllerRoundClaim,
+  beginControllerRoundRelayAfterRelease,
+  beginInitialControllerRoundDispatch,
+  finishControllerRoundRelayDispatch,
+  submitControllerRoundDisposition,
+} from '../../src/runtime/control-plane/facade/controller-round-relay';
+import { createWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { chatgptBridgeTargetMatchesPage } from '../../src/cli/chatgpt-browser/bridge-provider';
 import {
   bindChatgptWorkConversation,
@@ -12,6 +23,7 @@ import {
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
 import {
   chatgptAutomationControlWaitBudgets,
+  chatgptAutomationNavigationRequiresReplacement,
   chatgptAutomationPageFailure,
   chatgptAutomationReasoningLevelFromLabel,
   chatgptBrowserActionArgs,
@@ -122,6 +134,13 @@ describe('ChatGPT Work conversation binding', () => {
     expect(isChatgptConversationUrl('javascript:alert(1)')).toBe(false);
   });
 
+  test('replaces intentionally closed or stale automation sessions instead of failing continuation', () => {
+    expect(chatgptAutomationNavigationRequiresReplacement(new Error('BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT'))).toBe(true);
+    expect(chatgptAutomationNavigationRequiresReplacement(new Error('PLUGIN_BROWSER_SESSION_STATE_LOST: closed automation tab'))).toBe(true);
+    expect(chatgptAutomationNavigationRequiresReplacement(new Error('PLUGIN_SESSION_NOT_FOUND: closed automation session'))).toBe(true);
+    expect(chatgptAutomationNavigationRequiresReplacement(new Error('CHATGPT_AUTOMATION_LOGIN_REQUIRED'))).toBe(false);
+  });
+
   test('recognizes contextual ChatGPT reasoning labels without matching unrelated UI', () => {
     expect(chatgptAutomationReasoningLevelFromLabel('High')).toBe('high');
     expect(chatgptAutomationReasoningLevelFromLabel('Thinking: High')).toBe('high');
@@ -182,6 +201,11 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).not.toContain(':has-text(');
     expect(source).toContain('waitForChatgptIntelligenceControl'); expect(source).toContain('reasoningLabelMatches'); expect(source).toContain("'main button, main [role=\"button\"]'"); expect(source).toContain("limit: selector.startsWith('main ') ? 80 : 240"); expect(source).toContain('chatgptAutomationReasoningLevelFromLabel'); expect(source).toContain('CHATGPT_AUTOMATION_LOGIN_REQUIRED'); expect(source).not.toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('runWorkChatgptContinuation'); expect(engine).toContain("if (controllerType === 'chatgpt')"); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/'"); expect(engine).toContain("conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined");
     expect(source).toContain('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'); expect(source).toContain('workflowToolAttributionInstruction'); expect(source).toContain('repository_command_execute and repository_safe_patch_apply');
+    expect(source).toContain("controllerBrowserAction(controllerHome, workId, 'close_page'");
+    expect(source).toContain('closeChatgptAutomationTabAfterDispatch');
+    expect(source).toContain("tabCleanupStatus: tabCleanup.status");
+    expect(source).toContain("'PLUGIN_BROWSER_SESSION_STATE_LOST'");
+    expect(source).toContain("'PLUGIN_SESSION_NOT_FOUND'");
     expect(source).toContain('buildBrowserPluginManifest(0, undefined, repoRoot).enabled');
     expect(source).toContain("controllerBrowserAction(controllerHome, workId, 'configure', { enabled: true })");
     expect(source.indexOf('buildBrowserPluginManifest(0, undefined, repoRoot).enabled')).toBeLessThan(source.indexOf("controllerBrowserAction(controllerHome, workId, 'configure', { enabled: true })"));
@@ -197,7 +221,8 @@ describe('ChatGPT Work conversation binding', () => {
     const launcherStart = runtimeTools.slice(runtimeTools.indexOf("if (operation === 'launcher_start')"), runtimeTools.indexOf('const checks = listControllerChecks', runtimeTools.indexOf("if (operation === 'launcher_start')")));
     expect(launcherStart).toContain("if (controllerType === 'chatgpt')");
     expect(launcherStart).toContain('await runWorkChatgptContinuation({');
-    expect(launcherStart).toContain("summary: 'ChatGPT continuation dispatched with a durable controller-round closure obligation.'");
+    expect(launcherStart).toContain("summary: 'ChatGPT continuation dispatched;");
+    expect(launcherStart).toContain("semantic closure still requires an explicit disposition.'");
     expect(launcherStart.indexOf('await runWorkChatgptContinuation({')).toBeLessThan(launcherStart.indexOf('const launched = await launchSuperController'));
     expect(launcherStart).toContain("controllerType: controllerType as 'codex' | 'grok' | 'claude'");
   });
@@ -224,5 +249,124 @@ describe('ChatGPT native background-tab recovery', () => {
     expect(source).toContain('BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT');
     expect(source).toContain("controllerBrowserAction(controllerHome, workId, 'open_page'");
     expect(source).toContain('navigation.browserSessionId');
+  });
+});
+
+describe('controller relay repeated-state rearm', () => {
+  test('rearms a blocked relay only after durable child Work state changes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-controller-relay-rearm-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) {
+      execFileSync('git', args, { cwd: repoRoot });
+    }
+    writeFileSync(join(repoRoot, 'README.md'), 'relay rearm\n');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-rearm' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workId = 'WORK-RELAY-REARM';
+    const childWorkId = 'WORK-RELAY-REARM-CHILD';
+    const workInput = {
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop' as const,
+      acceptanceCriteria: ['Keep the relay fenced while allowing changed durable state to continue.'],
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current' as const, requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt' as const,
+      status: 'running' as const,
+    };
+    createWorkContract(store, { ...workInput, workId, objective: 'Persistent supervisor Work.' });
+    createWorkContract(store, {
+      ...workInput,
+      workId: childWorkId,
+      lifecycleRole: 'execution_child',
+      parentWorkId: workId,
+      objective: 'Bound runtime transaction Work.',
+    });
+    const relayScopeId = `goal:${workId}`;
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      relayScopeId,
+      identity: { controllerId: 'launcher', principalId: 'launcher', controllerInstanceId: 'runtime-test', sessionId: 'launch-1' },
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true });
+    const firstSession = claimControllerSession(store, {
+      workId,
+      controllerId: 'chatgpt-controller',
+      controllerType: 'chatgpt',
+      sessionId: 'chatgpt-session-1',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-test',
+      leaseMs: 5 * 60_000,
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: firstSession })?.status).toBe('claimed');
+    const firstContinue = submitControllerRoundDisposition(store, {
+      workId,
+      relayScopeId,
+      identity: {
+        controllerId: firstSession.controllerId,
+        principalId: firstSession.principalId ?? firstSession.controllerId,
+        controllerInstanceId: firstSession.controllerInstanceId ?? 'runtime-test',
+        sessionId: firstSession.sessionId,
+      },
+      disposition: 'continue_immediately',
+    });
+    expect(firstContinue).toMatchObject({ status: 'pending_release', repeatedStateCount: 1 });
+    releaseControllerSession(store, workId, firstSession.controllerId);
+    expect(beginControllerRoundRelayAfterRelease(store, { workId, releasedSession: firstSession })?.status).toBe('dispatching');
+    finishControllerRoundRelayDispatch(store, { workId, ok: true });
+    const secondSession = claimControllerSession(store, {
+      workId,
+      controllerId: 'chatgpt-controller',
+      controllerType: 'chatgpt',
+      sessionId: 'chatgpt-session-2',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-test',
+      leaseMs: 5 * 60_000,
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: secondSession })?.status).toBe('claimed');
+    const blocked = submitControllerRoundDisposition(store, {
+      workId,
+      relayScopeId,
+      identity: {
+        controllerId: secondSession.controllerId,
+        principalId: secondSession.principalId ?? secondSession.controllerId,
+        controllerInstanceId: secondSession.controllerInstanceId ?? 'runtime-test',
+        sessionId: secondSession.sessionId,
+      },
+      disposition: 'continue_immediately',
+    });
+    expect(blocked).toMatchObject({ status: 'blocked', repeatedStateCount: 2, blockedReason: 'repeated_state:2>=2' });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: secondSession })).toMatchObject({
+      status: 'blocked',
+      stateFingerprint: blocked.stateFingerprint,
+      blockedReason: 'repeated_state:2>=2',
+    });
+
+    updateWorkContract(store, childWorkId, { evidenceState: 'partial' });
+    const rearmed = acknowledgeControllerRoundClaim(store, { workId, session: secondSession });
+    expect(rearmed).toMatchObject({ status: 'claimed', repeatedStateCount: 0, roundCount: blocked.roundCount });
+    expect(rearmed?.stateFingerprint).not.toBe(blocked.stateFingerprint);
+    expect(rearmed?.blockedReason).toBeUndefined();
+
+    const continued = submitControllerRoundDisposition(store, {
+      workId,
+      relayScopeId,
+      identity: {
+        controllerId: secondSession.controllerId,
+        principalId: secondSession.principalId ?? secondSession.controllerId,
+        controllerInstanceId: secondSession.controllerInstanceId ?? 'runtime-test',
+        sessionId: secondSession.sessionId,
+      },
+      disposition: 'continue_immediately',
+    });
+    expect(continued).toMatchObject({ status: 'pending_release', repeatedStateCount: 1 });
   });
 });

@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process';
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS, buildControllerContextPack, buildControllerContextPackAsync } from '../../src/cli/controller/context-pack';
+import { AUTO_STRUCTURAL_PREFETCH_BUDGET_MS, AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS, buildControllerContextPack, buildControllerContextPackAsync } from '../../src/cli/controller/context-pack';
 import { structuralIntentQuery } from '../../src/cli/controller/context/query-planning';
 import { clearSourceSymbolIndexCacheForTest, materializeSource, sourceSymbolIndexCacheSnapshotForTest } from '../../src/cli/controller/context/source-materializer';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
@@ -485,8 +485,117 @@ describe('CodeGraph read provider', () => {
     expect(pack.contextContract.expansionSignals).toContain('impact_domain_without_evidence:concurrency');
   });
 
-  test('keeps optional auto structural prefetch within the bounded interactive fallback budget', () => {
+  test('keeps optional auto structural prefetch within a small first-call budget and a separate hard provider timeout', () => {
+    expect(AUTO_STRUCTURAL_PREFETCH_BUDGET_MS).toBe(100);
     expect(AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS).toBe(1_000);
+  });
+
+  test('defers slow auto structural enrichment without cancelling warm-cache population', async () => {
+    const root = contextRepo();
+    const session = { sessionId: 'context-auto-budget', repoId: 'repo-a', checkoutId: 'checkout-a' };
+    let asyncCalls = 0;
+    const delayedMs = AUTO_STRUCTURAL_PREFETCH_BUDGET_MS * 3;
+    const queryCodeGraphAsync = async () => {
+      asyncCalls += 1;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, delayedMs));
+      return structuralResponse();
+    };
+    const queryCodeGraph = (_repoRoot: string, request: Parameters<typeof queryCodeGraphReadProvider>[1]) => request.operation === 'file_dependencies'
+      ? structuralResponse({ operation: 'file_dependencies', result: { filePath: request.filePath, dependencies: [], dependents: [] } })
+      : structuralResponse();
+
+    const firstStartedAt = performance.now();
+    const first = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), {
+      description: 'runService',
+      searchTerms: ['runService'],
+      structuralContext: 'auto',
+      session,
+    }, { queryCodeGraph, queryCodeGraphAsync });
+    const firstElapsedMs = performance.now() - firstStartedAt;
+    expect(first.structuralContext).toMatchObject({ requestedMode: 'auto', status: 'degraded', requiredSatisfied: true });
+    expect(first.structuralContext.fallbackReason).toContain('CODEGRAPH_PREFETCH_DEFERRED');
+    expect(first.timingsMs.structuralPrefetchBudgetMs).toBe(AUTO_STRUCTURAL_PREFETCH_BUDGET_MS);
+    expect(first.timingsMs.structuralPrefetchDeferred).toBe(true);
+    expect(firstElapsedMs).toBeLessThan(delayedMs);
+
+    const immediateStartedAt = performance.now();
+    const immediate = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), {
+      description: 'runService',
+      searchTerms: ['runService'],
+      structuralContext: 'auto',
+      session,
+    }, { queryCodeGraph, queryCodeGraphAsync });
+    expect(immediate.structuralContext.status).toBe('degraded');
+    expect(immediate.timingsMs.structuralPrefetchDeferred).toBe(true);
+    expect(immediate.timingsMs.structuralPrefetchReusedInFlight).toBe(true);
+    expect(performance.now() - immediateStartedAt).toBeLessThan(AUTO_STRUCTURAL_PREFETCH_BUDGET_MS);
+    expect(asyncCalls).toBe(1);
+
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, delayedMs + 25));
+    const second = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), {
+      description: 'runService',
+      searchTerms: ['runService'],
+      structuralContext: 'auto',
+      session,
+    }, { queryCodeGraph, queryCodeGraphAsync });
+    expect(second.structuralContext.status).toBe('ready');
+    expect(second.cache.structuralHits).toBeGreaterThan(0);
+    expect(second.timingsMs.structuralPrefetchDeferred).toBe(false);
+    expect(asyncCalls).toBe(1);
+  });
+
+  test('required structural mode still waits for the requested structural evidence', async () => {
+    const root = contextRepo();
+    const session = { sessionId: 'context-required-wait', repoId: 'repo-a', checkoutId: 'checkout-a' };
+    const delayedMs = AUTO_STRUCTURAL_PREFETCH_BUDGET_MS + 50;
+    const queryCodeGraphAsync = async () => {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, delayedMs));
+      return structuralResponse();
+    };
+    const queryCodeGraph = (_repoRoot: string, request: Parameters<typeof queryCodeGraphReadProvider>[1]) => request.operation === 'file_dependencies'
+      ? structuralResponse({ operation: 'file_dependencies', result: { filePath: request.filePath, dependencies: [], dependents: [] } })
+      : structuralResponse();
+    const pack = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), {
+      description: 'runService',
+      searchTerms: ['runService'],
+      structuralContext: 'required',
+      session,
+    }, { queryCodeGraph, queryCodeGraphAsync });
+    expect(pack.structuralContext).toMatchObject({ requestedMode: 'required', status: 'ready', requiredSatisfied: true });
+    expect(pack.timingsMs.structuralPrefetchDeferred).toBe(false);
+    expect(pack.timingsMs.parallelPrefetch ?? 0).toBeGreaterThanOrEqual(AUTO_STRUCTURAL_PREFETCH_BUDGET_MS);
+  });
+
+  test('does not let an in-flight auto request weaken required structural semantics', async () => {
+    const root = contextRepo();
+    const session = { sessionId: 'context-mode-fence', repoId: 'repo-a', checkoutId: 'checkout-a' };
+    let autoCalls = 0;
+    let requiredCalls = 0;
+    const queryCodeGraphAsync = async (_repoRoot: string, _request: Parameters<typeof queryCodeGraphReadProvider>[1], options: { timeoutMs?: number } = {}) => {
+      if (options.timeoutMs === AUTO_STRUCTURAL_PREFETCH_TIMEOUT_MS) {
+        autoCalls += 1;
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, AUTO_STRUCTURAL_PREFETCH_BUDGET_MS * 3));
+      } else {
+        requiredCalls += 1;
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+      }
+      return structuralResponse();
+    };
+    const queryCodeGraph = (_repoRoot: string, request: Parameters<typeof queryCodeGraphReadProvider>[1]) => request.operation === 'file_dependencies'
+      ? structuralResponse({ operation: 'file_dependencies', result: { filePath: request.filePath, dependencies: [], dependents: [] } })
+      : structuralResponse();
+    const auto = buildControllerContextPackAsync(root, getMcpPolicy('controller'), {
+      description: 'runService', searchTerms: ['runService'], structuralContext: 'auto', session,
+    }, { queryCodeGraph, queryCodeGraphAsync });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+    const required = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), {
+      description: 'runService', searchTerms: ['runService'], structuralContext: 'required', session,
+    }, { queryCodeGraph, queryCodeGraphAsync });
+    expect(required.structuralContext).toMatchObject({ requestedMode: 'required', status: 'ready', requiredSatisfied: true });
+    expect(required.timingsMs.structuralPrefetchReusedInFlight).toBe(false);
+    expect(autoCalls).toBe(1);
+    expect(requiredCalls).toBe(1);
+    await auto;
   });
 
   test('ranks an exact code query before saturated broad-token decoys', async () => {

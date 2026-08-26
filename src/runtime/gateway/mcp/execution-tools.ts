@@ -14,16 +14,16 @@ import {
   setRepositoryCheckoutLifecycle,
 } from '../../../cli/repositories/registry';
 import { withControllerLock } from '../../../cli/repositories/locks';
-import { repositoryGitCommit, repositoryGitDeleteBranch, repositoryGitFinishWorkflow, repositoryGitMergeBranch, repositoryGitStatus, repositoryGitDiff } from '../../../cli/repositories/structured-git';
+import { repositoryGitCommit, repositoryGitDeleteBranch, repositoryGitFinishWorkflow, repositoryGitMergeBranch, repositoryGitRebaseOnto, repositoryGitStatus, repositoryGitDiff } from '../../../cli/repositories/structured-git';
 import { previewRepositoryCommandExecution } from '../../../cli/repositories/command-executor';
 import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
 import { globMatches } from '../../../cli/mcp/paths';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
-import { listControllerChecks } from '../../../cli/controller/check-runner';
+import { listControllerChecks, type ControllerCheck } from '../../../cli/controller/check-runner';
 import { readRepositoryAccessPolicy } from '../../control-plane/governance/access-policy';
 import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, transitionWorkContractPhase, updateWorkContract, appendVerificationRecord } from '../../control-plane/facade/work-contract-store';
 import { completeRequirementFromWork } from '../../control-plane/persistence/requirement-store';
-import { isTerminalWorkContractStatus, type WorkReconciliationRecord } from '../../control-plane/facade/types';
+import { isTerminalWorkContractStatus, type VerificationRecord, type WorkReconciliationRecord } from '../../control-plane/facade/types';
 import { buildWorkContinuationSnapshot } from '../../control-plane/facade/work-continuation';
 import { claimControllerSession, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../control-plane/facade/controller-session-store';
 import { currentControllerInstanceId, requireExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext, type SessionIdentity } from '../../control-plane/execution/session-store';
@@ -42,6 +42,7 @@ import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { executeRepositoryCommandViaProcessRuntime } from '../../execution/process-runtime/command-facade';
 import { getCheckProcessHandle } from '../../execution/process-runtime/check-facade';
 import { processCheckCompletionReceipt } from '../../execution/process-runtime/check-receipt';
+import { classifyPersistedCheckTerminalEvidence } from '../../execution/process-runtime/check-result';
 import { claimProcessInvocation, getProcessRecord } from '../../execution/process-runtime/store';
 import { runPersistedCheckViaProcessRuntime } from './persisted-check-process';
 import { hasCurrentWorkValidationAuthority, markWorkValidationPending, projectWorkValidationOutcome, reconcileWorkValidation } from './work-validation-reconciler';
@@ -225,23 +226,175 @@ export interface WorkTargetAdvanceInspection {
   relation: 'candidate_contains_target' | 'target_contains_candidate' | 'diverged_clean' | 'diverged_conflict';
   candidateHead: string;
   targetHead: string;
+  mergeBase: string;
+  candidateChangedPaths: string[];
+  targetChangedPaths: string[];
+  mergedTree?: string;
   detail?: string;
 }
 
 export function inspectWorkTargetAdvance(root: string, candidateRevision: string, targetRevision: string): WorkTargetAdvanceInspection {
   const candidateHead = gitCommit(root, candidateRevision, 'TARGET_ADVANCE_CANDIDATE');
   const targetHead = gitCommit(root, targetRevision, 'TARGET_ADVANCE_TARGET');
-  if (gitIsAncestor(root, targetHead, candidateHead)) return { relation: 'candidate_contains_target', candidateHead, targetHead };
-  if (gitIsAncestor(root, candidateHead, targetHead)) return { relation: 'target_contains_candidate', candidateHead, targetHead };
+  if (gitIsAncestor(root, targetHead, candidateHead)) {
+    return {
+      relation: 'candidate_contains_target', candidateHead, targetHead, mergeBase: targetHead,
+      candidateChangedPaths: gitChangedPaths(root, targetHead, candidateHead), targetChangedPaths: [],
+    };
+  }
+  if (gitIsAncestor(root, candidateHead, targetHead)) {
+    return {
+      relation: 'target_contains_candidate', candidateHead, targetHead, mergeBase: candidateHead,
+      candidateChangedPaths: [], targetChangedPaths: gitChangedPaths(root, candidateHead, targetHead),
+    };
+  }
+  const mergeBase = gitMergeBase(root, candidateHead, targetHead);
+  const candidateChangedPaths = gitChangedPaths(root, mergeBase, candidateHead);
+  const targetChangedPaths = gitChangedPaths(root, mergeBase, targetHead);
   const preflight = spawnSync('git', ['-C', root, 'merge-tree', '--write-tree', candidateHead, targetHead], {
     encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000, maxBuffer: 512 * 1024,
   });
   if (preflight.error || (preflight.status !== 0 && preflight.status !== 1)) {
     throw new Error(`WORK_TARGET_ADVANCE_PREFLIGHT_UNAVAILABLE: ${preflight.error?.message ?? preflight.stderr ?? 'merge-tree failed'}`);
   }
-  if (preflight.status === 0) return { relation: 'diverged_clean', candidateHead, targetHead };
+  if (preflight.status === 0) {
+    const mergedTree = typeof preflight.stdout === 'string' ? preflight.stdout.trim().split(/\s+/)[0] : undefined;
+    return {
+      relation: 'diverged_clean', candidateHead, targetHead, mergeBase, candidateChangedPaths, targetChangedPaths,
+      ...(mergedTree ? { mergedTree } : {}),
+    };
+  }
   const detail = `${preflight.stdout ?? ''}\n${preflight.stderr ?? ''}`.trim().slice(0, 1_000);
-  return { relation: 'diverged_conflict', candidateHead, targetHead, ...(detail ? { detail } : {}) };
+  return { relation: 'diverged_conflict', candidateHead, targetHead, mergeBase, candidateChangedPaths, targetChangedPaths, ...(detail ? { detail } : {}) };
+}
+
+export function targetAdvanceLinearMergeCommits(root: string, targetRevision: string, candidateRevision: string): string[] {
+  const targetHead = gitCommit(root, targetRevision, 'TARGET_ADVANCE_LINEAR_TARGET');
+  const candidateHead = gitCommit(root, candidateRevision, 'TARGET_ADVANCE_LINEAR_CANDIDATE');
+  const output = spawnSync('git', ['-C', root, 'rev-list', '--merges', `${targetHead}..${candidateHead}`], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000, maxBuffer: 512 * 1024,
+  });
+  if (output.status !== 0 || output.error || typeof output.stdout !== 'string') {
+    throw new Error('WORK_TARGET_ADVANCE_LINEAR_HISTORY_UNAVAILABLE: could not inspect candidate merge history');
+  }
+  return output.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function normalizedReadScope(scope: string): string {
+  return scope.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '') || '.';
+}
+
+function pathIsWithinReadScope(path: string, scope: string): boolean {
+  const normalized = normalizedReadScope(scope);
+  return normalized === '.' || path === normalized || path.startsWith(`${normalized}/`);
+}
+
+function stableCheckDefinition(check: ControllerCheck | undefined): string | undefined {
+  if (!check) return undefined;
+  return JSON.stringify({
+    id: check.id,
+    command: check.command,
+    cwd: check.cwd,
+    timeoutMs: check.timeoutMs,
+    source: check.source,
+    effects: check.effects ?? null,
+  });
+}
+
+export interface TargetAdvanceValidationTransferPlan {
+  transferredRecords: VerificationRecord[];
+  reusableCheckIds: string[];
+  invalidatedCheckIds: string[];
+}
+
+export function planTargetAdvanceValidationAuthority(input: {
+  checkIds: string[];
+  checkRefs: VerificationRecord[];
+  checksBefore: ControllerCheck[];
+  checksAfter: ControllerCheck[];
+  candidateHead: string;
+  candidateWorkspaceFingerprint: string;
+  integratedHead: string;
+  integratedWorkspaceFingerprint: string;
+  targetChangedPaths: string[];
+  recordedAt?: string;
+}): TargetAdvanceValidationTransferPlan {
+  const beforeById = new Map(input.checksBefore.map((check) => [check.id, check]));
+  const afterById = new Map(input.checksAfter.map((check) => [check.id, check]));
+  const transferredRecords: VerificationRecord[] = [];
+  const reusableCheckIds: string[] = [];
+  const invalidatedCheckIds: string[] = [];
+  const recordedAt = input.recordedAt ?? new Date().toISOString();
+  for (const checkId of input.checkIds) {
+    const before = beforeById.get(checkId);
+    const after = afterById.get(checkId);
+    const reads = before?.effects?.reads;
+    const definitionUnchanged = stableCheckDefinition(before) !== undefined
+      && stableCheckDefinition(before) === stableCheckDefinition(after);
+    const readsGitHistory = before?.effects?.git !== undefined;
+    const targetTouchesReadScope = !reads || reads.length === 0
+      || input.targetChangedPaths.some((path) => reads.some((scope) => pathIsWithinReadScope(path, scope)));
+    const sourcePass = effectiveVerificationEvidence(input.checkRefs, {
+      sourceRevision: input.candidateHead,
+      workspaceFingerprint: input.candidateWorkspaceFingerprint,
+      checkId,
+      requestedChecks: input.checkIds,
+    }).find((entry) => entry.current && entry.record.outcome === 'valid_pass' && Boolean(entry.record.receipt))?.record;
+    if (!definitionUnchanged || readsGitHistory || targetTouchesReadScope || !sourcePass) {
+      invalidatedCheckIds.push(checkId);
+      continue;
+    }
+    const transferred: VerificationRecord = {
+      ...sourcePass,
+      summary: `Validation authority transferred across target advancement because target-only changes did not intersect check ${checkId} read inputs.`,
+      recordedAt,
+      sourceRevision: input.integratedHead,
+      workspaceFingerprint: input.integratedWorkspaceFingerprint,
+      verificationInputFingerprint: verificationInputFingerprint({
+        sourceRevision: input.integratedHead,
+        workspaceFingerprint: input.integratedWorkspaceFingerprint,
+        checkId,
+        requestedChecks: input.checkIds,
+      }),
+      evidenceRef: {
+        title: checkId,
+        summary: `Reused prior valid receipt after proving target-only path changes do not affect this check's declared inputs.`,
+        detailLevel: 'summary',
+      },
+    };
+    transferredRecords.push(transferred);
+    reusableCheckIds.push(checkId);
+  }
+  return { transferredRecords, reusableCheckIds, invalidatedCheckIds };
+}
+
+export function targetAdvanceWorkScopeViolation(
+  scope: { allowedPaths: string[]; forbiddenPaths: string[] } | undefined,
+  changedPaths: string[],
+): { kind: 'forbidden' | 'out_of_scope'; path: string } | undefined {
+  if (!scope) return undefined;
+  for (const path of changedPaths) {
+    if (scope.forbiddenPaths.some((pattern) => globMatches(pattern, path))) return { kind: 'forbidden', path };
+    if (scope.allowedPaths.length > 0 && !scope.allowedPaths.some((pattern) => globMatches(pattern, path))) {
+      return { kind: 'out_of_scope', path };
+    }
+  }
+  return undefined;
+}
+
+function replaceTargetAdvanceScopeEvidence(
+  ctx: MultiRepositoryMcpToolContext,
+  contract: NonNullable<ReturnType<typeof contractFor>>,
+  actualChangedPaths: string[],
+): void {
+  updateWorkContract({ controllerHome: ctx.controllerHome, repoId: contract.repoId }, contract.workId, {
+    scopeEvidence: {
+      initialLikelyPaths: contract.scopeEvidence?.initialLikelyPaths ?? contract.allowedPaths,
+      inspectedPaths: contract.scopeEvidence?.inspectedPaths ?? [],
+      actualChangedPaths: [...new Set(actualChangedPaths)].sort((left, right) => left.localeCompare(right)).slice(0, 500),
+      recordedAt: new Date().toISOString(),
+    },
+  });
 }
 
 export interface DirectTargetDeliveryInspection {
@@ -1427,11 +1580,16 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
         break;
       }
       process = executed.process!;
+      const launchedRecord = getProcessRecord(ctx.controllerHome, handle.repositoryId, process.processId);
       validationRun = {
         ...validationRun,
         processes: {
           ...validationRun.processes,
-          [checkId]: { processId: process.processId, requestId: processRequestId },
+          [checkId]: {
+            processId: process.processId,
+            requestId: processRequestId,
+            ...(launchedRecord?.checkExecution ? { checkExecution: { ...launchedRecord.checkExecution } } : {}),
+          },
         },
       };
       current = transitionWorkHandle(ctx.controllerHome, current, 'validating', { validationRun });
@@ -1445,16 +1603,32 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       checks.push({ checkId, ok: false, status: 'infrastructure_failure', summary: `Validation process record is unavailable: ${process.processId}` });
       break;
     }
+    const boundCheckExecution = validationRun.processes[checkId]?.checkExecution;
     const receipt = processCheckCompletionReceipt(record, {
       repoId: handle.repositoryId,
       checkoutId: handle.checkoutId,
       workId: handle.workId,
       checkId,
       processId: process.processId,
+      ...(boundCheckExecution ? {
+        checkExecution: {
+          cacheKey: boundCheckExecution.cacheKey,
+          revision: boundCheckExecution.revision,
+          definitionDigest: boundCheckExecution.definitionDigest,
+          environmentFingerprint: boundCheckExecution.environmentFingerprint,
+          timeoutMs: boundCheckExecution.timeoutMs,
+          scopeKey: boundCheckExecution.scopeKey,
+        },
+      } : {}),
     });
+    const terminalEvidence = classifyPersistedCheckTerminalEvidence(record, checkId);
+    const infrastructureFailed = receipt.timedOut
+      || receipt.cancelled
+      || terminalEvidence.state !== 'matched'
+      || (!receipt.ok && terminalEvidence.failureClass !== 'acceptance_failure');
     appendVerificationRecord({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, handle.workId, {
       checkId,
-      outcome: receipt.ok ? 'valid_pass' : receipt.status === 'timed_out' || receipt.status === 'cancelled' ? 'infrastructure_failure' : 'valid_fail',
+      outcome: infrastructureFailed ? 'infrastructure_failure' : receipt.ok ? 'valid_pass' : 'valid_fail',
       summary: receipt.summary,
       recordedAt: receipt.finishedAt,
       sourceRevision: validationHead,
@@ -1475,9 +1649,10 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     checks.push({
       checkId,
       ok: receipt.ok,
-      status: receipt.ok ? 'passed' : receipt.status === 'timed_out' || receipt.status === 'cancelled' ? 'infrastructure_failure' : 'failed',
+      status: infrastructureFailed ? 'infrastructure_failure' : receipt.ok ? 'passed' : 'failed',
       process,
       receipt,
+      ...(terminalEvidence.warning ? { warning: terminalEvidence.warning } : {}),
     });
     if (!receipt.ok) break;
   }
@@ -2283,9 +2458,41 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       };
     }
     if (validationPreservedAcrossCommit && exactValidationInput) {
+      const checkDefinitions = listControllerChecks(validated.worktreeRepository.canonicalRoot);
+      for (const checkId of checks) {
+        const check = checkDefinitions.find((entry) => entry.id === checkId);
+        if (check?.effects?.git !== undefined) continue;
+        const sourcePass = contract
+          ? effectiveVerificationEvidence(contract.checkRefs, {
+              sourceRevision: exactValidationInput.head,
+              workspaceFingerprint: exactValidationInput.workspaceFingerprint,
+              checkId,
+              requestedChecks: checks,
+            }).find((entry) => entry.current && entry.record.outcome === 'valid_pass' && Boolean(entry.record.receipt))?.record
+          : undefined;
+        if (!sourcePass) continue;
+        appendVerificationRecord({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
+          ...sourcePass,
+          summary: `Validation authority transferred across content-equivalent commit for ${checkId}.`,
+          recordedAt: new Date().toISOString(),
+          sourceRevision: postCommitInput.head,
+          workspaceFingerprint: postCommitInput.workspaceFingerprint,
+          verificationInputFingerprint: verificationInputFingerprint({
+            sourceRevision: postCommitInput.head,
+            workspaceFingerprint: postCommitInput.workspaceFingerprint,
+            checkId,
+            requestedChecks: checks,
+          }),
+          evidenceRef: {
+            title: checkId,
+            summary: 'Reused prior valid receipt after proving the validated filesystem content was committed without drift.',
+            detailLevel: 'summary',
+          },
+        });
+      }
       appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
         title: 'validation authority preserved across content-equivalent commit',
-        summary: `Exact validated workspace ${exactValidationInput.workspaceFingerprint.slice(0, 16)} was committed without content/status drift; validation authority transferred to committed HEAD ${postCommitInput.head}.`,
+        summary: `Exact validated workspace ${exactValidationInput.workspaceFingerprint.slice(0, 16)} was committed without content/status drift; non-Git-sensitive per-check authority transferred to committed HEAD ${postCommitInput.head}.`,
         detailLevel: 'summary',
       });
     } else if (checks.length === 0) {
@@ -2366,15 +2573,35 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
           };
         }
         if (advance.relation === 'candidate_contains_target') {
+          const nonLinearCommits = targetAdvanceLinearMergeCommits(
+            mergeValidated.worktreeRepository.canonicalRoot,
+            advance.targetHead,
+            advance.candidateHead,
+          );
+          if (nonLinearCommits.length > 0) {
+            return failStage('merge', `WORK_TARGET_ADVANCE_LINEAR_HISTORY_VIOLATION: candidate already contains merge commit(s) above reconciled target ${advance.targetHead}: ${nonLinearCommits.slice(0, 8).join(', ')}`);
+          }
+          const scopeViolation = targetAdvanceWorkScopeViolation(contract, advance.candidateChangedPaths);
+          if (scopeViolation) {
+            return failStage('merge', `WORK_TARGET_ADVANCE_SCOPE_VIOLATION: Work-owned ${scopeViolation.kind} path ${scopeViolation.path}`);
+          }
+          if (contract) replaceTargetAdvanceScopeEvidence(ctx, contract, advance.candidateChangedPaths);
           current = transact('target-advance-provenance-confirmed', (fresh) => writeWorkHandle(ctx.controllerHome, {
             ...fresh,
             deliveryBaseCommit: advance.targetHead,
           }));
         }
         if (advance.relation === 'diverged_clean') {
-          const integrated = repositoryGitMergeBranch(ctx.controllerHome, mergeValidated.worktreeRepository, {
-            branch: targetBranch,
-            noFf: true,
+          const preIntegrationScopeViolation = targetAdvanceWorkScopeViolation(contract, advance.candidateChangedPaths);
+          if (preIntegrationScopeViolation) {
+            return failStage('merge', `WORK_TARGET_ADVANCE_SCOPE_VIOLATION: Work-owned ${preIntegrationScopeViolation.kind} path ${preIntegrationScopeViolation.path}`);
+          }
+          const checks = contract?.checks ?? [];
+          const candidateInput = currentWorkValidationInput(mergeValidated.worktreeRepository, current, checks);
+          const checksBefore = checks.length > 0 ? listControllerChecks(mergeValidated.worktreeRepository.canonicalRoot) : [];
+          const integrated = repositoryGitRebaseOnto(ctx.controllerHome, mergeValidated.worktreeRepository, {
+            onto: advance.targetHead,
+            upstream: advance.mergeBase,
             abortOnFailure: true,
             authorizationDecision: gitAuthorization,
             sessionId: session.sessionId,
@@ -2382,7 +2609,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
             workId: current.workId,
             goalId: current.goalId,
           });
-          if (integrated.execution.status !== 'executed' || integrated.execution.ok !== true) {
+          if (!integrated.rebased) {
             if (contract) {
               transitionWorkContractPhase(
                 { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
@@ -2391,7 +2618,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
                   phase: 'delivery',
                   status: 'blocked',
                   state: 'blocked',
-                  summary: `Target-advance integration failed inside the isolated Work checkout; canonical ${targetBranch} was not mutated.`,
+                  summary: `Linear target-advance integration failed inside the isolated Work checkout; canonical ${targetBranch} was not mutated.`,
                 },
               );
             }
@@ -2400,55 +2627,99 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
               stages: current.finalization,
               completed: false,
               blocked: true,
-              recoverable: true,
+              recoverable: integrated.restored,
               error: {
-                code: 'WORK_TARGET_ADVANCE_INTEGRATION_FAILED',
-                message: integrated.abort && (integrated.abort.status !== 'executed' || integrated.abort.ok !== true)
-                  ? 'Target integration failed and merge abort could not be proven; inspect the managed Work checkout before retrying.'
-                  : 'Target integration failed inside the managed Work checkout and was aborted; canonical target was left unchanged.',
+                code: 'WORK_TARGET_ADVANCE_LINEAR_INTEGRATION_FAILED',
+                message: integrated.restored
+                  ? 'Target advancement could not be rebased safely; the isolated Work checkout was restored to its original candidate HEAD.'
+                  : 'Target advancement rebase failed and exact checkout restoration could not be proven; inspect the isolated Work checkout before retrying.',
               },
-              continuation: 'WORK_TARGET_ADVANCE_REVIEW_REQUIRED: inspect the isolated Work checkout and retry only after it is clean.',
+              continuation: 'WORK_TARGET_ADVANCE_REVIEW_REQUIRED: inspect the isolated Work checkout and retry only after its exact branch/HEAD/cleanliness are proven.',
             };
           }
           const integratedHead = gitHead(mergeValidated.worktreeRepository.canonicalRoot);
-          const firstParent = integratedHead ? gitRevision(mergeValidated.worktreeRepository.canonicalRoot, `${integratedHead}^1`) : undefined;
-          if (!integratedHead || firstParent !== advance.candidateHead) {
-            return failStage('merge', `WORK_TARGET_ADVANCE_INTEGRATION_OWNERSHIP_MISMATCH: expected first parent ${advance.candidateHead}, found ${firstParent ?? 'unavailable'}`);
+          if (!integratedHead || !gitIsAncestor(mergeValidated.worktreeRepository.canonicalRoot, advance.targetHead, integratedHead)) {
+            return failStage('merge', `WORK_TARGET_ADVANCE_LINEAR_ANCESTRY_MISMATCH: target ${advance.targetHead} is not an ancestor of ${integratedHead ?? 'unavailable'}`);
           }
-          const checks = contract?.checks ?? [];
+          const mergeCommits = targetAdvanceLinearMergeCommits(
+            mergeValidated.worktreeRepository.canonicalRoot,
+            advance.targetHead,
+            integratedHead,
+          );
+          const integratedTree = spawnSync('git', ['-C', mergeValidated.worktreeRepository.canonicalRoot, 'rev-parse', '--verify', `${integratedHead}^{tree}`], {
+            encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+          });
+          if (mergeCommits.length > 0) {
+            return failStage('merge', `WORK_TARGET_ADVANCE_LINEAR_HISTORY_VIOLATION: integrated candidate contains merge commit(s): ${mergeCommits.slice(0, 8).join(', ')}`);
+          }
+          if (
+            !advance.mergedTree
+            || integratedTree.status !== 0
+            || integratedTree.error
+            || typeof integratedTree.stdout !== 'string'
+            || integratedTree.stdout.trim() !== advance.mergedTree
+          ) {
+            return failStage('merge', `WORK_TARGET_ADVANCE_LINEAR_TREE_MISMATCH: rebased candidate tree does not equal the preflight clean integration tree ${advance.mergedTree ?? 'unavailable'}`);
+          }
+          const workOwnedChangedPaths = gitChangedPaths(mergeValidated.worktreeRepository.canonicalRoot, advance.targetHead, integratedHead);
+          const postIntegrationScopeViolation = targetAdvanceWorkScopeViolation(contract, workOwnedChangedPaths);
+          if (postIntegrationScopeViolation) {
+            return failStage('merge', `WORK_TARGET_ADVANCE_SCOPE_VIOLATION: integrated Work-owned ${postIntegrationScopeViolation.kind} path ${postIntegrationScopeViolation.path}`);
+          }
           const integratedInput = currentWorkValidationInput(
             mergeValidated.worktreeRepository,
             { ...current, expectedHead: integratedHead },
             checks,
           );
+          const checksAfter = checks.length > 0 ? listControllerChecks(mergeValidated.worktreeRepository.canonicalRoot) : [];
+          const transferPlan = contract
+            ? planTargetAdvanceValidationAuthority({
+                checkIds: checks,
+                checkRefs: contract.checkRefs,
+                checksBefore,
+                checksAfter,
+                candidateHead: advance.candidateHead,
+                candidateWorkspaceFingerprint: candidateInput.workspaceFingerprint,
+                integratedHead,
+                integratedWorkspaceFingerprint: integratedInput.workspaceFingerprint,
+                targetChangedPaths: advance.targetChangedPaths,
+              })
+            : { transferredRecords: [], reusableCheckIds: [], invalidatedCheckIds: checks };
+          for (const record of transferPlan.transferredRecords) {
+            appendVerificationRecord({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, record);
+          }
+          if (contract) replaceTargetAdvanceScopeEvidence(ctx, contract, workOwnedChangedPaths);
+          const validationPreserved = transferPlan.invalidatedCheckIds.length === 0;
           current = transact('target-advance-integrated', (fresh) => transitionWorkHandle(
             ctx.controllerHome,
             fresh,
-            checks.length > 0 ? 'validating' : 'committed',
+            validationPreserved ? 'committed' : 'validating',
             {
               deliveryBaseCommit: advance.targetHead,
               expectedHead: integratedHead,
               failureReason: undefined,
-              finalization: { ...fresh.finalization, validation: checks.length > 0 ? 'pending' : 'done', merge: 'pending', lastError: undefined },
+              finalization: { ...fresh.finalization, validation: validationPreserved ? 'done' : 'pending', merge: 'pending', lastError: undefined },
               validationRun: undefined,
-              validatedInputFingerprint: checks.length > 0 ? undefined : integratedInput.fingerprint,
+              validatedInputFingerprint: validationPreserved ? integratedInput.fingerprint : undefined,
             },
           ));
           appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
-            title: 'target advancement integrated into isolated Work candidate',
-            summary: `Canonical ${targetBranch} at ${advance.targetHead} advanced independently. Forge merged it into Work candidate ${advance.candidateHead} as ${integratedHead} inside checkout ${current.checkoutId}; canonical target remained unchanged and prior validation authority was invalidated.`,
+            title: 'target advancement linearly integrated into isolated Work candidate',
+            summary: `Canonical ${targetBranch} at ${advance.targetHead} advanced independently. Forge rebased Work candidate ${advance.candidateHead} onto it as ${integratedHead} with no merge commits; Work scope is ${workOwnedChangedPaths.length} target-relative path(s). Validation authority transferred for ${transferPlan.reusableCheckIds.length}/${checks.length} check(s); ${transferPlan.invalidatedCheckIds.length} check(s) require fresh evidence.`,
             detailLevel: 'summary',
           });
-          if (checks.length > 0) {
+          if (!validationPreserved) {
             markWorkValidationPending(ctx.controllerHome, current);
             return {
               work: compactHandle(current),
               stages: current.finalization,
               completed: false,
-              continuation: `WORK_COMMITTED_REVALIDATION_REQUIRED: target branch ${targetBranch} advanced; integrated candidate ${integratedHead} must pass fresh Work-bound validation before ff-only delivery`,
+              continuation: `WORK_COMMITTED_REVALIDATION_REQUIRED: target branch ${targetBranch} changed inputs for [${transferPlan.invalidatedCheckIds.join(', ')}]; unaffected check evidence was transferred to ${integratedHead} and may be reused`,
             };
           }
-          projectWorkValidationOutcome(ctx.controllerHome, current, 'passed', 'Target advancement was integrated into the isolated Work candidate and no validation checks were required.');
+          projectWorkValidationOutcome(ctx.controllerHome, current, 'passed', checks.length === 0
+            ? 'Target advancement was linearly integrated and no validation checks were required.'
+            : `Target advancement was linearly integrated; all ${checks.length} check result(s) retained authority because target-only changes did not affect their declared inputs.`);
         }
       }
     }
