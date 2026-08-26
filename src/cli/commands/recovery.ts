@@ -97,6 +97,7 @@ export function recoveryConnectorDescriptor(
   const configuredUrl = config.recoveryPublicUrl;
   const url = configuredUrl ?? `${localOrigin}/recovery/mcp`;
   const origin = new URL(url).origin;
+  const authorizationServer = `${origin}/recovery`;
   const passphraseConfigured = Boolean(readMcpServiceOAuthPassphrase(home));
   const gatewayIdentity = readRecoveryRuntimeIdentity(home, 'gateway');
   const watchdogIdentity = readRecoveryRuntimeIdentity(home, 'watchdog');
@@ -158,7 +159,7 @@ export function recoveryConnectorDescriptor(
     previousRelease: authority.previous?.releaseRevision,
     oauth: {
       passphraseConfigured,
-      authorizationServerMetadataUrl: `${origin}/.well-known/oauth-authorization-server`,
+      authorizationServerMetadataUrl: `${origin}/.well-known/oauth-authorization-server${new URL(authorizationServer).pathname}`,
       protectedResourceMetadataUrl: `${origin}/.well-known/oauth-protected-resource/recovery/mcp`,
     },
     healthUrl: `${origin}/recovery/health`,

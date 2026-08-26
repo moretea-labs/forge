@@ -1433,14 +1433,32 @@ async function probePrimaryConnectorOwnership(
   if (!pid || !Number.isInteger(pid)) {
     return { ok: false, detail: `configured primary Connector launchd service has no live pid: ${service.target}` };
   }
-  const listening = await runCommand('lsof', ['-nP', '-a', '-p', String(pid), `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], 5_000);
-  const listenerPids = listening.stdout.split(/\s+/).map((value) => Number(value)).filter(Number.isInteger);
-  const ok = listening.ok && listenerPids.includes(pid);
+  const listening = await runCommand('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], 5_000);
+  const listenerPids = [...new Set(listening.stdout.split(/\s+/).map((value) => Number(value)).filter(Number.isInteger))];
+  let ownerPid: number | undefined;
+  for (const listenerPid of listenerPids) {
+    let candidate = listenerPid;
+    const visited = new Set<number>();
+    for (let depth = 0; depth < 32 && candidate > 1 && !visited.has(candidate); depth += 1) {
+      if (candidate === pid) {
+        ownerPid = listenerPid;
+        break;
+      }
+      visited.add(candidate);
+      const parent = await runCommand('ps', ['-o', 'ppid=', '-p', String(candidate)], 5_000);
+      if (!parent.ok) break;
+      const parentPid = Number(parent.stdout.trim());
+      if (!Number.isInteger(parentPid) || parentPid <= 0) break;
+      candidate = parentPid;
+    }
+    if (ownerPid !== undefined) break;
+  }
+  const ok = listening.ok && ownerPid !== undefined;
   return {
     ok,
     detail: ok
-      ? `configured primary Connector pid ${pid} owns TCP ${port}`
-      : `configured primary Connector pid ${pid} does not own TCP ${port}`,
+      ? `configured primary Connector process family rooted at pid ${pid} owns TCP ${port} through pid ${ownerPid}`
+      : `configured primary Connector process family rooted at pid ${pid} does not own TCP ${port}`,
   };
 }
 
