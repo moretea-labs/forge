@@ -86,9 +86,26 @@ Explicit **Scale** is the opt-in coordination form of this existing model, not a
 - `toolset=full` is an explicit compatibility profile and may contain historical definitions; current default schema construction must not depend on those legacy definitions.
 - Current schemas/handlers should live with their owning module. Legacy compatibility may delegate but must not independently own current business rules.
 
+### Controller facade and handoff boundary
+
+- The stable Controller-facing facade is `rh_access`, `rh_status`, `rh_inbox`, `rh_context`, and `rh_work`. Internal repository, controller, evidence, maintenance, and plugin capabilities may grow behind the capability registry without creating another top-level tool for each feature.
+- Handoff Inbox state is durable decision state for blocked or review-needed Controller judgement. It is not a log sink and must not become a second Requirement, Plan, Work, or Process lifecycle.
+- Facade results are bounded summaries plus evidence references. Forge may report policy, verification, lifecycle, and capability facts; semantic acceptance and the decision to continue remain Controller-owned.
+
+### Host hook boundary
+
+Host hook files are integration surfaces, not lifecycle or architecture authorities. Forge-managed entries are identified so install/uninstall can change only Forge-owned entries while preserving sibling user hooks; legacy adapter entries are migration input rather than a second current identity. The hot host path converges on the minimal `forge-hook` entrypoint and current hook runtime, and CLI absence fails safely instead of turning a host hook into a repository failure. Setup/readiness flows may inspect and report host gaps but must not silently treat user-owned host configuration as current architecture state.
+
 ## Provider boundary
 
 Typed provider/plugin actions should use Forge capability/resource semantics directly instead of hiding host/browser/device operations inside arbitrary repository shell commands. Built-in providers may remain inside Forge when they are tightly coupled to Controller policy and lifecycle; independent products/providers retain independent release boundaries and integrate through the Plugin Protocol.
+
+### iOS physical-device boundary
+
+- `ios-device` is the single physical-device resource domain. Backend/engine details may vary, but they must not create independent mutation authority or concurrent ownership for the same phone.
+- Agent-device readiness is capability-negotiated from a reviewed version/help contract and a stable contract fingerprint. A preferred version is support guidance rather than authority; unsupported or unreviewed pre-1.0 contracts fail closed instead of guessing flags or semantic support.
+- Application adapters own app-specific semantic targeting and assertions; provider code owns transport, device/session lifecycle, and command execution. Semantic action failure is distinct from transport/session death, and unknown mutation outcomes are fenced rather than blindly replayed.
+- iOS evidence is bounded and redacted. Read-only lifecycle/screenshot capability must never be represented as proof of semantic mutation capability.
 
 ## Browser Runtime V2 transition contract
 
@@ -114,12 +131,17 @@ The maintained documentation surface is intentionally small:
 
 - [`../README.md`](../README.md) — documentation entry.
 - [`../ROADMAP.md`](../ROADMAP.md) — current/next priorities.
-- `CURRENT.md` — current architecture authority.
+- `CURRENT.md` — sole maintained current architecture authority.
+- [`index.md`](index.md) — architecture navigation and lifecycle rules.
 - [`EVOLUTION.md`](EVOLUTION.md) — append-only architecture change log.
+- [`decisions/`](decisions/) — accepted ADR rationale; once a rule is ordinary current architecture it is folded into `CURRENT.md` and the ADR remains historical rationale.
 - [`versions/`](versions/) — architecture snapshot created at release/version boundaries.
+- [`history/`](history/) and [`history.md`](history.md) — archived historical evidence and compatibility history, never runtime authority.
 - [`../../CHANGELOG.md`](../../CHANGELOG.md) — release/user-visible change log.
 
-Research notes, tasks, reviews, old architecture pages, plans and Git history are evidence/history only. They do not need to be synchronized on every source edit.
+Architecture-root Markdown is deliberately restricted to `CURRENT.md`, `EVOLUTION.md`, `history.md`, and `index.md`. A proposed architecture change belongs in a request/ADR or durable Plan/Work evidence until its accepted invariant is folded into `CURRENT.md`; do not create a parallel root-level "current design" page. Execution statuses such as phases, "implementation in progress", pending manual validation, operator-specific paths, and machine-local observations belong in Work/Plan/evidence or the history archive, not in maintained current architecture.
+
+Research notes, tasks, reviews, archived architecture pages, plans and Git history are evidence/history only. They do not need to be synchronized on every source edit.
 
 ## Intentionally retained compatibility debt
 
