@@ -120,6 +120,12 @@ function cronWindowKey(schedule: RepositorySchedule, at = Date.now()): string {
 }
 
 function triggerWindowKey(schedule: RepositorySchedule, context: ScheduleTriggerContext | undefined, at = Date.now()): string {
+  // Explicit control-plane triggers use a separate identity namespace from timer/cron windows.
+  // A caller-supplied event/request id is the stable retry key; otherwise each manual trigger is distinct.
+  if (context?.source === 'manual' && schedule.trigger.type !== 'manual') {
+    const stableManualKey = context.eventId?.trim();
+    return `manual:${stableManualKey || randomUUID()}`;
+  }
   switch (schedule.trigger.type) {
     case 'cron':
       return cronWindowKey(schedule, at);

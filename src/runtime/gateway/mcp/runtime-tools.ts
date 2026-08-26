@@ -4030,10 +4030,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               }) as unknown as Record<string, unknown>);
             }
             if (operation === 'schedule_trigger') {
+              const repositoryEvent = typeof args.event_name === 'string' && args.event_name.trim().length > 0;
+              const explicitEventId = typeof args.event_id === 'string' ? args.event_id.trim() : '';
+              const manualRequestId = !repositoryEvent && typeof args.request_id === 'string' ? args.request_id.trim() : '';
               const occurrence = await triggerWorkContinuationSchedule(ctx.controllerHome, repository.repoId, scheduleId, {
-                source: typeof args.event_name === 'string' && args.event_name.trim() ? 'repository-event' : 'manual',
+                source: repositoryEvent ? 'repository-event' : 'manual',
                 eventName: typeof args.event_name === 'string' ? args.event_name : undefined,
-                eventId: typeof args.event_id === 'string' ? args.event_id : undefined,
+                eventId: explicitEventId || manualRequestId || undefined,
                 data: args.event_data && typeof args.event_data === 'object' && !Array.isArray(args.event_data) ? args.event_data as Record<string, unknown> : undefined,
               });
               return result(buildFacadeResult({ summary: occurrence ? `Schedule ${scheduleId} produced ${occurrence.decision}.` : `Schedule ${scheduleId} produced no occurrence.`, data: { occurrence } }) as unknown as Record<string, unknown>);

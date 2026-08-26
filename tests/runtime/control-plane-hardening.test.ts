@@ -1148,6 +1148,46 @@ describe('scheduled external Controller wake', () => {
     })).toThrow(/CONTROLLER_RELAY_ROUND_NOT_CLAIMED: goal_complete/);
   });
 
+  test('separates explicit manual triggers from interval and cron timer windows while preserving retry identity', async () => {
+    const root = temp('forge-schedule-manual-identity-');
+    const controllerHome = join(root, 'controller');
+    ensureControllerHome(controllerHome);
+    const repoId = 'repo-schedule-manual-identity';
+    const base = {
+      repoId,
+      enabled: true,
+      policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: true },
+      action: { operation: 'controller_context', resourceClaims: [] },
+      stopConditions: [] as string[],
+    };
+
+    for (const [name, trigger] of [
+      ['interval', { type: 'interval' as const, everyMinutes: 360 }],
+      ['cron', { type: 'cron' as const, cronExpression: '* * * * *', timezone: 'UTC' }],
+    ] as const) {
+      const schedule = createSchedule(controllerHome, {
+        ...base,
+        requestId: `schedule-manual-identity-${name}`,
+        name: `manual identity ${name}`,
+        trigger,
+      });
+      const timer = await evaluateSchedule(controllerHome, schedule, false, { source: 'timer' });
+      const timerRetry = await evaluateSchedule(controllerHome, schedule, false, { source: 'timer' });
+      expect(timer?.occurrenceId).toBeTruthy();
+      expect(timerRetry?.occurrenceId).toBe(timer?.occurrenceId);
+
+      const manual = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: `manual-${name}-request` });
+      const manualRetry = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: `manual-${name}-request` });
+      expect(manual?.occurrenceId).toBeTruthy();
+      expect(manual?.occurrenceId).not.toBe(timer?.occurrenceId);
+      expect(manual?.windowKey).toBe(`manual:manual-${name}-request`);
+      expect(manualRetry?.occurrenceId).toBe(manual?.occurrenceId);
+
+      const nextManual = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: `manual-${name}-request-2` });
+      expect(nextManual?.occurrenceId).not.toBe(manual?.occurrenceId);
+    }
+  });
+
   test('scopes continuation stop conditions to the target Work instead of historical repository noise', async () => {
     const root = temp('forge-schedule-stop-scope-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
