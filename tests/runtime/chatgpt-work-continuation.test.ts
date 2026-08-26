@@ -12,6 +12,7 @@ import {
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
 import {
   chatgptAutomationControlWaitBudgets,
+  chatgptAutomationNavigationRequiresReplacement,
   chatgptAutomationPageFailure,
   chatgptAutomationReasoningLevelFromLabel,
   chatgptBrowserActionArgs,
@@ -122,6 +123,13 @@ describe('ChatGPT Work conversation binding', () => {
     expect(isChatgptConversationUrl('javascript:alert(1)')).toBe(false);
   });
 
+  test('replaces intentionally closed or stale automation sessions instead of failing continuation', () => {
+    expect(chatgptAutomationNavigationRequiresReplacement(new Error('BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT'))).toBe(true);
+    expect(chatgptAutomationNavigationRequiresReplacement(new Error('PLUGIN_BROWSER_SESSION_STATE_LOST: closed automation tab'))).toBe(true);
+    expect(chatgptAutomationNavigationRequiresReplacement(new Error('PLUGIN_SESSION_NOT_FOUND: closed automation session'))).toBe(true);
+    expect(chatgptAutomationNavigationRequiresReplacement(new Error('CHATGPT_AUTOMATION_LOGIN_REQUIRED'))).toBe(false);
+  });
+
   test('recognizes contextual ChatGPT reasoning labels without matching unrelated UI', () => {
     expect(chatgptAutomationReasoningLevelFromLabel('High')).toBe('high');
     expect(chatgptAutomationReasoningLevelFromLabel('Thinking: High')).toBe('high');
@@ -182,6 +190,11 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).not.toContain(':has-text(');
     expect(source).toContain('waitForChatgptIntelligenceControl'); expect(source).toContain('reasoningLabelMatches'); expect(source).toContain("'main button, main [role=\"button\"]'"); expect(source).toContain("limit: selector.startsWith('main ') ? 80 : 240"); expect(source).toContain('chatgptAutomationReasoningLevelFromLabel'); expect(source).toContain('CHATGPT_AUTOMATION_LOGIN_REQUIRED'); expect(source).not.toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('runWorkChatgptContinuation'); expect(engine).toContain("if (controllerType === 'chatgpt')"); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/'"); expect(engine).toContain("conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined");
     expect(source).toContain('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'); expect(source).toContain('workflowToolAttributionInstruction'); expect(source).toContain('repository_command_execute and repository_safe_patch_apply');
+    expect(source).toContain("controllerBrowserAction(controllerHome, workId, 'close_page'");
+    expect(source).toContain('closeChatgptAutomationTabAfterDispatch');
+    expect(source).toContain("tabCleanupStatus: tabCleanup.status");
+    expect(source).toContain("'PLUGIN_BROWSER_SESSION_STATE_LOST'");
+    expect(source).toContain("'PLUGIN_SESSION_NOT_FOUND'");
     expect(source).toContain('buildBrowserPluginManifest(0, undefined, repoRoot).enabled');
     expect(source).toContain("controllerBrowserAction(controllerHome, workId, 'configure', { enabled: true })");
     expect(source.indexOf('buildBrowserPluginManifest(0, undefined, repoRoot).enabled')).toBeLessThan(source.indexOf("controllerBrowserAction(controllerHome, workId, 'configure', { enabled: true })"));
@@ -197,7 +210,8 @@ describe('ChatGPT Work conversation binding', () => {
     const launcherStart = runtimeTools.slice(runtimeTools.indexOf("if (operation === 'launcher_start')"), runtimeTools.indexOf('const checks = listControllerChecks', runtimeTools.indexOf("if (operation === 'launcher_start')")));
     expect(launcherStart).toContain("if (controllerType === 'chatgpt')");
     expect(launcherStart).toContain('await runWorkChatgptContinuation({');
-    expect(launcherStart).toContain("summary: 'ChatGPT continuation dispatched with a durable controller-round closure obligation.'");
+    expect(launcherStart).toContain("summary: 'ChatGPT continuation dispatched;");
+    expect(launcherStart).toContain("semantic closure still requires an explicit disposition.'");
     expect(launcherStart.indexOf('await runWorkChatgptContinuation({')).toBeLessThan(launcherStart.indexOf('const launched = await launchSuperController'));
     expect(launcherStart).toContain("controllerType: controllerType as 'codex' | 'grok' | 'claude'");
   });
