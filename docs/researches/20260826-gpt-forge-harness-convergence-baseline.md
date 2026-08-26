@@ -13,7 +13,7 @@ Record the starting point for `PLAN-gpt-forge-harness-convergence-20260826-r1`. 
 
 ## Controller/runtime snapshot
 
-Observed on repository `repo_123b7cf58b6b17b5cbe46a56` at main `fdc760e0aa1699ec7443598e8926ee94a47c8164`:
+Observed on the Forge repository at main `fdc760e0aa1699ec7443598e8926ee94a47c8164`:
 
 - stable MCP surface: 19/19 tools;
 - source coherence: ready;
