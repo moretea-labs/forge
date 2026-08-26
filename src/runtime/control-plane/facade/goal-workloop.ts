@@ -4,6 +4,7 @@ import {
   listHandoffItems,
   type HandoffInboxStoreOptions,
 } from './handoff-inbox-store';
+import { getControllerSession } from './controller-session-store';
 import {
   appendVerificationRecord,
   appendWorkEvidence,
@@ -1747,6 +1748,38 @@ export function stopGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopSt
       summary: `WorkContract ${input.workId} not found.`,
       data: { workId: input.workId },
     });
+  }
+
+  const owner = ctx.workStore.controllerHome
+    ? getControllerSession({ controllerHome: ctx.workStore.controllerHome, repoId: ctx.repoId }, work.workId)
+    : undefined;
+  if (owner) {
+    const ownerPrincipal = owner.principalId?.trim() || owner.controllerId;
+    const ownerInstanceId = owner.controllerInstanceId?.trim();
+    const callerPrincipal = ctx.principalId?.trim();
+    const callerInstanceId = ctx.controllerInstanceId?.trim();
+    const sameAuthority = Boolean(
+      callerPrincipal
+      && ownerPrincipal === callerPrincipal
+      && (!ownerInstanceId || ownerInstanceId === callerInstanceId),
+    );
+    if (!sameAuthority) {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `WORK_TERMINALIZATION_ACTIVE_CONTROLLER_FENCE: ${work.workId} has a newer active Controller claim generation ${owner.claimGeneration ?? 1}.`,
+        data: {
+          work: summarizeWorkContract(work),
+          activeController: {
+            controllerId: owner.controllerId,
+            principalId: ownerPrincipal,
+            controllerInstanceId: owner.controllerInstanceId,
+            sessionId: owner.sessionId,
+            claimGeneration: owner.claimGeneration ?? 1,
+          },
+          finalStatus: work.status,
+        },
+      });
+    }
   }
 
   const destructiveCleanup = input.authorizeDestructiveCleanup === true;

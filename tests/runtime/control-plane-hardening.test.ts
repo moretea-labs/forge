@@ -13,7 +13,8 @@ import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
-import { createWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { stopGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { createHandoffItem, getHandoffItem, listHandoffItems } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { claimControllerSession, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
@@ -744,6 +745,87 @@ describe('scheduled external Controller wake', () => {
     expect(waiting.disposition).toBe('wait');
     releaseControllerSession(store, workId, nextSession.controllerId);
     expect(claimStalledControllerRoundRelays(store, { nowMs: afterGrace + 2 * 60_000, graceMs: 60_000 })).toEqual([]);
+  });
+
+  test('keeps persistent scheduled Work running when a stale stop races after a successful bounded no-op claim', () => {
+    const root = temp('forge-controller-relay-persistent-noop-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'persistent scheduled no-op\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-persistent-noop' });
+    const workId = 'WORK-RELAY-PERSISTENT-NOOP';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Run one bounded scheduled health probe and remain persistent for the next occurrence.',
+      acceptanceCriteria: ['A successful no-op occurrence returns the relay to waiting without terminalizing Work.'],
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const store = { controllerHome, repoId: repository.repoId };
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: 'schedule:persistent-noop', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-persistent-noop' },
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true });
+    startExecutionSession(controllerHome, {
+      sessionId: 'chatgpt-session-current',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-test',
+    });
+    const session = claimControllerSession(store, {
+      workId,
+      controllerId: 'chatgpt-controller',
+      controllerType: 'chatgpt',
+      sessionId: 'chatgpt-session-current',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-test',
+      leaseMs: 5 * 60_000,
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session })?.status).toBe('claimed');
+
+    appendWorkEvidence(store, workId, {
+      title: 'bounded scheduled health probe succeeded',
+      summary: 'One bounded no-op occurrence completed successfully and produced no repository changes.',
+      detailLevel: 'summary',
+    });
+
+    const staleStop = stopGoalWorkloop({
+      workStore: store,
+      handoffStore: store,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      principalId: 'forge-scheduler',
+      controllerInstanceId: 'runtime-test',
+    }, {
+      workId,
+      reason: 'stale occurrence cleanup must not cancel persistent scheduled Work',
+    });
+    expect(staleStop.status).toBe('blocked');
+    expect(staleStop.summary).toContain('WORK_TERMINALIZATION_ACTIVE_CONTROLLER_FENCE');
+    expect(getWorkContract(store, workId)?.status).toBe('running');
+
+    const waiting = submitControllerRoundDisposition(store, {
+      workId,
+      identity: {
+        controllerId: session.controllerId,
+        principalId: session.principalId ?? session.controllerId,
+        controllerInstanceId: session.controllerInstanceId ?? 'runtime-test',
+        sessionId: session.sessionId,
+      },
+      disposition: 'wait',
+      relayScopeId: opened.relayScopeId,
+      reason: 'Successful bounded no-op occurrence remains persistent for the next schedule.',
+    });
+    expect(waiting.status).toBe('waiting');
+    expect(waiting.disposition).toBe('wait');
+    expect(getWorkContract(store, workId)?.status).toBe('running');
   });
 
   test('starts a fresh repeated-state budget for a later external wake while same-chain suppression remains fail-closed', () => {
