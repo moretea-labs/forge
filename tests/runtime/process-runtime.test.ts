@@ -61,6 +61,7 @@ import {
 } from '../../src/runtime/execution/process-runtime/lightweight-managed';
 import { classifyGatewayExecutionPath } from '../../src/runtime/gateway/mcp/router';
 import { persistedCheckSemanticScopeKey, runPersistedCheckViaProcessRuntime } from '../../src/runtime/gateway/mcp/persisted-check-process';
+import { classifyPersistedCheckTerminalEvidence } from '../../src/runtime/execution/process-runtime/check-result';
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { routeExecution } from '../../src/runtime/execution/thin-harness';
@@ -161,6 +162,11 @@ function fixture() {
       'quick-ok': {
         description: 'instant ok',
         command: ['node', '-e', 'process.exit(0)'],
+        timeoutMs: 30_000,
+      },
+      'quick-fail': {
+        description: 'instant acceptance failure',
+        command: ['node', '-e', 'process.exit(7)'],
         timeoutMs: 30_000,
       },
       'quick-sleep': {
@@ -1015,6 +1021,30 @@ describe('run_check Process Runtime facade', () => {
     expect(repeat.process?.processId).toBe(work.process?.processId); expect(repeat.process?.semanticDeduplicated).toBe(true);
   });
 
+  test('structured check failure remains acceptance failure evidence', async () => {
+    const fx = fixture();
+    const result = await runPersistedCheckViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      repoRoot: fx.repoRoot,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      checkId: 'quick-fail',
+      requestId: 'quick-fail-acceptance',
+      commandId: 'quick-fail-acceptance',
+      workId: 'work-quick-fail',
+      verificationBinding: { executionSessionId: 'session-quick-fail' },
+      interactiveWaitMs: 5_000,
+    });
+    expect(result.process).toMatchObject({ completed: true, ok: false, status: 'failed' });
+    const record = getProcessRecord(fx.controllerHome, fx.repository.repoId, result.process!.processId);
+    expect(record).toBeDefined();
+    expect(classifyPersistedCheckTerminalEvidence(record!, 'quick-fail')).toMatchObject({
+      state: 'matched',
+      failureClass: 'acceptance_failure',
+    });
+  });
+
   test('short check completes without ExecutionJob path', async () => {
     const fx = fixture();
     const result = await runCheckViaProcessRuntime({
@@ -1765,6 +1795,12 @@ describe('Process Runtime real lease contention', () => {
     expect(boundedOut.completed).toBe(true);
     expect(boundedOut.ok).not.toBe(true);
     expect(String(boundedOut.stderr ?? '')).toContain('PROCESS_LEASE_CONFLICT');
+    const boundedRecord = getProcessRecord(fx.controllerHome, fx.repository.repoId, boundedOut.processId);
+    expect(boundedRecord).toBeDefined();
+    expect(classifyPersistedCheckTerminalEvidence(boundedRecord!, 'package:check:task')).toMatchObject({
+      state: 'process_runtime_failed_before_result',
+      infrastructureReason: expect.stringContaining('PROCESS_LEASE_CONFLICT'),
+    });
 
     const serialized = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
