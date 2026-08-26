@@ -2052,7 +2052,7 @@ describe('standalone recovery on canonical Runtime', () => {
       readyForChatGPT: false,
       oauth: {
         passphraseConfigured: true,
-        authorizationServerMetadataUrl: 'https://recovery.example.test/.well-known/oauth-authorization-server',
+        authorizationServerMetadataUrl: 'https://recovery.example.test/.well-known/oauth-authorization-server/recovery',
         protectedResourceMetadataUrl: 'https://recovery.example.test/.well-known/oauth-protected-resource/recovery/mcp',
       },
       healthUrl: 'https://recovery.example.test/recovery/health',
