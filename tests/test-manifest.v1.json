@@ -565,6 +565,10 @@
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/rh-work-terminalization-authority.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/route-policy.test.ts": {
       "module": "routing",
       "resource": "pure"

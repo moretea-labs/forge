@@ -192,7 +192,10 @@ import {
   claimControllerSession,
   getControllerSession,
   releaseControllerSession,
+  releaseControllerSessionWithAuthority,
   resumeControllerSession,
+  withControllerSessionTerminalizationFence,
+  type ControllerTerminalizationAuthority,
 } from '../../control-plane/facade';
 import { currentControllerInstanceId, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../control-plane/execution/session-store';
 import { changedPaths as workChangedPaths } from '../../control-plane/execution/work-task-receipt';
@@ -4168,10 +4171,36 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             const workId = String(args.work_id ?? '').trim();
             const identity = authenticatedFacadeControllerIdentity(ctx, args);
             const owner = getControllerSession(store, workId);
-            if (owner && owner.controllerId !== identity.controllerId) {
-              throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workId} is owned by ${owner.controllerId}`);
+            if (owner) {
+              const ownerPrincipal = owner.principalId?.trim() || owner.controllerId;
+              const ownerInstanceId = owner.controllerInstanceId?.trim() || '';
+              if (owner.controllerId !== identity.controllerId) {
+                throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workId} is owned by ${owner.controllerId}`);
+              }
+              if (ownerPrincipal !== identity.principalId) {
+                throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${workId}`);
+              }
+              if (!ownerInstanceId || ownerInstanceId !== identity.controllerInstanceId) {
+                throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
+              }
+              if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) {
+                throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workId}`);
+              }
+              const released = releaseControllerSessionWithAuthority(store, {
+                workId,
+                actor: `controller-release:${identity.controllerId}:${identity.controllerInstanceId}`,
+                authority: {
+                  controllerId: owner.controllerId,
+                  controllerType: owner.controllerType,
+                  principalId: ownerPrincipal,
+                  controllerInstanceId: ownerInstanceId,
+                  claimGeneration: owner.claimGeneration,
+                },
+              });
+              if (!released.allowed) {
+                throw new Error(`WORK_CONTROLLER_RELEASE_FENCED: ${workId}:${released.reason}`);
+              }
             }
-            releaseControllerSession(store, workId, identity.controllerId);
             const executionSession = readExecutionSession(ctx.controllerHome, identity);
             if (executionSession?.activeWorkId === workId) {
               updateExecutionSession(ctx.controllerHome, identity, { activeWorkId: undefined, lastValidatedAt: new Date().toISOString() });
@@ -4626,7 +4655,69 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         }
 
         if (operation === 'stop') {
-          const facade = runGoalWorkloop({ ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined }, 'stop', args);
+          const workId = String(args.work_id ?? '').trim();
+          const currentOwner = workId ? getControllerSession(store, workId) : undefined;
+          let terminalizationAuthority: ControllerTerminalizationAuthority | undefined;
+          if (currentOwner) {
+            try {
+              const identity = authenticatedFacadeControllerIdentity(ctx, args);
+              const ownerPrincipal = currentOwner.principalId?.trim() || currentOwner.controllerId;
+              const ownerInstanceId = currentOwner.controllerInstanceId?.trim() || '';
+              if (currentOwner.controllerId !== identity.controllerId || ownerPrincipal !== identity.principalId) {
+                throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workId}`);
+              }
+              if (!ownerInstanceId || ownerInstanceId !== identity.controllerInstanceId) {
+                throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
+              }
+              if (typeof currentOwner.claimGeneration !== 'number' || currentOwner.claimGeneration < 1) {
+                throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workId}`);
+              }
+              terminalizationAuthority = {
+                controllerId: currentOwner.controllerId,
+                controllerType: currentOwner.controllerType,
+                principalId: ownerPrincipal,
+                controllerInstanceId: ownerInstanceId,
+                claimGeneration: currentOwner.claimGeneration,
+              };
+            } catch (error) {
+              const blocked = buildFacadeResult({
+                status: 'blocked',
+                summary: error instanceof Error ? error.message : `Work ${workId} terminalization authority check failed.`,
+                data: { workId, terminalizationApplied: false },
+              });
+              return result(blocked as unknown as Record<string, unknown>, true);
+            }
+          } else if (!['user', 'system'].includes(String(args.requested_by ?? ''))) {
+            const blocked = buildFacadeResult({
+              status: 'blocked',
+              summary: `WORK_CONTROLLER_OWNER_REQUIRED: ${workId}; unclaimed stop requires explicit requested_by=user or requested_by=system authority.`,
+              data: { workId, terminalizationApplied: false },
+            });
+            return result(blocked as unknown as Record<string, unknown>, true);
+          }
+
+          const fenced = withControllerSessionTerminalizationFence(
+            store,
+            {
+              workId,
+              actor: `rh-work-stop:${terminalizationAuthority?.controllerId ?? String(args.requested_by ?? 'explicit')}`,
+              authority: terminalizationAuthority,
+            },
+            () => runGoalWorkloop({ ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined }, 'stop', args),
+          );
+          if (!fenced.allowed) {
+            const blocked = buildFacadeResult({
+              status: 'blocked',
+              summary: `WORK_TERMINALIZATION_AUTHORITY_FENCED: ${workId}:${fenced.reason}`,
+              data: {
+                workId,
+                terminalizationApplied: false,
+                currentClaimGeneration: fenced.owner?.claimGeneration,
+              },
+            });
+            return result(blocked as unknown as Record<string, unknown>, true);
+          }
+          const facade = fenced.value;
           if (facade.status !== 'ok') {
             return result(facade as unknown as Record<string, unknown>, true);
           }
@@ -4750,7 +4841,60 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               return result(blocked as unknown as Record<string, unknown>, true);
             }
           }
-          const facade = runGoalWorkloop({ ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined }, 'finalize', args);
+          const semanticWork = getWorkContract(store, workId);
+          let facade;
+          if (semanticWork && !['completed', 'failed', 'cancelled'].includes(semanticWork.status)) {
+            try {
+              const identity = authenticatedFacadeControllerIdentity(ctx, args);
+              let owner = getControllerSession(store, workId);
+              if (!owner) {
+                owner = claimControllerSession(store, {
+                  workId,
+                  controllerId: identity.controllerId,
+                  controllerType: identity.controllerType,
+                  sessionId: identity.sessionId,
+                  principalId: identity.principalId,
+                  controllerInstanceId: identity.controllerInstanceId,
+                  expectedClaimGeneration: 0,
+                  leaseMs: 3_600_000,
+                });
+              }
+              const ownerPrincipal = owner.principalId?.trim() || owner.controllerId;
+              const ownerInstanceId = owner.controllerInstanceId?.trim() || '';
+              if (owner.controllerId !== identity.controllerId) throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workId}`);
+              if (ownerPrincipal !== identity.principalId) throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${workId}`);
+              if (!ownerInstanceId || ownerInstanceId !== identity.controllerInstanceId) throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
+              if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workId}`);
+              const fenced = withControllerSessionTerminalizationFence(
+                store,
+                {
+                  workId,
+                  actor: `rh-work-finalize:${identity.controllerId}:${identity.controllerInstanceId}`,
+                  authority: {
+                    controllerId: owner.controllerId,
+                    controllerType: owner.controllerType,
+                    principalId: ownerPrincipal,
+                    controllerInstanceId: ownerInstanceId,
+                    claimGeneration: owner.claimGeneration,
+                  },
+                },
+                () => runGoalWorkloop({ ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined }, 'finalize', args),
+              );
+              if (!fenced.allowed) {
+                throw new Error(`WORK_TERMINALIZATION_AUTHORITY_FENCED: ${workId}:${fenced.reason}`);
+              }
+              facade = fenced.value;
+            } catch (error) {
+              const blocked = buildFacadeResult({
+                status: 'blocked',
+                summary: error instanceof Error ? error.message : `Work ${workId} semantic finalization authority check failed.`,
+                data: { workId, terminalizationApplied: false, lifecycleClosed: false },
+              });
+              return result(blocked as unknown as Record<string, unknown>, true);
+            }
+          } else {
+            facade = runGoalWorkloop({ ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined }, 'finalize', args);
+          }
           const completed = getWorkContract(store, workId);
           let acceptedPlan;
           const reviewer = ctx.principalId?.trim();

@@ -718,7 +718,7 @@ describe('runtime maintenance executor', () => {
     });
     const fenced = applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate!);
     expect(fenced.applied).toBe(false);
-    expect(fenced.result).toContain('work_authority_became_active:controller_session');
+    expect(fenced.result).toBe('work_terminalization_fenced:active_controller_claim:claim_generation=1');
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-stale-then-claimed')?.status).toBe('ready');
 
     releaseControllerSession({ controllerHome, repoId: repository.repoId }, 'work-stale-then-claimed', 'controller-late');

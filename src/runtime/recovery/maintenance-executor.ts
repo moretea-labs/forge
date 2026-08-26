@@ -7,7 +7,7 @@ import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } f
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
 import { getWorkContract, readWorkContractStore, transitionWorkContractPhase } from '../control-plane/facade/work-contract-store';
-import { getControllerSession } from '../control-plane/facade/controller-session-store';
+import { getControllerSession, withControllerSessionTerminalizationFence } from '../control-plane/facade/controller-session-store';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { listControlPlaneRecords, type ControlPlaneRecord } from '../control-plane/persistence/sqlite-store';
@@ -762,47 +762,73 @@ export function applyStaleWorkContractMaintenanceCandidate(
   if (!work || isTerminalWorkContractStatus(work.status)) {
     return { ...candidate, applied: false, result: 'already_terminal' };
   }
-  const authorityRefs = activeWorkAuthorityRefs(repository, controllerHome, work);
-  if (authorityRefs.length > 0) {
+
+  // The stale scan is discovery only. Re-evaluate every non-Controller authority
+  // while holding the canonical ControllerSession lock, then perform the Work
+  // transition before releasing it. A newer controller_claim therefore either
+  // wins the lock first and fences this mutation, or starts only after an already
+  // completed maintenance terminalization; there is no check-then-cancel gap.
+  const fenced = withControllerSessionTerminalizationFence(
+    { controllerHome, repoId: repository.repoId },
+    { workId: work.workId, actor: `runtime-maintenance-terminalize:${work.workId}` },
+    () => {
+      const current = getWorkContract({ controllerHome, repoId: repository.repoId }, work.workId);
+      if (!current || isTerminalWorkContractStatus(current.status)) {
+        return { ...candidate, applied: false, result: 'already_terminal' };
+      }
+      const authorityRefs = activeWorkAuthorityRefs(repository, controllerHome, current);
+      if (authorityRefs.length > 0) {
+        return {
+          ...candidate,
+          applied: false,
+          result: `work_authority_became_active:${authorityRefs.join(',')}`,
+        };
+      }
+      // Discovery and mutation are separated by an arbitrary Controller/MCP delay.
+      // Re-probe the live worktree while the canonical ControllerSession fence is
+      // held so neither a newer Controller claim nor a late source write can be
+      // raced by stale maintenance terminalization.
+      const source = inspectStaleWorkRepositorySource(repository, current);
+      if (!source.safeToCancel) {
+        return {
+          ...candidate,
+          path: source.path ?? candidate.path,
+          safe: false,
+          reason: staleWorkCandidateReason(source),
+          sourceState: source.state,
+          disposition: 'source_preservation_required' as const,
+          applied: false,
+          result: `work_source_preserved:${source.state}`,
+        };
+      }
+      transitionWorkContractPhase({ controllerHome, repoId: repository.repoId }, current.workId, {
+        phase: 'cleanup',
+        status: 'cancelled',
+        state: 'skipped',
+        summary: 'Cancelled by explicit full maintenance stale Work cleanup after proving no unique live repository source; durable evidence retained.',
+        evidenceRefs: current.evidenceRefs,
+      });
+      return {
+        ...candidate,
+        path: source.path ?? candidate.path,
+        safe: true,
+        reason: staleWorkCandidateReason(source),
+        sourceState: source.state,
+        disposition: undefined,
+        applied: true,
+        result: 'work_contract_cancelled_evidence_retained',
+      };
+    },
+  );
+  if (!fenced.allowed) {
+    const generation = fenced.owner?.claimGeneration;
     return {
       ...candidate,
       applied: false,
-      result: `work_authority_became_active:${authorityRefs.join(',')}`,
+      result: `work_terminalization_fenced:${fenced.reason}${typeof generation === 'number' ? `:claim_generation=${generation}` : ''}`,
     };
   }
-  // Discovery and mutation are separated by an arbitrary Controller/MCP delay.
-  // Re-probe the live worktree so a successful write or commit after the scan
-  // cannot race stale maintenance into terminalizing unique repository source.
-  const source = inspectStaleWorkRepositorySource(repository, work);
-  if (!source.safeToCancel) {
-    return {
-      ...candidate,
-      path: source.path ?? candidate.path,
-      safe: false,
-      reason: staleWorkCandidateReason(source),
-      sourceState: source.state,
-      disposition: 'source_preservation_required',
-      applied: false,
-      result: `work_source_preserved:${source.state}`,
-    };
-  }
-  transitionWorkContractPhase({ controllerHome, repoId: repository.repoId }, work.workId, {
-    phase: 'cleanup',
-    status: 'cancelled',
-    state: 'skipped',
-    summary: 'Cancelled by explicit full maintenance stale Work cleanup after proving no unique live repository source; durable evidence retained.',
-    evidenceRefs: work.evidenceRefs,
-  });
-  return {
-    ...candidate,
-    path: source.path ?? candidate.path,
-    safe: true,
-    reason: staleWorkCandidateReason(source),
-    sourceState: source.state,
-    disposition: undefined,
-    applied: true,
-    result: 'work_contract_cancelled_evidence_retained',
-  };
+  return fenced.value;
 }
 
 function scanStaleEditSessionCandidates(

@@ -25,7 +25,7 @@ import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkComp
 import { completeRequirementFromWork } from '../../control-plane/persistence/requirement-store';
 import { isTerminalWorkContractStatus, type VerificationRecord, type WorkReconciliationRecord } from '../../control-plane/facade/types';
 import { buildWorkContinuationSnapshot } from '../../control-plane/facade/work-continuation';
-import { claimControllerSession, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../control-plane/facade/controller-session-store';
+import { claimControllerSession, getControllerSession, releaseControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../control-plane/facade/controller-session-store';
 import { currentControllerInstanceId, requireExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext, type SessionIdentity } from '../../control-plane/execution/session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from '../../control-plane/execution/validation';
 import { commandFingerprint, effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from '../../control-plane/execution/verification-evidence';
@@ -706,27 +706,53 @@ function assertWorkControllerOwnership(
   session: ExecutionSessionContext,
   handle: WorkHandleState,
   args: Record<string, unknown>,
-): void {
+) {
   const workIdValue = handle.workContractId ?? handle.workId;
-  const owner = getControllerSession({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, workIdValue);
+  const options = { controllerHome: ctx.controllerHome, repoId: handle.repositoryId };
+  const owner = getControllerSession(options, workIdValue);
   const controllerId = typeof args.controller_id === 'string' && args.controller_id.trim()
     ? args.controller_id.trim()
     : session.principalId;
   if (controllerId !== session.principalId) {
     throw new Error('WORK_CONTROLLER_IDENTITY_MISMATCH: controller_id must match the authenticated principal');
   }
-  const resumed = resumeControllerSession({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, {
+  if (owner) {
+    const ownerPrincipal = owner.principalId?.trim() || owner.controllerId;
+    const ownerInstanceId = owner.controllerInstanceId?.trim() || '';
+    if (owner.controllerId !== controllerId) throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workIdValue} is owned by ${owner.controllerId}`);
+    if (ownerPrincipal !== session.principalId) throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${workIdValue}`);
+    if (!ownerInstanceId || ownerInstanceId !== session.controllerInstanceId) throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workIdValue}`);
+    if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workIdValue}`);
+    const resumed = resumeControllerSession(options, {
+      workId: workIdValue,
+      controllerId,
+      controllerType: owner.controllerType,
+      sessionId: session.sessionId,
+      principalId: session.principalId,
+      controllerInstanceId: session.controllerInstanceId,
+      expectedClaimGeneration: owner.claimGeneration,
+      leaseMs: 3_600_000,
+    });
+    if (
+      resumed.controllerId !== controllerId
+      || resumed.principalId !== session.principalId
+      || resumed.controllerInstanceId !== session.controllerInstanceId
+      || resumed.claimGeneration !== owner.claimGeneration
+    ) {
+      throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workIdValue} ownership epoch changed during resume`);
+    }
+    return resumed;
+  }
+  return claimControllerSession(options, {
     workId: workIdValue,
     controllerId,
-    controllerType: owner?.controllerType ?? 'chatgpt',
+    controllerType: 'chatgpt',
     sessionId: session.sessionId,
     principalId: session.principalId,
     controllerInstanceId: session.controllerInstanceId,
+    expectedClaimGeneration: 0,
     leaseMs: 3_600_000,
   });
-  if (resumed.controllerId !== controllerId || resumed.sessionId !== session.sessionId) {
-    throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workIdValue} is owned by ${resumed.controllerId}/${resumed.sessionId}`);
-  }
 }
 
 function claimPreparedWorkOwnership(
@@ -1982,7 +2008,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
   if (terminalOutcome && args.cleanup !== false) {
     return await reconcileTerminalCleanup(ctx, session, current, args, terminalOutcome);
   }
-  assertWorkControllerOwnership(ctx, session, current, args);
+  const terminalizationOwner = assertWorkControllerOwnership(ctx, session, current, args);
   if (terminalOutcome && args.cleanup === false) {
     const recordedAt = new Date().toISOString();
     current = withControllerLock(
@@ -2897,13 +2923,37 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
         });
       }
       const receipt = completionReceiptForFinalizedWork(ctx, current, completionContract, args);
-      const recorded = recordWorkCompletionReceipt(
+      const ownerPrincipal = terminalizationOwner.principalId?.trim() || terminalizationOwner.controllerId;
+      const ownerInstanceId = terminalizationOwner.controllerInstanceId?.trim() || '';
+      const ownerClaimGeneration = terminalizationOwner.claimGeneration;
+      if (!ownerInstanceId || typeof ownerClaimGeneration !== 'number' || ownerClaimGeneration < 1) {
+        throw new Error(`WORK_CONTROLLER_TERMINALIZATION_AUTHORITY_INVALID: ${workId}`);
+      }
+      const fencedCompletion = withControllerSessionTerminalizationFence(
         { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
-        workId,
-        receipt,
-        requestedOutcome === 'completed_no_change' ? 'completed_no_change' : 'completed_changed',
-        requestedOutcome === 'completed_no_change' ? 'completed_no_change' : 'repository_change',
+        {
+          workId,
+          actor: `work-finalize-completion:${terminalizationOwner.controllerId}:${ownerInstanceId}`,
+          authority: {
+            controllerId: terminalizationOwner.controllerId,
+            controllerType: terminalizationOwner.controllerType,
+            principalId: ownerPrincipal,
+            controllerInstanceId: ownerInstanceId,
+            claimGeneration: ownerClaimGeneration,
+          },
+        },
+        () => recordWorkCompletionReceipt(
+          { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
+          workId,
+          receipt,
+          requestedOutcome === 'completed_no_change' ? 'completed_no_change' : 'completed_changed',
+          requestedOutcome === 'completed_no_change' ? 'completed_no_change' : 'repository_change',
+        ),
       );
+      if (!fencedCompletion.allowed) {
+        throw new Error(`WORK_TERMINALIZATION_AUTHORITY_FENCED: ${workId}:${fencedCompletion.reason}`);
+      }
+      const recorded = fencedCompletion.value;
       if (recorded.requirementId) {
         try {
           completeRequirementFromWork(

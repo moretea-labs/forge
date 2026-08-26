@@ -142,6 +142,108 @@ export function listControllerSessions(options: ControllerSessionStoreOptions): 
   return read(options).sessions.filter((session) => Date.parse(session.leaseExpiresAt) > at);
 }
 
+export interface ControllerTerminalizationAuthority {
+  controllerId: string;
+  controllerType: ControllerType;
+  principalId: string;
+  controllerInstanceId: string;
+  claimGeneration: number;
+}
+
+export type ControllerTerminalizationFenceReason =
+  | 'active_controller_claim'
+  | 'stale_controller_authority'
+  | 'controller_claim_missing';
+
+export type ControllerTerminalizationFenceResult<T> =
+  | { allowed: true; value: T; owner?: ControllerSession }
+  | { allowed: false; reason: ControllerTerminalizationFenceReason; owner?: ControllerSession };
+
+function controllerTerminalizationAuthorityMatches(
+  owner: ControllerSession,
+  authority: ControllerTerminalizationAuthority,
+): boolean {
+  const ownerPrincipal = owner.principalId?.trim() || owner.controllerId;
+  const ownerInstanceId = owner.controllerInstanceId?.trim() || '';
+  return owner.controllerId === authority.controllerId
+    && owner.controllerType === authority.controllerType
+    && ownerPrincipal === authority.principalId.trim()
+    && ownerInstanceId === authority.controllerInstanceId.trim()
+    && owner.claimGeneration === authority.claimGeneration;
+}
+
+/**
+ * Serialize control-path Work terminalization against the same canonical
+ * ControllerSession task lock used by claim/resume/release. This is a fence,
+ * not a second lifecycle authority: WorkContract remains the terminal state
+ * authority and ControllerSession remains the ownership authority.
+ *
+ * A caller without Controller authority may terminalize only while the Work is
+ * unclaimed. A caller that observed a live owner must present that exact durable
+ * owner epoch. Transport session ids are intentionally not compared because MCP
+ * transports may rotate without moving Work ownership; controller instance plus
+ * claim generation fence stale controller epochs while preserving that rotation.
+ */
+export function withControllerSessionTerminalizationFence<T>(
+  options: ControllerSessionStoreOptions,
+  input: {
+    workId: string;
+    actor: string;
+    authority?: ControllerTerminalizationAuthority;
+  },
+  operation: () => T,
+): ControllerTerminalizationFenceResult<T> {
+  return withControllerLock(
+    options.controllerHome,
+    { scope: 'task', repoId: options.repoId, taskId: `controller-session-${input.workId}` },
+    input.actor,
+    () => {
+      const owner = activeSession(read(options), input.workId);
+      if (!owner) {
+        if (input.authority) return { allowed: false, reason: 'controller_claim_missing' };
+        return { allowed: true, value: operation() };
+      }
+      if (!input.authority) return { allowed: false, reason: 'active_controller_claim', owner };
+
+      if (!controllerTerminalizationAuthorityMatches(owner, input.authority)) {
+        return { allowed: false, reason: 'stale_controller_authority', owner };
+      }
+      return { allowed: true, value: operation(), owner };
+    },
+  );
+}
+
+/**
+ * Release a live ControllerSession only when the caller still owns the exact
+ * durable controller epoch it observed. This closes the release-then-terminalize
+ * race without changing WorkContract lifecycle authority.
+ */
+export function releaseControllerSessionWithAuthority(
+  options: ControllerSessionStoreOptions,
+  input: {
+    workId: string;
+    actor: string;
+    authority: ControllerTerminalizationAuthority;
+  },
+): ControllerTerminalizationFenceResult<void> {
+  return withControllerLock(
+    options.controllerHome,
+    { scope: 'task', repoId: options.repoId, taskId: `controller-session-${input.workId}` },
+    input.actor,
+    () => {
+      const store = read(options);
+      const owner = activeSession(store, input.workId);
+      if (!owner) return { allowed: false, reason: 'controller_claim_missing' };
+      if (!controllerTerminalizationAuthorityMatches(owner, input.authority)) {
+        return { allowed: false, reason: 'stale_controller_authority', owner };
+      }
+      const sessions = store.sessions.filter((entry) => entry.workId !== input.workId);
+      write(options, { schemaVersion: 1, updatedAt: now(options), sessions });
+      return { allowed: true, value: undefined, owner };
+    },
+  );
+}
+
 /**
  * Strict claim used for first ownership acquisition and explicit release/reclaim flows.
  * A live claim with any different controller or transport session remains fenced.
