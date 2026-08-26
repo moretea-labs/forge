@@ -545,6 +545,129 @@ describe('mcp http transport', () => {
     }
   });
 
+  test('returns typed capacity backpressure without evicting active SSE requests', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-active-capacity-'));
+    const port = await freePort();
+    let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
+    try {
+      await withTestControllerHome(repoRoot, async (controllerHome) => {
+        mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
+        writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
+        runMcpSetupChatgpt({ repo: repoRoot, port: String(port) });
+        const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
+
+        proc = Bun.spawn(
+          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'planner', '--auth', 'bearer'],
+          {
+            cwd: process.cwd(),
+            stdout: 'ignore',
+            stderr: 'pipe',
+            env: isolatedMcpProcessEnv(controllerHome, {
+              FORGE_MCP_MAX_SESSIONS: '2',
+              FORGE_MCP_MAX_SESSIONS_PER_PRINCIPAL: '2',
+            }),
+          },
+        );
+        await waitForHealth(port);
+
+        const initialize = async (clientName: string): Promise<string> => {
+          const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${token}`,
+              'content-type': 'application/json',
+              accept: 'application/json, text/event-stream',
+            },
+            body: initializeBody(clientName),
+          });
+          expect(response.status).toBe(200);
+          const sessionId = response.headers.get('mcp-session-id');
+          expect(sessionId).toBeTruthy();
+          await response.body?.cancel().catch(() => undefined);
+          return sessionId!;
+        };
+
+        const firstSessionId = await initialize('active-a');
+        const secondSessionId = await initialize('active-b');
+        const firstController = new AbortController();
+        const secondController = new AbortController();
+        const firstStream = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          headers: {
+            authorization: `Bearer ${token}`,
+            'mcp-session-id': firstSessionId,
+            accept: 'text/event-stream',
+          },
+          signal: firstController.signal,
+        });
+        const secondStream = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          headers: {
+            authorization: `Bearer ${token}`,
+            'mcp-session-id': secondSessionId,
+            accept: 'text/event-stream',
+          },
+          signal: secondController.signal,
+        });
+        expect(firstStream.status).toBe(200);
+        expect(secondStream.status).toBe(200);
+        await Bun.sleep(25);
+
+        const saturated = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+          },
+          body: initializeBody('overflow'),
+        });
+        expect(saturated.status).toBe(503);
+        expect(saturated.headers.get('retry-after')).toBe('1');
+        expect(await saturated.json()).toMatchObject({
+          error: 'session_capacity',
+          code: 'MCP_SESSION_CAPACITY',
+          recoverable: true,
+          retryable: true,
+          sessionPreserved: true,
+          action: 'retry',
+        });
+        const saturatedHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
+        expect(saturatedHealth.sessions).toMatchObject({
+          active: 2,
+          activeStreams: 2,
+          evictable: 0,
+          protected: 2,
+          acceptingNewSessions: false,
+        });
+        expect(saturatedHealth.sessions.closed.capacityEviction).toBe(0);
+
+        firstController.abort();
+        await firstStream.body?.cancel().catch(() => undefined);
+        await Bun.sleep(50);
+        const recovered = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+          },
+          body: initializeBody('recovered'),
+        });
+        expect(recovered.status).toBe(200);
+        await recovered.body?.cancel().catch(() => undefined);
+        const recoveredHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
+        expect(recoveredHealth.sessions.active).toBe(2);
+        expect(recoveredHealth.sessions.activeStreams).toBe(1);
+        expect(recoveredHealth.sessions.closed.capacityEviction).toBe(1);
+
+        secondController.abort();
+        await secondStream.body?.cancel().catch(() => undefined);
+      });
+    } finally {
+      await stopMcpServerProcess(proc);
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   test('supports ChatGPT-compatible OAuth authorization flow', async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-oauth-'));
     const port = await freePort();

@@ -110,30 +110,43 @@ describe('MCP session lifecycle registry', () => {
     });
   });
 
-  test('reclaims the oldest stream-only session when global capacity is full', async () => {
+  test('backpressures instead of evicting active streams, then reclaims an idle session', async () => {
     let now = 1_000;
     const registry = new McpSessionRegistry({ maximumSessions: 2, now: () => now });
     const oldest = addSession(registry, 'oldest', { route: '/mcp' });
     registry.beginStream('oldest');
     now += 100;
-    addSession(registry, 'newer', { route: '/mcp-grok', principalId: 'principal-b' });
+    const newer = addSession(registry, 'newer', { route: '/mcp-grok', principalId: 'principal-b' });
     registry.beginStream('newer');
 
+    expect(await registry.reserveForInitialize({
+      principalId: 'principal-c',
+      route: '/mcp',
+    })).toBeUndefined();
+    expect(registry.get('oldest')).toBeDefined();
+    expect(registry.get('newer')).toBeDefined();
+    expect(oldest.closeCalls).toBe(0);
+    expect(newer.closeCalls).toBe(0);
+    expect(registry.snapshot()).toMatchObject({
+      active: 2,
+      maximum: 2,
+      evictable: 0,
+      protected: 2,
+      acceptingNewSessions: false,
+      closed: { capacityEviction: 0 },
+    });
+
+    registry.endStream('oldest');
     const reservation = await registry.reserveForInitialize({
       principalId: 'principal-c',
       route: '/mcp',
     });
     expect(reservation).toBeDefined();
-
     expect(registry.get('oldest')).toBeUndefined();
     expect(registry.get('newer')).toBeDefined();
     expect(oldest.closeCalls).toBe(1);
-    expect(registry.snapshot()).toMatchObject({
-      active: 1,
-      maximum: 2,
-      evictable: 1,
-      closed: { capacityEviction: 1 },
-    });
+    expect(newer.closeCalls).toBe(0);
+    expect(registry.snapshot().closed.capacityEviction).toBe(1);
   });
 
   test('never evicts a session with an active POST', async () => {
