@@ -730,7 +730,15 @@ async function handleMcpPost(
     if (stats.initializing >= MAX_INITIALIZING_SESSIONS || stats.activePosts >= MAX_ACTIVE_POSTS) {
       stats.rejectedOverload += 1;
       res.setHeader('retry-after', '1');
-      res.status(503).json({ error: 'server_busy', message: 'Too many MCP sessions are initializing; retry shortly' });
+      res.status(503).json({
+        error: 'server_busy',
+        code: 'MCP_SERVER_BUSY',
+        message: 'Too many MCP sessions are initializing; retry shortly',
+        recoverable: true,
+        retryable: true,
+        sessionPreserved: true,
+        action: 'retry',
+      });
       return;
     }
     stats.initializing += 1;
@@ -750,7 +758,15 @@ async function handleMcpPost(
       if (!reservationId) {
         stats.rejectedOverload += 1;
         res.setHeader('retry-after', '1');
-        res.status(503).json({ error: 'session_capacity', message: 'All MCP sessions are executing active work; retry shortly' });
+        res.status(503).json({
+          error: 'session_capacity',
+          code: 'MCP_SESSION_CAPACITY',
+          message: 'All MCP sessions are executing active requests; retry shortly',
+          recoverable: true,
+          retryable: true,
+          sessionPreserved: true,
+          action: 'retry',
+        });
         return;
       }
       const sessionContext = createMcpToolContext({
