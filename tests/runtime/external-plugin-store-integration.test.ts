@@ -29,6 +29,7 @@ import {
   clearAssistantPluginManifestCacheForTest,
   controllerPluginRepository,
   executeAssistantPluginAction,
+  finalizeRemoteEffectWorkFromActionReceipt,
   getAssistantPluginManifest,
   listAssistantPluginManifests,
   submitAssistantPluginAction,
@@ -375,7 +376,7 @@ describe('external plugin store integration', () => {
 });
 
 describe('Resend first-party plugin', () => {
-  test('binds a successful typed remote-write receipt to an external-effect-only Work', async () => {
+  test('keeps intermediate typed remote-write receipts durable until an explicit terminal action completes Work', async () => {
     const repoRoot = resendFixture();
     const controllerHome = join(repoRoot, '.controller');
     const initialized = spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, encoding: 'utf8' });
@@ -407,6 +408,19 @@ describe('Resend first-party plugin', () => {
       status: 'running', workKind: 'remote_effect', checks: [],
     });
 
+    const intermediate = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'resend', actionId: 'create_domain', requestId: 'remote-effect-prepare', workId,
+      args: { name: 'confirm.example.test' },
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(intermediate.receipt).toMatchObject({ status: 'succeeded', workId });
+    expect(intermediate.result?.work).toMatchObject({ workId, workKind: 'remote_effect', status: 'running' });
+    expect((intermediate.result?.work as { completionOutcome?: string } | undefined)?.completionOutcome).toBeUndefined();
+    const afterIntermediate = getWorkContract({ controllerHome, repoId: repository.repoId }, workId)!;
+    expect(afterIntermediate).toMatchObject({ status: 'running', workKind: 'remote_effect' });
+    expect(afterIntermediate.completionReceipt).toBeUndefined();
+    expect(afterIntermediate.evidenceRefs.some((evidence) => evidence.evidenceId === intermediate.receipt.receiptId)).toBe(true);
+
     const submitted = await submitAssistantPluginAction(controllerHome, repository, {
       pluginId: 'resend', actionId: 'send_email', requestId: 'remote-effect-send', workId,
       args: { to: ['recipient@example.test'], subject: 'Remote effect receipt', text: 'receipt acceptance' },
@@ -436,6 +450,48 @@ describe('Resend first-party plugin', () => {
     });
     expect(deduplicated.deduplicated).toBe(true);
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.evidenceRefs.filter((evidence) => evidence.evidenceId === submitted.receipt.receiptId)).toHaveLength(1);
+
+    const replayedIntermediate = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'resend', actionId: 'create_domain', requestId: 'remote-effect-prepare', workId,
+      args: { name: 'confirm.example.test' },
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(replayedIntermediate.deduplicated).toBe(true);
+    expect(replayedIntermediate.receipt.receiptId).toBe(intermediate.receipt.receiptId);
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.completionReceipt?.receiptId).toBe(submitted.receipt.receiptId);
+  });
+
+  test('explicit semantic finalization promotes the latest durable intermediate receipt idempotently', async () => {
+    const repoRoot = resendFixture();
+    const controllerHome = join(repoRoot, '.controller');
+    expect(spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, encoding: 'utf8' }).status).toBe(0);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'remote-effect-explicit-finalize' });
+    await executeResendPluginAction({
+      controllerHome, repoId: repository.repoId, repoRoot, pluginId: 'resend', actionId: 'configure', requestId: 'remote-effect-finalize-configure',
+      args: { enabled: true, provider: 'mock', from_email: 'forge@example.test' }, origin: { surface: 'mcp', actor: 'test' },
+    });
+    const started = startGoalWorkloop({
+      workStore: { controllerHome, repoId: repository.repoId }, handoffStore: { controllerHome, repoId: repository.repoId }, repoId: repository.repoId, checkoutId: repository.activeCheckoutId,
+    }, {
+      objective: 'Perform a two-step remote effect and finalize it semantically after confirmation.', acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
+      modeInput: { scopeClear: true, mutation: true, requiresExternalEffect: true, remoteWrite: true, risk: 'remote_write', requiresRecovery: false, requiresWorker: false, requiresApproval: false },
+    });
+    const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
+    const intermediate = await submitAssistantPluginAction(controllerHome, repository, {
+      pluginId: 'resend', actionId: 'create_domain', requestId: 'remote-effect-finalize-prepare', workId,
+      args: { name: 'explicit-finalize.example.test' }, origin: { surface: 'mcp', actor: 'test' },
+    });
+    const beforeFinalize = getWorkContract({ controllerHome, repoId: repository.repoId }, workId)!;
+    expect(beforeFinalize.status).toBe('running');
+    expect(beforeFinalize.completionReceipt).toBeUndefined();
+
+    const completed = finalizeRemoteEffectWorkFromActionReceipt(controllerHome, repository.repoId, workId);
+    expect(completed).toMatchObject({
+      status: 'completed', workKind: 'remote_effect', completionOutcome: 'completed_remote',
+      completionReceipt: { source: 'remote_effect', receiptId: intermediate.receipt.receiptId, actionId: 'create_domain' },
+    });
+    const replayed = finalizeRemoteEffectWorkFromActionReceipt(controllerHome, repository.repoId, workId);
+    expect(replayed.completionReceipt?.receiptId).toBe(intermediate.receipt.receiptId);
   });
 
   test('refuses to bind a remote-write plugin receipt to a repository-change Work before the external effect runs', async () => {
@@ -472,6 +528,7 @@ describe('Resend first-party plugin', () => {
     const send = manifest.actions.find((candidate) => candidate.actionId === 'send_email');
     expect(send?.confirmation).toBe('strong_confirmation');
     expect(send?.requiredConfirmationText).toBe('send-resend-email');
+    expect(send?.remoteEffectWorkCompletion).toBe('terminal');
   });
 
   test('persists only non-secret defaults and derives SMTP readiness from domain verification', async () => {

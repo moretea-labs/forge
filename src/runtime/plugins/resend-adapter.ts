@@ -295,7 +295,7 @@ function actions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'send_email', title: 'Send email with Resend', description: 'Send one email through Resend after strong confirmation.',
       readOnly: false, risk: 'remote_write', confirmation: 'strong_confirmation', requiredConfirmationText: 'send-resend-email',
-      defaultTimeoutMs: 45_000, cancellable: true, idempotent: false, scopes: ['resend.send'], resourceClaims: [{ resource: 'remote', mode: 'exclusive' }],
+      defaultTimeoutMs: 45_000, cancellable: true, idempotent: false, remoteEffectWorkCompletion: 'terminal', scopes: ['resend.send'], resourceClaims: [{ resource: 'remote', mode: 'exclusive' }],
       argumentsSchema: {
         type: 'object',
         properties: {

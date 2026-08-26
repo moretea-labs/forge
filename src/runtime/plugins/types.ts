@@ -54,6 +54,12 @@ export interface AssistantPluginActionDescriptor {
   defaultTimeoutMs: number;
   cancellable: boolean;
   idempotent: boolean;
+  /**
+   * Successful remote-write actions normally append a durable Work receipt only.
+   * Set terminal only when this action itself is authoritative semantic completion
+   * for a bound remote_effect Work.
+   */
+  remoteEffectWorkCompletion?: 'intermediate' | 'terminal';
   executionMode?: 'runtime' | 'lightweight_process';
   foregroundEffect?: AssistantPluginForegroundEffect;
   scopes: string[];

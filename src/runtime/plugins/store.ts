@@ -736,10 +736,55 @@ function remoteEffectWorkForPluginAction(
     throw new Error(`WORK_PLUGIN_RECEIPT_BINDING_CHECKS_PRESENT: ${workId} declares repository checks and cannot be completed by a plugin receipt alone`);
   }
   if (isTerminalWorkContractStatus(work.status)) {
-    if (work.status === 'completed' && receiptId && work.completionReceipt?.receiptId === receiptId) return work;
+    const receiptAlreadyBound = Boolean(receiptId) && (
+      work.completionReceipt?.receiptId === receiptId
+      || work.evidenceRefs.some((evidence) => evidence.evidenceId === receiptId)
+    );
+    if (work.status === 'completed' && receiptAlreadyBound) return work;
     throw new Error(`WORK_PLUGIN_RECEIPT_BINDING_TERMINAL: ${workId} is ${work.status}`);
   }
   return work;
+}
+
+export function finalizeRemoteEffectWorkFromActionReceipt(
+  controllerHome: string,
+  repoId: string,
+  workId: string,
+): WorkContract {
+  const work = getWorkContract({ controllerHome, repoId }, workId);
+  if (!work) throw new Error(`WORK_PLUGIN_RECEIPT_BINDING_NOT_FOUND: ${workId}`);
+  if (work.workKind !== 'remote_effect') {
+    throw new Error(`WORK_REMOTE_EFFECT_FINALIZE_KIND_MISMATCH: ${workId} is ${work.workKind}, expected remote_effect`);
+  }
+  if (work.status === 'completed' && work.completionReceipt?.source === 'remote_effect') return work;
+  if (isTerminalWorkContractStatus(work.status)) {
+    throw new Error(`WORK_REMOTE_EFFECT_FINALIZE_TERMINAL: ${workId} is ${work.status}`);
+  }
+  const receipt = work.evidenceRefs
+    .map((evidence) => evidence.evidenceId ? readPluginActionReceipt(controllerHome, repoId, evidence.evidenceId) : undefined)
+    .find((candidate) => candidate?.workId === workId && candidate.status === 'succeeded');
+  if (!receipt) {
+    throw new Error(`WORK_REMOTE_EFFECT_FINALIZE_RECEIPT_REQUIRED: ${workId} has no successful durable plugin action receipt`);
+  }
+  const remoteReceipt: RemoteEffectCompletionReceipt = {
+    schemaVersion: 1,
+    receiptId: receipt.receiptId,
+    source: 'remote_effect',
+    workId,
+    pluginId: receipt.pluginId,
+    actionId: receipt.actionId,
+    requestId: receipt.requestId,
+    semanticKey: receipt.semanticKey,
+    resultDigest: createHash('sha256').update(JSON.stringify(receipt.result ?? null)).digest('hex'),
+    recordedAt: new Date().toISOString(),
+  };
+  return recordWorkCompletionReceipt(
+    { controllerHome, repoId },
+    workId,
+    remoteReceipt,
+    'completed_remote',
+    'remote_effect',
+  );
 }
 
 function bindRemoteEffectReceiptToWork(
@@ -753,15 +798,17 @@ function bindRemoteEffectReceiptToWork(
   if (receipt.status !== 'succeeded') return remoteEffectWorkForPluginAction(controllerHome, repository, action, request);
   const work = remoteEffectWorkForPluginAction(controllerHome, repository, action, request, receipt.receiptId);
   if (!work) return undefined;
-  if (work.status === 'completed' && work.completionReceipt?.receiptId === receipt.receiptId) return work;
+  if (work.status === 'completed') return work;
+  let updated = work;
   if (!work.evidenceRefs.some((evidence) => evidence.evidenceId === receipt.receiptId)) {
-    appendWorkEvidence({ controllerHome, repoId: repository.repoId }, work.workId, {
+    updated = appendWorkEvidence({ controllerHome, repoId: repository.repoId }, work.workId, {
       evidenceId: receipt.receiptId,
       title: 'typed remote plugin effect completed',
       summary: `${receipt.pluginId}/${receipt.actionId} completed with durable receipt ${receipt.receiptId}.`,
       detailLevel: 'summary',
     });
   }
+  if (action.remoteEffectWorkCompletion !== 'terminal') return updated;
   const remoteReceipt: RemoteEffectCompletionReceipt = {
     schemaVersion: 1,
     receiptId: receipt.receiptId,
@@ -1045,13 +1092,14 @@ export async function submitAssistantPluginAction(
 
     let resultWithLineage = result;
     if (boundRemoteWork) {
+      const terminalRemoteEffect = action.remoteEffectWorkCompletion === 'terminal';
       resultWithLineage = {
         ...result,
         work: {
           workId: boundRemoteWork.workId,
           workKind: 'remote_effect',
-          completionOutcome: 'completed_remote',
-          status: 'completed',
+          ...(terminalRemoteEffect ? { completionOutcome: 'completed_remote' as const } : {}),
+          status: terminalRemoteEffect ? 'completed' : 'running',
         },
       };
     }

@@ -107,7 +107,7 @@ import {
 } from '../../../cli/controller/runtime-config';
 import { redactMcpText } from '../../../cli/mcp/redaction';
 import { resolveLocalBridgeSurface, summarizeRecentJobs } from '../../shared/local-bridge-surface';
-import { assistantPluginScope, controllerPluginRepository, executeAssistantPluginReadDirect, getAssistantPluginManifest, isDirectPluginReadAction, listAssistantPluginManifests, submitAssistantPluginAction } from '../../plugins/store';
+import { assistantPluginScope, controllerPluginRepository, executeAssistantPluginReadDirect, finalizeRemoteEffectWorkFromActionReceipt, getAssistantPluginManifest, isDirectPluginReadAction, listAssistantPluginManifests, submitAssistantPluginAction } from '../../plugins/store';
 import { startLightweightPluginAction, waitLightweightPluginAction } from '../../plugins/lightweight-action';
 import { mcpPluginExecutionOrigin } from '../../plugins/execution-origin';
 import {
@@ -4714,6 +4714,18 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               before = getWorkContract(store, workId);
             } catch (error) {
               const blocked = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Historical Work delivery reconciliation failed.', data: { workId, lifecycleClosed: false } });
+              return result(blocked as unknown as Record<string, unknown>, true);
+            }
+          }
+          if (before?.workKind === 'remote_effect' && !before.completionReceipt) {
+            try {
+              before = finalizeRemoteEffectWorkFromActionReceipt(ctx.controllerHome, repository.repoId, workId);
+            } catch (error) {
+              const blocked = buildFacadeResult({
+                status: 'blocked',
+                summary: error instanceof Error ? error.message : 'Remote-effect semantic finalization failed.',
+                data: { workId, lifecycleClosed: false },
+              });
               return result(blocked as unknown as Record<string, unknown>, true);
             }
           }
