@@ -1,15 +1,12 @@
-name: Forge Cloud Maintainer
+name: Forge Cloud Maintainer (manual fallback)
 
 on:
   workflow_dispatch:
-  schedule:
-    # GitHub-hosted jobs cannot run forever. Renew the same dedicated tunnel
-    # before the current ~5h45m host reaches the 6h hosted-runner ceiling.
-    - cron: '17 */5 * * *'
 
+# The persistent Forge Cloud VM owns the dedicated tunnel. Keep this workflow
+# only as an explicitly invoked recovery fallback; never renew it on a schedule.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   # Never intentionally run two writers against the dedicated tunnel until
