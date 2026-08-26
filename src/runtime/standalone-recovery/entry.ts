@@ -310,6 +310,10 @@ function publicOrigin(request: IncomingMessage, config?: Pick<RecoveryConfig, 'r
   return `${url.protocol}//${url.host}`;
 }
 
+function recoveryAuthorizationServer(request: IncomingMessage, config: Pick<RecoveryConfig, 'recoveryPublicUrl'>): string {
+  return `${publicOrigin(request, config)}/recovery`;
+}
+
 function resourcePathFromRequest(_request: IncomingMessage): '/recovery/mcp' {
   // Tailscale Serve path-prefix handlers strip the public prefix before
   // proxying to this process. The externally configured Recovery Connector is
@@ -323,8 +327,9 @@ function recoveryResource(request: IncomingMessage, config: Pick<RecoveryConfig,
 
 function recoveryAuthorizationServerMetadata(request: IncomingMessage, config: Pick<RecoveryConfig, 'recoveryPublicUrl'>): Record<string, unknown> {
   const origin = publicOrigin(request, config);
+  const authorizationServer = recoveryAuthorizationServer(request, config);
   return {
-    issuer: origin,
+    issuer: authorizationServer,
     authorization_endpoint: `${origin}/recovery/oauth/authorize`,
     token_endpoint: `${origin}/recovery/oauth/token`,
     registration_endpoint: `${origin}/recovery/oauth/register`,
@@ -340,7 +345,7 @@ function recoveryProtectedResourceMetadata(request: IncomingMessage, config: Pic
   const origin = publicOrigin(request, config);
   return {
     resource: recoveryResource(request, config),
-    authorization_servers: [origin],
+    authorization_servers: [recoveryAuthorizationServer(request, config)],
     scopes_supported: [RECOVERY_OAUTH_SCOPE],
     bearer_methods_supported: ['header'],
     resource_documentation: `${origin}/recovery/health`,
@@ -454,6 +459,8 @@ function isOAuthMetadataPath(request: IncomingMessage): boolean {
     || path === '/.well-known/openid-configuration'
     || path === '/oauth-authorization-server'
     || path === '/openid-configuration'
+    || path === '/.well-known/oauth-authorization-server/recovery'
+    || path === '/.well-known/openid-configuration/recovery'
     || path === '/recovery/.well-known/oauth-authorization-server'
     || path === '/recovery/.well-known/openid-configuration';
 }
