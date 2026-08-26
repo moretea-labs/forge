@@ -333,15 +333,7 @@
       "module": "browser",
       "resource": "controller-home-isolated"
     },
-    "tests/runtime/macos-capability-broker.test.ts": {
-      "module": "browser",
-      "resource": "temp-isolated"
-    },
     "tests/runtime/canonical-single-runtime.test.ts": {
-      "module": "controller",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/controller-home-migration.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
     },
@@ -372,6 +364,10 @@
     "tests/runtime/control-plane-hardening.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
+    },
+    "tests/runtime/controller-home-migration.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
     },
     "tests/runtime/controller-session-store.test.ts": {
       "module": "controller",
@@ -421,10 +417,6 @@
       "module": "controller",
       "resource": "process-tree"
     },
-    "tests/runtime/generated-cache-retention.test.ts": {
-      "module": "process-runtime",
-      "resource": "temp-isolated"
-    },
     "tests/runtime/facade-contracts.test.ts": {
       "module": "workflow",
       "resource": "pure"
@@ -437,8 +429,8 @@
       "module": "release",
       "resource": "temp-isolated"
     },
-    "tests/runtime/package-runtime-release.test.ts": {
-      "module": "release",
+    "tests/runtime/generated-cache-retention.test.ts": {
+      "module": "process-runtime",
       "resource": "temp-isolated"
     },
     "tests/runtime/git-executable-and-workspace.test.ts": {
@@ -456,6 +448,10 @@
     "tests/runtime/github-issue-watch.test.ts": {
       "module": "workflow",
       "resource": "pure"
+    },
+    "tests/runtime/governance-rule-resolution.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
     },
     "tests/runtime/handoff-inbox-authority.test.ts": {
       "module": "controller",
@@ -485,6 +481,10 @@
       "module": "controller",
       "resource": "temp-isolated"
     },
+    "tests/runtime/macos-capability-broker.test.ts": {
+      "module": "browser",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/managed-process-plugin.test.ts": {
       "module": "controller",
       "resource": "process-tree"
@@ -492,6 +492,10 @@
     "tests/runtime/mcp-transport-benchmark.test.ts": {
       "module": "process-runtime",
       "resource": "pure"
+    },
+    "tests/runtime/package-runtime-release.test.ts": {
+      "module": "release",
+      "resource": "temp-isolated"
     },
     "tests/runtime/pending-continuation-activation.test.ts": {
       "module": "workflow",

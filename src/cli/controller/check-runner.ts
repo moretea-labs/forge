@@ -26,6 +26,18 @@ export interface ControllerCheckEffects {
   hostServices?: string[];
 }
 
+export type ControllerCheckCostClass = 'L0' | 'L1' | 'L2' | 'L3' | 'L4';
+export type ControllerCheckRiskFloor = 'readonly' | 'low' | 'medium' | 'high' | 'destructive';
+export type ControllerCheckPhase = 'pre_edit' | 'post_edit' | 'pre_finalize' | 'release';
+
+export interface ControllerCheckSelection {
+  /** Execution cost only; it does not lower severity or automatically run the check. */
+  costClass: ControllerCheckCostClass;
+  /** Lowest change-risk band where this check is normally useful when selected mechanically. */
+  riskFloor: ControllerCheckRiskFloor;
+  phases: ControllerCheckPhase[];
+}
+
 export interface ControllerCheck {
   id: string;
   description: string;
@@ -34,6 +46,8 @@ export interface ControllerCheck {
   timeoutMs: number;
   source: 'repo-config' | 'package-script';
   effects?: ControllerCheckEffects;
+  /** Selection/preflight metadata; intentionally excluded from physical execution identity. */
+  selection?: ControllerCheckSelection;
 }
 
 export interface ControllerCheckSnapshot extends ControllerCheck {
@@ -69,6 +83,7 @@ interface CheckConfig {
     cwd?: string;
     timeoutMs?: number;
     effects?: unknown;
+    selection?: unknown;
   }>;
 }
 
@@ -182,6 +197,60 @@ function normalizeCheckEffects(repoRoot: string, value: unknown): ControllerChec
   };
 }
 
+const CHECK_COST_CLASSES = ['L0', 'L1', 'L2', 'L3', 'L4'] as const;
+const CHECK_RISK_FLOORS = ['readonly', 'low', 'medium', 'high', 'destructive'] as const;
+const CHECK_PHASES = ['pre_edit', 'post_edit', 'pre_finalize', 'release'] as const;
+
+function inferredCheckSelection(name: string): ControllerCheckSelection {
+  const normalized = name.trim().toLowerCase().replace(/^package:/, '');
+  if (/(?:^|:)(?:check:)?release$|full[-:]?regression/.test(normalized)) {
+    return { costClass: 'L4', riskFloor: 'high', phases: ['release'] };
+  }
+  if (/(?:^|:)(?:check:)?main$|(?:^|:)ci(?::|$)/.test(normalized)) {
+    return { costClass: 'L4', riskFloor: 'medium', phases: ['pre_finalize'] };
+  }
+  if (/(?:^|:)(?:browser-live|performance|journey)(?::|$)/.test(normalized)) {
+    return { costClass: 'L3', riskFloor: 'medium', phases: ['pre_finalize'] };
+  }
+  if (/(?:^|:)(?:integration|build)(?::|$)/.test(normalized) || normalized === 'test') {
+    return { costClass: 'L2', riskFloor: 'medium', phases: ['post_edit', 'pre_finalize'] };
+  }
+  if (/(?:^|:)(?:architecture-sync|check-scheduling|context-files|bootstrap-files|background-check-overlap)$/.test(normalized)) {
+    return { costClass: 'L0', riskFloor: 'low', phases: ['post_edit'] };
+  }
+  return { costClass: 'L1', riskFloor: 'low', phases: ['post_edit'] };
+}
+
+function normalizeCheckSelection(value: unknown, id: string): ControllerCheckSelection {
+  const fallback = inferredCheckSelection(id);
+  if (value === undefined) return fallback;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('check selection must be an object');
+  const raw = value as Record<string, unknown>;
+  const unsupported = Object.keys(raw).filter((key) => !['costClass', 'cost_class', 'riskFloor', 'risk_floor', 'phases'].includes(key));
+  if (unsupported.length > 0) throw new Error(`unsupported check selection field(s): ${unsupported.join(', ')}`);
+  const cost = raw.costClass ?? raw.cost_class;
+  const risk = raw.riskFloor ?? raw.risk_floor;
+  const phases = raw.phases;
+  if (cost !== undefined && (typeof cost !== 'string' || !CHECK_COST_CLASSES.includes(cost as ControllerCheckCostClass))) {
+    throw new Error(`check selection.costClass must be one of: ${CHECK_COST_CLASSES.join(', ')}`);
+  }
+  if (risk !== undefined && (typeof risk !== 'string' || !CHECK_RISK_FLOORS.includes(risk as ControllerCheckRiskFloor))) {
+    throw new Error(`check selection.riskFloor must be one of: ${CHECK_RISK_FLOORS.join(', ')}`);
+  }
+  if (phases !== undefined && (!Array.isArray(phases) || phases.length === 0 || phases.some((entry) => typeof entry !== 'string' || !CHECK_PHASES.includes(entry as ControllerCheckPhase)))) {
+    throw new Error(`check selection.phases must contain one or more of: ${CHECK_PHASES.join(', ')}`);
+  }
+  return {
+    costClass: (cost as ControllerCheckCostClass | undefined) ?? fallback.costClass,
+    riskFloor: (risk as ControllerCheckRiskFloor | undefined) ?? fallback.riskFloor,
+    phases: phases ? [...new Set(phases as ControllerCheckPhase[])] : fallback.phases,
+  };
+}
+
+export function controllerCheckSelection(check: Pick<ControllerCheck, 'id' | 'selection'>): ControllerCheckSelection {
+  return check.selection ?? inferredCheckSelection(check.id);
+}
+
 function inferredPackageCheckEffects(name: string): ControllerCheckEffects | undefined {
   const normalized = name.trim().toLowerCase();
   const staticAnalysis = /(?:^|:)(?:type|typecheck|lint|format:check|runtime-architecture|mcp-compatibility|forge-runtime)$/.test(normalized);
@@ -220,6 +289,7 @@ function configuredChecks(repoRoot: string): ControllerCheck[] {
       timeoutMs: boundedTimeout(value.timeoutMs),
       source: 'repo-config' as const,
       effects: normalizeCheckEffects(repoRoot, value.effects),
+      selection: normalizeCheckSelection(value.selection, id),
     }];
   });
 }
@@ -243,6 +313,7 @@ function packageChecks(repoRoot: string): ControllerCheck[] {
       timeoutMs: packageScriptTimeoutMs(name),
       source: 'package-script' as const,
       effects: inferredPackageCheckEffects(name),
+      selection: inferredCheckSelection(name),
     }];
   });
 }
@@ -380,6 +451,7 @@ function validateControllerCheckSnapshot(repoRoot: string, snapshot: ControllerC
     timeoutMs: boundedTimeout(snapshot.timeoutMs),
     source: snapshot.source,
     effects: normalizeCheckEffects(repoRoot, snapshot.effects),
+    selection: normalizeCheckSelection(snapshot.selection, snapshot.id),
   };
 }
 

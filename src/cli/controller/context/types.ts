@@ -3,13 +3,18 @@ import type { CodeGraphIndexMetadata, CodeGraphNodeSummary, CodeGraphReadProvide
 import type { queryCodeGraphReadProvider } from '../../../runtime/context/codegraph-read-provider';
 import type { MaterializedSourceSnippet } from './source-materializer';
 
-export const CONTEXT_PACK_SCHEMA_VERSION = 8;
+export const CONTEXT_PACK_SCHEMA_VERSION = 9;
 export type StructuralContextMode = 'off' | 'auto' | 'required';
 export type ControllerContextRetrievalMode = 'implementation' | 'plan' | 'debug' | 'review';
 export const CONTROLLER_CONTEXT_IMPACT_DOMAINS = [
   'persistence', 'scheduler', 'notification', 'timeline', 'events', 'cache', 'api', 'concurrency',
 ] as const;
 export type ControllerContextImpactDomain = (typeof CONTROLLER_CONTEXT_IMPACT_DOMAINS)[number];
+export type GovernanceRuleLevel = 'kernel' | 'capability' | 'platform' | 'project';
+export type GovernanceRuleSeverity = 'info' | 'warning' | 'error';
+export type GovernanceCheckCostClass = 'L0' | 'L1' | 'L2' | 'L3' | 'L4';
+export type GovernanceCheckRiskFloor = 'readonly' | 'low' | 'medium' | 'high' | 'destructive';
+export type GovernanceCheckPhase = 'pre_edit' | 'post_edit' | 'pre_finalize' | 'release';
 
 export interface ControllerContextPackOptions {
   description?: string;
@@ -83,6 +88,59 @@ export interface ControllerContextPackProjection {
     coverageGaps: string[];
     truncated: boolean;
   };
+  governanceContext: {
+    status: 'none' | 'ready' | 'degraded';
+    authority: 'repository_rule_registry';
+    registry: { rulesPath: string; exceptionsPath: string };
+    activeRules: Array<{
+      id: string;
+      title: string;
+      level: GovernanceRuleLevel;
+      severity: GovernanceRuleSeverity;
+      invariant: string;
+      owner?: string;
+      version?: number;
+      matchedPaths: string[];
+      matchedSignals: string[];
+      checkIds: string[];
+      partialExceptionIds: string[];
+      suppressedPaths: string[];
+    }>;
+    suppressedRules: Array<{
+      id: string;
+      title: string;
+      level: GovernanceRuleLevel;
+      severity: GovernanceRuleSeverity;
+      invariant: string;
+      owner?: string;
+      version?: number;
+      matchedPaths: string[];
+      matchedSignals: string[];
+      checkIds: string[];
+      partialExceptionIds: string[];
+      suppressedPaths: string[];
+      exceptionIds: string[];
+    }>;
+    recommendedCheckIds: string[];
+    recommendedChecks: Array<{
+      checkId: string;
+      ruleIds: string[];
+      available: boolean;
+      costClass?: GovernanceCheckCostClass;
+      riskFloor?: GovernanceCheckRiskFloor;
+      phases?: GovernanceCheckPhase[];
+    }>;
+    expiredExceptionIds: string[];
+    coverageGaps: string[];
+    metrics: {
+      rulesLoaded: number;
+      rulesEvaluated: number;
+      exceptionsLoaded: number;
+      filesScanned: number;
+      bytesScanned: number;
+      elapsedMs: number;
+    };
+  };
   structuralContext: {
     provider: 'codegraph';
     requestedMode: StructuralContextMode;
@@ -151,6 +209,7 @@ export interface ControllerContextPackProjection {
     structural: number;
     lexical: number;
     materialization: number;
+    governance: number;
     total: number;
     parallelFirstPass?: boolean;
     parallelPrefetch?: number;
