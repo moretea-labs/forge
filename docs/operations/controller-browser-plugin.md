@@ -51,6 +51,23 @@ Session metadata is reusable across actions via `session_id`. Any action that re
 - CDP browsers are disconnected after the action; Apple Events keeps plugin-owned session tabs open until `close_session`/`close_page` while preserving user-owned tabs; managed contexts are closed after the action. Standard native DOM reads/interactions do not foreground the owned tab and return DOM evidence instead of attempting a screenshot.
 - Health `userFacingStatus` reports `ready`, `session active`, or setup states.
 
+## Browser Runtime V2 migration contract
+
+The current provider implementations are being migrated behind the accepted Browser Runtime V2 contract in [`../architecture/decisions/20260826-browser-runtime-v2.md`](../architecture/decisions/20260826-browser-runtime-v2.md).
+
+The migration changes the internal execution model without changing the public Browser action IDs:
+
+- controller-home BrowserSession state is the only durable browser-session authority;
+- exact provider/resource identity is stable while URL/title are mutable observations;
+- provider routing is capability-based instead of fallback-by-exception;
+- a warm provider handle is reusable across bounded actions and full rediscovery is exceptional;
+- mutations compile to provider-local `observe -> act -> verify` transactions;
+- raw Apple Events / AX / socket / CGEvent success is not accepted as mutation success without postcondition evidence;
+- typed browser-internal capabilities are preferred for bookmarks/tabs/downloads instead of driving `chrome://` UI;
+- foreground physical input is an explicit last-resort capability, never an implicit generic interaction fallback.
+
+The end-state warm-path budgets are one provider RPC with p95 targets of 350 ms for reads, 600 ms for DOM interaction plus verification, and 700 ms for typed browser-internal-resource operations. Explicit physical-input fallback targets p95 <= 1500 ms and is foreground-capable only when requested. Cold rebind may use at most two provider calls. Fixed sleeps are compatibility behavior, not synchronization authority.
+
 ## Configuration
 
 The source of truth is `.forge/plugins/browser.json`.

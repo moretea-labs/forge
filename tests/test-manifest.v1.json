@@ -325,6 +325,10 @@
       "module": "ios",
       "resource": "temp-isolated"
     },
+    "tests/runtime/browser-runtime-contract.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
     "tests/runtime/browser-schedule-probe.test.ts": {
       "module": "workflow",
       "resource": "pure"

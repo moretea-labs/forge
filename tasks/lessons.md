@@ -60,3 +60,10 @@
 - Mistake pattern: Verifying an executable from an interactive shell and assuming the same interpreter resolution exists for launchd/systemd persistence.
 - Prevention rule: Materialized script entrypoints for persistent services must pin the absolute, validated installer/runtime executable or declare an explicit interpreter in the service contract. Regression tests must execute with the service manager's minimal PATH, not the developer shell PATH.
 - Where to apply next time: package Runtime/Connector launchers, launchd and systemd service rendering, package install/update cutover, and whole-Runtime activation verification.
+
+## A running cloud VM is not a healthy Forge execution node
+- Date: 2026-08-26
+- Triggered by correction: The Google Cloud `forge-cloud` e2-micro remained `RUNNING`, but Forge_Cloud calls alternated between Secure Tunnel HTTP 404/429, direct SSH and IAP SSH failed, and serial logs showed repeated WARP main-loop watchdog hangs, QUIC idle timeout, NTP timeout, and journald watchdog restarts.
+- Mistake pattern: Treating provider instance state and an occasionally live proxy tunnel as evidence that remote Forge hosting improves availability or performance.
+- Prevention rule: The Google Cloud `forge-cloud` VM is retired and must not be restarted or reused. A future remote Forge maintainer needs an independently benchmarked host/transport, stable management access, stable MCP/tunnel health, and measured latency/reliability that beats the local Forge path before adoption.
+- Where to apply next time: Cloud maintainer experiments, Secure Tunnel hosting, VM/provider selection, recovery automation, and any decision to move Forge source maintenance away from the local canonical Runtime.

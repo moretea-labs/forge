@@ -1,4 +1,4 @@
 interface:
   display_name: "forge"
   short_description: "Operate Forge workflows for repository planning, execution, verification, migration, audit, and repair"
-  default_prompt: "Use Forge to inspect this repository, choose the smallest appropriate workflow, and carry out or plan the requested work with bounded evidence and verification."
+  default_prompt: "Use Forge to inspect this repository, choose the smallest appropriate workflow, and carry out or plan the requested work with bounded evidence and verification. After verified repository delivery, promptly push the committed/merged target branch to its configured remote unless the user explicitly requested local-only delivery or the push is blocked; report any blocker precisely."

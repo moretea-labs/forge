@@ -90,6 +90,14 @@ Explicit **Scale** is the opt-in coordination form of this existing model, not a
 
 Typed provider/plugin actions should use Forge capability/resource semantics directly instead of hiding host/browser/device operations inside arbitrary repository shell commands. Built-in providers may remain inside Forge when they are tightly coupled to Controller policy and lifecycle; independent products/providers retain independent release boundaries and integrate through the Plugin Protocol.
 
+## Browser Runtime V2 transition contract
+
+Browser automation is converging on the accepted [`Browser Runtime V2`](decisions/20260826-browser-runtime-v2.md) architecture. Controller-home BrowserSession state is the sole durable browser-session authority. Stable provider/resource identity is distinct from mutable observed URL/title; providers may retain ephemeral live handles only as acceleration state.
+
+Browser providers are selected by declared capability. Common DOM and typed browser-internal operations must remain background-safe. Foreground presentation is an explicit effect reserved for capabilities that truly require physical pointer/keyboard input or human handoff. Mutating provider actions are complete only when their declared postconditions are verified; transport, Apple Events, Accessibility or CGEvent success alone is not semantic completion.
+
+During migration, the existing Browser public action surface remains compatible while legacy Playwright/CDP/native paths are compiled toward the V2 provider contract. No new Browser durable authority or implicit foreground fallback may be introduced.
+
 ## Testing and verification
 
 Tests are verification evidence, not an alternate architecture authority.

@@ -3,8 +3,10 @@ name: Forge Cloud Maintainer (manual fallback)
 on:
   workflow_dispatch:
 
-# The persistent Forge Cloud VM owns the dedicated tunnel. Keep this workflow
-# only as an explicitly invoked recovery fallback; never renew it on a schedule.
+# The Google Cloud `forge-cloud` VM experiment was retired on 2026-08-26 after
+# repeated tunnel and SSH instability. Keep this GitHub-hosted workflow only as
+# an explicitly invoked diagnostic fallback; never schedule it or treat it as
+# permanent Forge Cloud hosting.
 permissions:
   contents: read
 
