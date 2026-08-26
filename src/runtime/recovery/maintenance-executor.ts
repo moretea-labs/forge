@@ -49,6 +49,7 @@ export type RuntimeMaintenanceCandidateKind =
 export interface RuntimeMaintenanceRepository {
   repoId: string;
   canonicalRoot: string;
+  defaultBranch?: string;
   /** Test-only or embedded-runtime override. Production defaults to system temp roots. */
   runtimeTempRoots?: string[];
 }
@@ -90,7 +91,8 @@ export interface RuntimeMaintenanceCandidate {
   sourceControllerHome?: string;
   objective?: string;
   continuationPrompt?: string;
-  disposition?: 'resume_or_supersede_review' | 'completion_reconciliation' | 'ownership_reconciliation';
+  disposition?: 'resume_or_supersede_review' | 'completion_reconciliation' | 'ownership_reconciliation' | 'source_preservation_required';
+  sourceState?: 'no_managed_source' | 'clean_integrated' | 'dirty_worktree' | 'unintegrated_commits' | 'source_state_unknown';
 }
 
 export interface RuntimeMaintenanceSummary {
@@ -473,6 +475,121 @@ function looksLikeForgeManagedWorktree(path: string): boolean {
     || normalized.includes('/managed-worktrees/repo_');
 }
 
+type StaleWorkSourceState = NonNullable<RuntimeMaintenanceCandidate['sourceState']>;
+
+interface StaleWorkSourceInspection {
+  safeToCancel: boolean;
+  state: StaleWorkSourceState;
+  path?: string;
+  detail: string;
+}
+
+function inspectStaleWorkRepositorySource(
+  repository: RuntimeMaintenanceRepository,
+  contract: WorkContract,
+): StaleWorkSourceInspection {
+  const recordedPath = contract.worktreeRef?.trim();
+  if (!recordedPath) {
+    return {
+      safeToCancel: true,
+      state: 'no_managed_source',
+      detail: 'Work has no recorded managed worktree source.',
+    };
+  }
+  const path = resolve(recordedPath);
+  if (!looksLikeForgeManagedWorktree(path)) {
+    return {
+      safeToCancel: true,
+      state: 'no_managed_source',
+      path,
+      detail: 'Recorded Work path is not a Forge-managed worktree and is not disposable maintenance source.',
+    };
+  }
+  if (!existsSync(path)) {
+    return {
+      safeToCancel: false,
+      state: 'source_state_unknown',
+      path,
+      detail: 'Recorded managed worktree path is absent, so maintenance cannot prove that no unique branch/source remains recoverable through Git or checkout metadata; destructive stale-Work cancellation is fenced.',
+    };
+  }
+
+  const status = runProcess('git', ['status', '--porcelain', '--untracked-files=all'], {
+    cwd: path,
+    timeoutMs: 10_000,
+    maxOutputBytes: 500_000,
+  });
+  if (!status.ok) {
+    return {
+      safeToCancel: false,
+      state: 'source_state_unknown',
+      path,
+      detail: `Managed worktree source state could not be read (${status.stderr || 'git status failed'}); destructive stale-Work cancellation is fenced.`,
+    };
+  }
+  if (status.stdout.trim()) {
+    return {
+      safeToCancel: false,
+      state: 'dirty_worktree',
+      path,
+      detail: 'Managed worktree contains uncommitted or untracked repository source; durable metadata/process evidence is not a substitute for preserving the live source checkout.',
+    };
+  }
+
+  const head = runProcess('git', ['rev-parse', 'HEAD'], {
+    cwd: path,
+    timeoutMs: 10_000,
+    maxOutputBytes: 100_000,
+  });
+  const targetBranch = repository.defaultBranch?.trim() || 'main';
+  const target = runProcess('git', ['rev-parse', '--verify', `refs/heads/${targetBranch}`], {
+    cwd: repository.canonicalRoot,
+    timeoutMs: 10_000,
+    maxOutputBytes: 100_000,
+  });
+  if (!head.ok || !head.stdout.trim() || !target.ok || !target.stdout.trim()) {
+    return {
+      safeToCancel: false,
+      state: 'source_state_unknown',
+      path,
+      detail: `Managed worktree HEAD or target branch ${targetBranch} could not be resolved; destructive stale-Work cancellation is fenced.`,
+    };
+  }
+  const unique = runProcess('git', ['rev-list', '--count', `${target.stdout.trim()}..${head.stdout.trim()}`], {
+    cwd: repository.canonicalRoot,
+    timeoutMs: 10_000,
+    maxOutputBytes: 100_000,
+  });
+  if (!unique.ok || !/^\d+$/.test(unique.stdout.trim())) {
+    return {
+      safeToCancel: false,
+      state: 'source_state_unknown',
+      path,
+      detail: 'Managed worktree unique-commit state could not be proven; destructive stale-Work cancellation is fenced.',
+    };
+  }
+  if (Number(unique.stdout.trim()) > 0) {
+    return {
+      safeToCancel: false,
+      state: 'unintegrated_commits',
+      path,
+      detail: `Managed worktree HEAD has ${unique.stdout.trim()} commit(s) not reachable from ${targetBranch}; explicit semantic adoption or cleanup authority is required.`,
+    };
+  }
+  return {
+    safeToCancel: true,
+    state: 'clean_integrated',
+    path,
+    detail: `Managed worktree is clean and its HEAD is already reachable from ${targetBranch}.`,
+  };
+}
+
+function staleWorkCandidateReason(source: StaleWorkSourceInspection): string {
+  return source.safeToCancel
+    ? `Nonterminal WorkContract exceeded the explicit maintenance age threshold and has no active Plan, Requirement, Schedule, or Controller authority. ${source.detail} Explicit full maintenance may cancel Work metadata while retaining durable evidence.`
+    : `Protected stale Work: no active lifecycle authority remains, but repository source preservation is required. ${source.detail} The Work must remain nonterminal until source is explicitly adopted, delivered, or cleanup is semantically authorized.`;
+}
+
 function scanRetainedWorktreeCandidates(
   repository: RuntimeMaintenanceRepository,
   controllerHome: string,
@@ -616,19 +733,23 @@ function scanStaleWorkContractCandidates(
       // A live Plan/Requirement/Schedule/Controller reference is lifecycle authority,
       // not maintenance debt. Keep the Work fenced until that authority disappears;
       // if it later becomes unowned, the next scan will surface it as stale.
-      return authorityRefs.length > 0 ? [] : [{ contract, ageMinutes }];
+      if (authorityRefs.length > 0) return [];
+      return [{ contract, ageMinutes, source: inspectStaleWorkRepositorySource(repository, contract) }];
     })
     .sort((left, right) => right.ageMinutes - left.ageMinutes)
     .slice(0, options.maxCandidates)
-    .map(({ contract, ageMinutes }) => ({
+    .map(({ contract, ageMinutes, source }) => ({
       kind: 'stale_work_contract' as const,
       id: contract.workId,
+      path: source.path,
       status: contract.status,
-      safe: true,
-      reason: 'Nonterminal WorkContract exceeded the explicit maintenance age threshold and has no active Plan, Requirement, Schedule, or Controller authority; explicit full maintenance may cancel it while retaining evidence.',
+      safe: source.safeToCancel,
+      reason: staleWorkCandidateReason(source),
       ageMinutes,
       suggestedAction: 'full_maintenance_pass' as const,
       ownershipStatus: 'explicit' as const,
+      sourceState: source.state,
+      disposition: source.safeToCancel ? undefined : ('source_preservation_required' as const),
     }));
 }
 
@@ -649,14 +770,39 @@ export function applyStaleWorkContractMaintenanceCandidate(
       result: `work_authority_became_active:${authorityRefs.join(',')}`,
     };
   }
+  // Discovery and mutation are separated by an arbitrary Controller/MCP delay.
+  // Re-probe the live worktree so a successful write or commit after the scan
+  // cannot race stale maintenance into terminalizing unique repository source.
+  const source = inspectStaleWorkRepositorySource(repository, work);
+  if (!source.safeToCancel) {
+    return {
+      ...candidate,
+      path: source.path ?? candidate.path,
+      safe: false,
+      reason: staleWorkCandidateReason(source),
+      sourceState: source.state,
+      disposition: 'source_preservation_required',
+      applied: false,
+      result: `work_source_preserved:${source.state}`,
+    };
+  }
   transitionWorkContractPhase({ controllerHome, repoId: repository.repoId }, work.workId, {
     phase: 'cleanup',
     status: 'cancelled',
     state: 'skipped',
-    summary: 'Cancelled by explicit full maintenance stale Work cleanup; durable evidence retained.',
+    summary: 'Cancelled by explicit full maintenance stale Work cleanup after proving no unique live repository source; durable evidence retained.',
     evidenceRefs: work.evidenceRefs,
   });
-  return { ...candidate, applied: true, result: 'work_contract_cancelled_evidence_retained' };
+  return {
+    ...candidate,
+    path: source.path ?? candidate.path,
+    safe: true,
+    reason: staleWorkCandidateReason(source),
+    sourceState: source.state,
+    disposition: undefined,
+    applied: true,
+    result: 'work_contract_cancelled_evidence_retained',
+  };
 }
 
 function scanStaleEditSessionCandidates(

@@ -329,6 +329,10 @@
       "module": "browser",
       "resource": "pure"
     },
+    "tests/runtime/browser-runtime-v3.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
     "tests/runtime/browser-schedule-probe.test.ts": {
       "module": "workflow",
       "resource": "pure"

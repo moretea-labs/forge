@@ -1428,11 +1428,16 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
         break;
       }
       process = executed.process!;
+      const launchedRecord = getProcessRecord(ctx.controllerHome, handle.repositoryId, process.processId);
       validationRun = {
         ...validationRun,
         processes: {
           ...validationRun.processes,
-          [checkId]: { processId: process.processId, requestId: processRequestId },
+          [checkId]: {
+            processId: process.processId,
+            requestId: processRequestId,
+            ...(launchedRecord?.checkExecution ? { checkExecution: { ...launchedRecord.checkExecution } } : {}),
+          },
         },
       };
       current = transitionWorkHandle(ctx.controllerHome, current, 'validating', { validationRun });
@@ -1446,12 +1451,23 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       checks.push({ checkId, ok: false, status: 'infrastructure_failure', summary: `Validation process record is unavailable: ${process.processId}` });
       break;
     }
+    const boundCheckExecution = validationRun.processes[checkId]?.checkExecution;
     const receipt = processCheckCompletionReceipt(record, {
       repoId: handle.repositoryId,
       checkoutId: handle.checkoutId,
       workId: handle.workId,
       checkId,
       processId: process.processId,
+      ...(boundCheckExecution ? {
+        checkExecution: {
+          cacheKey: boundCheckExecution.cacheKey,
+          revision: boundCheckExecution.revision,
+          definitionDigest: boundCheckExecution.definitionDigest,
+          environmentFingerprint: boundCheckExecution.environmentFingerprint,
+          timeoutMs: boundCheckExecution.timeoutMs,
+          scopeKey: boundCheckExecution.scopeKey,
+        },
+      } : {}),
     });
     const terminalEvidence = classifyPersistedCheckTerminalEvidence(record, checkId);
     const infrastructureFailed = receipt.timedOut
