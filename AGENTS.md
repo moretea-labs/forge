@@ -43,6 +43,7 @@ Treat ChatGPT as the controller and Forge as its repository execution layer. Cha
 
 ## Operating Rules
 
+- After a managed repository change is verified and committed/merged, push the delivered target branch to its configured remote promptly. Do not leave a successfully delivered commit only on local refs unless the user explicitly requested local-only delivery or the push is blocked by safety, permissions, authentication, or branch policy; surface the exact blocker when a push cannot complete.
 - Sync `tasks/` whenever substantive repo changes are made.
 - Use `tasks/notes/<plan-stem>.notes.md` only for non-obvious slice decisions, deviations, tradeoffs, and open questions; `<plan-stem>` is the active plan filename without `plan-` and `.md` (for example `20260531-0045-governance-workflow`). Do not use notes as durable memory or a task log, and archive/promote them deliberately when the slice closes.
 - Treat hook execution as central-first: trusted repos run `~/.forge/hooks/` (bash shim) or the packaged CLI copy; this self-host repo pins `"hook_source": "repo"` in `.ai/harness/policy.json` so `.ai/hooks/` stays the live development runtime, with `assets/hooks/` as the product source mirrored on install. User-level `~/.claude/settings.json` and `~/.codex/hooks.json` are the host adapters.
