@@ -9,6 +9,7 @@ import { resolveRepositoryCommandCwd } from './command-scope';
 import type { RepositoryRecord } from './types';
 import { assertResolvedAuthorization, decideAuthorization, type AuthorizationDecision } from '../../runtime/control-plane/governance/authorization';
 import { readRepositoryAccessPolicy } from '../../runtime/control-plane/governance/access-policy';
+import { invalidateRepositoryReadCaches } from '../repository/inspector';
 
 export interface ExecuteRepositoryGitCommandInput {
   args: string[];
@@ -296,6 +297,7 @@ export function executeRepositoryGitCommand(
     after,
     repositoryChanged: snapshotChanged(before, after),
   };
+  if (execution.repositoryChanged) invalidateRepositoryReadCaches(root);
   auditExecution(controllerHome, repository, execution);
   return execution;
 }

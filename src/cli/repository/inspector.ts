@@ -2,13 +2,14 @@ import { createHash } from 'crypto';
 import { execFile } from 'child_process';
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
 import { lstat as lstatAsync, readFile as readFileAsync, readdir as readdirAsync, stat as statAsync } from 'fs/promises';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { globMatches, resolveMcpPath } from '../mcp/paths';
 import type { McpPolicy } from '../mcp/types';
 import {
   collectSessionIdentity,
   getOrCreateSessionCache,
+  invalidateSessionCachesForRepository,
   type RepositorySessionCache,
   type SessionIdentity,
 } from './session-cache';
@@ -144,18 +145,46 @@ function sampleGitIdentity(repoRoot: string): Omit<CachedGitIdentity, 'sampledAt
  * fingerprint is content-based (stable across reads) and the short TTL window
  * keeps checkout routing safe while real mutations invalidate through markers.
  */
+export function freshGitIdentity(repoRoot: string): CachedGitIdentity {
+  const root = resolve(repoRoot);
+  const sampled = sampleGitIdentity(root);
+  const entry: CachedGitIdentity = { ...sampled, sampledAt: Date.now() };
+  gitIdentityCache.set(root, entry);
+  pruneGitIdentityCache();
+  return entry;
+}
+
 export function cachedGitIdentity(repoRoot: string): CachedGitIdentity {
+  const root = resolve(repoRoot);
   const now = Date.now();
-  const existing = gitIdentityCache.get(repoRoot);
+  const existing = gitIdentityCache.get(root);
   if (existing && now - existing.sampledAt < GIT_IDENTITY_SAMPLE_TTL_MS) {
     gitIdentityPerformance.cacheHits += 1;
     return existing;
   }
-  const sampled = sampleGitIdentity(repoRoot);
-  const entry: CachedGitIdentity = { ...sampled, sampledAt: now };
-  gitIdentityCache.set(repoRoot, entry);
-  pruneGitIdentityCache();
-  return entry;
+  return freshGitIdentity(root);
+}
+
+/**
+ * Successful Forge-owned mutations invalidate observations derived from the
+ * previous source state. This is intentionally lazy: no graph rebuild, check,
+ * or language server is started here; the next read re-samples Git/current bytes.
+ */
+export function invalidateRepositoryReadCaches(repoRoot: string): void {
+  const root = resolve(repoRoot);
+  gitIdentityCache.delete(root);
+  gitSnapshotCache.delete(root);
+  for (const key of [...searchFileInventoryCache.keys()]) {
+    try {
+      const identity = JSON.parse(key) as { repoRoot?: unknown };
+      if (typeof identity.repoRoot === 'string' && resolve(identity.repoRoot) === root) {
+        searchFileInventoryCache.delete(key);
+      }
+    } catch {
+      // Cache keys are internal JSON identities. Ignore legacy/unparseable entries.
+    }
+  }
+  invalidateSessionCachesForRepository(root);
 }
 
 export function clearGitIdentityCacheForTest(): void {

@@ -20,6 +20,7 @@ import { commandValue, type CanonicalRepositoryCommand, type RepositoryCommandVa
 import { loadExternalFilesystemGrants } from '../../runtime/safe-tooling/external-filesystem';
 import type { RepositoryRecord } from './types';
 import { readRepositoryAccessPolicy } from '../../runtime/control-plane/governance/access-policy';
+import { invalidateRepositoryReadCaches } from '../repository/inspector';
 import { assertResolvedAuthorization, decideAuthorization, type AuthorizationDecision } from '../../runtime/control-plane/governance/authorization';
 import { assertRuntimeMayWriteOrThrow } from '../../runtime/root/write-fence';
 import { commandEnvironment, runCanonicalCommand, type RepositoryCommandAsyncHooks, type SpawnCommandResult } from './command-process';
@@ -433,6 +434,7 @@ export function executeRepositoryCommand(
       message: error || `repository command failed with exit ${String(result.status ?? 1)}`,
     } : undefined,
   };
+  if (execution.repositoryChanged) invalidateRepositoryReadCaches(root);
   auditCommand(controllerHome, repository, execution);
   return execution;
 }
@@ -592,6 +594,7 @@ export async function executeRepositoryCommandAsync(
         }
         : undefined,
   };
+  if (execution.repositoryChanged) invalidateRepositoryReadCaches(root);
   auditCommand(controllerHome, repository, execution);
   return execution;
 }

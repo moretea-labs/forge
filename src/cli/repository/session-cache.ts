@@ -150,6 +150,10 @@ export class RepositorySessionCache {
     return { ...this.identity };
   }
 
+  repositoryRootPath(): string {
+    return this.repoRoot;
+  }
+
   refreshIdentity(next: SessionIdentity): void {
     const prev = this.identity;
     this.identity = next;
@@ -432,6 +436,17 @@ export function pruneSessionCaches(nowMs = Date.now()): number {
 }
 
 /** Called by MCP transport close/eviction so read caches do not outlive a session. */
+export function invalidateSessionCachesForRepository(repoRoot: string): number {
+  const root = resolve(repoRoot);
+  let invalidated = 0;
+  for (const cache of globalSessions.values()) {
+    if (cache.repositoryRootPath() !== root) continue;
+    cache.invalidateWorkingTree();
+    invalidated += 1;
+  }
+  return invalidated;
+}
+
 export function clearSessionCachesForSession(sessionId: string): number {
   let removed = 0;
   for (const [key, cache] of globalSessions) {

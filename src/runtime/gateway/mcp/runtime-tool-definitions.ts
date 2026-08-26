@@ -50,7 +50,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     semantic_navigation: {
       type: 'array',
       maxItems: 8,
-      description: 'Optional bounded compiler/LSP semantic navigation. .ts/.tsx targets use the TypeScript Language Service; .swift targets use SourceKit-LSP only when SwiftPM/BSP/compilation build settings are already available. Use after discovery for precise definition/reference/implementation evidence; this never triggers a build and does not prove dynamic/string/config runtime edges.',
+      description: 'Optional bounded semantic navigation through the provider registry. TypeScript uses the in-process Language Service; Swift uses SourceKit-LSP only with existing build settings; registered generic LSP providers currently cover Rust, Go, Python, and C/C++ when their language-server executable and project root markers already exist. Providers start lazily only for explicit semantic requests; Forge never installs a server, triggers a build, or treats language-server output as source authority.',
       items: {
         type: 'object',
         required: ['navigation', 'path', 'line', 'column'],
@@ -61,6 +61,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
           line: { type: 'number' },
           column: { type: 'number' },
           tsconfig_path: { type: 'string' },
+          language: { type: 'string', description: 'Optional provider-routing hint. File extension remains the default routing signal.' },
         },
       },
     },

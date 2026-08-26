@@ -93,6 +93,7 @@
     "check:evaluation-framework": "bun test tests/evaluation-framework.test.ts",
     "check:background-check-overlap": "bun scripts/benchmark-background-check-overlap.ts",
     "check:typescript-navigation": "bun scripts/benchmark-typescript-navigation.ts",
+    "check:semantic-navigation-providers": "bun test tests/runtime/semantic-navigation-provider.test.ts",
     "check:check-scheduling": "bun test tests/runtime/check-scheduling.test.ts",
     "check:bootstrap-files": "bun test tests/bootstrap-files.test.ts",
     "test": "bun scripts/test-governance.ts affected",

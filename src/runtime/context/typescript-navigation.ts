@@ -29,6 +29,8 @@ export interface TypeScriptNavigationResult {
 export interface TypeScriptNavigationAccess {
   /** Stable identity for one read-policy scope. Restricted and unrestricted projects must never share a Language Service. */
   cacheScope: string;
+  /** Source identity observed by the caller. A different identity must not reuse project membership. */
+  sourceIdentity?: string;
   /** Return true only for repository-relative paths that this navigation call may read. */
   allowRepositoryPath(relativePath: string): boolean;
 }
@@ -40,6 +42,7 @@ interface CachedProject {
 }
 
 const projects = new Map<string, CachedProject>();
+const MAX_CACHED_TYPESCRIPT_PROJECTS = 32;
 
 function normalizePath(path: string): string {
   return path.replace(/\\/g, '/');
@@ -68,9 +71,13 @@ function loadProject(repoRoot: string, tsconfigPath = 'tsconfig.json', access?: 
   if (access && !access.allowRepositoryPath(configRelative)) {
     throw new Error(`TypeScript navigation tsconfig is denied by read policy: ${configRelative}.`);
   }
-  const cacheKey = `${root}\0${configPath}\0${scriptVersion(configPath)}\0${access?.cacheScope ?? 'unrestricted'}`;
+  const cacheKey = `${root}\0${configPath}\0${scriptVersion(configPath)}\0${access?.cacheScope ?? 'unrestricted'}\0${access?.sourceIdentity ?? 'unbound-source'}`;
   const cached = projects.get(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    projects.delete(cacheKey);
+    projects.set(cacheKey, cached);
+    return cached;
+  }
 
   const canReadAbsolute = (fileName: string): boolean => {
     if (!access) return true;
@@ -125,6 +132,13 @@ function loadProject(repoRoot: string, tsconfigPath = 'tsconfig.json', access?: 
     service: ts.createLanguageService(host, ts.createDocumentRegistry()),
   };
   projects.set(cacheKey, project);
+  while (projects.size > MAX_CACHED_TYPESCRIPT_PROJECTS) {
+    const oldestKey = projects.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    const oldest = projects.get(oldestKey);
+    projects.delete(oldestKey);
+    oldest?.service.dispose();
+  }
   return project;
 }
 

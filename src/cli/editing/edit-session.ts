@@ -12,6 +12,7 @@ import { tryAppendControllerWorklogEvent } from '../controller/worklog';
 import { globMatches, resolveMcpPath } from '../mcp/paths';
 import type { McpPolicy } from '../mcp/types';
 import type { ProcessCheckCompletionReceipt, ProcessCheckReceiptStatus } from '../../runtime/execution/process-runtime/check-receipt';
+import { invalidateRepositoryReadCaches } from '../repository/inspector';
 
 export type EditSessionStatus =
   | 'open'
@@ -1343,6 +1344,7 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
   const firstRevision = session.operations.length === 0;
   const records: EditSessionOperationRecord[] = [];
   let appliedOperationCount = 0;
+  let mutationAttempted = false;
   try {
     prepared.forEach((item, index) => {
       const beforeMode = item.beforeMode;
@@ -1352,6 +1354,7 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
         mkdirSync(dirname(join(repoRoot, backupRelative)), { recursive: true });
         writeFileSync(join(repoRoot, backupRelative), item.before, 'utf-8');
       }
+      mutationAttempted = true;
       if (item.operation.type === 'delete') rmSync(item.absolutePath);
       else atomicWriteFile(repoRoot, item.relativePath, item.after, {
         backupRoot: `${SESSION_ROOT}/${session.sessionId}/atomic-backups/r${revision}`,
@@ -1402,6 +1405,8 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
         rolledBack: true,
       },
     );
+  } finally {
+    if (mutationAttempted) invalidateRepositoryReadCaches(repoRoot);
   }
 
   const absoluteRevisionPatch = revisionPatchPath(repoRoot, session.sessionId, revision);
@@ -1586,7 +1591,15 @@ export function rollbackEditSession(repoRoot: string, sessionId: string, input: 
   const target = savepointRevision ?? (input.toRevision === undefined ? 0 : Math.trunc(input.toRevision));
   if (target < 0 || target >= session.currentRevision) throw new Error(`rollback target must be between 0 and ${session.currentRevision - 1}`);
   const reverted = session.operations.filter((operation) => operation.revision > target).reverse();
-  for (const operation of reverted) restoreOperation(repoRoot, operation);
+  let restoreAttempted = false;
+  try {
+    for (const operation of reverted) {
+      restoreAttempted = true;
+      restoreOperation(repoRoot, operation);
+    }
+  } finally {
+    if (restoreAttempted) invalidateRepositoryReadCaches(repoRoot);
+  }
 
   const at = now();
   session.operations = session.operations.filter((operation) => operation.revision <= target);
