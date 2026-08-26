@@ -36,6 +36,9 @@ import {
   createMacOsBrowserOwnedPage,
   reattachMacOsBrowserOwnedPage,
   discoverMacOsBrowserAttachment,
+  invalidateMacOsBrowserPageHandle,
+  invalidateMacOsBrowserPageHandles,
+  macOsBrowserPageHandleStale,
   getMacOsBrowserAttachObservation,
   listMacOsBrowserTabs,
   macOsActiveBrowserAttachSupported,
@@ -2469,6 +2472,19 @@ async function withPage<T>(
       return result;
     } catch (error) {
       lastError = error;
+      const nativeTab = handle?.connection.provider === 'macos-apple-events' ? handle.connection.tab : undefined;
+      if (handle?.connection.provider === 'macos-apple-events'
+        && handle.connection.browserProduct
+        && nativeTab?.windowId
+        && nativeTab.tabId
+        && macOsBrowserPageHandleStale(error)) {
+        // Do not replay the current action. Evict only so the next independent action must
+        // reattach/recover through the existing cold-path identity checks.
+        invalidateMacOsBrowserPageHandle(handle.connection.browserProduct, {
+          windowId: nativeTab.windowId,
+          tabId: nativeTab.tabId,
+        });
+      }
       if (options.pruneStaleSessionMetadata
         && target.existingSession
         && error instanceof AssistantPluginError
@@ -3999,7 +4015,10 @@ async function executeBrowserPluginActionInternal(
         },
       ],
     });
-    if (input.actionId === 'configure') invalidateBrowserRuntime(runtimeKey, 'configuration_changed');
+    if (input.actionId === 'configure') {
+      invalidateBrowserRuntime(runtimeKey, 'configuration_changed');
+      invalidateMacOsBrowserPageHandles();
+    }
     return result;
   }
   try {

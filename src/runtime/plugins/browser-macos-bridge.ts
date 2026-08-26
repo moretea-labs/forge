@@ -180,6 +180,38 @@ async function sendBrowserTrustedInput(
 
 let runtimeHooks: MacOsBrowserRuntimeHooks = { ...defaultRuntimeHooks };
 let lastAttachObservation: MacOsBrowserAttachObservation | undefined;
+const MAX_WARM_NATIVE_PAGE_HANDLES = 128;
+const warmNativePageHandles = new Map<string, MacOsAppleEventsPage>();
+
+function nativePageHandleKey(product: MacOsBrowserProduct, ref: MacOsBrowserTabRef): string {
+  // tabId is the stable browser entity. targetTabPreamble already tolerates window movement
+  // by searching all windows when the saved window hint no longer contains the tab.
+  return `${product}:${ref.tabId}`;
+}
+
+function rememberMacOsBrowserPageHandle(product: MacOsBrowserProduct, ref: MacOsBrowserTabRef, page: MacOsAppleEventsPage): void {
+  const key = nativePageHandleKey(product, ref);
+  warmNativePageHandles.delete(key);
+  warmNativePageHandles.set(key, page);
+  while (warmNativePageHandles.size > MAX_WARM_NATIVE_PAGE_HANDLES) {
+    const oldest = warmNativePageHandles.keys().next().value;
+    if (typeof oldest !== 'string') break;
+    warmNativePageHandles.delete(oldest);
+  }
+}
+
+export function invalidateMacOsBrowserPageHandle(product: MacOsBrowserProduct, ref: MacOsBrowserTabRef): void {
+  warmNativePageHandles.delete(nativePageHandleKey(product, ref));
+}
+
+export function invalidateMacOsBrowserPageHandles(): void {
+  warmNativePageHandles.clear();
+}
+
+export function macOsBrowserPageHandleStale(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /FORGE_BROWSER_TAB_NOT_FOUND|BROWSER_AUTOMATION_TAB_NOT_FOUND|target tab.*not found/i.test(message);
+}
 
 export function setMacOsBrowserRuntimeHooksForTest(hooks: Partial<MacOsBrowserRuntimeHooks>): void {
   runtimeHooks = { ...defaultRuntimeHooks, ...hooks };
@@ -188,6 +220,7 @@ export function setMacOsBrowserRuntimeHooksForTest(hooks: Partial<MacOsBrowserRu
 export function resetMacOsBrowserRuntimeHooksForTest(): void {
   runtimeHooks = { ...defaultRuntimeHooks };
   lastAttachObservation = undefined;
+  warmNativePageHandles.clear();
 }
 
 export function getMacOsBrowserAttachObservation(): MacOsBrowserAttachObservation | undefined {
@@ -567,7 +600,8 @@ function serializeEvaluation(expression: string | ((...args: unknown[]) => unkno
   return `(() => {
     try {
       const value = (${source});
-      return JSON.stringify({ ok: true, value: value === undefined ? { __forgeUndefined: true } : value });
+      const page = { url: String(document.location.href || ''), title: String(document.title || '') };
+      return JSON.stringify({ ok: true, value: value === undefined ? { __forgeUndefined: true } : value, page });
     } catch (error) {
       return JSON.stringify({ ok: false, error: String(error && (error.stack || error.message) || error) });
     }
@@ -618,7 +652,7 @@ function keyEventSource(selector: string | undefined, keySpec: string): string {
 export class MacOsAppleEventsPage {
   private metadata: MacOsBrowserMetadata;
   private readonly browser: MacOsBrowserDefinition;
-  private readonly timeoutMs: number;
+  private timeoutMs: number;
   private targetRef?: MacOsBrowserTabRef;
 
   constructor(attachment: MacOsBrowserAttachment, timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS, targetRef?: MacOsBrowserTabRef) {
@@ -679,6 +713,23 @@ export class MacOsAppleEventsPage {
 
   tabRef(): MacOsBrowserTabRef | undefined {
     return this.targetRef ? { ...this.targetRef } : undefined;
+  }
+
+  updateTimeout(timeoutMs: number): void {
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) this.timeoutMs = Math.trunc(timeoutMs);
+  }
+
+  attachmentSnapshot(): MacOsBrowserAttachment {
+    return {
+      metadata: { ...this.metadata, bounds: { ...this.metadata.bounds } },
+      attempts: [{
+        product: this.browser.product,
+        appName: this.browser.appName,
+        bundleId: this.browser.bundleId,
+        status: 'selected',
+        frontmost: this.metadata.frontmost,
+      }],
+    };
   }
 
   async goto(url: string, options: Record<string, unknown> = {}): Promise<unknown> {
@@ -756,15 +807,22 @@ export class MacOsAppleEventsPage {
 
   async evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T> {
     const raw = await this.executeJavaScriptRaw(serializeEvaluation(expression, arg));
-    let parsed: { ok?: boolean; value?: unknown; error?: string };
+    let parsed: { ok?: boolean; value?: unknown; error?: string; page?: { url?: unknown; title?: unknown } };
     try {
-      parsed = JSON.parse(raw) as { ok?: boolean; value?: unknown; error?: string };
+      parsed = JSON.parse(raw) as { ok?: boolean; value?: unknown; error?: string; page?: { url?: unknown; title?: unknown } };
     } catch {
       throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_PROTOCOL_ERROR', `${this.browser.appName} returned an invalid JavaScript result.`, {
         retryable: true,
       });
     }
     if (!parsed.ok) throw new Error(parsed.error || 'Browser JavaScript evaluation failed.');
+    if (parsed.page && typeof parsed.page.url === 'string' && parsed.page.url) {
+      this.metadata = {
+        ...this.metadata,
+        url: parsed.page.url,
+        title: typeof parsed.page.title === 'string' ? parsed.page.title : this.metadata.title,
+      };
+    }
     if (parsed.value && typeof parsed.value === 'object' && (parsed.value as { __forgeUndefined?: unknown }).__forgeUndefined === true) {
       return undefined as T;
     }
@@ -1200,10 +1258,12 @@ export async function createMacOsBrowserOwnedPage(
   const parts = raw.split(RECORD_SEPARATOR);
   if (parts.length < 2) throw new Error(`Browser scripting returned incomplete owned-tab metadata for ${browser.appName}.`);
   const ref = { windowId: parseBrowserId(parts[0] ?? '', 'window id'), tabId: parseBrowserId(parts[1] ?? '', 'tab id') };
-  return new MacOsAppleEventsPage({
+  const page = new MacOsAppleEventsPage({
     ...attachment,
     metadata: { ...attachment.metadata, url, title: '', windowId: ref.windowId, tabId: ref.tabId, active: false },
   }, timeoutMs, ref);
+  rememberMacOsBrowserPageHandle(attachment.metadata.product, ref, page);
+  return page;
 }
 
 export async function reattachMacOsBrowserOwnedPage(
@@ -1211,6 +1271,15 @@ export async function reattachMacOsBrowserOwnedPage(
   ref: MacOsBrowserTabRef,
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<{ page: MacOsAppleEventsPage; attachment: MacOsBrowserAttachment }> {
+  const cacheKey = nativePageHandleKey(product, ref);
+  const cached = warmNativePageHandles.get(cacheKey);
+  if (cached) {
+    cached.updateTimeout(timeoutMs);
+    // Refresh insertion order so bounded eviction behaves as a small LRU.
+    warmNativePageHandles.delete(cacheKey);
+    warmNativePageHandles.set(cacheKey, cached);
+    return { page: cached, attachment: cached.attachmentSnapshot() };
+  }
   const metadata = await readMacOsBrowserOwnedTabMetadata(product, ref, timeoutMs);
   const attachment: MacOsBrowserAttachment = {
     metadata,
@@ -1219,7 +1288,9 @@ export async function reattachMacOsBrowserOwnedPage(
   const resolvedRef = metadata.windowId && metadata.tabId
     ? { windowId: metadata.windowId, tabId: metadata.tabId }
     : ref;
-  return { page: new MacOsAppleEventsPage(attachment, timeoutMs, resolvedRef), attachment };
+  const page = new MacOsAppleEventsPage(attachment, timeoutMs, resolvedRef);
+  rememberMacOsBrowserPageHandle(product, resolvedRef, page);
+  return { page, attachment };
 }
 
 export async function closeMacOsBrowserOwnedTab(
@@ -1228,10 +1299,14 @@ export async function closeMacOsBrowserOwnedTab(
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<void> {
   const browser = browserDefinition(product);
-  await runBrowserAutomationText(
-    { action: 'close_tab', product, ref },
-    closeOwnedTabScript(browser, ref),
-    [],
-    timeoutMs,
-  );
+  try {
+    await runBrowserAutomationText(
+      { action: 'close_tab', product, ref },
+      closeOwnedTabScript(browser, ref),
+      [],
+      timeoutMs,
+    );
+  } finally {
+    invalidateMacOsBrowserPageHandle(product, ref);
+  }
 }

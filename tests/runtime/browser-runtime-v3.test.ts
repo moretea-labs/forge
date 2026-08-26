@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import {
   executeBrowserRuntimeAction,
   invalidateBrowserRuntime,
@@ -8,6 +8,20 @@ import {
   type BrowserRuntimeProvider,
 } from '../../src/runtime/plugins/browser-provider-registry';
 import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
+import {
+  invalidateMacOsBrowserPageHandle,
+  invalidateMacOsBrowserPageHandles,
+  reattachMacOsBrowserOwnedPage,
+  resetMacOsBrowserRuntimeHooksForTest,
+  setMacOsBrowserRuntimeHooksForTest,
+} from '../../src/runtime/plugins/browser-macos-bridge';
+
+const nativeSeparator = String.fromCharCode(30);
+
+afterEach(() => {
+  resetMacOsBrowserRuntimeHooksForTest();
+  invalidateMacOsBrowserPageHandles();
+});
 
 function input(actionId: string, requestId: string): AssistantPluginActionExecutionInput {
   return {
@@ -140,6 +154,48 @@ describe('Browser Runtime V3 routing', () => {
     expect(observed).toBeInstanceOf(Error);
     expect((observed as Error).message).toBe('unknown outcome after transport started');
     expect(calls).toEqual(['preferred']);
+  });
+
+  test('reuses one stable native tab handle without metadata or foreground preflight on the warm path', async () => {
+    const metadataUrl = 'https://example.com/native-warm';
+    const driftUrl = 'https://example.com/native-warm/drifted';
+    let metadataCalls = 0;
+    let javaScriptCalls = 0;
+    let activationCalls = 0;
+    const metadata = () => [
+      'false', metadataUrl, 'Native Warm', '0', '0', '1200', '800', '7', '9', 'false', 'false',
+    ].join(nativeSeparator);
+
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script) => {
+        if (script.includes('execute targetTab javascript')) {
+          javaScriptCalls += 1;
+          return JSON.stringify({ ok: true, value: 'warm-value', page: { url: driftUrl, title: 'Drifted' } });
+        }
+        if (script.includes('set active tab index of targetWindow')) activationCalls += 1;
+        metadataCalls += 1;
+        return metadata();
+      },
+    });
+
+    const first = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    // A moved window keeps the same stable tab entity; warm lookup is keyed by product + tabId.
+    const second = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '99', tabId: '9' }, 2_000);
+    expect(second.page).toBe(first.page);
+    expect(metadataCalls).toBe(1);
+
+    expect(await second.page.evaluate<string>('document.body ? document.body.innerText : ""')).toBe('warm-value');
+    expect(second.page.url()).toBe(driftUrl);
+    expect(javaScriptCalls).toBe(1);
+    expect(activationCalls).toBe(0);
+
+    invalidateMacOsBrowserPageHandle('chrome', { windowId: '7', tabId: '9' });
+    const third = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    expect(third.page).not.toBe(first.page);
+    expect(metadataCalls).toBe(2);
   });
 
   test('keeps warm providers valid until an explicit invalidation boundary', async () => {
