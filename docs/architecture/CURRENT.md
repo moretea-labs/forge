@@ -18,6 +18,14 @@ Semantic Controller
 
 Quality is prioritized over interactive performance; performance is prioritized over durability machinery that does not materially improve ordinary coding.
 
+## Controller efficiency contract
+
+- The optimization unit is a **semantic checkpoint**, not a single low-level operation. GPT may issue one intent that mechanically fans into several bounded reads/searches or one coherent edit-plus-validation transaction when the implied steps require no new semantic judgement.
+- Forge may execute deterministic conditionals such as `check failed -> collect bounded diagnostics and failure-site source`; it must stop before semantic actions such as choosing a repair, widening product scope, or deciding that acceptance is satisfied.
+- Controller turns should stay continuous through a coherent implementation slice. External Controller relay is for real continuity boundaries such as scheduling, long waits, context/session rollover, or unattended resumption, not a normal inner-loop coding primitive.
+- Operational output is aggressively bounded, while source/diagnostic evidence may use a larger information budget when that reduces repeated controller round trips. Every evidence bundle remains source/revision identified and reports truncation or coverage gaps rather than claiming semantic completeness.
+- ChatGPT-native perception/compute capabilities are not copied into Forge merely to centralize tools. Web/Vision/one-shot connector perception may stay controller-native; Forge owns the local or durable execution/evidence boundary. A separate ChatGPT sandbox is never repository source or build authority.
+
 ## Context engine
 
 - `rh_context` is the primary discovery/read path and may be called repeatedly.
