@@ -5,7 +5,7 @@ import { join } from 'path';
 import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
-import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
+import type { ManagedProcessRecord, ProcessCheckExecutionIdentity } from '../../src/runtime/execution/process-runtime/types';
 import { hasCurrentWorkValidationAuthority, markWorkValidationPending, reconcilePendingWorkValidations, reconcileWorkValidation } from '../../src/runtime/gateway/mcp/work-validation-reconciler';
 import {
   effectiveVerificationEvidence,
@@ -13,14 +13,20 @@ import {
   workspaceValidationFingerprint,
   workValidationInputFingerprint,
 } from '../../src/runtime/control-plane/execution/verification-evidence';
-import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types'; import { execFileSync } from 'child_process'; import { currentControllerCheckRevision } from '../../src/cli/controller/check-runner'; import { materializeWorkVerificationSnapshot } from '../../src/runtime/control-plane/execution/work-verification-snapshot';
+import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types'; import { execFileSync } from 'child_process'; import { controllerCheckExecutionIdentity, currentControllerCheckRevision } from '../../src/cli/controller/check-runner'; import { materializeWorkVerificationSnapshot } from '../../src/runtime/control-plane/execution/work-verification-snapshot';
 
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(status: 'succeeded' | 'failed' | 'timed_out', options: { createProcess?: boolean } = {}) {
+function fixture(status: 'succeeded' | 'failed' | 'timed_out', options: {
+  createProcess?: boolean;
+  checkId?: string;
+  worktreePath?: string;
+  checkExecution?: ProcessCheckExecutionIdentity;
+  bindingCheckExecution?: ProcessCheckExecutionIdentity;
+} = {}) {
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-'));
   roots.push(controllerHome);
   const now = '2026-08-03T00:00:00.000Z';
@@ -28,7 +34,7 @@ function fixture(status: 'succeeded' | 'failed' | 'timed_out', options: { create
   const checkoutId = 'checkout-validation';
   const workId = `work-validation-${status}-${options.createProcess === false ? 'missing' : 'recorded'}`;
   const processId = `proc-validation-${status}-${options.createProcess === false ? 'missing' : 'recorded'}`;
-  const checkId = 'check-validation';
+  const checkId = options.checkId ?? 'check-validation';
   createWorkContract({ controllerHome, repoId, now: () => now }, {
     workId,
     repoId,
@@ -50,7 +56,7 @@ function fixture(status: 'succeeded' | 'failed' | 'timed_out', options: { create
     principalId: 'principal-validation',
     repositoryId: repoId,
     checkoutId,
-    worktreePath: '/tmp/work-validation',
+    worktreePath: options.worktreePath ?? '/tmp/work-validation',
     branch: 'work/validation',
     managedWorktree: false,
     permissionSnapshotVersion: 1,
@@ -70,7 +76,15 @@ function fixture(status: 'succeeded' | 'failed' | 'timed_out', options: { create
       workspaceFingerprint: 'workspace-fingerprint',
       requestedChecks: [checkId],
       resumeState: 'editing',
-      processes: { [checkId]: { processId, requestId: 'request-validation' } },
+      processes: {
+        [checkId]: {
+          processId,
+          requestId: 'request-validation',
+          ...((options.bindingCheckExecution ?? options.checkExecution)
+            ? { checkExecution: { ...(options.bindingCheckExecution ?? options.checkExecution)! } }
+            : {}),
+        },
+      },
     },
   });
   const process: ManagedProcessRecord = {
@@ -91,6 +105,7 @@ function fixture(status: 'succeeded' | 'failed' | 'timed_out', options: { create
       executionSessionId: handle.sessionId,
     },
     resourceClaims: [],
+    ...(options.checkExecution ? { checkExecution: { ...options.checkExecution } } : {}),
     interactiveWaitMs: 0,
     timeoutMs: 30_000,
     maxOutputBytes: 1_024,
@@ -126,6 +141,68 @@ describe('Work validation receipt convergence', () => {
     const repeated = reconcileWorkValidation(fx.controllerHome, result.handle);
     expect(repeated).toMatchObject({ outcome: 'not_validating', changed: false, handle: { state: 'editing' } });
     expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'delivery', evidenceState: 'valid' });
+  });
+  test('accepts the producer cacheKey for the exact Work verification snapshot after authority-only worktree drift', () => {
+    const snapshotControllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-cache-key-controller-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-cache-key-repo-'));
+    roots.push(snapshotControllerHome, repoRoot);
+    writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({ scripts: { 'check:validation': 'node -e \"process.exit(0)\"' } }, null, 2));
+    writeFileSync(join(repoRoot, 'owned.ts'), 'export const owned = 1;\n');
+    writeFileSync(join(repoRoot, 'authority.ts'), 'export const authority = 1;\n');
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot });
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'authority.ts'), 'export const authority = 2;\n');
+
+    const snapshot = materializeWorkVerificationSnapshot({
+      controllerHome: snapshotControllerHome,
+      repoId: 'repo-validation-cache-key-snapshot',
+      sourceRoot: repoRoot,
+      scope: { workId: 'work-validation-cache-key-snapshot', allowedPaths: ['owned.ts', 'package.json'], forbiddenPaths: ['authority.ts'] },
+    });
+    const checkId = 'package:check:validation';
+    const producer = controllerCheckExecutionIdentity(snapshot.root, checkId, 30_000);
+    const recomputedConsumer = controllerCheckExecutionIdentity(repoRoot, checkId, 30_000);
+    expect(producer.cacheKey).not.toBe(recomputedConsumer.cacheKey);
+    const checkExecution: ProcessCheckExecutionIdentity = {
+      ...producer,
+      scopeKey: 'checkout:checkout-validation|work:work-validation-cache-key',
+    };
+    const fx = fixture('succeeded', {
+      checkId,
+      worktreePath: repoRoot,
+      checkExecution,
+      bindingCheckExecution: checkExecution,
+    });
+
+    const result = reconcileWorkValidation(fx.controllerHome, fx.handle);
+    expect(result).toMatchObject({ outcome: 'passed', changed: true, handle: { state: 'editing' } });
+    expect(result.summary).toBeUndefined();
+  });
+
+  test('rejects a receipt whose persisted Work snapshot cacheKey does not match the producer record', () => {
+    const checkExecution: ProcessCheckExecutionIdentity = {
+      schemaVersion: 1,
+      checkId: 'check-validation',
+      cacheKey: '3b2cfd0ed1eeb8fe98220671',
+      revision: 'snapshot-revision',
+      definitionDigest: 'definition-digest',
+      environmentFingerprint: 'environment-fingerprint',
+      timeoutMs: 30_000,
+      reuseScope: 'checkout',
+      scopeKey: 'checkout:checkout-validation|work:work-validation',
+    };
+    const fx = fixture('succeeded', {
+      checkExecution,
+      bindingCheckExecution: { ...checkExecution, cacheKey: 'f4a10b27228da26d8a7442f7' },
+    });
+
+    const result = reconcileWorkValidation(fx.controllerHome, fx.handle);
+    expect(result).toMatchObject({ outcome: 'infrastructure_failure', changed: true, handle: { state: 'failed' } });
+    expect(result.summary).toContain('PROCESS_CHECK_RECEIPT_IDENTITY_MISMATCH');
+    expect(result.summary).toContain('check cacheKey');
   });
   test('verification snapshot metadata does not change Check content identity', () => { const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-controller-')); const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-repo-')); roots.push(controllerHome, repoRoot); writeFileSync(join(repoRoot, 'source.ts'), 'export const value = 1;\n'); execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot }); execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot }); execFileSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot }); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot }); const sourceIdentity = currentControllerCheckRevision(repoRoot); const snapshot = materializeWorkVerificationSnapshot({ controllerHome, repoId: 'repo-validation-snapshot', sourceRoot: repoRoot, scope: { workId: 'work-validation-snapshot', allowedPaths: ['**'], forbiddenPaths: [] } }); expect(existsSync(join(snapshot.root, '.ai/harness/controller/work-verification-snapshot.json'))).toBe(true); expect(currentControllerCheckRevision(snapshot.root)).toBe(sourceIdentity); });
   test('verification snapshot treats empty allowed paths as an unfenced Work scope while preserving forbidden exclusions', () => {
