@@ -42,6 +42,7 @@ import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { executeRepositoryCommandViaProcessRuntime } from '../../execution/process-runtime/command-facade';
 import { getCheckProcessHandle } from '../../execution/process-runtime/check-facade';
 import { processCheckCompletionReceipt } from '../../execution/process-runtime/check-receipt';
+import { classifyPersistedCheckTerminalEvidence } from '../../execution/process-runtime/check-result';
 import { claimProcessInvocation, getProcessRecord } from '../../execution/process-runtime/store';
 import { runPersistedCheckViaProcessRuntime } from './persisted-check-process';
 import { hasCurrentWorkValidationAuthority, markWorkValidationPending, projectWorkValidationOutcome, reconcileWorkValidation } from './work-validation-reconciler';
@@ -1468,9 +1469,14 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
         },
       } : {}),
     });
+    const terminalEvidence = classifyPersistedCheckTerminalEvidence(record, checkId);
+    const infrastructureFailed = receipt.timedOut
+      || receipt.cancelled
+      || terminalEvidence.state !== 'matched'
+      || (!receipt.ok && terminalEvidence.failureClass !== 'acceptance_failure');
     appendVerificationRecord({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, handle.workId, {
       checkId,
-      outcome: receipt.ok ? 'valid_pass' : receipt.status === 'timed_out' || receipt.status === 'cancelled' ? 'infrastructure_failure' : 'valid_fail',
+      outcome: infrastructureFailed ? 'infrastructure_failure' : receipt.ok ? 'valid_pass' : 'valid_fail',
       summary: receipt.summary,
       recordedAt: receipt.finishedAt,
       sourceRevision: validationHead,
@@ -1491,9 +1497,10 @@ async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     checks.push({
       checkId,
       ok: receipt.ok,
-      status: receipt.ok ? 'passed' : receipt.status === 'timed_out' || receipt.status === 'cancelled' ? 'infrastructure_failure' : 'failed',
+      status: infrastructureFailed ? 'infrastructure_failure' : receipt.ok ? 'passed' : 'failed',
       process,
       receipt,
+      ...(terminalEvidence.warning ? { warning: terminalEvidence.warning } : {}),
     });
     if (!receipt.ok) break;
   }
