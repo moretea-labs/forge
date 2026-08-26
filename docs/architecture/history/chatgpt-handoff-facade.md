@@ -1,5 +1,9 @@
 # ChatGPT Handoff Inbox and MCP Facade Architecture
 
+Status: **Historical Design Rationale — Not Runtime Authority**
+
+Archived after the implemented Controller facade, Handoff Inbox, capability-registry, and policy-boundary invariants were folded into [`../CURRENT.md`](../CURRENT.md). The staged implementation sequence below records the original design path; it is not a list of unfinished current work.
+
 ## Purpose
 
 This design keeps ChatGPT as the strong interactive controller while making Forge a safer, smaller, and more useful repository control plane.

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { processLogDir } from './store';
+import type { ManagedProcessRecord } from './types';
 
 export interface PersistedCheckResultReceipt {
   schemaVersion: 1;
@@ -50,4 +51,56 @@ export function readPersistedCheckResultReceipt(path: string | undefined): Persi
   } catch {
     return undefined;
   }
+}
+
+export type PersistedCheckTerminalEvidenceState =
+  | 'matched'
+  | 'process_runtime_failed_before_result'
+  | 'missing'
+  | 'mismatch';
+
+export interface PersistedCheckTerminalEvidence {
+  state: PersistedCheckTerminalEvidenceState;
+  failureClass?: PersistedCheckResultReceipt['failureClass'];
+  warning?: string;
+  infrastructureReason?: string;
+}
+
+/**
+ * Classify one terminal Check Process using the structured result emitted by
+ * the check-runner sidecar. A Process Runtime/admission failure can terminate
+ * before that result exists (for example PROCESS_LEASE_CONFLICT); such a
+ * Process is infrastructure failure, never evidence that repository checks
+ * rejected the candidate. Missing/mismatched result identity also fails closed
+ * as infrastructure rather than manufacturing acceptance evidence.
+ */
+export function classifyPersistedCheckTerminalEvidence(
+  record: ManagedProcessRecord,
+  expectedCheckId: string,
+): PersistedCheckTerminalEvidence {
+  const structured = readPersistedCheckResultReceipt(record.origin?.checkResultReceiptPath);
+  const structuredMatches = Boolean(
+    structured
+    && record.checkExecution
+    && structured.checkId === expectedCheckId
+    && structured.cacheKey === record.checkExecution.cacheKey,
+  );
+  if (structuredMatches) {
+    return { state: 'matched', failureClass: structured?.failureClass };
+  }
+  if (!structured && record.error?.message?.trim()) {
+    const reason = record.error.message.trim().slice(0, 512);
+    return {
+      state: 'process_runtime_failed_before_result',
+      warning: `check process failed before structured result receipt: ${reason}`,
+      infrastructureReason: reason,
+    };
+  }
+  if (structured) {
+    return {
+      state: 'mismatch',
+      warning: 'check result receipt did not match the terminal Process semantic identity',
+    };
+  }
+  return { state: 'missing', warning: 'check result receipt is missing for the terminal Check Process' };
 }

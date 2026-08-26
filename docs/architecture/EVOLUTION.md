@@ -26,3 +26,9 @@ Append-only summary of why the architecture changed. The current contract is alw
 ## Earlier Controller generations
 
 Earlier V4–V8 Controller, Local Bridge, Supervisor, Issue/Task/Job and recovery designs are retained in Git history and accepted ADRs where still useful. They are not maintained as parallel current architecture authorities.
+
+## 2026-08-26 — Documentation lifecycle governance
+
+- Folded the still-current Controller facade/Handoff, host-hook ownership, and iOS physical-device provider invariants into `CURRENT.md` from current source rather than preserving old implementation plans as parallel authority.
+- Retired root-level phase/status design pages into the history archive; accepted ADRs and version snapshots remain rationale/snapshots while `CURRENT.md` remains the sole current architecture contract.
+- Added deterministic task-gate protection so new root-level parallel architecture pages and stale current-status/personal-machine identity markers fail existing static architecture verification instead of relying on a daemon or manual cleanup pass.

@@ -52,6 +52,23 @@ function sourceFiles(directory) {
   return files;
 }
 
+const allowedArchitectureRootMarkdown = new Set(['CURRENT.md', 'EVOLUTION.md', 'history.md', 'index.md']);
+const architectureRootMarkdown = readdirSync(resolve(root, 'docs/architecture'), { withFileTypes: true })
+  .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+  .map((entry) => entry.name)
+  .sort();
+for (const name of architectureRootMarkdown) {
+  if (!allowedArchitectureRootMarkdown.has(name)) {
+    failures.push(`docs/architecture/${name} must be archived under docs/architecture/history/ instead of acting as parallel root architecture authority`);
+  }
+}
+
+for (const path of ['README.md', 'docs/ROADMAP.md', 'docs/architecture/CURRENT.md', 'docs/architecture/index.md']) {
+  forbid(path, /\/Users\//, 'maintained documentation must not contain personal absolute macOS paths');
+  forbid(path, /\bRepo Harness\b/i, 'maintained documentation must use the current Forge product identity');
+  forbid(path, /(?:^|\n)\s*(?:>\s*)?(?:\*\*)?Status(?:\*\*)?\s*:\s*[^\n]*(?:implementation in progress|Phase\s+\d+)/i, 'maintained documentation must not carry transient execution status; use Plan/Work/evidence or history');
+}
+
 const required = [
   'src/runtime/gateway/mcp/router.ts',
   'src/cli/agent-jobs/executable-resolver.ts',
@@ -168,6 +185,13 @@ requireMissing('OPTIMIZATION_REPORT.md');
 requireMissing('docs/architecture/RELIABILITY-PROGRAM.md');
 requireMissing('docs/architecture/p0-canonical-single-runtime-plan.md');
 requireMissing('docs/architecture/transactional-adoption-planner.md');
+requireMissing('docs/architecture/global-hook-runtime.md');
+requireMissing('docs/architecture/ios-semantic-automation-provider-v2.md');
+requireMissing('docs/architecture/chatgpt-handoff-facade.md');
+requireText('docs/architecture/history/global-hook-runtime.md', 'Status: **Historical Evidence — Not Runtime Authority**');
+requireText('docs/architecture/history/ios-semantic-automation-provider-v2.md', 'Status: **Historical Design Evidence — Not Runtime Authority**');
+requireText('docs/architecture/history/chatgpt-handoff-facade.md', 'Status: **Historical Design Rationale — Not Runtime Authority**');
+requireText('docs/architecture/history/README.md', 'Status: **Historical Evidence — Not Runtime Authority**');
 requireMissing('docs/operations/20260802-requirement-portfolio-migration.md');
 requireMissing('docs/runbooks/RELIABILITY-SESSION-PROTOCOL.md');
 requireMissing('docs/architecture/decisions/20260718-mcp-session-lifecycle-and-ingress-isolation.md');

@@ -1,8 +1,19 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
+import { registerRepository } from '../../src/cli/repositories/registry';
+import { claimControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import {
+  acknowledgeControllerRoundClaim,
+  beginControllerRoundRelayAfterRelease,
+  beginInitialControllerRoundDispatch,
+  finishControllerRoundRelayDispatch,
+  submitControllerRoundDisposition,
+} from '../../src/runtime/control-plane/facade/controller-round-relay';
+import { createWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { chatgptBridgeTargetMatchesPage } from '../../src/cli/chatgpt-browser/bridge-provider';
 import {
   bindChatgptWorkConversation,
@@ -238,5 +249,124 @@ describe('ChatGPT native background-tab recovery', () => {
     expect(source).toContain('BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT');
     expect(source).toContain("controllerBrowserAction(controllerHome, workId, 'open_page'");
     expect(source).toContain('navigation.browserSessionId');
+  });
+});
+
+describe('controller relay repeated-state rearm', () => {
+  test('rearms a blocked relay only after durable child Work state changes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-controller-relay-rearm-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) {
+      execFileSync('git', args, { cwd: repoRoot });
+    }
+    writeFileSync(join(repoRoot, 'README.md'), 'relay rearm\n');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-rearm' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workId = 'WORK-RELAY-REARM';
+    const childWorkId = 'WORK-RELAY-REARM-CHILD';
+    const workInput = {
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop' as const,
+      acceptanceCriteria: ['Keep the relay fenced while allowing changed durable state to continue.'],
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current' as const, requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt' as const,
+      status: 'running' as const,
+    };
+    createWorkContract(store, { ...workInput, workId, objective: 'Persistent supervisor Work.' });
+    createWorkContract(store, {
+      ...workInput,
+      workId: childWorkId,
+      lifecycleRole: 'execution_child',
+      parentWorkId: workId,
+      objective: 'Bound runtime transaction Work.',
+    });
+    const relayScopeId = `goal:${workId}`;
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      relayScopeId,
+      identity: { controllerId: 'launcher', principalId: 'launcher', controllerInstanceId: 'runtime-test', sessionId: 'launch-1' },
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true });
+    const firstSession = claimControllerSession(store, {
+      workId,
+      controllerId: 'chatgpt-controller',
+      controllerType: 'chatgpt',
+      sessionId: 'chatgpt-session-1',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-test',
+      leaseMs: 5 * 60_000,
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: firstSession })?.status).toBe('claimed');
+    const firstContinue = submitControllerRoundDisposition(store, {
+      workId,
+      relayScopeId,
+      identity: {
+        controllerId: firstSession.controllerId,
+        principalId: firstSession.principalId ?? firstSession.controllerId,
+        controllerInstanceId: firstSession.controllerInstanceId ?? 'runtime-test',
+        sessionId: firstSession.sessionId,
+      },
+      disposition: 'continue_immediately',
+    });
+    expect(firstContinue).toMatchObject({ status: 'pending_release', repeatedStateCount: 1 });
+    releaseControllerSession(store, workId, firstSession.controllerId);
+    expect(beginControllerRoundRelayAfterRelease(store, { workId, releasedSession: firstSession })?.status).toBe('dispatching');
+    finishControllerRoundRelayDispatch(store, { workId, ok: true });
+    const secondSession = claimControllerSession(store, {
+      workId,
+      controllerId: 'chatgpt-controller',
+      controllerType: 'chatgpt',
+      sessionId: 'chatgpt-session-2',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-test',
+      leaseMs: 5 * 60_000,
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: secondSession })?.status).toBe('claimed');
+    const blocked = submitControllerRoundDisposition(store, {
+      workId,
+      relayScopeId,
+      identity: {
+        controllerId: secondSession.controllerId,
+        principalId: secondSession.principalId ?? secondSession.controllerId,
+        controllerInstanceId: secondSession.controllerInstanceId ?? 'runtime-test',
+        sessionId: secondSession.sessionId,
+      },
+      disposition: 'continue_immediately',
+    });
+    expect(blocked).toMatchObject({ status: 'blocked', repeatedStateCount: 2, blockedReason: 'repeated_state:2>=2' });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: secondSession })).toMatchObject({
+      status: 'blocked',
+      stateFingerprint: blocked.stateFingerprint,
+      blockedReason: 'repeated_state:2>=2',
+    });
+
+    updateWorkContract(store, childWorkId, { evidenceState: 'partial' });
+    const rearmed = acknowledgeControllerRoundClaim(store, { workId, session: secondSession });
+    expect(rearmed).toMatchObject({ status: 'claimed', repeatedStateCount: 0, roundCount: blocked.roundCount });
+    expect(rearmed?.stateFingerprint).not.toBe(blocked.stateFingerprint);
+    expect(rearmed?.blockedReason).toBeUndefined();
+
+    const continued = submitControllerRoundDisposition(store, {
+      workId,
+      relayScopeId,
+      identity: {
+        controllerId: secondSession.controllerId,
+        principalId: secondSession.principalId ?? secondSession.controllerId,
+        controllerInstanceId: secondSession.controllerInstanceId ?? 'runtime-test',
+        sessionId: secondSession.sessionId,
+      },
+      disposition: 'continue_immediately',
+    });
+    expect(continued).toMatchObject({ status: 'pending_release', repeatedStateCount: 1 });
   });
 });
