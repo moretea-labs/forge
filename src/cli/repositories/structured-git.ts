@@ -214,6 +214,44 @@ export function repositoryGitMergeBranch(
   return { branch, before, execution, ...(abort ? { abort } : {}), after: repositoryGitStatus(repository) };
 }
 
+export function repositoryGitRebaseOnto(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  input: {
+    onto: string;
+    upstream: string;
+    abortOnFailure?: unknown;
+    authorizationDecision?: AuthorizationDecision;
+    sessionId?: string;
+    principalId?: string;
+    workId?: string;
+    goalId?: string;
+  },
+): { before: RepositoryGitStatusSnapshot; execution: RepositoryGitExecution; abort?: RepositoryGitExecution; after: RepositoryGitStatusSnapshot; rebased: boolean; restored: boolean } {
+  const before = repositoryGitStatus(repository);
+  if (!before.clean) throw new Error('GIT_REBASE_WORKTREE_NOT_CLEAN: target advancement rebase requires a clean checkout');
+  const onto = gitText(repository, ['rev-parse', '--verify', `${input.onto}^{commit}`]);
+  const upstream = gitText(repository, ['rev-parse', '--verify', `${input.upstream}^{commit}`]);
+  if (!onto || !upstream) throw new Error('GIT_REBASE_REVISION_INVALID: onto and upstream must resolve to commits');
+  const execution = executeRepositoryGitCommand(controllerHome, repository, {
+    args: ['rebase', '--onto', onto, upstream],
+    authorization: 'explicit_user_request',
+    ...input,
+  });
+  let abort: RepositoryGitExecution | undefined;
+  if ((execution.status !== 'executed' || execution.ok !== true) && input.abortOnFailure === true) {
+    abort = executeRepositoryGitCommand(controllerHome, repository, {
+      args: ['rebase', '--abort'],
+      authorization: 'explicit_user_request',
+      ...input,
+    });
+  }
+  const after = repositoryGitStatus(repository);
+  const rebased = execution.status === 'executed' && execution.ok === true && after.clean;
+  const restored = after.clean && after.head === before.head && after.branch === before.branch;
+  return { before, execution, ...(abort ? { abort } : {}), after, rebased, restored };
+}
+
 export function repositoryGitDeleteBranch(controllerHome: string, repository: RepositoryRecord, input: { branch: unknown; force?: unknown; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; workId?: string; goalId?: string }): { branch: string; execution: RepositoryGitExecution } {
   const branch = assertSafeBranchName(input.branch);
   const current = repositoryGitStatus(repository).branch;

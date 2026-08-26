@@ -6,8 +6,11 @@ import { spawnSync } from "child_process";
 import { getRepository, listRepositories, registerRepository } from "../../src/cli/repositories/registry";
 import { callMcpTool } from "../../src/cli/mcp/tools";
 import { callRepositoryTool, repositoryToolDefinitions } from "../../src/cli/mcp/repository-tools";
-import { repositoryGitMergeBranch } from "../../src/cli/repositories/structured-git";
-import { completionReceiptChangedPaths, inspectDirectTargetDelivery, inspectWorkTargetAdvance } from "../../src/runtime/gateway/mcp/execution-tools";
+import { repositoryGitMergeBranch, repositoryGitRebaseOnto } from "../../src/cli/repositories/structured-git";
+import { completionReceiptChangedPaths, inspectDirectTargetDelivery, inspectWorkTargetAdvance, planTargetAdvanceValidationAuthority, targetAdvanceLinearMergeCommits, targetAdvanceWorkScopeViolation } from "../../src/runtime/gateway/mcp/execution-tools";
+import { commandFingerprint, verificationInputFingerprint } from "../../src/runtime/control-plane/execution/verification-evidence";
+import type { ControllerCheck } from "../../src/cli/controller/check-runner";
+import type { VerificationRecord } from "../../src/runtime/control-plane/facade/types";
 import { runtimeToolDefinitions } from "../../src/runtime/gateway/mcp/runtime-tools";
 import { createMcpToolContext } from "../../src/cli/mcp/multi-repository";
 import { getLocalBridgeJob, readLocalBridgeJobOutput, readLocalBridgeJobOutputSnapshot } from "../../src/cli/local-bridge/job-store";
@@ -1123,6 +1126,12 @@ describe("repository MCP command tools", () => {
 
       git(repoRoot, ["switch", "feature/conflict"]);
       const before = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const conflictAdvance = inspectWorkTargetAdvance(repoRoot, conflictCandidate, conflictTarget);
+      const rebase = repositoryGitRebaseOnto(controllerHome, repository, { onto: conflictTarget, upstream: conflictAdvance.mergeBase, abortOnFailure: true });
+      expect(rebase.rebased).toBe(false);
+      expect(rebase.restored).toBe(true);
+      expect(rebase.after.clean).toBe(true);
+      expect(spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()).toBe(before);
       const merge = repositoryGitMergeBranch(controllerHome, repository, { branch: "main", noFf: true, abortOnFailure: true });
       expect(merge.execution.ok).toBe(false);
       expect(merge.abort?.ok).toBe(true);
@@ -1133,6 +1142,146 @@ describe("repository MCP command tools", () => {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });
     }
+  });
+
+  test("Avela R4 target advancement keeps upstream iOS forbidden paths out of Android Work scope and produces linear history", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-aela-r4-target-advance-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "sample-repo");
+    const iosProject = "ios/YaoZhunShi.xcodeproj/project.pbxproj";
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(join(repoRoot, "android"), { recursive: true });
+      mkdirSync(join(repoRoot, "ios", "YaoZhunShi.xcodeproj"), { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "android", "app.txt"), "android-base\n");
+      writeFileSync(join(repoRoot, iosProject), "ios-base\n");
+      git(repoRoot, ["add", "."]);
+      git(repoRoot, ["commit", "-m", "base"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
+
+      git(repoRoot, ["switch", "-c", "work/android-only"]);
+      writeFileSync(join(repoRoot, "android", "app.txt"), "android-work\n");
+      git(repoRoot, ["add", "android/app.txt"]);
+      git(repoRoot, ["commit", "-m", "android work"]);
+      const candidate = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+
+      git(repoRoot, ["switch", "main"]);
+      writeFileSync(join(repoRoot, iosProject), "ios-upstream\n");
+      git(repoRoot, ["add", iosProject]);
+      git(repoRoot, ["commit", "-m", "independent ios target advance"]);
+      const target = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+
+      git(repoRoot, ["switch", "-c", "work/bad-target-merge", candidate]);
+      git(repoRoot, ["merge", "--no-ff", "main", "-m", "old target advancement merge"]);
+      const badMergedCandidate = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+      const alreadyMergedAdvance = inspectWorkTargetAdvance(repoRoot, badMergedCandidate, target);
+      expect(alreadyMergedAdvance.relation).toBe("candidate_contains_target");
+      expect(targetAdvanceLinearMergeCommits(repoRoot, target, badMergedCandidate)).toEqual([badMergedCandidate]);
+
+      const advance = inspectWorkTargetAdvance(repoRoot, candidate, target);
+      expect(advance.relation).toBe("diverged_clean");
+      expect(advance.candidateChangedPaths).toEqual(["android/app.txt"]);
+      expect(advance.targetChangedPaths).toEqual([iosProject]);
+      const workScope = { allowedPaths: ["android/**"], forbiddenPaths: ["ios/**"] };
+      expect(targetAdvanceWorkScopeViolation(workScope, advance.candidateChangedPaths)).toBeUndefined();
+      expect(targetAdvanceWorkScopeViolation(workScope, advance.targetChangedPaths)).toEqual({ kind: "forbidden", path: iosProject });
+      expect(targetAdvanceWorkScopeViolation(workScope, [iosProject])).toEqual({ kind: "forbidden", path: iosProject });
+
+      git(repoRoot, ["switch", "work/android-only"]);
+      const rebased = repositoryGitRebaseOnto(controllerHome, repository, {
+        onto: advance.targetHead,
+        upstream: advance.mergeBase,
+        abortOnFailure: true,
+      });
+      expect(rebased.rebased).toBe(true);
+      expect(rebased.after.clean).toBe(true);
+      const integratedHead = rebased.after.head!;
+      expect(completionReceiptChangedPaths(repoRoot, target, integratedHead)).toEqual(["android/app.txt"]);
+      expect(spawnSync("git", ["-C", repoRoot, "merge-base", "--is-ancestor", target, integratedHead]).status).toBe(0);
+      expect(spawnSync("git", ["-C", repoRoot, "rev-list", "--merges", `${target}..${integratedHead}`], { encoding: "utf8" }).stdout.trim()).toBe("");
+      expect(advance.mergedTree).toBeDefined();
+      expect(spawnSync("git", ["-C", repoRoot, "rev-parse", `${integratedHead}^{tree}`], { encoding: "utf8" }).stdout.trim()).toBe(advance.mergedTree!);
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("target advancement transfers only verification authority whose declared inputs are unchanged", () => {
+    const checkIds = ["android-focused", "ios-focused", "unknown-inputs", "git-aware"];
+    const checks: ControllerCheck[] = [
+      { id: "android-focused", description: "android", command: ["check-android"], cwd: ".", timeoutMs: 10_000, source: "repo-config", effects: { reads: ["android"] } },
+      { id: "ios-focused", description: "ios", command: ["check-ios"], cwd: ".", timeoutMs: 10_000, source: "repo-config", effects: { reads: ["ios"] } },
+      { id: "unknown-inputs", description: "unknown", command: ["check-unknown"], cwd: ".", timeoutMs: 10_000, source: "repo-config" },
+      { id: "git-aware", description: "git", command: ["check-git"], cwd: ".", timeoutMs: 10_000, source: "repo-config", effects: { reads: ["android"], git: "read" } },
+    ];
+    const sourceRevision = "candidate-after-content-equivalent-commit";
+    const workspaceFingerprint = "candidate-clean-workspace";
+    const checkRefs: VerificationRecord[] = checkIds.map((checkId) => {
+      const commandId = `command-${checkId}`;
+      return {
+        checkId,
+        outcome: "valid_pass",
+        summary: `${checkId} passed`,
+        recordedAt: "2026-08-26T00:00:00.000Z",
+        sourceRevision,
+        workspaceFingerprint,
+        verificationInputFingerprint: verificationInputFingerprint({ sourceRevision, workspaceFingerprint, checkId, requestedChecks: checkIds }),
+        commandFingerprint: commandFingerprint(checkId, commandId),
+        receipt: {
+          schemaVersion: 1,
+          receiptId: `receipt-${checkId}`,
+          resultDigest: `digest-${checkId}`,
+          repoId: "repo-test",
+          checkoutId: "checkout-test",
+          workId: "work-test",
+          checkId,
+          processId: `process-${checkId}`,
+          commandId,
+          status: "passed",
+          runtimeStatus: "succeeded",
+          ok: true,
+          timedOut: false,
+          cancelled: false,
+          artifactPath: `/tmp/${checkId}.json`,
+          summary: `${checkId} passed`,
+          startedAt: "2026-08-26T00:00:00.000Z",
+          finishedAt: "2026-08-26T00:00:01.000Z",
+        },
+      };
+    });
+
+    const plan = planTargetAdvanceValidationAuthority({
+      checkIds,
+      checkRefs,
+      checksBefore: checks,
+      checksAfter: checks,
+      candidateHead: "candidate-after-content-equivalent-commit",
+      candidateWorkspaceFingerprint: "candidate-clean-workspace",
+      integratedHead: "candidate-rebased-onto-target",
+      integratedWorkspaceFingerprint: "integrated-clean-workspace",
+      targetChangedPaths: ["ios/YaoZhunShi.xcodeproj/project.pbxproj"],
+      recordedAt: "2026-08-26T00:00:02.000Z",
+    });
+
+    expect(plan.reusableCheckIds).toEqual(["android-focused"]);
+    expect(plan.invalidatedCheckIds).toEqual(["ios-focused", "unknown-inputs", "git-aware"]);
+    expect(plan.transferredRecords).toHaveLength(1);
+    expect(plan.transferredRecords[0]).toMatchObject({
+      checkId: "android-focused",
+      outcome: "valid_pass",
+      sourceRevision: "candidate-rebased-onto-target",
+      workspaceFingerprint: "integrated-clean-workspace",
+    });
+    expect(plan.transferredRecords[0]?.verificationInputFingerprint).toBe(verificationInputFingerprint({
+      sourceRevision: "candidate-rebased-onto-target",
+      workspaceFingerprint: "integrated-clean-workspace",
+      checkId: "android-focused",
+      requestedChecks: checkIds,
+    }));
   });
 
   test("finish workflow transactionally rebases tracked target edits and rolls back on overlap", async () => { const workspace = mkdtempSync(join(tmpdir(), "forge-structured-git-dirty-target-")); const controllerHome = join(workspace, "controller-home"); const repoRoot = join(workspace, "sample-repo"); try { mkdirSync(controllerHome, { recursive: true }); mkdirSync(repoRoot, { recursive: true }); git(repoRoot, ["init", "-b", "main"]); git(repoRoot, ["config", "user.name", "Forge Test"]); git(repoRoot, ["config", "user.email", "forge-test@example.com"]); writeFileSync(join(repoRoot, "README.md"), "one\ntwo\nthree\n"); writeFileSync(join(repoRoot, "local.txt"), "base\n"); git(repoRoot, ["add", "."]); git(repoRoot, ["commit", "-m", "init"]); const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" }); git(repoRoot, ["switch", "-c", "feature/dirty-switch"]); writeFileSync(join(repoRoot, "local.txt"), "dirty-before-switch\n"); const switchBlocked = await json(callRepositoryTool(controllerHome, "repository_git_finish_workflow", { repo_id: repository.repoId, feature_branch: "feature/dirty-switch", target_branch: "main" })); expect(switchBlocked.finish.error.code).toBe("GIT_WORKTREE_NOT_CLEAN"); expect(spawnSync("git", ["-C", repoRoot, "branch", "--show-current"], { encoding: "utf8" }).stdout.trim()).toBe("feature/dirty-switch"); git(repoRoot, ["restore", "local.txt"]); git(repoRoot, ["switch", "main"]); git(repoRoot, ["branch", "-D", "feature/dirty-switch"]); git(repoRoot, ["switch", "-c", "feature/dirty-target"]); writeFileSync(join(repoRoot, "README.md"), "ONE\ntwo\nthree\n"); git(repoRoot, ["add", "README.md"]); git(repoRoot, ["commit", "-m", "feature"]); git(repoRoot, ["switch", "main"]); writeFileSync(join(repoRoot, "README.md"), "one\ntwo\nTHREE\n"); writeFileSync(join(repoRoot, "local.txt"), "local-dirty\n"); writeFileSync(join(repoRoot, "untracked.txt"), "keep\n"); git(repoRoot, ["add", "local.txt"]); const finish = await json(callRepositoryTool(controllerHome, "repository_git_finish_workflow", { repo_id: repository.repoId, feature_branch: "feature/dirty-target", target_branch: "main" })); expect(finish.finish.completed).toBe(true); expect(readFileSync(join(repoRoot, "README.md"), "utf8")).toBe("ONE\ntwo\nTHREE\n"); expect(readFileSync(join(repoRoot, "local.txt"), "utf8")).toBe("local-dirty\n"); expect(readFileSync(join(repoRoot, "untracked.txt"), "utf8")).toBe("keep\n"); expect(spawnSync("git", ["-C", repoRoot, "diff", "--cached", "--name-only"], { encoding: "utf8" }).stdout.trim()).toBe("local.txt"); git(repoRoot, ["commit", "-m", "preserve local change for overlap setup"]); git(repoRoot, ["switch", "-c", "feature/overlap"]); writeFileSync(join(repoRoot, "README.md"), "feature-overlap\n"); git(repoRoot, ["add", "README.md"]); git(repoRoot, ["commit", "-m", "overlap feature"]); git(repoRoot, ["switch", "main"]); const oldHead = spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim(); writeFileSync(join(repoRoot, "README.md"), "local-overlap\n"); const blocked = await json(callRepositoryTool(controllerHome, "repository_git_finish_workflow", { repo_id: repository.repoId, feature_branch: "feature/overlap", target_branch: "main" })); expect(blocked.finish.completed).toBe(false); expect(blocked.finish.error.code).toBe("GIT_LOCAL_CHANGES_REAPPLY_CONFLICT"); expect(spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()).toBe(oldHead); expect(readFileSync(join(repoRoot, "README.md"), "utf8")).toBe("local-overlap\n"); expect(spawnSync("git", ["-C", repoRoot, "show-ref", "--verify", "--quiet", "refs/heads/feature/overlap"]).status).toBe(0); expect(readFileSync(join(repoRoot, "untracked.txt"), "utf8")).toBe("keep\n"); } finally { await cleanupWorkspace([workspace, controllerHome, repoRoot]); rmSync(workspace, { recursive: true, force: true }); } });
