@@ -417,6 +417,45 @@ test('standalone Recovery restarts the configured primary public tunnel when the
   expect(reconnectCalls).toBe(2);
 });
 
+test('standalone Recovery accepts a primary Connector child process that owns the local MCP listener', async () => {
+  const home = controllerHome();
+  const connectorPlistPath = join(home, 'connector.plist');
+  writeFileSync(connectorPlistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
+  const config = createRecoveryConfig(home, {
+    publicMcpUrl: 'https://mcp.example.test/mcp',
+    primaryConnectorService: {
+      platform: 'launchd',
+      label: 'com.moretea.forge.mcp-gateway',
+      plistPath: connectorPlistPath,
+      localMcpUrl: 'http://127.0.0.1:8767/mcp',
+    },
+  });
+  const commands: string[][] = [];
+  const result = await restartPrimaryConnector(config, {
+    platform: 'darwin',
+    currentUid: async () => 501,
+    verifyLocal: async () => healthyVerify(),
+    probeConnectorLocal: async () => ({ ok: true, detail: 'HTTP 401 OAuth challenge', status: 401 }),
+    reconnect: async () => ({ ok: true, detail: 'public MCP reachable', verify: healthyVerify() }),
+    runCommand: async (name, args) => {
+      commands.push([name, ...args]);
+      if (name === 'launchctl' && args[0] === 'print') {
+        return { ok: true, status: 0, stdout: 'pid = 4242\n', stderr: '' };
+      }
+      if (name === 'lsof') {
+        return { ok: true, status: 0, stdout: '4343\n', stderr: '' };
+      }
+      if (name === 'ps' && args.at(-1) === '4343') {
+        return { ok: true, status: 0, stdout: '4242\n', stderr: '' };
+      }
+      return { ok: false, status: 1, stdout: '', stderr: 'unexpected command' };
+    },
+  });
+  expect(result).toMatchObject({ ok: true, attempted: false, noOp: true, serviceTarget: 'gui/501/com.moretea.forge.mcp-gateway' });
+  expect(commands).toContainEqual(['ps', '-o', 'ppid=', '-p', '4343']);
+  expect(commands).not.toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
+});
+
 test('standalone Recovery refuses a no-op when another process owns the configured primary Connector port', async () => {
   const home = controllerHome();
   const connectorPlistPath = join(home, 'connector.plist');
