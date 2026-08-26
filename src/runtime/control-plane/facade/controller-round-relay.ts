@@ -481,10 +481,15 @@ export function beginInitialControllerRoundDispatch(
     const maxRepeatedState = previous ? Math.min(previous.maxRepeatedState, requestedMaxRepeatedState) : requestedMaxRepeatedState;
     const maxFailures = previous ? Math.min(previous.maxFailures, requestedMaxFailures) : requestedMaxFailures;
     const stateFingerprint = mechanicalStateFingerprint(options, work, requirementId);
-    const roundCount = (previous?.roundCount ?? 0) + 1;
-    const repeatedStateCount = previous?.stateFingerprint === stateFingerprint
-      ? previous.repeatedStateCount + 1
-      : 0;
+    // beginInitialControllerRoundDispatch is entered only for a fresh external
+    // wake after any prior round has closed. Mechanical round/repeated-state
+    // budgets fence one immediate relay chain; carrying them across an explicit
+    // later schedule/manual occurrence eventually blocks healthy periodic Work
+    // whose repository state intentionally remains unchanged. Open-round
+    // duplicate suppression above still rejects a second wake for the same live
+    // chain, while submit/recovery paths continue to accumulate these budgets.
+    const roundCount = 1;
+    const repeatedStateCount = 0;
     const consecutiveFailures = previous?.consecutiveFailures ?? 0;
     let blockedReason: string | undefined;
     if (roundCount > maxRounds) blockedReason = `round_budget_exhausted:${roundCount}>${maxRounds}`;
