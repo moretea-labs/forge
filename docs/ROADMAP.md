@@ -12,8 +12,8 @@ This is the single maintained roadmap for Forge. It records only current priorit
 - Keep ordinary local coding on Ephemeral/Lightweight execution; reserve durable Work/Process state for continuity, scheduling, release, independent delivery, recovery, and external effects.
 - Return revision-bound structured evidence for compile/test/runtime/provider outcomes so GPT does not need extra mechanical fetches just to locate a failure. Visual Browser/iOS/device evidence should be consumable by ChatGPT Vision rather than exposed only as opaque local paths.
 - Use ChatGPT-native Web/Vision and suitable one-shot connectors as controller perception when they are the shorter path; keep Forge authoritative for repository/local-device/local-authenticated-browser, durable, scheduled, and effectful execution. ChatGPT sandbox is specialized compute only, never repository source/build authority.
-- Finish the active repair/release portfolio before opening avoidable parallel work. Persistent workflows are intentional; stale/duplicate repair Work and pending semantic handoffs are not.
-- Continue Browser Runtime V2 under its dedicated Plan authority: single controller-home session authority, capability-based routing, warm provider reuse, explicit foreground effects, postcondition verification, and measured p50/p95 live gates.
+- Finish the active repair/release portfolio before opening avoidable parallel work. Use [`researches/20260826-forge-capability-closure.md`](researches/20260826-forge-capability-closure.md) as the current P0/P1 governance/backlog evidence: every open gap has one current Work, Plan step, or explicit blocker. Persistent workflows are intentional; stale/duplicate repair Work and pending semantic handoffs are not.
+- Keep current Browser compatibility stable while Browser implementation evolution proceeds only under the dedicated Browser Runtime V3 Plan: unified transaction/provider routing and background-native convergence are delivered; physical/visual evidence and then measured live-gate/retirement closure remain under that single Plan authority.
 
 ## Next — prove higher implementation throughput without a new control plane
 
