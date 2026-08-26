@@ -26,6 +26,7 @@ const CHATGPT_CAPABILITY_MENUITEM_SELECTOR = '[role="menuitem"][aria-keyshortcut
 
 export type ChatgptAutomationReasoning = 'medium' | 'high' | 'xhigh';
 export type ChatgptAutomationTabPolicy = 'auto' | 'reuse' | 'new';
+export type ChatgptAutomationTabCleanupStatus = 'closed' | 'preserved_user_owned' | 'session_closed' | 'failed';
 
 export interface WorkChatgptContinuationInput {
   controllerHome: string;
@@ -54,6 +55,8 @@ export interface WorkChatgptContinuationResult {
   reasoning: ChatgptAutomationReasoning;
   tabPolicy: ChatgptAutomationTabPolicy;
   executionPreferenceVerified: boolean;
+  tabCleanupStatus?: ChatgptAutomationTabCleanupStatus;
+  tabCleanupError?: { code: string; message: string };
   error?: { code: string; message: string };
 }
 
@@ -424,9 +427,38 @@ function resultSessionId(result: Record<string, unknown>): string | undefined {
     ?? stringField((result.session as Record<string, unknown> | undefined)?.sessionId);
 }
 
-function requiresNativeNavigationReplacement(error: unknown): boolean {
-  return error instanceof Error
-    && error.message.includes('BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT');
+export function chatgptAutomationNavigationRequiresReplacement(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return [
+    'BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT',
+    'PLUGIN_BROWSER_SESSION_STATE_LOST',
+    'PLUGIN_SESSION_NOT_FOUND',
+  ].some((marker) => error.message.includes(marker));
+}
+
+async function closeChatgptAutomationTabAfterDispatch(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  timeoutMs?: number,
+): Promise<{ status: ChatgptAutomationTabCleanupStatus; error?: { code: string; message: string } }> {
+  try {
+    const closed = await controllerBrowserAction(controllerHome, workId, 'close_page', {
+      session_id: browserSessionId,
+    }, Math.min(timeoutMs ?? 15_000, 15_000));
+    if (closed.preservedUserOwnedTab === true) return { status: 'preserved_user_owned' };
+    if (closed.resourceClosed === true) return { status: 'closed' };
+    return { status: 'session_closed' };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      status: 'failed',
+      error: {
+        code: error instanceof Error && error.message.includes(':') ? error.message.split(':', 1)[0] : 'CHATGPT_AUTOMATION_TAB_CLEANUP_FAILED',
+        message,
+      },
+    };
+  }
 }
 
 export function isChatgptConversationUrl(value: string): boolean {
@@ -469,7 +501,7 @@ async function navigateWorkConversation(
     await navigate(browserSessionId, targetUrl);
     return { submissionTargetUrl: targetUrl, recoveredFromStaleBinding: false, browserSessionId };
   } catch (error) {
-    if (requiresNativeNavigationReplacement(error)) {
+    if (chatgptAutomationNavigationRequiresReplacement(error)) {
       const replacementSessionId = await openReplacement(targetUrl);
       return { submissionTargetUrl: targetUrl, recoveredFromStaleBinding: false, browserSessionId: replacementSessionId };
     }
@@ -478,7 +510,7 @@ async function navigateWorkConversation(
       await navigate(browserSessionId, 'https://chatgpt.com/');
       return { submissionTargetUrl: 'https://chatgpt.com/', recoveredFromStaleBinding: true, browserSessionId };
     } catch (fallbackError) {
-      if (!requiresNativeNavigationReplacement(fallbackError)) throw fallbackError;
+      if (!chatgptAutomationNavigationRequiresReplacement(fallbackError)) throw fallbackError;
       const replacementSessionId = await openReplacement('https://chatgpt.com/');
       return { submissionTargetUrl: 'https://chatgpt.com/', recoveredFromStaleBinding: true, browserSessionId: replacementSessionId };
     }
@@ -569,6 +601,12 @@ export async function runStandaloneChatgptPrompt(input: StandaloneChatgptPromptI
       navigation.submissionTargetUrl,
       input.timeoutMs,
     );
+    const tabCleanup = await closeChatgptAutomationTabAfterDispatch(
+      input.controllerHome,
+      browserScopeId,
+      navigation.browserSessionId,
+      input.timeoutMs,
+    );
     return {
       status: 'dispatched',
       provider: 'controller-browser',
@@ -579,6 +617,8 @@ export async function runStandaloneChatgptPrompt(input: StandaloneChatgptPromptI
       reasoning,
       tabPolicy,
       executionPreferenceVerified,
+      tabCleanupStatus: tabCleanup.status,
+      ...(tabCleanup.error ? { tabCleanupError: tabCleanup.error } : {}),
     };
   } catch (error) {
     return {
@@ -663,10 +703,19 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
         : bindChatgptWorkConversation(store, {
           workId: input.workId,
           conversationUrl: observedUrl,
-          latestBrowserSessionId: sessionId,
+          latestBrowserSessionId: navigation.browserSessionId,
           localAlias: binding?.localAlias ?? input.title,
         });
     }
+    // Submission is already externally committed at this point. Cleanup must never
+    // downgrade dispatch to failed, otherwise a scheduler retry can send the same
+    // prompt twice. Browser ownership policy keeps user-owned native tabs intact.
+    const tabCleanup = await closeChatgptAutomationTabAfterDispatch(
+      input.controllerHome,
+      input.workId,
+      navigation.browserSessionId,
+      input.timeoutMs,
+    );
     return {
       status: 'dispatched',
       provider: 'controller-browser',
@@ -679,6 +728,8 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
       reasoning,
       tabPolicy,
       executionPreferenceVerified,
+      tabCleanupStatus: tabCleanup.status,
+      ...(tabCleanup.error ? { tabCleanupError: tabCleanup.error } : {}),
     };
   } catch (error) {
     return {
