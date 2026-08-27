@@ -10,7 +10,7 @@ Archived after the still-current host-hook ownership invariants were folded into
 > **Notes**: `tasks/notes/hook-global-runtime.notes.md`
 > **Canary**: `scripts/canary-global-hook.sh`
 > **Generated**: 2026-05-28, operator: ancienttwo (canary log 711 lines, time window 15:23–17:04 +08:00; includes post-Codex-restart trust observations at 17:03)
-> **Repo set used for canary**: `/Users/ancienttwo/Projects/forge` (opt-in, this repo), `/Users/ancienttwo/Astrozi` (opt-in). **Gap**: no non-opt-in repo yet — pending manual run to confirm dual-fire vs single-fire branching.
+> **Repo set used for canary**: `/Users/<user>/Projects/forge` (opt-in, this repo), `/Users/<user>/Astrozi` (opt-in). **Gap**: no non-opt-in repo yet — pending manual run to confirm dual-fire vs single-fire branching.
 
 ## Purpose
 
@@ -91,7 +91,7 @@ Partially observed from canary install; manual UX-only items remain.
 **Confirmed (data-driven):**
 
 - ✅ `[hooks.state]` key format: `<absolute-path>:<event-snake-case>:<i>:<j>` where `i` indexes the per-event hooks array and `j` indexes the nested `hooks[].hooks[]` array. Same format applies to user-level and project-level paths (compare `~/.codex/hooks.json:...` entries to existing project-level entries in the same `config.toml`).
-- ✅ User-level hash registration works: **16 entries** under `[hooks.state."/Users/ancienttwo/.codex/hooks.json:..."]` after canary install + Codex restart + user trust acceptance (was 11 pre-canary, +5 for new canary entries).
+- ✅ User-level hash registration works: **16 entries** under `[hooks.state."/Users/<user>/.codex/hooks.json:..."]` after canary install + Codex restart + user trust acceptance (was 11 pre-canary, +5 for new canary entries).
 - ✅ Once trust is registered, fires happen silently (522+ codex fires without UX interruption in the canary window; post-restart fires at 17:03:44 Astrozi also silent).
 - ✅ **Per-new-entry trust prompt**: Codex restart after canary install showed 5 distinct trust prompts (one per new `(command, key)` combination); the 11 preexisting shim hashes silently passed without re-prompt. User reported manual acceptance: "已重启授权 5 个新 HOOK" (2026-05-28T17:03).
 - ✅ **Hash sensitivity to (command, key) tuple confirmed**: appending new entries to existing event arrays produced new `i` indices (`pre_tool_use:1:0`, `post_tool_use:4:0`, `session_start:1:0`, `user_prompt_submit:1:0`, `stop:1:0`), each triggering its own prompt. Implication: any change to either the command string or the array position will re-trust-prompt.
