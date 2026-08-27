@@ -300,6 +300,46 @@ describe('external plugin store integration', () => {
     expect(manifest.actions.map((action) => action.actionId)).toEqual(['desktop_status']);
   });
 
+  test('keeps preferStored discovery cache invalidation-driven instead of expiring after the live identity window', async () => {
+    if (process.platform === 'win32') return;
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-external-stored-cache-'));
+    roots.push(controllerHome);
+    const socketPath = join(controllerHome, 'desktop.sock');
+    const logPath = join(controllerHome, 'provider.log');
+    await startExternalProviderFixture(controllerHome, socketPath, logPath);
+    installExternalPluginRegistration(controllerHome, {
+      pluginId: 'desktop_operator', providerPluginId: 'desktop_operator', displayName: 'Forge Desktop Operator',
+      provider: 'local-macos', pluginVersion: '0.1.0', protocolVersion: '1.0', scope: 'controller', enabled: true,
+      transport: { kind: 'unix_socket_jsonl', socketPath, healthTimeoutMs: 1_000, actionTimeoutMs: 1_000 },
+      permissions: [{ scope: 'desktop.observe', mode: 'read', description: 'Observe desktop.', granted: true, required: true }],
+      capabilities: [{ capabilityId: 'desktop-observe', title: 'Desktop observe', description: 'Observe desktop.', scopes: ['desktop.observe'], actions: ['desktop_status'] }],
+      actions: [{ actionId: 'desktop_status', title: 'Desktop status', description: 'Read status.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 1_000, cancellable: true, idempotent: true, scopes: ['desktop.observe'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } }],
+    });
+    const repository = controllerPluginRepository(controllerHome);
+    const realDateNow = Date.now;
+    let fakeNow = realDateNow();
+    Date.now = () => fakeNow;
+    try {
+      clearAssistantPluginManifestCacheForTest();
+      listAssistantPluginManifests(controllerHome, repository, { preferStored: true });
+      const initialCalls = readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).length;
+      expect(initialCalls).toBeGreaterThan(0);
+
+      fakeNow += 6_000;
+      listAssistantPluginManifests(controllerHome, repository, { preferStored: true });
+      const afterWallClockExpiry = readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).length;
+      expect(afterWallClockExpiry).toBe(initialCalls);
+
+      clearAssistantPluginManifestCacheForTest();
+      listAssistantPluginManifests(controllerHome, repository, { preferStored: true });
+      const afterExplicitInvalidation = readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).length;
+      expect(afterExplicitInvalidation).toBeGreaterThan(initialCalls);
+    } finally {
+      Date.now = realDateNow;
+      clearAssistantPluginManifestCacheForTest();
+    }
+  });
+
   test('execute resolves a disabled external registration and fails as disabled rather than plugin-not-found', async () => {
     const fx = fixture(false);
     const manifest = getAssistantPluginManifest(fx.controllerHome, fx.repository, 'desktop_operator');
@@ -352,12 +392,18 @@ describe('external plugin store integration', () => {
       controllerHome, repoId: repository.repoId, repoRoot: repository.canonicalRoot, pluginId: 'desktop_operator', actionId: 'desktop_status',
       requestId: 'external-hotpath-2', args: {}, origin: { surface: 'mcp' }, timeoutMs: 1_000,
     });
-    clearAssistantPluginManifestCacheForTest();
+    const realDateNow = Date.now;
+    const expiredLiveWindow = realDateNow() + 6_000;
     writeFileSync(driftPath, 'drift');
-    await expect(executeAssistantPluginAction({
-      controllerHome, repoId: repository.repoId, repoRoot: repository.canonicalRoot, pluginId: 'desktop_operator', actionId: 'desktop_status',
-      requestId: 'external-hotpath-drift', args: {}, origin: { surface: 'mcp' }, timeoutMs: 1_000,
-    })).rejects.toThrow('EXTERNAL_PLUGIN_VERSION_MISMATCH');
+    Date.now = () => expiredLiveWindow;
+    try {
+      await expect(executeAssistantPluginAction({
+        controllerHome, repoId: repository.repoId, repoRoot: repository.canonicalRoot, pluginId: 'desktop_operator', actionId: 'desktop_status',
+        requestId: 'external-hotpath-drift', args: {}, origin: { surface: 'mcp' }, timeoutMs: 1_000,
+      })).rejects.toThrow('EXTERNAL_PLUGIN_VERSION_MISMATCH');
+    } finally {
+      Date.now = realDateNow;
+    }
     expect(readFileSync(logPath, 'utf8').trim().split('\n')).toEqual(['manifest', 'health', 'execute', 'execute', 'manifest', 'manifest', 'manifest']);
   });
 

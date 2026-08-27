@@ -51,7 +51,8 @@ export function assistantPluginScope(pluginId: string, controllerHome?: string):
   return PLUGIN_ADAPTERS.get(pluginId)?.scope ?? (controllerHome ? getExternalPluginAdapter(controllerHome, pluginId)?.scope : undefined);
 }
 
-const PLUGIN_MANIFEST_CACHE_TTL_MS = 5_000;
+const PLUGIN_MANIFEST_LIVE_CACHE_TTL_MS = 5_000;
+const PLUGIN_MANIFEST_STORED_CACHE_TTL_MS = Number.POSITIVE_INFINITY;
 
 
 interface PluginManifestCacheEntry<T> {
@@ -109,10 +110,11 @@ function itemCacheKey(controllerHome: string, repoId: string, pluginId: string, 
 function readPluginManifestCache<T>(
   cache: Map<string, PluginManifestCacheEntry<T>>,
   key: string,
+  maxAgeMs = PLUGIN_MANIFEST_LIVE_CACHE_TTL_MS,
 ): T | undefined {
   const cached = cache.get(key);
   if (!cached) return undefined;
-  if (Date.now() - cached.createdAt > PLUGIN_MANIFEST_CACHE_TTL_MS) {
+  if (Number.isFinite(maxAgeMs) && Date.now() - cached.createdAt > maxAgeMs) {
     cache.delete(key);
     return undefined;
   }
@@ -239,8 +241,11 @@ function cachedManifestForRepository(
   repoId: string,
   pluginId: string,
 ): AssistantPluginManifest | undefined {
-  return readPluginManifestCache(pluginManifestItemCache, itemCacheKey(controllerHome, repoId, pluginId, true))
-    ?? readPluginManifestCache(pluginManifestItemCache, itemCacheKey(controllerHome, repoId, pluginId, false));
+  return readPluginManifestCache(
+    pluginManifestItemCache,
+    itemCacheKey(controllerHome, repoId, pluginId, true),
+    PLUGIN_MANIFEST_STORED_CACHE_TTL_MS,
+  ) ?? readPluginManifestCache(pluginManifestItemCache, itemCacheKey(controllerHome, repoId, pluginId, false));
 }
 
 function computeManifest(
@@ -455,7 +460,14 @@ export function listAssistantPluginManifests(
   const preferStored = options.preferStored === true && options.forceRefresh !== true;
   const cacheKey = listCacheKey(controllerHome, repository.repoId, preferStored);
   if (options.forceRefresh !== true) {
-    const cached = readPluginManifestCache(pluginManifestListCache, cacheKey);
+    // Stored manifests are persisted snapshots. Their freshness is governed by
+    // explicit registry/config mutation invalidation, not a wall-clock trust
+    // window. Live execution manifests retain the short identity-validation TTL.
+    const cached = readPluginManifestCache(
+      pluginManifestListCache,
+      cacheKey,
+      preferStored ? PLUGIN_MANIFEST_STORED_CACHE_TTL_MS : PLUGIN_MANIFEST_LIVE_CACHE_TTL_MS,
+    );
     if (cached) return cached;
   }
   const manifests = listAssistantPluginIds(controllerHome, repository)
