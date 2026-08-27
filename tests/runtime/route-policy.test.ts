@@ -350,6 +350,37 @@ describe('single Route Policy authority', () => {
     expect(pureId).toBeTruthy();
     expect(getWorkContract({ root: join(root, 'pure-work') }, pureId!)).toMatchObject({ workKind: 'remote_effect' });
     expect(getWorkContract({ root: join(root, 'pure-work') }, pureId!)?.constraints.remoteDeliveryRequired).toBeUndefined();
+
+    const localStore = { root: join(root, 'local-effect-work') };
+    const local = routeWorkStart({ ...context, workStore: localStore }, {
+      objective: 'Activate one local Runtime release and verify its readiness',
+      acceptanceCriteria: ['Local Runtime activation receipt exists'],
+      // These are policy fences for optional evidence/docs, not proof of a source mutation.
+      allowedPaths: ['scripts/**', 'docs/operations/**'],
+      initialLikelyPaths: ['scripts/activate-source-baseline.ts'],
+      modeInput: {
+        scopeClear: true, mutation: true, requiresRecovery: true,
+        requiresExternalEffect: true, remoteWrite: false, risk: 'workspace_write',
+      },
+    });
+    const localId = (local.data as { work?: { workId?: string } }).work?.workId;
+    expect(localId).toBeTruthy();
+    expect(getWorkContract(localStore, localId!)).toMatchObject({ workKind: 'local_effect' });
+
+    const explicitStore = { root: join(root, 'explicit-repository-work') };
+    const explicitRepositoryChange = routeWorkStart({ ...context, workStore: explicitStore }, {
+      objective: 'Implement locally and then run a local external verification effect',
+      workKind: 'repository_change',
+      allowedPaths: ['src/runtime/**'],
+      acceptanceCriteria: ['Source change and local effect are both verified'],
+      modeInput: {
+        scopeClear: true, mutation: true, requiresRecovery: true,
+        requiresExternalEffect: true, remoteWrite: false, risk: 'local_repo_write',
+      },
+    });
+    const explicitId = (explicitRepositoryChange.data as { work?: { workId?: string } }).work?.workId;
+    expect(explicitId).toBeTruthy();
+    expect(getWorkContract(explicitStore, explicitId!)).toMatchObject({ workKind: 'repository_change' });
   });
 
   test('allows Requirement-bound durable Work without forcing a Plan', () => {

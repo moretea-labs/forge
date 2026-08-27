@@ -96,7 +96,7 @@ export interface GoalWorkloopStartInput {
   planId?: string;
   planStepId?: string;
   /** Explicit technical evidence shape chosen by the semantic Controller. Never inferred from objective/check text. */
-  workKind?: Extract<WorkKind, 'repository_change' | 'completed_no_change' | 'investigation' | 'reconciliation'>;
+  workKind?: Extract<WorkKind, 'repository_change' | 'completed_no_change' | 'investigation' | 'local_effect' | 'remote_effect' | 'reconciliation'>;
 }
 
 export interface GoalWorkloopContinueInput {
@@ -855,16 +855,17 @@ export function startGoalWorkloop(
     normalized.validCheckIds,
     normalized.suggestedNextActions,
   );
+  // allowed_paths and initial_likely_paths are policy/discovery fences, not proof
+  // that this Work owns a repository mutation. External-effect Work therefore
+  // needs either an explicit repository_change semantic choice or concrete
+  // expected source-change evidence before Forge treats it as repository_change.
   const repositoryChangeIntent = input.workKind === 'repository_change'
-    || effectiveAllowedPaths.length > 0
-    || (input.initialLikelyPaths?.length ?? 0) > 0
     || (input.modeInput.expectedFiles ?? 0) > 0
     || (input.modeInput.expectedChangedLines ?? 0) > 0;
   const resolvedWorkKind = input.workKind ?? (
     input.modeInput.requiresExternalEffect === true
-    && input.modeInput.remoteWrite === true
     && !repositoryChangeIntent
-      ? 'remote_effect'
+      ? (input.modeInput.remoteWrite === true ? 'remote_effect' : 'local_effect')
       : 'repository_change'
   );
   const remoteDeliveryRequired = resolvedWorkKind === 'repository_change'
@@ -1905,6 +1906,8 @@ export function runGoalWorkloop(
         workKind: args.work_kind === 'repository_change'
           || args.work_kind === 'completed_no_change'
           || args.work_kind === 'investigation'
+          || args.work_kind === 'local_effect'
+          || args.work_kind === 'remote_effect'
           || args.work_kind === 'reconciliation'
           ? args.work_kind
           : undefined,

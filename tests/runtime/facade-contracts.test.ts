@@ -53,6 +53,12 @@ describe('handoff and facade contracts', () => {
     expect(FACADE_TOOLS).toHaveLength(5);
   });
 
+  test('exposes effect-only WorkKind semantics without forcing a repository diff', () => {
+    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
+    const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
+    expect(properties?.work_kind?.enum).toEqual(expect.arrayContaining(['local_effect', 'remote_effect', 'repository_change']));
+  });
+
   test('classifies terminal handoff statuses', () => {
     expect(HANDOFF_STATUSES).toContain('pending');
     expect(isTerminalHandoffStatus('pending')).toBe(false);
