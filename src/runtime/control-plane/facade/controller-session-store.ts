@@ -4,7 +4,8 @@ import { withControllerLock } from '../../../cli/repositories/locks';
 import { peekExecutionSession } from '../execution/session-store';
 import { readJsonFile } from '../../shared/json-files';
 import { readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
-import type { ControllerSession, ControllerSessionStore, ControllerType } from './types';
+import { getWorkContract } from './work-contract-store';
+import { isTerminalWorkContractStatus, type ControllerSession, type ControllerSessionStore, type ControllerType } from './types';
 
 export interface ControllerSessionStoreOptions { controllerHome: string; repoId: string; now?: () => string; }
 
@@ -75,6 +76,13 @@ export function controllerSessionBlocksRecovery(
 function assertIdentity(input: ControllerSessionClaimInput): void {
   if (!input.workId.trim() || !input.controllerId.trim() || !input.sessionId.trim()) {
     throw new Error('CONTROLLER_SESSION_IDENTITY_REQUIRED');
+  }
+}
+
+function assertWorkClaimable(options: ControllerSessionStoreOptions, workId: string): void {
+  const work = getWorkContract({ controllerHome: options.controllerHome, repoId: options.repoId }, workId);
+  if (work && isTerminalWorkContractStatus(work.status)) {
+    throw new Error(`WORK_CONTROLLER_CLAIM_TERMINAL: ${work.workId}:${work.status}`);
   }
 }
 
@@ -258,6 +266,7 @@ export function claimControllerSession(
     { scope: 'task', repoId: options.repoId, taskId: `controller-session-${input.workId}` },
     `controller-claim:${input.controllerId}:${input.sessionId}`,
     () => {
+      assertWorkClaimable(options, input.workId);
       const store = read(options);
       const current = activeSession(store, input.workId);
       assertExpectedGeneration(input, current);
@@ -288,6 +297,7 @@ export function resumeControllerSession(
     { scope: 'task', repoId: options.repoId, taskId: `controller-session-${input.workId}` },
     `controller-resume:${input.controllerId}:${input.sessionId}`,
     () => {
+      assertWorkClaimable(options, input.workId);
       const store = read(options);
       const current = activeSession(store, input.workId);
       assertExpectedGeneration(input, current);

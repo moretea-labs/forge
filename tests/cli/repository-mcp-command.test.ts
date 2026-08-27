@@ -18,6 +18,7 @@ import { routeDurableMcpCall } from "../../src/runtime/gateway/mcp/router";
 import { getExecutionJob, listExecutionJobs } from "../../src/runtime/execution/jobs/store";
 import { createWorkContract } from "../../src/runtime/control-plane/facade/work-contract-store";
 import { claimControllerSession } from "../../src/runtime/control-plane/facade/controller-session-store";
+import { startExecutionSession, updateExecutionSession } from "../../src/runtime/control-plane/execution/session-store";
 import { applyExternalFilesystemGrant, previewExternalFilesystemGrant } from "../../src/runtime/safe-tooling/external-filesystem";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
 import { clearGitIdentityCacheForTest, clearGitSnapshotCacheForTest, gitSnapshot, gitSnapshotPerformanceSnapshot } from "../../src/cli/repository/inspector";
@@ -92,6 +93,58 @@ describe("repository MCP command tools", () => {
         recommendedOperation: "search",
       });
       expect(response.suggestedOperation).toBe("rh_context");
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("terminal-bound execution session cannot omit work_id and fall back to unbound repository mutation", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-terminal-bound-attribution-"));
+    const controllerHome = join(workspace, "controller");
+    const repoRoot = join(workspace, "repo");
+    mkdirSync(repoRoot, { recursive: true });
+    try {
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "README.md"), "base\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-m", "init"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
+      const workId = "WORK-TERMINAL-BOUND";
+      createWorkContract({ controllerHome, repoId: repository.repoId }, {
+        workId,
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        mode: "goal_workloop",
+        objective: "terminal session attribution must fail closed",
+        acceptanceCriteria: ["no mutation after terminalization"],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: "chatgpt",
+        status: "failed",
+      });
+      const caller = { sessionId: "session-terminal", principalId: "principal-terminal", controllerInstanceId: "runtime-terminal" };
+      startExecutionSession(controllerHome, caller);
+      updateExecutionSession(controllerHome, caller, {
+        activeRepositoryId: repository.repoId,
+        activeCheckoutId: repository.activeCheckoutId,
+        activeWorkId: workId,
+      });
+
+      const blocked = await json(callRepositoryTool(controllerHome, "repository_safe_patch_apply", {
+        repo_id: repository.repoId,
+        purpose: "must not escape terminal Work binding",
+        operations: [{ type: "create", path: "should-not-exist.txt", content: "forbidden\n" }],
+      }, caller));
+      expect(blocked.error).toMatchObject({
+        code: "WORK_ATTRIBUTION_TERMINAL",
+        message: "WORK_ATTRIBUTION_TERMINAL: WORK-TERMINAL-BOUND:failed",
+      });
+      expect(existsSync(join(repoRoot, "should-not-exist.txt"))).toBe(false);
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });

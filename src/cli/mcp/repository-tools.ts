@@ -331,8 +331,11 @@ function claimedSessionWorkId(
     const workId = executionSession?.activeWorkId?.trim();
     if (workId && executionSession?.activeRepositoryId === repository.repoId && (!executionSession.activeCheckoutId || executionSession.activeCheckoutId === repository.activeCheckoutId)) {
       const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
+      if (work && isTerminalWorkContractStatus(work.status)) {
+        throw new Error(`WORK_ATTRIBUTION_TERMINAL: ${work.workId}:${work.status}`);
+      }
       const owner = getControllerSession({ controllerHome, repoId: repository.repoId }, workId);
-      if (work && !isTerminalWorkContractStatus(work.status) && owner?.sessionId === caller.sessionId && (owner.principalId?.trim() || owner.controllerId) === caller.principalId.trim()) return workId;
+      if (work && owner?.sessionId === caller.sessionId && (owner.principalId?.trim() || owner.controllerId) === caller.principalId.trim()) return workId;
     }
   }
   const principal = caller.principalId.trim();

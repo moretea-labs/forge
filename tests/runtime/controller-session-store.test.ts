@@ -9,6 +9,7 @@ import {
   resumeControllerSession,
 } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { invalidateExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
+import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -79,6 +80,33 @@ describe('controller Work ownership fencing', () => {
     expect(controllerSessionBlocksRecovery(store, claimed.workId, { nowMs: invalidatedAtMs + 30_000, graceMs: 60_000 })).toBe(true);
     expect(controllerSessionBlocksRecovery(store, claimed.workId, { nowMs: invalidatedAtMs + 2 * 60_000, graceMs: 60_000 })).toBe(false);
     expect(() => claimControllerSession(store, claimInput('session-b', 'principal-b', 'instance-b'))).toThrow(/WORK_ALREADY_CLAIMED/);
+  });
+
+  test('rejects claim and resume for an existing terminal Work before persisting ownership', () => {
+    const home = controllerHome();
+    const store = { controllerHome: home, repoId: 'repo-a' };
+    createWorkContract(store, {
+      workId: 'work-owner',
+      repoId: 'repo-a',
+      mode: 'goal_workloop',
+      objective: 'terminal work must not revive',
+      acceptanceCriteria: ['terminal ownership is fenced'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'failed',
+    });
+    startExecutionSession(home, { sessionId: 'session-a', principalId: 'principal-a', controllerInstanceId: 'instance-a' });
+    startExecutionSession(home, { sessionId: 'session-b', principalId: 'principal-a', controllerInstanceId: 'instance-a' });
+
+    expect(() => claimControllerSession(store, claimInput('session-a', 'principal-a', 'instance-a')))
+      .toThrow(/WORK_CONTROLLER_CLAIM_TERMINAL: work-owner:failed/);
+    expect(getControllerSession(store, 'work-owner')).toBeUndefined();
+    expect(() => resumeControllerSession(store, claimInput('session-b', 'principal-a', 'instance-a')))
+      .toThrow(/WORK_CONTROLLER_CLAIM_TERMINAL: work-owner:failed/);
+    expect(getControllerSession(store, 'work-owner')).toBeUndefined();
   });
 
   test('rejects another principal and stale recovery generation', () => {
