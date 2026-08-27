@@ -154,6 +154,7 @@ try {
   });
   const origin = `http://127.0.0.1:${server.port}`;
   const one = `${origin}/one`;
+  const drifted = `${origin}/drifted`;
   const redirect = `${origin}/redirect`;
   const wrong = `${origin}/wrong`;
 
@@ -174,6 +175,55 @@ try {
 
     const userBefore = await productMetadata(product);
     if (requireCompetingForeground) assert.equal(userBefore.frontmost, false, `${product} must start behind a competing foreground app`);
+
+    const replacementProbe = await action('create_session', {
+      session_id: `browser-v3-replacement-probe-${product}`,
+      url: one,
+      browser_mode: 'attach_preferred',
+      native_browser_candidates: [product],
+      cdp_attach_fallback: 'fail_closed',
+      extract_text: false,
+    });
+    const replacementProbeSessionId = resultSessionId(replacementProbe);
+    openSessions.add(replacementProbeSessionId);
+    const replacementProbeOriginalRef = resultTabRef(replacementProbe);
+    const replacementReached = await action('open_page', {
+      session_id: replacementProbeSessionId,
+      url: drifted,
+      browser_mode: 'attach_preferred',
+      native_browser_candidates: [product],
+      cdp_attach_fallback: 'fail_closed',
+      extract_text: false,
+    });
+    const replacementProbeRef = resultTabRef(replacementReached);
+    const replacementReachedMetadata = await exactMetadata(product, replacementProbeRef);
+    assert.equal(replacementReachedMetadata.url, drifted, `${product} replacement did not reach the requested URL`);
+    assert.notDeepEqual(replacementProbeRef, replacementProbeOriginalRef, `${product} replacement did not establish a new stable tab ref`);
+    assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'replacement success');
+
+    let replacementMismatchCode = '';
+    try {
+      const unexpected = await action('open_page', { session_id: replacementProbeSessionId, url: redirect });
+      throw new Error(`Browser accepted a failed replacement postcondition: expected=${redirect} actual=${String(unexpected.url)} wrong=${wrong}`);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Browser accepted a failed replacement postcondition:')) throw error;
+      replacementMismatchCode = String((error as { code?: unknown }).code ?? '');
+      assert.equal(replacementMismatchCode, 'PLUGIN_BROWSER_NATIVE_REPLACEMENT_MISMATCH');
+    }
+    const replacementAfterMismatch = await exactMetadata(product, replacementProbeRef);
+    assert.equal(replacementAfterMismatch.url, drifted, `${product} failed replacement mutated the authoritative tab URL`);
+    const replacementProbeClosed = await action('close_session', { session_id: replacementProbeSessionId });
+    openSessions.delete(replacementProbeSessionId);
+    assert.equal(replacementProbeClosed.closed, true);
+    assert.equal(replacementProbeClosed.resourceClosed, true);
+    let authoritativeRefStillExists = true;
+    try {
+      await exactMetadata(product, replacementProbeRef);
+    } catch {
+      authoritativeRefStillExists = false;
+    }
+    assert.equal(authoritativeRefStillExists, false, `${product} close_session did not close the preserved authoritative replacement ref`);
+    assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'replacement probe cleanup');
 
     const createStarted = performance.now();
     const opened = await action('create_session', {

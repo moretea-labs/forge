@@ -103,11 +103,32 @@ describe('Browser Runtime V3 native replacement postconditions', () => {
     expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/', identity.url)).toBe(true);
   });
 
+  test('waits on the same replacement ref when it briefly preserves the previous URL', async () => {
+    let identityReads = 0;
+    const identity = await settleNativeCreatedPageIdentity({
+      waitForLoadState: async () => undefined,
+      identity: async () => {
+        identityReads += 1;
+        return identityReads === 1
+          ? { url: 'https://example.com/previous', title: 'Previous' }
+          : { url: 'https://www.tunemymusic.com/transfer/spotify-to-apple-music', title: 'Tune My Music' };
+      },
+    }, 'domcontentloaded', 25, {
+      requestedUrl: 'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
+      previousUrl: 'https://example.com/previous',
+    });
+    expect(identityReads).toBe(2);
+    expect(nativeReplacementUrlMatchesTarget('https://www.tunemymusic.com/transfer/spotify-to-apple-music', identity.url)).toBe(true);
+  });
+
   test('still rejects a settled wrong HTTP target after native tab settlement', async () => {
     const identity = await settleNativeCreatedPageIdentity({
       waitForLoadState: async () => undefined,
       identity: async () => ({ url: 'https://example.com/wrong', title: 'Wrong' }),
-    }, 'domcontentloaded', 1_000);
+    }, 'domcontentloaded', 1_000, {
+      requestedUrl: 'https://example.com/exact',
+      previousUrl: 'https://example.com/previous',
+    });
     expect(nativeReplacementUrlMatchesTarget('https://example.com/exact', identity.url)).toBe(false);
   });
 

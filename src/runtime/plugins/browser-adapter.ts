@@ -1297,9 +1297,29 @@ export async function settleNativeCreatedPageIdentity(
   },
   state: string,
   timeoutMs: number,
+  target?: { requestedUrl: string; previousUrl?: string },
 ): Promise<{ url: string; title: string }> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
   await page.waitForLoadState(state, { timeout: timeoutMs, requireHttpUrl: true });
-  return await page.identity();
+  let identity = await page.identity();
+  if (!target || nativeReplacementUrlMatchesTarget(target.requestedUrl, identity.url)) return identity;
+
+  const previousUrl = target.previousUrl?.trim();
+  if (!previousUrl || comparableUrl(identity.url) !== comparableUrl(previousUrl)) return identity;
+
+  // Native Chrome/Vivaldi can briefly expose the obsolete tab URL on the newly
+  // created stable replacement ref before the create-tab navigation commits.
+  // Only that exact previous URL is treated as transitional. A different HTTP(S)
+  // URL remains an immediate postcondition failure, and authority never moves to
+  // another tab while this bounded settlement loop runs.
+  while (Date.now() < deadline) {
+    const remainingMs = deadline - Date.now();
+    await new Promise((resolve) => setTimeout(resolve, Math.min(100, remainingMs)));
+    identity = await page.identity();
+    if (nativeReplacementUrlMatchesTarget(target.requestedUrl, identity.url)) return identity;
+    if (comparableUrl(identity.url) !== comparableUrl(previousUrl)) return identity;
+  }
+  return identity;
 }
 
 export function nativeReplacementMismatchDiagnostic(input: {
@@ -2248,6 +2268,7 @@ async function openNativeAttachedContext(
         throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Native replacement tab did not return a stable plugin-owned tab reference.', { retryable: true });
       }
       try {
+        const previousUrl = target.existingSession?.url ?? candidate.url();
         const identity = await settleNativeCreatedPageIdentity(
           replacement as unknown as {
             waitForLoadState: (state?: string, options?: Record<string, unknown>) => Promise<void>;
@@ -2255,12 +2276,13 @@ async function openNativeAttachedContext(
           },
           waitUntil(args.wait_until),
           timeout,
+          { requestedUrl: target.url, previousUrl },
         );
         if (!nativeReplacementUrlMatchesTarget(target.url, identity.url)) {
           const diagnostic = nativeReplacementMismatchDiagnostic({
             requestedUrl: target.url,
             actualUrl: identity.url,
-            previousUrl: target.existingSession?.url ?? candidate.url(),
+            previousUrl,
             obsoleteRef,
             replacementRef,
           });
