@@ -29,7 +29,7 @@ import {
   saveSchedule,
   saveScheduleDecision,
 } from './store';
-import { applyScheduleFailure } from './settlement';
+import { applyScheduleFailure, applyScheduleRetryableFailure } from './settlement';
 import { classifyScheduledBrowserObservation, executeScheduledBrowserProbe } from './browser-probe';
 import { executeScheduledGithubIssueWatch } from './github-issue-watch';
 import type {
@@ -365,6 +365,41 @@ function decideOccurrence(
   return saveOccurrence(controllerHome, { ...occurrence, decision, decisionId, status, reason });
 }
 
+export type ChatgptWakeFailureClass = 'retryable_readiness' | 'semantic_wait' | 'user_action_required' | 'ordinary_failure';
+
+export function classifyChatgptWakeFailure(reason: string): ChatgptWakeFailureClass {
+  const normalized = reason.toUpperCase();
+  if (
+    normalized.includes('CHATGPT_AUTOMATION_LOGIN_REQUIRED')
+    || normalized.includes('PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED')
+    || normalized.includes('AUTHENTICATION_REQUIRED')
+    || normalized.includes('CONSENT_REQUIRED')
+  ) return 'user_action_required';
+  if (normalized.includes('REPEATED_STATE:')) return 'semantic_wait';
+  const retryableMarkers = [
+    'PLUGIN_BROWSER_ATTACH_UNAVAILABLE',
+    'PLUGIN_BROWSER_DEPENDENCY_UNAVAILABLE',
+    'PLUGIN_BROWSER_NODE_HOST_UNAVAILABLE',
+    'PLUGIN_BROWSER_NODE_UNAVAILABLE',
+    'PLUGIN_BROWSER_ACTIVE_TAB_UNAVAILABLE',
+    'PLUGIN_BROWSER_SESSION_STATE_LOST',
+    'PLUGIN_SESSION_NOT_FOUND',
+    'PLUGIN_BROWSER_NATIVE_FOREGROUND_ACTIVATOR_UNAVAILABLE',
+    'CHATGPT_CONTROLLER_BROWSER_ROOT_UNAVAILABLE',
+    'CHATGPT_CONTROLLER_BROWSER_FAILED',
+    'CHATGPT_AUTOMATION_COMPOSER_UNAVAILABLE',
+    'CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE',
+    'CHATGPT_AUTOMATION_REPLACEMENT_SESSION_NOT_CONFIRMED',
+    'HTTP 502',
+    'ECONNREFUSED',
+    'ECONNRESET',
+    'ETIMEDOUT',
+    'UND_ERR_CONNECT_TIMEOUT',
+  ];
+  if (retryableMarkers.some((marker) => normalized.includes(marker))) return 'retryable_readiness';
+  return 'ordinary_failure';
+}
+
 function externalControllerLaunchArgs(args: Record<string, unknown>, controllerType: string): string[] {
   const launchArgs = Array.isArray(args.launch_args) ? args.launch_args.map(String) : [];
   if (controllerType !== 'chatgpt') return launchArgs;
@@ -544,25 +579,35 @@ async function executeExternalControllerWake(
     });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    if (options.transientWakeFailure) {
+    const failureClass = controllerType === 'chatgpt' ? classifyChatgptWakeFailure(reason) : 'ordinary_failure';
+    if (options.transientWakeFailure || failureClass === 'retryable_readiness' || failureClass === 'semantic_wait') {
+      const semanticWait = failureClass === 'semantic_wait';
+      const deferred = applyScheduleRetryableFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
+        outcome: semanticWait ? 'skipped' : 'failed',
+        decision: semanticWait ? 'nothing_to_do' : 'execute',
+        reason: semanticWait
+          ? `Controller wake deferred until durable state changes; schedule remains active: ${reason}`
+          : `Controller wake deferred by transient readiness; schedule remains active with bounded backoff: ${reason}`,
+        countFailure: !semanticWait,
+      });
       const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
       saveSchedule(controllerHome, {
         ...latest,
         lastTriggeredAt: timestamp,
         lastOccurrenceId: occurrence.occurrenceId,
-        nextEligibleAt: undefined,
-        pausedReason: undefined,
       });
-      return saveOccurrence(controllerHome, {
+      return deferred.occurrence ?? saveOccurrence(controllerHome, {
         ...wakeDecision,
-        status: 'failed',
-        reason: `Controller wake deferred; watcher remains active for retry: ${reason}`,
+        status: semanticWait ? 'skipped' : 'failed',
+        decision: semanticWait ? 'nothing_to_do' : 'execute',
+        reason,
       });
     }
     const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
       outcome: 'failed',
       decision: 'execute',
       reason,
+      ...(failureClass === 'user_action_required' ? { pauseReason: reason } : {}),
       handoff: {
         title: `External Controller wake ${occurrence.occurrenceId} failed`,
         summary: 'Forge recorded the schedule trigger but could not wake the configured external Controller.',

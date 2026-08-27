@@ -11,14 +11,21 @@ import {
 
 const TERMINAL_OCCURRENCE_STATUSES = new Set<ScheduleOccurrence['status']>(['succeeded', 'failed', 'shadowed', 'skipped']);
 
-function computeScheduleFailureState(schedule: ReturnType<typeof getSchedule>, nextFailures: number): Pick<ReturnType<typeof getSchedule>, 'consecutiveFailures' | 'nextEligibleAt' | 'enabled' | 'pausedReason'> {
-  const shouldPause = nextFailures >= schedule.policy.maxFailures;
+function computeScheduleBackoff(schedule: ReturnType<typeof getSchedule>, nextFailures: number): string {
   const backoffBase = Math.max(1, schedule.policy.backoffBaseMinutes ?? schedule.policy.cooldownMinutes ?? 1);
   const backoffMax = Math.max(backoffBase, schedule.policy.backoffMaxMinutes ?? 24 * 60);
-  const backoffMinutes = Math.min(backoffMax, backoffBase * (2 ** Math.max(0, nextFailures - 1)));
+  // Persistent readiness failures may span hours or days. Cap the exponent so
+  // the calculation stays bounded even while the observable failure count grows.
+  const exponent = Math.min(16, Math.max(0, nextFailures - 1));
+  const backoffMinutes = Math.min(backoffMax, backoffBase * (2 ** exponent));
+  return new Date(Date.now() + backoffMinutes * 60_000).toISOString();
+}
+
+function computeScheduleFailureState(schedule: ReturnType<typeof getSchedule>, nextFailures: number): Pick<ReturnType<typeof getSchedule>, 'consecutiveFailures' | 'nextEligibleAt' | 'enabled' | 'pausedReason'> {
+  const shouldPause = nextFailures >= schedule.policy.maxFailures;
   return {
     consecutiveFailures: nextFailures,
-    nextEligibleAt: new Date(Date.now() + backoffMinutes * 60_000).toISOString(),
+    nextEligibleAt: computeScheduleBackoff(schedule, nextFailures),
     enabled: shouldPause ? false : schedule.enabled,
     pausedReason: shouldPause ? 'Maximum consecutive failures reached.' : undefined,
   };
@@ -65,6 +72,43 @@ export function applyScheduleFailure(
     : countFailure
       ? saveSchedule(controllerHome, { ...schedule, ...computeScheduleFailureState(schedule, schedule.consecutiveFailures + 1) })
       : schedule;
+  return { schedule: nextSchedule, occurrence: nextOccurrence };
+}
+
+export function applyScheduleRetryableFailure(
+  controllerHome: string,
+  scheduleId: string,
+  repoId: string,
+  occurrenceId: string,
+  options: {
+    outcome: 'failed' | 'skipped';
+    decision: ScheduleDecisionType;
+    reason: string;
+    countFailure?: boolean;
+  },
+): { schedule: ReturnType<typeof getSchedule>; occurrence?: ScheduleOccurrence } {
+  const schedule = getSchedule(controllerHome, repoId, scheduleId);
+  const occurrence = getOccurrence(controllerHome, repoId, occurrenceId);
+  let nextOccurrence = occurrence;
+  if (occurrence && !TERMINAL_OCCURRENCE_STATUSES.has(occurrence.status)) {
+    nextOccurrence = saveOccurrence(controllerHome, {
+      ...occurrence,
+      status: options.outcome,
+      decision: options.decision,
+      reason: options.reason,
+    });
+  }
+  const countFailure = options.countFailure !== false;
+  const nextFailures = countFailure ? schedule.consecutiveFailures + 1 : schedule.consecutiveFailures;
+  const nextSchedule = saveSchedule(controllerHome, {
+    ...schedule,
+    consecutiveFailures: nextFailures,
+    nextEligibleAt: computeScheduleBackoff(schedule, Math.max(1, nextFailures)),
+    // Retryable readiness/semantic-wait failures never turn a durable schedule
+    // into a manual-resume task. Respect a concurrent explicit pause, however.
+    enabled: schedule.enabled,
+    pausedReason: schedule.enabled ? undefined : schedule.pausedReason,
+  });
   return { schedule: nextSchedule, occurrence: nextOccurrence };
 }
 

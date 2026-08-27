@@ -28,8 +28,9 @@ import {
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
-import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
-import { createSchedule, recordScheduleOccurrenceHandoff, saveOccurrence } from '../../src/runtime/workflow/schedules/store';
+import { classifyChatgptWakeFailure, evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
+import { applyScheduleRetryableFailure } from '../../src/runtime/workflow/schedules/settlement';
+import { createSchedule, getSchedule, recordScheduleOccurrenceHandoff, saveOccurrence, saveSchedule } from '../../src/runtime/workflow/schedules/store';
 import {
   buildSchedulerHealthSnapshot,
   normalizeSchedulerConfig,
@@ -639,6 +640,46 @@ describe('control-plane hardening', () => {
 
 
 describe('scheduled external Controller wake', () => {
+  test('classifies only explicit readiness failures as retryable while keeping consent and unknown failures fail-closed', () => {
+    expect(classifyChatgptWakeFailure('PLUGIN_BROWSER_ATTACH_UNAVAILABLE: Chrome attach failed')).toBe('retryable_readiness');
+    expect(classifyChatgptWakeFailure('HTTP 502 from primary connector')).toBe('retryable_readiness');
+    expect(classifyChatgptWakeFailure('CONTROLLER_RELAY_LAUNCH_BLOCKED: repeated_state:2>=2')).toBe('semantic_wait');
+    expect(classifyChatgptWakeFailure('CHATGPT_AUTOMATION_LOGIN_REQUIRED')).toBe('user_action_required');
+    expect(classifyChatgptWakeFailure('PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED')).toBe('user_action_required');
+    expect(classifyChatgptWakeFailure('PLUGIN_CONFIGURATION_INVALID')).toBe('ordinary_failure');
+  });
+
+  test('retryable continuation failure backs off without disabling the schedule and semantic wait does not count as failure', () => {
+    const root = temp('forge-schedule-retryable-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'retry@example.test'], ['config', 'user.name', 'Retry Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'retry\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'schedule-retryable' });
+    const schedule = createSchedule(controllerHome, {
+      requestId: 'retryable-schedule', repoId: repository.repoId, name: 'retryable continuation', enabled: true,
+      trigger: { type: 'interval', everyMinutes: 10 },
+      policy: { maxActiveOccurrences: 1, maxFailures: 1, cooldownMinutes: 1, dailyBudgetMinutes: 60, shadowMode: false, backoffBaseMinutes: 1, backoffMaxMinutes: 5 },
+      action: { operation: 'external_controller_wake', target: 'runtime', arguments: { work_id: 'WORK-RETRY', controller_type: 'chatgpt' } }, stopConditions: [],
+    });
+    saveOccurrence(controllerHome, { schemaVersion: 1, revision: 0, occurrenceId: 'OCC-RETRY-1', scheduleId: schedule.scheduleId, repoId: repository.repoId, windowKey: '1', status: 'running', decision: 'execute', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    const retry = applyScheduleRetryableFailure(controllerHome, schedule.scheduleId, repository.repoId, 'OCC-RETRY-1', { outcome: 'failed', decision: 'execute', reason: 'HTTP 502' });
+    expect(retry.schedule.enabled).toBe(true);
+    expect(retry.schedule.consecutiveFailures).toBe(1);
+    expect(retry.schedule.pausedReason).toBeUndefined();
+    expect(retry.schedule.nextEligibleAt).toBeTruthy();
+
+    saveOccurrence(controllerHome, { schemaVersion: 1, revision: 0, occurrenceId: 'OCC-RETRY-2', scheduleId: schedule.scheduleId, repoId: repository.repoId, windowKey: '2', status: 'running', decision: 'execute', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    const semanticWait = applyScheduleRetryableFailure(controllerHome, schedule.scheduleId, repository.repoId, 'OCC-RETRY-2', { outcome: 'skipped', decision: 'nothing_to_do', reason: 'repeated_state:2>=2', countFailure: false });
+    expect(semanticWait.schedule.enabled).toBe(true);
+    expect(semanticWait.schedule.consecutiveFailures).toBe(1);
+
+    saveSchedule(controllerHome, { ...getSchedule(controllerHome, repository.repoId, schedule.scheduleId), enabled: false, pausedReason: 'Explicit maintenance pause.' });
+    saveOccurrence(controllerHome, { schemaVersion: 1, revision: 0, occurrenceId: 'OCC-RETRY-3', scheduleId: schedule.scheduleId, repoId: repository.repoId, windowKey: '3', status: 'running', decision: 'execute', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    const explicitPause = applyScheduleRetryableFailure(controllerHome, schedule.scheduleId, repository.repoId, 'OCC-RETRY-3', { outcome: 'failed', decision: 'execute', reason: 'HTTP 502' });
+    expect(explicitPause.schedule.enabled).toBe(false);
+    expect(explicitPause.schedule.pausedReason).toBe('Explicit maintenance pause.');
+  });
+
   test('acknowledges a dispatched ChatGPT round only after an exact Work claim and only recovers liveness when that claimed round is abandoned', () => {
     const root = temp('forge-controller-relay-claim-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
