@@ -714,35 +714,31 @@ describe('CodeGraph read provider', () => {
 
   test('keeps bounded text fallback visible when required structural context is unavailable', () => { const root = contextRepo(); const unavailable = structuralResponse({ ok: false, status: 'unavailable', metadata: undefined, result: undefined, error: { code: 'CODEGRAPH_PLATFORM_BUNDLE_MISSING', message: 'not installed' } }); const pack = buildControllerContextPack(root, getMcpPolicy('controller'), { description: 'runService', searchTerms: ['runService'], structuralContext: 'required' }, { queryCodeGraph: () => unavailable }); expect(pack.structuralContext).toMatchObject({ requestedMode: 'required', status: 'unavailable', requiredSatisfied: false }); expect(pack.impactContext).toMatchObject({ status: 'degraded', confidence: 'medium' }); expect(pack.readiness).toMatchObject({ status: 'insufficient', structural: { requested: 'required', status: 'unavailable', requiredSatisfied: false }, readyForHighConfidenceMutation: false }); expect(pack.readiness.unresolvedReasonCodes).toContain('required_structural_context_unsatisfied'); expect(pack.impactContext.coverageGaps).toContain('structural_provider_unavailable'); expect(pack.next[0]).toContain('Structural context was required'); expect(pack.files.some((file) => file.path === 'src/service.ts')).toBe(true); });
 
-  test('materializes a bounded second structural adjacency wave in one context-pack call', () => {
+  test('materializes source-derived Wave 2 and Wave 3 evidence in one context-pack call', () => {
     const root = contextRepo();
-    writeFileSync(join(root, 'src/helper.ts'), 'export const helper = 1;\n');
+    writeFileSync(join(root, 'src/service.ts'), "import { helper } from './helper';\nexport const ENTRY_MARKER = helper();\n");
+    writeFileSync(join(root, 'src/helper.ts'), "import { deepValue } from './deep';\nexport function helper() { return deepValue; }\n");
+    writeFileSync(join(root, 'src/deep.ts'), 'export const deepValue = 42;\n');
     mkdirSync(join(root, 'tests'), { recursive: true });
     writeFileSync(join(root, 'tests/helper.test.ts'), "import { helper } from '../src/helper';\nvoid helper;\n");
-    const serviceNode = { id: 'node-service', kind: 'function', name: 'runService', qualifiedName: 'src/service.ts::runService', filePath: 'src/service.ts', language: 'typescript', startLine: 1, endLine: 1 };
+    const serviceNode = { id: 'node-service', kind: 'function', name: 'ENTRY_MARKER', qualifiedName: 'src/service.ts::ENTRY_MARKER', filePath: 'src/service.ts', language: 'typescript', startLine: 2, endLine: 2 };
     const calls: string[] = [];
-    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
-      description: 'Trace runService implementation and its related tests',
-      searchTerms: ['runService'],
-      structuralContext: 'auto',
-      maxFiles: 6,
-      maxSnippets: 12,
-    }, {
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), { description: 'Trace ENTRY_MARKER implementation and its related tests', searchTerms: ['ENTRY_MARKER'], retrievalMode: 'review', structuralContext: 'auto', maxFiles: 6, maxSnippets: 12 }, {
       queryCodeGraph: (_repoRoot, request) => {
         if (request.operation !== 'file_dependencies') return structuralResponse({ result: { nodes: [serviceNode], entryPoints: [serviceNode], relatedFiles: ['src/service.ts'], truncated: false } });
         calls.push(request.filePath ?? '');
-        if (request.filePath === 'src/service.ts') return structuralResponse({ operation: 'file_dependencies', result: { filePath: 'src/service.ts', dependencies: ['src/helper.ts'], dependents: [] } });
         if (request.filePath === 'src/helper.ts') return structuralResponse({ operation: 'file_dependencies', result: { filePath: 'src/helper.ts', dependencies: [], dependents: ['tests/helper.test.ts'] } });
         return structuralResponse({ operation: 'file_dependencies', result: { filePath: request.filePath, dependencies: [], dependents: [] } });
       },
     });
     expect(calls).toEqual(expect.arrayContaining(['src/service.ts', 'src/helper.ts']));
-    expect(pack.expansion).toMatchObject({ waveCount: 2, expansionPerformed: true, expansionBudgetUsed: 1 });
-    expect(pack.expansion.discoveredPaths).toContain('tests/helper.test.ts');
-    expect(pack.expansion.materializedPaths).toContain('tests/helper.test.ts');
-    expect(pack.files.find((file) => file.path === 'tests/helper.test.ts')?.reasons).toContain('wave2:dependent:src/helper.ts');
+    expect(pack.expansion).toMatchObject({ waveCount: 3, expansionPerformed: true, expansionBudgetUsed: 3 });
+    expect(pack.expansion.materializedPaths).toEqual(expect.arrayContaining(['src/helper.ts', 'src/deep.ts', 'tests/helper.test.ts']));
+    expect(pack.files.find((file) => file.path === 'src/helper.ts')?.reasons).toContain('source-reference:src/service.ts');
+    expect(pack.files.find((file) => file.path === 'src/deep.ts')?.reasons).toContain('source-reference:src/helper.ts');
+    expect(pack.files.find((file) => file.path === 'tests/helper.test.ts')?.reasons).toContain('codegraph:dependent:src/helper.ts');
     expect(pack.impactContext.relevantTests).toContain('tests/helper.test.ts');
-    expect(pack.timingsMs.waveCount).toBe(2);
+    expect(pack.timingsMs.waveCount).toBe(3);
   });
 
   test('does not add an adaptive wave for simple structural-off local retrieval', () => {
@@ -750,6 +746,20 @@ describe('CodeGraph read provider', () => {
     const pack = buildControllerContextPack(root, getMcpPolicy('controller'), { searchTerms: ['runService'], structuralContext: 'off', maxFiles: 4 });
     expect(pack.expansion).toMatchObject({ waveCount: 1, expansionPerformed: false, expansionBudgetUsed: 0 });
     expect(pack.readiness.structural).toMatchObject({ requested: 'off', status: 'disabled', requiredSatisfied: true });
+  });
+
+  test('keeps unmaterialized expansion evidence explicit when the bounded file budget is exhausted', () => {
+    const root = contextRepo();
+    writeFileSync(join(root, 'src/service.ts'), "import './alpha';\nimport './beta';\nexport const ENTRY_MARKER = true;\n");
+    writeFileSync(join(root, 'src/alpha.ts'), 'export const alpha = true;\n');
+    writeFileSync(join(root, 'src/beta.ts'), 'export const beta = true;\n');
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), { description: 'Review ENTRY_MARKER', searchTerms: ['ENTRY_MARKER'], retrievalMode: 'review', structuralContext: 'off', maxFiles: 2, maxSnippets: 4 });
+    expect(pack.expansion.expansionPerformed).toBe(true);
+    expect(pack.expansion.discoveredPaths).toEqual(expect.arrayContaining(['src/alpha.ts', 'src/beta.ts']));
+    expect(pack.contextContract.expansionSignals).toContain('evidence_expansion_budget_exhausted');
+    expect(pack.readiness.unresolvedReasonCodes).toContain('expansion_budget_exhausted');
+    expect(pack.coverage.likelyRelatedNotInspected.length).toBeGreaterThan(0);
+    expect(pack.readiness.readyForHighConfidenceMutation).toBe(false);
   });
 
   test('runs lexical fallback when stale required structural candidates already saturate discovery', () => {
@@ -776,6 +786,8 @@ describe('CodeGraph read provider', () => {
       maxFiles: 4,
     }, { queryCodeGraph: () => stale });
     expect(pack.structuralContext).toMatchObject({ requestedMode: 'required', status: 'stale', requiredSatisfied: false });
+    expect(pack.readiness).toMatchObject({ status: 'insufficient', readyForHighConfidenceMutation: false });
+    expect(pack.readiness.unresolvedReasonCodes).toContain('required_structural_context_unsatisfied');
     expect(pack.search.scannedFiles).toBeGreaterThan(0);
     expect(pack.files[0]?.path).toBe('src/service.ts');
     expect(pack.files[0]?.reasons).toContain('search:runService');

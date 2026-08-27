@@ -296,12 +296,27 @@ function rhContextLegacySemanticQuery(query: string): {
   return { retrievalQuery: retrievalQuery || fallback, requests };
 }
 
+interface RhContextSemanticNavigationProjection {
+  requested: number;
+  executed: number;
+  results: Record<string, unknown>[];
+  errors: Array<{ index: number; code: string; message: string }>;
+  providers: unknown[];
+  policyDeniedLocations: number;
+  policyDeniedReads: number;
+  policyDeniedReadSamples: string[];
+  requestTruncated: boolean;
+  freshness: 'not_requested' | 'changed_during_query' | 'current_at_query';
+  sourceIdentity?: Record<string, unknown>;
+  staticClosure: { scope: string; status: 'not_requested' | 'incomplete' | 'complete_for_requested_symbols'; limitations: string[] };
+}
+
 async function rhContextSemanticNavigation(
   repoRoot: string,
   policy: MultiRepositoryMcpToolContext['policy'],
   value: unknown,
   repositoryIdentity: { repoId: string; checkoutId: string },
-): Promise<Record<string, unknown>> {
+): Promise<RhContextSemanticNavigationProjection> {
   const raw = Array.isArray(value) ? value : [];
   const requests = raw.slice(0, RH_CONTEXT_SEMANTIC_QUERY_LIMIT);
   const results: Record<string, unknown>[] = [];
@@ -3604,6 +3619,38 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   : 'none',
             compatibilityQuerySyntax: RH_CONTEXT_LEGACY_SEMANTIC_SYNTAX,
           };
+          const semanticReasonCodes = Array.from(new Set([
+            ...semanticNavigation.errors.map((entry) => `semantic.${String(entry.code ?? 'provider_error').toLowerCase()}`),
+            ...(semanticNavigation.requestTruncated ? ['semantic.request_truncated'] : []),
+            ...(semanticNavigation.policyDeniedLocations > 0 || semanticNavigation.policyDeniedReads > 0 ? ['semantic.policy_denied'] : []),
+            ...(semanticNavigation.freshness === 'changed_during_query' ? ['semantic.source_changed_during_query'] : []),
+            ...(semanticNavigation.requested > 0 && semanticNavigation.staticClosure.status !== 'complete_for_requested_symbols' ? ['semantic.static_closure_incomplete'] : []),
+          ]));
+          const semanticUnavailable = semanticNavigation.requested > 0
+            && semanticNavigation.results.length === 0
+            && semanticNavigation.errors.length > 0
+            && semanticNavigation.errors.every((entry) => /UNAVAILABLE|NOT_AVAILABLE|NOT_READY|MISSING|NOT_FOUND|BUILD_SETTINGS|BUILD_SERVER/i.test(String(entry.code ?? '')));
+          const semanticReadinessStatus = semanticNavigation.requested === 0
+            ? 'not_requested' as const
+            : semanticNavigation.results.length === 0 && semanticNavigation.errors.length > 0
+              ? semanticUnavailable ? 'unavailable' as const : 'error' as const
+              : semanticNavigation.staticClosure.status === 'complete_for_requested_symbols' && semanticReasonCodes.length === 0
+                ? 'ready' as const
+                : 'partial' as const;
+          const readinessStatus = pack.readiness.status === 'insufficient'
+            ? 'insufficient' as const
+            : semanticReadinessStatus === 'unavailable' || semanticReadinessStatus === 'error'
+              ? 'insufficient' as const
+              : pack.readiness.status === 'degraded' || semanticReadinessStatus === 'partial'
+                ? 'degraded' as const
+                : 'ready' as const;
+          const readiness = {
+            ...pack.readiness,
+            status: readinessStatus,
+            semantic: { status: semanticReadinessStatus, reasonCodes: semanticReasonCodes },
+            unresolvedReasonCodes: Array.from(new Set([...pack.readiness.unresolvedReasonCodes, ...semanticReasonCodes])).slice(0, 80),
+            readyForHighConfidenceMutation: readinessStatus === 'ready',
+          };
           const warnings = structuralContext === 'required' && !pack.structuralContext.requiredSatisfied
             ? [pack.structuralContext.fallbackReason ?? 'Required structural context is not ready; lexical retrieval results are returned as degraded evidence.']
             : [];
@@ -3620,6 +3667,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               structuralContext: pack.structuralContext,
               impactContext: pack.impactContext,
               semanticNavigation,
+              readiness,
+              expansion: pack.expansion,
               files: pack.files,
               coverage: pack.coverage,
               cache: pack.cache,

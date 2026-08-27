@@ -654,6 +654,9 @@ export function buildControllerContextPack(
   }
 
   const rawSnippetTruncated = files.some((file) => file.snippets.some((snippet) => snippet.truncated));
+  const unresolvedExpansionPaths = Array.from(new Set(expansionDiscoveredPaths)).filter((path) => !files.some((file) => file.path === path));
+  const expansionBudgetExhausted = unresolvedExpansionPaths.length > 0
+    && (timingsMs.expansionBudgetUsed >= timingsMs.expansionBudgetMax || files.length >= maxFiles || remainingSnippets <= 0);
   const expansionSignals = [
     ...(files.length === 0 ? ["no_current_raw_source"] : []),
     ...(rawSnippetTruncated ? ["raw_snippet_truncated"] : []),
@@ -663,6 +666,7 @@ export function buildControllerContextPack(
     ...(structuralMode === "required" && !structuralContext.requiredSatisfied ? ["required_structural_context_unavailable"] : []),
     ...(policyDeniedFiles > 0 || deniedPaths.length > 0 ? ["policy_denied_candidates"] : []),
     ...(skippedLargeFiles > 0 ? ["large_candidates_skipped"] : []),
+    ...(expansionBudgetExhausted ? ["evidence_expansion_budget_exhausted"] : []),
     ...impactCoverage.flatMap((coverage) => coverage.status === "no_evidence"
       ? [`impact_domain_without_evidence:${coverage.domain}`]
       : coverage.status === "matched_not_selected"
@@ -779,6 +783,7 @@ export function buildControllerContextPack(
     ...rankedCandidates.map((entry) => entry.path),
     ...structuralContext.relatedFiles,
     ...graphImpactFiles,
+    ...expansionDiscoveredPaths,
   ])).filter((path) => !inspectedSet.has(path)).slice(0, 80);
   const materializedExactKnownPaths = files
     .filter((file) => file.reasons.includes("explicit-known-path"))
@@ -798,6 +803,7 @@ export function buildControllerContextPack(
     ...(structuralContext.status === "unavailable" || structuralContext.status === "degraded" ? ["structural_provider_degraded"] : []),
     ...(policyDeniedFiles > 0 || deniedPaths.length > 0 ? ["policy_denied_evidence"] : []),
     ...(skippedLargeFiles > 0 ? ["large_evidence_skipped"] : []),
+    ...(expansionBudgetExhausted ? ["expansion_budget_exhausted"] : []),
     ...(likelyRelatedNotInspected.length > 0 ? ["related_evidence_not_materialized"] : []),
   ])).slice(0, 40);
   const readinessStatus = files.length === 0 || (structuralMode === "required" && !structuralContext.requiredSatisfied)
@@ -823,7 +829,7 @@ export function buildControllerContextPack(
     semantic: { status: "not_requested", reasonCodes: ["semantic_navigation_not_requested"] },
     retrieval: {
       searchTruncated,
-      omittedCandidateCount: Math.max(0, rankedCandidates.length - selected.length),
+      omittedCandidateCount: rankedCandidates.filter((entry) => !inspectedSet.has(entry.path)).length,
       policyDeniedCandidateCount: policyDeniedFiles + deniedPaths.length,
       likelyRelatedNotInspectedCount: likelyRelatedNotInspected.length,
     },
@@ -924,7 +930,7 @@ export function buildControllerContextPack(
     contextContract: {
       strategy: retrievalMode === "implementation"
         ? "Use one broad current-source pack to discover credible entry points, then progressively expand from returned paths and symbols. Lexical terms are heuristic hints rather than completeness requirements. ChatGPT owns semantic sufficiency and should prefer targeted known_paths, compiler semantic navigation for concrete TypeScript symbols, or structural relationships before repeating broad lexical discovery."
-        : "Use this pack as progressive investigation evidence and repeat rh_context to expand exact ranges, symbols, relationships, tests, or neighboring modules whenever that can improve the plan, diagnosis, or review.",
+        : "Use the bounded evidence-closure waves already performed inside this rh_context call. Repeat rh_context only when unresolved material relationships remain after the internal expansion budget, or when the Controller intentionally changes evidence scope.",
       retrievalMode,
       semanticSufficiencyAuthority: "chatgpt",
       rawCodeRequiredForImplementation,
@@ -932,7 +938,7 @@ export function buildControllerContextPack(
       notes: [
         retrievalMode === "implementation"
           ? "The pack contains policy-approved current raw source with file SHA identities, but returned snippets are bounded evidence rather than proof of semantic completeness. After reading this evidence, derive new exact paths, symbols, tests, or relationships from the source itself. A guessed lexical term with no result is not by itself a reason to keep scanning or repeat the same broad query."
-          : "Investigation modes may intentionally expand exact ranges, structural relationships, tests, and neighboring modules before any implementation decision.",
+          : `Investigation mode performed ${timingsMs.waveCount} bounded evidence wave(s) inside this request; expansion budget ${timingsMs.expansionBudgetUsed}/${timingsMs.expansionBudgetMax}.`,
         "Search/CodeGraph ranking is discovery evidence, not a business-semantics authority. readiness and impactContext make the bounded evidence surface and unresolved gaps explicit; ChatGPT still decides semantic sufficiency.",
         instructionContext.contracts.length > 0
           ? `Applicable repository guidance was resolved hierarchically for selected source paths: ${instructionContext.contracts.map((entry) => entry.path).join(", ")}. These AGENTS.md/CLAUDE.md files are guidance-only evidence and do not define semantic scope.`

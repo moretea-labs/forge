@@ -502,6 +502,27 @@ printf 'BUILD SUCCEEDED\\n'
     expect('capabilityCount' in data).toBe(false);
   });
 
+  test('rh_context search exposes multi-wave readiness and folds semantic failures into mutation readiness', async () => {
+    const business = tempRoot('forge-context-readiness-facade-');
+    const controllerHome = tempRoot('forge-home-context-readiness-facade-');
+    initGitRepo(business, 'context-readiness-facade');
+    writeFileSync(join(business, 'src', 'index.ts'), "import { helper } from './helper';\nexport const ENTRY_MARKER = helper;\n");
+    writeFileSync(join(business, 'src', 'helper.ts'), 'export const helper = 42;\n');
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Readiness Facade' });
+    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId, operation: 'search', query: 'ENTRY_MARKER', known_paths: ['src/index.ts'], retrieval_mode: 'review', structural_context: 'off', max_files: 4, max_snippets: 8,
+      semantic_navigation: [{ navigation: 'references', path: 'src/index.ts', line: 0, column: 1 }],
+    }));
+    const data = payload.data as { readiness?: { status?: string; readyForHighConfidenceMutation?: boolean; semantic?: { status?: string; reasonCodes?: string[] }; unresolvedReasonCodes?: string[] }; expansion?: { waveCount?: number; expansionPerformed?: boolean; materializedPaths?: string[] }; semanticNavigation?: { requested?: number; errors?: Array<{ code?: string }> } };
+    expect(data.expansion).toMatchObject({ expansionPerformed: true });
+    expect(data.expansion?.waveCount).toBeGreaterThanOrEqual(2);
+    expect(data.expansion?.materializedPaths).toContain('src/helper.ts');
+    expect(data.semanticNavigation?.requested).toBe(1);
+    expect(data.semanticNavigation?.errors?.some((entry) => entry.code === 'SEMANTIC_NAVIGATION_REQUEST_INVALID')).toBe(true);
+    expect(data.readiness).toMatchObject({ status: 'insufficient', readyForHighConfidenceMutation: false, semantic: { status: 'error' } });
+    expect(data.readiness?.unresolvedReasonCodes).toContain('semantic.semantic_navigation_request_invalid');
+  });
+
   test('rh_context list query returns bounded read-only intent discovery and preserves plugin_action_execute authority', async () => {
     const business = tempRoot('forge-context-capability-search-');
     const controllerHome = tempRoot('forge-home-capability-search-');
