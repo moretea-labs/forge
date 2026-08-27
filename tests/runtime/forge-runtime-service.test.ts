@@ -22,7 +22,7 @@ import {
   type PackageRuntimeActivationRequest,
 } from '../../src/runtime/root/package-runtime-service';
 import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
-import { ensurePackageConnectorService, packageConnectorLaunchSpec, packageConnectorServicePaths, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit } from '../../src/runtime/root/package-connector-service';
+import { ensurePackageConnectorService, packageConnectorLaunchSpec, packageConnectorServiceMatchesRelease, packageConnectorServicePaths, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit } from '../../src/runtime/root/package-connector-service';
 import { retireConflictingForgeLaunchAgents } from '../../src/cli/controller/launch-agents';
 
 const roots: string[] = [];
@@ -471,6 +471,9 @@ describe('Forge Runtime service', () => {
     const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'connector-reuse-test' });
     const paths = packageConnectorServicePaths(fx.home, fx.root);
     mkdirSync(paths.serviceRoot, { recursive: true });
+    mkdirSync(join(fx.root, 'Library', 'LaunchAgents'), { recursive: true });
+    const launch = packageConnectorLaunchSpec({ release, controllerHome: fx.home, endpoint: 'http://127.0.0.1:8767/mcp' });
+    writeFileSync(paths.installedPlistPath, renderPackageConnectorLaunchAgent({ paths, launch }));
     const installedAt = '2026-08-18T00:00:00.000Z';
     writeFileSync(paths.authorityPath, `${JSON.stringify({
       schemaVersion: 1,
@@ -500,6 +503,35 @@ describe('Forge Runtime service', () => {
     expect(readFileSync(paths.authorityPath, 'utf8')).toBe(before);
     expect(readPackageConnectorServiceAuthority(fx.home)?.installedAt).toBe(installedAt);
     expect(existsSync(paths.sourcePlistPath)).toBe(false);
+  });
+
+  test('rejects a healthy connector whose launch spec does not match its immutable package release', () => {
+    const fx = fixture(), packageRoot = join(fx.root, 'package');
+    for (const dir of ['src/cli', 'src/runtime/shared', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
+    writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
+    writeFileSync(join(packageRoot, 'src', 'cli', 'index.ts'), '');
+    writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), '');
+    const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'connector-spec-test' });
+    const endpoint = 'http://127.0.0.1:8767/mcp';
+    const paths = packageConnectorServicePaths(fx.home, fx.root);
+    mkdirSync(join(fx.root, 'Library', 'LaunchAgents'), { recursive: true });
+    const authority = {
+      schemaVersion: 1 as const,
+      endpoint,
+      releaseId: release.releaseId,
+      releaseRoot: release.releaseRoot,
+      packageRoot: release.packageRoot,
+      mode: 'launchd' as const,
+      persistent: true,
+      servicePath: paths.installedPlistPath,
+      installedAt: new Date().toISOString(),
+    };
+    writeFileSync(paths.installedPlistPath, '<plist><string>/mutable/source/src/cli/index.ts</string></plist>\n');
+    expect(packageConnectorServiceMatchesRelease({ authority, release, controllerHome: fx.home, endpoint, platform: 'darwin', env: { HOME: fx.root } })).toBe(false);
+    const launch = packageConnectorLaunchSpec({ release, controllerHome: fx.home, endpoint });
+    writeFileSync(paths.installedPlistPath, renderPackageConnectorLaunchAgent({ paths, launch }));
+    expect(packageConnectorServiceMatchesRelease({ authority, release, controllerHome: fx.home, endpoint, platform: 'darwin', env: { HOME: fx.root } })).toBe(true);
   });
 
   test('retires a stale Forge connector owner on the same port before reboot can reload it', async () => {

@@ -151,6 +151,40 @@ export function renderPackageConnectorSystemdUserUnit(input: { launch: ReturnTyp
   return ['[Unit]', 'Description=Forge ChatGPT OAuth Gateway', 'After=network-online.target', '', '[Service]', 'Type=simple', `ExecStart=${[input.launch.executable, ...input.launch.args].map(quote).join(' ')}`, ...env, 'Restart=on-failure', 'RestartSec=5', '', '[Install]', 'WantedBy=default.target', ''].join('\n');
 }
 
+export function packageConnectorServiceMatchesRelease(input: {
+  authority: PackageConnectorServiceAuthority;
+  release: PackageRuntimeRelease;
+  controllerHome: string;
+  endpoint: string;
+  platform: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+}): boolean {
+  try {
+    if (
+      input.authority.endpoint !== input.endpoint
+      || input.authority.releaseId !== input.release.releaseId
+      || resolve(input.authority.releaseRoot) !== resolve(input.release.releaseRoot)
+      || resolve(input.authority.packageRoot) !== resolve(input.release.packageRoot)
+    ) return false;
+    const launch = packageConnectorLaunchSpec({ release: input.release, controllerHome: input.controllerHome, endpoint: input.endpoint });
+    if (input.platform === 'darwin') {
+      const paths = packageConnectorServicePaths(input.controllerHome, input.env?.HOME);
+      if (input.authority.mode !== 'launchd' || !input.authority.servicePath) return false;
+      const servicePath = resolve(input.authority.servicePath);
+      if (servicePath !== resolve(paths.installedPlistPath) || !existsSync(servicePath)) return false;
+      return readFileSync(servicePath, 'utf8') === renderPackageConnectorLaunchAgent({ paths, launch });
+    }
+    if (input.platform === 'linux') {
+      if (input.authority.mode !== 'systemd-user' || !input.authority.servicePath) return false;
+      const servicePath = resolve(input.authority.servicePath);
+      return existsSync(servicePath) && readFileSync(servicePath, 'utf8') === renderPackageConnectorSystemdUserUnit({ launch });
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function installSystemd(paths: PackageConnectorServicePaths, launch: ReturnType<typeof packageConnectorLaunchSpec>, env: NodeJS.ProcessEnv): string {
   const unitName = `${paths.label}.service`;
   const unitPath = join(env.HOME ?? homedir(), '.config', 'systemd', 'user', unitName);
@@ -243,9 +277,16 @@ export async function ensurePackageConnectorService(input: {
     try { authority = readPackageConnectorServiceAuthority(input.controllerHome); } catch { authority = undefined; }
     if (
       authority?.persistent
-      && authority.endpoint === input.endpoint
       && existsSync(authority.releaseRoot)
       && existsSync(authority.packageRoot)
+      && packageConnectorServiceMatchesRelease({
+        authority,
+        release: input.release,
+        controllerHome: input.controllerHome,
+        endpoint: input.endpoint,
+        platform,
+        env: input.env,
+      })
       && await (input.probeEndpoint ?? defaultConnectorEndpointProbe)(input.endpoint)
     ) {
       return {
