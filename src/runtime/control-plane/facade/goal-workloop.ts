@@ -12,6 +12,7 @@ import {
   createWorkContract,
   getWorkContract,
   listWorkContracts,
+  recordWorkCompletionReceipt,
   recordWorkScopeEvidence,
   summarizeWorkContract,
   transitionWorkContractPhase,
@@ -1713,6 +1714,47 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
           risk: 'readonly',
         },
       ],
+    });
+  }
+
+  // For a controller-local effect Work, the semantic Controller's explicit
+  // finalize call is the terminalization decision, but it is admissible only
+  // after durable result evidence exists. Record one canonical Work receipt here
+  // instead of routing an effect-only Work through Git delivery. Remote effects
+  // remain bound to their durable plugin action receipt in the plugin layer.
+  if (work.workKind === 'local_effect' && !work.completionReceipt && completionEvidence.durableResultEvidence) {
+    const recordedAt = nowIso(ctx);
+    const completed = recordWorkCompletionReceipt(
+      ctx.workStore,
+      work.workId,
+      {
+        schemaVersion: 1,
+        receiptId: `LFX-WORK-${randomUUID()}`,
+        source: 'local_effect',
+        workId: work.workId,
+        operation: 'controller_work/local_effect',
+        target: { kind: 'controller_local', id: work.workId },
+        changed: true,
+        recordedAt,
+      },
+      'completed_local',
+      'local_effect',
+    );
+    if (completed.planId && completed.planStepId && ctx.planStore) {
+      completePlanStepForWork(ctx.planStore, { planId: completed.planId, stepId: completed.planStepId, work: completed });
+    }
+    return buildFacadeResult({
+      status: 'ok',
+      summary: `Finalize result: succeeded for ${work.workId}.`,
+      data: {
+        work: summarizeWorkContract(completed),
+        finalStatus: 'completed',
+        completionReceipt: completed.completionReceipt,
+        validPasses: history.validPasses,
+        hiddenFailure: false,
+      },
+      evidenceRefs: completed.evidenceRefs.slice(0, 5),
+      suggestedNextActions: [{ label: 'Read controller status', tool: 'rh_status', operation: 'get', risk: 'readonly' }],
     });
   }
 

@@ -6,9 +6,9 @@ import { join } from 'path';
 import { assessWorkMode } from '../../src/cli/controller/work-mode';
 import { applyEditOperations, beginEditSession, finalizeEditSession } from '../../src/cli/editing/edit-session';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
-import { continueGoalWorkloop, routeWorkStart, verifyGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
+import { continueGoalWorkloop, finalizeGoalWorkloop, routeWorkStart, verifyGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { approvePlanContract, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
-import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkScopeEvidence } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkScopeEvidence } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { selectExecutionMode } from '../../src/runtime/control-plane/facade/types';
 import { decideRoute, type RoutePolicyInput } from '../../src/runtime/control-plane/routing/route-policy';
 const roots: string[] = [];
@@ -366,6 +366,29 @@ describe('single Route Policy authority', () => {
     const localId = (local.data as { work?: { workId?: string } }).work?.workId;
     expect(localId).toBeTruthy();
     expect(getWorkContract(localStore, localId!)).toMatchObject({ workKind: 'local_effect' });
+    const localContext = { ...context, workStore: localStore, workspaceFingerprint: 'workspace-a' };
+    const blockedLocalFinalize = finalizeGoalWorkloop(localContext, { workId: localId! });
+    expect(blockedLocalFinalize.status).toBe('blocked');
+    expect(blockedLocalFinalize.summary).toContain('No durable result evidence');
+    appendWorkEvidence(localStore, localId!, {
+      evidenceId: 'OCC-SCH-local-effect-timer-1',
+      title: 'scheduled continuation dispatched',
+      summary: 'A real timer-origin continuation occurrence completed.',
+      detailLevel: 'summary',
+    });
+    const completedLocal = finalizeGoalWorkloop(localContext, { workId: localId! });
+    expect(completedLocal.status).toBe('ok');
+    expect(getWorkContract(localStore, localId!)).toMatchObject({
+      status: 'completed',
+      workKind: 'local_effect',
+      completionOutcome: 'completed_local',
+      completionReceipt: {
+        source: 'local_effect',
+        workId: localId,
+        operation: 'controller_work/local_effect',
+        target: { kind: 'controller_local', id: localId },
+      },
+    });
 
     const explicitStore = { root: join(root, 'explicit-repository-work') };
     const explicitRepositoryChange = routeWorkStart({ ...context, workStore: explicitStore }, {

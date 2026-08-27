@@ -195,7 +195,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     target_branch: { type: 'string', description: 'Delivery branch; defaults to the repository default branch.' },
     delete_branch: { type: 'boolean', description: 'Defaults to true after target-branch containment is proven.' },
     no_ff: { type: 'boolean' },
-    completion_outcome: { type: 'string', enum: ['completed_changed', 'completed_no_change'] },
+    completion_outcome: { type: 'string', enum: ['completed_changed', 'completed_no_change', 'completed_local', 'completed_remote'], description: 'Explicit completion semantics. completed_local is for controller-local effect Work finalized from durable result evidence; completed_remote remains bound to a durable remote plugin receipt.' },
     no_change_evidence: { type: 'string', description: 'Optional explicit proof for a no-change completion; otherwise the lifecycle coordinator derives proof only for an unchanged validated HEAD.' },
     reconcile_historical_delivery: { type: 'boolean', description: 'Explicitly request reviewed reconciliation for a historically delivered repository Work whose original receipt is missing. Managed Work is eligible only after merge, branch cleanup, and worktree cleanup are durably complete.' },
     reconcile_target_revision: { type: 'string', description: 'Exact already-integrated commit accepted by the reviewer.' },

@@ -9,7 +9,7 @@ import {
   previewAutomaticRuntimeMaintenance,
   type RuntimeMaintenanceActionId,
 } from '../../recovery/maintenance-executor';
-import { controllerSessionBlocksRecovery, getControllerSession, getWorkContract, isTerminalWorkContractStatus, listHandoffItems } from '../../control-plane/facade';
+import { appendWorkEvidence, controllerSessionBlocksRecovery, getControllerSession, getWorkContract, isTerminalWorkContractStatus, listHandoffItems } from '../../control-plane/facade';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
 import { getExternalControllerLaunchReservation } from '../../control-plane/launcher/launch-reservation-store';
 import { runStandaloneChatgptPrompt, runWorkChatgptContinuation } from '../../control-plane/launcher/chatgpt-work-continuation';
@@ -527,11 +527,18 @@ async function executeExternalControllerWake(
           nextEligibleAt: undefined,
           pausedReason: undefined,
         });
-        return saveOccurrence(controllerHome, {
+        const succeededOccurrence = saveOccurrence(controllerHome, {
           ...wakeDecision,
           status: 'succeeded',
           reason: `ChatGPT dispatch action succeeded via ${dispatched.browserSessionId}; relay ${completedRelay?.relayScopeId ?? relay.relayScopeId} remains dispatched until the new Controller claims Work ${workId}.`,
         });
+        appendWorkEvidence(workStore, workId, {
+          evidenceId: succeededOccurrence.occurrenceId,
+          title: 'scheduled ChatGPT continuation dispatched',
+          summary: `Schedule ${schedule.scheduleId} timer occurrence ${succeededOccurrence.occurrenceId} dispatched the Work-bound ChatGPT continuation successfully.`,
+          detailLevel: 'summary',
+        });
+        return succeededOccurrence;
       } catch (error) {
         if (relay) {
           finishControllerRoundRelayDispatch(workStore, {
