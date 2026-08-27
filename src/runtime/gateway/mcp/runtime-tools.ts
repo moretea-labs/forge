@@ -162,6 +162,7 @@ import {
   listCapabilityDescriptors,
   getCapabilityDescriptor,
   getPluginActionCapabilitySchema,
+  searchCapabilityDescriptors,
   summarizeCapabilityGroups,
   listHandoffItems,
   normalizeCheckIds,
@@ -3705,6 +3706,52 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           };
           (payload.responseMeta as { structuredPayloadBytes: number }).structuredPayloadBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
           return result(payload);
+        }
+        const capabilityIntentQuery = operation === 'list' && typeof args.query === 'string'
+          ? args.query.trim()
+          : '';
+        if (capabilityIntentQuery) {
+          const manifestOptions = { preferStored: true };
+          const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, manifestOptions);
+          const controllerRepository = controllerPluginRepository(ctx.controllerHome);
+          const controllerManifests = repository.repoId === controllerRepository.repoId
+            ? []
+            : listAssistantPluginManifests(ctx.controllerHome, controllerRepository, manifestOptions);
+          const manifests = [...new Map(
+            [...repositoryManifests, ...controllerManifests].map((manifest) => [manifest.pluginId, manifest] as const),
+          ).values()];
+          const matches = searchCapabilityDescriptors(capabilityIntentQuery, manifests, 12)
+            .map((match) => ({
+              ...match,
+              pluginAction: getPluginActionCapabilitySchema(match.capabilityId, manifests),
+            }));
+          const facade = buildFacadeResult({
+            status: 'ok',
+            summary: matches.length > 0
+              ? `Found ${matches.length} capability candidate(s) for intent: ${capabilityIntentQuery}`
+              : `No capability candidates matched intent: ${capabilityIntentQuery}`,
+            data: {
+              operation,
+              repoId: repository.repoId,
+              capabilitySearch: {
+                query: capabilityIntentQuery,
+                matches,
+                readOnlyDiscovery: true,
+                executeWith: 'plugin_action_execute',
+              },
+              toolArchitecture: {
+                facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
+                domainSchemaLoading: 'intent_ranked_capability_search',
+                exactCapabilityLookupStillAvailable: true,
+              },
+              bounded: true,
+            },
+            warnings: [],
+            suggestedNextActions: [],
+            detailLevel: args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary',
+            rawAvailable: false,
+          });
+          return result(facade as unknown as Record<string, unknown>);
         }
         const requested = Array.isArray(args.requested_check_ids) ? args.requested_check_ids.map(String) : [];
         const detailLevel = args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary';

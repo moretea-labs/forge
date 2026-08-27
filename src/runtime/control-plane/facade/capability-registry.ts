@@ -206,6 +206,97 @@ export function listCapabilityDescriptors(manifests: readonly AssistantPluginMan
   return [...byId.values()].sort((a, b) => a.capabilityId.localeCompare(b.capabilityId));
 }
 
+export interface CapabilitySearchMatch {
+  capabilityId: string;
+  score: number;
+  matchedTerms: string[];
+  descriptor: CapabilityDescriptor;
+}
+
+function normalizedCapabilityText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[_./:-]+/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function capabilityIntentTokens(query: string): string[] {
+  return [...new Set(normalizedCapabilityText(query).split(' ').filter((token) => token.length >= 2))];
+}
+
+function intentBoosts(query: string, capabilityId: string): Array<{ label: string; score: number }> {
+  const normalized = normalizedCapabilityText(query);
+  const boosts: Array<{ label: string; score: number }> = [];
+  const appleDevelopmentIntent = /\b(xcode|provision|provisioning|signing|developer account|apple developer)\b/.test(normalized);
+  if (appleDevelopmentIntent) {
+    if (capabilityId === 'platform.ios') boosts.push({ label: 'apple-development', score: 90 });
+    if (capabilityId.startsWith('plugin.ios.')) boosts.push({ label: 'apple-development', score: 72 });
+    if (capabilityId === 'plugin.app_store_connect.auth_status') boosts.push({ label: 'apple-development', score: 88 });
+    else if (capabilityId === 'plugin.app_store_connect.configure') boosts.push({ label: 'apple-development', score: 82 });
+    else if (capabilityId.startsWith('plugin.app_store_connect.')) boosts.push({ label: 'apple-development', score: 28 });
+    if (capabilityId === 'plugin.desktop_operator.desktop_session_open') boosts.push({ label: 'xcode-desktop-fallback', score: 86 });
+    else if (capabilityId === 'plugin.desktop_operator.desktop_observe') boosts.push({ label: 'xcode-desktop-fallback', score: 78 });
+    else if (capabilityId === 'plugin.desktop_operator.desktop_press') boosts.push({ label: 'xcode-desktop-fallback', score: 74 });
+    else if (capabilityId.startsWith('plugin.desktop_operator.')) boosts.push({ label: 'xcode-desktop-fallback', score: 22 });
+  }
+
+  const browserLoginIntent = normalized.includes('browser')
+    && /\b(login|log in|signin|sign in|auth|authentication|session)\b/.test(normalized);
+  if (browserLoginIntent) {
+    if (capabilityId === 'plugin.browser') boosts.push({ label: 'browser-auth', score: 90 });
+    else if (capabilityId.startsWith('plugin.browser.')) boosts.push({ label: 'browser-auth', score: 62 });
+    if (capabilityId === 'plugin.desktop_operator.desktop_session_open') boosts.push({ label: 'browser-desktop-fallback', score: 70 });
+    else if (capabilityId === 'plugin.desktop_operator.desktop_observe') boosts.push({ label: 'browser-desktop-fallback', score: 62 });
+    else if (capabilityId.startsWith('plugin.desktop_operator.')) boosts.push({ label: 'browser-desktop-fallback', score: 18 });
+  }
+  return boosts;
+}
+
+export function searchCapabilityDescriptors(
+  query: string,
+  manifests: readonly AssistantPluginManifest[] = [],
+  limit = 12,
+): CapabilitySearchMatch[] {
+  const normalizedQuery = normalizedCapabilityText(query);
+  if (!normalizedQuery) return [];
+  const tokens = capabilityIntentTokens(query);
+  const boundedLimit = Math.max(1, Math.min(24, Math.floor(limit)));
+
+  return listCapabilityDescriptors(manifests)
+    .map((descriptor): CapabilitySearchMatch | undefined => {
+      const haystack = normalizedCapabilityText([
+        descriptor.capabilityId,
+        descriptor.summary,
+        descriptor.group,
+        descriptor.domain,
+        descriptor.operationClass,
+        descriptor.exposedVia,
+      ].join(' '));
+      let score = haystack.includes(normalizedQuery) ? 48 : 0;
+      const matchedTerms = new Set<string>();
+      for (const token of tokens) {
+        if (!haystack.includes(token)) continue;
+        matchedTerms.add(token);
+        score += descriptor.capabilityId.toLowerCase().includes(token) ? 12 : 5;
+      }
+      for (const boost of intentBoosts(query, descriptor.capabilityId)) {
+        score += boost.score;
+        matchedTerms.add(boost.label);
+      }
+      if (score <= 0) return undefined;
+      return {
+        capabilityId: descriptor.capabilityId,
+        score,
+        matchedTerms: [...matchedTerms].sort(),
+        descriptor,
+      };
+    })
+    .filter((entry): entry is CapabilitySearchMatch => Boolean(entry))
+    .sort((a, b) => b.score - a.score || a.capabilityId.localeCompare(b.capabilityId))
+    .slice(0, boundedLimit);
+}
+
 export function summarizeCapabilityGroups(manifests: readonly AssistantPluginManifest[] = []): CapabilityGroupSummary[] {
   const grouped = new Map<CapabilityDescriptor['group'], CapabilityDescriptor[]>();
   for (const descriptor of listCapabilityDescriptors(manifests)) {

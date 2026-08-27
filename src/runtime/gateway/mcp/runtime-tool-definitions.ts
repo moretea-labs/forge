@@ -40,7 +40,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple worktrees.' },
     operation: { type: 'string', enum: ['list', 'get', 'search'], description: 'Defaults to get. Use search as the default code-location path when an exact file is unknown.' },
-    query: { type: 'string', description: 'Code/content intent for operation=search. Frozen-schema clients may append @tsnav or @swiftnav references|definition|implementations <repo-path>:<line>:<column> for compiler/LSP-backed semantic navigation.' },
+    query: { type: 'string', description: 'Code/content intent for operation=search. For operation=list, a natural-language capability intent such as "configure Xcode provisioning" returns ranked read-only capability candidates while execution remains on the capability\'s typed executor. Frozen-schema clients may append @tsnav or @swiftnav references|definition|implementations <repo-path>:<line>:<column> for compiler/LSP-backed semantic navigation.' },
     known_paths: { type: 'array', items: { type: 'string' }, description: 'Optional exact paths or globs that should receive highest retrieval priority.' },
     include_globs: { type: 'array', items: { type: 'string' } },
     exclude_globs: { type: 'array', items: { type: 'string' } },

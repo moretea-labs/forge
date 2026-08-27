@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { normalizeCheckIds, classifyVerificationOutcome } from '../../src/runtime/control-plane/facade/check-normalization';
-import { listCapabilityDescriptors, summarizeCapabilityGroups } from '../../src/runtime/control-plane/facade/capability-registry';
+import { listCapabilityDescriptors, searchCapabilityDescriptors, summarizeCapabilityGroups } from '../../src/runtime/control-plane/facade/capability-registry';
 import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/policy-gate';
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
@@ -316,6 +316,14 @@ describe('handoff and facade contracts', () => {
     const groups = summarizeCapabilityGroups([]);
     expect(groups.find((entry) => entry.group === 'git')).toMatchObject({ capabilityCount: 1, facadeTools: ['rh_work'] });
     expect(groups.find((entry) => entry.group === 'ios')).toMatchObject({ capabilityCount: 1, executionSurfaces: ['plugin_action_execute'], facadeTools: [] });
+  });
+
+  test('ranks Apple development capabilities from natural-language intent without changing execution surfaces', () => {
+    const matches = searchCapabilityDescriptors('configure Xcode Apple developer account provisioning', [], 8);
+    const ids = matches.map((entry) => entry.capabilityId);
+    expect(ids).toContain('platform.ios');
+    expect(matches.find((entry) => entry.capabilityId === 'platform.ios')?.descriptor.exposedVia).toBe('plugin_action_execute');
+    expect(matches[0]?.matchedTerms).toContain('apple-development');
   });
 
   test('policy gate preserves bounded direct edit and blocks raw secret access', () => {
