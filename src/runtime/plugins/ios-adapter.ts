@@ -25,6 +25,7 @@ import type {
   AssistantPluginPermissionScope,
 } from './types';
 import { AssistantPluginError } from './errors';
+import { resolveAppStoreConnectXcodeAuthenticationReference } from './app-store-connect-adapter';
 import {
   executeIosAgentDeviceAction,
   iosAgentDeviceActions,
@@ -277,6 +278,9 @@ function actions(): AssistantPluginActionDescriptor[] {
           workspace: { type: 'string' },
           project: { type: 'string' },
           configuration: { type: 'string' },
+          destination_platform: { type: 'string', enum: ['ios_simulator', 'ios'] },
+          allow_provisioning_updates: { type: 'boolean' },
+          authentication_provider: { type: 'string', enum: ['app_store_connect'] },
           timeout_ms: { type: 'number' },
         },
         additionalProperties: false,
@@ -457,7 +461,22 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
           project: stringValue(input.args.project),
         }),
       };
-    case 'build':
+    case 'build': {
+      const destinationPlatform = stringValue(input.args.destination_platform);
+      if (destinationPlatform && destinationPlatform !== 'ios' && destinationPlatform !== 'ios_simulator') {
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'destination_platform must be ios or ios_simulator.', { retryable: false });
+      }
+      const allowProvisioningUpdates = input.args.allow_provisioning_updates === true;
+      const authenticationProvider = stringValue(input.args.authentication_provider);
+      if (authenticationProvider && authenticationProvider !== 'app_store_connect') {
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'authentication_provider must be app_store_connect.', { retryable: false });
+      }
+      if (authenticationProvider && !allowProvisioningUpdates) {
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'authentication_provider requires allow_provisioning_updates=true.', { retryable: false });
+      }
+      const authentication = authenticationProvider === 'app_store_connect'
+        ? resolveAppStoreConnectXcodeAuthenticationReference(input.repoRoot, input.controllerHome, input.repoId)
+        : undefined;
       return {
         ...iosAppBuild(repository, {
           scheme: stringValue(input.args.scheme),
@@ -466,9 +485,12 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
           workspace: stringValue(input.args.workspace),
           project: stringValue(input.args.project),
           configuration: stringValue(input.args.configuration),
+          destinationPlatform: destinationPlatform as 'ios' | 'ios_simulator' | undefined,
+          provisioning: allowProvisioningUpdates ? { allowUpdates: true, authentication } : undefined,
           timeoutMs: typeof input.args.timeout_ms === 'number' ? input.args.timeout_ms : undefined,
         }),
       };
+    }
     case 'xcode_test': {
       const onlyTesting = Array.isArray(input.args.only_testing)
         ? input.args.only_testing.map((entry) => String(entry).trim()).filter(Boolean).slice(0, 50)

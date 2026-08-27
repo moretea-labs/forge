@@ -6,6 +6,7 @@ import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot } from '../../src/cli/re
 import {
   buildAppStoreConnectPluginManifest,
   executeAppStoreConnectPluginAction,
+  resolveAppStoreConnectXcodeAuthenticationReference,
 } from '../../src/runtime/plugins/app-store-connect-adapter';
 
 const roots: string[] = [];
@@ -102,6 +103,29 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const persisted = readFileSync(globalPath, 'utf-8');
     expect(persisted).toContain(privateKeyPath);
     expect(persisted).not.toContain('test-key-material-never-persisted-inline');
+  });
+
+  test('resolves a file-backed Xcode authentication reference from the controller-global profile for a repository', async () => {
+    const repoRoot = root();
+    const controllerHome = join(repoRoot, '.controller');
+    const privateKeyPath = join(repoRoot, 'AuthKey_XCODE.p8');
+    writeFileSync(privateKeyPath, 'file-backed-test-key');
+    await executeAppStoreConnectPluginAction({
+      ...input(repoRoot, 'configure', {
+        enabled: true,
+        provider: 'app-store-connect-api',
+        issuer_id: 'issuer-xcode',
+        key_id: 'key-xcode',
+        private_key_path: privateKeyPath,
+      }),
+      controllerHome,
+      repoId: CONTROLLER_SCOPE_REPO_ID,
+      repoRoot: controllerSystemRoot(controllerHome),
+    });
+
+    const reference = resolveAppStoreConnectXcodeAuthenticationReference(repoRoot, controllerHome, 'repo-child');
+    expect(reference).toEqual({ privateKeyPath, keyId: 'key-xcode', issuerId: 'issuer-xcode' });
+    expect(existsSync(join(repoRoot, '.forge', 'plugins', 'app-store-connect.json'))).toBe(false);
   });
 
   test('repository overlay can override safe defaults or explicitly disable a global profile', async () => {

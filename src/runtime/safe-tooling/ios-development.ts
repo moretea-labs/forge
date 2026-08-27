@@ -395,7 +395,20 @@ export function iosSimulatorShutdown(input: { udid: string; timeoutMs?: number }
   };
 }
 
-export function iosAppBuild(repository: RepositoryRecord, input: { scheme?: string; udid?: string; workspace?: string; project?: string; configuration?: string; timeoutMs?: number; simulatorName?: string }) {
+export function iosAppBuild(repository: RepositoryRecord, input: {
+  scheme?: string;
+  udid?: string;
+  workspace?: string;
+  project?: string;
+  configuration?: string;
+  timeoutMs?: number;
+  simulatorName?: string;
+  destinationPlatform?: 'ios_simulator' | 'ios';
+  provisioning?: {
+    allowUpdates: boolean;
+    authentication?: { privateKeyPath: string; keyId: string; issuerId: string };
+  };
+}) {
   const unsupported = assertDarwin();
   if (unsupported) return unsupported;
   const listed = iosSchemesList(repository, { workspace: input.workspace, project: input.project });
@@ -406,9 +419,14 @@ export function iosAppBuild(repository: RepositoryRecord, input: { scheme?: stri
   const workspace = safeRepoRelativePath(repository.canonicalRoot, input.workspace ?? listedReady.workspace);
   const project = safeRepoRelativePath(repository.canonicalRoot, input.project ?? listedReady.project);
   const configuration = input.configuration ?? 'Debug';
-  const destination = input.udid
-    ? `platform=iOS Simulator,id=${String(input.udid).trim()}`
-    : `platform=iOS Simulator,name=${input.simulatorName ?? 'iPhone 16 Pro'}`;
+  const destinationPlatform = input.destinationPlatform ?? 'ios_simulator';
+  const udid = String(input.udid ?? '').trim();
+  if (destinationPlatform === 'ios' && !udid) throw new Error('IOS_PHYSICAL_DEVICE_UDID_REQUIRED');
+  const destination = destinationPlatform === 'ios'
+    ? `platform=iOS,id=${udid}`
+    : udid
+      ? `platform=iOS Simulator,id=${udid}`
+      : `platform=iOS Simulator,name=${input.simulatorName ?? 'iPhone 16 Pro'}`;
   const derivedDataPath = stableBuildDerivedDataPath(repository, { workspace, project, scheme, configuration, destination });
   const derivedDataReused = existsSync(derivedDataPath);
   mkdirSync(derivedDataPath, { recursive: true });
@@ -418,7 +436,33 @@ export function iosAppBuild(repository: RepositoryRecord, input: { scheme?: stri
   else if (project) args.push('-project', project);
   args.push('-scheme', scheme, '-configuration', configuration, '-destination', destination);
   args.push('-derivedDataPath', derivedDataPath);
+  const authentication = input.provisioning?.authentication;
+  if (input.provisioning?.allowUpdates) args.push('-allowProvisioningUpdates');
+  if (authentication) {
+    args.push(
+      '-authenticationKeyPath', authentication.privateKeyPath,
+      '-authenticationKeyID', authentication.keyId,
+      '-authenticationKeyIssuerID', authentication.issuerId,
+    );
+  }
   const result = runCommand('xcodebuild', args, { cwd: repository.canonicalRoot, timeoutMs: input.timeoutMs ?? 10 * 60_000 });
+  const sensitiveValues = authentication
+    ? [authentication.privateKeyPath, authentication.keyId, authentication.issuerId]
+    : [];
+  const redactSensitiveText = (value: string): string => sensitiveValues.reduce(
+    (current, secret) => secret ? current.split(secret).join('[REDACTED]') : current,
+    value,
+  );
+  const redactBoundedText = (value: string) => {
+    const bounded = boundedText(value);
+    return { ...bounded, content: redactSensitiveText(bounded.content) };
+  };
+  const sensitiveFlags = new Set(['-authenticationKeyPath', '-authenticationKeyID', '-authenticationKeyIssuerID']);
+  const safeCommand = result.command.map((entry, index, command) => (
+    index > 0 && sensitiveFlags.has(command[index - 1] ?? '') ? '[REDACTED]' : entry
+  ));
+  const safeStdout = redactBoundedText(result.stdout);
+  const safeStderr = redactBoundedText(result.stderr);
   const builtApps = findBuiltApps(repository, derivedDataPath);
   const priorSet = new Set(priorBuiltApps);
   const newBuiltApps = builtApps.filter((candidate) => !priorSet.has(candidate));
@@ -435,12 +479,12 @@ export function iosAppBuild(repository: RepositoryRecord, input: { scheme?: stri
     appPath: selected.appPath,
     builtApps,
     newBuiltApps,
-    command: result.command,
-    stdout: boundedText(result.stdout),
-    stderr: boundedText(result.stderr),
+    command: safeCommand,
+    stdout: safeStdout,
+    stderr: safeStderr,
     error: result.ok
       ? productError
-      : { code: 'IOS_BUILD_FAILED', message: (result.stderr || result.stdout).slice(0, 2000) },
+      : { code: 'IOS_BUILD_FAILED', message: redactSensitiveText(result.stderr || result.stdout).slice(0, 2000) },
   };
 }
 

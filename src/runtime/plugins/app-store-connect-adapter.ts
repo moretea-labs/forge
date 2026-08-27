@@ -47,6 +47,12 @@ interface AppStoreConnectAuthState {
   warnings: string[];
 }
 
+export interface AppStoreConnectXcodeAuthenticationReference {
+  privateKeyPath: string;
+  keyId: string;
+  issuerId: string;
+}
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -200,6 +206,37 @@ function resolveAuth(config: AppStoreConnectPluginConfig): AppStoreConnectAuthSt
     errors,
     warnings,
   };
+}
+
+export function resolveAppStoreConnectXcodeAuthenticationReference(
+  repoRoot: string,
+  controllerHome: string,
+  repoId: string,
+): AppStoreConnectXcodeAuthenticationReference {
+  const config = loadConfig(repoRoot, controllerHome, repoId);
+  if (!config.enabled) {
+    throw new AssistantPluginError('PLUGIN_DISABLED', 'App Store Connect is disabled for this repository.', { retryable: false });
+  }
+  if (config.provider !== 'app-store-connect-api') {
+    throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', 'Xcode provisioning requires the App Store Connect API provider.', { retryable: false });
+  }
+  const privateKeyPath = envValue('FORGE_ASC_PRIVATE_KEY_PATH') ?? config.privateKeyPath;
+  const keyId = envValue('FORGE_ASC_KEY_ID') ?? config.keyId;
+  const issuerId = envValue('FORGE_ASC_ISSUER_ID') ?? config.issuerId;
+  if (!privateKeyPath) {
+    throw new AssistantPluginError(
+      'PLUGIN_DEPENDENCY_MISSING',
+      'Xcode provisioning requires a file-backed App Store Connect private key path; inline key material is not accepted for this path.',
+      { retryable: false },
+    );
+  }
+  if (!existsSync(privateKeyPath)) {
+    throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', 'Configured App Store Connect private key path does not exist.', { retryable: false });
+  }
+  if (!keyId || !issuerId) {
+    throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', 'App Store Connect key id and issuer id are required for Xcode provisioning.', { retryable: false });
+  }
+  return { privateKeyPath, keyId, issuerId };
 }
 
 function readLength(buffer: Buffer, offset: number): { length: number; next: number } {

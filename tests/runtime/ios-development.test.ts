@@ -169,6 +169,57 @@ describe('iOS development simulator reliability', () => {
     expect(otherDestination.derivedDataPath).not.toBe(first.derivedDataPath);
   });
 
+  test('builds an exact physical iOS destination with provisioning credentials inside the runner while redacting returned evidence', () => {
+    const repo = repository();
+    const commands: string[][] = [];
+    const privateKeyPath = '/tmp/AuthKey_PRIVATE.p8';
+    const keyId = 'KEY-ID-PRIVATE';
+    const issuerId = 'ISSUER-ID-PRIVATE';
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (command === 'xcodebuild' && args.includes('-list')) {
+          return result(command, args, { stdout: JSON.stringify({ project: { schemes: ['App'] } }) });
+        }
+        if (command === 'xcodebuild' && args[0] === 'build') {
+          const derivedDataPath = args[args.indexOf('-derivedDataPath') + 1]!;
+          mkdirSync(join(derivedDataPath, 'Build', 'Products', 'Debug-iphoneos', 'App.app'), { recursive: true });
+          return result(command, args, { stdout: `used ${privateKeyPath} ${keyId}`, stderr: `issuer ${issuerId}` });
+        }
+        return result(command, args);
+      },
+    });
+
+    const built = iosAppBuild(repo.record, {
+      scheme: 'App',
+      udid: 'PHYSICAL-UDID',
+      destinationPlatform: 'ios',
+      provisioning: {
+        allowUpdates: true,
+        authentication: { privateKeyPath, keyId, issuerId },
+      },
+    });
+    expect(built.ready).toBe(true);
+    if (!('command' in built) || !('stdout' in built) || !('stderr' in built) || !('destination' in built)) {
+      throw new Error('expected physical build evidence');
+    }
+    const internal = commands.find((entry) => entry[0] === 'xcodebuild' && entry[1] === 'build')!;
+    expect(internal).toContain('platform=iOS,id=PHYSICAL-UDID');
+    expect(internal).toContain('-allowProvisioningUpdates');
+    expect(internal).toContain(privateKeyPath);
+    expect(internal).toContain(keyId);
+    expect(internal).toContain(issuerId);
+    expect(built.destination).toBe('platform=iOS,id=PHYSICAL-UDID');
+    expect(built.command).toContain('[REDACTED]');
+    expect(built.command).not.toContain(privateKeyPath);
+    expect(built.command).not.toContain(keyId);
+    expect(built.command).not.toContain(issuerId);
+    expect(built.stdout.content).not.toContain(privateKeyPath);
+    expect(built.stdout.content).not.toContain(keyId);
+    expect(built.stderr.content).not.toContain(issuerId);
+  });
+
   test('keeps Xcode tests serial by default but supports bounded opt-in parallel workers', () => {
     const repo = repository();
     const commands: string[][] = [];
