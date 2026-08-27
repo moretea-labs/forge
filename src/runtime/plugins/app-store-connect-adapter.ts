@@ -1,5 +1,5 @@
 import { createPrivateKey, sign } from 'crypto';
-import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, promises as fsPromises, readFileSync, statSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot } from '../../cli/repositories/controller-home';
 import type {
@@ -19,6 +19,8 @@ const CONFIG_ROOT = '.forge/plugins';
 const LEGACY_CONFIG_ROOT = '.repo-harness/plugins';
 const API_BASE_URL = 'https://api.appstoreconnect.apple.com';
 const DEFAULT_TIMEOUT_MS = 60_000;
+const PRIVATE_KEY_READ_MAX_ATTEMPTS = 4;
+const PRIVATE_KEY_READ_RETRY_BASE_MS = 10;
 
 type AppStoreConnectProviderKind = 'mock' | 'app-store-connect-api';
 
@@ -188,20 +190,48 @@ function privateKeyReference(config: AppStoreConnectPluginConfig): AppStoreConne
   return { available: false };
 }
 
-function privateKeyMaterial(config: AppStoreConnectPluginConfig): { key?: string; source?: string; warning?: string } {
+function fsErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object' || !('code' in error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+async function readPrivateKeyFile(path: string, source: string): Promise<{ key?: string; source: string; warning?: string }> {
+  for (let attempt = 1; attempt <= PRIVATE_KEY_READ_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return { key: await fsPromises.readFile(path, 'utf-8'), source };
+    } catch (error) {
+      const code = fsErrorCode(error);
+      if (code === 'ENOENT') {
+        return { source, warning: 'Configured App Store Connect private key path does not exist.' };
+      }
+      if (code === 'EDEADLK' && attempt < PRIVATE_KEY_READ_MAX_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, PRIVATE_KEY_READ_RETRY_BASE_MS * attempt));
+        continue;
+      }
+      if (code === 'EDEADLK') {
+        throw new AssistantPluginError(
+          'PLUGIN_PROVIDER_UNAVAILABLE',
+          'App Store Connect private key is temporarily unavailable because the filesystem is busy.',
+          { retryable: true, details: { credentialSource: source, code } },
+        );
+      }
+      throw new AssistantPluginError(
+        'PLUGIN_AUTH_REQUIRED',
+        'Configured App Store Connect private key could not be read.',
+        { retryable: false, details: { credentialSource: source, code } },
+      );
+    }
+  }
+  throw new AssistantPluginError('PLUGIN_PROVIDER_UNAVAILABLE', 'App Store Connect private key is temporarily unavailable.', { retryable: true });
+}
+
+async function privateKeyMaterial(config: AppStoreConnectPluginConfig): Promise<{ key?: string; source?: string; warning?: string }> {
   const inline = envValue('FORGE_ASC_PRIVATE_KEY');
   if (inline) return { key: inline.replace(/\\n/g, '\n'), source: 'env:FORGE_ASC_PRIVATE_KEY' };
   const envKeyPath = envValue('FORGE_ASC_PRIVATE_KEY_PATH');
-  if (envKeyPath) {
-    return existsSync(envKeyPath)
-      ? { key: readFileSync(envKeyPath, 'utf-8'), source: 'env:FORGE_ASC_PRIVATE_KEY_PATH' }
-      : { source: 'env:FORGE_ASC_PRIVATE_KEY_PATH', warning: 'Configured App Store Connect private key path does not exist.' };
-  }
-  if (config.privateKeyPath) {
-    return existsSync(config.privateKeyPath)
-      ? { key: readFileSync(config.privateKeyPath, 'utf-8'), source: 'config:privateKeyPath' }
-      : { source: 'config:privateKeyPath', warning: 'Configured App Store Connect private key path does not exist.' };
-  }
+  if (envKeyPath) return readPrivateKeyFile(envKeyPath, 'env:FORGE_ASC_PRIVATE_KEY_PATH');
+  if (config.privateKeyPath) return readPrivateKeyFile(config.privateKeyPath, 'config:privateKeyPath');
   return {};
 }
 
@@ -303,10 +333,10 @@ function derSignatureToJose(signature: Buffer): string {
   return Buffer.concat([derIntegerToJose(r), derIntegerToJose(s)]).toString('base64url');
 }
 
-function createJwt(config: AppStoreConnectPluginConfig): string {
+async function createJwt(config: AppStoreConnectPluginConfig): Promise<string> {
   const issuerId = envValue('FORGE_ASC_ISSUER_ID') ?? config.issuerId;
   const keyId = envValue('FORGE_ASC_KEY_ID') ?? config.keyId;
-  const key = privateKeyMaterial(config).key;
+  const key = (await privateKeyMaterial(config)).key;
   if (!issuerId || !keyId || !key) throw new AssistantPluginError('PLUGIN_AUTH_REQUIRED', 'App Store Connect API credentials are incomplete.', { retryable: false });
 
   const issuedAt = Math.floor(Date.now() / 1000);
@@ -332,7 +362,7 @@ async function apiRequest<T>(config: AppStoreConnectPluginConfig, options: {
     const response = await fetch(url, {
       method: options.method ?? 'GET',
       headers: {
-        authorization: `Bearer ${createJwt(config)}`,
+        authorization: `Bearer ${await createJwt(config)}`,
         accept: 'application/json',
         ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
       },

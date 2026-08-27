@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { generateKeyPairSync } from 'crypto';
+import { existsSync, mkdirSync, mkdtempSync, promises as fsPromises, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot } from '../../src/cli/repositories/controller-home';
@@ -143,6 +144,67 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     };
     expect(auth).toMatchObject({ ready: false, provider: 'app-store-connect-api' });
     expect(auth.warnings.join(' ')).toContain('private key path is not a regular file');
+  });
+
+  test('retries transient EDEADLK while reading a file-backed key for a real remote request after auth-status succeeds', async () => {
+    const repoRoot = root();
+    const privateKeyPath = join(repoRoot, 'AuthKey_REMOTE.p8');
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    writeFileSync(privateKeyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    const configRoot = join(repoRoot, '.forge', 'plugins');
+    mkdirSync(configRoot, { recursive: true });
+    writeFileSync(join(configRoot, 'app-store-connect.json'), JSON.stringify({
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'app-store-connect-api',
+      issuerId: 'issuer-remote',
+      keyId: 'key-remote',
+      privateKeyPath,
+    }, null, 2));
+
+    const originalReadFile = fsPromises.readFile;
+    const originalFetch = globalThis.fetch;
+    const invokeOriginalReadFile = originalReadFile as unknown as (...args: unknown[]) => Promise<unknown>;
+    let keyReadAttempts = 0;
+    let requestedUrl = '';
+    Object.defineProperty(fsPromises, 'readFile', {
+      configurable: true,
+      writable: true,
+      value: async (...args: unknown[]) => {
+        if (String(args[0]) === privateKeyPath) {
+          keyReadAttempts += 1;
+          if (keyReadAttempts === 1) {
+            const error = new Error('simulated private-key filesystem contention') as NodeJS.ErrnoException;
+            error.code = 'EDEADLK';
+            throw error;
+          }
+        }
+        return invokeOriginalReadFile(...args);
+      },
+    });
+    globalThis.fetch = (async (request: string | URL | Request, init?: RequestInit) => {
+      requestedUrl = String(request);
+      expect(new Headers(init?.headers).get('authorization')).toMatch(/^Bearer \S+$/);
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    try {
+      const auth = await executeAppStoreConnectPluginAction(input(repoRoot, 'auth_status', {})) as { ready: boolean; provider: string };
+      expect(auth).toMatchObject({ ready: true, provider: 'app-store-connect-api' });
+      expect(keyReadAttempts).toBe(0);
+
+      const result = await executeAppStoreConnectPluginAction(input(repoRoot, 'list_xcode_cloud_products', { app_id: '6775778505' }));
+      expect(result).toEqual({ data: [] });
+      expect(keyReadAttempts).toBe(2);
+      expect(requestedUrl).toContain('/v1/ciProducts');
+      expect(requestedUrl).toContain('6775778505');
+    } finally {
+      Object.defineProperty(fsPromises, 'readFile', { configurable: true, writable: true, value: originalReadFile });
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test('resolves a file-backed Xcode authentication reference from the controller-global profile for a repository', async () => {
