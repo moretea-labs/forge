@@ -382,6 +382,7 @@ function permission(scope: string, mode: 'read' | 'write', description: string, 
 function permissions(ready: boolean): AssistantPluginPermissionScope[] {
   return [
     permission('appstoreconnect.apps.read', 'read', 'Read App Store Connect apps, versions, localizations, builds, and TestFlight groups.', ready),
+    permission('appstoreconnect.developer_resources.read', 'read', 'Read Apple Developer bundle IDs, capabilities, certificates, devices, and provisioning profiles.', ready),
     permission('appstoreconnect.metadata.write', 'write', 'Patch App Store Connect metadata after dry-run review and authorization.', ready),
     permission('appstoreconnect.testflight.write', 'write', 'Assign builds to TestFlight groups and prepare beta review submissions.', ready),
     permission('appstoreconnect.release.write', 'write', 'Create App Store versions and gated review submissions.', ready),
@@ -402,6 +403,13 @@ function capabilities(): AssistantPluginCapability[] {
         'get_app_info', 'list_app_infos', 'list_builds', 'list_testflight_builds', 'get_build_detail',
         'list_beta_groups', 'list_beta_testers', 'list_review_submissions',
       ],
+    },
+    {
+      capabilityId: 'developer-resources-read',
+      title: 'Apple Developer Resources',
+      description: 'Read Certificates, Identifiers & Profiles resources to diagnose provisioning authorization without mutating Apple Developer state.',
+      scopes: ['appstoreconnect.developer_resources.read'],
+      actions: ['list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles'],
     },
     {
       capabilityId: 'app-store-metadata',
@@ -443,11 +451,16 @@ function actions(): AssistantPluginActionDescriptor[] {
   return [
     {
       actionId: 'configure', title: 'Configure App Store Connect plugin', description: 'Enable official App Store Connect API access and save non-secret defaults.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true,
-      scopes: ['appstoreconnect.apps.read', 'appstoreconnect.metadata.write', 'appstoreconnect.testflight.write', 'appstoreconnect.release.write', 'appstoreconnect.xcodecloud.read', 'appstoreconnect.xcodecloud.write'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
+      scopes: ['appstoreconnect.apps.read', 'appstoreconnect.developer_resources.read', 'appstoreconnect.metadata.write', 'appstoreconnect.testflight.write', 'appstoreconnect.release.write', 'appstoreconnect.xcodecloud.read', 'appstoreconnect.xcodecloud.write'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
       argumentsSchema: { type: 'object', properties: { enabled: { type: 'boolean' }, provider: { type: 'string', enum: ['mock', 'app-store-connect-api'] }, issuer_id: { type: 'string' }, key_id: { type: 'string' }, private_key_path: { type: 'string' }, clear_private_key_path: { type: 'boolean' }, clear_api_identity: { type: 'boolean' }, team_id: { type: 'string' }, clear_team_id: { type: 'boolean' }, default_app_id: { type: 'string' }, clear_default_app_id: { type: 'boolean' }, default_locale: { type: 'string' }, default_timeout_ms: { type: 'number' } }, additionalProperties: false },
     },
     { actionId: 'auth_status', title: 'Check App Store Connect auth', description: 'Report API readiness without returning secrets.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
     { actionId: 'list_apps', title: 'List apps', description: 'List App Store Connect apps, optionally filtered by bundle ID or name.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { bundle_id: { type: 'string' }, name: { type: 'string' }, limit: { type: 'number' } }, additionalProperties: false } },
+    { actionId: 'list_bundle_ids', title: 'List Apple Developer bundle IDs', description: 'Read registered Bundle IDs, optionally filtered by exact identifier or name.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.developer_resources.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { identifier: { type: 'string' }, name: { type: 'string' }, limit: { type: 'number' } }, additionalProperties: false } },
+    { actionId: 'list_bundle_id_capabilities', title: 'List Bundle ID capabilities', description: 'Read enabled capabilities for one exact Apple Developer Bundle ID resource.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.developer_resources.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { bundle_id_resource_id: { type: 'string' }, limit: { type: 'number' } }, required: ['bundle_id_resource_id'], additionalProperties: false } },
+    { actionId: 'list_certificates', title: 'List Apple Developer certificates', description: 'Read certificates available to the current Apple Developer API identity.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.developer_resources.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { certificate_type: { type: 'string' }, limit: { type: 'number' } }, additionalProperties: false } },
+    { actionId: 'list_devices', title: 'List Apple Developer devices', description: 'Read registered devices, optionally filtered by UDID.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.developer_resources.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { udid: { type: 'string' }, limit: { type: 'number' } }, additionalProperties: false } },
+    { actionId: 'list_profiles', title: 'List provisioning profiles', description: 'Read Apple Developer provisioning profiles, optionally filtered by profile name or type.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.developer_resources.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { name: { type: 'string' }, profile_type: { type: 'string' }, limit: { type: 'number' } }, additionalProperties: false } },
     { actionId: 'list_app_store_versions', title: 'List App Store versions', description: 'List App Store versions for one app.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' }, limit: { type: 'number' } }, additionalProperties: false } },
     { actionId: 'list_app_store_version_localizations', title: 'List App Store version localizations', description: 'List localizations for one App Store version.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { version_id: { type: 'string' }, limit: { type: 'number' } }, required: ['version_id'], additionalProperties: false } },
     { actionId: 'get_app_info', title: 'Get app info', description: 'Get App Info records and localizations for one app.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: readRemote, argumentsSchema: { type: 'object', properties: { app_id: { type: 'string' } }, additionalProperties: false } },
@@ -653,6 +666,11 @@ function mockResponse(actionId: string, args: Record<string, unknown>, config: A
       }],
     };
   }
+  if (actionId === 'list_bundle_ids') return { data: [{ type: 'bundleIds', id: stableMockId('bundle_id', args), attributes: { identifier: stringValue(args.identifier) ?? 'com.example.app', name: stringValue(args.name) ?? 'Mock Bundle ID', platform: 'IOS' } }] };
+  if (actionId === 'list_bundle_id_capabilities') return { data: [{ type: 'bundleIdCapabilities', id: stableMockId('bundle_capability', args), attributes: { capabilityType: 'ICLOUD', settings: [] } }] };
+  if (actionId === 'list_certificates') return { data: [{ type: 'certificates', id: stableMockId('certificate', args), attributes: { certificateType: stringValue(args.certificate_type) ?? 'DEVELOPMENT', displayName: 'Mock Certificate' } }] };
+  if (actionId === 'list_devices') return { data: [{ type: 'devices', id: stableMockId('device', args), attributes: { udid: stringValue(args.udid) ?? 'MOCK-UDID', name: 'Mock iPhone', platform: 'IOS', status: 'ENABLED' } }] };
+  if (actionId === 'list_profiles') return { data: [{ type: 'profiles', id: stableMockId('profile', args), attributes: { name: stringValue(args.name) ?? 'Mock Profile', profileType: stringValue(args.profile_type) ?? 'IOS_APP_DEVELOPMENT', profileState: 'ACTIVE' } }] };
   if (actionId === 'list_xcode_cloud_products') return { data: [{ type: 'ciProducts', id: stableMockId('ci_product', { id }), attributes: { name: 'Mock Xcode Cloud Product', productType: 'APP' } }] };
   if (actionId === 'list_xcode_cloud_workflows') return { data: [{ type: 'ciWorkflows', id: stableMockId('ci_workflow', { product: args.product_id }), attributes: { name: 'CI', isEnabled: true, clean: false } }] };
   if (actionId === 'get_xcode_cloud_workflow') return { data: { type: 'ciWorkflows', id: requiredArg(args, 'workflow_id'), attributes: { name: 'CI', isEnabled: true, branchStartCondition: {} } } };
@@ -805,6 +823,16 @@ export async function executeAppStoreConnectPluginAction(input: AssistantPluginA
       };
     case 'list_apps':
       return apiRequest(config, { path: '/v1/apps', query: { 'filter[bundleId]': stringValue(input.args.bundle_id), 'filter[name]': stringValue(input.args.name), limit: limit(input.args.limit) } });
+    case 'list_bundle_ids':
+      return apiRequest(config, { path: '/v1/bundleIds', query: { 'filter[identifier]': stringValue(input.args.identifier), 'filter[name]': stringValue(input.args.name), limit: limit(input.args.limit) } });
+    case 'list_bundle_id_capabilities':
+      return apiRequest(config, { path: `/v1/bundleIds/${encodeURIComponent(requiredArg(input.args, 'bundle_id_resource_id'))}/bundleIdCapabilities`, query: { limit: limit(input.args.limit) } });
+    case 'list_certificates':
+      return apiRequest(config, { path: '/v1/certificates', query: { 'filter[certificateType]': stringValue(input.args.certificate_type), limit: limit(input.args.limit) } });
+    case 'list_devices':
+      return apiRequest(config, { path: '/v1/devices', query: { 'filter[udid]': stringValue(input.args.udid), limit: limit(input.args.limit) } });
+    case 'list_profiles':
+      return apiRequest(config, { path: '/v1/profiles', query: { 'filter[name]': stringValue(input.args.name), 'filter[profileType]': stringValue(input.args.profile_type), limit: limit(input.args.limit) } });
     case 'list_app_store_versions':
       return apiRequest(config, { path: '/v1/appStoreVersions', query: { 'filter[app]': appId(input.args, config), limit: limit(input.args.limit) } });
     case 'list_app_store_version_localizations':

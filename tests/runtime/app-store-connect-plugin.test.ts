@@ -40,6 +40,17 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
     expect(manifest.pluginVersion).toBe('1.1.1');
     expect(manifest.actions.find((action) => action.actionId === 'list_xcode_cloud_workflows')).toMatchObject({ readOnly: true, risk: 'readonly' });
+    for (const actionId of ['list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles']) {
+      expect(manifest.actions.find((action) => action.actionId === actionId)).toMatchObject({
+        readOnly: true,
+        risk: 'readonly',
+        confirmation: 'none',
+        scopes: ['appstoreconnect.developer_resources.read'],
+      });
+    }
+    expect(manifest.capabilities.find((capability) => capability.capabilityId === 'developer-resources-read')?.actions).toEqual([
+      'list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles',
+    ]);
     expect(manifest.actions.find((action) => action.actionId === 'update_xcode_cloud_workflow')).toMatchObject({
       readOnly: false,
       risk: 'remote_write',
@@ -155,6 +166,17 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
       controllerScoped: false,
     });
     expect(disabled.enabled).toBe(false);
+  });
+
+  test('mock developer-resource reads stay read-only and preserve bounded typed filters', async () => {
+    const repoRoot = root();
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
+    const bundleIds = await executeAppStoreConnectPluginAction(input(repoRoot, 'list_bundle_ids', { identifier: 'com.example.target', limit: 5 })) as { data: Array<{ attributes: { identifier: string } }> };
+    const capabilities = await executeAppStoreConnectPluginAction(input(repoRoot, 'list_bundle_id_capabilities', { bundle_id_resource_id: 'bundle-1' })) as { data: Array<{ attributes: { capabilityType: string } }> };
+    const devices = await executeAppStoreConnectPluginAction(input(repoRoot, 'list_devices', { udid: 'DEVICE-UDID' })) as { data: Array<{ attributes: { udid: string } }> };
+    expect(bundleIds.data[0]?.attributes.identifier).toBe('com.example.target');
+    expect(capabilities.data[0]?.attributes.capabilityType).toBe('ICLOUD');
+    expect(devices.data[0]?.attributes.udid).toBe('DEVICE-UDID');
   });
 
   test('dry-run maps workflow trigger settings onto the official ciWorkflows PATCH resource', async () => {
