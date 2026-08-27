@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot } from '../../src/cli/repositories/controller-home';
 import {
   buildAppStoreConnectPluginManifest,
   executeAppStoreConnectPluginAction,
@@ -63,6 +64,73 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     expect(manifest.authority.sourceOfTruth).toContain('legacy-read-fallback:.repo-harness/plugins/app-store-connect.json');
     const auth = await executeAppStoreConnectPluginAction(input(repoRoot, 'auth_status', {}));
     expect(auth).toMatchObject({ ready: true, provider: 'mock' });
+  });
+
+
+  test('controller-global profile is inherited by repositories without duplicating credential references', async () => {
+    const repoRoot = root();
+    const controllerHome = join(repoRoot, '.controller');
+    const privateKeyPath = join(repoRoot, 'AuthKey_TEST.p8');
+    writeFileSync(privateKeyPath, 'test-key-material-never-persisted-inline');
+
+    const controllerInput = {
+      ...input(repoRoot, 'configure', {
+        enabled: true,
+        provider: 'app-store-connect-api',
+        issuer_id: 'issuer-global',
+        key_id: 'key-global',
+        private_key_path: privateKeyPath,
+        team_id: 'TEAMGLOBAL',
+      }),
+      controllerHome,
+      repoId: CONTROLLER_SCOPE_REPO_ID,
+      repoRoot: controllerSystemRoot(controllerHome),
+    };
+    await executeAppStoreConnectPluginAction(controllerInput);
+
+    const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot, {
+      controllerHome,
+      repoId: 'repo-child',
+      repoRoot,
+      controllerScoped: false,
+    });
+    expect(manifest.enabled).toBe(true);
+    expect(manifest.health.details).toMatchObject({ teamId: 'TEAMGLOBAL', credentialSource: 'config:privateKeyPath' });
+    expect(existsSync(join(repoRoot, '.forge', 'plugins', 'app-store-connect.json'))).toBe(false);
+
+    const globalPath = join(controllerSystemRoot(controllerHome), 'plugins', 'profiles', 'app-store-connect.json');
+    const persisted = readFileSync(globalPath, 'utf-8');
+    expect(persisted).toContain(privateKeyPath);
+    expect(persisted).not.toContain('test-key-material-never-persisted-inline');
+  });
+
+  test('repository overlay can override safe defaults or explicitly disable a global profile', async () => {
+    const repoRoot = root();
+    const controllerHome = join(repoRoot, '.controller');
+    await executeAppStoreConnectPluginAction({
+      ...input(repoRoot, 'configure', { enabled: true, provider: 'mock', team_id: 'GLOBAL', default_locale: 'en-US' }),
+      controllerHome,
+      repoId: CONTROLLER_SCOPE_REPO_ID,
+      repoRoot: controllerSystemRoot(controllerHome),
+    });
+
+    const child = { ...input(repoRoot, 'configure', { default_locale: 'fr-FR' }), controllerHome, repoId: 'repo-child' };
+    const configured = await executeAppStoreConnectPluginAction(child) as { config: { enabled: boolean; teamId?: string; defaultLocale?: string } };
+    expect(configured.config).toMatchObject({ enabled: true, teamId: 'GLOBAL', defaultLocale: 'fr-FR' });
+    const overlayPath = join(repoRoot, '.forge', 'plugins', 'app-store-connect.json');
+    const overlay = JSON.parse(readFileSync(overlayPath, 'utf-8')) as Record<string, unknown>;
+    expect(overlay).toMatchObject({ schemaVersion: 1, defaultLocale: 'fr-FR' });
+    expect(overlay).not.toHaveProperty('teamId');
+    expect(overlay).not.toHaveProperty('privateKeyPath');
+
+    await executeAppStoreConnectPluginAction({ ...child, requestId: 'test-disable', args: { enabled: false } });
+    const disabled = buildAppStoreConnectPluginManifest(1, undefined, repoRoot, {
+      controllerHome,
+      repoId: 'repo-child',
+      repoRoot,
+      controllerScoped: false,
+    });
+    expect(disabled.enabled).toBe(false);
   });
 
   test('dry-run maps workflow trigger settings onto the official ciWorkflows PATCH resource', async () => {

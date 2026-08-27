@@ -1,9 +1,11 @@
 import { createPrivateKey, sign } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
+import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot } from '../../cli/repositories/controller-home';
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
+  AssistantPluginBuildContext,
   AssistantPluginCapability,
   AssistantPluginHealth,
   AssistantPluginManifest,
@@ -70,6 +72,10 @@ function legacyConfigPath(repoRoot: string): string {
   return join(repoRoot, LEGACY_CONFIG_ROOT, 'app-store-connect.json');
 }
 
+function globalConfigPath(controllerHome: string): string {
+  return join(controllerSystemRoot(controllerHome), 'plugins', 'profiles', 'app-store-connect.json');
+}
+
 function normalizeConfig(raw: Partial<AppStoreConnectPluginConfig>): AppStoreConnectPluginConfig {
   return {
     schemaVersion: 1,
@@ -85,26 +91,57 @@ function normalizeConfig(raw: Partial<AppStoreConnectPluginConfig>): AppStoreCon
   };
 }
 
-function loadConfig(repoRoot: string): AppStoreConnectPluginConfig {
-  // `.forge/plugins` is the current authority, but installations created before
-  // the Forge config-root migration may still have the App Store Connect config
-  // under `.repo-harness/plugins`. Read that legacy file only when the current
-  // path is absent; the next explicit configure action writes the current path.
-  const path = existsSync(configPath(repoRoot)) ? configPath(repoRoot) : legacyConfigPath(repoRoot);
-  if (!existsSync(path)) return normalizeConfig({});
+function readConfigFile(path: string): Partial<AppStoreConnectPluginConfig> | undefined {
+  if (!existsSync(path)) return undefined;
   try {
-    return normalizeConfig(JSON.parse(readFileSync(path, 'utf-8')) as Partial<AppStoreConnectPluginConfig>);
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Partial<AppStoreConnectPluginConfig>;
+    return parsed && typeof parsed === 'object' ? parsed : undefined;
   } catch {
-    return normalizeConfig({});
+    return undefined;
   }
 }
 
-function saveConfig(repoRoot: string, patch: Partial<AppStoreConnectPluginConfig>): AppStoreConnectPluginConfig {
-  const next = normalizeConfig({ ...loadConfig(repoRoot), ...patch });
+function repositoryConfig(repoRoot: string): { raw?: Partial<AppStoreConnectPluginConfig>; source?: 'current' | 'legacy' } {
+  const current = readConfigFile(configPath(repoRoot));
+  if (current) return { raw: current, source: 'current' };
+  const legacy = readConfigFile(legacyConfigPath(repoRoot));
+  return legacy ? { raw: legacy, source: 'legacy' } : {};
+}
+
+function loadConfig(repoRoot: string, controllerHome?: string, repoId?: string): AppStoreConnectPluginConfig {
+  const global = controllerHome ? readConfigFile(globalConfigPath(controllerHome)) : undefined;
+  if (repoId === CONTROLLER_SCOPE_REPO_ID) return normalizeConfig(global ?? {});
+  const local = repositoryConfig(repoRoot).raw;
+  return normalizeConfig({ ...(global ?? {}), ...(local ?? {}) });
+}
+
+function definedPatch(patch: Partial<AppStoreConnectPluginConfig>): Partial<AppStoreConnectPluginConfig> {
+  return Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)) as Partial<AppStoreConnectPluginConfig>;
+}
+
+function saveConfig(
+  repoRoot: string,
+  patch: Partial<AppStoreConnectPluginConfig>,
+  controllerHome?: string,
+  repoId?: string,
+): AppStoreConnectPluginConfig {
+  const cleanPatch = definedPatch(patch);
+  if (controllerHome && repoId === CONTROLLER_SCOPE_REPO_ID) {
+    const path = globalConfigPath(controllerHome);
+    const next = normalizeConfig({ ...(readConfigFile(path) ?? {}), ...cleanPatch });
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, 'utf-8');
+    return next;
+  }
+
+  // Repository state is an overlay only. Do not materialize inherited global
+  // credential references into every repository just because configure ran.
+  const existing = repositoryConfig(repoRoot).raw ?? {};
+  const overlay = { schemaVersion: 1 as const, ...existing, ...cleanPatch };
   const path = configPath(repoRoot);
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, 'utf-8');
-  return next;
+  writeFileSync(path, `${JSON.stringify(overlay, null, 2)}\n`, 'utf-8');
+  return loadConfig(repoRoot, controllerHome, repoId);
 }
 
 function envValue(name: string): string | undefined {
@@ -671,8 +708,9 @@ function mockResponse(actionId: string, args: Record<string, unknown>, config: A
   throw new AssistantPluginError('PLUGIN_ACTION_NOT_SUPPORTED', `app_store_connect/${actionId} is not supported.`, { retryable: false });
 }
 
-export function buildAppStoreConnectPluginManifest(previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string): AssistantPluginManifest {
-  const config = loadConfig(repoRoot ?? process.cwd());
+export function buildAppStoreConnectPluginManifest(previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string, context?: AssistantPluginBuildContext): AssistantPluginManifest {
+  const effectiveRepoRoot = repoRoot ?? context?.repoRoot ?? process.cwd();
+  const config = loadConfig(effectiveRepoRoot, context?.controllerHome, context?.repoId);
   const auth = resolveAuth(config);
   const state = pluginState(config, auth);
   return {
@@ -683,7 +721,7 @@ export function buildAppStoreConnectPluginManifest(previousRevision = 0, previou
     provider: 'apple',
     displayName: 'App Store Connect API Plugin',
     pluginVersion: '1.1.1',
-    authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: [`repo-local:${CONFIG_ROOT}/app-store-connect.json`, `legacy-read-fallback:${LEGACY_CONFIG_ROOT}/app-store-connect.json`, 'env:FORGE_ASC_*'] },
+    authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-global:system/plugins/profiles/app-store-connect.json', `repo-overlay:${CONFIG_ROOT}/app-store-connect.json`, `legacy-read-fallback:${LEGACY_CONFIG_ROOT}/app-store-connect.json`, 'env:FORGE_ASC_*'] },
     enabled: config.enabled,
     lifecycle: { state: state.lifecycleState, reason: !config.enabled ? 'App Store Connect plugin is disabled.' : auth.ready ? 'App Store Connect API credentials are ready.' : auth.errors[0] ?? auth.warnings[0] },
     health: state.health,
@@ -695,7 +733,7 @@ export function buildAppStoreConnectPluginManifest(previousRevision = 0, previou
 }
 
 export async function executeAppStoreConnectPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
-  const config = loadConfig(input.repoRoot);
+  const config = loadConfig(input.repoRoot, input.controllerHome, input.repoId);
   if (input.actionId === 'configure') {
     const args = input.args;
     const next = saveConfig(input.repoRoot, {
@@ -708,7 +746,7 @@ export async function executeAppStoreConnectPluginAction(input: AssistantPluginA
       defaultAppId: args.clear_default_app_id === true ? '' : stringValue(args.default_app_id),
       defaultLocale: stringValue(args.default_locale),
       defaultTimeoutMs: boundedTimeout(args.default_timeout_ms),
-    });
+    }, input.controllerHome, input.repoId);
     return { config: next, auth: resolveAuth(next) };
   }
 
@@ -863,6 +901,7 @@ export async function executeAppStoreConnectPluginAction(input: AssistantPluginA
 
 export const appStoreConnectPluginAdapter = {
   pluginId: APP_STORE_CONNECT_PLUGIN_ID,
+  scope: 'controller_with_repository_overlay' as const,
   buildManifest: buildAppStoreConnectPluginManifest,
   executeAction: executeAppStoreConnectPluginAction,
 };

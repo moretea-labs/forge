@@ -152,12 +152,19 @@ export interface AssistantPluginActionExecutionInput {
   providerIdentityPrevalidated?: boolean;
 }
 
-export type AssistantPluginScope = 'repository' | 'controller';
+export type AssistantPluginScope = 'repository' | 'controller' | 'controller_with_repository_overlay';
+
+export interface AssistantPluginBuildContext {
+  controllerHome: string;
+  repoId: string;
+  repoRoot: string;
+  controllerScoped: boolean;
+}
 
 export interface AssistantPluginAdapter {
   pluginId: string;
   scope?: AssistantPluginScope;
-  buildManifest(previousRevision?: number, previousUpdatedAt?: string, repoRoot?: string): AssistantPluginManifest;
+  buildManifest(previousRevision?: number, previousUpdatedAt?: string, repoRoot?: string, context?: AssistantPluginBuildContext): AssistantPluginManifest;
   /** Resolve an exact stable resource identity for reusable authorization-class actions. */
   resolveAuthorizationContext?(input: AssistantPluginActionExecutionInput): Promise<AssistantPluginAuthorizationContext | undefined>;
   executeAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>>;

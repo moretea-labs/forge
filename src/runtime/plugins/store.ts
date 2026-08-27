@@ -90,6 +90,7 @@ export function controllerPluginRepository(controllerHome: string): RepositoryRe
 
 function adapterMatchesRepository(adapter: AssistantPluginAdapter, repository: RepositoryRecord): boolean {
   const scope = adapter.scope ?? 'repository';
+  if (scope === 'controller_with_repository_overlay') return true;
   return repository.repoId === CONTROLLER_SCOPE_REPO_ID ? scope === 'controller' : scope === 'repository';
 }
 
@@ -251,7 +252,12 @@ function computeManifest(
   const adapter = resolvedAdapter ?? resolvePluginAdapter(controllerHome, pluginId);
   if (!adapter || !adapterMatchesRepository(adapter, repository)) throw new Error(`PLUGIN_NOT_FOUND: ${pluginId}`);
   const previous = readStoredManifest(controllerHome, repository.repoId, pluginId);
-  const built = adapter.buildManifest(previous?.revision ?? 0, previous?.updatedAt, repository.canonicalRoot);
+  const built = adapter.buildManifest(previous?.revision ?? 0, previous?.updatedAt, repository.canonicalRoot, {
+    controllerHome,
+    repoId: repository.repoId,
+    repoRoot: repository.canonicalRoot,
+    controllerScoped: repository.repoId === CONTROLLER_SCOPE_REPO_ID,
+  });
   const changed = !previous || fingerprintManifest(previous) !== fingerprintManifest(built);
   return {
     ...built,
