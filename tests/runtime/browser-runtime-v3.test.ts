@@ -3,6 +3,7 @@ import {
   executeBrowserRuntimeAction,
   invalidateBrowserRuntime,
 } from '../../src/runtime/plugins/browser-runtime';
+import { nativeReplacementUrlMatchesTarget } from '../../src/runtime/plugins/browser-adapter';
 import {
   BrowserProviderUnavailableBeforeActionError,
   type BrowserRuntimeProvider,
@@ -55,6 +56,21 @@ function provider(options: {
     revalidate: options.revalidate,
   };
 }
+
+describe('Browser Runtime V3 native replacement postconditions', () => {
+  test('accepts same-origin canonical landing only for an HTTP(S) origin-root target', () => {
+    expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/', 'https://chatgpt.com/?temporary-chat=true')).toBe(true);
+    expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/', 'https://chatgpt.com/c/new-session')).toBe(true);
+    expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/', 'https://example.com/')).toBe(false);
+  });
+
+  test('keeps concrete resource targets fail-closed against same-origin path drift', () => {
+    expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/c/exact', 'https://chatgpt.com/c/exact')).toBe(true);
+    expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/c/exact', 'https://chatgpt.com/')).toBe(false);
+    expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/c/exact', 'https://chatgpt.com/c/other')).toBe(false);
+    expect(nativeReplacementUrlMatchesTarget('https://example.com/?mode=exact', 'https://example.com/?mode=other')).toBe(false);
+  });
+});
 
 describe('Browser Runtime V3 routing', () => {
   test('selects providers by required capabilities rather than failure-driven fallback order', async () => {

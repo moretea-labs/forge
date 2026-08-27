@@ -1274,6 +1274,21 @@ function comparableUrl(value: string): string {
   }
 }
 
+export function nativeReplacementUrlMatchesTarget(requestedUrl: string, actualUrl: string): boolean {
+  if (comparableUrl(actualUrl) === comparableUrl(requestedUrl)) return true;
+  try {
+    const requested = new URL(requestedUrl);
+    const actual = new URL(actualUrl);
+    const requestedIsOriginRoot = (requested.protocol === 'https:' || requested.protocol === 'http:')
+      && requested.pathname === '/'
+      && requested.search === ''
+      && requested.hash === '';
+    return requestedIsOriginRoot && actual.origin === requested.origin;
+  } catch {
+    return false;
+  }
+}
+
 function sameOrigin(left: string, right: string): boolean {
   try {
     return new URL(left).origin === new URL(right).origin;
@@ -2186,7 +2201,7 @@ async function openNativeAttachedContext(
       }
       try {
         const identity = await (replacement as unknown as { identity: () => Promise<{ url: string; title: string }> }).identity();
-        if (comparableUrl(identity.url) !== comparableUrl(target.url)) {
+        if (!nativeReplacementUrlMatchesTarget(target.url, identity.url)) {
           throw new AssistantPluginError(
             'PLUGIN_BROWSER_NATIVE_REPLACEMENT_MISMATCH',
             'Native replacement tab did not reach the requested URL; preserving the original plugin-owned tab.',
