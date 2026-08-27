@@ -283,6 +283,74 @@ describe('Browser Runtime V3 routing', () => {
     expect(metadataCalls).toBe(2);
   });
 
+  test('re-resolves a stable native tab immediately before activation after window topology drift', async () => {
+    let currentWindowId = '7';
+    const activationScripts: string[] = [];
+    const metadata = () => [
+      'true', 'https://chatgpt.com/c/native-stable', 'Native Stable', '0', '0', '1200', '800', currentWindowId, '9', 'true', 'false',
+    ].join(nativeSeparator);
+
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      tabInventory: async () => ({
+        product: 'chrome',
+        truncated: false,
+        tabs: [{ windowId: currentWindowId, tabId: '9', active: true, url: 'https://chatgpt.com/c/native-stable', title: 'Native Stable' }],
+      }),
+      runAppleScript: async (script) => {
+        if (script.includes('set active tab index of targetWindow')) {
+          activationScripts.push(script);
+          return '';
+        }
+        return metadata();
+      },
+    });
+
+    const attached = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    currentWindowId = '99';
+    await attached.page.bringToFront();
+
+    expect(activationScripts).toHaveLength(1);
+    expect(activationScripts[0]).toContain('set targetTabId to "9"');
+    expect(activationScripts[0]).not.toContain('first window whose id is');
+    expect(attached.page.tabRef()).toEqual({ windowId: '99', tabId: '9' });
+  });
+
+  test('fails closed before activation when live native tab identity cannot be proven', async () => {
+    let ambiguous = false;
+    let activationCalls = 0;
+    const metadata = () => [
+      'true', 'https://chatgpt.com/c/native-ambiguous', 'Native Ambiguous', '0', '0', '1200', '800', '7', '9', 'true', 'false',
+    ].join(nativeSeparator);
+
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      tabInventory: async () => ({
+        product: 'chrome',
+        truncated: false,
+        tabs: ambiguous
+          ? [
+            { windowId: '7', tabId: '9', active: true, url: 'https://chatgpt.com/c/native-ambiguous', title: 'Native Ambiguous' },
+            { windowId: '99', tabId: '9', active: false, url: 'https://example.com/', title: 'Other' },
+          ]
+          : [{ windowId: '7', tabId: '9', active: true, url: 'https://chatgpt.com/c/native-ambiguous', title: 'Native Ambiguous' }],
+      }),
+      runAppleScript: async (script) => {
+        if (script.includes('set active tab index of targetWindow')) activationCalls += 1;
+        return metadata();
+      },
+    });
+
+    const attached = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    ambiguous = true;
+    await expect(attached.page.bringToFront()).rejects.toThrow('PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN');
+    expect(activationCalls).toBe(0);
+  });
+
   test('keeps warm providers valid until an explicit invalidation boundary', async () => {
     const runtimeKey = 'browser-v3:warm-generation';
     let revalidations = 0;

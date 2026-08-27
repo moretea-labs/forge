@@ -90,6 +90,7 @@ interface MacOsBrowserRuntimeHooks {
   // Test-only escape hatches. Production intentionally leaves these undefined so
   // Apple Events and screen capture are attributed to the stable helper process.
   runAppleScript?: (script: string, args: string[], timeoutMs: number) => Promise<string>;
+  tabInventory?: (product: MacOsBrowserProduct, timeoutMs: number) => Promise<MacOsBrowserTabInventory>;
   captureRegion?: (region: { x: number; y: number; width: number; height: number }, path: string, timeoutMs: number) => Promise<Buffer>;
   trustedInput?: (request: Extract<BrowserAutomationBrokerAction, { action: 'trusted_input' }>, timeoutMs: number) => Promise<void>;
 }
@@ -198,8 +199,8 @@ const MAX_WARM_NATIVE_PAGE_HANDLES = 128;
 const warmNativePageHandles = new Map<string, MacOsAppleEventsPage>();
 
 function nativePageHandleKey(product: MacOsBrowserProduct, ref: MacOsBrowserTabRef): string {
-  // tabId is the stable browser entity. targetTabPreamble already tolerates window movement
-  // by searching all windows when the saved window hint no longer contains the tab.
+  // tabId is the stable browser entity. The windowId is only a mutable placement hint and
+  // is re-resolved from live inventory immediately before exact-target Apple Events operations.
   return `${product}:${ref.tabId}`;
 }
 
@@ -382,24 +383,16 @@ function targetTabPreamble(ref: MacOsBrowserTabRef): string {
   return `set targetTabId to ${quotedAppleScript(ref.tabId)}
 set targetWindow to missing value
 set targetTab to missing value
-try
-  set hintedWindow to first window whose id is ${quotedAppleScript(ref.windowId)}
-  set hintedTab to first tab of hintedWindow whose id is targetTabId
-  set targetWindow to hintedWindow
-  set targetTab to hintedTab
-end try
-if targetTab is missing value then
-  repeat with candidateWindow in windows
-    repeat with candidateTab in tabs of candidateWindow
-      if ((id of candidateTab) as text) is targetTabId then
-        set targetWindow to candidateWindow
-        set targetTab to candidateTab
-        exit repeat
-      end if
-    end repeat
-    if targetTab is not missing value then exit repeat
+repeat with candidateWindow in windows
+  repeat with candidateTab in tabs of candidateWindow
+    if ((id of candidateTab) as text) is targetTabId then
+      set targetWindow to candidateWindow
+      set targetTab to candidateTab
+      exit repeat
+    end if
   end repeat
-end if
+  if targetTab is not missing value then exit repeat
+end repeat
 if targetTab is missing value then error "FORGE_BROWSER_TAB_NOT_FOUND:" & targetTabId`;
 }
 
@@ -690,12 +683,20 @@ export class MacOsAppleEventsPage {
 
   private async runAutomation(
     request: BrowserAutomationBrokerAction,
-    script: string,
+    script: string | ((resolvedRef?: MacOsBrowserTabRef) => string),
     args: string[] = [],
     timeoutMs = this.timeoutMs,
   ): Promise<string> {
     try {
-      return await runBrowserAutomationText(request, script, args, timeoutMs);
+      let effectiveRequest = request;
+      let resolvedRef: MacOsBrowserTabRef | undefined;
+      if ('ref' in request && request.ref) {
+        resolvedRef = await resolveCurrentMacOsBrowserTabRef(this.browser.product, request.ref, timeoutMs);
+        this.targetRef = resolvedRef;
+        effectiveRequest = { ...request, ref: resolvedRef } as BrowserAutomationBrokerAction;
+      }
+      const effectiveScript = typeof script === 'function' ? script(resolvedRef ?? this.targetRef) : script;
+      return await runBrowserAutomationText(effectiveRequest, effectiveScript, args, timeoutMs);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OPERATION_FAILED', `${this.browser.appName} Apple Events operation failed: ${message}`, {
@@ -706,10 +707,9 @@ export class MacOsAppleEventsPage {
   }
 
   private async refreshMetadata(): Promise<MacOsBrowserMetadata> {
-    const script = this.targetRef ? targetMetadataScript(this.browser, this.targetRef) : metadataScript(this.browser);
     this.metadata = parseMetadata(this.browser.product, await this.runAutomation(
       { action: 'metadata', product: this.browser.product, ...(this.targetRef ? { ref: this.targetRef } : {}) },
-      script,
+      (resolvedRef) => resolvedRef ? targetMetadataScript(this.browser, resolvedRef) : metadataScript(this.browser),
     ));
     if (this.targetRef && this.metadata.windowId && this.metadata.tabId) {
       this.targetRef = { windowId: this.metadata.windowId, tabId: this.metadata.tabId };
@@ -721,7 +721,7 @@ export class MacOsAppleEventsPage {
     try {
       return await this.runAutomation(
         { action: 'execute_javascript', product: this.browser.product, ...(this.targetRef ? { ref: this.targetRef } : {}), source },
-        executeJavaScriptScript(this.browser, this.targetRef),
+        (resolvedRef) => executeJavaScriptScript(this.browser, resolvedRef),
         [source],
         timeoutMs,
       );
@@ -762,7 +762,7 @@ export class MacOsAppleEventsPage {
     const timeout = typeof options.timeout === 'number' ? Math.trunc(options.timeout) : this.timeoutMs;
     await this.runAutomation(
       { action: 'navigate', product: this.browser.product, ...(this.targetRef ? { ref: this.targetRef } : {}), url },
-      navigateScript(this.browser, this.targetRef),
+      (resolvedRef) => navigateScript(this.browser, resolvedRef),
       [url],
       timeout,
     );
@@ -775,7 +775,7 @@ export class MacOsAppleEventsPage {
     const timeout = typeof options.timeout === 'number' ? Math.trunc(options.timeout) : this.timeoutMs;
     await this.runAutomation(
       { action: 'reload', product: this.browser.product, ...(this.targetRef ? { ref: this.targetRef } : {}) },
-      reloadScript(this.browser, this.targetRef),
+      (resolvedRef) => reloadScript(this.browser, resolvedRef),
       [],
       timeout,
     );
@@ -1005,6 +1005,7 @@ export class MacOsAppleEventsPage {
     if (!this.targetRef) {
       throw new AssistantPluginError('PLUGIN_BROWSER_TRUSTED_INPUT_UNAVAILABLE', 'Native trusted input requires an exact saved browser tab.', { retryable: false });
     }
+    this.targetRef = await resolveCurrentMacOsBrowserTabRef(this.browser.product, this.targetRef, this.timeoutMs);
     await sendBrowserTrustedInput({ action: 'trusted_input', product: this.browser.product, ref: this.targetRef, input }, this.timeoutMs);
     await this.refreshMetadata();
   }
@@ -1208,6 +1209,9 @@ export class MacOsAppleEventsPage {
   async bringToFront(): Promise<void> {
     if (this.targetRef) {
       this.metadata = await activateMacOsBrowserOwnedTab(this.browser.product, this.targetRef, this.timeoutMs);
+      if (this.metadata.windowId && this.metadata.tabId) {
+        this.targetRef = { windowId: this.metadata.windowId, tabId: this.metadata.tabId };
+      }
       return;
     }
     await this.runAutomation(
@@ -1221,6 +1225,47 @@ export class MacOsAppleEventsPage {
       await this.evaluate(keyEventSource(undefined, key));
     },
   };
+}
+
+async function resolveCurrentMacOsBrowserTabRef(
+  product: MacOsBrowserProduct,
+  ref: MacOsBrowserTabRef,
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
+): Promise<MacOsBrowserTabRef> {
+  // Existing unit-level AppleScript hooks historically model one exact script at a time.
+  // Preserve that narrow test seam unless a live inventory hook is explicitly supplied;
+  // production always resolves through the stable Desktop Operator broker inventory.
+  const inventory = runtimeHooks.tabInventory
+    ? await runtimeHooks.tabInventory(product, timeoutMs)
+    : runtimeHooks.runAppleScript
+      ? undefined
+      : await listMacOsBrowserTabs(product, timeoutMs);
+  if (!inventory) return ref;
+
+  const matches = inventory.tabs.filter((candidate) => candidate.tabId === ref.tabId);
+  if (inventory.truncated || matches.length !== 1) {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN',
+      inventory.truncated
+        ? `Cannot prove the current ${product} tab identity because live inventory was truncated.`
+        : matches.length === 0
+          ? `Saved ${product} tab ${ref.tabId} no longer exists in live inventory.`
+          : `Saved ${product} tab ${ref.tabId} is ambiguous in live inventory.`,
+      {
+        retryable: true,
+        details: {
+          browserProduct: product,
+          tabId: ref.tabId,
+          savedWindowId: ref.windowId,
+          candidateCount: matches.length,
+          inventoryTruncated: inventory.truncated,
+        },
+      },
+    );
+  }
+
+  const match = matches[0]!;
+  return { windowId: match.windowId, tabId: match.tabId };
 }
 
 export async function listMacOsBrowserTabs(
@@ -1243,9 +1288,10 @@ export async function readMacOsBrowserOwnedTabMetadata(
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<MacOsBrowserMetadata> {
   const browser = browserDefinition(product);
+  const resolvedRef = await resolveCurrentMacOsBrowserTabRef(product, ref, timeoutMs);
   return parseMetadata(product, await runBrowserAutomationText(
-    { action: 'metadata', product, ref },
-    targetMetadataScript(browser, ref),
+    { action: 'metadata', product, ref: resolvedRef },
+    targetMetadataScript(browser, resolvedRef),
     [],
     timeoutMs,
   ));
@@ -1257,13 +1303,33 @@ export async function activateMacOsBrowserOwnedTab(
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<MacOsBrowserMetadata> {
   const browser = browserDefinition(product);
+  const resolvedRef = await resolveCurrentMacOsBrowserTabRef(product, ref, timeoutMs);
   await runBrowserAutomationText(
-    { action: 'activate', product, ref },
-    activateTargetTabScript(browser, ref),
+    { action: 'activate', product, ref: resolvedRef },
+    activateTargetTabScript(browser, resolvedRef),
     [],
     timeoutMs,
   );
-  return readMacOsBrowserOwnedTabMetadata(product, ref, timeoutMs);
+  const metadata = await readMacOsBrowserOwnedTabMetadata(product, resolvedRef, timeoutMs);
+  if (metadata.tabId !== resolvedRef.tabId || metadata.active !== true) {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_NATIVE_ACTIVATION_POSTCONDITION_FAILED',
+      `${browser.appName} did not prove that the exact requested tab became active.`,
+      {
+        retryable: true,
+        details: {
+          browserProduct: product,
+          requestedTabId: resolvedRef.tabId,
+          resolvedWindowId: resolvedRef.windowId,
+          observedWindowId: metadata.windowId,
+          observedTabId: metadata.tabId,
+          observedActive: metadata.active,
+          observedFrontmost: metadata.frontmost,
+        },
+      },
+    );
+  }
+  return metadata;
 }
 
 export function createMacOsBrowserPage(attachment: MacOsBrowserAttachment, timeoutMs?: number): MacOsAppleEventsPage {
@@ -1327,9 +1393,10 @@ export async function closeMacOsBrowserOwnedTab(
 ): Promise<void> {
   const browser = browserDefinition(product);
   try {
+    const resolvedRef = await resolveCurrentMacOsBrowserTabRef(product, ref, timeoutMs);
     await runBrowserAutomationText(
-      { action: 'close_tab', product, ref },
-      closeOwnedTabScript(browser, ref),
+      { action: 'close_tab', product, ref: resolvedRef },
+      closeOwnedTabScript(browser, resolvedRef),
       [],
       timeoutMs,
     );
