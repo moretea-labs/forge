@@ -78,4 +78,4 @@ Forge 把读取、普通本地写入、远程操作、破坏性操作、工作�
 
 [中文文档中心](docs/README.zh-CN.md) · [Wiki](docs/wiki/Home.md) · [SUPPORT.md](SUPPORT.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md)
 
-当前稳定版本是 `1.6.0`，稳定安装使用 npm `latest`。
+当前稳定版本是 `1.7.0`，稳定安装使用 npm `latest`。

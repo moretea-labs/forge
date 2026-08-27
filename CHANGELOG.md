@@ -4,6 +4,32 @@ All notable public Forge changes are recorded here. Release entries are tied to 
 
 ## Unreleased
 
+## 1.7.0 - 2026-08-27
+
+### Persistent autonomous control
+
+- Add the durable Schedule → Work → ChatGPT conversation continuation contract, explicit round dispositions, effect-only Work/finalization semantics, and tab settlement after Controller release instead of immediately after prompt dispatch.
+- Keep transient Browser/connector readiness failures on bounded backoff without permanently disabling schedules, while authentication, consent, destructive actions, and other hard boundaries remain fail-closed.
+- Make real timer-origin continuation and the Continuous Evolution Supervisor a stable-release gate rather than treating schedule configuration alone as proof of autonomous operation.
+
+### Browser Runtime V3
+
+- Promote Browser Runtime V3 as the current browser architecture with one Controller Home BrowserSession authority, stable plugin-owned native tab identity, background-safe navigation, exact rebind, and explicit physical-input fallback.
+- Harden native replacement with strict postconditions, HTTP(S) settlement that rejects transitional `about:*` pages, destination-origin authorization, and preservation of user-owned tabs.
+- Improve Chrome/Vivaldi provider behavior, postcondition evidence, restart/rebind handling, and visual evidence integration without adding a second Browser authority.
+
+### Capabilities, plugins, and iOS
+
+- Add deterministic natural-intent capability discovery while keeping `plugin_action_execute` as the sole typed plugin executor and preserving the stable ChatGPT facade.
+- Add controller-global plugin profiles with repository overlays, including reusable App Store Connect credential references without copying private-key contents into repository state or tool output.
+- Add typed physical-device iOS build destinations and opt-in Xcode provisioning updates using file-backed App Store Connect key references, with bounded/redacted execution evidence.
+
+### Runtime, recovery, and governance
+
+- Continue converging Work/Plan/finalizer lifecycle authority, target-advancement validation, process/session fencing, source coherence, and whole-Runtime immutable activation/rollback under the independent Recovery boundary.
+- Keep ChatGPT as the semantic controller and Forge as the deterministic execution/control plane, with Direct-first execution and durable Work/Plan state only where continuity, isolation, recovery, scheduling, or external effects require it.
+- Tighten maintained architecture/documentation authority and capability-closure governance so stale Work or superseded design documents do not become parallel current truth.
+
 ## 1.6.0 - 2026-08-16
 
 ### Architecture V2 and execution governance

@@ -1,6 +1,6 @@
 {
   "name": "@moretea-labs/forge",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Local-first action assistant for software work with resumable execution, bounded tools, and reviewable evidence",
   "license": "MIT",
   "author": "Moretea Labs contributors",

@@ -58,7 +58,7 @@ Forge ships typed local/browser/desktop/iOS/GitHub/Gmail/Calendar/Tasks/App Stor
 
 Local read/write grants are explicit and expiring; remote or destructive effects are distinguished from ordinary local work; high-impact actions require stronger confirmation. Full Access reduces repetitive prompts for normal work without removing the hard boundaries around secrets, destructive actions, and outside-workspace access. See [Security](SECURITY.md) and the [Security Model](docs/wiki/Security-Model.md).
 
-**Docs:** [Wiki](docs/wiki/Home.md) · [Support](SUPPORT.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md). Current stable release: `1.6.0`; stable installs use npm `latest`.
+**Docs:** [Wiki](docs/wiki/Home.md) · [Support](SUPPORT.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md). Current stable release: `1.7.0`; stable installs use npm `latest`.
 
 ---
 <a id="zh-cn"></a>
@@ -109,4 +109,4 @@ Forge 内置本机、Browser、Desktop、iOS、GitHub、Gmail、Calendar、Tasks
 
 安全上，普通本地修改、远程影响、破坏性操作、密钥和工作区外访问是不同边界；Full Access 不会取消高风险确认。详见[安全说明](SECURITY.md)和[安全模型](docs/wiki/Security-Model.md)。
 
-**文档：** [Wiki](docs/wiki/Home.md) · [支持](SUPPORT.md) · [贡献](CONTRIBUTING.md) · [更新日志](CHANGELOG.md)。当前稳定版为 `1.6.0`，稳定安装使用 npm `latest`。
+**文档：** [Wiki](docs/wiki/Home.md) · [支持](SUPPORT.md) · [贡献](CONTRIBUTING.md) · [更新日志](CHANGELOG.md)。当前稳定版为 `1.7.0`，稳定安装使用 npm `latest`。
