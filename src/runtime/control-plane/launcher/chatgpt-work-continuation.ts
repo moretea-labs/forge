@@ -461,6 +461,26 @@ async function closeChatgptAutomationTabAfterDispatch(
   }
 }
 
+/**
+ * Settles the browser resource for one completed Work-bound ChatGPT round.
+ * Conversation identity is durable in the Work binding and intentionally
+ * survives this ephemeral tab/session cleanup. Browser ownership policy keeps
+ * user-owned native tabs intact.
+ */
+export async function settleWorkChatgptAutomationTab(input: {
+  controllerHome: string;
+  workId: string;
+  browserSessionId: string;
+  timeoutMs?: number;
+}): Promise<{ status: ChatgptAutomationTabCleanupStatus; error?: { code: string; message: string } }> {
+  return closeChatgptAutomationTabAfterDispatch(
+    input.controllerHome,
+    input.workId,
+    input.browserSessionId,
+    input.timeoutMs,
+  );
+}
+
 export function isChatgptConversationUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -707,15 +727,10 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
           localAlias: binding?.localAlias ?? input.title,
         });
     }
-    // Submission is already externally committed at this point. Cleanup must never
-    // downgrade dispatch to failed, otherwise a scheduler retry can send the same
-    // prompt twice. Browser ownership policy keeps user-owned native tabs intact.
-    const tabCleanup = await closeChatgptAutomationTabAfterDispatch(
-      input.controllerHome,
-      input.workId,
-      navigation.browserSessionId,
-      input.timeoutMs,
-    );
+    // Work-bound dispatch keeps the Forge-owned automation tab/session alive for
+    // the launched semantic Controller round. The exact Controller release path
+    // settles it after an explicit disposition. Closing here would race the new
+    // ChatGPT round and make dispatch success look like round completion.
     return {
       status: 'dispatched',
       provider: 'controller-browser',
@@ -728,8 +743,6 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
       reasoning,
       tabPolicy,
       executionPreferenceVerified,
-      tabCleanupStatus: tabCleanup.status,
-      ...(tabCleanup.error ? { tabCleanupError: tabCleanup.error } : {}),
     };
   } catch (error) {
     return {

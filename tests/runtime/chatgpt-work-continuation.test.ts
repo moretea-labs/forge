@@ -203,7 +203,10 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'); expect(source).toContain('workflowToolAttributionInstruction'); expect(source).toContain('repository_command_execute and repository_safe_patch_apply');
     expect(source).toContain("controllerBrowserAction(controllerHome, workId, 'close_page'");
     expect(source).toContain('closeChatgptAutomationTabAfterDispatch');
-    expect(source).toContain("tabCleanupStatus: tabCleanup.status");
+    expect(source).toContain('settleWorkChatgptAutomationTab');
+    const workContinuation = source.slice(source.indexOf('export async function runWorkChatgptContinuation'));
+    expect(workContinuation).not.toContain('closeChatgptAutomationTabAfterDispatch(');
+    expect(workContinuation).not.toContain('tabCleanupStatus: tabCleanup.status');
     expect(source).toContain("'PLUGIN_BROWSER_SESSION_STATE_LOST'");
     expect(source).toContain("'PLUGIN_SESSION_NOT_FOUND'");
     expect(source).toContain('buildBrowserPluginManifest(0, undefined, repoRoot).enabled');
@@ -225,6 +228,12 @@ describe('ChatGPT Work conversation binding', () => {
     expect(launcherStart).toContain("semantic closure still requires an explicit disposition.'");
     expect(launcherStart.indexOf('await runWorkChatgptContinuation({')).toBeLessThan(launcherStart.indexOf('const launched = await launchSuperController'));
     expect(launcherStart).toContain("controllerType: controllerType as 'codex' | 'grok' | 'claude'");
+    const controllerRelease = runtimeTools.slice(runtimeTools.indexOf("if (operation === 'controller_release')"), runtimeTools.indexOf("if (operation === 'launcher_start')"));
+    expect(controllerRelease).toContain('await runWorkChatgptContinuation({');
+    expect(controllerRelease).not.toContain('await runStandaloneChatgptPrompt({');
+    expect(controllerRelease).toContain('settleWorkChatgptAutomationTab({');
+    expect(controllerRelease).toContain("status: 'retained_for_immediate_continuation'");
+    expect(controllerRelease).toContain("['waiting', 'waiting_for_user', 'goal_complete', 'blocked', 'failed']");
   });
 
   test('migrates legacy ChatGPT schedules idempotently without changing task state', () => {

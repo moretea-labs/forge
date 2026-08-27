@@ -56,6 +56,14 @@ export type ControllerRoundRelayStatus =
   | 'blocked'
   | 'failed';
 
+export type ControllerRoundTabSettlementStatus =
+  | 'round_open'
+  | 'retained_for_immediate_continuation'
+  | 'closed'
+  | 'preserved_user_owned'
+  | 'session_closed'
+  | 'failed';
+
 export interface ControllerRoundRelayRecord {
   schemaVersion: 1;
   repoId: string;
@@ -86,6 +94,9 @@ export interface ControllerRoundRelayRecord {
   updatedAt: string;
   dispatchedAt?: string;
   claimedAt?: string;
+  tabSettlementStatus?: ControllerRoundTabSettlementStatus;
+  tabSettlementAt?: string;
+  tabSettlementError?: string;
 }
 
 export interface ControllerRoundRelayStoreOptions {
@@ -177,6 +188,47 @@ function readRelayRecord(
   workId: string,
 ): ControlPlaneRecord<ControllerRoundRelayRecord> | undefined {
   return readControlPlaneRecord<ControllerRoundRelayRecord>(options.controllerHome, NAMESPACE, options.repoId, workId);
+}
+
+export function getControllerRoundRelay(
+  options: ControllerRoundRelayStoreOptions,
+  workId: string,
+): ControllerRoundRelayRecord | undefined {
+  return readRelayRecord(options, workId)?.value;
+}
+
+export function recordControllerRoundTabSettlement(
+  options: ControllerRoundRelayStoreOptions,
+  input: {
+    workId: string;
+    status: ControllerRoundTabSettlementStatus;
+    error?: string;
+  },
+): ControllerRoundRelayRecord | undefined {
+  const initial = readRelayRecord(options, input.workId);
+  if (!initial) return undefined;
+  return relayLock(options, initial.value.relayScopeId, `controller-relay-tab-settlement:${input.workId}`, () => {
+    const current = readRelayRecord(options, input.workId);
+    if (!current) return undefined;
+    const at = nowIso(options);
+    const next: ControllerRoundRelayRecord = {
+      ...current.value,
+      tabSettlementStatus: input.status,
+      tabSettlementAt: at,
+      tabSettlementError: bounded(input.error, 2_000),
+      updatedAt: at,
+    };
+    writeControlPlaneRecord(options.controllerHome, {
+      namespace: NAMESPACE,
+      scope: options.repoId,
+      key: input.workId,
+      schemaVersion: SCHEMA_VERSION,
+      value: next,
+      action: 'controller_round_tab_settled',
+      expectedRevision: current.revision,
+    });
+    return next;
+  });
 }
 
 function relayHistory(options: ControllerRoundRelayStoreOptions, relayScopeId: string): ControllerRoundRelayRecord[] {
@@ -464,6 +516,7 @@ export function submitControllerRoundDisposition(
       ...(browserSessionId ? { browserSessionId } : {}),
       ...(conversationUrl ? { conversationUrl } : {}),
       ...(blockedReason ? { blockedReason } : {}),
+      tabSettlementStatus: existing.value.tabSettlementStatus ?? 'round_open',
       submittedAt: at,
       updatedAt: at,
     };
@@ -618,6 +671,9 @@ export function finishControllerRoundRelayDispatch(
           consecutiveFailures: 0,
           lastError: undefined,
           blockedReason: undefined,
+          tabSettlementStatus: 'round_open',
+          tabSettlementAt: undefined,
+          tabSettlementError: undefined,
           ...(bounded(input.browserSessionId, 500) ? { browserSessionId: bounded(input.browserSessionId, 500) } : {}),
           ...(bounded(input.conversationUrl, 2_000) ? { conversationUrl: bounded(input.conversationUrl, 2_000) } : {}),
           dispatchedAt: at,

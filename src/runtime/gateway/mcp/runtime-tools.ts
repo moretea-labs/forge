@@ -206,7 +206,7 @@ import { observeRuntimeStatus } from '../../root/status';
 import { reconcileWorkValidation } from './work-validation-reconciler';
 import { callExecutionTool } from './execution-tools';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
-import { runStandaloneChatgptPrompt, runWorkChatgptContinuation } from '../../control-plane/launcher/chatgpt-work-continuation';
+import { runStandaloneChatgptPrompt, runWorkChatgptContinuation, settleWorkChatgptAutomationTab } from '../../control-plane/launcher/chatgpt-work-continuation';
 import { getChatgptWorkConversationBinding } from '../../control-plane/launcher/chatgpt-work-binding-store';
 import {
   acknowledgeControllerRoundClaim,
@@ -214,7 +214,9 @@ import {
   beginInitialControllerRoundDispatch,
   buildControllerRoundRelayPrompt,
   finishControllerRoundRelayDispatch,
+  getControllerRoundRelay,
   parseControllerDispositionCompatibilityCapability,
+  recordControllerRoundTabSettlement,
   submitControllerRoundDisposition,
   type ControllerRoundDisposition,
 } from '../../control-plane/facade/controller-round-relay';
@@ -4206,8 +4208,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             if (executionSession?.activeWorkId === workId) {
               updateExecutionSession(ctx.controllerHome, identity, { activeWorkId: undefined, lastValidatedAt: new Date().toISOString() });
             }
+            const relayStore = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
             const relay = owner ? beginControllerRoundRelayAfterRelease(
-              { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+              relayStore,
               { workId, releasedSession: owner },
             ) : undefined;
             if (relay?.status === 'dispatching') {
@@ -4217,19 +4220,27 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   relay_scope_id: relay.relayScopeId,
                   requirement_id: relay.requirementId,
                 });
-                const prompt = buildControllerRoundRelayPrompt({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, relay);
-                const dispatched = await runStandaloneChatgptPrompt({
+                const prompt = buildControllerRoundRelayPrompt(relayStore, relay);
+                const dispatched = await runWorkChatgptContinuation({
                   controllerHome: ctx.controllerHome,
                   repoId: repository.repoId,
-                  scopeId: `controller-relay:${relay.relayScopeId}`,
+                  repoRoot: repository.canonicalRoot,
+                  workId,
                   prompt,
                   browserSessionId: relay.browserSessionId,
                   conversationUrl: relay.conversationUrl,
-                  tabPolicy: 'new',
+                  tabPolicy: 'reuse',
                 });
                 if (dispatched.status === 'failed') throw new Error(dispatched.error?.message ?? 'CONTROLLER_RELAY_DISPATCH_FAILED');
+                // The next prompt is externally committed before this transition is
+                // recorded. Contiguous immediate rounds intentionally retain one
+                // Forge-owned tab, avoiding a close/reopen race and duplicate prompt.
+                recordControllerRoundTabSettlement(relayStore, {
+                  workId,
+                  status: 'retained_for_immediate_continuation',
+                });
                 const completed = finishControllerRoundRelayDispatch(
-                  { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+                  relayStore,
                   { workId, ok: true, browserSessionId: dispatched.browserSessionId, conversationUrl: dispatched.conversationUrl },
                 );
                 return result(buildFacadeResult({
@@ -4238,7 +4249,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 }) as unknown as Record<string, unknown>);
               } catch (relayError) {
                 const failed = finishControllerRoundRelayDispatch(
-                  { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+                  relayStore,
                   { workId, ok: false, error: relayError instanceof Error ? relayError.message : String(relayError) },
                 );
                 return result(buildFacadeResult({
@@ -4248,7 +4259,32 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 }) as unknown as Record<string, unknown>, true);
               }
             }
-            return result(buildFacadeResult({ summary: 'Controller lease released.', data: { relay } }) as unknown as Record<string, unknown>);
+            const settledRelay = getControllerRoundRelay(relayStore, workId);
+            let tabSettlement;
+            if (
+              owner?.controllerType === 'chatgpt'
+              && settledRelay
+              && ['waiting', 'waiting_for_user', 'goal_complete', 'blocked', 'failed'].includes(settledRelay.status)
+            ) {
+              const binding = getChatgptWorkConversationBinding(store, workId);
+              const browserSessionId = settledRelay.browserSessionId ?? binding?.latestBrowserSessionId;
+              if (browserSessionId) {
+                tabSettlement = await settleWorkChatgptAutomationTab({
+                  controllerHome: ctx.controllerHome,
+                  workId,
+                  browserSessionId,
+                });
+                recordControllerRoundTabSettlement(relayStore, {
+                  workId,
+                  status: tabSettlement.status,
+                  error: tabSettlement.error?.message,
+                });
+              }
+            }
+            return result(buildFacadeResult({
+              summary: 'Controller lease released.',
+              data: { relay: getControllerRoundRelay(relayStore, workId) ?? relay, tabSettlement },
+            }) as unknown as Record<string, unknown>);
           } catch (error) {
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller release failed.', data: {} }) as unknown as Record<string, unknown>, true);
           }
