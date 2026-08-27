@@ -308,7 +308,7 @@ function claimedExplicitWork(
   return work;
 }
 
-function assertNoTerminalExecutionSessionBinding(
+function assertNoBoundExecutionSessionMutation(
   controllerHome: string,
   repository: ReturnType<typeof resolveRepositorySelection>,
   caller?: RepositoryToolCallerContext,
@@ -320,13 +320,13 @@ function assertNoTerminalExecutionSessionBinding(
     controllerInstanceId: caller.controllerInstanceId,
   });
   const workId = executionSession?.activeWorkId?.trim();
-  if (!workId
-    || executionSession?.activeRepositoryId !== repository.repoId
-    || (executionSession.activeCheckoutId && executionSession.activeCheckoutId !== repository.activeCheckoutId)) return;
+  if (!workId || executionSession?.activeRepositoryId !== repository.repoId) return;
   const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
-  if (work && isTerminalWorkContractStatus(work.status)) {
+  if (!work) throw new Error(`WORK_ATTRIBUTION_INVALID: ${workId}`);
+  if (isTerminalWorkContractStatus(work.status)) {
     throw new Error(`WORK_ATTRIBUTION_TERMINAL: ${work.workId}:${work.status}`);
   }
+  throw new Error(`WORK_ATTRIBUTION_REQUIRED: ${work.workId}; active execution session mutations must pass work_id explicitly`);
 }
 
 function claimedSessionWorkId(
@@ -404,7 +404,7 @@ function safePatchEditBinding(
       ? claimedSessionEditBinding(controllerHome, repository, caller, existingWorkId)
       : undefined;
   }
-  assertNoTerminalExecutionSessionBinding(controllerHome, repository, caller);
+  assertNoBoundExecutionSessionMutation(controllerHome, repository, caller);
   return undefined;
 }
 
@@ -1100,7 +1100,7 @@ export async function callRepositoryTool(
         const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
         const { repository, executionIdentity } = target;
         const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-        if (!explicitWorkId) assertNoTerminalExecutionSessionBinding(controllerHome, repository, caller);
+        if (!explicitWorkId) assertNoBoundExecutionSessionMutation(controllerHome, repository, caller);
         const deliveryWorkId = rawDefaultBranchMergeCommand(repository, args.command)
           ? executionIdentity.workId
           : undefined;

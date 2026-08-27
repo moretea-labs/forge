@@ -99,6 +99,78 @@ describe("repository MCP command tools", () => {
     }
   });
 
+  test("active Work-bound execution session cannot omit work_id and fall back to canonical mutation when checkout differs", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-active-bound-attribution-"));
+    const controllerHome = join(workspace, "controller");
+    const repoRoot = join(workspace, "repo");
+    mkdirSync(repoRoot, { recursive: true });
+    try {
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "README.md"), "base\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-m", "init"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
+      const workId = "WORK-ACTIVE-BOUND-DIFFERENT-CHECKOUT";
+      createWorkContract({ controllerHome, repoId: repository.repoId }, {
+        workId,
+        repoId: repository.repoId,
+        checkoutId: "checkout-work-owned",
+        mode: "goal_workloop",
+        objective: "active bound Work must not fall back to canonical mutation",
+        acceptanceCriteria: ["explicit Work attribution is required"],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: "chatgpt",
+        status: "running",
+      });
+      const caller = { sessionId: "session-active-bound", principalId: "principal-active-bound", controllerInstanceId: "runtime-active-bound" };
+      claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+        workId,
+        controllerId: caller.principalId,
+        controllerType: "chatgpt",
+        sessionId: caller.sessionId,
+        principalId: caller.principalId,
+        controllerInstanceId: caller.controllerInstanceId,
+        leaseMs: 60_000,
+      });
+      startExecutionSession(controllerHome, caller);
+      updateExecutionSession(controllerHome, caller, {
+        activeRepositoryId: repository.repoId,
+        activeCheckoutId: "checkout-work-owned",
+        activeWorkId: workId,
+      });
+
+      const blockedPatch = await json(callRepositoryTool(controllerHome, "repository_safe_patch_apply", {
+        repo_id: repository.repoId,
+        purpose: "must not mutate canonical checkout without explicit Work attribution",
+        operations: [{ type: "create", path: "should-not-exist.txt", content: "forbidden\n" }],
+      }, caller));
+      expect(blockedPatch.error).toMatchObject({
+        code: "WORK_ATTRIBUTION_REQUIRED",
+        message: `WORK_ATTRIBUTION_REQUIRED: ${workId}; active execution session mutations must pass work_id explicitly`,
+      });
+      expect(existsSync(join(repoRoot, "should-not-exist.txt"))).toBe(false);
+
+      const blockedCommand = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        command: ["sh", "-c", "printf forbidden > also-should-not-exist.txt"],
+        request_id: "active-bound-command-must-not-fall-back",
+      }, caller));
+      expect(blockedCommand.error).toMatchObject({
+        code: "WORK_ATTRIBUTION_REQUIRED",
+        message: `WORK_ATTRIBUTION_REQUIRED: ${workId}; active execution session mutations must pass work_id explicitly`,
+      });
+      expect(existsSync(join(repoRoot, "also-should-not-exist.txt"))).toBe(false);
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("terminal-bound execution session cannot omit work_id and fall back to unbound repository mutation", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-terminal-bound-attribution-"));
     const controllerHome = join(workspace, "controller");
