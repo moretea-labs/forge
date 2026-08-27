@@ -502,4 +502,33 @@ printf 'BUILD SUCCEEDED\\n'
     expect('capabilityCount' in data).toBe(false);
   });
 
+  test('rh_context list query returns bounded read-only intent discovery and preserves plugin_action_execute authority', async () => {
+    const business = tempRoot('forge-context-capability-search-');
+    const controllerHome = tempRoot('forge-home-capability-search-');
+    initGitRepo(business, 'context-capability-search');
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Capability Search' });
+    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId,
+      operation: 'list',
+      query: 'browser login authentication',
+      detail_level: 'summary',
+    }));
+    const data = payload.data as {
+      capabilitySearch?: {
+        query?: string;
+        readOnlyDiscovery?: boolean;
+        executeWith?: string;
+        matches?: Array<{ capabilityId?: string; descriptor?: { exposedVia?: string } }>;
+      };
+    };
+    expect(data.capabilitySearch).toMatchObject({
+      query: 'browser login authentication',
+      readOnlyDiscovery: true,
+      executeWith: 'plugin_action_execute',
+    });
+    expect(data.capabilitySearch?.matches?.some((entry) => entry.capabilityId === 'plugin.browser')).toBe(true);
+    expect(data.capabilitySearch?.matches?.find((entry) => entry.capabilityId === 'plugin.browser')?.descriptor?.exposedVia).toBe('plugin_action_execute');
+  });
+
 });

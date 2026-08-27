@@ -326,6 +326,43 @@ describe('handoff and facade contracts', () => {
     expect(matches[0]?.matchedTerms).toContain('apple-development');
   });
 
+  test('ranks plugin-backed Apple and browser fallback capabilities without changing executor authority', () => {
+    const manifests = [
+      {
+        pluginId: 'app_store_connect',
+        displayName: 'App Store Connect API Plugin',
+        actions: [
+          { actionId: 'auth_status', title: 'Check App Store Connect auth', description: 'Report API readiness.', readOnly: true, risk: 'readonly' },
+          { actionId: 'configure', title: 'Configure App Store Connect', description: 'Configure provider defaults.', readOnly: false, risk: 'workspace_write' },
+        ],
+      },
+      {
+        pluginId: 'desktop_operator',
+        displayName: 'Forge Desktop Operator',
+        actions: [
+          { actionId: 'desktop_session_open', title: 'Open desktop session', description: 'Open an exact foreground desktop session.', readOnly: false, risk: 'workspace_write' },
+          { actionId: 'desktop_observe', title: 'Observe desktop', description: 'Read current visual state.', readOnly: true, risk: 'readonly' },
+        ],
+      },
+    ] as unknown as Parameters<typeof searchCapabilityDescriptors>[1];
+
+    const apple = searchCapabilityDescriptors('configure Xcode account Apple provisioning', manifests, 12);
+    const appleIds = apple.map((entry) => entry.capabilityId);
+    expect(appleIds).toEqual(expect.arrayContaining([
+      'platform.ios',
+      'plugin.app_store_connect.auth_status',
+      'plugin.app_store_connect.configure',
+      'plugin.desktop_operator.desktop_session_open',
+    ]));
+    expect(apple.every((entry) => entry.descriptor.exposedVia === 'plugin_action_execute' || entry.descriptor.exposedVia.startsWith('rh_'))).toBe(true);
+
+    const browser = searchCapabilityDescriptors('browser login authentication', manifests, 12);
+    const browserIds = browser.map((entry) => entry.capabilityId);
+    expect(browserIds).toContain('plugin.browser');
+    expect(browserIds).toContain('plugin.desktop_operator.desktop_session_open');
+    expect(browser.find((entry) => entry.capabilityId === 'plugin.desktop_operator.desktop_session_open')?.descriptor.exposedVia).toBe('plugin_action_execute');
+  });
+
   test('policy gate preserves bounded direct edit and blocks raw secret access', () => {
     expect(evaluatePolicyGate({
       risk: 'local_repo_write',
