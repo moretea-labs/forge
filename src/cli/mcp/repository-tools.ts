@@ -308,6 +308,27 @@ function claimedExplicitWork(
   return work;
 }
 
+function assertNoTerminalExecutionSessionBinding(
+  controllerHome: string,
+  repository: ReturnType<typeof resolveRepositorySelection>,
+  caller?: RepositoryToolCallerContext,
+): void {
+  if (!caller?.principalId?.trim() || !caller.sessionId?.trim()) return;
+  const executionSession = readExecutionSession(controllerHome, {
+    sessionId: caller.sessionId,
+    principalId: caller.principalId,
+    controllerInstanceId: caller.controllerInstanceId,
+  });
+  const workId = executionSession?.activeWorkId?.trim();
+  if (!workId
+    || executionSession?.activeRepositoryId !== repository.repoId
+    || (executionSession.activeCheckoutId && executionSession.activeCheckoutId !== repository.activeCheckoutId)) return;
+  const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
+  if (work && isTerminalWorkContractStatus(work.status)) {
+    throw new Error(`WORK_ATTRIBUTION_TERMINAL: ${work.workId}:${work.status}`);
+  }
+}
+
 function claimedSessionWorkId(
   controllerHome: string,
   repository: ReturnType<typeof resolveRepositorySelection>,
@@ -377,11 +398,14 @@ function safePatchEditBinding(
   const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
   if (explicitWorkId) return claimedSessionEditBinding(controllerHome, repository, caller, explicitWorkId);
   const sessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
-  if (!sessionId) return undefined;
-  const existingWorkId = getEditSession(repository.canonicalRoot, sessionId).workId?.trim();
-  return existingWorkId
-    ? claimedSessionEditBinding(controllerHome, repository, caller, existingWorkId)
-    : undefined;
+  if (sessionId) {
+    const existingWorkId = getEditSession(repository.canonicalRoot, sessionId).workId?.trim();
+    return existingWorkId
+      ? claimedSessionEditBinding(controllerHome, repository, caller, existingWorkId)
+      : undefined;
+  }
+  assertNoTerminalExecutionSessionBinding(controllerHome, repository, caller);
+  return undefined;
 }
 
 function resolveRepositorySelectionForClaimedWork(
@@ -1075,6 +1099,8 @@ export async function callRepositoryTool(
         const explorationGuidance = fragmentedRepositoryExplorationGuidance(args.command);
         const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
         const { repository, executionIdentity } = target;
+        const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+        if (!explicitWorkId) assertNoTerminalExecutionSessionBinding(controllerHome, repository, caller);
         const deliveryWorkId = rawDefaultBranchMergeCommand(repository, args.command)
           ? executionIdentity.workId
           : undefined;

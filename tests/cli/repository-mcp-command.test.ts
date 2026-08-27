@@ -145,6 +145,17 @@ describe("repository MCP command tools", () => {
         message: "WORK_ATTRIBUTION_TERMINAL: WORK-TERMINAL-BOUND:failed",
       });
       expect(existsSync(join(repoRoot, "should-not-exist.txt"))).toBe(false);
+
+      const blockedCommand = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        command: ["sh", "-c", "printf forbidden > also-should-not-exist.txt"],
+        request_id: "terminal-bound-command-must-not-escape",
+      }, caller));
+      expect(blockedCommand.error).toMatchObject({
+        code: "WORK_ATTRIBUTION_TERMINAL",
+        message: "WORK_ATTRIBUTION_TERMINAL: WORK-TERMINAL-BOUND:failed",
+      });
+      expect(existsSync(join(repoRoot, "also-should-not-exist.txt"))).toBe(false);
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });
