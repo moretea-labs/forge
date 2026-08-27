@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { externalPluginListItem, installerNextSteps, officialPluginCatalogItems, pluginCatalogCompatibility } from '../../src/cli/commands/plugin';
+import { externalPluginListItem, installerNextSteps, officialPluginCatalogItems, pluginCatalogCompatibility, registrationFrom } from '../../src/cli/commands/plugin';
 
 describe('official plugin catalog', () => {
   test('includes the pinned Forge Figma Bridge release', () => {
@@ -13,17 +13,37 @@ describe('official plugin catalog', () => {
     });
   });
 
-  test('does not advertise a pinned provider-version mismatch as compatible', () => {
+  test('accepts an explicitly pinned installer receipt version without weakening provider identity', () => {
     const desktop = officialPluginCatalogItems('darwin').find((entry) => entry.id === 'desktop_operator');
     expect(desktop).toMatchObject({
       id: 'desktop_operator',
       version: '0.2.1',
       providerVersion: '0.2.0',
-      compatible: false,
+      compatible: true,
     });
-    expect(desktop?.reason).toContain('catalog version 0.2.1');
-    expect(desktop?.reason).toContain('provider version 0.2.0');
-    expect(pluginCatalogCompatibility({ ...desktop!, providerVersion: '0.2.1' }, 'darwin')).toEqual({ compatible: true });
+    expect(pluginCatalogCompatibility(desktop!, 'darwin')).toEqual({ compatible: true });
+
+    const registration = registrationFrom({
+      providerInstall: {
+        kind: 'desktop_operator',
+        pluginVersion: '0.2.0',
+        protocolVersion: '1.0',
+        socketPath: '/tmp/forge-desktop-operator.sock',
+        launchAgentLabel: 'com.moretea.forge.desktop-operator',
+        expectedProgramContains: 'Forge Desktop Operator.app',
+      },
+    }, desktop!);
+    expect(registration.pluginVersion).toBe('0.2.1');
+    expect(() => registrationFrom({
+      providerInstall: {
+        kind: 'desktop_operator',
+        pluginVersion: '0.1.9',
+        protocolVersion: '1.0',
+        socketPath: '/tmp/forge-desktop-operator.sock',
+        launchAgentLabel: 'com.moretea.forge.desktop-operator',
+        expectedProgramContains: 'Forge Desktop Operator.app',
+      },
+    }, desktop!)).toThrow(/PLUGIN_INSTALLER_PROVIDER_VERSION_MISMATCH/);
   });
 
   test('controller-level listing does not report repository-scoped plugins as missing', () => {
