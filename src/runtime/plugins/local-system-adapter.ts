@@ -171,6 +171,98 @@ function run(command: string, args: string[], timeoutMs = 30_000): CommandResult
   };
 }
 
+export interface DesktopApplicationIdentity {
+  bundleId?: string;
+  appName?: string;
+}
+
+export interface VerifiedDesktopApplicationActivation {
+  activated: true;
+  verified: true;
+  bundleId: string;
+  appName: string;
+  activationCommand: string[];
+  frontmostQueryCommand: string[];
+}
+
+function normalizedDesktopApplicationIdentity(identity: DesktopApplicationIdentity): { bundleId: string; appName: string } {
+  return {
+    bundleId: typeof identity.bundleId === 'string' ? identity.bundleId.trim() : '',
+    appName: typeof identity.appName === 'string' ? identity.appName.trim() : '',
+  };
+}
+
+function frontmostDesktopApplication(): { bundleId: string; appName: string; queryCommand: string[] } {
+  const front = run('/usr/bin/lsappinfo', ['front'], 2_000);
+  const asn = front.stdout.trim();
+  if (!front.ok || !/^ASN:[^\s]+:?$/.test(asn)) {
+    throw new AssistantPluginError('DESKTOP_FALLBACK_FRONTMOST_QUERY_FAILED', 'LaunchServices did not return a valid frontmost application identity.', {
+      retryable: true,
+      details: { status: front.status, stderr: bounded(front.stderr, 2_000).content, stdout: bounded(front.stdout, 2_000).content },
+    });
+  }
+  const info = run('/usr/bin/lsappinfo', ['info', '-only', 'bundleid', '-only', 'name', asn], 2_000);
+  if (!info.ok) {
+    throw new AssistantPluginError('DESKTOP_FALLBACK_FRONTMOST_QUERY_FAILED', 'LaunchServices could not resolve the frontmost application identity.', {
+      retryable: true,
+      details: { status: info.status, stderr: bounded(info.stderr, 2_000).content, asn },
+    });
+  }
+  const bundleId = info.stdout.match(/bundleID="([^"]+)"/)?.[1]?.trim() ?? '';
+  const appName = info.stdout.match(/^"([^"]+)"/m)?.[1]?.trim() ?? '';
+  if (!bundleId && !appName) {
+    throw new AssistantPluginError('DESKTOP_FALLBACK_FRONTMOST_QUERY_FAILED', 'LaunchServices returned frontmost evidence without a stable application identity.', {
+      retryable: true,
+      details: { observed: bounded(info.stdout, 4_000).content, asn },
+    });
+  }
+  return { bundleId, appName, queryCommand: info.command };
+}
+
+export async function activateAndVerifyFrontmostApplication(
+  identity: DesktopApplicationIdentity,
+): Promise<VerifiedDesktopApplicationActivation> {
+  if (process.platform !== 'darwin') {
+    throw new AssistantPluginError('DESKTOP_FALLBACK_ACTIVATION_UNAVAILABLE', 'Forge desktop activation fallback is available only on macOS.', { retryable: false });
+  }
+  const target = normalizedDesktopApplicationIdentity(identity);
+  if (!target.bundleId && !target.appName) {
+    throw new AssistantPluginError('DESKTOP_FALLBACK_ACTIVATION_TARGET_INVALID', 'Desktop activation fallback requires an exact bundle id or application name.', { retryable: false });
+  }
+  const activationArgs = target.bundleId ? ['-b', target.bundleId] : ['-a', target.appName];
+  const activation = run('/usr/bin/open', activationArgs, 5_000);
+  if (!activation.ok) {
+    throw new AssistantPluginError('DESKTOP_FALLBACK_ACTIVATION_FAILED', `LaunchServices could not activate ${target.bundleId || target.appName}.`, {
+      retryable: true,
+      details: { target, status: activation.status, stderr: bounded(activation.stderr, 4_000).content },
+    });
+  }
+
+  let observed: { bundleId: string; appName: string; queryCommand: string[] } | undefined;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    observed = frontmostDesktopApplication();
+    const matches = target.bundleId
+      ? observed.bundleId === target.bundleId
+      : observed.appName === target.appName;
+    if (matches) {
+      return {
+        activated: true,
+        verified: true,
+        bundleId: observed.bundleId,
+        appName: observed.appName,
+        activationCommand: activation.command,
+        frontmostQueryCommand: observed.queryCommand,
+      };
+    }
+    if (attempt < 11) await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  throw new AssistantPluginError('DESKTOP_FALLBACK_ACTIVATION_NOT_CONFIRMED', `LaunchServices did not confirm ${target.bundleId || target.appName} as frontmost after activation.`, {
+    retryable: true,
+    details: { target, observed: observed ? { bundleId: observed.bundleId, appName: observed.appName } : undefined, activationCommand: activation.command },
+  });
+}
+
 function projectScriptRuntimePath(runtime: string): string {
   const home = process.env.HOME?.trim();
   const candidates: Record<string, string[]> = {

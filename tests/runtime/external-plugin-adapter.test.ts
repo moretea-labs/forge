@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { createExternalPluginAdapter } from '../../src/runtime/plugins/external-adapter';
+import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 import type { ExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 import type { ExternalUnixSocketCallOptions } from '../../src/runtime/plugins/external-unix-socket';
 
@@ -152,7 +153,7 @@ describe('external plugin adapter', () => {
     expect(calls[1]?.params).toEqual({ action: 'desktop_status', arguments: {} });
   });
 
-  test('executes Forge-composed foreground pointer interaction atomically without requiring a provider-native composite action', async () => {
+  test('executes Forge-composed foreground pointer interaction through the shared verified activation fallback and a fresh visual revision', async () => {
     const base = registration();
     const foregroundAction = {
       ...base.actions[0]!,
@@ -165,8 +166,18 @@ describe('external plugin adapter', () => {
       scopes: ['desktop.interact', 'desktop.capture'],
     };
     const calls: ExternalUnixSocketCallOptions[] = [];
+    const fallbackTargets: Array<{ bundleId?: string; appName?: string }> = [];
     let statusReads = 0;
+    let sessionOpenCalls = 0;
     const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, foregroundAction] }), {
+      activateAndVerifyFrontmostApplication: async (target) => {
+        fallbackTargets.push(target);
+        return {
+          activated: true, verified: true, bundleId: 'com.google.Chrome', appName: 'Google Chrome',
+          activationCommand: ['/usr/bin/open', '-b', 'com.google.Chrome'],
+          frontmostQueryCommand: ['/usr/bin/lsappinfo', 'info'],
+        };
+      },
       call: async (options) => {
         calls.push(options);
         if (options.method === 'manifest') {
@@ -180,7 +191,12 @@ describe('external plugin adapter', () => {
               ? { sessions: [{ interactionId: 'desk-source', bundleIdentifier: 'com.google.Chrome', appName: 'Google Chrome' }], applications: [] }
               : { sessions: [], applications: [{ active: true, terminated: false, bundle_id: 'com.google.Chrome', name: 'Google Chrome' }] };
           case 'desktop_session_open':
-            expect(params.arguments).toEqual({ bundle_id: 'com.google.Chrome', launch: false, activate: true });
+            sessionOpenCalls += 1;
+            if (sessionOpenCalls === 1) {
+              expect(params.arguments).toEqual({ bundle_id: 'com.google.Chrome', launch: false, activate: true });
+              throw new AssistantPluginError('APP_ACTIVATION_FAILED', 'Target application did not become frontmost', { retryable: true });
+            }
+            expect(params.arguments).toEqual({ bundle_id: 'com.google.Chrome', launch: false, activate: false });
             return { interactionId: 'desk-active' };
           case 'desktop_screenshot':
             expect(params.arguments).toMatchObject({ interaction_id: 'desk-active', scope: 'window', window_id: 4159 });
@@ -201,11 +217,106 @@ describe('external plugin adapter', () => {
       origin: { surface: 'mcp' },
     });
 
+    expect(fallbackTargets).toEqual([{ bundleId: 'com.google.Chrome', appName: undefined }]);
     expect(result).toMatchObject({ interactionId: 'desk-active', activationVerified: true, windowId: 4159, visualRevision: 7, click: { clicked: true } });
-    expect(calls.map((entry) => entry.method)).toEqual(['manifest', 'execute', 'execute', 'execute', 'execute', 'execute']);
     expect(calls.slice(1).map((entry) => (entry.params as { action?: string } | undefined)?.action)).toEqual([
-      'desktop_status', 'desktop_session_open', 'desktop_status', 'desktop_screenshot', 'desktop_pointer_click',
+      'desktop_status', 'desktop_session_open', 'desktop_session_open', 'desktop_screenshot', 'desktop_pointer_click',
     ]);
+  });
+
+  test('recovers APP_ACTIVATION_FAILED by rebinding first and then requiring exact independent frontmost proof', async () => {
+    const base = registration();
+    const sessionOpenAction = {
+      ...base.actions[0]!, actionId: 'desktop_session_open', title: 'Open desktop session', description: 'Open session.',
+      readOnly: false, risk: 'workspace_write' as const, confirmation: 'authorization' as const, scopes: ['desktop.session'],
+    };
+    const providerArgs: Record<string, unknown>[] = [];
+    const fallbackTargets: Array<{ bundleId?: string; appName?: string }> = [];
+    let opens = 0;
+    const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, sessionOpenAction] }), {
+      activateAndVerifyFrontmostApplication: async (target) => {
+        fallbackTargets.push(target);
+        return { activated: true, verified: true, bundleId: 'com.vivaldi.Vivaldi', appName: 'Vivaldi', activationCommand: ['/usr/bin/open', '-b', 'com.vivaldi.Vivaldi'], frontmostQueryCommand: ['/usr/bin/lsappinfo', 'info'] };
+      },
+      call: async (options) => {
+        if (options.method === 'manifest') return providerManifest({ actions: ['desktop_status', 'desktop_session_open'] });
+        const params = options.params as { action?: string; arguments?: Record<string, unknown> } | undefined;
+        if (params?.action === 'desktop_session_open') {
+          providerArgs.push(params.arguments ?? {});
+          opens += 1;
+          if (opens === 1) throw new AssistantPluginError('APP_ACTIVATION_FAILED', 'Target application did not become frontmost', { retryable: true });
+          return { interactionId: 'desk-vivaldi' };
+        }
+        if (params?.action === 'desktop_status') return { applications: [{ active: true, terminated: false, bundle_id: 'com.vivaldi.Vivaldi', name: 'Vivaldi' }] };
+        throw new Error(`unexpected provider action: ${String(params?.action)}`);
+      },
+    });
+
+    const result = await adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator', actionId: 'desktop_session_open', requestId: 'activate-fallback-success',
+      args: { bundle_id: 'com.vivaldi.Vivaldi', launch: false, activate: true }, origin: { surface: 'mcp' },
+    });
+
+    expect(result).toEqual({ interactionId: 'desk-vivaldi' });
+    expect(fallbackTargets).toEqual([{ bundleId: 'com.vivaldi.Vivaldi', appName: undefined }]);
+    expect(providerArgs).toEqual([
+      { bundle_id: 'com.vivaldi.Vivaldi', launch: false, activate: true },
+      { bundle_id: 'com.vivaldi.Vivaldi', launch: false, activate: false },
+    ]);
+  });
+
+  test('fails closed when APP_ACTIVATION_FAILED fallback cannot independently verify frontmost identity', async () => {
+    const base = registration();
+    const sessionOpenAction = { ...base.actions[0]!, actionId: 'desktop_session_open', title: 'Open desktop session', readOnly: false, risk: 'workspace_write' as const, confirmation: 'authorization' as const };
+    let providerOpenCalls = 0;
+    const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, sessionOpenAction] }), {
+      activateAndVerifyFrontmostApplication: async () => {
+        throw new AssistantPluginError('DESKTOP_FALLBACK_ACTIVATION_NOT_CONFIRMED', 'wrong app remained frontmost', { retryable: true });
+      },
+      call: async (options) => {
+        if (options.method === 'manifest') return providerManifest({ actions: ['desktop_status', 'desktop_session_open'] });
+        const params = options.params as { action?: string } | undefined;
+        if (params?.action === 'desktop_session_open') {
+          providerOpenCalls += 1;
+          if (providerOpenCalls === 1) {
+            throw new AssistantPluginError('APP_ACTIVATION_FAILED', 'Target application did not become frontmost', { retryable: true });
+          }
+          return { interactionId: 'desk-fallback-failure' };
+        }
+        throw new Error(`unexpected provider action: ${String(params?.action)}`);
+      },
+    });
+
+    const promise = adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator', actionId: 'desktop_session_open', requestId: 'activate-fallback-failure',
+      args: { bundle_id: 'com.google.Chrome', launch: false, activate: true }, origin: { surface: 'mcp' },
+    });
+    await expect(promise).rejects.toThrow('DESKTOP_ACTIVATION_FALLBACK_FAILED');
+    expect(providerOpenCalls).toBe(2);
+  });
+
+  test('rejects false-positive fallback proof when its verified identity does not match the exact requested application', async () => {
+    const base = registration();
+    const sessionOpenAction = { ...base.actions[0]!, actionId: 'desktop_session_open', title: 'Open desktop session', readOnly: false, risk: 'workspace_write' as const, confirmation: 'authorization' as const };
+    let opens = 0;
+    const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, sessionOpenAction] }), {
+      activateAndVerifyFrontmostApplication: async () => ({ activated: true, verified: true, bundleId: 'com.apple.dt.Xcode', appName: 'Xcode', activationCommand: ['/usr/bin/open'], frontmostQueryCommand: ['/usr/bin/lsappinfo'] }),
+      call: async (options) => {
+        if (options.method === 'manifest') return providerManifest({ actions: ['desktop_status', 'desktop_session_open'] });
+        const params = options.params as { action?: string } | undefined;
+        if (params?.action === 'desktop_session_open') {
+          opens += 1;
+          if (opens === 1) throw new AssistantPluginError('APP_ACTIVATION_FAILED', 'Target application did not become frontmost', { retryable: true });
+          return { interactionId: 'desk-rebound' };
+        }
+        throw new Error(`unexpected provider action: ${String(params?.action)}`);
+      },
+    });
+
+    await expect(adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator', actionId: 'desktop_session_open', requestId: 'activate-fallback-false-positive',
+      args: { bundle_id: 'com.google.Chrome', launch: false, activate: true }, origin: { surface: 'mcp' },
+    })).rejects.toThrow('DESKTOP_ACTIVATION_FALLBACK_FAILED');
   });
 
   test('fails activated desktop session open when the provider cannot prove the application became frontmost', async () => {

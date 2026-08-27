@@ -3,7 +3,7 @@ import { AssistantPluginError } from './errors';
 import { getExternalPluginRegistration, listExternalPluginRegistrations, type ExternalPluginRegistration } from './external-registration';
 import { callExternalUnixSocket, probeExternalUnixSocketSync, type ExternalUnixSocketCallOptions } from './external-unix-socket';
 import { executeManagedPluginProcess, executeManagedPluginProcessSync, type ManagedPluginProcessSpec } from './managed-process-adapter';
-import { restartVerifiedUserLaunchAgent, startVerifiedUserLaunchAgent, stopVerifiedUserLaunchAgent } from './local-system-adapter';
+import { activateAndVerifyFrontmostApplication, restartVerifiedUserLaunchAgent, startVerifiedUserLaunchAgent, stopVerifiedUserLaunchAgent } from './local-system-adapter';
 import type { AssistantPluginActionDescriptor, AssistantPluginAdapter, AssistantPluginAuthorizationContext, AssistantPluginCapability, AssistantPluginHealth, AssistantPluginManifest, AssistantPluginPermissionScope } from './types';
 
 interface ProviderManifest {
@@ -32,6 +32,7 @@ export interface ExternalPluginAdapterDependencies {
   startVerifiedUserLaunchAgent?: (label: unknown, expectedProgram: unknown) => Record<string, unknown>;
   stopVerifiedUserLaunchAgent?: (label: unknown, expectedProgram: unknown) => Record<string, unknown>;
   restartVerifiedUserLaunchAgent?: (label: unknown, expectedProgram: unknown) => Record<string, unknown>;
+  activateAndVerifyFrontmostApplication?: typeof activateAndVerifyFrontmostApplication;
   now?: () => Date;
 }
 
@@ -256,6 +257,100 @@ function desktopApplicationIsActive(status: Record<string, unknown>, bundleId: s
   });
 }
 
+async function openVerifiedDesktopSession(
+  registration: ExternalPluginRegistration,
+  requestId: string,
+  args: Record<string, unknown>,
+  timeoutMs: number | undefined,
+  signal: AbortSignal | undefined,
+  dependencies: ExternalPluginAdapterDependencies,
+): Promise<Record<string, unknown>> {
+  const bundleId = typeof args.bundle_id === 'string' ? args.bundle_id.trim() : '';
+  const appName = typeof args.app_name === 'string' ? args.app_name.trim() : '';
+  if (!bundleId && !appName) {
+    throw providerError('DESKTOP_ACTIVATION_TARGET_UNAVAILABLE', 'Activated desktop sessions require an exact bundle id or application name.');
+  }
+
+  let result: Record<string, unknown>;
+  let fallbackVerified = false;
+  try {
+    result = await callProvider(
+      registration,
+      requestId,
+      'desktop_session_open',
+      args,
+      timeoutMs,
+      signal,
+      dependencies,
+    );
+  } catch (error) {
+    if (!(error instanceof AssistantPluginError) || error.code !== 'APP_ACTIVATION_FAILED') throw error;
+
+    result = await callProvider(
+      registration,
+      `${requestId}:fallback-session`,
+      'desktop_session_open',
+      { ...(bundleId ? { bundle_id: bundleId } : { app_name: appName }), launch: false, activate: false },
+      timeoutMs,
+      signal,
+      dependencies,
+    );
+
+    const activateFallback = dependencies.activateAndVerifyFrontmostApplication ?? activateAndVerifyFrontmostApplication;
+    try {
+      const fallbackProof = await activateFallback({ bundleId: bundleId || undefined, appName: appName || undefined });
+      const proofBundleId = typeof fallbackProof.bundleId === 'string' ? fallbackProof.bundleId.trim() : '';
+      const proofAppName = typeof fallbackProof.appName === 'string' ? fallbackProof.appName.trim() : '';
+      const proofMatches = bundleId ? proofBundleId === bundleId : proofAppName === appName;
+      if (fallbackProof.activated !== true || fallbackProof.verified !== true || !proofMatches) {
+        throw new AssistantPluginError(
+          'DESKTOP_ACTIVATION_FALLBACK_IDENTITY_MISMATCH',
+          `Forge fallback did not prove the exact requested application ${bundleId || appName} as frontmost.`,
+          { retryable: true, details: { target: { bundleId, appName }, observed: { bundleId: proofBundleId, appName: proofAppName } } },
+        );
+      }
+      fallbackVerified = true;
+    } catch (fallbackError) {
+      if (fallbackError instanceof AssistantPluginError) {
+        throw new AssistantPluginError(
+          'DESKTOP_ACTIVATION_FALLBACK_FAILED',
+          `Desktop Operator activation failed and Forge could not independently verify ${bundleId || appName} as frontmost.`,
+          {
+            retryable: fallbackError.retryable,
+            details: {
+              providerErrorCode: error.code,
+              fallbackErrorCode: fallbackError.code,
+              fallbackErrorMessage: fallbackError.message,
+              target: bundleId || appName,
+            },
+          },
+        );
+      }
+      throw new AssistantPluginError(
+        'DESKTOP_ACTIVATION_FALLBACK_FAILED',
+        `Desktop Operator activation failed and Forge fallback failed for ${bundleId || appName}.`,
+        { retryable: true, details: { providerErrorCode: error.code, fallbackErrorMessage: String(fallbackError), target: bundleId || appName } },
+      );
+    }
+  }
+
+  if (!fallbackVerified) {
+    const activeStatus = await callProvider(
+      registration,
+      `${requestId}:active-status`,
+      'desktop_status',
+      { limit: 500 },
+      timeoutMs,
+      signal,
+      dependencies,
+    );
+    if (!desktopApplicationIsActive(activeStatus, bundleId, appName)) {
+      throw providerError('DESKTOP_ACTIVATION_NOT_CONFIRMED', `Desktop Operator did not confirm ${bundleId || appName} as the frontmost application after activation.`, true);
+    }
+  }
+  return result;
+}
+
 async function resolveExternalAuthorizationContext(
   registration: ExternalPluginRegistration,
   input: Parameters<NonNullable<AssistantPluginAdapter['resolveAuthorizationContext']>>[0],
@@ -463,10 +558,9 @@ export function createExternalPluginAdapter(
           throw providerError('DESKTOP_FOREGROUND_POINTER_TARGET_UNAVAILABLE', `Desktop session ${sourceInteractionId} has no stable application identity.`);
         }
 
-        const activation = await callProvider(
+        const activation = await openVerifiedDesktopSession(
           registration,
           `${input.requestId}:activate`,
-          'desktop_session_open',
           { ...(bundleId ? { bundle_id: bundleId } : { app_name: appName }), launch: false, activate: true },
           input.timeoutMs,
           input.signal,
@@ -475,18 +569,6 @@ export function createExternalPluginAdapter(
         const activationInteractionId = firstString(activation, 'interactionId', 'interaction_id');
         if (!activationInteractionId) {
           throw providerError('DESKTOP_ACTIVATION_SESSION_MISSING', 'Desktop Operator activated the application without returning a bound interaction session.', true);
-        }
-        const activeStatus = await callProvider(
-          registration,
-          `${input.requestId}:active-status`,
-          'desktop_status',
-          { limit: 500 },
-          input.timeoutMs,
-          input.signal,
-          dependencies,
-        );
-        if (!desktopApplicationIsActive(activeStatus, bundleId, appName)) {
-          throw providerError('DESKTOP_ACTIVATION_NOT_CONFIRMED', `Desktop Operator did not confirm ${bundleId || appName} as the frontmost application after activation.`, true);
         }
 
         const screenshot = await callProvider(
@@ -534,7 +616,17 @@ export function createExternalPluginAdapter(
         };
       }
 
-      const result = await callProvider(
+      if (registration.pluginId === 'desktop_operator' && input.actionId === 'desktop_session_open' && input.args.activate === true) {
+        return await openVerifiedDesktopSession(
+          registration,
+          input.requestId,
+          input.args,
+          input.timeoutMs,
+          input.signal,
+          dependencies,
+        );
+      }
+      return await callProvider(
         registration,
         input.requestId,
         input.actionId,
@@ -543,23 +635,6 @@ export function createExternalPluginAdapter(
         input.signal,
         dependencies,
       );
-      if (registration.pluginId === 'desktop_operator' && input.actionId === 'desktop_session_open' && input.args.activate === true) {
-        const bundleId = typeof input.args.bundle_id === 'string' ? input.args.bundle_id.trim() : '';
-        const appName = typeof input.args.app_name === 'string' ? input.args.app_name.trim() : '';
-        const activeStatus = await callProvider(
-          registration,
-          `${input.requestId}:active-status`,
-          'desktop_status',
-          { limit: 500 },
-          input.timeoutMs,
-          input.signal,
-          dependencies,
-        );
-        if (!desktopApplicationIsActive(activeStatus, bundleId, appName)) {
-          throw providerError('DESKTOP_ACTIVATION_NOT_CONFIRMED', `Desktop Operator did not confirm ${bundleId || appName || 'the requested application'} as the frontmost application after activation.`, true);
-        }
-      }
-      return result;
     },
     shouldRefreshManifestAfterAction(actionId) {
       return EXTERNAL_PROVIDER_LIFECYCLE_ACTIONS.has(actionId);
