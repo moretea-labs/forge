@@ -62,7 +62,7 @@ function parseProviderManifest(value: Record<string, unknown>, registration: Ext
   if (manifest.provider !== registration.provider) throw providerError('EXTERNAL_PLUGIN_PROVIDER_MISMATCH', `Expected provider ${registration.provider}, received ${manifest.provider || 'unknown'}.`);
   const missingActions = registration.actions
     .map((action) => action.actionId)
-    .filter((actionId) => !(registration.pluginId === 'desktop_operator' && actionId === 'desktop_foreground_pointer_click'))
+    .filter((actionId) => !(registration.pluginId === 'desktop_operator' && ['desktop_pointer_click', 'desktop_foreground_pointer_click'].includes(actionId)))
     .filter((actionId) => !manifest.actions.includes(actionId));
   if (missingActions.length > 0) throw providerError('EXTERNAL_PLUGIN_ACTION_MISMATCH', `Provider is missing registered actions: ${missingActions.join(', ')}.`);
   return manifest;

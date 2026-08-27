@@ -13,12 +13,12 @@ describe('official plugin catalog', () => {
     });
   });
 
-  test('accepts an explicitly pinned installer receipt version without weakening provider identity', () => {
+  test('requires the Desktop Operator provider identity to match the catalog release', () => {
     const desktop = officialPluginCatalogItems('darwin').find((entry) => entry.id === 'desktop_operator');
     expect(desktop).toMatchObject({
       id: 'desktop_operator',
       version: '0.2.1',
-      providerVersion: '0.2.0',
+      providerVersion: '0.2.1',
       compatible: true,
     });
     expect(pluginCatalogCompatibility(desktop!, 'darwin')).toEqual({ compatible: true });
@@ -26,7 +26,7 @@ describe('official plugin catalog', () => {
     const registration = registrationFrom({
       providerInstall: {
         kind: 'desktop_operator',
-        pluginVersion: '0.2.0',
+        pluginVersion: '0.2.1',
         protocolVersion: '1.0',
         socketPath: '/tmp/forge-desktop-operator.sock',
         launchAgentLabel: 'com.moretea.forge.desktop-operator',
@@ -37,7 +37,7 @@ describe('official plugin catalog', () => {
     expect(() => registrationFrom({
       providerInstall: {
         kind: 'desktop_operator',
-        pluginVersion: '0.1.9',
+        pluginVersion: '0.2.0',
         protocolVersion: '1.0',
         socketPath: '/tmp/forge-desktop-operator.sock',
         launchAgentLabel: 'com.moretea.forge.desktop-operator',

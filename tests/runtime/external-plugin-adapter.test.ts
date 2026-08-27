@@ -87,6 +87,29 @@ describe('external plugin adapter', () => {
     expect(calls).toHaveLength(1);
   });
 
+  test('tolerates retired Forge-only pointer actions in a legacy Desktop Operator registration', async () => {
+    const base = registration();
+    const legacy = registration({
+      actions: [
+        ...base.actions,
+        { ...base.actions[0]!, actionId: 'desktop_pointer_click', title: 'Legacy pointer click', readOnly: false, risk: 'workspace_write', confirmation: 'authorization' },
+        { ...base.actions[0]!, actionId: 'desktop_foreground_pointer_click', title: 'Legacy foreground pointer click', readOnly: false, risk: 'workspace_write', confirmation: 'authorization' },
+      ],
+    });
+    const calls: ExternalUnixSocketCallOptions[] = [];
+    const adapter = createExternalPluginAdapter(legacy, {
+      call: async (options) => {
+        calls.push(options);
+        return options.method === 'manifest' ? providerManifest() : { observed: true };
+      },
+    });
+    const result = await adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator', actionId: 'desktop_status', requestId: 'legacy-pointer-registration', args: {}, origin: { surface: 'mcp' },
+    });
+    expect(result).toEqual({ observed: true });
+    expect(calls.map((entry) => entry.method)).toEqual(['manifest', 'execute']);
+  });
+
   test('injects and executes registration-bound provider lifecycle without calling a stopped provider', async () => {
     const lifecycle = { kind: 'verified_user_launch_agent' as const, label: 'com.moretea.desktop-operator', expectedProgramContains: 'forge-desktop-operator' };
     const lifecycleCalls: string[] = [];

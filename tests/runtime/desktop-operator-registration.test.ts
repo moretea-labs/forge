@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
+import { validateMacOsCapabilityBrokerHandshake } from '../../src/runtime/plugins/macos-capability-broker';
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
@@ -24,8 +25,6 @@ describe('Desktop Operator trusted external registration', () => {
     ]);
     expect(input.capabilities.find((capability) => capability.capabilityId === 'desktop.interact')?.actions).toEqual([
       'desktop_press',
-      'desktop_pointer_click',
-      'desktop_foreground_pointer_click',
       'desktop_type_text',
       'desktop_key',
       'desktop_open_url',
@@ -36,8 +35,6 @@ describe('Desktop Operator trusted external registration', () => {
       'desktop_session_open',
       'desktop_observe',
       'desktop_press',
-      'desktop_pointer_click',
-      'desktop_foreground_pointer_click',
       'desktop_type_text',
       'desktop_key',
       'desktop_clipboard_read',
@@ -52,7 +49,7 @@ describe('Desktop Operator trusted external registration', () => {
     for (const action of input.actions.filter((action) => action.readOnly)) {
       expect(action.risk).toBe('readonly');
     }
-    for (const action of input.actions.filter((action) => ['desktop_permissions_request', 'desktop_press', 'desktop_pointer_click', 'desktop_foreground_pointer_click', 'desktop_type_text', 'desktop_key', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_open_url', 'desktop_batch'].includes(action.actionId))) {
+    for (const action of input.actions.filter((action) => ['desktop_permissions_request', 'desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_open_url', 'desktop_batch'].includes(action.actionId))) {
       expect(action.risk).toBe('workspace_write');
       expect(action.confirmation).toBe('authorization');
     }
@@ -62,21 +59,8 @@ describe('Desktop Operator trusted external registration', () => {
     expect(pressSchema?.properties?.force_coordinate).toBeUndefined();
     expect(pressSchema?.properties?.coordinate_fallback).toBeUndefined();
     expect(press?.description).toContain('pointer/coordinate fallback is intentionally unavailable');
-    const pointerClick = input.actions.find((action) => action.actionId === 'desktop_pointer_click');
-    expect(pointerClick).toMatchObject({ readOnly: false, risk: 'workspace_write', confirmation: 'authorization', scopes: ['desktop.interact'] });
-    expect(pointerClick?.argumentsSchema?.required).toEqual(['interaction_id', 'window_id', 'visual_revision', 'x', 'y']);
-    expect(pointerClick?.description).toContain('fresh window screenshot visual revision');
-    expect(pointerClick?.description).toContain('never activates or focuses');
-    const foregroundPointerClick = input.actions.find((action) => action.actionId === 'desktop_foreground_pointer_click');
-    expect(foregroundPointerClick).toMatchObject({
-      readOnly: false,
-      risk: 'workspace_write',
-      confirmation: 'authorization',
-      scopes: ['desktop.interact', 'desktop.capture'],
-    });
-    expect(foregroundPointerClick?.argumentsSchema?.required).toEqual(['interaction_id', 'window_id', 'x', 'y']);
-    expect(foregroundPointerClick?.description).toContain('Atomically reactivate');
-    expect(foregroundPointerClick?.description).toContain('fresh visual revision');
+    expect(input.actions.find((action) => action.actionId === 'desktop_pointer_click')).toBeUndefined();
+    expect(input.actions.find((action) => action.actionId === 'desktop_foreground_pointer_click')).toBeUndefined();
     const observe = input.actions.find((action) => action.actionId === 'desktop_observe');
     const observeSchema = observe?.argumentsSchema as { properties?: {
       root_selector?: { properties?: { ref?: { type?: string } } };
@@ -104,6 +88,38 @@ describe('Desktop Operator trusted external registration', () => {
     expect(permissionArgumentsSchema?.properties?.services).toMatchObject({ minItems: 1, maxItems: 2, uniqueItems: true });
     expect(permissionRequest?.description).toContain('macOS may foreground');
     expect(input.permissions.some((permission) => permission.scope === 'desktop.permissions' && permission.granted)).toBe(true);
+  });
+
+  test('accepts the official v0.2.1 legacy broker handshake and remains strict when browser metadata is declared', () => {
+    expect(() => validateMacOsCapabilityBrokerHandshake({
+      pluginId: 'desktop_operator',
+      pluginVersion: '0.2.1',
+      protocolVersion: '1.0',
+    }, 'metadata')).not.toThrow();
+
+    expect(() => validateMacOsCapabilityBrokerHandshake({
+      pluginId: 'desktop_operator',
+      pluginVersion: '0.2.1',
+      protocolVersion: '1.0',
+      internalCapabilities: ['macos_browser_automation.v1'],
+      browserAutomationProtocolVersion: 1,
+      browserAutomationActions: ['metadata'],
+    }, 'metadata')).not.toThrow();
+
+    let observed: unknown;
+    try {
+      validateMacOsCapabilityBrokerHandshake({
+        pluginId: 'desktop_operator',
+        pluginVersion: '0.2.1',
+        protocolVersion: '1.0',
+        internalCapabilities: ['macos_browser_automation.v1'],
+        browserAutomationProtocolVersion: 1,
+        browserAutomationActions: ['reload'],
+      }, 'metadata');
+    } catch (error) {
+      observed = error;
+    }
+    expect(observed).toMatchObject({ code: 'PLUGIN_MACOS_CAPABILITY_BROKER_CAPABILITY_UNSUPPORTED' });
   });
 
   test('binds optional provider lifecycle to one verified user LaunchAgent identity', () => {

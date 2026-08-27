@@ -36,14 +36,10 @@ function unavailable(error: AssistantPluginError, path: string): AssistantPlugin
   );
 }
 
-async function verifyBrokerIdentity(path: string, timeoutMs: number, requestedAction?: string): Promise<void> {
-  const handshake = await callExternalUnixSocket({
-    socketPath: path,
-    requestId: `macos-broker-handshake:${randomUUID()}`,
-    method: 'handshake',
-    timeoutMs: Math.min(timeoutMs, 2_000),
-    maxResponseBytes: 64 * 1024,
-  });
+export function validateMacOsCapabilityBrokerHandshake(
+  handshake: Record<string, unknown>,
+  requestedAction?: string,
+): void {
   if (handshake.pluginId !== BROKER_PLUGIN_ID || handshake.protocolVersion !== BROKER_PROTOCOL_VERSION) {
     throw new AssistantPluginError(
       'PLUGIN_MACOS_CAPABILITY_BROKER_IDENTITY_MISMATCH',
@@ -58,6 +54,14 @@ async function verifyBrokerIdentity(path: string, timeoutMs: number, requestedAc
     ? handshake.browserAutomationActions.filter((entry): entry is string => typeof entry === 'string')
     : [];
   const browserProtocolVersion = handshake.browserAutomationProtocolVersion;
+  const declaresBrowserMetadata = Array.isArray(handshake.internalCapabilities)
+    || Array.isArray(handshake.browserAutomationActions)
+    || browserProtocolVersion !== undefined;
+  // Desktop Operator v0.2.1 predates optional browser capability metadata in its handshake,
+  // but it implements the separately routed macos_browser_automation method. In that legacy
+  // shape, let the real method/action call prove support. Unsupported methods/actions still
+  // fail closed at the provider boundary.
+  if (!declaresBrowserMetadata) return;
   if (!capabilities.includes(BROWSER_AUTOMATION_CAPABILITY)
     || browserProtocolVersion !== BROWSER_AUTOMATION_PROTOCOL_VERSION
     || (requestedAction && !actions.includes(requestedAction))) {
@@ -79,6 +83,17 @@ async function verifyBrokerIdentity(path: string, timeoutMs: number, requestedAc
       },
     );
   }
+}
+
+async function verifyBrokerIdentity(path: string, timeoutMs: number, requestedAction?: string): Promise<void> {
+  const handshake = await callExternalUnixSocket({
+    socketPath: path,
+    requestId: `macos-broker-handshake:${randomUUID()}`,
+    method: 'handshake',
+    timeoutMs: Math.min(timeoutMs, 2_000),
+    maxResponseBytes: 64 * 1024,
+  });
+  validateMacOsCapabilityBrokerHandshake(handshake, requestedAction);
 }
 
 export async function callMacOsCapabilityBroker(

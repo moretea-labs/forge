@@ -33,6 +33,7 @@ function registry():Registry{
 function within(root:string,relative:string):string{const target=resolve(root,relative);const base=`${resolve(root)}${sep}`;if(target!==resolve(root)&&!target.startsWith(base))throw new Error('PLUGIN_INSTALL_PATH_ESCAPE');return target;}
 export function pluginCatalogCompatibility(entry:RegistryEntry,platform:NodeJS.Platform=process.platform):{compatible:boolean;reason?:string}{
   if(!entry.platforms.includes(platform))return{compatible:false,reason:`unsupported platform: ${platform}`};
+  if(entry.providerVersion&&entry.providerVersion!==entry.version)return{compatible:false,reason:`catalog version ${entry.version} does not match pinned provider version ${entry.providerVersion}`};
   return{compatible:true};
 }
 export function officialPluginCatalogItems(platform:NodeJS.Platform=process.platform){return registry().plugins.map(entry=>({...entry,...pluginCatalogCompatibility(entry,platform)}));}
@@ -72,7 +73,7 @@ export function registrationFrom(result:Record<string,unknown>,entry:RegistryEnt
   if(facts.protocolVersion!==expectedProtocolVersion)throw new Error(`PLUGIN_INSTALLER_PROTOCOL_VERSION_MISMATCH: expected ${expectedProtocolVersion} for ${entry.id}@${entry.version}, actual ${String(facts.protocolVersion??'missing')}`);
   const socketPath=typeof facts.socketPath==='string'?facts.socketPath:'';const launchAgentLabel=typeof facts.launchAgentLabel==='string'?facts.launchAgentLabel:'';const expectedProgramContains=typeof facts.expectedProgramContains==='string'?facts.expectedProgramContains:'';
   if(!isAbsolute(socketPath)||!launchAgentLabel||!expectedProgramContains)throw new Error('PLUGIN_INSTALLER_PROVIDER_FACTS_INVALID');
-  return createDesktopOperatorRegistrationInput({socketPath,launchAgentLabel,expectedProgramContains,pluginVersion:entry.version,protocolVersion:expectedProtocolVersion});
+  return createDesktopOperatorRegistrationInput({socketPath,launchAgentLabel,expectedProgramContains,pluginVersion:expectedProviderVersion,protocolVersion:expectedProtocolVersion});
 }
 function install(entry:RegistryEntry,controllerHome:string):Record<string,unknown>{
   const compatibility=pluginCatalogCompatibility(entry,process.platform);
