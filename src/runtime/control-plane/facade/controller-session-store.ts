@@ -49,7 +49,7 @@ function write(options: ControllerSessionStoreOptions, store: ControllerSessionS
   });
 }
 
-const DEFAULT_CONTROLLER_RECOVERY_GRACE_MS = 10 * 60_000;
+const DEFAULT_CONTROLLER_RECOVERY_GRACE_MS = 5 * 60_000;
 const MAX_CONTROLLER_RECOVERY_GRACE_MS = 60 * 60_000;
 
 function activeSession(store: ControllerSessionStore, workId: string): ControllerSession | undefined {
@@ -65,12 +65,20 @@ export function controllerSessionBlocksRecovery(
   const owner = activeSession(read(options), workId);
   if (!owner) return false;
   const execution = peekExecutionSession(options.controllerHome, owner.sessionId);
-  if (!execution?.invalidatedAt) return true;
-  const invalidatedAtMs = Date.parse(execution.invalidatedAt);
-  if (!Number.isFinite(invalidatedAtMs)) return true;
   const nowMs = input.nowMs ?? Date.now();
   const graceMs = Math.max(60_000, Math.min(input.graceMs ?? DEFAULT_CONTROLLER_RECOVERY_GRACE_MS, MAX_CONTROLLER_RECOVERY_GRACE_MS));
-  return nowMs - invalidatedAtMs < graceMs;
+  if (execution?.invalidatedAt) {
+    const invalidatedAtMs = Date.parse(execution.invalidatedAt);
+    if (!Number.isFinite(invalidatedAtMs)) return true;
+    return nowMs - invalidatedAtMs < graceMs;
+  }
+  if (execution?.activeWorkId && execution.activeWorkId !== workId) return false;
+  const activityMs = [execution?.lastValidatedAt, execution?.updatedAt, owner.claimedAt]
+    .map((value) => value ? Date.parse(value) : Number.NaN)
+    .filter(Number.isFinite)
+    .reduce((latest, value) => Math.max(latest, value), Number.NEGATIVE_INFINITY);
+  if (!Number.isFinite(activityMs)) return false;
+  return nowMs - activityMs < graceMs;
 }
 
 function assertIdentity(input: ControllerSessionClaimInput): void {

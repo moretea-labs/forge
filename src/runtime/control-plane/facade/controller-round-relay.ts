@@ -7,6 +7,7 @@ import {
   writeControlPlaneRecord,
   type ControlPlaneRecord,
 } from '../persistence/sqlite-store';
+import { workHasActiveExecution } from '../../execution/work-activity';
 import { controllerSessionBlocksRecovery, getControllerSession } from './controller-session-store';
 import { getHandoffItem, listHandoffItems } from './handoff-inbox-store';
 import { getWorkContract, readWorkContractStore } from './work-contract-store';
@@ -893,7 +894,7 @@ export function claimStalledControllerRoundRelays(
     const candidateWorks = relevantWork(options, candidate);
     const activeCandidateWorks = candidateWorks.filter((work) => !isTerminalWorkContractStatus(work.status));
     if (activeCandidateWorks.length === 0) continue;
-    if (activeCandidateWorks.some((work) => controllerSessionBlocksRecovery(options, work.workId, { nowMs, graceMs }))) continue;
+    if (activeCandidateWorks.some((work) => workHasActiveExecution(options.controllerHome, options.repoId, work.workId) || controllerSessionBlocksRecovery(options, work.workId, { nowMs, graceMs }))) continue;
 
     const next = relayLock(options, candidate.relayScopeId, `controller-relay-recover:${candidate.originWorkId}`, () => {
       const latest = relayHistory(options, candidate.relayScopeId)[0];
@@ -905,7 +906,7 @@ export function claimStalledControllerRoundRelays(
       const works = relevantWork(options, latest);
       const activeWorks = works.filter((work) => !isTerminalWorkContractStatus(work.status));
       if (activeWorks.length === 0) return undefined;
-      if (activeWorks.some((work) => controllerSessionBlocksRecovery(options, work.workId, { nowMs, graceMs }))) return undefined;
+      if (activeWorks.some((work) => workHasActiveExecution(options.controllerHome, options.repoId, work.workId) || controllerSessionBlocksRecovery(options, work.workId, { nowMs, graceMs }))) return undefined;
 
       const currentRecord = readRelayRecord(options, latest.originWorkId);
       if (!currentRecord || currentRecord.value.updatedAt !== latest.updatedAt || currentRecord.value.status !== latest.status) return undefined;

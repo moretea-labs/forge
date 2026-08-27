@@ -7,6 +7,9 @@ import { readForgeRuntimeStatus, schedulerHeartbeatSnapshotHealthy } from '../..
 import { createExecutionJob, executionJobRoot } from '../../src/runtime/execution/jobs/store';
 import { operationReceiptMatchesJobOwnership, type OperationReceipt } from '../../src/runtime/execution/jobs/receipt-store';
 import { TERMINAL_JOB_STATUSES, type ExecutionJob } from '../../src/runtime/execution/jobs/types';
+import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
+import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
+import { workHasActiveExecution } from '../../src/runtime/execution/work-activity';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
@@ -17,7 +20,7 @@ import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkComp
 import { stopGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { createHandoffItem, getHandoffItem, listHandoffItems } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { claimControllerSession, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { claimControllerSession, controllerSessionBlocksRecovery, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { invalidateExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import {
   acknowledgeControllerRoundClaim,
@@ -649,6 +652,39 @@ describe('scheduled external Controller wake', () => {
     expect(classifyChatgptWakeFailure('PLUGIN_CONFIGURATION_INVALID')).toBe('ordinary_failure');
   });
 
+  test('does not treat an old unexpired Controller lease as work, while a live Work Process remains authoritative', () => {
+    const root = temp('forge-controller-liveness-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'liveness@example.test'], ['config', 'user.name', 'Liveness Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'liveness\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-liveness' });
+    const workId = 'WORK-CONTROLLER-LIVENESS';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
+      objective: 'Verify continuation liveness semantics.', acceptanceCriteria: ['Idle leases do not masquerade as execution.'],
+      allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+    });
+    const observedNow = Date.now();
+    const staleAt = new Date(observedNow - 10 * 60_000).toISOString();
+    const staleStore = { controllerHome, repoId: repository.repoId, now: () => staleAt };
+    const staleOwner = claimControllerSession(staleStore, {
+      workId, controllerId: 'stale-controller', controllerType: 'chatgpt', sessionId: 'stale-session-without-execution-context',
+      principalId: 'stale-principal', controllerInstanceId: 'runtime-stale', leaseMs: 60 * 60_000,
+    });
+    expect(Date.parse(staleOwner.leaseExpiresAt)).toBeGreaterThan(observedNow);
+    expect(controllerSessionBlocksRecovery({ controllerHome, repoId: repository.repoId }, workId, { nowMs: observedNow, graceMs: 5 * 60_000 })).toBe(false);
+
+    const processNow = new Date(observedNow).toISOString();
+    createProcessRecord({
+      schemaVersion: 1, processId: 'proc-live-work-liveness', repoId: repository.repoId, checkoutId: repository.activeCheckoutId, workId,
+      commandId: 'live-work-liveness', controllerHome, status: 'running', route: 'managed',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => {}, 1000)'], cwd: repoRoot }, resourceClaims: [],
+      interactiveWaitMs: 0, timeoutMs: 30_000, maxOutputBytes: 1_024, startedAt: processNow, updatedAt: processNow, terminalFenceToken: 1,
+    } satisfies ManagedProcessRecord);
+    expect(workHasActiveExecution(controllerHome, repository.repoId, workId)).toBe(true);
+  });
+
   test('retryable continuation failure backs off without disabling the schedule and semantic wait does not count as failure', () => {
     const root = temp('forge-schedule-retryable-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
@@ -741,9 +777,7 @@ describe('scheduled external Controller wake', () => {
     expect(acknowledgeControllerRoundClaim(store, { workId, session })?.claimedAt).toBe(claimed?.claimedAt);
 
     const afterGrace = Date.parse(claimed!.claimedAt!) + 2 * 60_000;
-    expect(claimStalledControllerRoundRelays(store, { nowMs: afterGrace, graceMs: 60_000 })).toEqual([]);
     expect(Date.parse(session.leaseExpiresAt)).toBeGreaterThan(afterGrace);
-    invalidateExecutionSession(controllerHome, session.sessionId, 'mcp_transport_transport_close');
     expect(getControllerSession(store, workId)?.sessionId).toBe(session.sessionId);
     const recovered = claimStalledControllerRoundRelays(store, { nowMs: afterGrace, graceMs: 60_000 });
     expect(recovered).toHaveLength(1);
@@ -1096,7 +1130,7 @@ describe('scheduled external Controller wake', () => {
     });
   });
 
-  test('does not recover a Requirement relay while any linked active Work still has a controller owner beyond the prompt snapshot limit', () => {
+  test('does not recover a Requirement relay while any linked active Work still has real execution beyond the prompt snapshot limit', () => {
     const root = temp('forge-controller-relay-requirement-owner-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
     for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
@@ -1106,7 +1140,7 @@ describe('scheduled external Controller wake', () => {
     createRequirement({ controllerHome, now: () => '2026-08-25T00:00:00.000Z' }, {
       requirementId,
       title: 'Requirement relay owner fencing',
-      outcomeStatement: 'A relay must not recover while any linked active Work still has a live controller owner.',
+      outcomeStatement: 'A relay must not recover while any linked active Work still has real active execution.',
     });
     const workIds = Array.from({ length: 9 }, (_, index) => `WORK-RELAY-REQ-${index + 1}`);
     for (const [index, workId] of workIds.entries()) {
@@ -1121,7 +1155,7 @@ describe('scheduled external Controller wake', () => {
         requirementId,
         mode: 'goal_workloop',
         objective: `Requirement relay Work ${index + 1}.`,
-        acceptanceCriteria: ['Preserve Requirement-wide controller ownership fencing.'],
+        acceptanceCriteria: ['Preserve Requirement-wide active execution fencing.'],
         allowedPaths: ['**/*'],
         forbiddenPaths: [],
         checks: [],
@@ -1138,15 +1172,26 @@ describe('scheduled external Controller wake', () => {
     });
     const dispatched = finishControllerRoundRelayDispatch(store, { workId: originWorkId, ok: true });
     expect(dispatched?.status).toBe('dispatched');
-    claimControllerSession(store, {
+    const processNow = new Date().toISOString();
+    createProcessRecord({
+      schemaVersion: 1,
+      processId: 'proc-requirement-linked-live-work',
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
       workId: workIds[0]!,
-      controllerId: 'chatgpt-controller',
-      controllerType: 'chatgpt',
-      sessionId: 'chatgpt-session-existing',
-      principalId: 'chatgpt-principal',
-      controllerInstanceId: 'runtime-test',
-      leaseMs: 5 * 60_000,
-    });
+      commandId: 'requirement-linked-live-work',
+      controllerHome,
+      status: 'running',
+      route: 'managed',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => {}, 1000)'], cwd: repoRoot },
+      resourceClaims: [],
+      interactiveWaitMs: 0,
+      timeoutMs: 30_000,
+      maxOutputBytes: 1_024,
+      startedAt: processNow,
+      updatedAt: processNow,
+      terminalFenceToken: 1,
+    } satisfies ManagedProcessRecord);
 
     const afterGrace = Date.parse(dispatched!.dispatchedAt!) + 2 * 60_000;
     expect(opened.relayScopeId).toBe(`requirement:${requirementId}`);

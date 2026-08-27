@@ -3,6 +3,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { getRepository } from '../../../cli/repositories/registry';
 import { findExecutionJob, listActiveExecutionJobs, listExecutionJobs } from '../../execution/jobs/store';
+import { executionJobBelongsToWork, workHasActiveExecution } from '../../execution/work-activity';
 import { readRepositoryProjection } from '../../projections/materialized-view';
 import {
   applyRuntimeMaintenance,
@@ -261,15 +262,6 @@ function workBoundScheduleWorkId(schedule: RepositorySchedule): string | undefin
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function executionJobBelongsToWork(job: ReturnType<typeof listExecutionJobs>[number], workId: string): boolean {
-  if (job.resourceClaims.some((claim) => claim.workId === workId)) return true;
-  const payload = job.payload as Record<string, unknown>;
-  const args = payload.arguments && typeof payload.arguments === 'object' && !Array.isArray(payload.arguments)
-    ? payload.arguments as Record<string, unknown>
-    : undefined;
-  return [payload.workId, payload.work_id, args?.workId, args?.work_id].some((value) => value === workId);
-}
-
 async function stopReason(controllerHome: string, schedule: RepositorySchedule): Promise<string | undefined> {
   const projection = readRepositoryProjection(controllerHome, schedule.repoId);
   const workId = workBoundScheduleWorkId(schedule);
@@ -443,11 +435,14 @@ async function executeExternalControllerWake(
   }
   const existingOwner = getControllerSession(workStore, workId);
   const occurrenceNowMs = Date.parse(timestamp);
-  if (existingOwner && controllerSessionBlocksRecovery(workStore, workId, {
-    nowMs: Number.isFinite(occurrenceNowMs) ? occurrenceNowMs : Date.now(),
-  })) {
+  const nowMs = Number.isFinite(occurrenceNowMs) ? occurrenceNowMs : Date.now();
+  if (workHasActiveExecution(controllerHome, schedule.repoId, workId)) {
     saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
-    return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} already has an active Controller ${existingOwner.controllerId}.`);
+    return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} has active execution; duplicate Controller wake suppressed.`);
+  }
+  if (existingOwner && controllerSessionBlocksRecovery(workStore, workId, { nowMs })) {
+    saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
+    return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} has a recently active Controller ${existingOwner.controllerId}.`);
   }
   const launchReservation = getExternalControllerLaunchReservation(workStore, workId);
   if (launchReservation) {
