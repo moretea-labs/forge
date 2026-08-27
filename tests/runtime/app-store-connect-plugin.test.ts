@@ -116,6 +116,35 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     expect(persisted).not.toContain('test-key-material-never-persisted-inline');
   });
 
+  test('capability and auth-status probes degrade invalid key references without reading secret bytes', async () => {
+    const repoRoot = root();
+    const privateKeyPath = join(repoRoot, 'AuthKey_DIRECTORY.p8');
+    mkdirSync(privateKeyPath);
+    const configRoot = join(repoRoot, '.forge', 'plugins');
+    mkdirSync(configRoot, { recursive: true });
+    writeFileSync(join(configRoot, 'app-store-connect.json'), JSON.stringify({
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'app-store-connect-api',
+      issuerId: 'issuer-test',
+      keyId: 'key-test',
+      privateKeyPath,
+    }, null, 2));
+
+    const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
+    expect(manifest.enabled).toBe(true);
+    expect(manifest.health).toMatchObject({ state: 'degraded', ready: false, probed: true });
+    expect(manifest.health.warnings.join(' ')).toContain('private key path is not a regular file');
+
+    const auth = await executeAppStoreConnectPluginAction(input(repoRoot, 'auth_status', {})) as {
+      ready: boolean;
+      provider: string;
+      warnings: string[];
+    };
+    expect(auth).toMatchObject({ ready: false, provider: 'app-store-connect-api' });
+    expect(auth.warnings.join(' ')).toContain('private key path is not a regular file');
+  });
+
   test('resolves a file-backed Xcode authentication reference from the controller-global profile for a repository', async () => {
     const repoRoot = root();
     const controllerHome = join(repoRoot, '.controller');

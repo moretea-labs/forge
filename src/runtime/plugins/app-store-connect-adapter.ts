@@ -1,5 +1,5 @@
 import { createPrivateKey, sign } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { CONTROLLER_SCOPE_REPO_ID, controllerSystemRoot } from '../../cli/repositories/controller-home';
 import type {
@@ -154,6 +154,40 @@ function envValue(name: string): string | undefined {
   return stringValue(process.env[name]);
 }
 
+interface AppStoreConnectPrivateKeyReference {
+  available: boolean;
+  source?: string;
+  warning?: string;
+}
+
+function privateKeyPathReference(path: string, source: string): AppStoreConnectPrivateKeyReference {
+  if (!existsSync(path)) {
+    return { available: false, source, warning: 'Configured App Store Connect private key path does not exist.' };
+  }
+  try {
+    if (!statSync(path).isFile()) {
+      return { available: false, source, warning: 'Configured App Store Connect private key path is not a regular file.' };
+    }
+    accessSync(path, fsConstants.R_OK);
+    return { available: true, source };
+  } catch {
+    // Capability discovery and auth_status are metadata reads. They must never
+    // synchronously consume secret bytes just to decide whether a credential
+    // reference is usable; filesystem contention (including macOS EDEADLK)
+    // therefore degrades readiness instead of escaping as a raw read error.
+    return { available: false, source, warning: 'Configured App Store Connect private key path is not readable.' };
+  }
+}
+
+function privateKeyReference(config: AppStoreConnectPluginConfig): AppStoreConnectPrivateKeyReference {
+  const inline = envValue('FORGE_ASC_PRIVATE_KEY');
+  if (inline) return { available: true, source: 'env:FORGE_ASC_PRIVATE_KEY' };
+  const envKeyPath = envValue('FORGE_ASC_PRIVATE_KEY_PATH');
+  if (envKeyPath) return privateKeyPathReference(envKeyPath, 'env:FORGE_ASC_PRIVATE_KEY_PATH');
+  if (config.privateKeyPath) return privateKeyPathReference(config.privateKeyPath, 'config:privateKeyPath');
+  return { available: false };
+}
+
 function privateKeyMaterial(config: AppStoreConnectPluginConfig): { key?: string; source?: string; warning?: string } {
   const inline = envValue('FORGE_ASC_PRIVATE_KEY');
   if (inline) return { key: inline.replace(/\\n/g, '\n'), source: 'env:FORGE_ASC_PRIVATE_KEY' };
@@ -188,12 +222,12 @@ function resolveAuth(config: AppStoreConnectPluginConfig): AppStoreConnectAuthSt
 
   const issuerId = envValue('FORGE_ASC_ISSUER_ID') ?? config.issuerId;
   const keyId = envValue('FORGE_ASC_KEY_ID') ?? config.keyId;
-  const key = privateKeyMaterial(config);
+  const key = privateKeyReference(config);
   const errors: string[] = [];
   const warnings: string[] = key.warning ? [key.warning] : [];
   if (!issuerId) errors.push('Set FORGE_ASC_ISSUER_ID or configure issuer_id.');
   if (!keyId) errors.push('Set FORGE_ASC_KEY_ID or configure key_id.');
-  if (!key.key) errors.push('Set FORGE_ASC_PRIVATE_KEY, FORGE_ASC_PRIVATE_KEY_PATH, or configure private_key_path.');
+  if (!key.available) errors.push('Set FORGE_ASC_PRIVATE_KEY, FORGE_ASC_PRIVATE_KEY_PATH, or configure private_key_path.');
 
   return {
     provider: 'app-store-connect-api',
@@ -807,20 +841,21 @@ export async function executeAppStoreConnectPluginAction(input: AssistantPluginA
 
   if (config.provider === 'mock') return mockResponse(input.actionId, input.args, config);
   const auth = resolveAuth(config);
+  if (input.actionId === 'auth_status') {
+    return {
+      ready: config.enabled && auth.ready,
+      provider: auth.provider,
+      issuerId: auth.issuerId ? 'configured' : undefined,
+      keyId: auth.keyId ? 'configured' : undefined,
+      credentialSource: auth.credentialSource,
+      errors: auth.errors,
+      warnings: auth.warnings,
+      userFacingStatus: userFacingAscStatus(config, auth),
+    };
+  }
   if (!config.enabled || !auth.ready) throw new AssistantPluginError('PLUGIN_NOT_READY', 'App Store Connect plugin is not ready.', { retryable: false, details: { enabled: config.enabled, errors: auth.errors } });
 
   switch (input.actionId) {
-    case 'auth_status':
-      return {
-        ready: auth.ready,
-        provider: auth.provider,
-        issuerId: auth.issuerId ? 'configured' : undefined,
-        keyId: auth.keyId ? 'configured' : undefined,
-        credentialSource: auth.credentialSource,
-        errors: auth.errors,
-        warnings: auth.warnings,
-        userFacingStatus: userFacingAscStatus(config, auth),
-      };
     case 'list_apps':
       return apiRequest(config, { path: '/v1/apps', query: { 'filter[bundleId]': stringValue(input.args.bundle_id), 'filter[name]': stringValue(input.args.name), limit: limit(input.args.limit) } });
     case 'list_bundle_ids':
