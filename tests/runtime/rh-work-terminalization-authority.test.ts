@@ -10,6 +10,7 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 
 const roots: string[] = [];
@@ -163,6 +164,41 @@ describe('rh_work terminalization authority', () => {
     expect(staleStop.status).toBe('blocked');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('ready');
   }, 15_000);
+
+  test('stale legacy cleanup cannot release a newer ownership epoch', () => {
+    const fx = fixture();
+    const workId = 'work-stale-legacy-cleanup';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const first = claimControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      controllerId: 'principal-cleanup',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-old-cleanup',
+      principalId: 'principal-cleanup',
+      controllerInstanceId: 'runtime-old',
+      leaseMs: 60_000,
+    });
+    const newer = resumeControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      controllerId: first.controllerId,
+      controllerType: first.controllerType,
+      sessionId: 'transport-new-cleanup',
+      principalId: 'principal-cleanup',
+      controllerInstanceId: 'runtime-new',
+      expectedClaimGeneration: first.claimGeneration,
+      leaseMs: 60_000,
+    });
+
+    expect(() => releasePreparedWorkOwnership(
+      ctx(fx.controllerHome, fx.repository, 'principal-cleanup', 'transport-stale-cleanup', 'runtime-old'),
+      { workId, workContractId: workId, repositoryId: fx.repository.repoId } as any,
+    )).toThrow('WORK_CONTROLLER_INSTANCE_MISMATCH');
+
+    const retained = getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId);
+    expect(retained?.controllerInstanceId).toBe('runtime-new');
+    expect(retained?.claimGeneration).toBe(newer.claimGeneration);
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('ready');
+  });
 
   test('claim generation is fenced atomically and explicit unclaimed user stop remains valid', async () => {
     const fx = fixture();

@@ -25,7 +25,7 @@ import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkComp
 import { completeRequirementFromWork } from '../../control-plane/persistence/requirement-store';
 import { isTerminalWorkContractStatus, type VerificationRecord, type WorkReconciliationRecord } from '../../control-plane/facade/types';
 import { buildWorkContinuationSnapshot } from '../../control-plane/facade/work-continuation';
-import { claimControllerSession, getControllerSession, releaseControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../control-plane/facade/controller-session-store';
+import { claimControllerSession, getControllerSession, releaseControllerSession, releaseControllerSessionWithAuthority, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../control-plane/facade/controller-session-store';
 import { currentControllerInstanceId, requireExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext, type SessionIdentity } from '../../control-plane/execution/session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from '../../control-plane/execution/validation';
 import { commandFingerprint, effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from '../../control-plane/execution/verification-evidence';
@@ -982,21 +982,43 @@ function adoptExistingWorkHead(
   };
 }
 
-function releasePreparedWorkOwnership(
+export function releasePreparedWorkOwnership(
   ctx: MultiRepositoryMcpToolContext,
   handle: WorkHandleState,
 ): 'released' | 'already_released' {
   const workIdValue = handle.workContractId ?? handle.workId;
-  const current = getControllerSession(
-    { controllerHome: ctx.controllerHome, repoId: handle.repositoryId },
-    workIdValue,
-  );
+  const options = { controllerHome: ctx.controllerHome, repoId: handle.repositoryId };
+  const current = getControllerSession(options, workIdValue);
   if (!current) return 'already_released';
-  releaseControllerSession(
-    { controllerHome: ctx.controllerHome, repoId: handle.repositoryId },
-    workIdValue,
-    current.controllerId,
-  );
+
+  const callerPrincipal = principalFor(ctx);
+  const callerInstanceId = ctx.controllerInstanceId ?? currentControllerInstanceId();
+  const ownerPrincipal = current.principalId?.trim() || current.controllerId;
+  const ownerInstanceId = current.controllerInstanceId?.trim() || '';
+  if (ownerPrincipal !== callerPrincipal) {
+    throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${workIdValue}`);
+  }
+  if (!ownerInstanceId || ownerInstanceId !== callerInstanceId) {
+    throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workIdValue}`);
+  }
+  if (typeof current.claimGeneration !== 'number' || current.claimGeneration < 1) {
+    throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workIdValue}`);
+  }
+
+  const released = releaseControllerSessionWithAuthority(options, {
+    workId: workIdValue,
+    actor: `legacy-work-release:${callerPrincipal}:${callerInstanceId}`,
+    authority: {
+      controllerId: current.controllerId,
+      controllerType: current.controllerType,
+      principalId: ownerPrincipal,
+      controllerInstanceId: ownerInstanceId,
+      claimGeneration: current.claimGeneration,
+    },
+  });
+  if (!released.allowed) {
+    throw new Error(`WORK_CONTROLLER_RELEASE_FENCED: ${workIdValue}:${released.reason}`);
+  }
   return 'released';
 }
 
