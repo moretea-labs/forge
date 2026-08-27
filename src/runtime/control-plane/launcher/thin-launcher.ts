@@ -326,7 +326,7 @@ export async function launchSuperController(
       `Continue Forge Work ${work.workId} in repo ${work.repoId}.`,
       handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
       request.continuationPrompt?.trim() ? `Continuation: ${request.continuationPrompt.trim()}` : '',
-      `First call rh_work continue with repo_id=${work.repoId} and work_id=${work.workId}. Treat Forge Work/Plan/evidence as source of truth; do not invent new scope from chat history. If the claim fails, do not mutate. Continue the next safe action, finalize only when acceptance passes, and create a HandoffItem when judgement is required.`,
+      `No Controller ownership was preclaimed for this continued conversation. First call rh_work operation=controller_claim with repo_id=${work.repoId}, work_id=${work.workId}, and controller_type=chatgpt through your authenticated MCP session; do not invent controller_id/session_id. Only after that exact Work claim succeeds, call rh_work operation=continue with the same repo_id/work_id. Treat Forge Work/Plan/evidence as source of truth; do not invent new scope from chat history. If the claim does not succeed, do not mutate. Continue the next safe action, finalize only when acceptance passes, and create a HandoffItem when judgement is required.`,
     ].filter(Boolean).join('\n')
     : [
       `Work: ${work.workId}`,

@@ -403,23 +403,24 @@ export function submitControllerRoundDisposition(
     }
 
     const liveOwner = getControllerSession(options, work.workId);
-    const authority = liveOwner
+    const authority = terminal
       ? (() => {
-          const owner = assertChatgptOwner(options, work.workId, input.identity);
-          return {
-            controllerId: owner.controllerId,
-            principalId: owner.principalId?.trim() || owner.controllerId,
-            controllerInstanceId: owner.controllerInstanceId?.trim() || '',
-            sessionId: owner.sessionId,
-            claimGeneration: owner.claimGeneration,
-          };
-        })()
-      : (() => {
-          if (!terminal) throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${work.workId}`);
+          // The physical Work may be completed while its old live lease still exists.
+          // goal_complete is semantic round closure, not a terminal Work reclaim: use
+          // the authenticated controller/principal plus the already-claimed relay as
+          // authority and allow MCP session / Runtime instance rotation. If a live
+          // owner remains, it must still agree on controller type and principal.
           const principalId = input.identity.principalId.trim();
           const controllerInstanceId = input.identity.controllerInstanceId.trim();
           const sessionId = input.identity.sessionId.trim();
           if (!principalId || !controllerInstanceId || !sessionId) throw new Error(`CONTROLLER_RELAY_TERMINAL_AUTHORITY_REQUIRED: ${work.workId}`);
+          if (liveOwner) {
+            if (liveOwner.controllerType !== 'chatgpt') throw new Error(`CONTROLLER_RELAY_CHATGPT_ONLY: ${work.workId}`);
+            if (liveOwner.controllerId !== input.identity.controllerId) throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${work.workId}`);
+            if ((liveOwner.principalId?.trim() || liveOwner.controllerId) !== principalId) {
+              throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${work.workId}`);
+            }
+          }
           if (existing.value.controllerId !== input.identity.controllerId) throw new Error(`CONTROLLER_RELAY_CLAIM_CONTROLLER_MISMATCH: ${work.workId}`);
           if (existing.value.principalId !== principalId) throw new Error(`CONTROLLER_RELAY_CLAIM_PRINCIPAL_MISMATCH: ${work.workId}`);
           if (existing.value.claimGeneration < 1) throw new Error(`CONTROLLER_RELAY_CLAIM_GENERATION_REQUIRED: ${work.workId}`);
@@ -429,6 +430,16 @@ export function submitControllerRoundDisposition(
             controllerInstanceId,
             sessionId,
             claimGeneration: existing.value.claimGeneration,
+          };
+        })()
+      : (() => {
+          const owner = assertChatgptOwner(options, work.workId, input.identity);
+          return {
+            controllerId: owner.controllerId,
+            principalId: owner.principalId?.trim() || owner.controllerId,
+            controllerInstanceId: owner.controllerInstanceId?.trim() || '',
+            sessionId: owner.sessionId,
+            claimGeneration: owner.claimGeneration,
           };
         })();
     if (existing.value.controllerId !== authority.controllerId) {

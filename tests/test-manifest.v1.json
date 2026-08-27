@@ -337,6 +337,10 @@
       "module": "workflow",
       "resource": "pure"
     },
+    "tests/runtime/autonomous-continuation-lifecycle.test.ts": {
+      "module": "controller",
+      "resource": "process-tree"
+    },
     "tests/runtime/browser-session-authority.test.ts": {
       "module": "browser",
       "resource": "controller-home-isolated"

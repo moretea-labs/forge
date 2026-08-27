@@ -4255,20 +4255,27 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               if ((currentOwner.principalId?.trim() || currentOwner.controllerId) !== identity.principalId) {
                 throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${workId}`);
               }
-              if (!currentOwner.controllerInstanceId?.trim() || currentOwner.controllerInstanceId.trim() !== identity.controllerInstanceId) {
-                throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
-              }
-              if (currentOwner.sessionId !== identity.sessionId) {
-                resumeControllerSession(store, {
-                  workId,
-                  controllerId: identity.controllerId,
-                  controllerType: 'chatgpt',
-                  sessionId: identity.sessionId,
-                  principalId: identity.principalId,
-                  controllerInstanceId: identity.controllerInstanceId,
-                  expectedClaimGeneration: currentOwner.claimGeneration,
-                  leaseMs: 3_600_000,
-                });
+              // Finalization may terminalize the Work before the prompt-required
+              // goal_complete disposition is submitted. A frozen MCP client may also
+              // rotate transport sessions between those two calls. Never resume or
+              // rewrite a terminal Work lease here; terminal authorization is fenced
+              // by the already-claimed relay lineage in submitControllerRoundDisposition.
+              if (!terminalGoalComplete) {
+                if (!currentOwner.controllerInstanceId?.trim() || currentOwner.controllerInstanceId.trim() !== identity.controllerInstanceId) {
+                  throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
+                }
+                if (currentOwner.sessionId !== identity.sessionId) {
+                  resumeControllerSession(store, {
+                    workId,
+                    controllerId: identity.controllerId,
+                    controllerType: 'chatgpt',
+                    sessionId: identity.sessionId,
+                    principalId: identity.principalId,
+                    controllerInstanceId: identity.controllerInstanceId,
+                    expectedClaimGeneration: currentOwner.claimGeneration,
+                    leaseMs: 3_600_000,
+                  });
+                }
               }
             }
             const chatgptBinding = getChatgptWorkConversationBinding(store, workId);
