@@ -1289,6 +1289,18 @@ export function nativeReplacementUrlMatchesTarget(requestedUrl: string, actualUr
   }
 }
 
+export async function settleNativeCreatedPageIdentity(
+  page: {
+    waitForLoadState: (state?: string, options?: Record<string, unknown>) => Promise<void>;
+    identity: () => Promise<{ url: string; title: string }>;
+  },
+  state: string,
+  timeoutMs: number,
+): Promise<{ url: string; title: string }> {
+  await page.waitForLoadState(state, { timeout: timeoutMs });
+  return await page.identity();
+}
+
 function sameOrigin(left: string, right: string): boolean {
   try {
     return new URL(left).origin === new URL(right).origin;
@@ -2200,7 +2212,14 @@ async function openNativeAttachedContext(
         throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Native replacement tab did not return a stable plugin-owned tab reference.', { retryable: true });
       }
       try {
-        const identity = await (replacement as unknown as { identity: () => Promise<{ url: string; title: string }> }).identity();
+        const identity = await settleNativeCreatedPageIdentity(
+          replacement as unknown as {
+            waitForLoadState: (state?: string, options?: Record<string, unknown>) => Promise<void>;
+            identity: () => Promise<{ url: string; title: string }>;
+          },
+          waitUntil(args.wait_until),
+          timeout,
+        );
         if (!nativeReplacementUrlMatchesTarget(target.url, identity.url)) {
           throw new AssistantPluginError(
             'PLUGIN_BROWSER_NATIVE_REPLACEMENT_MISMATCH',
@@ -2305,8 +2324,14 @@ async function openNativeAttachedContext(
     if (!page) {
       page = await createMacOsBrowserOwnedPage(activeAttachment, target.url, timeout) as unknown as PageLike;
       createdThisCallRef = (page as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
-      const liveIdentity = await (page as unknown as { identity?: () => Promise<{ url: string; title: string }> }).identity?.()
-        .catch(() => undefined);
+      const liveIdentity = await settleNativeCreatedPageIdentity(
+        page as unknown as {
+          waitForLoadState: (state?: string, options?: Record<string, unknown>) => Promise<void>;
+          identity: () => Promise<{ url: string; title: string }>;
+        },
+        waitUntil(args.wait_until),
+        timeout,
+      ).catch(() => undefined);
       if (!liveIdentity?.url || isBlankPage(liveIdentity.url) || comparableUrl(liveIdentity.url) !== comparableUrl(target.url)) {
         page = await navigateNativePageWithReplacement(page);
       }

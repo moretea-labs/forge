@@ -3,7 +3,7 @@ import {
   executeBrowserRuntimeAction,
   invalidateBrowserRuntime,
 } from '../../src/runtime/plugins/browser-runtime';
-import { nativeReplacementUrlMatchesTarget } from '../../src/runtime/plugins/browser-adapter';
+import { nativeReplacementUrlMatchesTarget, settleNativeCreatedPageIdentity } from '../../src/runtime/plugins/browser-adapter';
 import {
   BrowserProviderUnavailableBeforeActionError,
   type BrowserRuntimeProvider,
@@ -69,6 +69,32 @@ describe('Browser Runtime V3 native replacement postconditions', () => {
     expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/c/exact', 'https://chatgpt.com/')).toBe(false);
     expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/c/exact', 'https://chatgpt.com/c/other')).toBe(false);
     expect(nativeReplacementUrlMatchesTarget('https://example.com/?mode=exact', 'https://example.com/?mode=other')).toBe(false);
+  });
+
+  test('settles a newly created exact native tab before reading identity', async () => {
+    const calls: string[] = [];
+    let url = 'chrome://newtab/';
+    const identity = await settleNativeCreatedPageIdentity({
+      waitForLoadState: async (state, options) => {
+        calls.push(`wait:${state}:${String(options?.timeout)}`);
+        url = 'https://chatgpt.com/';
+      },
+      identity: async () => {
+        calls.push('identity');
+        return { url, title: 'ChatGPT' };
+      },
+    }, 'domcontentloaded', 1_234);
+    expect(calls).toEqual(['wait:domcontentloaded:1234', 'identity']);
+    expect(identity.url).toBe('https://chatgpt.com/');
+    expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/', identity.url)).toBe(true);
+  });
+
+  test('still rejects a settled wrong HTTP target after native tab settlement', async () => {
+    const identity = await settleNativeCreatedPageIdentity({
+      waitForLoadState: async () => undefined,
+      identity: async () => ({ url: 'https://example.com/wrong', title: 'Wrong' }),
+    }, 'domcontentloaded', 1_000);
+    expect(nativeReplacementUrlMatchesTarget('https://example.com/exact', identity.url)).toBe(false);
   });
 });
 
