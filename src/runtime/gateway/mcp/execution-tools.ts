@@ -2837,7 +2837,9 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
   }
 
   let remoteDelivery: WorkRemoteDeliveryReceipt | undefined;
-  if (args.remote_write === true && requestedOutcome !== 'completed_no_change') {
+  const remoteDeliveryRequired = args.remote_write === true
+    || contractFor(ctx, current)?.constraints.remoteDeliveryRequired === true;
+  if (remoteDeliveryRequired && requestedOutcome !== 'completed_no_change') {
     const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
     const target = selectWorkFinalizationTarget(repository, current);
     const targetBranch = explicitTargetBranch ?? repository.defaultBranch ?? 'main';

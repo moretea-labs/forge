@@ -860,6 +860,16 @@ export function startGoalWorkloop(
     || (input.initialLikelyPaths?.length ?? 0) > 0
     || (input.modeInput.expectedFiles ?? 0) > 0
     || (input.modeInput.expectedChangedLines ?? 0) > 0;
+  const resolvedWorkKind = input.workKind ?? (
+    input.modeInput.requiresExternalEffect === true
+    && input.modeInput.remoteWrite === true
+    && !repositoryChangeIntent
+      ? 'remote_effect'
+      : 'repository_change'
+  );
+  const remoteDeliveryRequired = resolvedWorkKind === 'repository_change'
+    && input.modeInput.requiresExternalEffect === true
+    && input.modeInput.remoteWrite === true;
   const work = createWorkContract(ctx.workStore, {
     workId: generatedWorkId,
     repoId: ctx.repoId,
@@ -873,18 +883,15 @@ export function startGoalWorkloop(
     mode: executionMode,
     objective: input.objective,
     acceptanceCriteria: effectiveAcceptanceCriteria,
-    constraints: input.constraints ?? { requireHandoffOnAmbiguity: true },
+    constraints: {
+      ...(input.constraints ?? { requireHandoffOnAmbiguity: true }),
+      ...(remoteDeliveryRequired ? { remoteDeliveryRequired: true } : {}),
+    },
     risk: workRiskFor(input),
     // Remote delivery is a risk/effect dimension, not a reason to erase a
     // repository-change Work's semantic identity. Pure external actions with no
     // repository-change signal remain remote_effect and keep plugin receipt semantics.
-    workKind: input.workKind ?? (
-      input.modeInput.requiresExternalEffect === true
-      && input.modeInput.remoteWrite === true
-      && !repositoryChangeIntent
-        ? 'remote_effect'
-        : undefined
-    ),
+    workKind: resolvedWorkKind,
     status: 'running',
     phase: 'implementation',
     issueId: input.issueId,

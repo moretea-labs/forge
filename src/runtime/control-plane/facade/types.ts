@@ -354,6 +354,8 @@ export interface WorkContractConstraints {
   conflictsWithThinHarnessPolicy?: boolean;
   /** True when the change alters the default routing or execution mode visible to users. */
   changesDefaultExecutionStrategy?: boolean;
+  /** Repository-change delivery must publish the exact integrated revision before Work terminalization. */
+  remoteDeliveryRequired?: boolean;
 }
 
 export interface WorkContractDriverPolicy {

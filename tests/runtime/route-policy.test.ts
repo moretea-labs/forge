@@ -310,6 +310,48 @@ describe('single Route Policy authority', () => {
     expect(result.summary).not.toContain('PLAN_REQUIRED');
     expect(result.data).toMatchObject({ workContractCreated: true });
   });
+  test('persists exact remote delivery for repository-change Work without converting pure remote effects', () => {
+    const root = temp('route-remote-delivery-work-');
+    const workStore = { root: join(root, 'work') };
+    const context = {
+      workStore,
+      handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-a',
+      checkoutId: 'checkout-a',
+      principalId: 'principal-a',
+      controllerInstanceId: 'controller-a',
+      sourceRevision: 'revision-a',
+    };
+    const mixed = routeWorkStart(context, {
+      objective: 'Implement and publish one repository revision',
+      allowedPaths: ['src/runtime/**'],
+      acceptanceCriteria: ['Exact integrated revision is published'],
+      modeInput: {
+        scopeClear: true, mutation: true, expectedFiles: 3, expectedChangedLines: 120,
+        requiresRecovery: true, requiresExternalEffect: true, remoteWrite: true, risk: 'remote_write',
+      },
+    });
+    const mixedId = (mixed.data as { work?: { workId?: string } }).work?.workId;
+    expect(mixedId).toBeTruthy();
+    expect(getWorkContract(workStore, mixedId!)).toMatchObject({
+      workKind: 'repository_change',
+      constraints: { remoteDeliveryRequired: true },
+    });
+
+    const pure = routeWorkStart({ ...context, workStore: { root: join(root, 'pure-work') } }, {
+      objective: 'Perform one external remote action',
+      acceptanceCriteria: ['Remote action receipt exists'],
+      modeInput: {
+        scopeClear: true, mutation: true, requiresRecovery: true,
+        requiresExternalEffect: true, remoteWrite: true, risk: 'remote_write',
+      },
+    });
+    const pureId = (pure.data as { work?: { workId?: string } }).work?.workId;
+    expect(pureId).toBeTruthy();
+    expect(getWorkContract({ root: join(root, 'pure-work') }, pureId!)).toMatchObject({ workKind: 'remote_effect' });
+    expect(getWorkContract({ root: join(root, 'pure-work') }, pureId!)?.constraints.remoteDeliveryRequired).toBeUndefined();
+  });
+
   test('allows Requirement-bound durable Work without forcing a Plan', () => {
     const root = temp('route-requirement-workloop-');
     const workStore = { root: join(root, 'work') };
