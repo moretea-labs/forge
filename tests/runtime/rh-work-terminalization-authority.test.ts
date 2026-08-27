@@ -7,7 +7,8 @@ import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
-import { createWorkContract, getWorkContract, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 
@@ -210,4 +211,115 @@ describe('rh_work terminalization authority', () => {
     expect(explicit.status).toBe('ok');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, explicitWorkId)?.status).toBe('cancelled');
   }, 15_000);
+
+  test('finalize leaves Plan semantic acceptance explicit and does not unlock dependent steps', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const planId = 'plan-explicit-semantic-acceptance';
+    const workId = 'work-canary-subpart-only';
+    createPlanContract(store, {
+      planId,
+      repoId: fx.repository.repoId,
+      scopeKey: 'explicit-semantic-acceptance',
+      sourceRevision: targetRevision,
+      goal: 'require Controller review after Work finalization',
+      steps: [
+        {
+          id: 'release-gate',
+          objective: 'combine a canary sub-part with independent stabilization evidence',
+          dependencies: [],
+          authoritativeFiles: [],
+          allowedPaths: [],
+          forbiddenPaths: [],
+          checks: ['package:check:main'],
+          acceptanceCriteria: ['canary Work is delivered', 'stabilization supervisor has two timer-origin wakes'],
+        },
+        {
+          id: 'publish',
+          objective: 'remain blocked until semantic acceptance',
+          dependencies: ['release-gate'],
+          authoritativeFiles: [],
+          allowedPaths: [],
+          forbiddenPaths: [],
+          checks: ['package:check:release'],
+          acceptanceCriteria: ['release gate is semantically accepted'],
+        },
+      ],
+    });
+    approvePlanContract(store, planId);
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      mode: 'goal_workloop',
+      objective: 'deliver only the canary sub-part',
+      acceptanceCriteria: ['canary Work completion receipt exists'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'ready',
+      workKind: 'completed_no_change',
+      planId,
+      planStepId: 'release-gate',
+      planSourceRevision: targetRevision,
+    });
+    claimPlanStepForWork(store, { planId, stepId: 'release-gate', workId, sourceRevision: targetRevision });
+    const recordedAt = '2026-08-27T07:00:00.000Z';
+    const completed = recordWorkCompletionReceipt(store, workId, {
+      schemaVersion: 1,
+      receiptId: 'receipt-canary-subpart-only',
+      source: 'controller_work',
+      issueId: 'release-gate',
+      taskId: 'canary-subpart',
+      workId,
+      targetBranch: 'main',
+      targetRevision,
+      changedPaths: [],
+      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
+      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
+      verifiedAt: recordedAt,
+      recordedAt,
+    }, 'completed_no_change');
+    completePlanStepForWork(store, { planId, stepId: 'release-gate', work: completed });
+    expect(getPlanContract(store, planId)?.steps[0]?.status).toBe('validating');
+
+    const finalized = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-semantic-reviewer', 'transport-finalize', 'runtime-finalize'),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt' },
+    ));
+    expect(finalized.status).toBe('ok');
+    expect(finalized.data.semanticAcceptanceRecorded).not.toBe(true);
+    expect(getPlanContract(store, planId)).toMatchObject({
+      status: 'verifying',
+      steps: [
+        { id: 'release-gate', status: 'validating' },
+        { id: 'publish', status: 'pending' },
+      ],
+    });
+    expect(() => claimPlanStepForWork(store, {
+      planId,
+      stepId: 'publish',
+      workId: 'work-publish-premature',
+      sourceRevision: targetRevision,
+    })).toThrow(/PLAN_NOT_EXECUTABLE: plan-explicit-semantic-acceptance is verifying/);
+
+    const accepted = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-semantic-reviewer', 'transport-accept', 'runtime-finalize'),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'plan_accept_step',
+        plan_id: planId,
+        plan_step_id: 'release-gate',
+        acceptance_rationale: 'Reviewed the Work receipt and the independent stabilization evidence required by the whole release gate.',
+      },
+    ));
+    expect(accepted.status).toBe('ok');
+    expect(accepted.data.semanticAcceptanceRecorded).toBe(true);
+    expect(getPlanContract(store, planId)?.steps[0]?.status).toBe('completed');
+  }, 15_000);
+
 });

@@ -349,3 +349,101 @@ test('projects terminal Work evidence to validating and requires explicit semant
   expect(accepted).toMatchObject({ status: 'finalized', steps: [{ workId: 'work-receipt', status: 'completed' }] });
   expect(accepted.steps[0]?.evidenceRefs[0]?.title).toBe('semantic acceptance');
 });
+
+test('keeps dependent Plan steps blocked while a delivered dependency still awaits semantic acceptance', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-store-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-1', now: () => '2026-08-27T00:00:00.000Z' };
+  createPlanContract(options, {
+    planId: 'plan-partial-semantic-acceptance',
+    repoId: 'repo-1',
+    scopeKey: 'partial-semantic-acceptance',
+    sourceRevision: 'abc123',
+    goal: 'prove that Work delivery cannot unlock a dependent release step',
+    steps: [
+      {
+        id: 'canary-and-soak',
+        objective: 'combine canary delivery with broader stabilization evidence',
+        dependencies: [],
+        authoritativeFiles: [],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: ['package:check:main'],
+        acceptanceCriteria: ['canary is delivered', 'stabilization supervisor completes two timer-origin wakes'],
+      },
+      {
+        id: 'publish',
+        objective: 'publish only after the whole gate is semantically accepted',
+        dependencies: ['canary-and-soak'],
+        authoritativeFiles: [],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: ['package:check:release'],
+        acceptanceCriteria: ['release gate is accepted'],
+      },
+    ],
+  });
+  approvePlanContract(options, 'plan-partial-semantic-acceptance');
+  claimPlanStepForWork(options, {
+    planId: 'plan-partial-semantic-acceptance',
+    stepId: 'canary-and-soak',
+    workId: 'work-canary-only',
+    sourceRevision: 'abc123',
+  });
+  const receipt = {
+    schemaVersion: 1 as const,
+    receiptId: 'receipt-canary-only',
+    source: 'controller_work' as const,
+    issueId: 'ISS-canary-only',
+    taskId: 'canary',
+    workId: 'work-canary-only',
+    targetBranch: 'main',
+    targetRevision: 'abc123',
+    changedPaths: [],
+    delivery: { kind: 'no_change' as const, status: 'integrated' as const, strategy: 'no_change' as const, reachable: true, recordedAt: '2026-08-27T00:00:00.000Z' },
+    cleanup: { status: 'complete' as const, warnings: [], blockers: [], recordedAt: '2026-08-27T00:00:00.000Z' },
+    verifiedAt: '2026-08-27T00:00:00.000Z',
+    recordedAt: '2026-08-27T00:00:00.000Z',
+  };
+  const validating = completePlanStepForWork(options, {
+    planId: 'plan-partial-semantic-acceptance',
+    stepId: 'canary-and-soak',
+    work: {
+      workId: 'work-canary-only',
+      status: 'completed',
+      phase: 'cleanup',
+      evidenceState: 'valid',
+      completionOutcome: 'completed_no_change',
+      completionReceipt: receipt,
+      evidenceRefs: [{ evidenceId: receipt.receiptId, title: 'Canary Work delivered.' }],
+    },
+  });
+  expect(validating).toMatchObject({
+    status: 'verifying',
+    steps: [
+      { id: 'canary-and-soak', status: 'validating', workId: 'work-canary-only' },
+      { id: 'publish', status: 'pending' },
+    ],
+  });
+  expect(() => claimPlanStepForWork(options, {
+    planId: 'plan-partial-semantic-acceptance',
+    stepId: 'publish',
+    workId: 'work-publish-too-early',
+    sourceRevision: 'abc123',
+  })).toThrow(/PLAN_NOT_EXECUTABLE: plan-partial-semantic-acceptance is verifying/);
+
+  const accepted = acceptPlanStepEvidence(options, {
+    planId: 'plan-partial-semantic-acceptance',
+    stepId: 'canary-and-soak',
+    reviewer: 'chatgpt',
+    rationale: 'Reviewed both the canary receipt and the independent stabilization-supervisor evidence.',
+  });
+  expect(accepted.steps[0]?.status).toBe('completed');
+  const admitted = claimPlanStepForWork(options, {
+    planId: 'plan-partial-semantic-acceptance',
+    stepId: 'publish',
+    workId: 'work-publish-after-acceptance',
+    sourceRevision: 'abc123',
+  });
+  expect(admitted.steps[1]).toMatchObject({ status: 'executing', workId: 'work-publish-after-acceptance' });
+});
