@@ -10,9 +10,11 @@ import {
   setBrowserPluginRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-adapter';
 import {
+  invalidateMacOsBrowserPageHandles,
   resetMacOsBrowserRuntimeHooksForTest,
   setMacOsBrowserRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-macos-bridge';
+import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 import {
   ensureLegacyBrowserSessionsImported,
   findBrowserSession,
@@ -307,6 +309,190 @@ describe('browser session controller authority', () => {
       args: { session_id: 'native-foreground', kind: 'click', x: 10, y: 20, post_action_wait_ms: 1 },
     });
     expect(trustedRefs).toEqual([{ product: 'chrome', windowId: '7', tabId: '9' }]);
+  });
+
+  test('legacy native broker without tab inventory creates and closes only the exact plugin-owned tab', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    }));
+
+    const separator = String.fromCharCode(30);
+    const url = 'https://example.com/legacy-inventory';
+    let tabExists = false;
+    let inventoryCalls = 0;
+    let createCalls = 0;
+    let closeCalls = 0;
+    const metadata = () => [
+      'false', url, 'Legacy Inventory', '0', '0', '1200', '800', '7', tabExists ? '9' : '3', tabExists ? 'false' : 'true', 'false',
+    ].join(separator);
+
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script) => {
+        if (script.includes('set outputText to "false"')) {
+          inventoryCalls += 1;
+          throw new AssistantPluginError('BROWSER_AUTOMATION_ACTION_UNSUPPORTED', 'list_tabs is unavailable in the legacy broker.', { retryable: false });
+        }
+        if (script.includes('make new tab at end of tabs of targetWindow')) {
+          createCalls += 1;
+          tabExists = true;
+          return `7${separator}9`;
+        }
+        if (script.includes('close targetTab')) {
+          closeCalls += 1;
+          tabExists = false;
+          return '';
+        }
+        if (script.includes('execute targetTab javascript')) {
+          return JSON.stringify({ ok: true, value: { url, title: 'Legacy Inventory' }, page: { url, title: 'Legacy Inventory' } });
+        }
+        if (script.includes('set targetTabId to "9"') && !tabExists) {
+          throw new Error('Google Chrome got an error: Can’t get tab whose id = "9". Invalid index. (-1719)');
+        }
+        return metadata();
+      },
+    });
+
+    const baseInput = {
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      origin: { surface: 'mcp' as const, actor: 'test' },
+    };
+    const opened = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'legacy-inventory-open',
+      actionId: 'create_session',
+      args: { url, browser_mode: 'attach_preferred', native_browser_candidates: ['chrome'], cdp_attach_fallback: 'fail_closed' },
+    });
+    const openedSession = opened.session as { sessionId: string; browser?: { provider?: string; tab?: { ownership?: string; windowId?: string; tabId?: string } } };
+    expect(openedSession.browser?.provider).toBe('macos-apple-events');
+    expect(openedSession.browser?.tab).toMatchObject({ ownership: 'plugin_owned', windowId: '7', tabId: '9' });
+    expect(createCalls).toBe(1);
+    expect(inventoryCalls).toBe(1);
+
+    const listed = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'legacy-inventory-list',
+      actionId: 'list_sessions',
+      args: {},
+    });
+    expect(listed).toMatchObject({ liveNativeSessionCount: 1, unverifiedSessionCount: 0 });
+    expect(inventoryCalls).toBe(2);
+
+    const closed = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'legacy-inventory-close',
+      actionId: 'close_session',
+      args: { session_id: openedSession.sessionId },
+    });
+    expect(closed).toMatchObject({ closed: true, resourceClosed: true });
+    expect(closeCalls).toBe(1);
+    expect(inventoryCalls).toBe(3);
+  });
+
+  test('native cold rebind reports and persists the live same-origin URL after external drift', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    }));
+
+    const separator = String.fromCharCode(30);
+    const originalUrl = 'https://example.com/native-drift';
+    const driftedUrl = 'https://example.com/native-drift/changed';
+    let currentUrl = originalUrl;
+    let tabExists = false;
+    const metadata = () => [
+      'false', currentUrl, 'Native Drift', '0', '0', '1200', '800', '7', '9', 'false', 'false',
+    ].join(separator);
+
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script, args = []) => {
+        if (script.includes('set outputText to "false"')) {
+          throw new AssistantPluginError('BROWSER_AUTOMATION_ACTION_UNSUPPORTED', 'list_tabs is unavailable.', { retryable: false });
+        }
+        if (script.includes('make new tab at end of tabs of targetWindow')) {
+          tabExists = true;
+          currentUrl = args[0] ?? originalUrl;
+          return `7${separator}9`;
+        }
+        if (script.includes('set targetTabId to "9"') && !tabExists) {
+          throw new Error('Google Chrome got an error: Can’t get tab whose id = "9". Invalid index. (-1719)');
+        }
+        if (script.includes('close targetTab')) {
+          tabExists = false;
+          return '';
+        }
+        if (script.includes('execute targetTab javascript')) {
+          const source = args[0] ?? '';
+          const value = source.includes('document.readyState')
+            ? 'complete'
+            : source.includes('textContent') || source.includes('innerText')
+              ? 'Drifted Body'
+              : { url: currentUrl, title: 'Native Drift' };
+          return JSON.stringify({ ok: true, value, page: { url: currentUrl, title: 'Native Drift' } });
+        }
+        return metadata();
+      },
+    });
+
+    const baseInput = {
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      origin: { surface: 'mcp' as const, actor: 'test' },
+    };
+    const opened = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'native-drift-open',
+      actionId: 'create_session',
+      args: { url: originalUrl, browser_mode: 'attach_preferred', native_browser_candidates: ['chrome'], cdp_attach_fallback: 'fail_closed' },
+    });
+    const sessionId = String((opened.session as { sessionId: string }).sessionId);
+
+    currentUrl = driftedUrl;
+    invalidateMacOsBrowserPageHandles();
+    const observed = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'native-drift-read',
+      actionId: 'get_text',
+      args: { session_id: sessionId, selector: 'body' },
+    });
+    expect(observed.url).toBe(driftedUrl);
+    expect(observed.text).toBe('Drifted Body');
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.url).toBe(driftedUrl);
+
+    const closed = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'native-drift-close',
+      actionId: 'close_session',
+      args: { session_id: sessionId },
+    });
+    expect(closed).toMatchObject({ closed: true, resourceClosed: true });
   });
 
   test('browser defaults fail closed and declares foreground effects per action', () => {

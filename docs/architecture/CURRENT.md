@@ -123,13 +123,15 @@ Typed provider/plugin actions should use Forge capability/resource semantics dir
 - Application adapters own app-specific semantic targeting and assertions; provider code owns transport, device/session lifecycle, and command execution. Semantic action failure is distinct from transport/session death, and unknown mutation outcomes are fenced rather than blindly replayed.
 - iOS evidence is bounded and redacted. Read-only lifecycle/screenshot capability must never be represented as proof of semantic mutation capability.
 
-## Browser Runtime V2 transition contract
+## Browser Runtime V3 contract
 
-Browser automation is converging on the accepted [`Browser Runtime V2`](decisions/20260826-browser-runtime-v2.md) architecture. Controller-home BrowserSession state is the sole durable browser-session authority. Stable provider/resource identity is distinct from mutable observed URL/title; providers may retain ephemeral live handles only as acceleration state.
+Browser Runtime V3 is the current Browser execution authority. Controller-home BrowserSession state is the sole durable browser-session authority; stable provider/resource identity is distinct from mutable observed URL/title, and provider-local live handles are acceleration state only. The accepted Browser Runtime V2 ADR remains historical rationale rather than a competing current authority.
 
-Browser providers are selected by declared capability. Common DOM and typed browser-internal operations must remain background-safe. Foreground presentation is an explicit effect reserved for capabilities that truly require physical pointer/keyboard input or human handoff. Mutating provider actions are complete only when their declared postconditions are verified; transport, Apple Events, Accessibility or CGEvent success alone is not semantic completion.
+Browser providers are selected by declared capability. Common DOM and typed browser-internal operations must remain background-safe. Native macOS sessions reuse or recover only exact Forge-owned `windowId` + `tabId` identities. Provider-wide tab inventory is an optional optimization: when the installed broker cannot enumerate tabs, Forge may create a new plugin-owned tab or validate a saved exact ref, but it must not scan for or guess an unrelated user tab.
 
-During migration, the existing Browser public action surface remains compatible while legacy Playwright/CDP/native paths are compiled toward the V2 provider contract. No new Browser durable authority or implicit foreground fallback may be introduced.
+Foreground presentation is an explicit effect reserved for capabilities that truly require physical pointer/keyboard input or human handoff. Browser `trusted_input` never silently activates a background tab or converts CSS viewport coordinates into desktop coordinates. If the native broker lacks the required trusted-input capability, Browser fails with a typed capability error; an explicitly requested Desktop Operator foreground/physical action remains a separate authority boundary. Mutating provider actions are complete only when their declared postconditions are verified; transport, Apple Events, Accessibility, socket, or CGEvent success alone is not semantic completion.
+
+The public Browser action surface remains compatible across Playwright/CDP/native providers. Current native compatibility may omit optional broker methods such as global tab inventory while preserving exact-ref lifecycle safety. DOM automation through Chrome/Vivaldi Apple Events still requires the browser's JavaScript-from-Apple-Events permission; missing permission fails closed instead of weakening the provider contract.
 
 ## Testing and verification
 

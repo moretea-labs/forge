@@ -168,7 +168,21 @@ async function sendBrowserTrustedInput(
     await runtimeHooks.trustedInput(request, timeoutMs);
     return;
   }
-  const result = await callBrowserAutomationBroker(request, timeoutMs);
+  let result: Record<string, unknown>;
+  try {
+    result = await callBrowserAutomationBroker(request, timeoutMs);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error ?? '');
+    if ((error instanceof AssistantPluginError && error.code === 'BROWSER_AUTOMATION_ACTION_UNSUPPORTED')
+      || /\bBROWSER_AUTOMATION_ACTION_UNSUPPORTED\b/.test(message)) {
+      throw new AssistantPluginError(
+        'PLUGIN_BROWSER_TRUSTED_INPUT_UNAVAILABLE',
+        'Installed Forge Desktop Operator does not support native browser trusted input. Keep the exact tab explicitly foregrounded and use a separately grounded Desktop Operator interaction, or upgrade the stable Desktop Operator provider.',
+        { retryable: false, details: { browserProduct: request.product, requiredProviderAction: 'trusted_input' } },
+      );
+    }
+    throw error;
+  }
   if (result.performed !== true) {
     throw new AssistantPluginError(
       'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
@@ -210,7 +224,7 @@ export function invalidateMacOsBrowserPageHandles(): void {
 
 export function macOsBrowserPageHandleStale(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '');
-  return /FORGE_BROWSER_TAB_NOT_FOUND|BROWSER_AUTOMATION_TAB_NOT_FOUND|target tab.*not found/i.test(message);
+  return /FORGE_BROWSER_TAB_NOT_FOUND|BROWSER_AUTOMATION_TAB_NOT_FOUND|target tab.*not found|can[’']t get tab .*invalid index.*-1719/i.test(message);
 }
 
 export function setMacOsBrowserRuntimeHooksForTest(hooks: Partial<MacOsBrowserRuntimeHooks>): void {

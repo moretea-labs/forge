@@ -32,3 +32,11 @@ Earlier V4–V8 Controller, Local Bridge, Supervisor, Issue/Task/Job and recover
 - Folded the still-current Controller facade/Handoff, host-hook ownership, and iOS physical-device provider invariants into `CURRENT.md` from current source rather than preserving old implementation plans as parallel authority.
 - Retired root-level phase/status design pages into the history archive; accepted ADRs and version snapshots remain rationale/snapshots while `CURRENT.md` remains the sole current architecture contract.
 - Added deterministic task-gate protection so new root-level parallel architecture pages and stale current-status/personal-machine identity markers fail existing static architecture verification instead of relying on a daemon or manual cleanup pass.
+
+## 2026-08-27 — Browser Runtime V3 becomes current authority
+
+- Promoted the Browser provider/resource transaction model from V2 migration rationale to the current V3 runtime contract while retaining one public Browser action surface.
+- Kept controller-home BrowserSession state as the only durable browser-session authority and made exact native `windowId` + `tabId` identity authoritative across warm-handle invalidation and cold rebind.
+- Made provider-wide native tab inventory optional for compatibility with the stable Desktop Operator broker: absence of inventory may reduce cross-tab reuse, but must never permit guessing or adopting an unrelated user tab.
+- Kept foreground/physical input explicit. Browser background actions never silently activate a tab; Desktop Operator foreground/physical actions remain a separate verified capability boundary.
+- Added current-source live acceptance coverage for Chrome/Vivaldi native lifecycle, background foreground-preservation, URL drift/rebind, replacement postconditions, internal resources, cleanup, and attributable latency reporting. Environment-owned browser permission gaps remain typed external blockers rather than reasons to weaken the runtime contract.

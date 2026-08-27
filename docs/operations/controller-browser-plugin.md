@@ -51,22 +51,21 @@ Session metadata is reusable across actions via `session_id`. Any action that re
 - CDP browsers are disconnected after the action; Apple Events keeps plugin-owned session tabs open until `close_session`/`close_page` while preserving user-owned tabs; managed contexts are closed after the action. Standard native DOM reads/interactions do not foreground the owned tab and return DOM evidence instead of attempting a screenshot.
 - Health `userFacingStatus` reports `ready`, `session active`, or setup states.
 
-## Browser Runtime V2 migration contract
+## Browser Runtime V3 contract
 
-The current provider implementations are being migrated behind the accepted Browser Runtime V2 contract in [`../architecture/decisions/20260826-browser-runtime-v2.md`](../architecture/decisions/20260826-browser-runtime-v2.md).
-
-The migration changes the internal execution model without changing the public Browser action IDs:
+Browser Runtime V3 is the current Browser authority. The V2 ADR in [`../architecture/decisions/20260826-browser-runtime-v2.md`](../architecture/decisions/20260826-browser-runtime-v2.md) remains historical rationale; it is not a second runtime contract. Public Browser action IDs remain stable.
 
 - controller-home BrowserSession state is the only durable browser-session authority;
-- exact provider/resource identity is stable while URL/title are mutable observations;
+- exact provider/resource identity is stable while URL/title are mutable observations and are refreshed after persisted reads;
 - provider routing is capability-based instead of fallback-by-exception;
 - a warm provider handle is reusable across bounded actions and full rediscovery is exceptional;
+- cold native rebind uses the saved exact `windowId` + `tabId`; losing optional global tab inventory does not authorize guessing a user tab;
 - mutations compile to provider-local `observe -> act -> verify` transactions;
 - raw Apple Events / AX / socket / CGEvent success is not accepted as mutation success without postcondition evidence;
 - typed browser-internal capabilities are preferred for bookmarks/tabs/downloads instead of driving `chrome://` UI;
-- foreground physical input is an explicit last-resort capability, never an implicit generic interaction fallback.
+- foreground physical input is explicit and separate. Browser `trusted_input` does not silently foreground a tab or reuse Desktop coordinates; use an explicitly authorized Desktop Operator foreground/physical action when that is the intended capability.
 
-The end-state warm-path budgets are one provider RPC with p95 targets of 350 ms for reads, 600 ms for DOM interaction plus verification, and 700 ms for typed browser-internal-resource operations. Explicit physical-input fallback targets p95 <= 1500 ms and is foreground-capable only when requested. Cold rebind may use at most two provider calls. Fixed sleeps are compatibility behavior, not synchronization authority.
+The warm-path performance targets remain p95 <= 350 ms for reads, <= 600 ms for DOM interaction plus verification, and <= 700 ms for typed browser-internal-resource operations. Explicit physical-input fallback targets p95 <= 1500 ms and is foreground-capable only when requested. Current-source live evidence is emitted by `tests/live/browser-runtime-v3.e2e.ts`; Work/Plan evidence owns measured p50/p95 values rather than this maintained runbook.
 
 ## Configuration
 
@@ -188,12 +187,15 @@ Apple Events attachment treats silence as the default execution contract:
 - native tab ownership is the stable window/tab reference itself. CDP keeps its separate owner-token mechanism;
 - only explicitly foreground-dependent operations such as screenshot capture or human handoff may require visible foreground presentation. They fail closed rather than activating implicitly.
 
-The live macOS acceptance test covers background replacement, DOM fill/click, click-driven navigation, session URL refresh, `go_back`, `reload`, explicit screenshot refusal, session close, and verifies both the user's active Chrome tab and the system frontmost application remain unchanged.
-Run it explicitly on a macOS workstation with a running Chrome instance:
+The legacy macOS acceptance test remains available through `bun run test:browser-live`. Browser Runtime V3 adds `tests/live/browser-runtime-v3.e2e.ts`, which uses loopback fixtures and exact owned refs to cover Chrome/Vivaldi lifecycle, competing-foreground preservation, same-origin URL drift plus cold rebind, failed replacement postconditions, Chrome internal-resource adoption, cleanup, and per-operation p50/p95 reporting. Run the V3 gate explicitly on a macOS workstation with the target browsers already running:
 
 ```bash
-bun run test:browser-live
+bun tests/live/browser-runtime-v3.e2e.ts
 ```
+
+Set `FORGE_BROWSER_V3_REQUIRE_COMPETING_FOREGROUND=1` when a non-browser application is already frontmost to make foreground preservation a hard precondition. Set `FORGE_BROWSER_V3_REQUIRE_DOM_ALL=1` only when JavaScript-from-Apple-Events permission is expected for every requested native browser. Without that strict flag, a browser whose lifecycle is available but DOM automation is blocked is reported as `external_permission_required` with `PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED`; the harness still verifies exact-ref cleanup and active-user-tab preservation for that product.
+
+The stable Desktop Operator broker may omit global `list_tabs` or Browser `trusted_input`. Forge treats inventory absence as a loss of reuse optimization, not as permission to inspect or adopt unknown user tabs: new sessions create a Forge-owned tab, saved sessions validate exact refs, and close/reconcile operate on exact refs. Missing native trusted input remains a typed Browser capability limitation; explicit Desktop Operator foreground/physical interaction is a separate, visually verified path.
 
 ## Tab Resume And Diagnostics
 

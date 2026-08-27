@@ -41,6 +41,7 @@ import {
   macOsBrowserPageHandleStale,
   getMacOsBrowserAttachObservation,
   listMacOsBrowserTabs,
+  readMacOsBrowserOwnedTabMetadata,
   macOsActiveBrowserAttachSupported,
   macOsBrowserJavaScriptAutomationDisabled,
   type MacOsBrowserAttachAttempt,
@@ -2217,65 +2218,72 @@ async function openNativeAttachedContext(
   };
   try {
     if (!page && !savedTab && !stringValue(args.session_id)) {
-      const inventory = await listMacOsBrowserTabs(activeAttachment.metadata.product, timeout);
-      const ownedSelection = selectLiveForgeOwnedNativeTab(repoRoot, target.url, activeAttachment.metadata.product, inventory);
-      if (ownedSelection.match === 'ambiguous') {
-        throw new AssistantPluginError(
-          'PLUGIN_BROWSER_REUSABLE_TAB_AMBIGUOUS',
-          'Multiple live Forge-owned browser tabs can satisfy this sessionless navigation; refusing to open another duplicate tab.',
-          { retryable: false, details: { targetUrl: target.url, candidateCount: ownedSelection.candidateCount } },
-        );
+      let inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>> | undefined;
+      try {
+        inventory = await listMacOsBrowserTabs(activeAttachment.metadata.product, timeout);
+      } catch (error) {
+        if (!nativeTabInventoryUnsupported(error)) throw error;
       }
-      if (ownedSelection.candidate) {
-        if (ownedSelection.session) {
-          target.sessionId = ownedSelection.session.sessionId;
-          target.existingSession = ownedSelection.session;
-        }
-        const rebound = await reattachMacOsBrowserOwnedPage(
-          activeAttachment.metadata.product,
-          { windowId: ownedSelection.candidate.windowId, tabId: ownedSelection.candidate.tabId },
-          timeout,
-        );
-        page = rebound.page as unknown as PageLike;
-        discovered = { attachment: rebound.attachment, attempts: rebound.attachment.attempts };
-        activeAttachment = rebound.attachment;
-        matchedBy = 'owned_token';
-        effectiveOwnership = 'plugin_owned';
-        sessionResume = {
-          sessionId: target.sessionId,
-          status: 'matched',
-          reason: ownedSelection.match === 'exact_url'
-            ? 'No session id was supplied; reused the unique live Forge-owned native tab already at the target URL.'
-            : 'No session id was supplied; reused the unique live Forge-owned native tab for the same origin and navigated it in place.',
-          savedTab: ownedSelection.session?.browser?.tab,
-        };
-      } else {
-        const exactSelection = selectExactNativeTab(target.url, inventory);
-        if (exactSelection.match === 'ambiguous') {
+      if (inventory) {
+        const ownedSelection = selectLiveForgeOwnedNativeTab(repoRoot, target.url, activeAttachment.metadata.product, inventory);
+        if (ownedSelection.match === 'ambiguous') {
           throw new AssistantPluginError(
             'PLUGIN_BROWSER_REUSABLE_TAB_AMBIGUOUS',
-            'Multiple existing browser tabs already match the target URL; refusing to open another duplicate tab.',
-            { retryable: false, details: { targetUrl: target.url, candidateCount: exactSelection.candidateCount } },
+            'Multiple live Forge-owned browser tabs can satisfy this sessionless navigation; refusing to open another duplicate tab.',
+            { retryable: false, details: { targetUrl: target.url, candidateCount: ownedSelection.candidateCount } },
           );
         }
-        if (exactSelection.candidate) {
+        if (ownedSelection.candidate) {
+          if (ownedSelection.session) {
+            target.sessionId = ownedSelection.session.sessionId;
+            target.existingSession = ownedSelection.session;
+          }
           const rebound = await reattachMacOsBrowserOwnedPage(
             activeAttachment.metadata.product,
-            { windowId: exactSelection.candidate.windowId, tabId: exactSelection.candidate.tabId },
+            { windowId: ownedSelection.candidate.windowId, tabId: ownedSelection.candidate.tabId },
             timeout,
           );
           page = rebound.page as unknown as PageLike;
           discovered = { attachment: rebound.attachment, attempts: rebound.attachment.attempts };
-        activeAttachment = rebound.attachment;
-          matchedBy = 'exact_url';
-          effectiveOwnership = 'user_owned';
-          recoveredTabTitle = exactSelection.candidate.title;
-          recoveredTabUrl = exactSelection.candidate.url;
+          activeAttachment = rebound.attachment;
+          matchedBy = 'owned_token';
+          effectiveOwnership = 'plugin_owned';
           sessionResume = {
             sessionId: target.sessionId,
             status: 'matched',
-            reason: 'No session id was supplied; reused the unique existing native browser tab with the exact target URL instead of opening a duplicate.',
+            reason: ownedSelection.match === 'exact_url'
+              ? 'No session id was supplied; reused the unique live Forge-owned native tab already at the target URL.'
+              : 'No session id was supplied; reused the unique live Forge-owned native tab for the same origin and navigated it in place.',
+            savedTab: ownedSelection.session?.browser?.tab,
           };
+        } else {
+          const exactSelection = selectExactNativeTab(target.url, inventory);
+          if (exactSelection.match === 'ambiguous') {
+            throw new AssistantPluginError(
+              'PLUGIN_BROWSER_REUSABLE_TAB_AMBIGUOUS',
+              'Multiple existing browser tabs already match the target URL; refusing to open another duplicate tab.',
+              { retryable: false, details: { targetUrl: target.url, candidateCount: exactSelection.candidateCount } },
+            );
+          }
+          if (exactSelection.candidate) {
+            const rebound = await reattachMacOsBrowserOwnedPage(
+              activeAttachment.metadata.product,
+              { windowId: exactSelection.candidate.windowId, tabId: exactSelection.candidate.tabId },
+              timeout,
+            );
+            page = rebound.page as unknown as PageLike;
+            discovered = { attachment: rebound.attachment, attempts: rebound.attachment.attempts };
+            activeAttachment = rebound.attachment;
+            matchedBy = 'exact_url';
+            effectiveOwnership = 'user_owned';
+            recoveredTabTitle = exactSelection.candidate.title;
+            recoveredTabUrl = exactSelection.candidate.url;
+            sessionResume = {
+              sessionId: target.sessionId,
+              status: 'matched',
+              reason: 'No session id was supplied; reused the unique existing native browser tab with the exact target URL instead of opening a duplicate.',
+            };
+          }
         }
       }
     }
@@ -2335,6 +2343,10 @@ async function openNativeAttachedContext(
     const title = matchedBy === 'owned_token' ? (target.existingSession?.title ?? '') : matchedBy === 'recovered_tab' ? recoveredTabTitle : '';
     const inventory: BrowserTabInventoryEntry[] = [{ index: 0, key: tabKey(pageUrl, title), url: pageUrl, title }];
     const metadata = activeAttachment.metadata;
+    // The live exact-tab URL is authoritative after a safe native rebind. Keep the
+    // action-local target synchronized so read/query responses and the persisted
+    // session report the same observed URL in this round.
+    target.url = pageUrl;
     const connection = refreshConnectionTab({
       requestedMode: 'attach_preferred',
       mode: 'attach_preferred',
@@ -2468,6 +2480,9 @@ async function withPage<T>(
       if (options.persistSession) {
         const identity = await readPageIdentity(handle.page, handle.connection, target.url);
         saveSession(repoRoot, sessionFromPage(target, identity.url, identity.title, handle.connection));
+        if (result && typeof result === 'object' && !Array.isArray(result) && Object.prototype.hasOwnProperty.call(result, 'url')) {
+          (result as Record<string, unknown>).url = identity.url;
+        }
       }
       return result;
     } catch (error) {
@@ -2505,6 +2520,12 @@ function listSavedSessions(repoRoot: string): BrowserSessionState[] {
   return listSavedBrowserSessions(repoRoot)
     .filter((entry) => Boolean(entry.sessionId && entry.url))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function nativeTabInventoryUnsupported(error: unknown): boolean {
+  if (error instanceof AssistantPluginError && error.code === 'BROWSER_AUTOMATION_ACTION_UNSUPPORTED') return true;
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /\bBROWSER_AUTOMATION_ACTION_UNSUPPORTED\b/.test(message);
 }
 
 function isDiscardableNativeOwnedTabUrl(url: string): boolean {
@@ -2568,8 +2589,54 @@ async function inspectNativeOwnedSessions(
       inventories.set(product, inventory);
     }
     if (inventory instanceof Error) {
-      for (const session of group) items.set(session.sessionId, { session, liveness: 'unverified', evidence: 'native_inventory_unavailable', cleanupError: inventory.message });
-      unverifiedCount += group.length;
+      if (!nativeTabInventoryUnsupported(inventory)) {
+        for (const session of group) items.set(session.sessionId, { session, liveness: 'unverified', evidence: 'native_inventory_unavailable', cleanupError: inventory.message });
+        unverifiedCount += group.length;
+        continue;
+      }
+
+      const ref = { windowId: tab.windowId!, tabId: tab.tabId! };
+      let metadata: Awaited<ReturnType<typeof readMacOsBrowserOwnedTabMetadata>>;
+      try {
+        metadata = await readMacOsBrowserOwnedTabMetadata(product, ref, timeout);
+      } catch (metadataError) {
+        if (macOsBrowserPageHandleStale(metadataError)) {
+          const pruned = options.pruneDead === true;
+          if (pruned) {
+            for (const session of group) removeSession(repoRoot, session.sessionId);
+            prunedCount += group.length;
+          }
+          for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_missing', pruned });
+          deadCount += group.length;
+        } else {
+          const cleanupError = metadataError instanceof Error ? metadataError.message : String(metadataError);
+          for (const session of group) items.set(session.sessionId, { session, liveness: 'unverified', evidence: 'native_inventory_unavailable', cleanupError });
+          unverifiedCount += group.length;
+        }
+        continue;
+      }
+
+      if (isDiscardableNativeOwnedTabUrl(metadata.url)) {
+        deadCount += group.length;
+        if (options.pruneDead === true) {
+          try {
+            await closeMacOsBrowserOwnedTab(product, ref, timeout);
+            for (const session of group) removeSession(repoRoot, session.sessionId);
+            prunedCount += group.length;
+            closedInvalidCount += 1;
+            for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_invalid_closed', pruned: true });
+          } catch (error) {
+            failedCleanupCount += 1;
+            const cleanupError = error instanceof Error ? error.message : String(error);
+            for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_invalid_close_failed', cleanupError });
+          }
+        } else {
+          for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_invalid' });
+        }
+      } else {
+        for (const session of group) items.set(session.sessionId, { session, liveness: 'live', evidence: 'native_tab_live' });
+        liveCount += group.length;
+      }
       continue;
     }
 
@@ -2627,10 +2694,23 @@ async function closeTrackedNativeOwnedSession(
     });
   }
   const timeout = config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const inventory = await listMacOsBrowserTabs(browser.browserProduct, timeout);
-  const live = inventory.tabs.some((entry) => entry.windowId === tab.windowId && entry.tabId === tab.tabId);
-  if (!live) return { resourceClosed: false, resourceAlreadyMissing: true };
-  await closeMacOsBrowserOwnedTab(browser.browserProduct, { windowId: tab.windowId, tabId: tab.tabId }, timeout);
+  const ref = { windowId: tab.windowId, tabId: tab.tabId };
+  let inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>> | undefined;
+  try {
+    inventory = await listMacOsBrowserTabs(browser.browserProduct, timeout);
+  } catch (error) {
+    if (!nativeTabInventoryUnsupported(error)) throw error;
+    try {
+      await readMacOsBrowserOwnedTabMetadata(browser.browserProduct, ref, timeout);
+    } catch (metadataError) {
+      if (macOsBrowserPageHandleStale(metadataError)) return { resourceClosed: false, resourceAlreadyMissing: true };
+      throw metadataError;
+    }
+  }
+  if (inventory && !inventory.tabs.some((entry) => entry.windowId === tab.windowId && entry.tabId === tab.tabId)) {
+    return { resourceClosed: false, resourceAlreadyMissing: true };
+  }
+  await closeMacOsBrowserOwnedTab(browser.browserProduct, ref, timeout);
   return { resourceClosed: true, resourceAlreadyMissing: false };
 }
 
@@ -4504,19 +4584,17 @@ async function executeBrowserPluginActionInternal(
       }
       case 'get_text': {
         const target = resolveActionTarget(input.repoRoot, input.args);
-        return {
-          sessionId: target.sessionId,
-          url: target.url,
-          ...(await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
-            const selection = resolveBrowserEvaluationScope(page, input.args, connection);
-            return {
-              provider: browserResultProvider(connection.provider),
-              ...(await extractText(selection.scope, stringValue(input.args.selector), positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS))),
-              ...(selection.frame ? { frame: selection.frame } : {}),
-              browserConnection: connection,
-            };
-          }, { persistSession: true })),
-        };
+        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+          const selection = resolveBrowserEvaluationScope(page, input.args, connection);
+          return {
+            provider: browserResultProvider(connection.provider),
+            sessionId: target.sessionId,
+            url: target.url,
+            ...(await extractText(selection.scope, stringValue(input.args.selector), positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS))),
+            ...(selection.frame ? { frame: selection.frame } : {}),
+            browserConnection: connection,
+          };
+        }, { persistSession: true });
       }
       case 'get_html': {
         const target = resolveActionTarget(input.repoRoot, input.args);
