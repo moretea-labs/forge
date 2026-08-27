@@ -712,7 +712,45 @@ describe('CodeGraph read provider', () => {
     expect(pack.structuralContext.entryPoints.map((entry) => entry.filePath)).not.toContain('scratch/ios/device.ts');
   });
 
-  test('keeps bounded text fallback visible when required structural context is unavailable', () => { const root = contextRepo(); const unavailable = structuralResponse({ ok: false, status: 'unavailable', metadata: undefined, result: undefined, error: { code: 'CODEGRAPH_PLATFORM_BUNDLE_MISSING', message: 'not installed' } }); const pack = buildControllerContextPack(root, getMcpPolicy('controller'), { description: 'runService', searchTerms: ['runService'], structuralContext: 'required' }, { queryCodeGraph: () => unavailable }); expect(pack.structuralContext).toMatchObject({ requestedMode: 'required', status: 'unavailable', requiredSatisfied: false }); expect(pack.impactContext).toMatchObject({ status: 'degraded', confidence: 'medium' }); expect(pack.impactContext.coverageGaps).toContain('structural_provider_unavailable'); expect(pack.next[0]).toContain('Structural context was required'); expect(pack.files.some((file) => file.path === 'src/service.ts')).toBe(true); });
+  test('keeps bounded text fallback visible when required structural context is unavailable', () => { const root = contextRepo(); const unavailable = structuralResponse({ ok: false, status: 'unavailable', metadata: undefined, result: undefined, error: { code: 'CODEGRAPH_PLATFORM_BUNDLE_MISSING', message: 'not installed' } }); const pack = buildControllerContextPack(root, getMcpPolicy('controller'), { description: 'runService', searchTerms: ['runService'], structuralContext: 'required' }, { queryCodeGraph: () => unavailable }); expect(pack.structuralContext).toMatchObject({ requestedMode: 'required', status: 'unavailable', requiredSatisfied: false }); expect(pack.impactContext).toMatchObject({ status: 'degraded', confidence: 'medium' }); expect(pack.readiness).toMatchObject({ status: 'insufficient', structural: { requested: 'required', status: 'unavailable', requiredSatisfied: false }, readyForHighConfidenceMutation: false }); expect(pack.readiness.unresolvedReasonCodes).toContain('required_structural_context_unsatisfied'); expect(pack.impactContext.coverageGaps).toContain('structural_provider_unavailable'); expect(pack.next[0]).toContain('Structural context was required'); expect(pack.files.some((file) => file.path === 'src/service.ts')).toBe(true); });
+
+  test('materializes a bounded second structural adjacency wave in one context-pack call', () => {
+    const root = contextRepo();
+    writeFileSync(join(root, 'src/helper.ts'), 'export const helper = 1;\n');
+    mkdirSync(join(root, 'tests'), { recursive: true });
+    writeFileSync(join(root, 'tests/helper.test.ts'), "import { helper } from '../src/helper';\nvoid helper;\n");
+    const serviceNode = { id: 'node-service', kind: 'function', name: 'runService', qualifiedName: 'src/service.ts::runService', filePath: 'src/service.ts', language: 'typescript', startLine: 1, endLine: 1 };
+    const calls: string[] = [];
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      description: 'Trace runService implementation and its related tests',
+      searchTerms: ['runService'],
+      structuralContext: 'auto',
+      maxFiles: 6,
+      maxSnippets: 12,
+    }, {
+      queryCodeGraph: (_repoRoot, request) => {
+        if (request.operation !== 'file_dependencies') return structuralResponse({ result: { nodes: [serviceNode], entryPoints: [serviceNode], relatedFiles: ['src/service.ts'], truncated: false } });
+        calls.push(request.filePath ?? '');
+        if (request.filePath === 'src/service.ts') return structuralResponse({ operation: 'file_dependencies', result: { filePath: 'src/service.ts', dependencies: ['src/helper.ts'], dependents: [] } });
+        if (request.filePath === 'src/helper.ts') return structuralResponse({ operation: 'file_dependencies', result: { filePath: 'src/helper.ts', dependencies: [], dependents: ['tests/helper.test.ts'] } });
+        return structuralResponse({ operation: 'file_dependencies', result: { filePath: request.filePath, dependencies: [], dependents: [] } });
+      },
+    });
+    expect(calls).toEqual(expect.arrayContaining(['src/service.ts', 'src/helper.ts']));
+    expect(pack.expansion).toMatchObject({ waveCount: 2, expansionPerformed: true, expansionBudgetUsed: 1 });
+    expect(pack.expansion.discoveredPaths).toContain('tests/helper.test.ts');
+    expect(pack.expansion.materializedPaths).toContain('tests/helper.test.ts');
+    expect(pack.files.find((file) => file.path === 'tests/helper.test.ts')?.reasons).toContain('wave2:dependent:src/helper.ts');
+    expect(pack.impactContext.relevantTests).toContain('tests/helper.test.ts');
+    expect(pack.timingsMs.waveCount).toBe(2);
+  });
+
+  test('does not add an adaptive wave for simple structural-off local retrieval', () => {
+    const root = contextRepo();
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), { searchTerms: ['runService'], structuralContext: 'off', maxFiles: 4 });
+    expect(pack.expansion).toMatchObject({ waveCount: 1, expansionPerformed: false, expansionBudgetUsed: 0 });
+    expect(pack.readiness.structural).toMatchObject({ requested: 'off', status: 'disabled', requiredSatisfied: true });
+  });
 
   test('runs lexical fallback when stale required structural candidates already saturate discovery', () => {
     const root = contextRepo();

@@ -6,6 +6,7 @@ import {
   searchRepositoryManyCacheIdentity,
 } from "../repository/inspector";
 import { globMatches } from "../mcp/paths";
+import { posix } from "path";
 import type { McpPolicy } from "../mcp/types";
 import { materializeSource } from "./context/source-materializer";
 import { projectBoard } from "./issue-store";
@@ -58,8 +59,50 @@ export type {
   ControllerContextPackProjection,
   ControllerContextPackSnippet,
   ControllerContextRetrievalMode,
+  ControllerEvidenceReadiness,
+  ControllerContextExpansionState,
   StructuralContextMode,
 } from './context/types';
+
+const MAX_CONTEXT_EVIDENCE_WAVES = 3;
+const SOURCE_REFERENCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.json'] as const;
+
+function sourceReferenceSpecifiers(contents: string): string[] {
+  const specifiers = new Set<string>();
+  const patterns = [
+    /\b(?:import|export)\s+(?:type\s+)?(?:[^'\"]*?\s+from\s+)?['\"]([^'\"]+)['\"]/g,
+    /\brequire\s*\(\s*['\"]([^'\"]+)['\"]\s*\)/g,
+    /\bimport\s*\(\s*['\"]([^'\"]+)['\"]\s*\)/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of contents.matchAll(pattern)) {
+      const value = match[1]?.trim();
+      if (value?.startsWith('.')) specifiers.add(value);
+    }
+  }
+  return Array.from(specifiers).slice(0, 24);
+}
+
+function resolveSourceReference(repoRoot: string, policy: McpPolicy, sourcePath: string, specifier: string): string | undefined {
+  const base = posix.normalize(posix.join(posix.dirname(sourcePath), specifier));
+  if (!base || base === '..' || base.startsWith('../') || posix.isAbsolute(base)) return undefined;
+  const hasExtension = /\.[A-Za-z0-9]+$/.test(posix.basename(base));
+  const candidates = hasExtension
+    ? [base]
+    : [base, ...SOURCE_REFERENCE_EXTENSIONS.map((extension) => `${base}${extension}`), ...SOURCE_REFERENCE_EXTENSIONS.map((extension) => `${base}/index${extension}`)];
+  for (const candidate of candidates) {
+    const readable = readableFile(repoRoot, policy, candidate);
+    if (readable.ok) return readable.path;
+  }
+  return undefined;
+}
+
+function contextPathPriority(path: string, reasons: string[]): number {
+  const testBonus = /(^|\/)(__tests__|tests?|spec)(\/|$)|\.(test|spec)\.[^.]+$/i.test(path) ? 6 : 0;
+  const sourceBonus = reasons.some((reason) => reason.startsWith('source-reference:')) ? 5 : 0;
+  const structuralBonus = reasons.some((reason) => reason.startsWith('codegraph:')) ? 3 : 0;
+  return testBonus + sourceBonus + structuralBonus;
+}
 
 export function buildControllerContextPack(
   repoRoot: string,
@@ -68,7 +111,7 @@ export function buildControllerContextPack(
   dependencies: ControllerContextPackDependencies = {},
 ): ControllerContextPackProjection {
   const contextStartedAt = performance.now();
-  const timingsMs = { gitAndFocus: 0, structural: 0, lexical: 0, materialization: 0, governance: 0, total: 0 };
+  const timingsMs = { gitAndFocus: 0, structural: 0, lexical: 0, materialization: 0, governance: 0, total: 0, waveCount: 1, expansionBudgetUsed: 0, expansionBudgetMax: 2 };
   const retrievalMode = options.retrievalMode ?? "implementation";
   const requestedMaxFiles = clamp(options.maxFiles, DEFAULT_MAX_FILES, 1, 30);
   const requestedMaxSnippets = clamp(options.maxSnippets, DEFAULT_MAX_SNIPPETS, 1, 80);
@@ -386,8 +429,15 @@ export function buildControllerContextPack(
       if (left.lines.length !== right.lines.length) return right.lines.length - left.lines.length;
       return left.path.localeCompare(right.path);
     });
-  const selected = rankedCandidates.slice(0, maxFiles);
   const isExactKnownCandidate = (entry: { reasons: string[] }): boolean => entry.reasons.includes("explicit-known-path");
+  const multiWaveEligible = retrievalMode !== "implementation";
+  timingsMs.expansionBudgetMax = multiWaveEligible ? Math.min(6, Math.max(2, Math.ceil(maxFiles / 2))) : 0;
+  const rankedExactKnownCount = rankedCandidates.filter(isExactKnownCandidate).length;
+  const initialCandidateLimit = multiWaveEligible
+    ? Math.min(maxFiles, Math.max(rankedExactKnownCount, Math.max(1, maxFiles - timingsMs.expansionBudgetMax)))
+    : maxFiles;
+  const selected = rankedCandidates.slice(0, initialCandidateLimit);
+  const deferredSelected = rankedCandidates.slice(initialCandidateLimit, maxFiles);
   const selectedExactKnownCount = selected.filter(isExactKnownCandidate).length;
   // Reserve at least one materialization for every selected exact known file.
   // This may raise a caller's inferred snippet budget, but never beyond the
@@ -410,6 +460,8 @@ export function buildControllerContextPack(
 
   let remainingSnippets = maxSnippets;
   const files: ControllerContextPackFile[] = [];
+  const expansionDiscoveredPaths: string[] = [];
+  const expansionMaterializedPaths: string[] = [];
   const materializationStartedAt = performance.now();
   for (let selectedIndex = 0; selectedIndex < selected.length; selectedIndex += 1) {
     const entry = selected[selectedIndex]!;
@@ -422,9 +474,12 @@ export function buildControllerContextPack(
       .slice(selectedIndex + 1)
       .filter(isExactKnownCandidate)
       .length;
+    const waveOnePerFileCap = multiWaveEligible
+      ? Math.max(1, Math.ceil(maxSnippets / Math.max(1, initialCandidateLimit + timingsMs.expansionBudgetMax)))
+      : remainingSnippets;
     const fileSnippetBudget = exactKnown
       ? Math.max(1, remainingSnippets - exactKnownAfter)
-      : remainingSnippets;
+      : Math.min(remainingSnippets, waveOnePerFileCap);
     let snippets: ControllerContextPackSnippet[] = [];
     try {
       snippets = materializeSource({
@@ -453,6 +508,143 @@ export function buildControllerContextPack(
         snippetCount: snippets.length,
         snippets,
       });
+    }
+  }
+
+  // Investigation modes perform bounded internal evidence-closure waves after
+  // Wave 1 raw source materialization. Each later wave derives concrete paths
+  // from the source that was just read plus current CodeGraph adjacency, then
+  // materializes those paths in the same context request.
+  const materializedPathSet = new Set(files.map((file) => file.path));
+  let frontier = files.slice();
+  if (multiWaveEligible && frontier.length > 0 && timingsMs.expansionBudgetMax > 0) {
+    for (let wave = 2; wave <= MAX_CONTEXT_EVIDENCE_WAVES; wave += 1) {
+      if (frontier.length === 0 || timingsMs.expansionBudgetUsed >= timingsMs.expansionBudgetMax || files.length >= maxFiles || remainingSnippets <= 0) break;
+      const expansionReasons = new Map<string, { reasons: Set<string>; lines: Set<number> }>();
+      const addExpansionCandidate = (path: string, reason: string, line = 1): void => {
+        if (!path || materializedPathSet.has(path) || !coveredByGlob(path, searchIncludeGlobs) || excludeGlobs.some((glob) => globMatches(glob, path))) return;
+        const readable = readableFile(repoRoot, policy, path);
+        if (!readable.ok) {
+          if (/denied|policy/i.test(readable.reason)) deniedPaths.push({ path: readable.path, reason: readable.reason });
+          return;
+        }
+        const current = expansionReasons.get(readable.path) ?? { reasons: new Set<string>(), lines: new Set<number>() };
+        current.reasons.add(reason);
+        current.lines.add(line);
+        expansionReasons.set(readable.path, current);
+      };
+
+      for (const file of frontier.slice(0, 6)) {
+        const contents = file.snippets.map((snippet) => snippet.content).join('\n');
+        for (const specifier of sourceReferenceSpecifiers(contents)) {
+          const resolved = resolveSourceReference(repoRoot, policy, file.path, specifier);
+          if (resolved) addExpansionCandidate(resolved, `source-reference:${file.path}`);
+        }
+        if (structuralContext.status !== 'ready') continue;
+        const adjacency = queryStructural(structuralIndexRoot, { operation: 'file_dependencies', filePath: file.path, limit: 40 });
+        if (!adjacency.ok || adjacency.status !== 'ready') continue;
+        const dependencies = Array.isArray(adjacency.result?.dependencies)
+          ? adjacency.result.dependencies.filter((value): value is string => typeof value === 'string')
+          : [];
+        const dependents = Array.isArray(adjacency.result?.dependents)
+          ? adjacency.result.dependents.filter((value): value is string => typeof value === 'string')
+          : [];
+        for (const path of dependencies.slice(0, 40)) {
+          graphImpactFiles.add(path);
+          addExpansionCandidate(path, `codegraph:dependency:${file.path}`);
+        }
+        for (const path of dependents.slice(0, 40)) {
+          graphImpactFiles.add(path);
+          addExpansionCandidate(path, `codegraph:dependent:${file.path}`);
+        }
+      }
+
+      const expansionCandidates = Array.from(expansionReasons.entries())
+        .map(([path, entry]) => ({ path, reasons: Array.from(entry.reasons), lines: Array.from(entry.lines) }))
+        .sort((left, right) => {
+          const priority = contextPathPriority(right.path, right.reasons) - contextPathPriority(left.path, left.reasons);
+          if (priority !== 0) return priority;
+          if (left.reasons.length !== right.reasons.length) return right.reasons.length - left.reasons.length;
+          return left.path.localeCompare(right.path);
+        });
+      expansionDiscoveredPaths.push(...expansionCandidates.map((entry) => entry.path));
+      if (expansionCandidates.length === 0) break;
+
+      const nextFrontier: ControllerContextPackFile[] = [];
+      for (const entry of expansionCandidates) {
+        if (timingsMs.expansionBudgetUsed >= timingsMs.expansionBudgetMax || files.length >= maxFiles || remainingSnippets <= 0) break;
+        try {
+          const snippets = materializeSource({
+            repoRoot,
+            policy,
+            path: entry.path,
+            hitLines: entry.lines.length > 0 ? entry.lines : [1],
+            reasons: entry.reasons,
+            maxSnippets: Math.min(3, remainingSnippets),
+            maxCharsPerSnippet,
+            session: options.session,
+          });
+          for (const snippet of snippets) {
+            if (snippet.cacheHit) rangeCacheHits += 1;
+            else rangeCacheMisses += 1;
+          }
+          remainingSnippets -= snippets.length;
+          if (snippets.length === 0) continue;
+          const materialized: ControllerContextPackFile = {
+            path: entry.path,
+            reasons: entry.reasons,
+            hitLines: Array.from(new Set(entry.lines)).sort((a, b) => a - b).slice(0, 30),
+            snippetCount: snippets.length,
+            snippets,
+          };
+          files.push(materialized);
+          materializedPathSet.add(entry.path);
+          expansionMaterializedPaths.push(entry.path);
+          nextFrontier.push(materialized);
+          timingsMs.expansionBudgetUsed += 1;
+        } catch (error) {
+          deniedPaths.push({ path: entry.path, reason: error instanceof Error ? error.message : String(error) });
+        }
+      }
+      if (nextFrontier.length === 0) break;
+      timingsMs.waveCount = wave;
+      frontier = nextFrontier;
+    }
+  }
+
+  // Fill any reserved first-pass candidates only after expansion has had a
+  // chance to use its bounded slots; this preserves ordinary discovery evidence
+  // when no higher-value relationship is found.
+  for (const entry of deferredSelected) {
+    if (files.length >= maxFiles || remainingSnippets <= 0 || materializedPathSet.has(entry.path)) continue;
+    try {
+      const snippets = materializeSource({
+        repoRoot,
+        policy,
+        path: entry.path,
+        hitLines: entry.lines.length > 0 ? entry.lines : [1],
+        reasons: entry.reasons,
+        maxSnippets: remainingSnippets,
+        maxCharsPerSnippet,
+        session: options.session,
+      });
+      for (const snippet of snippets) {
+        if (snippet.cacheHit) rangeCacheHits += 1;
+        else rangeCacheMisses += 1;
+      }
+      remainingSnippets -= snippets.length;
+      if (snippets.length > 0) {
+        files.push({
+          path: entry.path,
+          reasons: entry.reasons,
+          hitLines: Array.from(new Set(entry.lines)).sort((a, b) => a - b).slice(0, 30),
+          snippetCount: snippets.length,
+          snippets,
+        });
+        materializedPathSet.add(entry.path);
+      }
+    } catch (error) {
+      deniedPaths.push({ path: entry.path, reason: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -491,6 +683,7 @@ export function buildControllerContextPack(
     ...graphImpactFiles,
     ...structuralContext.relatedFiles,
     ...selected.map((entry) => entry.path),
+    ...files.map((file) => file.path),
   ])).slice(0, 160);
   const relevantTests = structuralUniverse.filter((path) => /(^|\/)(__tests__|tests?|spec)(\/|$)|\.(test|spec)\.[^.]+$/i.test(path)).slice(0, 40);
   const architectureContracts = structuralUniverse.filter((path) =>
@@ -596,6 +789,55 @@ export function buildControllerContextPack(
     ...expansionSignals,
     ...(likelyRelatedNotInspected.length > 0 ? ["likely_related_files_not_inspected"] : []),
   ])).slice(0, 80);
+  const readinessReasonCodes = Array.from(new Set([
+    ...(files.length === 0 ? ["raw_source_unavailable"] : []),
+    ...(rawSnippetTruncated ? ["raw_source_truncated"] : []),
+    ...(searchTruncated ? ["retrieval_truncated"] : []),
+    ...(structuralMode === "required" && !structuralContext.requiredSatisfied ? ["required_structural_context_unsatisfied"] : []),
+    ...(structuralContext.status === "stale" ? ["structural_context_stale"] : []),
+    ...(structuralContext.status === "unavailable" || structuralContext.status === "degraded" ? ["structural_provider_degraded"] : []),
+    ...(policyDeniedFiles > 0 || deniedPaths.length > 0 ? ["policy_denied_evidence"] : []),
+    ...(skippedLargeFiles > 0 ? ["large_evidence_skipped"] : []),
+    ...(likelyRelatedNotInspected.length > 0 ? ["related_evidence_not_materialized"] : []),
+  ])).slice(0, 40);
+  const readinessStatus = files.length === 0 || (structuralMode === "required" && !structuralContext.requiredSatisfied)
+    ? "insufficient" as const
+    : readinessReasonCodes.length > 0
+      ? "degraded" as const
+      : "ready" as const;
+  const readiness: ControllerContextPackProjection["readiness"] = {
+    status: readinessStatus,
+    sourceRevision: git.head,
+    rawSource: {
+      status: files.length === 0 ? "unavailable" : rawSnippetTruncated ? "partial" : "current",
+      materializedFileCount: files.length,
+      snippetTruncated: rawSnippetTruncated,
+    },
+    structural: {
+      requested: structuralMode,
+      status: structuralContext.status,
+      requiredSatisfied: structuralContext.requiredSatisfied,
+      baselineRevisionMatches: structuralContext.baselineRevisionMatches,
+      overlayChangedFileCount: structuralContext.overlayChangedFiles.length,
+    },
+    semantic: { status: "not_requested", reasonCodes: ["semantic_navigation_not_requested"] },
+    retrieval: {
+      searchTruncated,
+      omittedCandidateCount: Math.max(0, rankedCandidates.length - selected.length),
+      policyDeniedCandidateCount: policyDeniedFiles + deniedPaths.length,
+      likelyRelatedNotInspectedCount: likelyRelatedNotInspected.length,
+    },
+    unresolvedReasonCodes: readinessReasonCodes,
+    readyForHighConfidenceMutation: readinessStatus === "ready",
+  };
+  const expansion: ControllerContextPackProjection["expansion"] = {
+    waveCount: timingsMs.waveCount,
+    expansionPerformed: timingsMs.waveCount > 1,
+    expansionBudgetUsed: timingsMs.expansionBudgetUsed,
+    expansionBudgetMax: timingsMs.expansionBudgetMax,
+    discoveredPaths: Array.from(new Set(expansionDiscoveredPaths)).slice(0, 30),
+    materializedPaths: Array.from(new Set(expansionMaterializedPaths)).slice(0, 30),
+  };
   timingsMs.total = Math.round((performance.now() - contextStartedAt) * 100) / 100;
 
   return {
@@ -628,6 +870,8 @@ export function buildControllerContextPack(
     governanceContext,
     structuralContext,
     impactContext,
+    readiness,
+    expansion,
     files,
     coverage: {
       inspectedFiles,
@@ -689,7 +933,7 @@ export function buildControllerContextPack(
         retrievalMode === "implementation"
           ? "The pack contains policy-approved current raw source with file SHA identities, but returned snippets are bounded evidence rather than proof of semantic completeness. After reading this evidence, derive new exact paths, symbols, tests, or relationships from the source itself. A guessed lexical term with no result is not by itself a reason to keep scanning or repeat the same broad query."
           : "Investigation modes may intentionally expand exact ranges, structural relationships, tests, and neighboring modules before any implementation decision.",
-        "Search/CodeGraph ranking is discovery evidence, not a business-semantics authority. impactContext makes the bounded evidence surface and coverage gaps explicit; ChatGPT still decides semantic sufficiency.",
+        "Search/CodeGraph ranking is discovery evidence, not a business-semantics authority. readiness and impactContext make the bounded evidence surface and unresolved gaps explicit; ChatGPT still decides semantic sufficiency.",
         instructionContext.contracts.length > 0
           ? `Applicable repository guidance was resolved hierarchically for selected source paths: ${instructionContext.contracts.map((entry) => entry.path).join(", ")}. These AGENTS.md/CLAUDE.md files are guidance-only evidence and do not define semantic scope.`
           : "No applicable AGENTS.md/CLAUDE.md guidance file was found for the selected source paths.",

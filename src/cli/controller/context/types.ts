@@ -3,9 +3,11 @@ import type { CodeGraphIndexMetadata, CodeGraphNodeSummary, CodeGraphReadProvide
 import type { queryCodeGraphReadProvider, queryCodeGraphReadProviderAsync } from '../../../runtime/context/codegraph-read-provider';
 import type { MaterializedSourceSnippet } from './source-materializer';
 
-export const CONTEXT_PACK_SCHEMA_VERSION = 9;
+export const CONTEXT_PACK_SCHEMA_VERSION = 10;
 export type StructuralContextMode = 'off' | 'auto' | 'required';
 export type ControllerContextRetrievalMode = 'implementation' | 'plan' | 'debug' | 'review';
+export type ControllerEvidenceReadinessStatus = 'ready' | 'degraded' | 'insufficient';
+export type ControllerSemanticEvidenceStatus = 'not_requested' | 'ready' | 'partial' | 'unavailable' | 'error';
 export const CONTROLLER_CONTEXT_IMPACT_DOMAINS = [
   'persistence', 'scheduler', 'notification', 'timeline', 'events', 'cache', 'api', 'concurrency',
 ] as const;
@@ -47,6 +49,44 @@ export interface ControllerContextPackFile {
   hitLines: number[];
   snippetCount: number;
   snippets: ControllerContextPackSnippet[];
+}
+
+export interface ControllerEvidenceReadiness {
+  status: ControllerEvidenceReadinessStatus;
+  sourceRevision: string | null;
+  rawSource: {
+    status: 'current' | 'partial' | 'unavailable';
+    materializedFileCount: number;
+    snippetTruncated: boolean;
+  };
+  structural: {
+    requested: StructuralContextMode;
+    status: 'disabled' | 'ready' | 'stale' | 'unavailable' | 'degraded';
+    requiredSatisfied: boolean;
+    baselineRevisionMatches: boolean;
+    overlayChangedFileCount: number;
+  };
+  semantic: {
+    status: ControllerSemanticEvidenceStatus;
+    reasonCodes: string[];
+  };
+  retrieval: {
+    searchTruncated: boolean;
+    omittedCandidateCount: number;
+    policyDeniedCandidateCount: number;
+    likelyRelatedNotInspectedCount: number;
+  };
+  unresolvedReasonCodes: string[];
+  readyForHighConfidenceMutation: boolean;
+}
+
+export interface ControllerContextExpansionState {
+  waveCount: number;
+  expansionPerformed: boolean;
+  expansionBudgetUsed: number;
+  expansionBudgetMax: number;
+  discoveredPaths: string[];
+  materializedPaths: string[];
 }
 
 export interface ControllerContextPackProjection {
@@ -179,6 +219,8 @@ export interface ControllerContextPackProjection {
       baselineRevisionMatches: boolean;
     };
   };
+  readiness: ControllerEvidenceReadiness;
+  expansion: ControllerContextExpansionState;
   files: ControllerContextPackFile[];
   coverage: {
     inspectedFiles: string[];
@@ -217,6 +259,9 @@ export interface ControllerContextPackProjection {
     structuralPrefetchBudgetMs?: number;
     structuralPrefetchDeferred?: boolean;
     structuralPrefetchReusedInFlight?: boolean;
+    waveCount: number;
+    expansionBudgetUsed: number;
+    expansionBudgetMax: number;
   };
   deniedPaths: Array<{ path: string; reason: string }>;
   omitted: Array<{ path: string; reason: string }>;
