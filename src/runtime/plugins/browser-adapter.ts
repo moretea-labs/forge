@@ -1301,6 +1301,38 @@ export async function settleNativeCreatedPageIdentity(
   return await page.identity();
 }
 
+export function nativeReplacementMismatchDiagnostic(input: {
+  requestedUrl: string;
+  actualUrl: string;
+  previousUrl?: string;
+  obsoleteRef?: MacOsBrowserTabRef;
+  replacementRef?: MacOsBrowserTabRef;
+}): {
+  sameTargetOrigin: boolean;
+  samePreviousOrigin: boolean;
+  samePreviousUrl: boolean;
+  sameTabRef: boolean;
+  actualScheme: string;
+} {
+  let actualScheme = 'invalid';
+  try {
+    const protocol = new URL(input.actualUrl).protocol.replace(/:$/, '').toLowerCase();
+    actualScheme = /^[a-z][a-z0-9+.-]*$/.test(protocol) ? protocol : 'invalid';
+  } catch {
+    // Keep the diagnostic bounded and non-sensitive when the observed URL is malformed.
+  }
+  const previousUrl = input.previousUrl?.trim();
+  return {
+    sameTargetOrigin: sameOrigin(input.actualUrl, input.requestedUrl),
+    samePreviousOrigin: previousUrl ? sameOrigin(input.actualUrl, previousUrl) : false,
+    samePreviousUrl: previousUrl ? comparableUrl(input.actualUrl) === comparableUrl(previousUrl) : false,
+    sameTabRef: Boolean(input.obsoleteRef && input.replacementRef
+      && input.obsoleteRef.windowId === input.replacementRef.windowId
+      && input.obsoleteRef.tabId === input.replacementRef.tabId),
+    actualScheme,
+  };
+}
+
 function sameOrigin(left: string, right: string): boolean {
   try {
     return new URL(left).origin === new URL(right).origin;
@@ -2221,10 +2253,20 @@ async function openNativeAttachedContext(
           timeout,
         );
         if (!nativeReplacementUrlMatchesTarget(target.url, identity.url)) {
+          const diagnostic = nativeReplacementMismatchDiagnostic({
+            requestedUrl: target.url,
+            actualUrl: identity.url,
+            previousUrl: target.existingSession?.url ?? candidate.url(),
+            obsoleteRef,
+            replacementRef,
+          });
+          const diagnosticText = Object.entries(diagnostic)
+            .map(([key, value]) => `${key}=${String(value)}`)
+            .join(',');
           throw new AssistantPluginError(
             'PLUGIN_BROWSER_NATIVE_REPLACEMENT_MISMATCH',
-            'Native replacement tab did not reach the requested URL; preserving the original plugin-owned tab.',
-            { retryable: true, details: { expectedUrl: target.url, actualUrl: identity.url } },
+            `Native replacement tab did not reach the requested URL; preserving the original plugin-owned tab. diagnostic=${diagnosticText}`,
+            { retryable: true, details: diagnostic },
           );
         }
       } catch (replacementError) {

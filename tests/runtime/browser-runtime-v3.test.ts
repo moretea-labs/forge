@@ -3,7 +3,11 @@ import {
   executeBrowserRuntimeAction,
   invalidateBrowserRuntime,
 } from '../../src/runtime/plugins/browser-runtime';
-import { nativeReplacementUrlMatchesTarget, settleNativeCreatedPageIdentity } from '../../src/runtime/plugins/browser-adapter';
+import {
+  nativeReplacementMismatchDiagnostic,
+  nativeReplacementUrlMatchesTarget,
+  settleNativeCreatedPageIdentity,
+} from '../../src/runtime/plugins/browser-adapter';
 import {
   BrowserProviderUnavailableBeforeActionError,
   type BrowserRuntimeProvider,
@@ -95,6 +99,35 @@ describe('Browser Runtime V3 native replacement postconditions', () => {
       identity: async () => ({ url: 'https://example.com/wrong', title: 'Wrong' }),
     }, 'domcontentloaded', 1_000);
     expect(nativeReplacementUrlMatchesTarget('https://example.com/exact', identity.url)).toBe(false);
+  });
+
+  test('classifies replacement mismatch without exposing URL contents', () => {
+    expect(nativeReplacementMismatchDiagnostic({
+      requestedUrl: 'https://chatgpt.com/',
+      actualUrl: 'https://example.com/previous',
+      previousUrl: 'https://example.com/previous',
+      obsoleteRef: { windowId: 'window-old', tabId: 'tab-old' },
+      replacementRef: { windowId: 'window-old', tabId: 'tab-new' },
+    })).toEqual({
+      sameTargetOrigin: false,
+      samePreviousOrigin: true,
+      samePreviousUrl: true,
+      sameTabRef: false,
+      actualScheme: 'https',
+    });
+    expect(nativeReplacementMismatchDiagnostic({
+      requestedUrl: 'https://chatgpt.com/',
+      actualUrl: 'chrome://newtab/',
+      previousUrl: 'https://example.com/previous',
+      obsoleteRef: { windowId: 'window-old', tabId: 'tab-old' },
+      replacementRef: { windowId: 'window-old', tabId: 'tab-old' },
+    })).toEqual({
+      sameTargetOrigin: false,
+      samePreviousOrigin: false,
+      samePreviousUrl: false,
+      sameTabRef: true,
+      actualScheme: 'chrome',
+    });
   });
 });
 
