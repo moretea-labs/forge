@@ -169,6 +169,14 @@ describe('browser session controller authority', () => {
     });
     expect(auth?.target.kind).toBe('browser-origin');
     expect(auth?.target.id).toBe('chrome@https://example.com');
+
+    const navigateAuth = await resolveBrowserPluginAuthorizationContext({
+      ...baseInput,
+      actionId: 'navigate',
+      args: { session_id: 'native-auth', url: 'https://chatgpt.com/' },
+    });
+    expect(navigateAuth?.target.kind).toBe('browser-origin');
+    expect(navigateAuth?.target.id).toBe('chrome@https://chatgpt.com');
   });
 
   test('native active-tab adoption distinguishes browser-active from authoritative system foreground', async () => {

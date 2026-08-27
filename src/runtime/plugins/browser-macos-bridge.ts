@@ -663,6 +663,18 @@ function keyEventSource(selector: string | undefined, keySpec: string): string {
   })()`;
 }
 
+export function nativeDomLoadStateSatisfied(
+  state: string,
+  readyState: string,
+  currentUrl: string,
+  requireHttpUrl: boolean,
+): boolean {
+  if (requireHttpUrl && !/^https?:\/\//i.test(currentUrl ?? '')) return false;
+  return state === 'load' || state === 'networkidle'
+    ? readyState === 'complete'
+    : readyState === 'interactive' || readyState === 'complete';
+}
+
 export class MacOsAppleEventsPage {
   private metadata: MacOsBrowserMetadata;
   private readonly browser: MacOsBrowserDefinition;
@@ -1146,6 +1158,7 @@ export class MacOsAppleEventsPage {
 
   async waitForLoadState(state = 'domcontentloaded', options: Record<string, unknown> = {}): Promise<void> {
     const timeout = typeof options.timeout === 'number' ? Math.trunc(options.timeout) : this.timeoutMs;
+    const requireHttpUrl = options.requireHttpUrl === true;
     const deadline = Date.now() + timeout;
     while (Date.now() <= deadline) {
       if (this.targetRef) {
@@ -1168,10 +1181,10 @@ export class MacOsAppleEventsPage {
         }
       }
       try {
-        const readyState = await this.evaluate<string>('document.readyState');
-        if (state === 'load' || state === 'networkidle') {
-          if (readyState === 'complete') return;
-        } else if (readyState === 'interactive' || readyState === 'complete') return;
+        const domState = await this.evaluate<{ readyState: string; url: string }>(
+          '({ readyState: String(document.readyState || ""), url: String(document.location.href || "") })',
+        );
+        if (nativeDomLoadStateSatisfied(state, domState.readyState, domState.url, requireHttpUrl)) return;
       } catch (error) {
         if (error instanceof AssistantPluginError && error.code === 'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED') {
           const metadata = await this.refreshMetadata();

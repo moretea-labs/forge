@@ -16,6 +16,7 @@ import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plug
 import {
   invalidateMacOsBrowserPageHandle,
   invalidateMacOsBrowserPageHandles,
+  nativeDomLoadStateSatisfied,
   reattachMacOsBrowserOwnedPage,
   resetMacOsBrowserRuntimeHooksForTest,
   setMacOsBrowserRuntimeHooksForTest,
@@ -75,12 +76,21 @@ describe('Browser Runtime V3 native replacement postconditions', () => {
     expect(nativeReplacementUrlMatchesTarget('https://example.com/?mode=exact', 'https://example.com/?mode=other')).toBe(false);
   });
 
+  test('does not accept transitional native URLs merely because DOM readyState is complete', () => {
+    expect(nativeDomLoadStateSatisfied('domcontentloaded', 'complete', 'about:blank', true)).toBe(false);
+    expect(nativeDomLoadStateSatisfied('domcontentloaded', 'complete', 'chrome://newtab/', true)).toBe(false);
+    expect(nativeDomLoadStateSatisfied('domcontentloaded', 'interactive', 'https://chatgpt.com/', true)).toBe(true);
+    expect(nativeDomLoadStateSatisfied('load', 'interactive', 'https://chatgpt.com/', true)).toBe(false);
+    expect(nativeDomLoadStateSatisfied('load', 'complete', 'https://chatgpt.com/', true)).toBe(true);
+    expect(nativeDomLoadStateSatisfied('domcontentloaded', 'complete', 'about:blank', false)).toBe(true);
+  });
+
   test('settles a newly created exact native tab before reading identity', async () => {
     const calls: string[] = [];
     let url = 'chrome://newtab/';
     const identity = await settleNativeCreatedPageIdentity({
       waitForLoadState: async (state, options) => {
-        calls.push(`wait:${state}:${String(options?.timeout)}`);
+        calls.push(`wait:${state}:${String(options?.timeout)}:${String(options?.requireHttpUrl)}`);
         url = 'https://chatgpt.com/';
       },
       identity: async () => {
@@ -88,7 +98,7 @@ describe('Browser Runtime V3 native replacement postconditions', () => {
         return { url, title: 'ChatGPT' };
       },
     }, 'domcontentloaded', 1_234);
-    expect(calls).toEqual(['wait:domcontentloaded:1234', 'identity']);
+    expect(calls).toEqual(['wait:domcontentloaded:1234:true', 'identity']);
     expect(identity.url).toBe('https://chatgpt.com/');
     expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/', identity.url)).toBe(true);
   });

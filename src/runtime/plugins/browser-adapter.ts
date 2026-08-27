@@ -575,7 +575,8 @@ async function resolveBrowserPluginAuthorizationContextInternal(
 
   let origin: string;
   try {
-    const parsed = new URL(session.url);
+    const destinationUrl = input.actionId === 'navigate' ? stringValue(input.args.url) : undefined;
+    const parsed = new URL(destinationUrl ?? session.url);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
     origin = parsed.origin.toLowerCase();
   } catch {
@@ -1297,7 +1298,7 @@ export async function settleNativeCreatedPageIdentity(
   state: string,
   timeoutMs: number,
 ): Promise<{ url: string; title: string }> {
-  await page.waitForLoadState(state, { timeout: timeoutMs });
+  await page.waitForLoadState(state, { timeout: timeoutMs, requireHttpUrl: true });
   return await page.identity();
 }
 
