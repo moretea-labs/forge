@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
@@ -20,6 +20,13 @@ import {
   rotateRuntimeGeneration,
 } from '../../src/runtime/control-plane/runtime-generation';
 import { writeJsonAtomic } from '../../src/runtime/shared/json-files';
+import {
+  resolveLightweightPluginActionRuntimeInvocation,
+  startLightweightPluginAction,
+  waitLightweightPluginAction,
+} from '../../src/runtime/plugins/lightweight-action';
+import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
+import { startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 
 const roots: string[] = [];
 const previousEnv = process.env[CONTROLLER_RUNTIME_SOURCE_ROOT_ENV];
@@ -82,6 +89,120 @@ describe('runtime source isolation', () => {
     expect(resolved.reason).toBe('package-root');
     expect(resolved.root).toBe(packageRuntimeSourceRoot());
     expect(realpathSync(resolved.root!)).not.toBe(realpathSync(business));
+  });
+
+  test('package Runtime lightweight ios.build reaches its handler from a non-Forge repository cwd', async () => {
+    const business = tempRoot('forge-business-ios-lightweight-');
+    const controllerHome = tempRoot('forge-home-ios-lightweight-');
+    const releaseRoot = tempRoot('forge-package-release-ios-lightweight-');
+    const fakeBin = tempRoot('forge-ios-lightweight-bin-');
+    initGitRepo(business, 'business-ios-app');
+    mkdirSync(join(business, 'Business.xcodeproj'), { recursive: true });
+    writeFileSync(join(business, 'Business.xcodeproj', 'project.pbxproj'), '// lightweight iOS fixture\n');
+    ensureControllerHome(controllerHome);
+    git(business, 'add', '.');
+    git(business, 'commit', '-m', 'add iOS fixture');
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Business iOS app' });
+    const startedWork = startGoalWorkloop({
+      workStore: { controllerHome, repoId: repository.repoId },
+      handoffStore: { controllerHome, repoId: repository.repoId },
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+    }, {
+      objective: 'Build the non-Forge iOS fixture through the typed plugin action.',
+      acceptanceCriteria: ['The lightweight iOS build reaches xcodebuild.'],
+      allowedPaths: ['**'], forbiddenPaths: [], checks: [],
+      modeInput: {
+        scopeClear: true, mutation: true, requiresExternalEffect: false, remoteWrite: false,
+        requiresRecovery: false, requiresWorker: false, requiresApproval: false,
+      },
+    });
+    const workId = String((startedWork.data as { work?: { workId?: string } }).work?.workId ?? '');
+    expect(workId).toBeTruthy();
+    symlinkSync(packageRuntimeSourceRoot(), join(releaseRoot, 'package'), 'dir');
+    expect(existsSync(join(business, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'))).toBe(false);
+
+    const invocation = resolveLightweightPluginActionRuntimeInvocation({
+      releasePath: releaseRoot,
+      sourceDir: '/$bunfs/runtime/plugins',
+      nodeExecutable: '/runtime-owned/trusted-node',
+    });
+    expect(invocation).toMatchObject({ identity: 'package_release_node', executable: '/runtime-owned/trusted-node' });
+    expect(invocation.argsPrefix[1]).toBe(join(releaseRoot, 'package', 'src', 'runtime', 'shared', 'node-ts-loader.mjs'));
+    expect(invocation.argsPrefix[2]).toBe(join(releaseRoot, 'package', 'src', 'runtime', 'plugins', 'plugin-action-sidecar.ts'));
+    expect(invocation.argsPrefix.join(' ')).not.toContain('/$bunfs/');
+    expect(invocation.argsPrefix.join(' ')).not.toContain(business);
+    if (process.platform !== 'darwin') return;
+
+    writeFileSync(join(fakeBin, 'xcodebuild'), `#!/bin/sh
+if [ "$1" = "-version" ]; then
+  printf 'Xcode 16.0\\nBuild version 16A000\\n'
+  exit 0
+fi
+for arg in "$@"; do
+  if [ "$arg" = "-list" ]; then
+    printf '{"project":{"schemes":["Business"]}}\\n'
+    exit 0
+  fi
+done
+derived=""
+previous=""
+for arg in "$@"; do
+  if [ "$previous" = "-derivedDataPath" ]; then
+    derived="$arg"
+    break
+  fi
+  previous="$arg"
+done
+if [ -n "$derived" ]; then
+  mkdir -p "$derived/Build/Products/Debug-iphonesimulator/Business.app"
+fi
+printf 'BUILD SUCCEEDED\\n'
+`, { mode: 0o700 });
+
+    const previousReleasePath = process.env.FORGE_RELEASE_PATH;
+    const previousPath = process.env.PATH;
+    process.env.FORGE_RELEASE_PATH = releaseRoot;
+    process.env.PATH = `${fakeBin}:${previousPath ?? ''}`;
+    const request = {
+      pluginId: 'ios',
+      actionId: 'build',
+      requestId: 'non-forge-package-runtime-ios-build',
+      workId,
+      args: { scheme: 'Business', project: 'Business.xcodeproj', simulator_name: 'iPhone 16 Pro' },
+      origin: { surface: 'mcp' as const, actor: 'test' },
+    };
+    try {
+      const started = await startLightweightPluginAction({
+        controllerHome,
+        repository,
+        request,
+        interactiveWaitMs: 5_000,
+        timeoutMs: 15_000,
+      });
+      const completed = started.handle.completed
+        ? started.handle
+        : await waitLightweightPluginAction(controllerHome, repository.repoId, started.handle.processId, 15_000);
+      expect(completed.ok).toBe(true);
+      expect(completed.workId).toBe(workId);
+      expect(`${completed.stdoutTail ?? ''}\n${completed.stderrTail ?? ''}`).not.toContain('ERR_MODULE_NOT_FOUND');
+      expect(`${completed.stdoutTail ?? ''}\n${completed.stderrTail ?? ''}`).not.toContain('/$bunfs/');
+      const submitted = await submitAssistantPluginAction(controllerHome, repository, request);
+      expect(submitted.deduplicated).toBe(true);
+      expect(submitted.workId).toBe(workId);
+      expect(submitted.receipt.workId).toBe(workId);
+      expect(submitted.action.resourceClaims).toEqual([
+        { resource: 'workspace', mode: 'write' },
+        { resource: 'repo-state', mode: 'write' },
+      ]);
+      expect(submitted.result?.result).toMatchObject({ ready: true, ok: true, scheme: 'Business' });
+      expect(String((submitted.result?.result as Record<string, unknown>).appPath ?? '')).toContain('Business.app');
+    } finally {
+      if (previousReleasePath === undefined) delete process.env.FORGE_RELEASE_PATH;
+      else process.env.FORGE_RELEASE_PATH = previousReleasePath;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
   });
 
   test('immutable release identity never inherits a newer ambient parent Git HEAD', () => {

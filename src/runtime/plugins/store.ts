@@ -746,6 +746,22 @@ function remoteEffectWorkForPluginAction(
   return work;
 }
 
+function attributedWorkForPluginAction(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  action: AssistantPluginActionDescriptor,
+  request: AssistantPluginActionRequest,
+): WorkContract | undefined {
+  const workId = request.workId?.trim();
+  if (!workId || action.risk === 'remote_write') return undefined;
+  const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
+  if (!work) throw new Error(`WORK_PLUGIN_ATTRIBUTION_NOT_FOUND: ${workId}`);
+  if (isTerminalWorkContractStatus(work.status)) {
+    throw new Error(`WORK_PLUGIN_ATTRIBUTION_TERMINAL: ${workId} is ${work.status}`);
+  }
+  return work;
+}
+
 export function finalizeRemoteEffectWorkFromActionReceipt(
   controllerHome: string,
   repoId: string,
@@ -906,7 +922,7 @@ export async function submitAssistantPluginAction(
     if (request.workId && existing.workId !== request.workId) {
       throw new Error(`WORK_PLUGIN_RECEIPT_BINDING_CONFLICT: ${request.requestId} already belongs to Work ${existing.workId ?? 'none'}`);
     }
-    if (request.workId) bindRemoteEffectReceiptToWork(controllerHome, repository, action, request, existing);
+    if (request.workId && action.risk === 'remote_write') bindRemoteEffectReceiptToWork(controllerHome, repository, action, request, existing);
     return {
       manifest,
       action,
@@ -925,13 +941,18 @@ export async function submitAssistantPluginAction(
   let authorization = initialAuthorizationEvidence(manifest, action);
   let authorizationContext: AssistantPluginAuthorizationContext | undefined;
   let activeAuthorizationGrant: PluginCapabilityAuthorizationGrant | undefined;
-  const boundRemoteWork = remoteEffectWorkForPluginAction(controllerHome, repository, action, request);
   const requiresLocalEffectWork = localSystemActionRequiresWork(
     repository,
     request.pluginId,
     request.actionId,
     normalizedArgs,
   );
+  const boundRemoteWork = action.risk === 'remote_write'
+    ? remoteEffectWorkForPluginAction(controllerHome, repository, action, request)
+    : undefined;
+  const attributedWork = !requiresLocalEffectWork
+    ? attributedWorkForPluginAction(controllerHome, repository, action, request)
+    : undefined;
   const acceptedWork = requiresLocalEffectWork
     ? acceptSubmittedWorkContract(controllerHome, {
         requestId: request.requestId,
@@ -1147,7 +1168,13 @@ export async function submitAssistantPluginAction(
       semanticKey: key,
       status: 'succeeded',
       createdAt,
-      ...(acceptedWork ? { workId: acceptedWork.workId } : boundRemoteWork ? { workId: boundRemoteWork.workId } : {}),
+      ...(acceptedWork
+        ? { workId: acceptedWork.workId }
+        : boundRemoteWork
+          ? { workId: boundRemoteWork.workId }
+          : attributedWork
+            ? { workId: attributedWork.workId }
+            : {}),
       origin: request.origin,
       authorization,
       result: resultWithLineage,
@@ -1170,7 +1197,7 @@ export async function submitAssistantPluginAction(
       result: resultWithLineage,
       receipt,
       authorization,
-      workId: acceptedWork?.workId ?? boundRemoteWork?.workId,
+      workId: acceptedWork?.workId ?? boundRemoteWork?.workId ?? attributedWork?.workId,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1206,7 +1233,13 @@ export async function submitAssistantPluginAction(
       semanticKey: key,
       status: 'failed',
       createdAt,
-      ...(acceptedWork ? { workId: acceptedWork.workId } : boundRemoteWork ? { workId: boundRemoteWork.workId } : {}),
+      ...(acceptedWork
+        ? { workId: acceptedWork.workId }
+        : boundRemoteWork
+          ? { workId: boundRemoteWork.workId }
+          : attributedWork
+            ? { workId: attributedWork.workId }
+            : {}),
       origin: request.origin,
       authorization,
       error: { code, message },

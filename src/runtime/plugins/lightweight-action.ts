@@ -38,6 +38,64 @@ export interface LightweightPluginActionStart {
   requestSha256: string;
 }
 
+export interface LightweightPluginActionRuntimeInvocation {
+  executable: string;
+  argsPrefix: string[];
+  identity: 'compiled_release_sidecar' | 'package_release_node' | 'source_node';
+}
+
+function trustedNodeExecutable(explicit?: string): string {
+  const executable = explicit?.trim() || resolveTrustedNodeExecutable().executable;
+  if (!executable) {
+    throw new Error('NODE_EXECUTABLE_UNAVAILABLE: typed plugin sidecar requires a bundled Runtime sidecar or trusted Node executable');
+  }
+  return executable;
+}
+
+export function resolveLightweightPluginActionRuntimeInvocation(options: {
+  releasePath?: string;
+  execPath?: string;
+  sourceDir?: string;
+  nodeExecutable?: string;
+} = {}): LightweightPluginActionRuntimeInvocation {
+  const releasePath = (options.releasePath ?? process.env.FORGE_RELEASE_PATH)?.trim();
+  if (releasePath) {
+    const releaseRoot = resolve(releasePath);
+    const compiledSidecar = join(releaseRoot, 'forge-plugin-action-sidecar');
+    if (existsSync(compiledSidecar)) {
+      return { executable: compiledSidecar, argsPrefix: [], identity: 'compiled_release_sidecar' };
+    }
+    const packageSidecar = join(releaseRoot, 'package', 'src', 'runtime', 'plugins', 'plugin-action-sidecar.ts');
+    const packageLoader = join(releaseRoot, 'package', 'src', 'runtime', 'shared', 'node-ts-loader.mjs');
+    if (existsSync(packageSidecar) && existsSync(packageLoader)) {
+      return {
+        executable: trustedNodeExecutable(options.nodeExecutable),
+        argsPrefix: ['--loader', packageLoader, packageSidecar],
+        identity: 'package_release_node',
+      };
+    }
+    throw new Error(`RUNTIME_PLUGIN_ACTION_SIDECAR_UNAVAILABLE: immutable Runtime release has no plugin action sidecar: ${releaseRoot}`);
+  }
+
+  const execPath = options.execPath ?? process.execPath;
+  const compiledSidecar = join(dirname(execPath), 'forge-plugin-action-sidecar');
+  if (existsSync(compiledSidecar)) {
+    return { executable: compiledSidecar, argsPrefix: [], identity: 'compiled_release_sidecar' };
+  }
+
+  const sourceDir = options.sourceDir ?? import.meta.dir;
+  const sourceSidecar = resolve(sourceDir, 'plugin-action-sidecar.ts');
+  const sourceLoader = resolve(sourceDir, '../shared/node-ts-loader.mjs');
+  if (existsSync(sourceSidecar) && existsSync(sourceLoader)) {
+    return {
+      executable: trustedNodeExecutable(options.nodeExecutable),
+      argsPrefix: ['--loader', sourceLoader, sourceSidecar],
+      identity: 'source_node',
+    };
+  }
+  throw new Error(`RUNTIME_PLUGIN_ACTION_SIDECAR_UNAVAILABLE: no runtime-owned plugin action sidecar or loader is available from ${sourceDir}`);
+}
+
 export async function startLightweightPluginAction(input: {
   controllerHome: string;
   repository: RepositoryRecord;
@@ -63,26 +121,16 @@ export async function startLightweightPluginAction(input: {
     privateAtomicWrite(requestPath, bytes);
   }
 
-  const runtimeSidecar = join(dirname(process.execPath), 'forge-plugin-action-sidecar');
-  const useBundledSidecar = existsSync(runtimeSidecar);
-  const nodeExecutable = useBundledSidecar ? undefined : resolveTrustedNodeExecutable().executable;
-  if (!useBundledSidecar && !nodeExecutable) {
-    throw new Error('NODE_EXECUTABLE_UNAVAILABLE: typed plugin sidecar requires a bundled Runtime sidecar or trusted Node executable');
-  }
-  const sourceSidecarPath = resolve(import.meta.dir, 'plugin-action-sidecar.ts');
-  const loaderPath = resolve(import.meta.dir, '../shared/node-ts-loader.mjs');
+  const invocation = resolveLightweightPluginActionRuntimeInvocation();
   const { handle } = await startLightweightInternalProcess({
     controllerHome: input.controllerHome,
     repoId: input.repository.repoId,
-    executable: useBundledSidecar ? runtimeSidecar : nodeExecutable!,
-    args: useBundledSidecar
-      ? ['--request', requestPath, '--expected-sha256', requestSha256]
-      : [
-          '--loader', loaderPath,
-          sourceSidecarPath,
-          '--request', requestPath,
-          '--expected-sha256', requestSha256,
-        ],
+    executable: invocation.executable,
+    args: [
+      ...invocation.argsPrefix,
+      '--request', requestPath,
+      '--expected-sha256', requestSha256,
+    ],
     cwd: input.repository.canonicalRoot,
     interactiveWaitMs: Math.max(0, input.interactiveWaitMs ?? 750),
     timeoutMs: input.timeoutMs,
