@@ -16,6 +16,8 @@ export interface PackageConnectorServicePaths {
   authorityPath: string;
 }
 
+export type PackageConnectorReleaseBinding = Pick<PackageRuntimeRelease, 'releaseId' | 'releaseRoot' | 'packageRoot'>;
+
 export interface PackageConnectorServiceAuthority {
   schemaVersion: 1;
   endpoint: string;
@@ -83,7 +85,7 @@ export function readPackageConnectorServiceAuthority(controllerHome: string): Pa
   return parsed as PackageConnectorServiceAuthority;
 }
 
-function writePackageConnectorServiceAuthority(input: { release: PackageRuntimeRelease; controllerHome: string; result: PackageConnectorServiceResult }): void {
+function writePackageConnectorServiceAuthority(input: { release: PackageConnectorReleaseBinding; controllerHome: string; result: PackageConnectorServiceResult }): void {
   const paths = packageConnectorServicePaths(input.controllerHome);
   const authority: PackageConnectorServiceAuthority = {
     schemaVersion: 1,
@@ -99,12 +101,20 @@ function writePackageConnectorServiceAuthority(input: { release: PackageRuntimeR
   atomicWrite(paths.authorityPath, `${JSON.stringify(authority, null, 2)}\n`);
 }
 
+export function packageConnectorEndpointStatusHealthy(status: number): boolean {
+  // The OAuth-protected MCP endpoint is healthy when it either answers directly
+  // or returns the expected unauthenticated Bearer challenge. Treating every
+  // received HTTP status as healthy masks upstream 5xx failures that are often
+  // surfaced remotely as 502 and prevents the persistent service from healing.
+  return status === 200 || status === 401;
+}
+
 async function defaultConnectorEndpointProbe(endpoint: string): Promise<boolean> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 1_500);
   try {
     const response = await fetch(endpoint, { method: 'GET', redirect: 'manual', signal: controller.signal });
-    return response.status > 0;
+    return packageConnectorEndpointStatusHealthy(response.status);
   } catch {
     return false;
   } finally {
@@ -112,7 +122,7 @@ async function defaultConnectorEndpointProbe(endpoint: string): Promise<boolean>
   }
 }
 
-export function packageConnectorLaunchSpec(input: { release: PackageRuntimeRelease; controllerHome: string; endpoint: string; executable?: string }): { executable: string; args: string[]; environment: Record<string, string>; port: number } {
+export function packageConnectorLaunchSpec(input: { release: PackageConnectorReleaseBinding; controllerHome: string; endpoint: string; executable?: string }): { executable: string; args: string[]; environment: Record<string, string>; port: number } {
   const parsed = new URL(input.endpoint);
   const port = Number(parsed.port);
   if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || parsed.pathname !== '/mcp' || !Number.isInteger(port) || port < 1 || port > 65_535) {
@@ -153,7 +163,7 @@ export function renderPackageConnectorSystemdUserUnit(input: { launch: ReturnTyp
 
 export function packageConnectorServiceMatchesRelease(input: {
   authority: PackageConnectorServiceAuthority;
-  release: PackageRuntimeRelease;
+  release: PackageConnectorReleaseBinding;
   controllerHome: string;
   endpoint: string;
   platform: NodeJS.Platform;
@@ -216,7 +226,7 @@ function startPortable(paths: PackageConnectorServicePaths, launch: ReturnType<t
   } finally { closeSync(stdout); closeSync(stderr); }
 }
 
-export async function installPackageConnectorService(input: { release: PackageRuntimeRelease; controllerHome: string; endpoint: string; platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; forcePortable?: boolean }): Promise<PackageConnectorServiceResult> {
+export async function installPackageConnectorService(input: { release: PackageConnectorReleaseBinding; controllerHome: string; endpoint: string; platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; forcePortable?: boolean }): Promise<PackageConnectorServiceResult> {
   const paths = packageConnectorServicePaths(input.controllerHome, input.env?.HOME);
   mkdirSync(join(paths.serviceRoot, 'logs'), { recursive: true, mode: 0o700 });
   const launch = packageConnectorLaunchSpec({ release: input.release, controllerHome: input.controllerHome, endpoint: input.endpoint });
@@ -251,7 +261,7 @@ export async function installPackageConnectorService(input: { release: PackageRu
 }
 
 export async function ensurePackageConnectorService(input: {
-  release: PackageRuntimeRelease;
+  release: PackageConnectorReleaseBinding;
   controllerHome: string;
   endpoint: string;
   platform?: NodeJS.Platform;

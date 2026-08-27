@@ -367,6 +367,39 @@ test('standalone Recovery restarts only the configured primary Connector service
   expect(commands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
 });
 
+test('standalone Recovery repairs immutable Connector release binding before deciding whether kickstart is still needed', async () => {
+  const home = controllerHome();
+  const plistPath = join(home, 'connector.plist');
+  writeFileSync(plistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
+  const config = createRecoveryConfig(home, {
+    publicMcpUrl: 'https://mcp.example.test/mcp',
+    primaryConnectorService: { platform: 'launchd', label: 'com.moretea.forge.mcp-gateway', plistPath },
+  });
+  let repairs = 0;
+  const commands: string[][] = [];
+  const result = await restartPrimaryConnector(config, {
+    platform: 'darwin',
+    currentUid: async () => 501,
+    verifyLocal: async () => healthyVerify(),
+    repairConnectorBinding: async () => {
+      repairs += 1;
+      return { ok: true, attempted: true, detail: 'synthetic immutable binding repair' };
+    },
+    probeConnectorLocal: async () => ({ ok: true, detail: 'HTTP 401 OAuth challenge', status: 401 }),
+    probeConnectorOwnership: async () => ({ ok: true, detail: 'configured launchd service owns TCP 8767' }),
+    reconnect: async () => ({ ok: true, detail: 'public MCP reachable', verify: healthyVerify() }),
+    runCommand: async (name, args) => {
+      commands.push([name, ...args]);
+      return { ok: true, status: 0, stdout: '', stderr: '' };
+    },
+  });
+  expect(repairs).toBe(1);
+  expect(result).toMatchObject({ ok: true, attempted: true });
+  expect(result.noOp).not.toBe(true);
+  expect(result.detail).toContain('immutable release binding was repaired');
+  expect(commands).not.toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
+});
+
 test('standalone Recovery restarts the configured primary public tunnel when the local Connector is healthy but public MCP stays unavailable', async () => {
   const home = controllerHome();
   const connectorPlistPath = join(home, 'connector.plist');
@@ -601,8 +634,21 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(listed.runtimeReady).toBe(true);
     expect(listed.knownGood.map((entry) => entry.revision)).toContain('release-a');
 
-    expect(await runtimeStatus(config)).toMatchObject({ running: true, ready: true });
-    expect(await dispatchRecoveryTool(config, 'runtime_status', {})).toMatchObject({ running: true, ready: true });
+    expect(await runtimeStatus(config)).toMatchObject({
+      running: true,
+      ready: true,
+      recoveryWatchdog: {
+        failures: 0,
+        rollbackUsed: false,
+        runtimeRestartAttempts: 0,
+        primaryConnectorRestartAttempts: 0,
+      },
+    });
+    expect(await dispatchRecoveryTool(config, 'runtime_status', {})).toMatchObject({
+      running: true,
+      ready: true,
+      recoveryWatchdog: { failures: 0, rollbackUsed: false },
+    });
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('runtime_status');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('restart_primary_runtime');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('recover_primary_runtime');

@@ -22,8 +22,9 @@ import {
   type PackageRuntimeActivationRequest,
 } from '../../src/runtime/root/package-runtime-service';
 import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
-import { ensurePackageConnectorService, packageConnectorLaunchSpec, packageConnectorServiceMatchesRelease, packageConnectorServicePaths, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit } from '../../src/runtime/root/package-connector-service';
+import { ensurePackageConnectorService, packageConnectorEndpointStatusHealthy, packageConnectorLaunchSpec, packageConnectorServiceMatchesRelease, packageConnectorServicePaths, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit } from '../../src/runtime/root/package-connector-service';
 import { retireConflictingForgeLaunchAgents } from '../../src/cli/controller/launch-agents';
+import { writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 
 const roots: string[] = [];
 function fixture(): { root: string; home: string; repo: string; token: string } {
@@ -282,8 +283,10 @@ describe('Forge Runtime service', () => {
     writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 2;\n');
     writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
 
+    writeMcpServiceLocalConfig(fx.home, { chatgpt: { localEndpoint: 'http://127.0.0.1:8767/mcp' } });
     let scheduled: PackageRuntimeActivationRequest | undefined;
     let installAttempts = 0;
+    let connectorAttempts = 0;
     const result = await installPackageRuntimeService({
       controllerHome: fx.home,
       packageRoot,
@@ -299,11 +302,17 @@ describe('Forge Runtime service', () => {
         installAttempts += 1;
         return forgeRuntimeServicePaths(fx.home);
       },
+      ensureConnectorService: async () => {
+        connectorAttempts += 1;
+        return { endpoint: 'http://127.0.0.1:8767/mcp', mode: 'launchd', persistent: true };
+      },
     });
 
     expect(result.status).toBe('activation_scheduled');
     expect(installAttempts).toBe(0);
+    expect(connectorAttempts).toBe(0);
     expect(scheduled).toBeDefined();
+    expect(scheduled?.connectorEndpoint).toBe('http://127.0.0.1:8767/mcp');
     expect(readPackageRuntimeActivationReceipt(result.activation!.receiptPath)?.status).toBe('activation_scheduled');
     const helperPlist = renderPackageRuntimeActivationLaunchAgent(scheduled!);
     expect(helperPlist).toContain(`<string>${scheduled!.nodeExecutable}</string>`);
@@ -315,11 +324,16 @@ describe('Forge Runtime service', () => {
         installAttempts += 1;
         return forgeRuntimeServicePaths(fx.home);
       },
+      ensureConnectorService: async () => {
+        connectorAttempts += 1;
+        return { endpoint: 'http://127.0.0.1:8767/mcp', mode: 'launchd', persistent: true };
+      },
       waitForInstallerExit: async () => {},
       cleanupActivationHelper: async () => {},
     });
 
     expect(installAttempts).toBe(1);
+    expect(connectorAttempts).toBe(1);
     const receipt = readPackageRuntimeActivationReceipt(result.activation!.receiptPath);
     expect(receipt?.status).toBe('activated');
     expect(receipt?.releaseId).toBe(result.release.releaseId);
@@ -332,7 +346,9 @@ describe('Forge Runtime service', () => {
     writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 3;\n');
     writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
 
+    writeMcpServiceLocalConfig(fx.home, { chatgpt: { localEndpoint: 'http://127.0.0.1:8767/mcp' } });
     let scheduled: PackageRuntimeActivationRequest | undefined;
+    let connectorAttempts = 0;
     const result = await installPackageRuntimeService({
       controllerHome: fx.home,
       packageRoot,
@@ -347,12 +363,18 @@ describe('Forge Runtime service', () => {
       installDarwinService: async () => forgeRuntimeServicePaths(fx.home),
     });
 
+    expect(connectorAttempts).toBe(0);
     await expect(activateScheduledPackageRuntimeService(scheduled!, {
       installDarwinService: async () => { throw new Error('synthetic detached activation failure'); },
+      ensureConnectorService: async () => {
+        connectorAttempts += 1;
+        return { endpoint: 'http://127.0.0.1:8767/mcp', mode: 'launchd', persistent: true };
+      },
       waitForInstallerExit: async () => {},
       cleanupActivationHelper: async () => {},
     })).rejects.toThrow('FORGE_PACKAGE_RUNTIME_ACTIVATION_FAILED_ROLLED_BACK');
 
+    expect(connectorAttempts).toBe(0);
     const receipt = readPackageRuntimeActivationReceipt(result.activation!.receiptPath);
     expect(receipt?.status).toBe('failed+rollback');
     expect(receipt?.rollbackSucceeded).toBe(true);
@@ -459,6 +481,14 @@ describe('Forge Runtime service', () => {
     const unit = renderPackageConnectorSystemdUserUnit({ launch });
     expect(unit).toContain('Restart=on-failure');
     expect(unit).toContain('8767');
+  });
+
+  test('classifies only expected MCP/OAuth connector responses as healthy', () => {
+    expect(packageConnectorEndpointStatusHealthy(200)).toBe(true);
+    expect(packageConnectorEndpointStatusHealthy(401)).toBe(true);
+    expect(packageConnectorEndpointStatusHealthy(404)).toBe(false);
+    expect(packageConnectorEndpointStatusHealthy(500)).toBe(false);
+    expect(packageConnectorEndpointStatusHealthy(502)).toBe(false);
   });
 
   test('reuses a healthy persistent public Gateway without rewriting its service or authority', async () => {

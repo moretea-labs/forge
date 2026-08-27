@@ -78,9 +78,47 @@ Remediation:
   the tunnel log shows no new `upstream_status=500` entries.
 
 Known code defect to fix: `mcp serve` should exit with a non-zero status when
-the requested port is already in use instead of staying alive in a hot loop,
-and the recovery rollback should also rewrite
-`runtime/connector-service/authority.json` back to the restored release.
+the requested port is already in use instead of staying alive in a hot loop.
+
+## Connector/Activation Recovery Gaps Behind Intermittent 502 (2026-08-27)
+
+A second class of intermittent `502` was traced to release/Connector coherence rather
+than to a permanently dead Recovery service.
+
+Observed evidence:
+
+- a live Forge MCP request returned `502` while independent Recovery observed the
+  Canonical Runtime briefly as `RUNTIME_NOT_RUNNING`; the Runtime became ready again
+  a few seconds later after release authority reverted to the prior package release;
+- separate MCP connection failures also occurred while independent Recovery still
+  observed the Canonical Runtime as ready, proving that not every `502` is a whole-
+  Runtime failure;
+- the persistent package Connector health probe accepted any received HTTP status,
+  so `500`/`502` could be classified as healthy and the broken service reused;
+- detached macOS package activation scheduled the Runtime switch and then rebound the
+  Connector to the candidate release before the activation helper committed the
+  Runtime service. If helper activation failed, Runtime authority/service rolled back
+  while Connector authority/plist could remain on the candidate generation;
+- standalone Recovery's Connector action previously restarted the already-installed
+  launchd service. A stale/mutable launch spec therefore remained stale after restart.
+
+Corrected invariants:
+
+1. Connector reuse accepts only the expected MCP/OAuth endpoint semantics (`200` or
+   the unauthenticated `401` Bearer challenge); `5xx` is always unhealthy.
+2. Detached activation does not switch the Connector in the installer. The activation
+   helper installs the Runtime service first and only then commits the Connector to the
+   same immutable package release. A Runtime activation failure therefore leaves the
+   prior Connector generation untouched.
+3. Connector-only Recovery first reconciles the canonical package Connector against
+   the active immutable Runtime release, then verifies local ownership/public MCP, and
+   only then decides whether a launchd/tunnel restart is still required.
+4. Whole-Runtime rollback remains deliberately stricter than Connector recovery. A
+   known-good Runtime is not rolled back merely because its Connector or external
+   tunnel drifted; those hops must be repaired independently.
+5. Recovery `runtime_status` reports bounded Watchdog decision evidence (last action,
+   reason and restart/failure counters) so incident review can distinguish "Recovery
+   never fired" from "Recovery fired and the client observed the bounded outage".
 
 ## Session Continuation Fails With 404 MCP_TOOL_SURFACE_CHANGED (2026-08-23)
 

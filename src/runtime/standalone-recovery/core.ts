@@ -22,6 +22,7 @@ import {
   type RuntimeReleaseAuthority,
 } from '../root/release-store';
 import type { RuntimeReleaseManifest } from '../root/types';
+import { ensurePackageConnectorService, packageConnectorServicePaths, type PackageConnectorReleaseBinding } from '../root/package-connector-service';
 import { createRecoveryHttpTransport, type RecoveryHttpTransport } from './http-transport';
 import { observeRecoveryWatchdogHealth } from './watchdog-heartbeat';
 import { RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
@@ -202,6 +203,7 @@ export interface WatchdogState {
   recoveryReleaseRevision?: string;
   lastFullVerifyAt?: number;
   lastDecision?: WatchdogDecision['action'];
+  lastReason?: string;
   updatedAt?: string;
 }
 
@@ -570,7 +572,23 @@ async function withLock<T>(
 }
 
 export async function runtimeStatus(config: RecoveryConfig) {
-  return observeRuntimeStatus(config.controllerHome);
+  const observation = observeRuntimeStatus(config.controllerHome);
+  const watchdog = loadWatchdogState(config);
+  return {
+    ...observation,
+    recoveryWatchdog: {
+      lastDecision: watchdog.lastDecision,
+      lastReason: watchdog.lastReason,
+      updatedAt: watchdog.updatedAt,
+      failures: watchdog.failures,
+      rollbackUsed: watchdog.rollbackUsed,
+      runtimeRestartAttempts: watchdog.runtimeRestartAttempts ?? 0,
+      runtimeRestartFailures: watchdog.runtimeRestartFailures ?? 0,
+      primaryConnectorFailures: watchdog.primaryConnectorFailures ?? 0,
+      primaryConnectorRestartAttempts: watchdog.primaryConnectorRestartAttempts ?? 0,
+      primaryConnectorRestartFailures: watchdog.primaryConnectorRestartFailures ?? 0,
+    },
+  };
 }
 
 async function probe(transport: RecoveryHttpTransport, url: string, timeoutMs = 4_000): Promise<{ ok: boolean; detail: string; status?: number }> {
@@ -1391,6 +1409,7 @@ export interface PrimaryConnectorRecoveryDependencies {
   reconnect?: (config: RecoveryConfig) => Promise<{ ok: boolean; detail: string; verify: VerifyResult }>;
   probeConnectorLocal?: (config: RecoveryConfig) => Promise<{ ok: boolean; detail: string; status?: number } | undefined>;
   probeConnectorOwnership?: (config: RecoveryConfig) => Promise<{ ok: boolean; detail: string }>;
+  repairConnectorBinding?: (config: RecoveryConfig) => Promise<{ ok: boolean; attempted: boolean; noOp?: boolean; detail: string }>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -1409,6 +1428,40 @@ async function probePrimaryConnectorLocal(config: RecoveryConfig): Promise<{ ok:
   const localMcpUrl = config.primaryConnectorService?.localMcpUrl?.trim();
   if (!localMcpUrl) return undefined;
   return probeExternalMcp(createRecoveryHttpTransport(config.controllerHome), localMcpUrl);
+}
+
+function activePackageConnectorReleaseBinding(config: RecoveryConfig): PackageConnectorReleaseBinding | undefined {
+  const configured = config.primaryConnectorService;
+  if (!configured || configured.platform !== 'launchd' || !configured.localMcpUrl?.trim()) return undefined;
+  const authority = readRuntimeReleaseAuthority(config.controllerHome);
+  if (!authority) return undefined;
+  const releaseRoot = dirname(resolve(authority.active.manifestPath));
+  const packageRoot = join(releaseRoot, 'package');
+  const paths = packageConnectorServicePaths(config.controllerHome);
+  const configuredPlist = resolve(configured.plistPath ?? paths.installedPlistPath);
+  if (configured.label !== paths.label || configuredPlist !== resolve(paths.installedPlistPath)) return undefined;
+  if (!existsSync(join(packageRoot, 'src', 'cli', 'index.ts')) || !existsSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'))) return undefined;
+  return { releaseId: authority.active.releaseId, releaseRoot, packageRoot };
+}
+
+async function repairPrimaryConnectorBinding(config: RecoveryConfig): Promise<{ ok: boolean; attempted: boolean; noOp?: boolean; detail: string }> {
+  const release = activePackageConnectorReleaseBinding(config);
+  const endpoint = config.primaryConnectorService?.localMcpUrl?.trim();
+  if (!release || !endpoint) return { ok: true, attempted: false, noOp: true, detail: 'primary Connector does not use the canonical package-release binding contract' };
+  try {
+    const result = await ensurePackageConnectorService({ release, controllerHome: config.controllerHome, endpoint, platform: 'darwin' });
+    const attempted = result.reused !== true;
+    return {
+      ok: true,
+      attempted,
+      ...(attempted ? {} : { noOp: true }),
+      detail: attempted
+        ? `primary Connector binding repaired to active immutable Runtime release ${release.releaseId}`
+        : `primary Connector binding already matches active immutable Runtime release ${release.releaseId}`,
+    };
+  } catch (error) {
+    return { ok: false, attempted: true, detail: error instanceof Error ? error.message : 'primary Connector binding repair failed' };
+  }
 }
 
 async function probePrimaryConnectorOwnership(
@@ -1477,15 +1530,25 @@ export async function restartPrimaryConnector(
   const timeoutMs = config.primaryConnectorService?.postRestartVerifyTimeoutMs ?? 30_000;
   const locked = await withLock(config, { action: 'restart_primary_connector' }, async () => {
     const tunnelConfigured = Boolean(configuredPrimaryPublicTunnel(config));
+    const repairConnectorBinding = dependencies.repairConnectorBinding ?? repairPrimaryConnectorBinding;
+    const bindingRepair = await repairConnectorBinding(config);
+    if (bindingRepair.attempted) {
+      audit(config, bindingRepair.ok ? 'primary_connector_binding_repaired' : 'primary_connector_binding_repair_failed', { detail: bindingRepair.detail });
+    }
+    if (!bindingRepair.ok) {
+      return { ok: false, attempted: true, detail: `primary Connector immutable release binding repair failed: ${bindingRepair.detail}`, serviceTarget: service.target, verify: initialLocal } satisfies PrimaryConnectorRestartResult;
+    }
     let localConnector = await probeConnectorLocal(config);
     let connectorOwnership = localConnector?.ok ? await probeConnectorOwnership(config) : undefined;
     let observed = localConnector?.ok && connectorOwnership?.ok ? await reconnect(config) : undefined;
     if (observed?.ok) {
       return {
         ok: true,
-        attempted: false,
-        noOp: true,
-        detail: 'primary Connector and public MCP endpoint recovered before restart',
+        attempted: bindingRepair.attempted,
+        ...(bindingRepair.attempted ? {} : { noOp: true }),
+        detail: bindingRepair.attempted
+          ? 'primary Connector immutable release binding was repaired and the public MCP endpoint recovered'
+          : 'primary Connector and public MCP endpoint recovered before restart',
         serviceTarget: service.target,
         verify: observed.verify,
       } satisfies PrimaryConnectorRestartResult;
@@ -2636,6 +2699,7 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
       runtimeHealthySince: undefined,
       lastFullVerifyAt,
       lastDecision: 'degraded',
+      lastReason: 'canonical Runtime is within startup grace; restart escalation suppressed',
     };
     return {
       state,
@@ -2691,6 +2755,7 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
       recoveryGatewayRestartUsed: false,
       lastFullVerifyAt,
       lastDecision: 'healthy',
+      lastReason: 'primary runtime and standalone Recovery verification passed',
     };
     return { state, decision: { action: 'healthy', reason: 'primary runtime and standalone Recovery verification passed' }, verify: verified };
   }
@@ -2772,6 +2837,7 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     publicTunnelMinimumFailureDurationMs: configuredRecoveryTunnel(config)?.minimumFailureDurationMs,
   });
   state.lastDecision = decision.action;
+  state.lastReason = decision.reason;
   if (decision.action === 'repair_public_tunnel') {
     const publicTunnelRepair = await repairPublicTunnel(config);
     const nextState = publicTunnelRepair.ok

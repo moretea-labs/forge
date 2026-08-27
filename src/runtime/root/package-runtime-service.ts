@@ -56,6 +56,8 @@ export interface PackageRuntimeActivationRequest {
   installerPid: number;
   release: PackageRuntimeRelease;
   config: ForgeRuntimeServiceConfig;
+  connectorEndpoint?: string;
+  refreshConnector?: boolean;
   priorAuthorityPresent: boolean;
   priorConfigBytes?: string;
   publicationChanged: boolean;
@@ -110,6 +112,7 @@ export interface PackageRuntimeServiceDependencies {
 
 export interface PackageRuntimeActivationDependencies {
   installDarwinService?: typeof installForgeRuntimeService;
+  ensureConnectorService?: typeof ensurePackageConnectorService;
   waitForInstallerExit?: (pid: number) => Promise<void>;
   cleanupActivationHelper?: (request: PackageRuntimeActivationRequest) => Promise<void>;
 }
@@ -283,6 +286,8 @@ export function readPackageRuntimeActivationRequest(path: string): PackageRuntim
     || !Number.isInteger(value.installerPid) || Number(value.installerPid) < 1
     || !value.release || typeof value.release !== 'object'
     || !value.config || typeof value.config !== 'object'
+    || (value.connectorEndpoint !== undefined && typeof value.connectorEndpoint !== 'string')
+    || (value.refreshConnector !== undefined && typeof value.refreshConnector !== 'boolean')
     || typeof value.priorAuthorityPresent !== 'boolean'
     || typeof value.publicationChanged !== 'boolean'
     || typeof value.runnerPath !== 'string'
@@ -394,6 +399,7 @@ export async function activateScheduledPackageRuntimeService(
   dependencies: PackageRuntimeActivationDependencies = {},
 ): Promise<PackageRuntimeActivationReceipt> {
   const installDarwinService = dependencies.installDarwinService ?? installForgeRuntimeService;
+  const ensureConnectorService = dependencies.ensureConnectorService ?? ensurePackageConnectorService;
   const wait = dependencies.waitForInstallerExit ?? waitForInstallerExit;
   const cleanup = dependencies.cleanupActivationHelper ?? cleanupActivationHelper;
   try {
@@ -410,6 +416,15 @@ export async function activateScheduledPackageRuntimeService(
       runnerPath: request.runnerPath,
       nodeExecutable: request.nodeExecutable,
     });
+    if (request.connectorEndpoint) {
+      await ensureConnectorService({
+        release: request.release,
+        controllerHome: request.controllerHome,
+        endpoint: request.connectorEndpoint,
+        platform: 'darwin',
+        refresh: request.refreshConnector === true,
+      });
+    }
     return writeActivationReceipt(request, 'activated', { servicePath: paths.installedPlistPath });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -459,6 +474,7 @@ export async function installPackageRuntimeService(
   const installDarwinService = dependencies.installDarwinService ?? installForgeRuntimeService;
   const explicitInjectedInline = Boolean(dependencies.installDarwinService && !dependencies.scheduleDarwinActivation && !dependencies.activationMode);
   const activationMode = dependencies.activationMode ?? (explicitInjectedInline ? 'inline' : 'detached');
+  const connectorEndpoint = loadMcpServiceLocalConfig(controllerHome)?.chatgpt?.localEndpoint;
 
   let base: PackageRuntimeServiceInstallResult;
   if (!options.forcePortable && platform === 'darwin' && activationMode === 'detached') {
@@ -472,6 +488,8 @@ export async function installPackageRuntimeService(
       installerPid: process.pid,
       release,
       config,
+      ...(connectorEndpoint ? { connectorEndpoint } : {}),
+      ...(options.refreshConnector !== undefined ? { refreshConnector: options.refreshConnector === true } : {}),
       priorAuthorityPresent: Boolean(priorAuthority),
       ...(priorConfigBytes !== undefined ? { priorConfigBytes } : {}),
       publicationChanged,
@@ -566,9 +584,7 @@ export async function installPackageRuntimeService(
     }
   }
 
-  const localConfig = loadMcpServiceLocalConfig(controllerHome);
-  const connectorEndpoint = localConfig?.chatgpt?.localEndpoint;
-  if (!connectorEndpoint) return base;
+  if (!connectorEndpoint || base.status === 'activation_scheduled') return base;
   const ensureConnectorService = dependencies.ensureConnectorService ?? ensurePackageConnectorService;
   const connector = await ensureConnectorService({
     release, controllerHome, endpoint: connectorEndpoint, platform, env, forcePortable: options.forcePortable === true, refresh: options.refreshConnector === true,
