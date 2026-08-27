@@ -64,6 +64,22 @@ Work is a continuity/orchestration mechanism, not a coding-quality mechanism. Fi
 
 Plan is optional intent/coordination state. Initial likely paths are evidence, not a frozen semantic scope. The controller may discover and edit additional policy-allowed files without creating a second lifecycle solely because understanding improved.
 
+### Persistent autonomous continuation
+
+A scheduled unattended workflow is one durable **Work + ChatGPT conversation lineage**, not one browser tab and not one schedule occurrence. The existing authorities compose into one lifecycle:
+
+1. A Schedule occurrence mechanically selects its already-bound active Work and requests `external_controller_wake`; it never invents semantic work.
+2. The ChatGPT launcher resolves the Work's durable conversation binding, opens or reattaches only the execution tab/session needed for this round, submits the continuation prompt, and records dispatch evidence. Dispatch is transport evidence only; it is not a Controller claim or semantic completion.
+3. The launched ChatGPT Controller claims the exact Work and independently reconstructs current Plan/Work/Schedule/Handoff/source/runtime evidence before deciding what to do. Chat history is useful transport context but is never the durable source of truth.
+4. ChatGPT performs semantic reasoning while Forge performs deterministic context, edit, process, provider, verification, and finalize operations. Forge may automatically execute checks or lifecycle mechanics that ChatGPT explicitly requests, but it never infers that acceptance is satisfied.
+5. Before a Controller round ends, ChatGPT records exactly one semantic disposition: `continue_immediately`, `wait`, `wait_for_user` with an active Handoff, or `goal_complete`. The exact Controller claim/release lineage fences this transition.
+6. Round-owned automation resources are cleaned only after the round reaches its settlement boundary. User-owned browser tabs are preserved; a Forge-owned ephemeral ChatGPT tab may be closed while the Work's conversation id/url binding remains durable for the next wake.
+7. `wait` keeps a persistent Work active and schedulable. A later Schedule wake must recover the same Work and same conversation lineage without requiring the user to restate the remaining task. `goal_complete` is the semantic terminal path and terminal Work automatically stops its continuation schedule.
+
+Machine-observable continuation health is derived from existing records rather than a new database: Schedule occurrence, WorkContract, ChatGPT conversation binding, ControllerSession/round relay, verification/finalization receipts, and browser cleanup evidence. Health reporting must distinguish `wake requested`, `prompt dispatched`, `Controller claimed`, `semantic disposition recorded`, `lease released`, `verification/finalize outcome`, `tab cleanup`, and `waiting/next eligible`; none of those states may be substituted for another.
+
+Transient Runtime, connector, or browser-provider unavailability may delay a wake through bounded backoff/re-arm, but must not silently terminalize the Work or permanently freeze a healthy persistent schedule. Repeated-state fencing remains a protection against semantic self-spin; recovery requires new durable evidence or a valid new Controller claim rather than blind retries.
+
 Explicit **Scale** is the opt-in coordination form of this existing model, not a separate runtime tier. `rh_work mode=scale` requires a bound approved Plan step, routes through durable bounded Work with an isolated checkout, and lets the semantic controller decompose independent deliverables across multiple Plan steps. Independent Scale Work may proceed concurrently when existing Process/resource claims permit; conflicting claims still serialize or reject through the same Lease authority. Generic `requires_parallelism` alone does not imply Scale, Plan, Work, or isolation. Scale does not introduce an agent swarm, second scheduler, or second project lifecycle.
 
 ## State ownership

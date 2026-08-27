@@ -4,6 +4,7 @@ This is the single maintained roadmap for Forge. It records only current priorit
 
 ## Now — converge the GPT execution harness
 
+- **P0: prove Persistent Autonomous Continuation end to end.** One Work-bound Schedule must repeatedly wake the same durable Work and ChatGPT conversation, let ChatGPT claim/reason/execute through Forge, verify and finalize when semantically appropriate, record an explicit round disposition, release ownership, close only the Forge-owned ephemeral automation tab after round settlement, and return to the next wake for multi-hour/multi-day unattended operation. Dispatch/claim/disposition/finalize/tab-cleanup/next-eligibility must be independently observable, and transient provider/runtime outages must re-arm without user restatement.
 - Preserve the one-brain contract: the external GPT controller owns requirement interpretation, repository understanding, implementation decisions, semantic review, and whether to keep exploring. Forge stays deterministic and must not acquire a coding/semantic agent or a Codex/Claude/Grok dependency.
 - Keep the default ChatGPT surface at the stable 19-tool contract. Improve information gained per call behind the existing facades instead of fragmenting the public MCP surface.
 - Make `rh_context` a reliable high-density first-call fan-in: current raw source remains authoritative; lexical, compiler-semantic, structural, and guidance evidence are combined mechanically; source identity and bounded coverage gaps stay explicit; GPT alone decides whether context is sufficient.
