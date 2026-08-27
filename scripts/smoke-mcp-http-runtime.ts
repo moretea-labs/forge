@@ -121,8 +121,11 @@ try {
   }
 
   const port = await freePort();
+  const nodeLoaderArgs = process.execPath.includes('bun')
+    ? []
+    : ['--loader', join(process.cwd(), 'src/runtime/shared/node-ts-loader.mjs')];
   const child = spawn(process.execPath, [
-    '--loader', join(process.cwd(), 'src/runtime/shared/node-ts-loader.mjs'),
+    ...nodeLoaderArgs,
     join(process.cwd(), 'src/cli/index.ts'), 'mcp', 'serve', '--repo', repoRoot,
     '--transport', 'http', '--enable-dev-runner', '--dev-runner-agents', 'codex,claude', '--host', '127.0.0.1', '--port', String(port), '--profile', 'controller', '--auth', 'oauth',
   ], {
