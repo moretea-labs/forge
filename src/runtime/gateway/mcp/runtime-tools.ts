@@ -4637,12 +4637,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   return result(facade as unknown as Record<string, unknown>);
                 }
                 if (admission.reason === 'extend_existing' && admission.plan) {
-                  const facade = buildFacadeResult({
-                    summary: `PLAN_EXTENSION_REQUIRES_REPLAN: ${admission.plan.planId} remains the serial authority. Extend/replan and supersede that authority rather than creating a second active Plan draft.`,
-                    data: { plan: summarizePlanContract(admission.plan), executionStarted: false, planContractCreated: false, admissionDecision: 'extend_existing', resolutionRequired: false },
-                    suggestedNextActions: [{ label: 'Read active Plan', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: admission.plan.planId }, risk: 'readonly', confidence: 'high' }],
-                  });
-                  return result(facade as unknown as Record<string, unknown>);
+                  // plan_create + plan_relation=extend is the atomic serial-replan
+                  // path. Admission continues under the same lock so successor
+                  // creation and predecessor supersession are persisted together.
+                  return undefined;
                 }
                 throw new Error(`PLAN_ADMISSION_RESULT_INVALID: ${admission.admissionDecision}:${admission.reason}`);
               };

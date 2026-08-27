@@ -42,9 +42,55 @@ export function resolvePlanAdmission(
 ): PlanAdmissionResolution {
   const activePlans = plans.filter((plan) => !isTerminalPlanContractStatus(plan.status));
   const normalizedScopeKey = normalizePlanScopeKey(input.scopeKey);
+  const requirementId = input.requirementId?.trim() || undefined;
+  const requirementPlans = requirementId
+    ? activePlans.filter((candidate) => candidate.requirementId === requirementId)
+    : [];
+  const relatedPlanId = input.relatedPlanId?.trim() || undefined;
+  const explicitlyRelatedPlan = relatedPlanId
+    ? activePlans.find((candidate) => candidate.planId === relatedPlanId)
+    : undefined;
+  const relatedPlan = explicitlyRelatedPlan && (!requirementId || explicitlyRelatedPlan.requirementId === requirementId)
+    ? explicitlyRelatedPlan
+    : !relatedPlanId && requirementPlans.length === 1 ? requirementPlans[0] : undefined;
   const exactScopeAuthority = normalizedScopeKey
     ? activePlans.find((candidate) => candidate.scopeKey === normalizedScopeKey)
     : undefined;
+
+  // An explicit extension is a serial replan, not a second active Plan. Resolve
+  // it before exact-scope reuse so a successor may retain the predecessor scope.
+  // If another Plan owns the requested successor scope, preserve that authority.
+  if (input.planRelation === 'extend') {
+    if (!relatedPlan) {
+      return {
+        admissionDecision: 'resolution_required',
+        resolutionRequired: true,
+        reason: 'extension_target_required',
+        normalizedScopeKey,
+        candidates: (requirementPlans.length > 0 ? requirementPlans : activePlans).slice(0, 8),
+        allowedPlanRelations: PLAN_ADMISSION_RELATIONS,
+      };
+    }
+    if (exactScopeAuthority && exactScopeAuthority.planId !== relatedPlan.planId) {
+      return {
+        admissionDecision: 'reuse_existing',
+        resolutionRequired: false,
+        reason: 'exact_scope_authority',
+        normalizedScopeKey,
+        plan: exactScopeAuthority,
+        candidates: [exactScopeAuthority],
+      };
+    }
+    return {
+      admissionDecision: 'extend_existing',
+      resolutionRequired: false,
+      reason: 'extend_existing',
+      normalizedScopeKey,
+      plan: relatedPlan,
+      candidates: requirementPlans.length > 0 ? requirementPlans.slice(0, 8) : [relatedPlan],
+    };
+  }
+
   if (exactScopeAuthority) {
     return {
       admissionDecision: 'reuse_existing',
@@ -56,15 +102,6 @@ export function resolvePlanAdmission(
     };
   }
 
-  const requirementId = input.requirementId?.trim() || undefined;
-  const requirementPlans = requirementId
-    ? activePlans.filter((candidate) => candidate.requirementId === requirementId)
-    : [];
-  const relatedPlanId = input.relatedPlanId?.trim() || undefined;
-  const relatedPlan = relatedPlanId
-    ? requirementPlans.find((candidate) => candidate.planId === relatedPlanId)
-    : requirementPlans.length === 1 ? requirementPlans[0] : undefined;
-
   if (requirementPlans.length > 0 && !input.planRelation) {
     return {
       admissionDecision: 'resolution_required',
@@ -73,27 +110,6 @@ export function resolvePlanAdmission(
       normalizedScopeKey,
       candidates: requirementPlans.slice(0, 8),
       allowedPlanRelations: PLAN_ADMISSION_RELATIONS,
-    };
-  }
-
-  if (requirementPlans.length > 0 && input.planRelation === 'extend') {
-    if (!relatedPlan) {
-      return {
-        admissionDecision: 'resolution_required',
-        resolutionRequired: true,
-        reason: 'extension_target_required',
-        normalizedScopeKey,
-        candidates: requirementPlans.slice(0, 8),
-        allowedPlanRelations: PLAN_ADMISSION_RELATIONS,
-      };
-    }
-    return {
-      admissionDecision: 'extend_existing',
-      resolutionRequired: false,
-      reason: 'extend_existing',
-      normalizedScopeKey,
-      plan: relatedPlan,
-      candidates: requirementPlans.slice(0, 8),
     };
   }
 

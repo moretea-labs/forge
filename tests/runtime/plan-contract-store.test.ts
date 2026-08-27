@@ -11,6 +11,7 @@ import {
   createPlanContract,
   getPlanContract,
   listPlanContracts,
+  supersedePlanContract,
 } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import {
   ControlPlaneConflictError,
@@ -215,11 +216,49 @@ test('requires explicit Requirement relation and permits only distinct-scope par
   const unresolved = admitPlanContract(options, { ...base, planId: 'plan-second', scopeKey: 'second-scope' });
   expect(unresolved).toMatchObject({ admissionDecision: 'resolution_required', reason: 'requirement_relation_required' });
   const extended = admitPlanContract(options, { ...base, planId: 'plan-extended', scopeKey: 'extended-scope', planRelation: 'extend', relatedPlanId: 'plan-primary' });
-  expect(extended).toMatchObject({ admissionDecision: 'extend_existing', plan: { planId: 'plan-primary' } });
+  expect(extended).toMatchObject({ admissionDecision: 'create_new', reason: 'extend_existing', plan: { planId: 'plan-extended', status: 'draft' } });
+  expect(getPlanContract(options, 'plan-primary')).toMatchObject({ status: 'superseded', supersededBy: 'plan-extended' });
   const parallel = admitPlanContract(options, { ...base, planId: 'plan-parallel', scopeKey: 'parallel-scope', planRelation: 'parallel' });
   expect(parallel).toMatchObject({ admissionDecision: 'create_new', plan: { planId: 'plan-parallel' } });
   const duplicateParallel = admitPlanContract(options, { ...base, planId: 'plan-parallel-duplicate', scopeKey: 'parallel-scope', planRelation: 'parallel' });
   expect(duplicateParallel).toMatchObject({ admissionDecision: 'reuse_existing', plan: { planId: 'plan-parallel' } });
+});
+
+test('atomically replaces the exact-scope Plan authority during serial replanning', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-atomic-replan-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-atomic-replan' };
+  const base = {
+    repoId: options.repoId,
+    scopeKey: 'release-scope',
+    sourceRevision: 'revision-a',
+    goal: 'Release safely',
+    steps: [{ id: 'step-a', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['done'] }],
+  };
+  expect(admitPlanContract(options, { ...base, planId: 'plan-r1' }).plan?.planId).toBe('plan-r1');
+  const replacement = admitPlanContract(options, {
+    ...base,
+    planId: 'plan-r2',
+    sourceRevision: 'revision-b',
+    planRelation: 'extend',
+    relatedPlanId: 'plan-r1',
+  });
+  expect(replacement).toMatchObject({ admissionDecision: 'create_new', reason: 'extend_existing', plan: { planId: 'plan-r2', scopeKey: 'release-scope', status: 'draft' } });
+  expect(getPlanContract(options, 'plan-r1')).toMatchObject({ status: 'superseded', supersededBy: 'plan-r2' });
+  expect(listPlanContracts({ ...options, status: 'active' }).map((plan) => plan.planId)).toEqual(['plan-r2']);
+});
+
+test('direct supersession rejects a missing successor without mutating the predecessor', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-missing-successor-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-missing-successor' };
+  createPlanContract(options, {
+    planId: 'plan-current', repoId: options.repoId, scopeKey: 'scope-a', sourceRevision: 'revision-a', goal: 'Stay authoritative',
+    steps: [{ id: 'step-a', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['done'] }],
+  });
+  expect(() => supersedePlanContract(options, 'plan-current', 'plan-does-not-exist')).toThrow('PLAN_SUCCESSOR_NOT_FOUND: plan-does-not-exist');
+  expect(getPlanContract(options, 'plan-current')?.status).toBe('draft');
+  expect(getPlanContract(options, 'plan-current')?.supersededBy).toBeUndefined();
 });
 
 test('serializes concurrent approval so only one same-scope draft becomes committed', async () => {

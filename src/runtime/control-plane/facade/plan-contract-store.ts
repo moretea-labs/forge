@@ -229,12 +229,10 @@ function writePlanContractStore(options: PlanContractStoreOptions, store: PlanCo
   return store;
 }
 
-function createPlanContractUnlocked(options: PlanContractStoreOptions, input: CreatePlanContractInput): PlanContract {
-  assertRequirementReference(options, input.requirementId);
-  const at = nowIso(options);
+function buildPlanContract(input: CreatePlanContractInput, at: string): PlanContract {
   const planId = sanitizeFileComponent(input.planId);
   if (!String(input.planId ?? '').trim() || planId === 'unknown') throw new Error('plan_id is required');
-  const plan: PlanContract = {
+  return {
     schemaVersion: 1,
     planId,
     repoId: input.repoId,
@@ -254,12 +252,47 @@ function createPlanContractUnlocked(options: PlanContractStoreOptions, input: Cr
     createdAt: at,
     updatedAt: at,
   };
+}
+
+function createPlanContractUnlocked(options: PlanContractStoreOptions, input: CreatePlanContractInput): PlanContract {
+  assertRequirementReference(options, input.requirementId);
+  const at = nowIso(options);
+  const plan = buildPlanContract(input, at);
   const store = readPlanContractStore(options);
   if (store.contracts.some((existing) => existing.planId === plan.planId)) {
     throw new Error(`plan contract already exists: ${plan.planId}`);
   }
   writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts: [plan, ...store.contracts] });
   return plan;
+}
+
+function replacePlanContractUnlocked(
+  options: PlanContractStoreOptions,
+  predecessorId: string,
+  input: CreatePlanContractInput,
+): PlanContract {
+  assertRequirementReference(options, input.requirementId);
+  const at = nowIso(options);
+  const store = readPlanContractStore(options);
+  const predecessorKey = sanitizeFileComponent(predecessorId);
+  const predecessorIndex = store.contracts.findIndex((contract) => contract.planId === predecessorKey);
+  if (predecessorIndex < 0) throw new Error(`plan contract not found: ${predecessorKey}`);
+  const predecessor = store.contracts[predecessorIndex]!;
+  if (isTerminalPlanContractStatus(predecessor.status)) throw new Error(`plan contract ${predecessor.planId} is terminal (${predecessor.status})`);
+  const successor = buildPlanContract(input, at);
+  if (successor.planId === predecessor.planId) throw new Error('PLAN_SUCCESSOR_ID_MUST_CHANGE');
+  if (successor.repoId !== predecessor.repoId) throw new Error('PLAN_SUCCESSOR_REPOSITORY_MISMATCH');
+  if (store.contracts.some((existing) => existing.planId === successor.planId)) {
+    throw new Error(`plan contract already exists: ${successor.planId}`);
+  }
+  const conflictingScope = store.contracts.find((existing, index) => index !== predecessorIndex
+    && !isTerminalPlanContractStatus(existing.status)
+    && existing.scopeKey === successor.scopeKey);
+  if (conflictingScope) throw new Error(`PLAN_SCOPE_ALREADY_OWNED: ${successor.scopeKey}:${conflictingScope.planId}`);
+  const contracts = [...store.contracts];
+  contracts[predecessorIndex] = { ...predecessor, status: 'superseded', supersededBy: successor.planId, updatedAt: at };
+  writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts: [successor, ...contracts] });
+  return successor;
 }
 
 export function createPlanContract(options: PlanContractStoreOptions, input: CreatePlanContractInput): PlanContract {
@@ -288,6 +321,10 @@ function admitPlanContractUnlocked(options: PlanContractStoreOptions, input: Adm
     planRelation: input.planRelation,
     relatedPlanId: input.relatedPlanId,
   });
+  if (resolution.admissionDecision === 'extend_existing' && resolution.plan) {
+    const successor = replacePlanContractUnlocked(options, resolution.plan.planId, input);
+    return { ...resolution, admissionDecision: 'create_new', plan: successor };
+  }
   if (resolution.admissionDecision !== 'create_new') return resolution;
   return { ...resolution, plan: createPlanContractUnlocked(options, input) };
 }
@@ -390,19 +427,24 @@ export async function approvePlanContractAsync(options: PlanContractStoreOptions
 }
 
 export function supersedePlanContract(options: PlanContractStoreOptions, planId: string, supersededBy: string): PlanContract {
-  const store = readPlanContractStore(options);
-  const index = store.contracts.findIndex((contract) => contract.planId === sanitizeFileComponent(planId));
-  if (index < 0) throw new Error(`plan contract not found: ${sanitizeFileComponent(planId)}`);
-  const current = store.contracts[index];
-  if (isTerminalPlanContractStatus(current.status)) throw new Error(`plan contract ${current.planId} is terminal (${current.status})`);
-  const replacement = sanitizeFileComponent(supersededBy);
-  if (!replacement || replacement === 'unknown') throw new Error('superseded_by is required');
-  const at = nowIso(options);
-  const next = { ...current, status: 'superseded' as const, supersededBy: replacement, updatedAt: at };
-  const contracts = [...store.contracts];
-  contracts[index] = next;
-  writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts });
-  return next;
+  return withPlanAdmissionLock(options, () => {
+    const store = readPlanContractStore(options);
+    const index = store.contracts.findIndex((contract) => contract.planId === sanitizeFileComponent(planId));
+    if (index < 0) throw new Error(`plan contract not found: ${sanitizeFileComponent(planId)}`);
+    const current = store.contracts[index]!;
+    if (isTerminalPlanContractStatus(current.status)) throw new Error(`plan contract ${current.planId} is terminal (${current.status})`);
+    const replacement = sanitizeFileComponent(supersededBy);
+    if (!replacement || replacement === 'unknown') throw new Error('superseded_by is required');
+    if (replacement === current.planId) throw new Error('PLAN_SUCCESSOR_ID_MUST_CHANGE');
+    const successor = store.contracts.find((contract) => contract.planId === replacement);
+    if (!successor) throw new Error(`PLAN_SUCCESSOR_NOT_FOUND: ${replacement}`);
+    const at = nowIso(options);
+    const next = { ...current, status: 'superseded' as const, supersededBy: successor.planId, updatedAt: at };
+    const contracts = [...store.contracts];
+    contracts[index] = next;
+    writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts });
+    return next;
+  });
 }
 
 /**
