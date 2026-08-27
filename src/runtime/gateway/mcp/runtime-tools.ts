@@ -18,7 +18,7 @@ import { repositoryControllerRoot } from '../../../cli/repositories/controller-h
 import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../execution/jobs/store';
 import { waitForExecutionJob } from '../../execution/jobs/wait';
 import type { ExecutionJob } from '../../execution/jobs/types';
-import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS, checkRequiresDurableWorkflow, getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
+import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS, checkRequiresDurableWorkflow, getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, listRecoverableProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
 import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../../execution/process-runtime/command-facade';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
@@ -3139,6 +3139,16 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               : 'RUNTIME_SOURCE_SNAPSHOT_STALE');
           const runtimeReadiness = observation.snapshot?.readiness;
           const releaseDiagnostic = runtimeReadiness?.diagnostics.releaseCoherence;
+          const activeWorkSnapshot = listWorkContracts({ ...store, status: 'active', limit: 3 }).map((entry) => ({
+            workId: entry.workId,
+            status: entry.status,
+            mode: entry.mode,
+            objective: entry.objective.slice(0, 160),
+            semantics: buildWorkContinuationSnapshot(entry).semantics,
+            nextSafeAction: buildWorkContinuationSnapshot(entry).nextSafeAction,
+          }));
+          const activePlanSnapshot = listPlanContracts({ ...store, status: 'active', limit: 3 }).map(summarizePlanContract);
+          const pendingHandoffSnapshot = listHandoffItems({ ...store, status: 'pending', limit: 4 });
           const preferredFacadeTools = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'] as const;
           const facade = buildFacadeResult({
             status: ready ? 'ok' : 'blocked',
@@ -3208,6 +3218,20 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 duplicateTools: exposure.duplicateToolNames,
                 fingerprint: exposure.fingerprint,
                 schemaStableAcrossAccessModes: exposure.schemaStableAcrossAccessModes,
+              },
+              controllerSnapshot: {
+                activeWork: activeWorkSnapshot,
+                activePlans: activePlanSnapshot,
+                pendingHandoffCount: pendingHandoffSnapshot.length,
+                pendingHandoffs: pendingHandoffSnapshot.slice(0, 3).map((item) => ({
+                  id: item.id,
+                  workId: item.workId,
+                  title: item.title.slice(0, 96),
+                  severity: item.severity,
+                  updatedAt: item.updatedAt,
+                })),
+                bounded: true,
+                nextDetail: 'Use rh_context(work_id=...) or rh_work(plan_get) only when the next decision requires more detail.',
               },
             },
             suggestedNextActions: [{
@@ -3682,8 +3706,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           (payload.responseMeta as { structuredPayloadBytes: number }).structuredPayloadBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
           return result(payload);
         }
-        const checks = listControllerChecks(repository.canonicalRoot);
         const requested = Array.isArray(args.requested_check_ids) ? args.requested_check_ids.map(String) : [];
+        const detailLevel = args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary';
+        const isSummary = detailLevel === 'summary';
+        const checks = requested.length > 0 || !isSummary ? listControllerChecks(repository.canonicalRoot) : [];
         const normalizedChecks = normalizeCheckIds(requested, checks);
         const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
         const workId = typeof args.work_id === 'string' ? args.work_id : undefined;
@@ -3698,8 +3724,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           });
           return result(facade as unknown as Record<string, unknown>, true);
         }
-        const detailLevel = args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary';
-        const isSummary = detailLevel === 'summary';
         const activeContractScan = operation === 'list' || !workId
           ? listWorkContracts({ ...store, status: 'active', limit: 20 })
           : [];
@@ -3713,22 +3737,28 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             .filter((job) => timestampIsCurrent(job.updatedAt, currentCutoffMs))
             .slice(0, 5)
           : [];
-        const processScan = listProcessRecords(ctx.controllerHome, repository.repoId, workId ? 100 : 50);
+        const processScan = isSummary
+          ? listRecoverableProcessRecords(ctx.controllerHome, repository.repoId)
+          : listProcessRecords(ctx.controllerHome, repository.repoId, workId ? 100 : 50);
         const relevantProcesses = processScan.filter((process) => workId ? process.workId === workId : timestampIsCurrent(process.updatedAt, currentCutoffMs));
         const liveProcessIds = new Set(processRuntimeResourceDiagnostics().activeProcessIds);
         const activeProcesses = relevantProcesses.filter((process) => liveProcessIds.has(process.processId) && isManagedProcessActive(process));
         const workController = work ? getControllerSession(store, work.workId) : undefined;
         const manifestOptions = { preferStored: true };
-        const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, manifestOptions);
-        const controllerRepository = controllerPluginRepository(ctx.controllerHome);
-        const controllerManifests = repository.repoId === controllerRepository.repoId
+        const manifests = isSummary
           ? []
-          : listAssistantPluginManifests(ctx.controllerHome, controllerRepository, manifestOptions);
-        const manifests = [...new Map(
-          [...repositoryManifests, ...controllerManifests].map((manifest) => [manifest.pluginId, manifest] as const),
-        ).values()];
-        const capabilities = listCapabilityDescriptors(manifests);
-        const capabilityGroups = summarizeCapabilityGroups(manifests);
+          : (() => {
+              const repositoryManifests = listAssistantPluginManifests(ctx.controllerHome, repository, manifestOptions);
+              const controllerRepository = controllerPluginRepository(ctx.controllerHome);
+              const controllerManifests = repository.repoId === controllerRepository.repoId
+                ? []
+                : listAssistantPluginManifests(ctx.controllerHome, controllerRepository, manifestOptions);
+              return [...new Map(
+                [...repositoryManifests, ...controllerManifests].map((manifest) => [manifest.pluginId, manifest] as const),
+              ).values()];
+            })();
+        const capabilities = isSummary ? [] : listCapabilityDescriptors(manifests);
+        const capabilityGroups = isSummary ? [] : summarizeCapabilityGroups(manifests);
         const capabilityLookup = undefined;
         const selectedChecks = normalizedChecks.validCheckIds
           .map((id) => checks.find((check) => check.id === id))
@@ -3781,8 +3811,11 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           requestedCheckIds: requested,
           normalizedChecks,
           invalidCheckIdsAreNotFailures: true,
-          capabilityCount: capabilities.length,
-          capabilityGroups: capabilityGroups.map((group) => ({ group: group.group, capabilityCount: group.capabilityCount })),
+          capabilityInventory: {
+            mode: 'detail_only',
+            deferred: true,
+            reason: 'Work/repository summary does not hydrate plugin manifests; request capability_id or detail/raw only when schema/policy detail is needed.',
+          },
           capabilityLookup,
           toolArchitecture: {
             facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
@@ -3815,8 +3848,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           counts: {
             availableChecks: checks.length,
             selectedChecks: selectedChecks.length,
-            capabilities: capabilities.length,
-            capabilityGroups: capabilityGroups.length,
+            capabilityInventoryDeferred: true,
             activeWork: currentContractScan.length,
             activeWorkShown: activeContracts.length,
             storedNonTerminalWork: activeContractScan.length,
@@ -3826,6 +3858,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             currentAttentionShown: attention.length,
             activeProcesses: activeProcesses.length,
             recentProcesses: relevantProcesses.length,
+            historicalProcessScanDeferred: true,
             pendingAttentionScanned: pendingAttention.length,
             historicalPendingAttention: Math.max(0, pendingAttention.length - currentAttentionScan.length),
             omittedCurrentAttention: Math.max(0, currentAttentionScan.length - attention.length),
@@ -4400,6 +4433,22 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Launcher failed.', data: {} }) as unknown as Record<string, unknown>, true);
           }
         }
+        if (operation === 'plan_list') {
+          const plans = listPlanContracts({ ...store, status: 'active', limit: typeof args.limit === 'number' ? args.limit : 20 });
+          const facade = buildFacadeResult({
+            summary: `${plans.length} active PlanContract(s) in this repository.`,
+            data: { plans: plans.map(summarizePlanContract), bounded: true },
+          });
+          return result(facade as unknown as Record<string, unknown>);
+        }
+        if (operation === 'plan_get') {
+          const plan = getPlanContract(store, String(args.plan_id ?? ''));
+          const facade = plan
+            ? buildFacadeResult({ summary: `PlanContract ${plan.planId} retrieved.`, data: { plan: args.detail_level === 'detail' ? plan : summarizePlanContract(plan) }, detailLevel: args.detail_level === 'detail' ? 'detail' : 'summary' })
+            : buildFacadeResult({ status: 'not_found', summary: `PlanContract ${String(args.plan_id ?? '')} not found.`, data: { planId: String(args.plan_id ?? '') } });
+          return result(facade as unknown as Record<string, unknown>, !plan);
+        }
+
         const checks = listControllerChecks(repository.canonicalRoot);
         const workloopCtx = {
           workStore: store,
@@ -4609,21 +4658,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 suggestedNextActions: [{ label: 'Approve reviewed plan', tool: 'rh_work', operation: 'plan_approve', payload: { plan_id: plan.planId }, risk: 'workspace_write', confidence: 'medium' }],
               });
               return result(facade as unknown as Record<string, unknown>);
-            }
-            if (operation === 'plan_list') {
-              const plans = listPlanContracts({ ...store, status: 'active', limit: typeof args.limit === 'number' ? args.limit : 20 });
-              const facade = buildFacadeResult({
-                summary: `${plans.length} active PlanContract(s) in this repository.`,
-                data: { plans: plans.map(summarizePlanContract), bounded: true },
-              });
-              return result(facade as unknown as Record<string, unknown>);
-            }
-            if (operation === 'plan_get') {
-              const plan = getPlanContract(store, String(args.plan_id ?? ''));
-              const facade = plan
-                ? buildFacadeResult({ summary: `PlanContract ${plan.planId} retrieved.`, data: { plan: args.detail_level === 'detail' ? plan : summarizePlanContract(plan) }, detailLevel: args.detail_level === 'detail' ? 'detail' : 'summary' })
-                : buildFacadeResult({ status: 'not_found', summary: `PlanContract ${String(args.plan_id ?? '')} not found.`, data: { planId: String(args.plan_id ?? '') } });
-              return result(facade as unknown as Record<string, unknown>, !plan);
             }
             if (operation === 'plan_approve') {
               const plan = await approvePlanContractAsync(store, String(args.plan_id ?? ''));

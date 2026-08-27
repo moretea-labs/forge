@@ -450,13 +450,56 @@ printf 'BUILD SUCCEEDED\\n'
       readiness: { ready: boolean; reasonCodes: string[] };
       repositoryState?: { branch?: string | null };
       runtime?: { source?: { canonicalRoot?: string; branch?: string | null } };
+      controllerSnapshot?: { activeWork?: unknown[]; activePlans?: unknown[]; pendingHandoffs?: unknown[]; bounded?: boolean };
     };
     expect(data.readiness.reasonCodes.some((code) => code.startsWith('RUNTIME_SOURCE'))).toBe(false);
     expect(JSON.stringify(payload)).not.toContain('runtime source root moved');
+    expect(data.controllerSnapshot).toMatchObject({ bounded: true });
+    expect(Array.isArray(data.controllerSnapshot?.activeWork)).toBe(true);
+    expect(Array.isArray(data.controllerSnapshot?.activePlans)).toBe(true);
     // repository state still reflects the business checkout
     if (data.repositoryState?.branch) {
       expect(data.repositoryState.branch).toBe('perf-i18n-global-opt');
     }
+  });
+
+  test('rh_context Work summary defers plugin capability and historical process hydration', async () => {
+    const business = tempRoot('forge-context-summary-fast-');
+    const controllerHome = tempRoot('forge-home-context-summary-fast-');
+    initGitRepo(business, 'context-summary-fast');
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Summary Fast' });
+    const started = startGoalWorkloop({
+      workStore: { controllerHome, repoId: repository.repoId },
+      handoffStore: { controllerHome, repoId: repository.repoId },
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+    }, {
+      objective: 'Keep one bounded Work available for fast summary projection.',
+      acceptanceCriteria: ['Summary projection remains bounded.'],
+      allowedPaths: ['**'], forbiddenPaths: [], checks: [],
+      modeInput: {
+        scopeClear: true, mutation: true, requiresExternalEffect: false, remoteWrite: false,
+        requiresRecovery: false, requiresWorker: false, requiresApproval: false,
+      },
+    });
+    const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
+    expect(workId).toBeTruthy();
+    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId,
+      operation: 'get',
+      work_id: workId,
+      detail_level: 'summary',
+    }));
+    const data = payload.data as {
+      capabilityInventory?: { mode?: string; deferred?: boolean };
+      counts?: { capabilityInventoryDeferred?: boolean; historicalProcessScanDeferred?: boolean };
+      work?: { workId?: string };
+    };
+    expect(data.work?.workId).toBe(workId);
+    expect(data.capabilityInventory).toEqual(expect.objectContaining({ mode: 'detail_only', deferred: true }));
+    expect(data.counts).toEqual(expect.objectContaining({ capabilityInventoryDeferred: true, historicalProcessScanDeferred: true }));
+    expect('capabilityCount' in data).toBe(false);
   });
 
 });
