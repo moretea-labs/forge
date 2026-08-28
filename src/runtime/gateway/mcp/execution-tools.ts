@@ -25,7 +25,7 @@ import { appendWorkEvidence, createWorkContract, getWorkContract, listWorkContra
 import { completeRequirementFromWork } from '../../control-plane/persistence/requirement-store';
 import { isTerminalWorkContractStatus, type VerificationRecord, type WorkReconciliationRecord } from '../../control-plane/facade/types';
 import { buildWorkContinuationSnapshot } from '../../control-plane/facade/work-continuation';
-import { claimControllerSession, getControllerSession, releaseControllerSession, releaseControllerSessionWithAuthority, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../control-plane/facade/controller-session-store';
+import { claimControllerSession, getControllerSession, releaseControllerSessionWithAuthority, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../control-plane/facade/controller-session-store';
 import { currentControllerInstanceId, requireExecutionSession, startExecutionSession, updateExecutionSession, type ExecutionSessionContext, type SessionIdentity } from '../../control-plane/execution/session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from '../../control-plane/execution/validation';
 import { commandFingerprint, effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from '../../control-plane/execution/verification-evidence';
