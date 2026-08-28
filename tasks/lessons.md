@@ -68,6 +68,13 @@
 - Prevention rule: For `external_controller_wake`, cap the effective lane at 3 counted failures, 60 daily minutes, and a 10-minute cooldown/backoff; retryable failures must honor that circuit breaker and preserve an explicit pause. Scheduled relay prompts must claim only their origin Work, attempt at most one bounded repair/diagnostic, then record evidence and end the round.
 - Where to apply next time: schedule policy hydration and settlement, external Controller wake engine, Controller relay prompt construction, and canary acceptance before enabling any additional autonomous lane.
 
+## Release staging must compare physical source roots
+- Date: 2026-08-28
+- Triggered by correction: `forge runtime service install --repo <workspace alias>` rejected the same checkout because the command resolved the supplied alias differently from the process working directory.
+- Mistake pattern: Comparing lexical paths at a deployment boundary even though a source checkout may be reached through a symlink or workspace alias.
+- Prevention rule: Preserve the candidate-stager's same-checkout fence, but compare canonical physical paths for both the requested source root and current working directory.
+- Where to apply next time: candidate release staging and any deployment command that binds a caller-supplied repository root to a process working directory.
+
 ## A running cloud VM is not a healthy Forge execution node
 - Date: 2026-08-26
 - Triggered by correction: The Google Cloud `forge-cloud` e2-micro remained `RUNNING`, but Forge_Cloud calls alternated between Secure Tunnel HTTP 404/429, direct SSH and IAP SSH failed, and serial logs showed repeated WARP main-loop watchdog hangs, QUIC idle timeout, NTP timeout, and journald watchdog restarts.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { realpathSync } from 'fs';
 import { resolve } from 'path';
 import { assertRuntimeReleaseFiles, stageRuntimeRelease, type CandidateRuntimeStageReceiptV1 } from '../src/runtime/root/release-materialize';
 
@@ -18,7 +19,7 @@ const controllerHome = resolve(requiredOption(args, '--controller-home'));
 const sourceRoot = resolve(requiredOption(args, '--source-root'));
 const expectedHead = requiredOption(args, '--expected-head');
 if (!/^[a-f0-9]{40}$/i.test(expectedHead)) throw new Error('RUNTIME_RELEASE_CANDIDATE_EXPECTED_HEAD_INVALID');
-if (sourceRoot !== resolve(process.cwd())) throw new Error('RUNTIME_RELEASE_CANDIDATE_CWD_MISMATCH');
+if (realpathSync(sourceRoot) !== realpathSync(process.cwd())) throw new Error('RUNTIME_RELEASE_CANDIDATE_CWD_MISMATCH');
 
 const staged = stageRuntimeRelease({ controllerHome, sourceRoot });
 assertRuntimeReleaseFiles(staged);
