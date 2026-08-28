@@ -122,6 +122,38 @@ describe('rh_work terminalization authority', () => {
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('cancelled');
   }, 15_000);
 
+  test('controller release survives transport session rollover for the same authenticated controller authority', async () => {
+    const fx = fixture();
+    const workId = 'work-release-transport-rollover';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    claimControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      controllerId: 'principal-rollover',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-before-rollover',
+      principalId: 'principal-rollover',
+      controllerInstanceId: 'runtime-stable',
+      leaseMs: 60_000,
+    });
+
+    const unrelated = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-other', 'transport-after-rollover-other', 'runtime-stable'),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_release', work_id: workId, session_id: 'transport-before-rollover' },
+    ));
+    expect(unrelated.status).toBe('blocked');
+    expect(unrelated.summary).toContain('WORK_CONTROLLER_OWNER_MISMATCH');
+    expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toBeTruthy();
+
+    const released = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-rollover', 'transport-after-rollover', 'runtime-stable'),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_release', work_id: workId, session_id: 'transport-before-rollover' },
+    ));
+    expect(released.status).toBe('ok');
+    expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toBeUndefined();
+  }, 15_000);
+
   test('stale controller release cannot clear a newer ownership epoch', async () => {
     const fx = fixture();
     const workId = 'work-stale-release';

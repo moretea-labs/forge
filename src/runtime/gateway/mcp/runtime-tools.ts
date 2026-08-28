@@ -1119,6 +1119,7 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
 function authenticatedFacadeControllerIdentity(
   ctx: MultiRepositoryMcpToolContext,
   args: Record<string, unknown>,
+  options: { allowTransportSessionRollover?: boolean } = {},
 ): { controllerId: string; principalId: string; sessionId: string; controllerInstanceId: string; controllerType: 'chatgpt' | 'codex' | 'claude' | 'grok' | 'human' } {
   const principalId = ctx.principalId?.trim();
   const sessionId = ctx.sessionId?.trim();
@@ -1130,7 +1131,7 @@ function authenticatedFacadeControllerIdentity(
   if (requestedControllerId && requestedControllerId !== principalId) {
     throw new Error('CONTROLLER_ID_CONTEXT_MISMATCH: controller_id must match the authenticated principal');
   }
-  if (requestedSessionId && requestedSessionId !== sessionId) {
+  if (!options.allowTransportSessionRollover && requestedSessionId && requestedSessionId !== sessionId) {
     throw new Error('CONTROLLER_SESSION_CONTEXT_MISMATCH: session_id must match the authenticated MCP session');
   }
   const requestedControllerType = typeof args.controller_type === 'string' && ['chatgpt', 'codex', 'claude', 'grok', 'human'].includes(args.controller_type)
@@ -4317,7 +4318,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         if (operation === 'controller_release') {
           try {
             const workId = String(args.work_id ?? '').trim();
-            const identity = authenticatedFacadeControllerIdentity(ctx, args);
+            const identity = authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true });
             const owner = getControllerSession(store, workId);
             if (owner) {
               const ownerPrincipal = owner.principalId?.trim() || owner.controllerId;
