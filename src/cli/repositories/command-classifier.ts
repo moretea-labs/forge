@@ -42,7 +42,7 @@ const READ_ONLY_GIT_SUBCOMMANDS = new Set([
   'count-objects', 'verify-pack', 'check-ignore',
 ]);
 
-function shellSegments(command: string): string[] {
+export function shellSegments(command: string): string[] {
   const segments: string[] = [];
   let current = '';
   let quote: "'" | '"' | undefined;
@@ -87,7 +87,7 @@ function shellSegments(command: string): string[] {
   return segments;
 }
 
-function shellWordsPreservingQuotes(segment: string): string[] {
+export function shellWordsPreservingQuotes(segment: string): string[] {
   const words: string[] = [];
   let current = '';
   let quote: "'" | '"' | undefined;

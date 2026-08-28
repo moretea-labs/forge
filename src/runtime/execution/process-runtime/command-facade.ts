@@ -10,7 +10,7 @@
 
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
-import { classifyRepositoryCommand, fixedShellWrapperCommand } from '../../../cli/repositories/command-classifier';
+import { classifyRepositoryCommand, fixedShellWrapperCommand, shellSegments, shellWordsPreservingQuotes } from '../../../cli/repositories/command-classifier';
 import {
   executeRepositoryCommandAsync,
   executeRepositoryReadOnlyCommandDirect,
@@ -237,29 +237,40 @@ function repositoryCommandRecoveryLifecycle(command: string | readonly string[])
   return wrapped ? recoveryLifecycleFromShell(wrapped) : undefined;
 }
 
-function rawGitCommitRequiresExplicitPathScope(command: string | readonly string[]): boolean {
-  const normalized = normalizeRepositoryCommand(command);
-  if (normalized.kind === 'shell') {
-    return /(?:^|[;&|]\s*)\s*git\s+commit\b/i.test(normalized.shellCommand ?? '');
-  }
-  const executable = commandBasename(normalized.executable ?? '');
-  const args = [...(normalized.args ?? [])];
-  if (executable !== 'git') {
-    const wrapped = fixedShellWrapperCommand(normalized.value as string[]);
-    return wrapped ? /(?:^|[;&|]\s*)\s*git\s+commit\b/i.test(wrapped) : false;
-  }
+function gitCommitWordsRequireExplicitPathScope(words: readonly string[]): boolean | undefined {
+  const executable = commandBasename(words[0] ?? '');
+  if (executable !== 'git') return undefined;
+  const args = words.slice(1);
   let index = 0;
   while (index < args.length && args[index]?.startsWith('-')) {
     const option = args[index]!;
     if (['-c', '-C', '--git-dir', '--work-tree', '--namespace'].includes(option)) index += 2;
+    else if (['--git-dir=', '--work-tree=', '--namespace='].some((prefix) => option.startsWith(prefix))) index += 1;
     else index += 1;
   }
-  if (args[index]?.toLowerCase() !== 'commit') return false;
+  if (args[index]?.toLowerCase() !== 'commit') return undefined;
   const commitArgs = args.slice(index + 1);
   const pathSeparator = commitArgs.indexOf('--');
-  const hasExplicitOnly = commitArgs.includes('--only') || commitArgs.includes('-o');
   const paths = pathSeparator >= 0 ? commitArgs.slice(pathSeparator + 1).filter(Boolean) : [];
-  return !(hasExplicitOnly && paths.length > 0);
+  const widensScope = commitArgs.some((arg) => ['-a', '--all', '-i', '--include', '--interactive', '-p', '--patch'].includes(arg));
+  return paths.length === 0 || widensScope;
+}
+
+function rawGitCommitRequiresExplicitPathScope(command: string | readonly string[]): boolean {
+  const normalized = normalizeRepositoryCommand(command);
+  if (normalized.kind === 'argv') {
+    const direct = gitCommitWordsRequireExplicitPathScope([
+      normalized.executable ?? '',
+      ...(normalized.args ?? []),
+    ]);
+    if (direct !== undefined) return direct;
+    const wrapped = fixedShellWrapperCommand(normalized.value as string[]);
+    if (!wrapped) return false;
+    return shellSegments(wrapped)
+      .some((segment) => gitCommitWordsRequireExplicitPathScope(shellWordsPreservingQuotes(segment)) === true);
+  }
+  return shellSegments(normalized.shellCommand ?? '')
+    .some((segment) => gitCommitWordsRequireExplicitPathScope(shellWordsPreservingQuotes(segment)) === true);
 }
 
 function toProcessCommand(command: string | readonly string[], cwd: string): ProcessCommandSpec {

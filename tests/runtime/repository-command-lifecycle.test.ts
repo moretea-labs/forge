@@ -309,6 +309,12 @@ describe('repository command execution lifecycle', () => {
     expect(route(['git', 'commit', '-m', 'unsafe'])).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
     expect(route('git commit -m unsafe')).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
     expect(route(['git', 'commit', '--only', '-m', 'safe', '--', 'README.md'])).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
+    expect(route(['git', 'commit', '-m', 'safe argv pathspec', '--', 'README.md', 'docs/forge-plugin-management.md'])).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
+    expect(route("git commit -m 'safe shell pathspec' -- README.md docs/forge-plugin-management.md")).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
+    expect(route(['bash', '-lc', "git commit -m 'safe wrapped pathspec' -- README.md"])).toEqual({ route: 'process_direct', reason: 'lightweight_local_shell_wrapper' });
+    expect(route(['bash', '-lc', "rg -n 'git commit' src tests"])).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
+    expect(route(['git', 'commit', '-a', '-m', 'scope widening', '--', 'README.md'])).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
+    expect(route("git commit --include -m 'scope widening' -- README.md")).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
 
     const controllerHome = tempRoot('forge-selected-commit-home-');
     const repoRoot = tempRoot('forge-selected-commit-repo-');
