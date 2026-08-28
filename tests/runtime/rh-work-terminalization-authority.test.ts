@@ -12,6 +12,8 @@ import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, cre
 import { claimControllerSession, getControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
+import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 
 const roots: string[] = [];
 
@@ -55,6 +57,31 @@ function ctx(
     controllerType: 'chatgpt',
     audit: () => undefined,
   } as unknown as MultiRepositoryMcpToolContext;
+}
+
+function publishCurrentRuntime(controllerHome: string, runtimeInstanceId: string): void {
+  const ownership = acquireRuntimeOwnership(controllerHome, runtimeInstanceId);
+  const now = new Date().toISOString();
+  writeRuntimeStatusSnapshot(controllerHome, {
+    schemaVersion: 1,
+    runtimeInstanceId,
+    pid: ownership.record.pid,
+    releaseId: 'release-continuity-test',
+    artifactIdentity: 'artifact-continuity-test',
+    startedAt: now,
+    updatedAt: now,
+    readiness: {
+      ready: true,
+      reasonCodes: [],
+      diagnostics: {
+        database: { outcome: 'pass' },
+        scheduler: { outcome: 'pass' },
+        releaseCoherence: { outcome: 'pass' },
+        mcpEndToEnd: { outcome: 'pass' },
+      },
+      observedAt: now,
+    },
+  });
 }
 
 function createReadyWork(controllerHome: string, repoId: string, workId: string): void {
@@ -151,6 +178,31 @@ describe('rh_work terminalization authority', () => {
       { repo_id: fx.repository.repoId, operation: 'controller_release', work_id: workId, session_id: 'transport-before-rollover' },
     ));
     expect(released.status).toBe('ok');
+    expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toBeUndefined();
+  }, 15_000);
+
+  test('current canonical Runtime migrates the same principal before release while the old Runtime stays fenced', async () => {
+    const fx = fixture();
+    const workId = 'work-runtime-migration-release';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const first = claimControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      controllerId: 'principal-migrate',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-old-runtime',
+      principalId: 'principal-migrate',
+      controllerInstanceId: 'runtime-old',
+      leaseMs: 60_000,
+    });
+    publishCurrentRuntime(fx.controllerHome, 'runtime-new');
+
+    const released = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-migrate', 'transport-new-runtime', 'runtime-new'),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_release', work_id: workId },
+    ));
+    expect(released.status).toBe('ok');
+    expect(first.claimGeneration).toBe(1);
     expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toBeUndefined();
   }, 15_000);
 

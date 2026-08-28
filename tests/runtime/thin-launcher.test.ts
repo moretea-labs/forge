@@ -10,7 +10,7 @@ import {
   resolveLauncherExecutable,
   type ThinLauncherRequest,
 } from '../../src/runtime/control-plane/launcher/thin-launcher';
-import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
+import { getExternalControllerLaunchReservation, readExternalControllerLaunchReservationRecord } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 
 const roots: string[] = [];
 const launchedPids: number[] = [];
@@ -90,7 +90,7 @@ describe('Thin Launcher startup observability', () => {
       await launchSuperController({ work: fx.store, handoff: fx.store }, {
         controllerType: 'grok',
         executable: process.execPath,
-        args: ['-e', 'process.exit(17)'],
+        args: ['-e', 'console.error("launcher-startup-boom"); process.exit(17)'],
         workId: fx.workId,
         cwd: fx.root,
       });
@@ -100,7 +100,12 @@ describe('Thin Launcher startup observability', () => {
 
     expect(message).toContain('LAUNCHER_STARTUP_FAILED');
     expect(message).toContain('code=17');
+    expect(message).toContain('launcher-startup-boom');
     expect(getExternalControllerLaunchReservation(fx.store, fx.workId)).toBeUndefined();
+    expect(readExternalControllerLaunchReservationRecord(fx.store, fx.workId)).toMatchObject({
+      exitCode: 17,
+      stderrTail: expect.stringContaining('launcher-startup-boom'),
+    });
   });
 
   test('returns only after a live child survives the startup grace', async () => {

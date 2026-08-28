@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+  bindControllerSessionToCurrentRuntime,
   claimControllerSession,
   controllerSessionBlocksRecovery,
   getControllerSession,
@@ -107,6 +108,26 @@ describe('controller Work ownership fencing', () => {
     expect(() => resumeControllerSession(store, claimInput('session-b', 'principal-a', 'instance-a')))
       .toThrow(/WORK_CONTROLLER_CLAIM_TERMINAL: work-owner:failed/);
     expect(getControllerSession(store, 'work-owner')).toBeUndefined();
+  });
+
+  test('binds a same-principal Work forward only to the positively current Runtime instance', () => {
+    const home = controllerHome();
+    const store = { controllerHome: home, repoId: 'repo-a' };
+    const first = claimControllerSession(store, claimInput('session-old', 'principal-a', 'runtime-old'));
+
+    const migrated = bindControllerSessionToCurrentRuntime(store, {
+      ...claimInput('session-new', 'principal-a', 'runtime-new'),
+      currentRuntimeInstanceId: 'runtime-new',
+    });
+    expect(migrated.controllerInstanceId).toBe('runtime-new');
+    expect(migrated.sessionId).toBe('session-new');
+    expect(migrated.claimGeneration).toBe((first.claimGeneration ?? 1) + 1);
+
+    expect(() => bindControllerSessionToCurrentRuntime(store, {
+      ...claimInput('session-stale', 'principal-a', 'runtime-old'),
+      currentRuntimeInstanceId: 'runtime-new',
+    })).toThrow(/WORK_CONTROLLER_INSTANCE_MISMATCH/);
+    expect(getControllerSession(store, 'work-owner')?.controllerInstanceId).toBe('runtime-new');
   });
 
   test('rejects another principal and stale recovery generation', () => {

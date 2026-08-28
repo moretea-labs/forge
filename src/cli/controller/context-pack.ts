@@ -254,11 +254,17 @@ export function buildControllerContextPack(
         ? [...metadata.changedFiles.added, ...metadata.changedFiles.modified]
         : [];
       overlayChangedFiles = Array.from(new Set([...overlayChangedFiles, ...providerChangedFiles]));
+      const structuralEvidenceCurrent = structural.status === "ready"
+        && baselineRevisionMatches
+        && overlayChangedFiles.length === 0;
+      const structuralStatus = structural.status === "ready" && !structuralEvidenceCurrent
+        ? "stale"
+        : structural.status;
       structuralContext = {
         provider: "codegraph",
         requestedMode: structuralMode,
-        status: indexSource === "repository_baseline" && (!baselineRevisionMatches || overlayChangedFiles.length > 0) && structural.status === "ready" ? "stale" : structural.status,
-        requiredSatisfied: structuralMode !== "required" || (structural.status === "ready" && baselineRevisionMatches && overlayChangedFiles.length === 0),
+        status: structuralStatus,
+        requiredSatisfied: structuralMode !== "required" || structuralEvidenceCurrent,
         indexSource,
         overlayChangedFiles,
         baselineRevisionMatches,
@@ -291,18 +297,22 @@ export function buildControllerContextPack(
         }
         addReason(candidates, readable.path, reason, line);
       };
-      for (const node of graph.nodes.slice(0, maxFiles * 6)) {
-        addStructuralPath(node.filePath, `codegraph:context:${node.kind}:${node.name}`, node.startLine);
-      }
-      for (const node of graph.entryPoints) {
-        addStructuralPath(node.filePath, `codegraph:entry:${node.name}`, node.startLine);
-      }
-      for (const path of graph.relatedFiles.slice(0, maxFiles * 6)) addStructuralPath(path, "codegraph:related");
-      // Context search identifies the structural entry points. For a bounded
-      // number of those files, enrich the same Context Plane call with direct
-      // file dependencies/dependents. This is impact evidence, not a second
-      // routing/tool surface, and remains completely off for ordinary Direct.
-      if (structural.status === "ready") {
+      // Structural relationships may only influence discovery/materialization
+      // when the graph is current for this exact source identity. Stale graph
+      // nodes remain visible through structuralContext/impactContext hints, but
+      // must never steer which raw source GPT sees first.
+      if (structuralEvidenceCurrent) {
+        for (const node of graph.nodes.slice(0, maxFiles * 6)) {
+          addStructuralPath(node.filePath, `codegraph:context:${node.kind}:${node.name}`, node.startLine);
+        }
+        for (const node of graph.entryPoints) {
+          addStructuralPath(node.filePath, `codegraph:entry:${node.name}`, node.startLine);
+        }
+        for (const path of graph.relatedFiles.slice(0, maxFiles * 6)) addStructuralPath(path, "codegraph:related");
+        // Context search identifies the structural entry points. For a bounded
+        // number of those files, enrich the same Context Plane call with direct
+        // file dependencies/dependents. This is impact evidence, not a second
+        // routing/tool surface, and remains completely off for ordinary Direct.
         const primaryFiles = Array.from(new Set(graph.entryPoints.map((node) => node.filePath).filter(Boolean))).slice(0, 4);
         for (const filePath of primaryFiles) {
           const adjacency = queryStructural(structuralIndexRoot, { operation: "file_dependencies", filePath, limit: 40 });
@@ -323,10 +333,13 @@ export function buildControllerContextPack(
           }
         }
       }
-      for (const path of metadata?.changedFiles.added ?? []) addStructuralPath(path, "codegraph:changed-file", 1);
-      for (const path of metadata?.changedFiles.modified ?? []) addStructuralPath(path, "codegraph:changed-file", 1);
       for (const path of metadata?.changedFiles.removed ?? []) omitted.push({ path, reason: "codegraph reports file removed since index" });
-      for (const path of overlayChangedFiles) addStructuralPath(path, "worktree:changed-file", 1);
+      // A repository-baseline graph deliberately runs against another checkout.
+      // Current worktree changes are still authoritative raw-source evidence,
+      // but they come from Git rather than stale CodeGraph metadata.
+      if (indexSource === "repository_baseline") {
+        for (const path of gitStatusChangedPaths(git.status)) addStructuralPath(path, "worktree:changed-file", 1);
+      }
     }
   }
 

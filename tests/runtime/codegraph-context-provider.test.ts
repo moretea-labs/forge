@@ -762,6 +762,53 @@ describe('CodeGraph read provider', () => {
     expect(pack.readiness.readyForHighConfidenceMutation).toBe(false);
   });
 
+  test('keeps stale structural relationships diagnostic-only instead of promoting them into source selection', () => {
+    const root = contextRepo();
+    writeFileSync(join(root, 'src/stale-only.ts'), 'export const staleOnly = true;\n');
+    writeFileSync(join(root, 'src/provider-changed.ts'), 'export const providerChanged = true;\n');
+    const staleNode = {
+      id: 'stale-node',
+      kind: 'function',
+      name: 'staleOnly',
+      qualifiedName: 'src/stale-only.ts::staleOnly',
+      filePath: 'src/stale-only.ts',
+      language: 'typescript',
+      startLine: 1,
+      endLine: 1,
+    };
+    const stale = structuralResponse({
+      status: 'stale',
+      metadata: {
+        initialized: true,
+        lastIndexedAt: 1,
+        buildVersion: '1.0.1',
+        extractionVersion: 1,
+        staleEngine: false,
+        changedFiles: { added: [], modified: ['src/provider-changed.ts'], removed: [] },
+      },
+      result: {
+        nodes: [staleNode],
+        entryPoints: [staleNode],
+        relatedFiles: ['src/stale-only.ts', 'src/provider-changed.ts'],
+        truncated: false,
+      },
+    });
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      description: 'runService',
+      searchTerms: ['runService'],
+      structuralContext: 'required',
+      maxFiles: 4,
+    }, { queryCodeGraph: () => stale });
+    expect(pack.structuralContext).toMatchObject({ status: 'stale', requiredSatisfied: false });
+    expect(pack.structuralContext.overlayChangedFiles).toContain('src/provider-changed.ts');
+    expect(pack.impactContext.primaryTargets).toEqual([]);
+    expect(pack.impactContext.structuralHints).toEqual(expect.arrayContaining(['src/stale-only.ts', 'src/provider-changed.ts']));
+    expect(pack.files.some((file) => file.path === 'src/stale-only.ts')).toBe(false);
+    expect(pack.files.some((file) => file.path === 'src/provider-changed.ts')).toBe(false);
+    expect(pack.files.some((file) => file.reasons.some((reason) => reason.startsWith('codegraph:')))).toBe(false);
+    expect(pack.files.find((file) => file.path === 'src/service.ts')?.reasons).toContain('search:runService');
+  });
+
   test('runs lexical fallback when stale required structural candidates already saturate discovery', () => {
     const root = contextRepo();
     const noiseFiles = Array.from({ length: 16 }, (_, index) => `noise/changed-${index}.ts`);
