@@ -254,6 +254,7 @@ export async function verifyRecoveryConnector(
   if (!connector.public) failures.push('readiness: Recovery Connector does not have an HTTPS public endpoint.');
 
   const origin = new URL(connector.url).origin;
+  const authorizationServer = `${origin}/recovery`;
   try {
     const response = await request(connector.healthUrl, { headers: { accept: 'application/json' } });
     const body = await responseJson(response);
@@ -273,7 +274,7 @@ export async function verifyRecoveryConnector(
     const response = await request(connector.oauth.authorizationServerMetadataUrl, { headers: { accept: 'application/json' } });
     const body = await responseJson(response);
     const ok = response.status === 200
-      && body.issuer === origin
+      && body.issuer === authorizationServer
       && body.authorization_endpoint === `${origin}/recovery/oauth/authorize`
       && body.token_endpoint === `${origin}/recovery/oauth/token`
       && body.registration_endpoint === `${origin}/recovery/oauth/register`;
@@ -287,7 +288,7 @@ export async function verifyRecoveryConnector(
     const response = await request(connector.oauth.protectedResourceMetadataUrl, { headers: { accept: 'application/json' } });
     const body = await responseJson(response);
     const authorizationServers = Array.isArray(body.authorization_servers) ? body.authorization_servers : [];
-    const ok = response.status === 200 && body.resource === connector.url && authorizationServers.includes(origin);
+    const ok = response.status === 200 && body.resource === connector.url && authorizationServers.includes(authorizationServer);
     probes.protectedResourceMetadata = { ok, status: response.status };
     if (!ok) failures.push('protectedResourceMetadata: OAuth protected-resource metadata is incomplete or inconsistent.');
   } catch (error) {
