@@ -4248,7 +4248,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             if (!['continue_immediately', 'wait', 'wait_for_user', 'goal_complete'].includes(disposition)) {
               throw new Error('CONTROLLER_RELAY_DISPOSITION_INVALID');
             }
-            const identity = authenticatedFacadeControllerIdentity(ctx, args);
+            const identity = authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true });
             const work = getWorkContract(store, workId);
             if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
             const terminalGoalComplete = work.status === 'completed' && disposition === 'goal_complete';

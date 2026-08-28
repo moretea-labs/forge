@@ -164,6 +164,7 @@ describe('autonomous continuation lifecycle', () => {
       operation: 'repair',
       capability_id: `controller.disposition:goal_complete:${opened.relayScopeId}`,
       work_id: workId,
+      session_id: owner.sessionId,
       reason: 'Physical no-change finalization completed before semantic round closure.',
     }));
     expect(completed.status).toBe('ok');
