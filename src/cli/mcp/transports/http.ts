@@ -1125,6 +1125,29 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     });
   });
 
+  // Recovery probes this endpoint every few seconds. Keep it strictly in-memory
+  // and transport-scoped: whole-control-plane readiness below may traverse every
+  // repository projection and probe the local bridge, which must never become a
+  // periodic event-loop load generator for the public MCP Connector itself.
+  app.get('/transport-ready', (_req, res) => {
+    const sessionSnapshot = sessionRegistry.snapshot();
+    const sessionCapacityReady = sessionSnapshot.acceptingNewSessions
+      && runtimeStats.initializing < MAX_INITIALIZING_SESSIONS
+      && runtimeStats.activePosts < MAX_ACTIVE_POSTS;
+    res.status(sessionCapacityReady ? 200 : 503).json({
+      ready: sessionCapacityReady,
+      profile: toolContext.policy.profile,
+      gateway: sessionCapacityReady ? 'ready' : 'saturated',
+      sessionCapacity: sessionSnapshot,
+      runtimeCapacity: {
+        initializing: runtimeStats.initializing,
+        maximumInitializing: MAX_INITIALIZING_SESSIONS,
+        activePosts: runtimeStats.activePosts,
+        maximumActivePosts: MAX_ACTIVE_POSTS,
+      },
+    });
+  });
+
   app.get('/ready', async (_req, res) => {
     const runtimeGeneration = currentRuntimeGeneration();
     const sessionSnapshot = sessionRegistry.snapshot();

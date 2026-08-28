@@ -513,8 +513,28 @@ function recoveryLockOwnerAlive(lock: RecoveryLock): boolean {
   return observed === undefined || observed === lock.processStartTime;
 }
 
+function recoveryLockOwnerAttributable(owner: RecoveryLock): boolean {
+  return Boolean(owner.action && owner.requestId?.trim());
+}
+
+function recoveryLockIdentityFailure(owner: RecoveryLock): string {
+  return `RECOVERY_OPERATION_LOCK_IDENTITY_UNCERTAIN: live mutation lock pid=${owner.pid} instance=${owner.instanceId} is missing action/request identity`;
+}
+
+function assertRecoveryLockOwnerAttributable(config: RecoveryConfig, owner: RecoveryLock): void {
+  if (recoveryLockOwnerAttributable(owner)) return;
+  audit(config, 'recovery_operation_lock_identity_uncertain', {
+    pid: owner.pid,
+    instanceId: owner.instanceId,
+    action: owner.action ?? null,
+    requestId: owner.requestId ?? null,
+    acquiredAt: owner.acquiredAt,
+  });
+  throw new Error(recoveryLockIdentityFailure(owner));
+}
+
 function recoveryBusyDetail(owner: RecoveryLock): string {
-  return `Recovery mutation already in progress: action=${owner.action ?? 'unknown'} request=${owner.requestId ?? 'unknown'} pid=${owner.pid}`;
+  return `Recovery mutation already in progress: action=${owner.action ?? 'invalid'} request=${owner.requestId ?? 'invalid'} pid=${owner.pid} instance=${owner.instanceId}`;
 }
 
 async function withLock<T>(
@@ -524,14 +544,16 @@ async function withLock<T>(
 ): Promise<RecoveryLockAttempt<T>> {
   const path = lockPath(config);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const instanceId = randomUUID();
+  const requestId = intent.requestId?.trim() || `internal:${intent.action}:${instanceId}`;
   const lock: RecoveryLock = {
     schemaVersion: 1,
     pid: process.pid,
-    instanceId: randomUUID(),
+    instanceId,
     processStartTime: processStartTime(process.pid),
     acquiredAt: new Date().toISOString(),
     action: intent.action,
-    ...(intent.requestId ? { requestId: intent.requestId } : {}),
+    requestId,
   };
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -548,13 +570,31 @@ async function withLock<T>(
         if (!existing || !Number.isInteger(existing.pid) || typeof existing.instanceId !== 'string') {
           throw new Error('RECOVERY_OPERATION_LOCK_UNCERTAIN');
         }
-        if (recoveryLockOwnerAlive(existing)) return { acquired: false, owner: existing };
+        if (recoveryLockOwnerAlive(existing)) {
+          assertRecoveryLockOwnerAttributable(config, existing);
+          return { acquired: false, owner: existing };
+        }
         const latest = json<RecoveryLock>(path);
         if (!latest || latest.instanceId !== existing.instanceId) {
-          if (attempt === 1) return { acquired: false, owner: latest ?? existing };
+          if (attempt === 1) {
+            if (latest && recoveryLockOwnerAlive(latest)) {
+              assertRecoveryLockOwnerAttributable(config, latest);
+              return { acquired: false, owner: latest };
+            }
+            audit(config, 'recovery_operation_lock_race', {
+              existingInstanceId: existing.instanceId,
+              existingPid: existing.pid,
+              latestInstanceId: latest?.instanceId ?? null,
+              latestPid: latest?.pid ?? null,
+            });
+            throw new Error('RECOVERY_OPERATION_LOCK_RACE');
+          }
           continue;
         }
-        if (recoveryLockOwnerAlive(latest)) return { acquired: false, owner: latest };
+        if (recoveryLockOwnerAlive(latest)) {
+          assertRecoveryLockOwnerAttributable(config, latest);
+          return { acquired: false, owner: latest };
+        }
         try { writeFileSync(`${path}.stale-${Date.now()}-${existing.instanceId}`, readFileSync(path)); } catch { /* evidence best effort */ }
         rmSync(path, { force: true });
         continue;
@@ -630,9 +670,9 @@ async function probeExternalMcp(transport: RecoveryHttpTransport, url: string): 
   } finally { clearTimeout(timer); }
 }
 
-function publicGatewayReadinessEndpoint(endpoint: string): string {
+function publicGatewayReadinessEndpoint(endpoint: string, legacy = false): string {
   const url = new URL(endpoint);
-  url.pathname = '/ready';
+  url.pathname = legacy ? '/ready' : '/transport-ready';
   url.search = '';
   url.hash = '';
   return url.toString();
@@ -644,13 +684,23 @@ async function probePublicGatewayReadiness(
 ): Promise<{ ok: boolean; detail: string; status?: number; value?: unknown }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort('RECOVERY_HTTP_TIMEOUT'), 4_000);
+  let surface = 'transport-ready';
   try {
-    const response = await transport.request({
+    let response = await transport.request({
       url: publicGatewayReadinessEndpoint(endpoint),
       headers: { accept: 'application/json' },
       timeoutMs: 4_000,
       signal: controller.signal,
     });
+    if (response.status === 404 || response.status === 405) {
+      surface = 'legacy-ready';
+      response = await transport.request({
+        url: publicGatewayReadinessEndpoint(endpoint, true),
+        headers: { accept: 'application/json' },
+        timeoutMs: 4_000,
+        signal: controller.signal,
+      });
+    }
     let sessionCapacity: unknown;
     try {
       const payload = JSON.parse(response.body) as { sessionCapacity?: unknown };
@@ -663,12 +713,12 @@ async function probePublicGatewayReadiness(
     );
     return {
       ok: response.ok && !recoveryRecommended,
-      detail: `HTTP ${response.status}${recoveryRecommended ? '; session capacity recommends Connector recovery' : ''}`,
+      detail: `${surface} HTTP ${response.status}${recoveryRecommended ? '; session capacity recommends Connector recovery' : ''}`,
       status: response.status,
       ...(sessionCapacity === undefined ? {} : { value: sessionCapacity }),
     };
   } catch (error) {
-    return { ok: false, detail: error instanceof Error ? error.message.slice(0, 180) : 'request failed' };
+    return { ok: false, detail: `${surface} ${error instanceof Error ? error.message.slice(0, 180) : 'request failed'}` };
   } finally {
     clearTimeout(timer);
   }
@@ -1404,6 +1454,8 @@ function primaryRuntimeLaunchdService(config: RecoveryConfig, uid: number): Laun
 }
 
 export interface PrimaryConnectorRecoveryDependencies {
+  /** Durable caller identity propagated into the Recovery mutation lock and audit trail. */
+  requestId?: string;
   platform?: NodeJS.Platform;
   currentUid?: () => Promise<number | undefined>;
   runCommand?: CommandRunner;
@@ -1533,7 +1585,7 @@ export async function restartPrimaryConnector(
   const now = dependencies.now ?? Date.now;
   const wait = dependencies.sleep ?? sleep;
   const timeoutMs = config.primaryConnectorService?.postRestartVerifyTimeoutMs ?? 30_000;
-  const locked = await withLock(config, { action: 'restart_primary_connector' }, async () => {
+  const locked = await withLock(config, { action: 'restart_primary_connector', requestId: dependencies.requestId }, async () => {
     const tunnelConfigured = Boolean(configuredPrimaryPublicTunnel(config));
     const repairConnectorBinding = dependencies.repairConnectorBinding ?? repairPrimaryConnectorBinding;
     const bindingRepair = await repairConnectorBinding(config);
@@ -2887,7 +2939,9 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     return { state: { ...state, recoveryGatewayRestartUsed: true }, decision, verify: verified, recoveryGatewayRestart };
   }
   if (decision.action === 'restart_primary_connector') {
-    const primaryConnectorRestart = await restartPrimaryConnector(config);
+    const primaryConnectorRestart = await restartPrimaryConnector(config, {
+      requestId: `watchdog:restart_primary_connector:${now}`,
+    });
     const attempts = (state.primaryConnectorRestartAttempts ?? 0) + (primaryConnectorRestart.attempted ? 1 : 0);
     const nextState: WatchdogState = primaryConnectorRestart.ok
       ? {
