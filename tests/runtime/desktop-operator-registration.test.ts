@@ -55,10 +55,11 @@ describe('Desktop Operator trusted external registration', () => {
     }
     const press = input.actions.find((action) => action.actionId === 'desktop_press');
     const pressSchema = press?.argumentsSchema as { properties?: Record<string, { enum?: string[] } | undefined> } | undefined;
-    expect(pressSchema?.properties?.semantic_action?.enum).toEqual(['press', 'show_menu', 'pick', 'open', 'confirm']);
+    expect(pressSchema?.properties?.semantic_action?.enum).toEqual(['press', 'show_menu', 'pick', 'open', 'confirm', 'scroll_down_page', 'scroll_up_page']);
     expect(pressSchema?.properties?.force_coordinate).toBeUndefined();
     expect(pressSchema?.properties?.coordinate_fallback).toBeUndefined();
-    expect(press?.description).toContain('pointer/coordinate fallback is intentionally unavailable');
+    expect(press?.description).toContain('one-page list scrolling');
+    expect(press?.description).toContain('pointer/coordinate and raw input fallback are intentionally unavailable');
     expect(input.actions.find((action) => action.actionId === 'desktop_pointer_click')).toBeUndefined();
     expect(input.actions.find((action) => action.actionId === 'desktop_foreground_pointer_click')).toBeUndefined();
     const observe = input.actions.find((action) => action.actionId === 'desktop_observe');

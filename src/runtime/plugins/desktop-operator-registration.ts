@@ -119,7 +119,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'desktop_press',
       title: 'Press desktop element',
-      description: 'Press one Accessibility element semantically in the background; pointer/coordinate fallback is intentionally unavailable.',
+      description: 'Perform one bounded Accessibility semantic action in the background, including one-page list scrolling; pointer/coordinate and raw input fallback are intentionally unavailable.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
@@ -135,8 +135,8 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
           selector: SELECTOR_SCHEMA,
           semantic_action: {
             type: 'string',
-            enum: ['press', 'show_menu', 'pick', 'open', 'confirm'],
-            description: 'Bounded Accessibility action supported by the trusted Desktop Operator provider; defaults to press when omitted.',
+            enum: ['press', 'show_menu', 'pick', 'open', 'confirm', 'scroll_down_page', 'scroll_up_page'],
+            description: 'Bounded Accessibility action supported by the trusted Desktop Operator provider; scroll actions move exactly one page and default to press when omitted.',
           },
         },
         required: ['interaction_id', 'selector'],

@@ -10,7 +10,7 @@ forge plugin catalog
 
 | Plugin ID | Product | Pinned release | Platforms |
 | --- | --- | --- | --- |
-| `desktop_operator` | [Forge Desktop Operator](https://github.com/moretea-labs/forge-desktop-operator) | `v0.2.2` | macOS |
+| `desktop_operator` | [Forge Desktop Operator](https://github.com/moretea-labs/forge-desktop-operator) | `v0.2.3` | macOS |
 | `design` | [Forge Design](https://github.com/moretea-labs/forge-design) | `v0.3.0` | macOS, Linux, Windows |
 | `personal_knowledge` | [Personal Knowledge Assistant](https://github.com/moretea-labs/personal-knowledge-assistant) | `v0.2.1` | macOS, Linux, Windows |
 

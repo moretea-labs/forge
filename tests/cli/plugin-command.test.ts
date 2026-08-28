@@ -17,8 +17,8 @@ describe('official plugin catalog', () => {
     const desktop = officialPluginCatalogItems('darwin').find((entry) => entry.id === 'desktop_operator');
     expect(desktop).toMatchObject({
       id: 'desktop_operator',
-      version: '0.2.2',
-      providerVersion: '0.2.2',
+      version: '0.2.3',
+      providerVersion: '0.2.3',
       compatible: true,
     });
     expect(pluginCatalogCompatibility(desktop!, 'darwin')).toEqual({ compatible: true });
@@ -26,14 +26,14 @@ describe('official plugin catalog', () => {
     const registration = registrationFrom({
       providerInstall: {
         kind: 'desktop_operator',
-        pluginVersion: '0.2.2',
+        pluginVersion: '0.2.3',
         protocolVersion: '1.0',
         socketPath: '/tmp/forge-desktop-operator.sock',
         launchAgentLabel: 'com.moretea.forge.desktop-operator',
         expectedProgramContains: 'Forge Desktop Operator.app',
       },
     }, desktop!);
-    expect(registration.pluginVersion).toBe('0.2.2');
+    expect(registration.pluginVersion).toBe('0.2.3');
     expect(() => registrationFrom({
       providerInstall: {
         kind: 'desktop_operator',
@@ -54,7 +54,7 @@ describe('official plugin catalog', () => {
         expectedProgramContains: 'Forge Desktop Operator.app',
       },
     }, desktop!, { packageIdentityVerified: true });
-    expect(verifiedPackageRegistration.pluginVersion).toBe('0.2.2');
+    expect(verifiedPackageRegistration.pluginVersion).toBe('0.2.3');
   });
 
   test('controller-level listing does not report repository-scoped plugins as missing', () => {
