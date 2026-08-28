@@ -124,8 +124,10 @@ export interface AssistantPluginActionRequest {
   pluginId: string;
   actionId: string;
   requestId: string;
-  /** Optional existing external-effect Work that owns this typed action receipt. */
+  /** Optional existing Work that owns this typed action receipt. */
   workId?: string;
+  /** Durable repository authority for workId. May differ from provider scope for controller-scoped plugins. */
+  workRepoId?: string;
   args: Record<string, unknown>;
   timeoutMs?: number;
   signal?: AbortSignal;

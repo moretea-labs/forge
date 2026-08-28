@@ -114,6 +114,49 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
   });
 }
 
+describe('controller-scoped plugin Work attribution', () => {
+  test('keeps provider receipts controller-scoped while fencing Work in the caller repository', async () => {
+    const { controllerHome, socketPath, repository: providerRepository } = fixture();
+    const logPath = join(controllerHome, 'provider-attribution.log');
+    await startExternalProviderFixture(controllerHome, socketPath, logPath);
+
+    const businessRoot = mkdtempSync(join(tmpdir(), 'forge-plugin-work-attribution-'));
+    roots.push(businessRoot);
+    expect(spawnSync('git', ['init', '-b', 'main'], { cwd: businessRoot, encoding: 'utf8' }).status).toBe(0);
+    writeFileSync(join(businessRoot, 'README.md'), 'fixture\n');
+    expect(spawnSync('git', ['add', '.'], { cwd: businessRoot, encoding: 'utf8' }).status).toBe(0);
+    expect(spawnSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge@example.test', 'commit', '-m', 'init'], { cwd: businessRoot, encoding: 'utf8' }).status).toBe(0);
+    const businessRepository = registerRepository({ path: businessRoot, controllerHome, displayName: 'plugin-work-attribution' });
+    const started = startGoalWorkloop({
+      workStore: { controllerHome, repoId: businessRepository.repoId },
+      handoffStore: { controllerHome, repoId: businessRepository.repoId },
+      repoId: businessRepository.repoId,
+      checkoutId: businessRepository.activeCheckoutId,
+    }, {
+      objective: 'Own one controller-scoped typed plugin observation from the business repository.',
+      acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
+      modeInput: { scopeClear: true, mutation: true, requiresExternalEffect: false, remoteWrite: false, requiresRecovery: true, requiresWorker: false, requiresApproval: false },
+    });
+    const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
+    expect(workId).toBeTruthy();
+
+    const submitted = await submitAssistantPluginAction(controllerHome, providerRepository, {
+      pluginId: 'desktop_operator', actionId: 'desktop_status', requestId: 'controller-scope-work-attribution',
+      workId, workRepoId: businessRepository.repoId, args: {}, origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(submitted.receipt).toMatchObject({
+      status: 'succeeded', repoId: providerRepository.repoId, workRepoId: businessRepository.repoId, workId,
+    });
+    expect(getWorkContract({ controllerHome, repoId: businessRepository.repoId }, workId)).toMatchObject({ status: 'running' });
+    expect(getWorkContract({ controllerHome, repoId: providerRepository.repoId }, workId)).toBeUndefined();
+
+    await expect(submitAssistantPluginAction(controllerHome, providerRepository, {
+      pluginId: 'desktop_operator', actionId: 'desktop_status', requestId: 'controller-scope-work-attribution',
+      workId, workRepoId: providerRepository.repoId, args: {}, origin: { surface: 'mcp', actor: 'test' },
+    })).rejects.toThrow('WORK_PLUGIN_ATTRIBUTION_REPO_CONFLICT');
+  });
+});
+
 function resendFixture(): string {
   const repoRoot = mkdtempSync(join(tmpdir(), 'forge-resend-plugin-'));
   roots.push(repoRoot);

@@ -598,6 +598,8 @@ export interface PluginActionReceipt {
   receiptId: string;
   requestId: string;
   repoId: string;
+  /** Work authority repository when it differs from controller/provider receipt scope. */
+  workRepoId?: string;
   pluginId: string;
   actionId: string;
   semanticKey: string;
@@ -613,6 +615,7 @@ export interface PluginActionReceipt {
 interface PluginActionRequestIndex {
   requestId: string;
   repoId: string;
+  workRepoId?: string;
   receiptId: string;
   semanticKey: string;
   createdAt: string;
@@ -733,6 +736,15 @@ function localEffectTarget(
   };
 }
 
+function workAttributionRepoId(repository: RepositoryRecord, request: AssistantPluginActionRequest): string {
+  const explicit = request.workRepoId?.trim();
+  if (!request.workId?.trim()) {
+    if (explicit) throw new Error(`WORK_PLUGIN_ATTRIBUTION_REPO_WITHOUT_WORK: ${explicit}`);
+    return repository.repoId;
+  }
+  return explicit || repository.repoId;
+}
+
 function remoteEffectWorkForPluginAction(
   controllerHome: string,
   repository: RepositoryRecord,
@@ -745,7 +757,8 @@ function remoteEffectWorkForPluginAction(
   if (action.risk !== 'remote_write') {
     throw new Error(`WORK_PLUGIN_RECEIPT_BINDING_REQUIRES_REMOTE_WRITE: ${action.actionId}`);
   }
-  const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
+  const workRepoId = workAttributionRepoId(repository, request);
+  const work = getWorkContract({ controllerHome, repoId: workRepoId }, workId);
   if (!work) throw new Error(`WORK_PLUGIN_RECEIPT_BINDING_NOT_FOUND: ${workId}`);
   if (work.workKind !== 'remote_effect') {
     throw new Error(`WORK_PLUGIN_RECEIPT_BINDING_KIND_MISMATCH: ${workId} is ${work.workKind}, expected remote_effect`);
@@ -772,8 +785,9 @@ function attributedWorkForPluginAction(
 ): WorkContract | undefined {
   const workId = request.workId?.trim();
   if (!workId || action.risk === 'remote_write') return undefined;
-  const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
-  if (!work) throw new Error(`WORK_PLUGIN_ATTRIBUTION_NOT_FOUND: ${workId}`);
+  const workRepoId = workAttributionRepoId(repository, request);
+  const work = getWorkContract({ controllerHome, repoId: workRepoId }, workId);
+  if (!work) throw new Error(`WORK_PLUGIN_ATTRIBUTION_NOT_FOUND: ${workRepoId}:${workId}`);
   if (isTerminalWorkContractStatus(work.status)) {
     throw new Error(`WORK_PLUGIN_ATTRIBUTION_TERMINAL: ${workId} is ${work.status}`);
   }
@@ -795,7 +809,11 @@ export function finalizeRemoteEffectWorkFromActionReceipt(
     throw new Error(`WORK_REMOTE_EFFECT_FINALIZE_TERMINAL: ${workId} is ${work.status}`);
   }
   const receipt = work.evidenceRefs
-    .map((evidence) => evidence.evidenceId ? readPluginActionReceipt(controllerHome, repoId, evidence.evidenceId) : undefined)
+    .map((evidence) => {
+      if (!evidence.evidenceId) return undefined;
+      return readPluginActionReceipt(controllerHome, repoId, evidence.evidenceId)
+        ?? readPluginActionReceipt(controllerHome, CONTROLLER_SCOPE_REPO_ID, evidence.evidenceId);
+    })
     .find((candidate) => candidate?.workId === workId && candidate.status === 'succeeded');
   if (!receipt) {
     throw new Error(`WORK_REMOTE_EFFECT_FINALIZE_RECEIPT_REQUIRED: ${workId} has no successful durable plugin action receipt`);
@@ -833,9 +851,10 @@ function bindRemoteEffectReceiptToWork(
   const work = remoteEffectWorkForPluginAction(controllerHome, repository, action, request, receipt.receiptId);
   if (!work) return undefined;
   if (work.status === 'completed') return work;
+  const workRepoId = workAttributionRepoId(repository, request);
   let updated = work;
   if (!work.evidenceRefs.some((evidence) => evidence.evidenceId === receipt.receiptId)) {
-    updated = appendWorkEvidence({ controllerHome, repoId: repository.repoId }, work.workId, {
+    updated = appendWorkEvidence({ controllerHome, repoId: workRepoId }, work.workId, {
       evidenceId: receipt.receiptId,
       title: 'typed remote plugin effect completed',
       summary: `${receipt.pluginId}/${receipt.actionId} completed with durable receipt ${receipt.receiptId}.`,
@@ -856,7 +875,7 @@ function bindRemoteEffectReceiptToWork(
     recordedAt: new Date().toISOString(),
   };
   return recordWorkCompletionReceipt(
-    { controllerHome, repoId: repository.repoId },
+    { controllerHome, repoId: workRepoId },
     work.workId,
     remoteReceipt,
     'completed_remote',
@@ -939,6 +958,10 @@ export async function submitAssistantPluginAction(
     }
     if (request.workId && existing.workId !== request.workId) {
       throw new Error(`WORK_PLUGIN_RECEIPT_BINDING_CONFLICT: ${request.requestId} already belongs to Work ${existing.workId ?? 'none'}`);
+    }
+    const requestedWorkRepoId = request.workId ? workAttributionRepoId(repository, request) : undefined;
+    if (requestedWorkRepoId && (index.workRepoId ?? index.repoId) !== requestedWorkRepoId) {
+      throw new Error(`WORK_PLUGIN_ATTRIBUTION_REPO_CONFLICT: ${request.requestId} already belongs to Work repository ${index.workRepoId ?? index.repoId}`);
     }
     if (request.workId && action.risk === 'remote_write') bindRemoteEffectReceiptToWork(controllerHome, repository, action, request, existing);
     return {
@@ -1181,6 +1204,7 @@ export async function submitAssistantPluginAction(
       receiptId,
       requestId: request.requestId,
       repoId: repository.repoId,
+      ...(request.workId ? { workRepoId: workAttributionRepoId(repository, request) } : {}),
       pluginId: request.pluginId,
       actionId: request.actionId,
       semanticKey: key,
@@ -1201,6 +1225,7 @@ export async function submitAssistantPluginAction(
     writeJsonAtomic(requestPath, {
       requestId: request.requestId,
       repoId: repository.repoId,
+      ...(request.workId ? { workRepoId: workAttributionRepoId(repository, request) } : {}),
       receiptId,
       semanticKey: key,
       createdAt,
@@ -1221,7 +1246,7 @@ export async function submitAssistantPluginAction(
     const message = error instanceof Error ? error.message : String(error);
     const code = /^([A-Z][A-Z0-9_]+)/.exec(message)?.[1] ?? 'PLUGIN_ACTION_FAILED';
     if (boundRemoteWork) {
-      appendWorkEvidence({ controllerHome, repoId: repository.repoId }, boundRemoteWork.workId, {
+      appendWorkEvidence({ controllerHome, repoId: workAttributionRepoId(repository, request) }, boundRemoteWork.workId, {
         title: 'typed remote plugin effect failed',
         summary: `${request.pluginId}/${request.actionId}: ${message}`.slice(0, 1_000),
         detailLevel: 'summary',
@@ -1246,6 +1271,7 @@ export async function submitAssistantPluginAction(
       receiptId,
       requestId: request.requestId,
       repoId: repository.repoId,
+      ...(request.workId ? { workRepoId: workAttributionRepoId(repository, request) } : {}),
       pluginId: request.pluginId,
       actionId: request.actionId,
       semanticKey: key,

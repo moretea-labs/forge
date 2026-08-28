@@ -6702,7 +6702,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       }
       case 'plugin_action_execute': {
         const pluginId = String(args.plugin_id ?? '').trim();
+        const workId = typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined;
         const repository = pluginRepository(ctx, args, pluginId);
+        const workRepository = workId ? selected(ctx, args) : undefined;
         const actionId = String(args.action_id ?? '').trim();
         const requestId = String(args.request_id ?? '').trim();
         const actionArguments = args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
@@ -6712,7 +6714,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           pluginId,
           actionId,
           requestId,
-          workId: typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined,
+          workId,
+          ...(workId && workRepository ? { workRepoId: workRepository.repoId } : {}),
           args: actionArguments,
           timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
           signal: ctx.signal,
