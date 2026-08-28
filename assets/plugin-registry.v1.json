@@ -4,12 +4,12 @@
     {
       "id": "desktop_operator",
       "name": "Forge Desktop Operator",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "description": "Native macOS desktop automation provider for Forge.",
       "repository": "https://github.com/moretea-labs/forge-desktop-operator.git",
-      "ref": "v0.2.1",
+      "ref": "v0.2.2",
       "installer": "forge-plugin-install.mjs",
-      "providerVersion": "0.2.1",
+      "providerVersion": "0.2.2",
       "protocolVersion": "1.0",
       "platforms": [
         "darwin"
