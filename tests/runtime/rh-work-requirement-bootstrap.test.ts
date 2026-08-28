@@ -143,6 +143,27 @@ describe('rh_work Requirement bootstrap', () => {
     expect(malformed.status).toBe('ok');
     expect(malformed.data.planContractCreated).toBe(true);
 
+    const repeatedCreate = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'PLAN-LEGACY-MALFORMED',
+      scope_key: 'legacy-malformed-scope',
+      source_revision: sourceRevision,
+      objective: 'Restore the existing draft to a reviewable PlanContract.',
+      plan_steps: [{
+        id: 'repair', objective: 'Repair the draft authority in place.', dependencies: [],
+        authoritative_files: ['src/index.ts'], allowed_paths: ['src/**'], forbidden_paths: [],
+        check_ids: ['package:check:type'], acceptance_criteria: ['The same Plan can be approved.'],
+      }],
+    }));
+    expect(repeatedCreate.status).toBe('ok');
+    expect(repeatedCreate.data.planContractCreated).toBe(false);
+    expect(repeatedCreate.data.repairRequired).toBe(true);
+    expect(repeatedCreate.suggestedNextActions[0]).toMatchObject({
+      operation: 'repair',
+      payload: { plan_id: 'PLAN-LEGACY-MALFORMED', repair_operation: 'repair', dry_run: false },
+    });
+
     const diagnosed = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'repair',

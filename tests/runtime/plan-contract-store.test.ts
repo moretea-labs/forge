@@ -163,6 +163,14 @@ test('repairs a legacy malformed draft in place without replacing Plan authority
     evidenceRefs: legacy.evidenceRefs,
   });
   expect(listPlanContracts({ ...options, status: 'all' })).toHaveLength(1);
+  expect(() => repairDraftPlanContract(options, legacy.planId, {
+    expectedSourceRevision: 'stale-source',
+    scopeKey: legacy.scopeKey,
+    sourceRevision: 'newer-source',
+    goal: 'A stale controller must not overwrite the current draft.',
+    steps: [{ id: 'repair', objective: 'reject stale writer', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['stale source is fenced'] }],
+  })).toThrow(`PLAN_DRAFT_REPAIR_STALE_SOURCE: ${legacy.planId}:expected=stale-source:actual=101a8920`);
+  expect(getPlanContract(options, legacy.planId)?.sourceRevision).toBe('101a8920');
   expect(approvePlanContract(options, legacy.planId).status).toBe('approved');
   expect(() => repairDraftPlanContract(options, legacy.planId, {
     scopeKey: 'legacy-scope', sourceRevision: 'later', goal: 'must not rewrite approved authority',

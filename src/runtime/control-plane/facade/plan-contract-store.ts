@@ -60,7 +60,10 @@ export interface AdmitPlanContractInput extends CreatePlanContractInput {
   relatedPlanId?: string;
 }
 
-export interface RepairDraftPlanContractInput extends Omit<CreatePlanContractInput, 'planId' | 'repoId' | 'requirementId' | 'evidenceRefs'> {}
+export interface RepairDraftPlanContractInput extends Omit<CreatePlanContractInput, 'planId' | 'repoId' | 'requirementId' | 'evidenceRefs'> {
+  /** Source revision observed before entering the admission lock; rejects stale draft writers. */
+  expectedSourceRevision?: string;
+}
 
 export type AdmitPlanContractResult = PlanAdmissionResolution;
 
@@ -334,6 +337,9 @@ function repairDraftPlanContractUnlocked(
   if (index < 0) throw new Error(`plan contract not found: ${key}`);
   const current = store.contracts[index]!;
   if (current.status !== 'draft') throw new Error(`PLAN_DRAFT_REPAIR_STATUS_INVALID: ${current.planId}:${current.status}`);
+  if (input.expectedSourceRevision !== undefined && current.sourceRevision !== input.expectedSourceRevision) {
+    throw new Error(`PLAN_DRAFT_REPAIR_STALE_SOURCE: ${current.planId}:expected=${input.expectedSourceRevision}:actual=${current.sourceRevision}`);
+  }
   assertRequirementReference(options, current.requirementId);
   const at = nowIso(options);
   const candidate = buildPlanContract({

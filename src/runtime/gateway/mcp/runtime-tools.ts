@@ -2385,6 +2385,7 @@ async function runFacadeRepair(
     }
     try {
       const repaired = await repairDraftPlanContractAsync(store, planId, {
+        expectedSourceRevision: plan.sourceRevision,
         scopeKey: typeof args.scope_key === 'string' ? args.scope_key : plan.scopeKey,
         sourceRevision: typeof args.source_revision === 'string' ? args.source_revision : plan.sourceRevision,
         goal: typeof args.objective === 'string' ? args.objective : plan.goal,
@@ -4731,6 +4732,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           try {
             if (operation === 'plan_create') {
               const rawSteps = Array.isArray(args.plan_steps) ? args.plan_steps : [];
+              const requestedPlanId = String(args.plan_id ?? '').trim();
               const requestedRequirementId = typeof args.requirement_id === 'string' && args.requirement_id.trim() ? args.requirement_id.trim() : undefined;
               const requestedPlanRelation: 'extend' | 'parallel' | undefined = args.plan_relation === 'extend' || args.plan_relation === 'parallel'
                 ? args.plan_relation
@@ -4753,16 +4755,43 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               const renderPlanAdmission = (admission: ReturnType<typeof resolvePlanAdmission>): CallToolResult | undefined => {
                 if (admission.admissionDecision === 'create_new') return undefined;
                 if (admission.reason === 'exact_scope_authority' && admission.plan) {
+                  const exactDraftRepair = admission.plan.status === 'draft' && requestedPlanId === admission.plan.planId;
                   const facade = buildFacadeResult({
-                    summary: `PLAN_AUTHORITY_REUSED: active Plan ${admission.plan.planId} already owns scope ${admission.normalizedScopeKey}; no duplicate draft was created.`,
+                    summary: exactDraftRepair
+                      ? `PLAN_DRAFT_REPAIR_REQUIRED: draft Plan ${admission.plan.planId} already owns scope ${admission.normalizedScopeKey}; preserve that authority and amend it through rh_work repair.`
+                      : `PLAN_AUTHORITY_REUSED: active Plan ${admission.plan.planId} already owns scope ${admission.normalizedScopeKey}; no duplicate draft was created.`,
                     data: {
                       plan: summarizePlanContract(admission.plan),
                       executionStarted: false,
                       planContractCreated: false,
                       admissionDecision: 'reuse_existing',
                       resolutionRequired: false,
+                      ...(exactDraftRepair ? { repairRequired: true } : {}),
                     },
-                    suggestedNextActions: [{ label: 'Read active Plan', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: admission.plan.planId }, risk: 'readonly', confidence: 'high' }],
+                    suggestedNextActions: exactDraftRepair
+                      ? [{
+                          label: 'Repair this exact draft Plan',
+                          tool: 'rh_work',
+                          operation: 'repair',
+                          payload: {
+                            plan_id: admission.plan.planId,
+                            repair_operation: 'repair',
+                            dry_run: false,
+                            scope_key: args.scope_key,
+                            source_revision: args.source_revision,
+                            objective: args.objective,
+                            plan_steps: args.plan_steps,
+                            non_goals: args.non_goals,
+                            assumptions: args.assumptions,
+                            resolved_decisions: args.resolved_decisions,
+                            stop_conditions: args.stop_conditions,
+                            replan_conditions: args.replan_conditions,
+                            integration_strategy: args.integration_strategy,
+                          },
+                          risk: 'workspace_write',
+                          confidence: 'high',
+                        }]
+                      : [{ label: 'Read active Plan', tool: 'rh_work', operation: 'plan_get', payload: { plan_id: admission.plan.planId }, risk: 'readonly', confidence: 'high' }],
                   });
                   return result(facade as unknown as Record<string, unknown>);
                 }
