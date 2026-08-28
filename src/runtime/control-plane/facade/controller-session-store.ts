@@ -51,6 +51,8 @@ function write(options: ControllerSessionStoreOptions, store: ControllerSessionS
 
 const DEFAULT_CONTROLLER_RECOVERY_GRACE_MS = 5 * 60_000;
 const MAX_CONTROLLER_RECOVERY_GRACE_MS = 60 * 60_000;
+const DEFAULT_CONTROLLER_LEASE_MS = 60 * 60_000;
+const MAX_CONTROLLER_LEASE_MS = 60 * 60_000;
 
 function activeSession(store: ControllerSessionStore, workId: string): ControllerSession | undefined {
   const at = Date.now();
@@ -101,7 +103,7 @@ function claimedSession(
   previous?: ControllerSession,
 ): ControllerSession {
   const leaseExpiresAt = new Date(
-    Date.parse(claimedAt) + Math.max(1_000, Math.min(input.leaseMs ?? 300_000, 3_600_000)),
+    Date.parse(claimedAt) + Math.max(1_000, Math.min(input.leaseMs ?? DEFAULT_CONTROLLER_LEASE_MS, MAX_CONTROLLER_LEASE_MS)),
   ).toISOString();
   const previousPrincipal = previous?.principalId?.trim() || previous?.controllerId;
   const inputPrincipal = input.principalId?.trim() || input.controllerId;

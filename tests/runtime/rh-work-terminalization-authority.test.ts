@@ -232,6 +232,34 @@ describe('rh_work terminalization authority', () => {
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('ready');
   });
 
+  test('default controller ownership lasts one hour while explicit shorter leases remain bounded', () => {
+    const fx = fixture();
+    const defaultWorkId = 'work-default-one-hour-lease';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, defaultWorkId);
+    const owner = claimControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: defaultWorkId,
+      controllerId: 'principal-default-lease',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-default-lease',
+      principalId: 'principal-default-lease',
+      controllerInstanceId: 'runtime-default-lease',
+    });
+    expect(Date.parse(owner.leaseExpiresAt) - Date.parse(owner.claimedAt)).toBe(60 * 60_000);
+
+    const shortWorkId = 'work-explicit-short-lease';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, shortWorkId);
+    const shortOwner = claimControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: shortWorkId,
+      controllerId: 'principal-short-lease',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-short-lease',
+      principalId: 'principal-short-lease',
+      controllerInstanceId: 'runtime-short-lease',
+      leaseMs: 60_000,
+    });
+    expect(Date.parse(shortOwner.leaseExpiresAt) - Date.parse(shortOwner.claimedAt)).toBe(60_000);
+  });
+
   test('claim generation is fenced atomically and explicit unclaimed user stop remains valid', async () => {
     const fx = fixture();
     const workId = 'work-generation-fence';
