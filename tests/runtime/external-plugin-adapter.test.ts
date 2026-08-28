@@ -224,6 +224,50 @@ describe('external plugin adapter', () => {
     ]);
   });
 
+  test('re-establishes exact verified foreground at the desktop_key action boundary before sending the key chord', async () => {
+    const base = registration();
+    const keyAction = {
+      ...base.actions[0]!, actionId: 'desktop_key', title: 'Press desktop keys', description: 'Foreground-bound key action.',
+      readOnly: false, risk: 'workspace_write' as const, confirmation: 'authorization' as const, scopes: ['desktop.interact'],
+    };
+    const calls: ExternalUnixSocketCallOptions[] = [];
+    const proofTargets: Array<{ bundleId?: string; appName?: string }> = [];
+    const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, keyAction] }), {
+      activateAndVerifyFrontmostApplication: async (target) => {
+        proofTargets.push(target);
+        return { activated: true, verified: true, bundleId: 'com.liguangming.Shadowrocket', appName: 'Shadowrocket', activationCommand: ['/usr/bin/open'], frontmostQueryCommand: ['/usr/bin/lsappinfo'] };
+      },
+      call: async (options) => {
+        calls.push(options);
+        if (options.method === 'manifest') return providerManifest({ actions: ['desktop_status', 'desktop_session_open', 'desktop_key'] });
+        const params = options.params as { action?: string; arguments?: Record<string, unknown> } | undefined;
+        if (params?.action === 'desktop_status') {
+          return { sessions: [{ interactionId: 'desk-shadow-source', bundleIdentifier: 'com.liguangming.Shadowrocket', appName: 'Shadowrocket' }] };
+        }
+        if (params?.action === 'desktop_session_open') {
+          expect(params.arguments).toEqual({ bundle_id: 'com.liguangming.Shadowrocket', launch: false, activate: true });
+          return { interactionId: 'desk-shadow-active' };
+        }
+        if (params?.action === 'desktop_key') {
+          expect(params.arguments).toEqual({ interaction_id: 'desk-shadow-active', keys: ['ESC'] });
+          return { pressed: true };
+        }
+        throw new Error(`unexpected provider action: ${String(params?.action)}`);
+      },
+    });
+
+    const result = await adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator', actionId: 'desktop_key', requestId: 'foreground-key-1',
+      args: { interaction_id: 'desk-shadow-source', keys: ['ESC'] }, origin: { surface: 'mcp' },
+    });
+
+    expect(result).toEqual({ pressed: true });
+    expect(proofTargets).toEqual([{ bundleId: 'com.liguangming.Shadowrocket', appName: undefined }]);
+    expect(calls.slice(1).map((entry) => (entry.params as { action?: string } | undefined)?.action)).toEqual([
+      'desktop_status', 'desktop_session_open', 'desktop_key',
+    ]);
+  });
+
   test('recovers APP_ACTIVATION_FAILED by rebinding first and then requiring exact independent frontmost proof', async () => {
     const base = registration();
     const sessionOpenAction = {

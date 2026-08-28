@@ -603,6 +603,53 @@ export function createExternalPluginAdapter(
         };
       }
 
+      if (registration.pluginId === 'desktop_operator' && input.actionId === 'desktop_key') {
+        const sourceInteractionId = typeof input.args.interaction_id === 'string' ? input.args.interaction_id.trim() : '';
+        const keys = Array.isArray(input.args.keys) ? input.args.keys : [];
+        if (!sourceInteractionId || keys.length === 0) {
+          throw providerError('DESKTOP_FOREGROUND_KEY_ARGUMENT_INVALID', 'desktop_key requires interaction_id and at least one key.');
+        }
+        const sourceStatus = await callProvider(
+          registration,
+          `${input.requestId}:source-status`,
+          'desktop_status',
+          { limit: 500 },
+          input.timeoutMs,
+          input.signal,
+          dependencies,
+        );
+        const sourceSession = desktopSession(sourceStatus, sourceInteractionId);
+        if (!sourceSession) {
+          throw providerError('DESKTOP_FOREGROUND_KEY_SESSION_NOT_FOUND', `Desktop session ${sourceInteractionId} is no longer available.`, true);
+        }
+        const bundleId = firstString(sourceSession, 'bundleIdentifier', 'bundle_id');
+        const appName = firstString(sourceSession, 'appName', 'app_name');
+        if (!bundleId && !appName) {
+          throw providerError('DESKTOP_FOREGROUND_KEY_TARGET_UNAVAILABLE', `Desktop session ${sourceInteractionId} has no stable application identity.`);
+        }
+        const activation = await openVerifiedDesktopSession(
+          registration,
+          `${input.requestId}:activate`,
+          { ...(bundleId ? { bundle_id: bundleId } : { app_name: appName }), launch: false, activate: true },
+          input.timeoutMs,
+          input.signal,
+          dependencies,
+        );
+        const activationInteractionId = firstString(activation, 'interactionId', 'interaction_id');
+        if (!activationInteractionId) {
+          throw providerError('DESKTOP_ACTIVATION_SESSION_MISSING', 'Desktop Operator activated the application without returning a bound interaction session.', true);
+        }
+        return await callProvider(
+          registration,
+          `${input.requestId}:key`,
+          'desktop_key',
+          { interaction_id: activationInteractionId, keys },
+          input.timeoutMs,
+          input.signal,
+          dependencies,
+        );
+      }
+
       if (registration.pluginId === 'desktop_operator' && input.actionId === 'desktop_session_open' && input.args.activate === true) {
         return await openVerifiedDesktopSession(
           registration,

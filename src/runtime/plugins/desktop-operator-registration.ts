@@ -170,7 +170,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'desktop_key',
       title: 'Press desktop keys',
-      description: 'Send one bounded key chord only when the explicit target session is already foreground; the operator never activates it.',
+      description: 'Send one bounded key chord to the exact target session after Forge independently re-establishes and verifies that application as system-frontmost at the action boundary.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
