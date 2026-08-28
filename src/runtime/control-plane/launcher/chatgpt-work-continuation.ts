@@ -256,7 +256,7 @@ async function findChatgptIntelligenceControl(
       // Prefer the composer/main region so sidebar history cannot crowd the
       // reasoning control out of a bounded query. Keep a larger global fallback
       // for ChatGPT layouts that place the control outside <main>.
-      limit: selector.startsWith('main ') ? 80 : 240,
+      limit: chatgptAutomationControlQueryLimit(selector),
       timeout_ms: timeoutMs ?? 60_000,
     }, timeoutMs);
     const match = queryMatches(result).find((candidate) => {
@@ -268,12 +268,19 @@ async function findChatgptIntelligenceControl(
   return undefined;
 }
 
+export function chatgptAutomationControlQueryLimit(selector: string): number {
+  // Long tool-heavy conversations can contribute well over 80 buttons before
+  // the composer controls. Keep the preferred <main> scan bounded but large
+  // enough that the current reasoning control is not crowded out by history.
+  return selector.startsWith('main ') ? 160 : 320;
+}
+
 export function chatgptAutomationControlWaitBudgets(timeoutMs?: number): { waitBudgetMs: number; probeTimeoutMs: number } {
   const waitBudgetMs = Math.min(Math.max(timeoutMs ?? 30_000, 1_000), 30_000);
-  // One probe checks both the preferred <main> scope and the global fallback.
-  // Keep each selector query short enough that one slow pre-hydration pass cannot
-  // consume the whole readiness window before React exposes the reasoning control.
-  return { waitBudgetMs, probeTimeoutMs: Math.min(waitBudgetMs, 2_500) };
+  // Native Chrome attachment has a few seconds of Apple Events/DOM latency on
+  // long conversations. Keep each probe bounded while allowing a real query to
+  // complete; the total readiness window remains capped at 30 seconds.
+  return { waitBudgetMs, probeTimeoutMs: Math.min(waitBudgetMs, 5_000) };
 }
 
 async function waitForChatgptIntelligenceControl(
