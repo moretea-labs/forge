@@ -100,14 +100,22 @@ export function applyScheduleRetryableFailure(
   }
   const countFailure = options.countFailure !== false;
   const nextFailures = countFailure ? schedule.consecutiveFailures + 1 : schedule.consecutiveFailures;
+  const failureState = countFailure && schedule.enabled
+    ? computeScheduleFailureState(schedule, nextFailures)
+    : {
+      consecutiveFailures: nextFailures,
+      nextEligibleAt: countFailure
+        ? schedule.nextEligibleAt
+        : computeScheduleBackoff(schedule, Math.max(1, nextFailures)),
+      enabled: schedule.enabled,
+      pausedReason: schedule.enabled ? undefined : schedule.pausedReason,
+    };
   const nextSchedule = saveSchedule(controllerHome, {
     ...schedule,
-    consecutiveFailures: nextFailures,
-    nextEligibleAt: computeScheduleBackoff(schedule, Math.max(1, nextFailures)),
-    // Retryable readiness/semantic-wait failures never turn a durable schedule
-    // into a manual-resume task. Respect a concurrent explicit pause, however.
-    enabled: schedule.enabled,
-    pausedReason: schedule.enabled ? undefined : schedule.pausedReason,
+    ...failureState,
+    // One transient fault backs off and re-arms. Repeated faults have crossed
+    // the already-declared failure budget and must stop before they consume
+    // further controller sessions or browser interactions.
   });
   return { schedule: nextSchedule, occurrence: nextOccurrence };
 }

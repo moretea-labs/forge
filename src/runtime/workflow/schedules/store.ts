@@ -62,6 +62,30 @@ function occurrenceIndexPath(controllerHome: string, repoId: string): string {
 function requestPath(controllerHome: string, repoId: string, requestId: string): string {
   return join(schedulesRoot(controllerHome, repoId), 'indexes', 'requests', `${createHash('sha256').update(requestId).digest('hex')}.json`);
 }
+
+const EXTERNAL_CONTROLLER_WAKE_MAX_FAILURES = 3;
+const EXTERNAL_CONTROLLER_WAKE_DAILY_BUDGET_MINUTES = 60;
+const EXTERNAL_CONTROLLER_WAKE_MIN_COOLDOWN_MINUTES = 10;
+
+function boundedSchedulePolicy(schedule: RepositorySchedule): RepositorySchedule['policy'] {
+  const policy = {
+    ...schedule.policy,
+    backoffBaseMinutes: Math.max(1, schedule.policy.backoffBaseMinutes ?? schedule.policy.cooldownMinutes ?? 1),
+    backoffMaxMinutes: Math.max(1, schedule.policy.backoffMaxMinutes ?? 24 * 60),
+  };
+  if (schedule.action.operation !== 'external_controller_wake') return policy;
+  // A Work-bound controller wake is expensive and can affect the user's
+  // browser. No schedule payload may convert a transient tool outage into an
+  // all-day retry loop. Larger work needs an explicit future user action after
+  // the bounded lane records useful failure evidence.
+  return {
+    ...policy,
+    maxFailures: Math.max(1, Math.min(policy.maxFailures, EXTERNAL_CONTROLLER_WAKE_MAX_FAILURES)),
+    dailyBudgetMinutes: Math.max(1, Math.min(policy.dailyBudgetMinutes, EXTERNAL_CONTROLLER_WAKE_DAILY_BUDGET_MINUTES)),
+    cooldownMinutes: Math.max(policy.cooldownMinutes, EXTERNAL_CONTROLLER_WAKE_MIN_COOLDOWN_MINUTES),
+    backoffBaseMinutes: Math.max(policy.backoffBaseMinutes, EXTERNAL_CONTROLLER_WAKE_MIN_COOLDOWN_MINUTES),
+  };
+}
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value as Record<string, unknown>)
@@ -136,11 +160,7 @@ export function getSchedule(controllerHome: string, repoId: string, scheduleId: 
     ...schedule,
     revision: Number.isFinite(schedule.revision) ? schedule.revision : 1,
     requestId: schedule.requestId || `legacy-schedule:${schedule.scheduleId}`,
-    policy: {
-      ...schedule.policy,
-      backoffBaseMinutes: Math.max(1, schedule.policy.backoffBaseMinutes ?? schedule.policy.cooldownMinutes ?? 1),
-      backoffMaxMinutes: Math.max(1, schedule.policy.backoffMaxMinutes ?? 24 * 60),
-    },
+    policy: boundedSchedulePolicy(schedule),
     consecutiveNoops: Math.max(0, schedule.consecutiveNoops ?? 0),
   };
 }

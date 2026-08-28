@@ -61,6 +61,13 @@
 - Prevention rule: Materialized script entrypoints for persistent services must pin the absolute, validated installer/runtime executable or declare an explicit interpreter in the service contract. Regression tests must execute with the service manager's minimal PATH, not the developer shell PATH.
 - Where to apply next time: package Runtime/Connector launchers, launchd and systemd service rendering, package install/update cutover, and whole-Runtime activation verification.
 
+## Controller recovery must be a single bounded Work lane
+- Date: 2026-08-28
+- Triggered by correction: Eight independent `external_controller_wake` schedules retried browser and Desktop Operator failures concurrently, with policies allowing up to 720 daily minutes, while retryable settlement bypassed each schedule's own failure circuit breaker.
+- Mistake pattern: Treating every repair hypothesis as an independently recurring controller loop, and giving a Work-originated wake a generic relay prompt that could select or create sibling Work.
+- Prevention rule: For `external_controller_wake`, cap the effective lane at 3 counted failures, 60 daily minutes, and a 10-minute cooldown/backoff; retryable failures must honor that circuit breaker and preserve an explicit pause. Scheduled relay prompts must claim only their origin Work, attempt at most one bounded repair/diagnostic, then record evidence and end the round.
+- Where to apply next time: schedule policy hydration and settlement, external Controller wake engine, Controller relay prompt construction, and canary acceptance before enabling any additional autonomous lane.
+
 ## A running cloud VM is not a healthy Forge execution node
 - Date: 2026-08-26
 - Triggered by correction: The Google Cloud `forge-cloud` e2-micro remained `RUNNING`, but Forge_Cloud calls alternated between Secure Tunnel HTTP 404/429, direct SSH and IAP SSH failed, and serial logs showed repeated WARP main-loop watchdog hangs, QUIC idle timeout, NTP timeout, and journald watchdog restarts.

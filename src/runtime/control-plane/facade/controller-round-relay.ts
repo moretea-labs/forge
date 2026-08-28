@@ -958,6 +958,7 @@ export function claimStalledControllerRoundRelays(
 export function buildControllerRoundRelayPrompt(
   options: ControllerRoundRelayStoreOptions,
   record: ControllerRoundRelayRecord,
+  promptOptions: { exactOriginWork?: boolean } = {},
 ): string {
   const requirement = requirementForRelay(options, record.requirementId);
   const relevantWorks = relevantWork(options, record);
@@ -981,7 +982,9 @@ export function buildControllerRoundRelayPrompt(
     requirementLine,
     `Linked Work snapshot:\n${workLines}`,
     `Active Handoff snapshot:\n${handoffLines}`,
-    `Previous relay origin Work: ${record.originWorkId}. Do not assume the next action must continue that Work; select, start, or claim the appropriate Work from the latest semantic state.`,
+    promptOptions.exactOriginWork
+      ? `This is a Work-bound scheduled round. Claim and advance only origin Work ${record.originWorkId}. Do not select, start, delegate, or resume a sibling Work, create another schedule, or widen scope. If this Work cannot safely advance after one bounded diagnostic or repair attempt, record the exact evidence, submit wait or wait_for_user, release ownership, and end the round.`
+      : `Previous relay origin Work: ${record.originWorkId}. Do not assume the next action must continue that Work; select, start, or claim the appropriate Work from the latest semantic state.`,
     `Mechanical relay budget: round=${record.roundCount}/${record.maxRounds}; repeated_state=${record.repeatedStateCount}/${record.maxRepeatedState}; consecutive_failures=${record.consecutiveFailures}/${record.maxFailures}.`,
     ...(['CONTROLLER_RELAY_ROUND_UNCLOSED', 'CONTROLLER_RELAY_CLAIMED_ROUND_UNCLOSED'].includes(record.lastError ?? '')
       ? ['The previous ChatGPT round did not submit an explicit disposition before its liveness grace elapsed. Forge is only recovering liveness: reread durable state, make the semantic decision in ChatGPT, and close this round explicitly.']

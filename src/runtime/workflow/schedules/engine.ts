@@ -504,7 +504,7 @@ async function executeExternalControllerWake(
           conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
         });
         if (relay.status === 'blocked') throw new Error(`CONTROLLER_RELAY_LAUNCH_BLOCKED: ${relay.blockedReason ?? relay.relayScopeId}`);
-        const relayPrompt = `${buildControllerRoundRelayPrompt(workStore, relay)}\n\nScheduled continuation hint: ${continuationPrompt}`;
+        const relayPrompt = `${buildControllerRoundRelayPrompt(workStore, relay, { exactOriginWork: true })}\n\nScheduled continuation hint: ${continuationPrompt}`;
         const dispatched = await runWorkChatgptContinuation({
           controllerHome,
           repoId: schedule.repoId,

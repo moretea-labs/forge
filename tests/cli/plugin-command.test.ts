@@ -44,6 +44,17 @@ describe('official plugin catalog', () => {
         expectedProgramContains: 'Forge Desktop Operator.app',
       },
     }, desktop!)).toThrow(/PLUGIN_INSTALLER_PROVIDER_VERSION_MISMATCH/);
+    const verifiedPackageRegistration = registrationFrom({
+      providerInstall: {
+        kind: 'desktop_operator',
+        pluginVersion: '0.2.0',
+        protocolVersion: '1.0',
+        socketPath: '/tmp/forge-desktop-operator.sock',
+        launchAgentLabel: 'com.moretea.forge.desktop-operator',
+        expectedProgramContains: 'Forge Desktop Operator.app',
+      },
+    }, desktop!, { packageIdentityVerified: true });
+    expect(verifiedPackageRegistration.pluginVersion).toBe('0.2.1');
   });
 
   test('controller-level listing does not report repository-scoped plugins as missing', () => {

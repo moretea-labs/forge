@@ -63,13 +63,17 @@ export function installerNextSteps(result:Record<string,unknown>):string[]{
     .filter(Boolean)
     .slice(0,10);
 }
-export function registrationFrom(result:Record<string,unknown>,entry:RegistryEntry):ExternalPluginRegistrationInput{
+export function registrationFrom(
+  result:Record<string,unknown>,
+  entry:RegistryEntry,
+  options: { packageIdentityVerified?: boolean } = {},
+):ExternalPluginRegistrationInput{
   if(result.registration){const input=result.registration as ExternalPluginRegistrationInput;if(input.pluginId!==entry.id)throw new Error('PLUGIN_INSTALLER_ID_MISMATCH');if(input.pluginVersion!==entry.version)throw new Error('PLUGIN_INSTALLER_VERSION_MISMATCH');return input;}
   const facts=result.providerInstall as Record<string,unknown>|undefined;
   if(!facts||facts.kind!=='desktop_operator'||entry.id!=='desktop_operator')throw new Error('PLUGIN_INSTALLER_REGISTRATION_MISSING');
   const expectedProviderVersion=entry.providerVersion??entry.version;
   const expectedProtocolVersion=entry.protocolVersion??'1.0';
-  if(facts.pluginVersion!==expectedProviderVersion)throw new Error(`PLUGIN_INSTALLER_PROVIDER_VERSION_MISMATCH: expected ${expectedProviderVersion} for ${entry.id}@${entry.version}, actual ${String(facts.pluginVersion??'missing')}`);
+  if(facts.pluginVersion!==expectedProviderVersion&&!options.packageIdentityVerified)throw new Error(`PLUGIN_INSTALLER_PROVIDER_VERSION_MISMATCH: expected ${expectedProviderVersion} for ${entry.id}@${entry.version}, actual ${String(facts.pluginVersion??'missing')}`);
   if(facts.protocolVersion!==expectedProtocolVersion)throw new Error(`PLUGIN_INSTALLER_PROTOCOL_VERSION_MISMATCH: expected ${expectedProtocolVersion} for ${entry.id}@${entry.version}, actual ${String(facts.protocolVersion??'missing')}`);
   const socketPath=typeof facts.socketPath==='string'?facts.socketPath:'';const launchAgentLabel=typeof facts.launchAgentLabel==='string'?facts.launchAgentLabel:'';const expectedProgramContains=typeof facts.expectedProgramContains==='string'?facts.expectedProgramContains:'';
   if(!isAbsolute(socketPath)||!launchAgentLabel||!expectedProgramContains)throw new Error('PLUGIN_INSTALLER_PROVIDER_FACTS_INVALID');
@@ -86,7 +90,12 @@ function install(entry:RegistryEntry,controllerHome:string):Record<string,unknow
     const manifest=JSON.parse(readFileSync(manifestPath,'utf8')) as Record<string,unknown>;if(manifest.id!==entry.id||manifest.version!==entry.version)throw new Error(`PLUGIN_PACKAGE_IDENTITY_MISMATCH: ${entry.id}`);
     if(existsSync(finalRoot)){renameSync(finalRoot,backup);backed=true;}renameSync(stage,finalRoot);
     const result=installerJson(run(process.execPath,[within(finalRoot,entry.installer)],finalRoot,180000));
-    const installed=installExternalPluginRegistration(controllerHome,registrationFrom(result,entry));
+    // The staged package manifest is checked against the catalog before the
+    // installer runs. Provider identity is then probed through the installed
+    // socket during registry sync. The installer's providerInstall version is
+    // useful diagnostics, but must not strand a verified package when that
+    // helper field is stale.
+    const installed=installExternalPluginRegistration(controllerHome,registrationFrom(result,entry,{packageIdentityVerified:true}));
     const repository=controllerPluginRepository(controllerHome);syncAssistantPluginRegistry(controllerHome,repository);const plugin=getAssistantPluginManifest(controllerHome,repository,entry.id);
     if(backed)rmSync(backup,{recursive:true,force:true});
     return{pluginId:entry.id,version:entry.version,packageRoot:finalRoot,registrationRevision:installed.revision,enabled:plugin.enabled,health:plugin.health,nextSteps:installerNextSteps(result)};
