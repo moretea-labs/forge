@@ -1206,6 +1206,13 @@ export async function callRepositoryTool(
               });
             }
             if (routeClass.route === 'process_direct' || routeClass.route === 'process_managed' || routeClass.route === 'durable') {
+              const processRequestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+              if (executionIdentity.workId && !processRequestId) {
+                throw new Error(
+                  `WORK_PROCESS_REQUEST_ID_REQUIRED: ${executionIdentity.workId}; `
+                  + 'Work-attributed Process Runtime commands require a stable request_id so reconnect/retry can resume the original Process without duplicate execution.',
+                );
+              }
               const processResult = await executeRepositoryCommandViaProcessRuntime({
                 controllerHome,
                 repository,
@@ -1217,7 +1224,7 @@ export async function callRepositoryTool(
                   : typeof args.interactive_wait_ms === 'number' ? args.interactive_wait_ms : undefined,
                 maxOutputBytes,
                 returnHandleImmediately,
-                requestId: typeof args.request_id === 'string' ? args.request_id : undefined,
+                requestId: processRequestId || undefined,
                 workId: executionIdentity.workId,
                 executionIdentity,
                 allowNonGitWorkspace: target.workspace !== undefined,

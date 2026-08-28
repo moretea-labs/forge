@@ -171,6 +171,76 @@ describe("repository MCP command tools", () => {
     }
   });
 
+  test("Work-attributed process commands require a stable request_id before spawn", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-work-process-request-id-"));
+    const controllerHome = join(workspace, "controller");
+    const repoRoot = join(workspace, "repo");
+    mkdirSync(repoRoot, { recursive: true });
+    try {
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "README.md"), "base\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-m", "init"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
+      writeFileSync(join(repoRoot, "tracked.txt"), "v1\n");
+      const workId = "WORK-PROCESS-REQUEST-ID";
+      createWorkContract({ controllerHome, repoId: repository.repoId }, {
+        workId,
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        mode: "goal_workloop",
+        objective: "process execution remains resumable after transport loss",
+        acceptanceCriteria: ["stable request id exists before spawn"],
+        allowedPaths: ["tracked.txt"],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: "chatgpt",
+        status: "running",
+      });
+      const caller = { sessionId: "session-process-request-id", principalId: "principal-process-request-id", controllerInstanceId: "runtime-process-request-id" };
+      claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+        workId,
+        controllerId: caller.principalId,
+        controllerType: "chatgpt",
+        sessionId: caller.sessionId,
+        principalId: caller.principalId,
+        controllerInstanceId: caller.controllerInstanceId,
+        leaseMs: 60_000,
+      });
+
+      const preview = await json(callRepositoryTool(controllerHome, "repository_command_preview", {
+        repo_id: repository.repoId,
+        command: "git add tracked.txt",
+      }, caller));
+      expect(typeof preview.approvalToken).toBe("string");
+
+      const missingKey = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        work_id: workId,
+        command: "git add tracked.txt",
+        approval_token: preview.approvalToken,
+      }, caller));
+      expect(missingKey.error).toMatchObject({ code: "WORK_PROCESS_REQUEST_ID_REQUIRED" });
+      expect(spawnSync("git", ["-C", repoRoot, "status", "--short"], { encoding: "utf8" }).stdout).toContain("?? tracked.txt");
+
+      const keyed = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        work_id: workId,
+        command: "git add tracked.txt",
+        approval_token: preview.approvalToken,
+        request_id: "work-process-request-id-stable",
+      }, caller));
+      expect(keyed.accepted).toBe(true);
+      expect(typeof keyed.processId).toBe("string");
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("terminal-bound execution session cannot omit work_id and fall back to unbound repository mutation", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-terminal-bound-attribution-"));
     const controllerHome = join(workspace, "controller");
