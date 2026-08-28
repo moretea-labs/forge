@@ -91,7 +91,7 @@ export interface RuntimeMaintenanceCandidate {
   sourceControllerHome?: string;
   objective?: string;
   continuationPrompt?: string;
-  disposition?: 'resume_or_supersede_review' | 'completion_reconciliation' | 'ownership_reconciliation' | 'source_preservation_required';
+  disposition?: 'resume_or_supersede_review' | 'completion_reconciliation' | 'ownership_reconciliation' | 'source_preservation_required' | 'semantic_completion_required';
   sourceState?: 'no_managed_source' | 'clean_integrated' | 'dirty_worktree' | 'unintegrated_commits' | 'source_state_unknown';
 }
 
@@ -584,10 +584,20 @@ function inspectStaleWorkRepositorySource(
   };
 }
 
-function staleWorkCandidateReason(source: StaleWorkSourceInspection): string {
-  return source.safeToCancel
-    ? `Nonterminal WorkContract exceeded the explicit maintenance age threshold and has no active Plan, Requirement, Schedule, or Controller authority. ${source.detail} Explicit full maintenance may cancel Work metadata while retaining durable evidence.`
-    : `Protected stale Work: no active lifecycle authority remains, but repository source preservation is required. ${source.detail} The Work must remain nonterminal until source is explicitly adopted, delivered, or cleanup is semantically authorized.`;
+function staleWorkSemanticTerminalizationReady(contract: WorkContract): boolean {
+  if (contract.phase !== 'cleanup') return false;
+  return (['implementation', 'verification', 'delivery'] as const).every((phase) =>
+    ['satisfied', 'skipped'].includes(contract.phaseEvidence[phase].state));
+}
+
+function staleWorkCandidateReason(source: StaleWorkSourceInspection, semanticReady: boolean): string {
+  if (!source.safeToCancel) {
+    return `Protected stale Work: no active lifecycle authority remains, but repository source preservation is required. ${source.detail} The Work must remain nonterminal until source is explicitly adopted, delivered, or cleanup is semantically authorized.`;
+  }
+  if (!semanticReady) {
+    return `Protected stale Work: repository source has no unique live changes, but the Work semantic lifecycle has not reached cleanup with implementation, verification, and delivery explicitly satisfied or skipped. ${source.detail} Maintenance may clean source debt, but it cannot infer that the objective or acceptance criteria are complete.`;
+  }
+  return `Cleanup-ready WorkContract exceeded the explicit maintenance age threshold and has no active Plan, Requirement, Schedule, or Controller authority. ${source.detail} Explicit full maintenance may finish cleanup while retaining durable evidence.`;
 }
 
 function scanRetainedWorktreeCandidates(
@@ -738,19 +748,26 @@ function scanStaleWorkContractCandidates(
     })
     .sort((left, right) => right.ageMinutes - left.ageMinutes)
     .slice(0, options.maxCandidates)
-    .map(({ contract, ageMinutes, source }) => ({
-      kind: 'stale_work_contract' as const,
-      id: contract.workId,
-      path: source.path,
-      status: contract.status,
-      safe: source.safeToCancel,
-      reason: staleWorkCandidateReason(source),
-      ageMinutes,
-      suggestedAction: 'full_maintenance_pass' as const,
-      ownershipStatus: 'explicit' as const,
-      sourceState: source.state,
-      disposition: source.safeToCancel ? undefined : ('source_preservation_required' as const),
-    }));
+    .map(({ contract, ageMinutes, source }) => {
+      const semanticReady = staleWorkSemanticTerminalizationReady(contract);
+      return {
+        kind: 'stale_work_contract' as const,
+        id: contract.workId,
+        path: source.path,
+        status: contract.status,
+        safe: source.safeToCancel && semanticReady,
+        reason: staleWorkCandidateReason(source, semanticReady),
+        ageMinutes,
+        suggestedAction: 'full_maintenance_pass' as const,
+        ownershipStatus: 'explicit' as const,
+        sourceState: source.state,
+        disposition: !source.safeToCancel
+          ? ('source_preservation_required' as const)
+          : !semanticReady
+            ? ('semantic_completion_required' as const)
+            : undefined,
+      };
+    });
 }
 
 export function applyStaleWorkContractMaintenanceCandidate(
@@ -794,25 +811,38 @@ export function applyStaleWorkContractMaintenanceCandidate(
           ...candidate,
           path: source.path ?? candidate.path,
           safe: false,
-          reason: staleWorkCandidateReason(source),
+          reason: staleWorkCandidateReason(source, staleWorkSemanticTerminalizationReady(current)),
           sourceState: source.state,
           disposition: 'source_preservation_required' as const,
           applied: false,
           result: `work_source_preserved:${source.state}`,
         };
       }
+      const semanticReady = staleWorkSemanticTerminalizationReady(current);
+      if (!semanticReady) {
+        return {
+          ...candidate,
+          path: source.path ?? candidate.path,
+          safe: false,
+          reason: staleWorkCandidateReason(source, false),
+          sourceState: source.state,
+          disposition: 'semantic_completion_required' as const,
+          applied: false,
+          result: 'work_semantic_completion_required',
+        };
+      }
       transitionWorkContractPhase({ controllerHome, repoId: repository.repoId }, current.workId, {
         phase: 'cleanup',
         status: 'cancelled',
         state: 'skipped',
-        summary: 'Cancelled by explicit full maintenance stale Work cleanup after proving no unique live repository source; durable evidence retained.',
+        summary: 'Cancelled by explicit full maintenance after the Work had already reached cleanup with prior semantic phases satisfied and no unique live repository source remained; durable evidence retained.',
         evidenceRefs: current.evidenceRefs,
       });
       return {
         ...candidate,
         path: source.path ?? candidate.path,
         safe: true,
-        reason: staleWorkCandidateReason(source),
+        reason: staleWorkCandidateReason(source, true),
         sourceState: source.state,
         disposition: undefined,
         applied: true,
