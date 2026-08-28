@@ -584,7 +584,7 @@ export function beginInitialControllerRoundDispatch(
     // chain, while submit/recovery paths continue to accumulate these budgets.
     const roundCount = 1;
     const repeatedStateCount = 0;
-    const consecutiveFailures = previous?.consecutiveFailures ?? 0;
+    const consecutiveFailures = 0;
     let blockedReason: string | undefined;
     if (roundCount > maxRounds) blockedReason = `round_budget_exhausted:${roundCount}>${maxRounds}`;
     else if (repeatedStateCount >= maxRepeatedState) blockedReason = `repeated_state:${repeatedStateCount}>=${maxRepeatedState}`;

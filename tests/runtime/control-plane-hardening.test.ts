@@ -1024,6 +1024,44 @@ describe('scheduled external Controller wake', () => {
     expect(blocked).toMatchObject({ status: 'blocked', repeatedStateCount: 2, blockedReason: 'repeated_state:2>=2' });
   });
 
+  test('starts a fresh launch-failure budget for a later external wake after the prior closed chain exhausted it', () => {
+    const root = temp('forge-controller-relay-fresh-failure-budget-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'fresh failure budget\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-fresh-failure-budget' });
+    const workId = 'WORK-RELAY-FRESH-FAILURE-BUDGET';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
+      objective: 'Allow a later scheduled wake to recover after a transient launcher failure exhausted the prior relay chain.',
+      acceptanceCriteria: ['A new explicit wake gets a fresh relay-local failure budget.'],
+      allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+    });
+    const store = { controllerHome, repoId: repository.repoId };
+    const first = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-failed' },
+      maxFailures: 1,
+    });
+    expect(first).toMatchObject({ status: 'dispatching', consecutiveFailures: 0, maxFailures: 1 });
+    const failed = finishControllerRoundRelayDispatch(store, { workId, ok: false, error: 'HTTP 502' });
+    expect(failed).toMatchObject({ status: 'failed', consecutiveFailures: 1, maxFailures: 1 });
+
+    const second = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-retry' },
+      maxFailures: 1,
+    });
+    expect(second).toMatchObject({ status: 'dispatching', consecutiveFailures: 0, maxFailures: 1, roundCount: 1, repeatedStateCount: 0 });
+    expect(second.blockedReason).toBeUndefined();
+    expect(() => beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-duplicate' },
+      maxFailures: 1,
+    })).toThrow(/CONTROLLER_RELAY_ROUND_ALREADY_OPEN/);
+  });
+
   test('recovers continue_immediately when the controller lease is released before pending_release can enter dispatching', () => {
     const root = temp('forge-controller-relay-release-gap-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
