@@ -29,6 +29,20 @@ export interface MacOsBrowserTabRef {
   tabId: string;
 }
 
+export interface MacOsBrowserCreateTabNavigationProvenance {
+  provenanceVersion: 1;
+  requestedUrl: string;
+  assignmentAccepted: true;
+  acceptedBy?: string;
+  observedUrlAfterAssignment?: string;
+}
+
+export interface MacOsBrowserCreateTabEvidence {
+  ref: MacOsBrowserTabRef;
+  refSource: 'structured' | 'legacy_value';
+  navigation?: MacOsBrowserCreateTabNavigationProvenance;
+}
+
 export interface MacOsBrowserMetadata {
   product: MacOsBrowserProduct;
   appName: string;
@@ -131,6 +145,85 @@ const defaultRuntimeHooks: MacOsBrowserRuntimeHooks = {
     }
   },
 };
+
+export function parseMacOsBrowserCreateTabBrokerResult(result: Record<string, unknown>): MacOsBrowserCreateTabEvidence {
+  const structuredRef = result.ref;
+  let ref: MacOsBrowserTabRef;
+  let refSource: MacOsBrowserCreateTabEvidence['refSource'];
+  if (structuredRef !== undefined) {
+    if (!structuredRef || typeof structuredRef !== 'object' || Array.isArray(structuredRef)) {
+      throw new AssistantPluginError('PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR', 'Stable Forge macOS capability broker returned an invalid create-tab ref.', { retryable: true });
+    }
+    const record = structuredRef as Record<string, unknown>;
+    if (typeof record.windowId !== 'string' || !record.windowId.trim() || typeof record.tabId !== 'string' || !record.tabId.trim()) {
+      throw new AssistantPluginError('PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR', 'Stable Forge macOS capability broker returned an incomplete create-tab ref.', { retryable: true });
+    }
+    ref = { windowId: record.windowId, tabId: record.tabId };
+    refSource = 'structured';
+    if (typeof result.value === 'string') {
+      const legacyParts = result.value.split(RECORD_SEPARATOR);
+      if (legacyParts.length >= 2) {
+        const legacyRef = {
+          windowId: parseBrowserId(legacyParts[0] ?? '', 'window id'),
+          tabId: parseBrowserId(legacyParts[1] ?? '', 'tab id'),
+        };
+        if (legacyRef.windowId !== ref.windowId || legacyRef.tabId !== ref.tabId) {
+          throw new AssistantPluginError('PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR', 'Stable Forge macOS capability broker returned conflicting structured and legacy create-tab refs.', { retryable: true });
+        }
+      }
+    }
+  } else {
+    if (typeof result.value !== 'string') {
+      throw new AssistantPluginError('PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR', 'Stable Forge macOS capability broker returned no create-tab ref.', { retryable: true });
+    }
+    const parts = result.value.split(RECORD_SEPARATOR);
+    if (parts.length < 2) throw new AssistantPluginError('PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR', 'Stable Forge macOS capability broker returned incomplete legacy create-tab metadata.', { retryable: true });
+    ref = { windowId: parseBrowserId(parts[0] ?? '', 'window id'), tabId: parseBrowserId(parts[1] ?? '', 'tab id') };
+    refSource = 'legacy_value';
+  }
+
+  const navigationValue = result.navigation;
+  if (navigationValue === undefined) return { ref, refSource };
+  if (!navigationValue || typeof navigationValue !== 'object' || Array.isArray(navigationValue)) {
+    throw new AssistantPluginError('PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR', 'Stable Forge macOS capability broker returned invalid create-tab navigation provenance.', { retryable: true });
+  }
+  const navigation = navigationValue as Record<string, unknown>;
+  if (navigation.provenanceVersion !== 1
+    || typeof navigation.requestedUrl !== 'string'
+    || navigation.assignmentAccepted !== true) {
+    throw new AssistantPluginError('PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR', 'Stable Forge macOS capability broker returned incomplete create-tab navigation provenance.', { retryable: true });
+  }
+  if (navigation.acceptedBy !== undefined && typeof navigation.acceptedBy !== 'string') {
+    throw new AssistantPluginError('PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR', 'Stable Forge macOS capability broker returned invalid create-tab acceptedBy provenance.', { retryable: true });
+  }
+  if (navigation.observedUrlAfterAssignment !== undefined && typeof navigation.observedUrlAfterAssignment !== 'string') {
+    throw new AssistantPluginError('PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR', 'Stable Forge macOS capability broker returned invalid create-tab observed URL provenance.', { retryable: true });
+  }
+  return {
+    ref,
+    refSource,
+    navigation: {
+      provenanceVersion: 1,
+      requestedUrl: navigation.requestedUrl,
+      assignmentAccepted: true,
+      ...(navigation.acceptedBy ? { acceptedBy: navigation.acceptedBy } : {}),
+      ...(navigation.observedUrlAfterAssignment ? { observedUrlAfterAssignment: navigation.observedUrlAfterAssignment } : {}),
+    },
+  };
+}
+
+async function runCreateTabAutomation(
+  request: Extract<BrowserAutomationBrokerAction, { action: 'create_tab' }>,
+  testScript: string,
+  testArgs: string[],
+  timeoutMs: number,
+): Promise<MacOsBrowserCreateTabEvidence> {
+  if (runtimeHooks.runAppleScript) {
+    const value = await runtimeHooks.runAppleScript(testScript, testArgs, timeoutMs);
+    return parseMacOsBrowserCreateTabBrokerResult({ value });
+  }
+  return parseMacOsBrowserCreateTabBrokerResult(await callBrowserAutomationBroker(request, timeoutMs));
+}
 
 async function runBrowserAutomationText(
   request: BrowserAutomationBrokerAction,
@@ -673,12 +766,18 @@ export class MacOsAppleEventsPage {
   private readonly browser: MacOsBrowserDefinition;
   private timeoutMs: number;
   private targetRef?: MacOsBrowserTabRef;
+  private readonly createTabEvidence?: MacOsBrowserCreateTabEvidence;
 
-  constructor(attachment: MacOsBrowserAttachment, timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS, targetRef?: MacOsBrowserTabRef) {
+  constructor(attachment: MacOsBrowserAttachment, timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS, targetRef?: MacOsBrowserTabRef, createTabEvidence?: MacOsBrowserCreateTabEvidence) {
     this.metadata = { ...attachment.metadata, ...(targetRef ? { windowId: targetRef.windowId, tabId: targetRef.tabId } : {}) };
     this.browser = browserDefinition(attachment.metadata.product);
     this.timeoutMs = timeoutMs;
     this.targetRef = targetRef;
+    this.createTabEvidence = createTabEvidence ? {
+      ...createTabEvidence,
+      ref: { ...createTabEvidence.ref },
+      ...(createTabEvidence.navigation ? { navigation: { ...createTabEvidence.navigation } } : {}),
+    } : undefined;
   }
 
   private async runAutomation(
@@ -739,6 +838,14 @@ export class MacOsAppleEventsPage {
 
   tabRef(): MacOsBrowserTabRef | undefined {
     return this.targetRef ? { ...this.targetRef } : undefined;
+  }
+
+  creationEvidence(): MacOsBrowserCreateTabEvidence | undefined {
+    return this.createTabEvidence ? {
+      ...this.createTabEvidence,
+      ref: { ...this.createTabEvidence.ref },
+      ...(this.createTabEvidence.navigation ? { navigation: { ...this.createTabEvidence.navigation } } : {}),
+    } : undefined;
   }
 
   updateTimeout(timeoutMs: number): void {
@@ -1342,19 +1449,17 @@ export async function createMacOsBrowserOwnedPage(
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<MacOsAppleEventsPage> {
   const browser = browserDefinition(attachment.metadata.product);
-  const raw = await runBrowserAutomationText(
+  const creationEvidence = await runCreateTabAutomation(
     { action: 'create_tab', product: attachment.metadata.product, url },
     createOwnedTabScript(browser),
     [url],
     timeoutMs,
   );
-  const parts = raw.split(RECORD_SEPARATOR);
-  if (parts.length < 2) throw new Error(`Browser scripting returned incomplete owned-tab metadata for ${browser.appName}.`);
-  const ref = { windowId: parseBrowserId(parts[0] ?? '', 'window id'), tabId: parseBrowserId(parts[1] ?? '', 'tab id') };
+  const ref = creationEvidence.ref;
   const page = new MacOsAppleEventsPage({
     ...attachment,
     metadata: { ...attachment.metadata, url, title: '', windowId: ref.windowId, tabId: ref.tabId, active: false },
-  }, timeoutMs, ref);
+  }, timeoutMs, ref, creationEvidence);
   rememberMacOsBrowserPageHandle(attachment.metadata.product, ref, page);
   return page;
 }

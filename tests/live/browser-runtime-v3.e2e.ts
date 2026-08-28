@@ -115,9 +115,17 @@ async function closeSession(sessionId: string): Promise<void> {
 
 async function createBrokerTab(product: MacOsBrowserProduct, url: string): Promise<{ windowId: string; tabId: string }> {
   const created = await callBrowserAutomationBroker({ action: 'create_tab', product, url }, 8_000);
-  const [windowId, tabId] = String(created.value ?? '').split(separator);
-  assert(windowId && tabId, `broker create_tab returned incomplete ref for ${product}`);
-  const ref = { windowId, tabId };
+  const [legacyWindowId, legacyTabId] = String(created.value ?? '').split(separator);
+  const structuredRef = created.ref as Record<string, unknown> | undefined;
+  const navigation = created.navigation as Record<string, unknown> | undefined;
+  assert(structuredRef && typeof structuredRef.windowId === 'string' && typeof structuredRef.tabId === 'string', `broker create_tab returned incomplete structured ref for ${product}`);
+  assert.equal(structuredRef.windowId, legacyWindowId, `broker create_tab structured/legacy window ref diverged for ${product}`);
+  assert.equal(structuredRef.tabId, legacyTabId, `broker create_tab structured/legacy tab ref diverged for ${product}`);
+  assert(navigation, `broker create_tab returned no navigation provenance for ${product}`);
+  assert.equal(navigation.provenanceVersion, 1, `broker create_tab returned unsupported provenance for ${product}`);
+  assert.equal(navigation.requestedUrl, url, `broker create_tab did not preserve exact requestedUrl for ${product}`);
+  assert.equal(navigation.assignmentAccepted, true, `broker create_tab did not prove URL assignment for ${product}`);
+  const ref = { windowId: structuredRef.windowId as string, tabId: structuredRef.tabId as string };
   brokerOwnedTabs.push({ product, ref });
   return ref;
 }

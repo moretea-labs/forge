@@ -45,6 +45,7 @@ import {
   macOsActiveBrowserAttachSupported,
   macOsBrowserJavaScriptAutomationDisabled,
   type MacOsBrowserAttachAttempt,
+  type MacOsBrowserCreateTabEvidence,
   type MacOsBrowserProduct,
   type MacOsBrowserTabRef,
 } from './browser-macos-bridge';
@@ -1290,6 +1291,27 @@ export function nativeReplacementUrlMatchesTarget(requestedUrl: string, actualUr
   }
 }
 
+export function nativeReplacementAssignmentProvenanceProvesTarget(
+  evidence: MacOsBrowserCreateTabEvidence | undefined,
+  requestedUrl: string,
+  replacementRef: MacOsBrowserTabRef,
+): boolean {
+  if (!evidence || evidence.refSource !== 'structured' || !evidence.navigation) return false;
+  if (evidence.ref.windowId !== replacementRef.windowId || evidence.ref.tabId !== replacementRef.tabId) return false;
+  return evidence.navigation.provenanceVersion === 1
+    && evidence.navigation.assignmentAccepted === true
+    && evidence.navigation.requestedUrl === requestedUrl;
+}
+
+export function nativeReplacementPostAssignmentUrlMatchesTarget(
+  requestedUrl: string,
+  actualUrl: string,
+  assignmentProvenanceProven: boolean,
+): boolean {
+  if (nativeReplacementUrlMatchesTarget(requestedUrl, actualUrl)) return true;
+  return assignmentProvenanceProven && sameOrigin(actualUrl, requestedUrl);
+}
+
 export async function settleNativeCreatedPageIdentity(
   page: {
     waitForLoadState: (state?: string, options?: Record<string, unknown>) => Promise<void>;
@@ -2265,9 +2287,34 @@ async function openNativeAttachedContext(
     } catch (error) {
       if (!nativeBackgroundNavigationRequiresReplacement(error) || effectiveOwnership === 'user_owned' || !obsoleteRef) throw error;
       const replacement = await createMacOsBrowserOwnedPage(activeAttachment, target.url, timeout) as unknown as PageLike;
-      const replacementRef = (replacement as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
+      const replacementPage = replacement as unknown as {
+        tabRef?: () => MacOsBrowserTabRef | undefined;
+        creationEvidence?: () => MacOsBrowserCreateTabEvidence | undefined;
+      };
+      const replacementRef = replacementPage.tabRef?.();
       if (!replacementRef) {
         throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Native replacement tab did not return a stable plugin-owned tab reference.', { retryable: true });
+      }
+      const creationEvidence = replacementPage.creationEvidence?.();
+      const assignmentProvenanceProven = nativeReplacementAssignmentProvenanceProvesTarget(creationEvidence, target.url, replacementRef);
+      if (!assignmentProvenanceProven) {
+        await closeMacOsBrowserOwnedTab(activeAttachment.metadata.product, replacementRef, timeout).catch(() => undefined);
+        throw new AssistantPluginError(
+          'PLUGIN_BROWSER_NATIVE_REPLACEMENT_PROVENANCE_UNPROVEN',
+          'Native replacement tab did not prove exact requested-URL assignment through the stable create-tab provenance contract; preserving the original plugin-owned tab.',
+          {
+            retryable: true,
+            details: {
+              browserProduct: activeAttachment.metadata.product,
+              stableRef: creationEvidence?.refSource === 'structured',
+              provenanceVersion: creationEvidence?.navigation?.provenanceVersion ?? null,
+              assignmentAccepted: creationEvidence?.navigation?.assignmentAccepted === true,
+              requestedUrlMatches: creationEvidence?.navigation
+                ? creationEvidence.navigation.requestedUrl === target.url
+                : false,
+            },
+          },
+        );
       }
       try {
         const previousUrl = target.existingSession?.url ?? candidate.url();
@@ -2280,7 +2327,7 @@ async function openNativeAttachedContext(
           timeout,
           { requestedUrl: target.url, previousUrl },
         );
-        if (!nativeReplacementUrlMatchesTarget(target.url, identity.url)) {
+        if (!nativeReplacementPostAssignmentUrlMatchesTarget(target.url, identity.url, assignmentProvenanceProven)) {
           const diagnostic = nativeReplacementMismatchDiagnostic({
             requestedUrl: target.url,
             actualUrl: identity.url,

@@ -4,7 +4,9 @@ import {
   invalidateBrowserRuntime,
 } from '../../src/runtime/plugins/browser-runtime';
 import {
+  nativeReplacementAssignmentProvenanceProvesTarget,
   nativeReplacementMismatchDiagnostic,
+  nativeReplacementPostAssignmentUrlMatchesTarget,
   nativeReplacementUrlMatchesTarget,
   settleNativeCreatedPageIdentity,
 } from '../../src/runtime/plugins/browser-adapter';
@@ -17,6 +19,7 @@ import {
   invalidateMacOsBrowserPageHandle,
   invalidateMacOsBrowserPageHandles,
   nativeDomLoadStateSatisfied,
+  parseMacOsBrowserCreateTabBrokerResult,
   reattachMacOsBrowserOwnedPage,
   resetMacOsBrowserRuntimeHooksForTest,
   setMacOsBrowserRuntimeHooksForTest,
@@ -61,6 +64,106 @@ function provider(options: {
     revalidate: options.revalidate,
   };
 }
+
+describe('Browser Runtime V3 native create-tab provenance', () => {
+  test('prefers the structured stable ref and preserves exact assignment provenance', () => {
+    const evidence = parseMacOsBrowserCreateTabBrokerResult({
+      value: `window-42${nativeSeparator}tab-99`,
+      ref: { windowId: 'window-42', tabId: 'tab-99' },
+      navigation: {
+        provenanceVersion: 1,
+        requestedUrl: 'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
+        assignmentAccepted: true,
+        acceptedBy: 'chrome_applescript_url_set',
+        observedUrlAfterAssignment: 'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
+      },
+    });
+    expect(evidence).toEqual({
+      ref: { windowId: 'window-42', tabId: 'tab-99' },
+      refSource: 'structured',
+      navigation: {
+        provenanceVersion: 1,
+        requestedUrl: 'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
+        assignmentAccepted: true,
+        acceptedBy: 'chrome_applescript_url_set',
+        observedUrlAfterAssignment: 'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
+      },
+    });
+    expect(nativeReplacementAssignmentProvenanceProvesTarget(
+      evidence,
+      'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
+      { windowId: 'window-42', tabId: 'tab-99' },
+    )).toBe(true);
+  });
+
+  test('keeps legacy value parsing compatible but insufficient for replacement authority', () => {
+    const evidence = parseMacOsBrowserCreateTabBrokerResult({ value: `window-legacy${nativeSeparator}tab-legacy` });
+    expect(evidence).toEqual({
+      ref: { windowId: 'window-legacy', tabId: 'tab-legacy' },
+      refSource: 'legacy_value',
+    });
+    expect(nativeReplacementAssignmentProvenanceProvesTarget(
+      evidence,
+      'https://chatgpt.com/',
+      evidence.ref,
+    )).toBe(false);
+  });
+
+  test('fails replacement authority for mismatched request or stable ref', () => {
+    const evidence = parseMacOsBrowserCreateTabBrokerResult({
+      ref: { windowId: 'window-1', tabId: 'tab-2' },
+      navigation: { provenanceVersion: 1, requestedUrl: 'https://chatgpt.com/c/exact', assignmentAccepted: true },
+    });
+    expect(nativeReplacementAssignmentProvenanceProvesTarget(
+      evidence,
+      'https://chatgpt.com/c/other',
+      evidence.ref,
+    )).toBe(false);
+    expect(nativeReplacementAssignmentProvenanceProvesTarget(
+      evidence,
+      'https://chatgpt.com/c/exact/',
+      evidence.ref,
+    )).toBe(false);
+    expect(nativeReplacementAssignmentProvenanceProvesTarget(
+      evidence,
+      'https://chatgpt.com/c/exact',
+      { windowId: 'window-1', tabId: 'tab-other' },
+    )).toBe(false);
+  });
+
+  test('accepts same-origin canonicalization only after exact assignment proof and never accepts wrong origin', () => {
+    expect(nativeReplacementPostAssignmentUrlMatchesTarget(
+      'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
+      'https://www.tunemymusic.com/',
+      true,
+    )).toBe(true);
+    expect(nativeReplacementPostAssignmentUrlMatchesTarget(
+      'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
+      'https://www.tunemymusic.com/',
+      false,
+    )).toBe(false);
+    expect(nativeReplacementPostAssignmentUrlMatchesTarget(
+      'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
+      'https://example.com/',
+      true,
+    )).toBe(false);
+  });
+
+  test('rejects conflicting structured and legacy stable refs', () => {
+    expect(() => parseMacOsBrowserCreateTabBrokerResult({
+      value: `legacy-window${nativeSeparator}legacy-tab`,
+      ref: { windowId: 'window-1', tabId: 'tab-2' },
+    })).toThrow('conflicting structured and legacy create-tab refs');
+  });
+
+  test('rejects malformed structured provenance instead of silently downgrading to legacy value', () => {
+    expect(() => parseMacOsBrowserCreateTabBrokerResult({
+      value: `window-1${nativeSeparator}tab-2`,
+      ref: { windowId: 'window-1', tabId: 'tab-2' },
+      navigation: { provenanceVersion: 1, requestedUrl: 'https://chatgpt.com/', assignmentAccepted: false },
+    })).toThrow('incomplete create-tab navigation provenance');
+  });
+});
 
 describe('Browser Runtime V3 native replacement postconditions', () => {
   test('accepts same-origin canonical landing only for an HTTP(S) origin-root target', () => {
