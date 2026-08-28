@@ -521,6 +521,10 @@ describe('repository command execution lifecycle', () => {
       modeInput: {
         scopeClear: true,
         mutation: true,
+        // Source-changing Work must carry concrete repository-change evidence;
+        // allowed/likely paths are policy/discovery hints and are not ownership proof.
+        expectedFiles: 1,
+        expectedChangedLines: 1,
         requiresExternalEffect: true,
         remoteWrite: true,
         risk: 'remote_write',
