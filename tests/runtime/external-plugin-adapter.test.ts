@@ -319,7 +319,46 @@ describe('external plugin adapter', () => {
     })).rejects.toThrow('DESKTOP_ACTIVATION_FALLBACK_FAILED');
   });
 
-  test('fails activated desktop session open when the provider cannot prove the application became frontmost', async () => {
+  test('independently proves exact system frontmost identity after the provider reports activated-session success', async () => {
+    const base = registration();
+    const sessionOpenAction = {
+      ...base.actions[0]!,
+      actionId: 'desktop_session_open',
+      title: 'Open desktop session',
+      description: 'Open session.',
+      readOnly: false,
+      risk: 'workspace_write' as const,
+      confirmation: 'authorization' as const,
+      scopes: ['desktop.session'],
+    };
+    const proofTargets: Array<{ bundleId?: string; appName?: string }> = [];
+    const providerActions: string[] = [];
+    const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, sessionOpenAction] }), {
+      activateAndVerifyFrontmostApplication: async (target) => {
+        proofTargets.push(target);
+        return { activated: true, verified: true, bundleId: 'com.vivaldi.Vivaldi', appName: 'Vivaldi', activationCommand: ['/usr/bin/open'], frontmostQueryCommand: ['/usr/bin/lsappinfo'] };
+      },
+      call: async (options) => {
+        if (options.method === 'manifest') return providerManifest({ actions: ['desktop_status', 'desktop_session_open'] });
+        const params = options.params as { action?: string } | undefined;
+        providerActions.push(String(params?.action ?? ''));
+        if (params?.action === 'desktop_session_open') return { interactionId: 'desk-new' };
+        throw new Error(`unexpected provider action: ${String(params?.action)}`);
+      },
+    });
+
+    const result = await adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator',
+      actionId: 'desktop_session_open', requestId: 'activate-independently-proven',
+      args: { bundle_id: 'com.vivaldi.Vivaldi', launch: false, activate: true }, origin: { surface: 'mcp' },
+    });
+
+    expect(result).toEqual({ interactionId: 'desk-new' });
+    expect(proofTargets).toEqual([{ bundleId: 'com.vivaldi.Vivaldi', appName: undefined }]);
+    expect(providerActions).toEqual(['desktop_session_open']);
+  });
+
+  test('fails activated desktop session open when independent system frontmost proof cannot be established', async () => {
     const base = registration();
     const sessionOpenAction = {
       ...base.actions[0]!,
@@ -332,13 +371,13 @@ describe('external plugin adapter', () => {
       scopes: ['desktop.session'],
     };
     const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, sessionOpenAction] }), {
+      activateAndVerifyFrontmostApplication: async () => {
+        throw new AssistantPluginError('DESKTOP_FALLBACK_ACTIVATION_NOT_CONFIRMED', 'wrong app remained frontmost', { retryable: true });
+      },
       call: async (options) => {
         if (options.method === 'manifest') return providerManifest({ actions: ['desktop_status', 'desktop_session_open'] });
         const params = options.params as { action?: string } | undefined;
         if (params?.action === 'desktop_session_open') return { interactionId: 'desk-new' };
-        if (params?.action === 'desktop_status') {
-          return { applications: [{ active: false, terminated: false, bundle_id: 'com.vivaldi.Vivaldi', name: 'Vivaldi' }] };
-        }
         throw new Error(`unexpected provider action: ${String(params?.action)}`);
       },
     });

@@ -248,13 +248,23 @@ function desktopSession(status: Record<string, unknown>, interactionId: string):
   return recordArray(status.sessions).find((session) => firstString(session, 'interactionId', 'interaction_id') === interactionId);
 }
 
-function desktopApplicationIsActive(status: Record<string, unknown>, bundleId: string, appName: string): boolean {
-  return recordArray(status.applications).some((application) => {
-    if (application.active !== true || application.terminated === true) return false;
-    const candidateBundleId = firstString(application, 'bundle_id', 'bundleIdentifier');
-    const candidateName = firstString(application, 'name', 'appName');
-    return bundleId ? candidateBundleId === bundleId : Boolean(appName) && candidateName === appName;
-  });
+async function independentlyEnsureExactFrontmostDesktopApplication(
+  bundleId: string,
+  appName: string,
+  dependencies: ExternalPluginAdapterDependencies,
+): Promise<void> {
+  const activateAndVerify = dependencies.activateAndVerifyFrontmostApplication ?? activateAndVerifyFrontmostApplication;
+  const proof = await activateAndVerify({ bundleId: bundleId || undefined, appName: appName || undefined });
+  const proofBundleId = typeof proof.bundleId === 'string' ? proof.bundleId.trim() : '';
+  const proofAppName = typeof proof.appName === 'string' ? proof.appName.trim() : '';
+  const proofMatches = bundleId ? proofBundleId === bundleId : proofAppName === appName;
+  if (proof.activated !== true || proof.verified !== true || !proofMatches) {
+    throw new AssistantPluginError(
+      'DESKTOP_ACTIVATION_FALLBACK_IDENTITY_MISMATCH',
+      `Forge did not prove the exact requested application ${bundleId || appName} as frontmost.`,
+      { retryable: true, details: { target: { bundleId, appName }, observed: { bundleId: proofBundleId, appName: proofAppName } } },
+    );
+  }
 }
 
 async function openVerifiedDesktopSession(
@@ -272,7 +282,7 @@ async function openVerifiedDesktopSession(
   }
 
   let result: Record<string, unknown>;
-  let fallbackVerified = false;
+  let providerActivationError: AssistantPluginError | undefined;
   try {
     result = await callProvider(
       registration,
@@ -285,7 +295,7 @@ async function openVerifiedDesktopSession(
     );
   } catch (error) {
     if (!(error instanceof AssistantPluginError) || error.code !== 'APP_ACTIVATION_FAILED') throw error;
-
+    providerActivationError = error;
     result = await callProvider(
       registration,
       `${requestId}:fallback-session`,
@@ -295,59 +305,36 @@ async function openVerifiedDesktopSession(
       signal,
       dependencies,
     );
-
-    const activateFallback = dependencies.activateAndVerifyFrontmostApplication ?? activateAndVerifyFrontmostApplication;
-    try {
-      const fallbackProof = await activateFallback({ bundleId: bundleId || undefined, appName: appName || undefined });
-      const proofBundleId = typeof fallbackProof.bundleId === 'string' ? fallbackProof.bundleId.trim() : '';
-      const proofAppName = typeof fallbackProof.appName === 'string' ? fallbackProof.appName.trim() : '';
-      const proofMatches = bundleId ? proofBundleId === bundleId : proofAppName === appName;
-      if (fallbackProof.activated !== true || fallbackProof.verified !== true || !proofMatches) {
-        throw new AssistantPluginError(
-          'DESKTOP_ACTIVATION_FALLBACK_IDENTITY_MISMATCH',
-          `Forge fallback did not prove the exact requested application ${bundleId || appName} as frontmost.`,
-          { retryable: true, details: { target: { bundleId, appName }, observed: { bundleId: proofBundleId, appName: proofAppName } } },
-        );
-      }
-      fallbackVerified = true;
-    } catch (fallbackError) {
-      if (fallbackError instanceof AssistantPluginError) {
-        throw new AssistantPluginError(
-          'DESKTOP_ACTIVATION_FALLBACK_FAILED',
-          `Desktop Operator activation failed and Forge could not independently verify ${bundleId || appName} as frontmost.`,
-          {
-            retryable: fallbackError.retryable,
-            details: {
-              providerErrorCode: error.code,
-              fallbackErrorCode: fallbackError.code,
-              fallbackErrorMessage: fallbackError.message,
-              target: bundleId || appName,
-            },
-          },
-        );
-      }
-      throw new AssistantPluginError(
-        'DESKTOP_ACTIVATION_FALLBACK_FAILED',
-        `Desktop Operator activation failed and Forge fallback failed for ${bundleId || appName}.`,
-        { retryable: true, details: { providerErrorCode: error.code, fallbackErrorMessage: String(fallbackError), target: bundleId || appName } },
-      );
-    }
   }
 
-  if (!fallbackVerified) {
-    const activeStatus = await callProvider(
-      registration,
-      `${requestId}:active-status`,
-      'desktop_status',
-      { limit: 500 },
-      timeoutMs,
-      signal,
-      dependencies,
-    );
-    if (!desktopApplicationIsActive(activeStatus, bundleId, appName)) {
-      throw providerError('DESKTOP_ACTIVATION_NOT_CONFIRMED', `Desktop Operator did not confirm ${bundleId || appName} as the frontmost application after activation.`, true);
+  try {
+    await independentlyEnsureExactFrontmostDesktopApplication(bundleId, appName, dependencies);
+  } catch (verificationError) {
+    const wrappedCode = providerActivationError ? 'DESKTOP_ACTIVATION_FALLBACK_FAILED' : 'DESKTOP_ACTIVATION_NOT_CONFIRMED';
+    const wrappedMessage = providerActivationError
+      ? `Desktop Operator activation failed and Forge could not independently verify ${bundleId || appName} as frontmost.`
+      : `Desktop Operator returned an activated session, but Forge could not independently verify ${bundleId || appName} as frontmost.`;
+    if (verificationError instanceof AssistantPluginError) {
+      throw new AssistantPluginError(wrappedCode, wrappedMessage, {
+        retryable: verificationError.retryable,
+        details: {
+          ...(providerActivationError ? { providerErrorCode: providerActivationError.code } : {}),
+          verificationErrorCode: verificationError.code,
+          verificationErrorMessage: verificationError.message,
+          target: bundleId || appName,
+        },
+      });
     }
+    throw new AssistantPluginError(wrappedCode, wrappedMessage, {
+      retryable: true,
+      details: {
+        ...(providerActivationError ? { providerErrorCode: providerActivationError.code } : {}),
+        verificationErrorMessage: String(verificationError),
+        target: bundleId || appName,
+      },
+    });
   }
+
   return result;
 }
 
