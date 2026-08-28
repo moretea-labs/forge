@@ -857,6 +857,8 @@ export async function verifyStableRuntime(
     probes.external_mcp_http = await probeExternalMcp(transport, config.publicMcpUrl);
     probes.primary_connector_ready = await probePublicGatewayReadiness(transport, config.publicMcpUrl);
   }
+  const primaryConnectorLocal = await probePrimaryConnectorLocal(config, transport);
+  if (primaryConnectorLocal) probes.primary_connector_local = primaryConnectorLocal;
   if (config.gateway) probes.recovery_gateway = await probe(transport, `http://${config.gateway.host}:${config.gateway.port}/health`);
   const watchdogHealth = observeRecoveryWatchdogHealth(config.controllerHome);
   probes.recovery_watchdog = {
@@ -1424,10 +1426,13 @@ function primaryConnectorLaunchdService(config: RecoveryConfig, uid: number): La
   return { uid, domain, target: `${domain}/${label}`, label, plistPath };
 }
 
-async function probePrimaryConnectorLocal(config: RecoveryConfig): Promise<{ ok: boolean; detail: string; status?: number } | undefined> {
+async function probePrimaryConnectorLocal(
+  config: RecoveryConfig,
+  transport = createRecoveryHttpTransport(config.controllerHome),
+): Promise<{ ok: boolean; detail: string; status?: number } | undefined> {
   const localMcpUrl = config.primaryConnectorService?.localMcpUrl?.trim();
   if (!localMcpUrl) return undefined;
-  return probeExternalMcp(createRecoveryHttpTransport(config.controllerHome), localMcpUrl);
+  return probeExternalMcp(transport, localMcpUrl);
 }
 
 function activePackageConnectorReleaseBinding(config: RecoveryConfig): PackageConnectorReleaseBinding | undefined {
@@ -2710,17 +2715,29 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   const recoveryHealthy = verified.probes.recovery_gateway?.ok !== false
     && verified.probes.recovery_external_http?.ok !== false;
   const primaryRuntimeHealthy = localVerify.ok;
-  const primaryConnectorConfigured = Boolean(config.primaryConnectorService && config.publicMcpUrl);
+  const primaryConnectorConfigured = Boolean(config.primaryConnectorService);
+  const primaryConnectorLocalFailed = verified.probes.primary_connector_local?.ok === false;
+  const primaryConnectorCapacityFailed = connectorCapacityRecoveryRecommended(verified);
+  const primaryPublicTransportManaged = Boolean(configuredPrimaryPublicTunnel(config));
+  const primaryPublicTransportFailed = Boolean(
+    config.publicMcpUrl
+    && primaryRuntimeHealthy
+    && !primaryConnectorCapacityFailed
+    && (
+      verified.probes.external_mcp_http?.ok === false
+      || verified.probes.primary_connector_ready?.ok === false
+    ),
+  );
   const primaryConnectorFailed = Boolean(
     primaryConnectorConfigured
     && primaryRuntimeHealthy
     && (
-      verified.probes.external_mcp_http?.ok === false
-      || verified.probes.primary_connector_ready?.ok === false
-      || connectorCapacityRecoveryRecommended(verified)
+      primaryConnectorLocalFailed
+      || primaryConnectorCapacityFailed
+      || (primaryPublicTransportManaged && primaryPublicTransportFailed)
     ),
   );
-  if (primaryRuntimeHealthy && !primaryConnectorFailed && recoveryHealthy) {
+  if (primaryRuntimeHealthy && !primaryConnectorFailed && !primaryPublicTransportFailed && recoveryHealthy) {
     if (fullVerificationPerformed && verified.ok && !matchingKnownGood(config, verified.releases.active)) {
       try {
         const attestation = await withLock(config, { action: 'attest_known_good' }, async () => persistVerifiedKnownGood(config, verified));
@@ -2758,6 +2775,26 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
       lastReason: 'primary runtime and standalone Recovery verification passed',
     };
     return { state, decision: { action: 'healthy', reason: 'primary runtime and standalone Recovery verification passed' }, verify: verified };
+  }
+  if (primaryRuntimeHealthy && !primaryConnectorFailed && primaryPublicTransportFailed && recoveryHealthy) {
+    const reason = primaryPublicTransportManaged
+      ? 'primary public transport is unavailable but no safely repairable primary Connector path was established'
+      : 'primary public transport is unavailable while the local Connector is healthy, but no managed primary public tunnel is configured; external transport repair is required';
+    const state: WatchdogState = {
+      ...recordWatchdogRuntimeHealthy(
+        scopeWatchdogStateToRuntimeRelease(scopedPrior, verified.releases.active),
+        now,
+        watchdogRuntimeRestartBudgetStableMs(config),
+      ),
+      failures: scopedPrior.failures + 1,
+      firstFailureAt: scopedPrior.firstFailureAt ?? now,
+      primaryConnectorFailures: 0,
+      primaryConnectorFirstFailureAt: undefined,
+      lastFullVerifyAt,
+      lastDecision: 'degraded',
+      lastReason: reason,
+    };
+    return { state, decision: { action: 'degraded', reason }, verify: verified };
   }
   const publicTunnelFailed = isExternalTunnelFailure(config, verified, localVerify);
   const evidenceClasses = Object.entries(localVerify.probes)

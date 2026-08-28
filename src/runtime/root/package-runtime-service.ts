@@ -357,6 +357,10 @@ async function cleanupActivationHelper(request: PackageRuntimeActivationRequest)
 async function rollbackPackageRuntimeActivation(
   request: PackageRuntimeActivationRequest,
   installDarwinService: typeof installForgeRuntimeService,
+  options: {
+    restoreConnector?: boolean;
+    ensureConnectorService?: typeof ensurePackageConnectorService;
+  } = {},
 ): Promise<string[]> {
   const errors: string[] = [];
   const servicePaths = forgeRuntimeServicePaths(request.controllerHome);
@@ -389,6 +393,28 @@ async function rollbackPackageRuntimeActivation(
       });
     } catch (error) {
       errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  if (options.restoreConnector && request.connectorEndpoint && request.priorAuthorityPresent) {
+    try {
+      const restored = readRuntimeReleaseAuthority(request.controllerHome);
+      if (!restored) throw new Error('FORGE_PACKAGE_CONNECTOR_ROLLBACK_AUTHORITY_MISSING');
+      const releaseRoot = dirname(resolve(restored.active.manifestPath));
+      const packageRoot = join(releaseRoot, 'package');
+      const ensureConnectorService = options.ensureConnectorService ?? ensurePackageConnectorService;
+      await ensureConnectorService({
+        release: {
+          releaseId: restored.active.releaseId,
+          releaseRoot,
+          packageRoot,
+        },
+        controllerHome: request.controllerHome,
+        endpoint: request.connectorEndpoint,
+        platform: 'darwin',
+        refresh: true,
+      });
+    } catch (error) {
+      errors.push(`primary Connector rollback failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   return errors;
@@ -428,7 +454,10 @@ export async function activateScheduledPackageRuntimeService(
     return writeActivationReceipt(request, 'activated', { servicePath: paths.installedPlistPath });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    const rollbackErrors = await rollbackPackageRuntimeActivation(request, installDarwinService);
+    const rollbackErrors = await rollbackPackageRuntimeActivation(request, installDarwinService, {
+      restoreConnector: Boolean(request.connectorEndpoint),
+      ensureConnectorService,
+    });
     writeActivationReceipt(request, 'failed+rollback', {
       error: detail,
       rollbackSucceeded: rollbackErrors.length === 0,

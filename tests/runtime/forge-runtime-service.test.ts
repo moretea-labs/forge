@@ -22,7 +22,7 @@ import {
   type PackageRuntimeActivationRequest,
 } from '../../src/runtime/root/package-runtime-service';
 import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
-import { ensurePackageConnectorService, packageConnectorEndpointStatusHealthy, packageConnectorLaunchSpec, packageConnectorServiceMatchesRelease, packageConnectorServicePaths, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit } from '../../src/runtime/root/package-connector-service';
+import { ensurePackageConnectorService, packageConnectorEndpointStatusHealthy, packageConnectorLaunchSpec, packageConnectorServiceMatchesRelease, packageConnectorServicePaths, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit, waitForPackageConnectorEndpointReady } from '../../src/runtime/root/package-connector-service';
 import { retireConflictingForgeLaunchAgents } from '../../src/cli/controller/launch-agents';
 import { writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 
@@ -339,6 +339,66 @@ describe('Forge Runtime service', () => {
     expect(receipt?.releaseId).toBe(result.release.releaseId);
   });
 
+  test('restores the prior immutable Connector binding when candidate Connector cutover fails', async () => {
+    const fx = fixture();
+    const priorPackageRoot = join(fx.root, 'package-prior');
+    const candidatePackageRoot = join(fx.root, 'package-candidate');
+    for (const packageRoot of [priorPackageRoot, candidatePackageRoot]) {
+      for (const dir of ['src', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+      writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: packageRoot === priorPackageRoot ? '9.9.8-test' : '9.9.9-test' }));
+      writeFileSync(join(packageRoot, 'src', 'runtime.ts'), `export const runtime = '${packageRoot === priorPackageRoot ? 'prior' : 'candidate'}';\n`);
+      writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
+    }
+    const priorRelease = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot: priorPackageRoot, operationId: 'prior-runtime' });
+    writeForgeRuntimeServiceConfig({
+      schemaVersion: 1,
+      controllerHome: fx.home,
+      repositoryRoot: priorRelease.packageRoot,
+      host: '127.0.0.1',
+      port: 8765,
+      authTokenFile: fx.token,
+    });
+    syncForgeRuntimeActiveEntrypoint(fx.home);
+    writeMcpServiceLocalConfig(fx.home, { chatgpt: { localEndpoint: 'http://127.0.0.1:8767/mcp' } });
+
+    let scheduled: PackageRuntimeActivationRequest | undefined;
+    const result = await installPackageRuntimeService({
+      controllerHome: fx.home,
+      packageRoot: candidatePackageRoot,
+      authTokenFile: fx.token,
+      platform: 'darwin',
+    }, {
+      scheduleDarwinActivation: async (request) => {
+        scheduled = request;
+        return { label: request.helperLabel, servicePath: request.helperInstalledPlistPath };
+      },
+      installDarwinService: async () => forgeRuntimeServicePaths(fx.home),
+    });
+    expect(result.status).toBe('activation_scheduled');
+    expect(scheduled?.priorAuthorityPresent).toBe(true);
+
+    const connectorCalls: Array<{ releaseId: string; refresh?: boolean }> = [];
+    await expect(activateScheduledPackageRuntimeService(scheduled!, {
+      installDarwinService: async () => forgeRuntimeServicePaths(fx.home),
+      ensureConnectorService: async (input) => {
+        connectorCalls.push({ releaseId: input.release.releaseId, refresh: input.refresh });
+        if (input.release.releaseId === result.release.releaseId) throw new Error('FORGE_PACKAGE_CONNECTOR_ENDPOINT_NOT_READY: synthetic');
+        return { endpoint: input.endpoint, mode: 'launchd', persistent: true, releaseId: input.release.releaseId, releaseRoot: input.release.releaseRoot };
+      },
+      waitForInstallerExit: async () => {},
+      cleanupActivationHelper: async () => {},
+    })).rejects.toThrow('FORGE_PACKAGE_RUNTIME_ACTIVATION_FAILED_ROLLED_BACK');
+
+    expect(connectorCalls).toEqual([
+      { releaseId: result.release.releaseId, refresh: false },
+      { releaseId: priorRelease.releaseId, refresh: true },
+    ]);
+    expect(readRuntimeReleaseAuthority(fx.home)?.active.releaseId).toBe(priorRelease.releaseId);
+    const receipt = readPackageRuntimeActivationReceipt(result.activation!.receiptPath);
+    expect(receipt?.status).toBe('failed+rollback');
+    expect(receipt?.rollbackSucceeded).toBe(true);
+  });
+
   test('persists failed+rollback when detached activation fails after scheduling', async () => {
     const fx = fixture(), packageRoot = join(fx.root, 'package-detached-failure');
     for (const dir of ['src', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
@@ -489,6 +549,36 @@ describe('Forge Runtime service', () => {
     expect(packageConnectorEndpointStatusHealthy(404)).toBe(false);
     expect(packageConnectorEndpointStatusHealthy(500)).toBe(false);
     expect(packageConnectorEndpointStatusHealthy(502)).toBe(false);
+  });
+
+  test('waits for the package Connector OAuth listener before declaring cutover ready', async () => {
+    let probes = 0;
+    let now = 0;
+    const ready = await waitForPackageConnectorEndpointReady('http://127.0.0.1:8767/mcp', {
+      timeoutMs: 500,
+      pollIntervalMs: 100,
+      now: () => now,
+      wait: async (ms) => { now += ms; },
+      probeEndpoint: async () => {
+        probes += 1;
+        return probes >= 3;
+      },
+    });
+    expect(ready).toBe(true);
+    expect(probes).toBe(3);
+    expect(now).toBe(200);
+
+    probes = 0;
+    now = 0;
+    const timedOut = await waitForPackageConnectorEndpointReady('http://127.0.0.1:8767/mcp', {
+      timeoutMs: 200,
+      pollIntervalMs: 100,
+      now: () => now,
+      wait: async (ms) => { now += ms; },
+      probeEndpoint: async () => { probes += 1; return false; },
+    });
+    expect(timedOut).toBe(false);
+    expect(probes).toBe(3);
   });
 
   test('reuses a healthy persistent public Gateway without rewriting its service or authority', async () => {

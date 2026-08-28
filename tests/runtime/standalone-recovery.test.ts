@@ -243,6 +243,30 @@ async function runtimeServer(options: { challengeUnauthenticatedMcp?: boolean } 
   return { port: address.port, endpoint: `http://127.0.0.1:${address.port}/mcp`, requests };
 }
 
+async function failingPublicGatewayServer(status = 530): Promise<{ endpoint: string; requests: RuntimeRequestRecord[] }> {
+  const requests: RuntimeRequestRecord[] = [];
+  const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+    requests.push({
+      method: request.method,
+      url: request.url,
+      authorizationPresent: typeof request.headers.authorization === 'string',
+      accept: request.headers.accept,
+      contentType: request.headers['content-type'],
+      body: '',
+    });
+    response.statusCode = status;
+    response.end(JSON.stringify({ error: 'upstream_transport_unavailable' }));
+  });
+  servers.push(server);
+  await new Promise<void>((done, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => done());
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('failing public Gateway test server unavailable');
+  return { endpoint: `http://127.0.0.1:${address.port}/mcp`, requests };
+}
+
 async function saturatedPublicGatewayServer(): Promise<{ endpoint: string; requests: RuntimeRequestRecord[] }> {
   const requests: RuntimeRequestRecord[] = [];
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
@@ -754,6 +778,52 @@ describe('standalone recovery on canonical Runtime', () => {
       jsonrpc: '2.0',
       method: 'initialize',
     });
+  });
+
+  test('keeps an unmanaged external 530 separate from a healthy local primary Connector', async () => {
+    const home = controllerHome();
+    const activeManifest = manifest(home, 'release-primary-transport-530', 'artifact-primary-transport-530');
+    ensureActiveRuntimeRelease(home, activeManifest);
+    const runtime = await runtimeServer({ challengeUnauthenticatedMcp: true });
+    const connector = await runtimeServer({ challengeUnauthenticatedMcp: true });
+    const publicGateway = await failingPublicGatewayServer(530);
+    writeMainToken(home);
+    startObservedRuntime(
+      home,
+      runtime.endpoint,
+      'release-primary-transport-530',
+      'artifact-primary-transport-530',
+      new Date(Date.now() - 120_000).toISOString(),
+    );
+    const config = createRecoveryConfig(home, {
+      publicMcpUrl: publicGateway.endpoint,
+      primaryConnectorService: {
+        platform: 'launchd',
+        label: 'com.moretea.forge.mcp-gateway',
+        localMcpUrl: connector.endpoint,
+        minimumFailures: 1,
+        minimumFailureDurationMs: 0,
+      },
+    });
+
+    const verified = await verifyStableRuntime(config, undefined, { probeMcpProtocol: false });
+    expect(verified.ok).toBe(false);
+    expect(verified.probes.external_mcp_http).toMatchObject({ ok: false, status: 530 });
+    expect(verified.probes.primary_connector_ready).toMatchObject({ ok: false, status: 530 });
+    expect(verified.probes.primary_connector_local).toMatchObject({ ok: true, status: 401 });
+
+    const tick = await watchdogTick(config, {
+      failures: 0,
+      rollbackUsed: false,
+      lastFullVerifyAt: Date.now(),
+    });
+    expect(tick.decision).toMatchObject({
+      action: 'degraded',
+      reason: expect.stringContaining('no managed primary public tunnel is configured'),
+    });
+    expect(tick.state.primaryConnectorFailures ?? 0).toBe(0);
+    expect(tick.state.primaryConnectorRestartAttempts ?? 0).toBe(0);
+    expect(tick.verify.probes.primary_connector_local).toMatchObject({ ok: true, status: 401 });
   });
 
   test('turns public Gateway session-capacity exhaustion into the existing bounded Connector recovery decision', async () => {

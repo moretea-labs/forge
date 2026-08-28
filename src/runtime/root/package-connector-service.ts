@@ -122,6 +122,30 @@ async function defaultConnectorEndpointProbe(endpoint: string): Promise<boolean>
   }
 }
 
+export async function waitForPackageConnectorEndpointReady(
+  endpoint: string,
+  options: {
+    timeoutMs?: number;
+    pollIntervalMs?: number;
+    probeEndpoint?: (endpoint: string) => Promise<boolean>;
+    wait?: (ms: number) => Promise<void>;
+    now?: () => number;
+  } = {},
+): Promise<boolean> {
+  const timeoutMs = Math.max(0, options.timeoutMs ?? 15_000);
+  const pollIntervalMs = Math.max(10, options.pollIntervalMs ?? 100);
+  const probeEndpoint = options.probeEndpoint ?? defaultConnectorEndpointProbe;
+  const wait = options.wait ?? ((ms: number) => new Promise<void>((resolveWait) => setTimeout(resolveWait, ms)));
+  const now = options.now ?? Date.now;
+  const deadline = now() + timeoutMs;
+  do {
+    if (await probeEndpoint(endpoint)) return true;
+    if (now() >= deadline) return false;
+    await wait(Math.min(pollIntervalMs, Math.max(1, deadline - now())));
+  } while (now() <= deadline);
+  return false;
+}
+
 export function packageConnectorLaunchSpec(input: { release: PackageConnectorReleaseBinding; controllerHome: string; endpoint: string; executable?: string }): { executable: string; args: string[]; environment: Record<string, string>; port: number } {
   const parsed = new URL(input.endpoint);
   const port = Number(parsed.port);
@@ -226,7 +250,7 @@ function startPortable(paths: PackageConnectorServicePaths, launch: ReturnType<t
   } finally { closeSync(stdout); closeSync(stderr); }
 }
 
-export async function installPackageConnectorService(input: { release: PackageConnectorReleaseBinding; controllerHome: string; endpoint: string; platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; forcePortable?: boolean }): Promise<PackageConnectorServiceResult> {
+export async function installPackageConnectorService(input: { release: PackageConnectorReleaseBinding; controllerHome: string; endpoint: string; platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; forcePortable?: boolean; probeEndpoint?: (endpoint: string) => Promise<boolean> }): Promise<PackageConnectorServiceResult> {
   const paths = packageConnectorServicePaths(input.controllerHome, input.env?.HOME);
   mkdirSync(join(paths.serviceRoot, 'logs'), { recursive: true, mode: 0o700 });
   const launch = packageConnectorLaunchSpec({ release: input.release, controllerHome: input.controllerHome, endpoint: input.endpoint });
@@ -243,6 +267,8 @@ export async function installPackageConnectorService(input: { release: PackageCo
     installLaunchAgent(paths.sourcePlistPath, paths.label);
     const result = await bootstrapLaunchAgentWithRetryV2({ label: paths.label, plistPath: paths.installedPlistPath });
     if (!result.ok) throw new Error(`FORGE_PACKAGE_CONNECTOR_LAUNCHD_INSTALL_FAILED: ${result.diagnostics.join('; ')}`);
+    const endpointReady = await waitForPackageConnectorEndpointReady(input.endpoint, { probeEndpoint: input.probeEndpoint });
+    if (!endpointReady) throw new Error(`FORGE_PACKAGE_CONNECTOR_ENDPOINT_NOT_READY: ${input.endpoint}`);
     const installed = { endpoint: input.endpoint, mode: 'launchd' as const, persistent: true, servicePath: paths.installedPlistPath, releaseId: input.release.releaseId, releaseRoot: input.release.releaseRoot };
     writePackageConnectorServiceAuthority({ release: input.release, controllerHome: input.controllerHome, result: installed });
     return installed;
