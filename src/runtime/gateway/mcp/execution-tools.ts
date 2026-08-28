@@ -493,7 +493,7 @@ function exactCommitChangedPaths(repoRoot: string, revision: string): string[] {
 }
 
 function workOwnedDirtyPaths(
-  contract: ReturnType<typeof contractFor>,
+  contract: { allowedPaths: string[]; forbiddenPaths: string[] } | undefined,
   status: ReturnType<typeof repositoryGitStatus>,
 ): { dirtyPaths: string[]; ownedPaths: string[] } {
   const dirtyPaths = [...new Set([...status.staged, ...status.unstaged, ...status.untracked])]
@@ -504,6 +504,142 @@ function workOwnedDirtyPaths(
     return contract.allowedPaths.length === 0 || contract.allowedPaths.some((pattern) => globMatches(pattern, path));
   });
   return { dirtyPaths, ownedPaths };
+}
+
+export interface DirectCanonicalTargetAdvanceInspection {
+  reconcilable: boolean;
+  reason:
+    | 'not_direct_target'
+    | 'path_mismatch'
+    | 'branch_mismatch'
+    | 'revision_unavailable'
+    | 'target_not_current'
+    | 'not_descendant'
+    | 'explicit_scope_required'
+    | 'owned_dirty_required'
+    | 'unrelated_dirty_paths'
+    | 'target_touches_work_path'
+    | 'fresh_verification_required'
+    | 'fresh_verification_missing'
+    | 'reconcilable';
+  previousHead?: string;
+  targetHead?: string;
+  dirtyPaths: string[];
+  targetChangedPaths: string[];
+  workspaceFingerprint?: string;
+  freshCheckIds: string[];
+}
+
+/**
+ * Direct canonical Work is intentionally stricter than managed-worktree delivery:
+ * the shared checkout may contain preserved dirty content owned by another Work.
+ * Reconcile a stale expectedHead only when the target advanced linearly, every
+ * current dirty path is positively owned by this Work, target-only commits do not
+ * touch those dirty paths, and exact current source/workspace verification exists.
+ * The caller may then move only delivery identity; this function never attributes
+ * target-only commits or unrelated dirty paths to the Work.
+ */
+export function inspectDirectCanonicalTargetAdvanceReconciliation(input: {
+  root: string;
+  worktreePath: string;
+  managedWorktree: boolean;
+  workBranch: string;
+  targetBranch: string;
+  expectedRevision?: string;
+  status: ReturnType<typeof repositoryGitStatus>;
+  scope?: { allowedPaths: string[]; forbiddenPaths: string[] };
+  checkIds: string[];
+  checkRefs: VerificationRecord[];
+}): DirectCanonicalTargetAdvanceInspection {
+  const empty = (reason: DirectCanonicalTargetAdvanceInspection['reason']): DirectCanonicalTargetAdvanceInspection => ({
+    reconcilable: false,
+    reason,
+    dirtyPaths: [],
+    targetChangedPaths: [],
+    freshCheckIds: [],
+  });
+  if (input.managedWorktree || input.workBranch !== input.targetBranch) return empty('not_direct_target');
+  try {
+    if (realpathSync(input.root) !== realpathSync(input.worktreePath)) return empty('path_mismatch');
+  } catch {
+    return empty('path_mismatch');
+  }
+  const branch = spawnSync('git', ['-C', input.root, 'branch', '--show-current'], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  if (branch.status !== 0 || typeof branch.stdout !== 'string' || branch.stdout.trim() !== input.targetBranch) {
+    return empty('branch_mismatch');
+  }
+  const previousHead = input.expectedRevision ? gitRevision(input.root, input.expectedRevision) : undefined;
+  const targetHead = gitRevision(input.root, input.targetBranch);
+  const currentHead = input.status.head ? gitRevision(input.root, input.status.head) : undefined;
+  if (!previousHead || !targetHead || !currentHead) return empty('revision_unavailable');
+  const base = {
+    previousHead,
+    targetHead,
+    dirtyPaths: [] as string[],
+    targetChangedPaths: [] as string[],
+    freshCheckIds: [] as string[],
+  };
+  if (targetHead !== currentHead) return { ...base, reconcilable: false, reason: 'target_not_current' };
+  if (targetHead === previousHead || !gitIsAncestor(input.root, previousHead, targetHead)) {
+    return { ...base, reconcilable: false, reason: 'not_descendant' };
+  }
+  // Positive allow-list ownership is required here. An empty allow-list means
+  // repository-wide scope and cannot distinguish another Work's preserved dirty
+  // content in a shared canonical checkout.
+  if (!input.scope || input.scope.allowedPaths.length === 0) {
+    return { ...base, reconcilable: false, reason: 'explicit_scope_required' };
+  }
+  const { dirtyPaths, ownedPaths } = workOwnedDirtyPaths(input.scope, input.status);
+  const dirtyBase = { ...base, dirtyPaths };
+  if (dirtyPaths.length === 0 || ownedPaths.length === 0) {
+    return { ...dirtyBase, reconcilable: false, reason: 'owned_dirty_required' };
+  }
+  if (ownedPaths.length !== dirtyPaths.length) {
+    return { ...dirtyBase, reconcilable: false, reason: 'unrelated_dirty_paths' };
+  }
+  const targetChangedPaths = gitChangedPaths(input.root, previousHead, targetHead);
+  const targetBase = { ...dirtyBase, targetChangedPaths };
+  const dirtySet = new Set(dirtyPaths);
+  if (targetChangedPaths.some((path) => dirtySet.has(path))) {
+    return { ...targetBase, reconcilable: false, reason: 'target_touches_work_path' };
+  }
+  const workspaceFingerprint = workspaceValidationFingerprint(input.root, input.status);
+  const declaredCheckIds = [...new Set(input.checkIds)].sort((left, right) => left.localeCompare(right));
+  const candidateCheckIds = declaredCheckIds.length > 0
+    ? declaredCheckIds
+    : [...new Set(input.checkRefs.map((record) => record.checkId).filter(Boolean))].sort((left, right) => left.localeCompare(right));
+  if (candidateCheckIds.length === 0) {
+    return { ...targetBase, workspaceFingerprint, reconcilable: false, reason: 'fresh_verification_required' };
+  }
+  const freshCheckIds = candidateCheckIds.filter((checkId) => effectiveVerificationEvidence(input.checkRefs, {
+    sourceRevision: targetHead,
+    workspaceFingerprint,
+    checkId,
+    // Contract-declared checks share one validation-input identity. When the
+    // contract has no declared checks, rh_work verify can still append an
+    // explicit focused check receipt; such evidence is bound to its one-check
+    // request and must be evaluated with that exact requested-check set.
+    requestedChecks: declaredCheckIds.length > 0 ? declaredCheckIds : [checkId],
+  }).some((entry) => entry.current
+    && entry.record.outcome === 'valid_pass'
+    && entry.record.receipt?.ok === true
+    && entry.record.receipt.status === 'passed'
+    && entry.record.receipt.runtimeStatus === 'succeeded'));
+  const freshVerificationSatisfied = declaredCheckIds.length > 0
+    ? freshCheckIds.length === declaredCheckIds.length
+    : freshCheckIds.length > 0;
+  if (!freshVerificationSatisfied) {
+    return { ...targetBase, workspaceFingerprint, freshCheckIds, reconcilable: false, reason: 'fresh_verification_missing' };
+  }
+  return {
+    ...targetBase,
+    workspaceFingerprint,
+    freshCheckIds,
+    reconcilable: true,
+    reason: 'reconcilable',
+  };
 }
 
 export function completionReceiptChangedPaths(repoRoot: string, baseRevision: string, deliveryRevision: string): string[] {
@@ -2210,6 +2346,44 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       command: 'work_finalize',
     });
   if (gitAuthorization.decision !== 'allow') return { authorization: gitAuthorization, work: compactHandle(current), stages: current.finalization };
+
+  // A direct Work can share canonical main with another Work's preserved dirty
+  // delta. If main advanced after this Work was prepared, keep the global
+  // execution-identity fence strict and reconcile only here, where delivery
+  // ownership plus exact current verification can be proven together.
+  if (wants.commit && !current.managedWorktree && current.expectedHead) {
+    const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
+    const worktree = selectRepositoryCheckout(repository, current.checkoutId, { allowArchived: true });
+    const target = selectWorkFinalizationTarget(repository, current);
+    const targetBranch = explicitTargetBranch ?? repository.defaultBranch ?? 'main';
+    const contract = contractFor(ctx, current);
+    const advance = inspectDirectCanonicalTargetAdvanceReconciliation({
+      root: target.canonicalRoot,
+      worktreePath: current.worktreePath,
+      managedWorktree: current.managedWorktree,
+      workBranch: current.branch,
+      targetBranch,
+      expectedRevision: current.expectedHead,
+      status: repositoryGitStatus(worktree),
+      scope: contract ? { allowedPaths: contract.allowedPaths, forbiddenPaths: contract.forbiddenPaths } : undefined,
+      checkIds: contract?.checks ?? [],
+      checkRefs: contract?.checkRefs ?? [],
+    });
+    if (advance.reconcilable && advance.targetHead) {
+      const previousHead = current.expectedHead;
+      current = transact('direct-canonical-target-advance-reconciled', (fresh) => writeWorkHandle(ctx.controllerHome, {
+        ...fresh,
+        deliveryBaseCommit: advance.targetHead,
+        expectedHead: advance.targetHead,
+        failureReason: undefined,
+      }));
+      appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
+        title: 'direct canonical target advancement reconciled',
+        summary: `Canonical ${targetBranch} advanced linearly ${previousHead} -> ${advance.targetHead}. ${advance.targetChangedPaths.length} target-only path(s) were disjoint from all ${advance.dirtyPaths.length} positively Work-owned dirty path(s), and fresh exact verification bound [${advance.freshCheckIds.join(', ')}] to source ${advance.targetHead} plus workspace ${advance.workspaceFingerprint?.slice(0, 16) ?? 'unknown'}. Delivery identity advanced without adopting target-only commits or unrelated dirty paths.`,
+        detailLevel: 'summary',
+      });
+    }
+  }
 
   if (failedCleanupProof) {
     const preservedFailure = current.failureReason ?? current.finalization.lastError ?? 'Work validation failed.';
