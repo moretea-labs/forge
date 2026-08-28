@@ -297,6 +297,7 @@ export function classifyRepositoryCommandRoute(
   command: string | readonly string[],
   options: {
     forceDurable?: boolean;
+    workId?: string;
     defaultBranch?: string;
     timeoutMs?: number;
   } = {},
@@ -311,6 +312,12 @@ export function classifyRepositoryCommandRoute(
     return { route: 'durable', reason: 'force_durable_or_async' };
   }
   const classification = classifyRepositoryCommand(command, options.defaultBranch);
+  // Work-bound effects must survive Controller/Runtime rotation with one durable
+  // Process identity. Read-only observations can remain ephemeral because they
+  // have no ambiguous side effect to reconcile after a restart.
+  if (options.workId?.trim() && classification.risk !== 'readonly') {
+    return { route: 'process_managed', reason: 'work_attributed_effectful_durable' };
+  }
   const text = Array.isArray(command) ? command.join(' ') : String(command);
   // Classification chooses scheduling/receipt granularity only; it does not
   // decide whether a scoped repository command is allowed to run. Known remote
@@ -365,8 +372,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
   assertRepositoryCommandNoPluginExecutionBypass(input.command);
   const decision = classifyRepositoryCommandRoute(input.command, {
     forceDurable: input.forceDurable,
-    // Work identity is continuity/audit metadata only. It must not change the
-    // execution lane of an otherwise ordinary local repository command.
+    workId: input.workId,
     defaultBranch: input.repository.defaultBranch,
     timeoutMs: input.timeoutMs,
   });

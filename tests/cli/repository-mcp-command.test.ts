@@ -316,6 +316,7 @@ describe("repository MCP command tools", () => {
       }, caller));
       expect(keyed.accepted).toBe(true);
       expect(typeof keyed.processId).toBe("string");
+      expect(String(keyed.processId)).not.toStartWith("lightweight:");
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });

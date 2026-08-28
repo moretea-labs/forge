@@ -1602,6 +1602,9 @@ describe('command classifier safe shell combinations', () => {
     expect(classifyRepositoryCommandRoute(['forge', 'recovery', 'status']).route).not.toBe('reject');
     expect(classifyRepositoryCommandRoute(['bun', 'bin/forge.mjs', 'recovery', 'verify']).route).not.toBe('reject');
     expect(classifyRepositoryCommandRoute(['git', 'status', '--short'])).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
+    expect(classifyRepositoryCommandRoute(['git', 'status', '--short'], { workId: 'work-readonly' })).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
+    expect(classifyRepositoryCommandRoute(['touch', 'marker.txt'], { workId: 'work-effectful' })).toEqual({ route: 'process_managed', reason: 'work_attributed_effectful_durable' });
+    expect(classifyRepositoryCommandRoute(['bash', '-lc', 'printf work > marker.txt'], { workId: 'work-shell-effectful' })).toEqual({ route: 'process_managed', reason: 'work_attributed_effectful_durable' });
     expect(classifyRepositoryCommandRoute(['echo', 'forge recovery activate-runtime'])).not.toEqual({ route: 'reject', reason: 'standalone_recovery_lifecycle_required' });
   });
 

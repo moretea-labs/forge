@@ -227,7 +227,7 @@ describe('repository command execution lifecycle', () => {
     expect(readWorkHandle(controllerHome, repository.repoId, handle.workId)?.expectedHead).toBe(currentHead);
   });
 
-  test('settles WorkHandle expectedHead when a lightweight managed commit completes after the caller returns', async () => {
+  test('settles WorkHandle expectedHead when a durable Work process completes after the caller returns', async () => {
     const controllerHome = tempRoot('forge-cmd-work-head-async-home-');
     const repoRoot = tempRoot('forge-cmd-work-head-async-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
@@ -247,6 +247,8 @@ describe('repository command execution lifecycle', () => {
     });
     expect(execution.route).toBe('process_managed');
     expect(execution.process?.completed).toBe(false);
+    expect(execution.process?.processId).not.toStartWith('lightweight:');
+    expect(execution.executionMetrics).toMatchObject({ lane: 'durable_process' });
     const terminal = await waitRepositoryCommandProcess(controllerHome, repository.repoId, execution.process!.processId, { timeoutMs: 10_000 });
     expect(terminal).toMatchObject({ completed: true, ok: true });
     expect(readWorkHandle(controllerHome, repository.repoId, handle.workId)?.expectedHead).toBe(gitOutput(repoRoot, ['rev-parse', 'HEAD']));
