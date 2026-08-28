@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { spawnSync } from 'child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -36,6 +37,15 @@ import {
 } from '../../src/cli/mcp/transports/http';
 import { closeRuntimeMcpTransportResources, startRuntimeMcpTransport } from '../../src/runtime/root/mcp-transport';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
+import { registerRepository } from '../../src/cli/repositories/registry';
+import {
+  callPostFinalizeWorkReadOnlyCommand,
+  callRepositoryToolWithPostFinalizeAttribution,
+} from '../../src/cli/mcp/post-finalize-work-attribution';
+import {
+  createWorkContract,
+  recordWorkCompletionReceipt,
+} from '../../src/runtime/control-plane/facade/work-contract-store';
 
 describe('MCP canonical Runtime proxy routing', () => {
   test('bounds inner Runtime proxy lanes and leases them exclusively under concurrency', async () => {
@@ -588,5 +598,161 @@ describe('MCP canonical Runtime schema fencing', () => {
 
     expect(fingerprint).toBe('runtime-schema-v1');
     expect(discoveryCalls).toBe(1);
+  });
+});
+
+
+function runPostFinalizeGit(root: string, args: string[]): string {
+  const executed = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+  if (executed.status !== 0) throw new Error(executed.stderr || `git ${args.join(' ')} failed`);
+  return executed.stdout.trim();
+}
+
+function postFinalizeAttributionFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'forge-post-finalize-attribution-'));
+  const controllerHome = join(root, 'controller');
+  const repoRoot = join(root, 'repo');
+  mkdirSync(repoRoot, { recursive: true });
+  runPostFinalizeGit(repoRoot, ['init', '-b', 'main']);
+  runPostFinalizeGit(repoRoot, ['config', 'user.name', 'Forge Test']);
+  runPostFinalizeGit(repoRoot, ['config', 'user.email', 'forge-test@example.com']);
+  writeFileSync(join(repoRoot, 'README.md'), 'base\n');
+  runPostFinalizeGit(repoRoot, ['add', 'README.md']);
+  runPostFinalizeGit(repoRoot, ['commit', '-m', 'init']);
+  const targetRevision = runPostFinalizeGit(repoRoot, ['rev-parse', 'HEAD']);
+  const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+  const workId = 'WORK-POST-FINALIZE-READONLY';
+  const principalId = 'principal-post-finalize';
+  createWorkContract({ controllerHome, repoId: repository.repoId }, {
+    workId,
+    repoId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
+    principalId,
+    controllerInstanceId: 'runtime-post-finalize',
+    mode: 'goal_workloop',
+    objective: 'Exercise post-finalize readonly attribution.',
+    acceptanceCriteria: ['readonly observation remains attributable after lifecycle close'],
+    allowedPaths: [],
+    forbiddenPaths: [],
+    checks: [],
+    constraints: { requireHandoffOnAmbiguity: true },
+    requestedBy: 'chatgpt',
+    workKind: 'completed_no_change',
+    status: 'running',
+  });
+  const recordedAt = '2026-08-28T00:18:00.000Z';
+  recordWorkCompletionReceipt({ controllerHome, repoId: repository.repoId }, workId, {
+    schemaVersion: 1,
+    receiptId: 'receipt-post-finalize-readonly',
+    source: 'controller_work',
+    issueId: 'post-finalize-attribution',
+    taskId: workId,
+    workId,
+    targetBranch: 'main',
+    targetRevision,
+    changedPaths: [],
+    delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
+    cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
+    verifiedAt: recordedAt,
+    recordedAt,
+  }, 'completed_no_change', 'completed_no_change');
+  return {
+    root,
+    controllerHome,
+    repoRoot,
+    repository,
+    workId,
+    caller: {
+      sessionId: 'session-after-finalize',
+      principalId,
+      controllerInstanceId: 'runtime-after-finalize',
+    },
+  };
+}
+
+describe('MCP post-finalize Work attribution', () => {
+  test('keeps completed Work attribution for bounded typed-argv readonly observations only', async () => {
+    const fx = postFinalizeAttributionFixture();
+    try {
+      const response = await callRepositoryToolWithPostFinalizeAttribution(
+        fx.controllerHome,
+        'repository_command_execute',
+        {
+          repo_id: fx.repository.repoId,
+          work_id: fx.workId,
+          command: ['git', 'status', '-sb'],
+          request_id: 'post-finalize-status',
+        },
+        fx.caller,
+      );
+      const structured = (response?.structuredContent ?? {}) as Record<string, unknown>;
+      expect(structured.accepted).toBe(true);
+      expect(structured.ok).toBe(true);
+      expect(structured.lifecycleClosed).toBe(true);
+      expect(structured.workId).toBe(fx.workId);
+      expect(structured.postFinalizeAttribution).toBe('readonly_followup');
+      expect(String(structured.stdout)).toContain('## main');
+
+      expect(await callPostFinalizeWorkReadOnlyCommand(
+        fx.controllerHome,
+        'repository_command_execute',
+        {
+          repo_id: fx.repository.repoId,
+          work_id: fx.workId,
+          command: ['git', 'status', '-sb'],
+          request_id: 'post-finalize-wrong-principal',
+        },
+        { ...fx.caller, principalId: 'different-principal' },
+      )).toBeUndefined();
+    } finally {
+      rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  test('does not reopen terminal Work mutation or remote-delivery authority', async () => {
+    const fx = postFinalizeAttributionFixture();
+    try {
+      const mutationPath = join(fx.repoRoot, 'must-not-exist.txt');
+      const mutationArgs = {
+        repo_id: fx.repository.repoId,
+        work_id: fx.workId,
+        command: ['touch', 'must-not-exist.txt'],
+        request_id: 'post-finalize-mutation',
+      };
+      expect(await callPostFinalizeWorkReadOnlyCommand(
+        fx.controllerHome,
+        'repository_command_execute',
+        mutationArgs,
+        fx.caller,
+      )).toBeUndefined();
+      expect(await callPostFinalizeWorkReadOnlyCommand(
+        fx.controllerHome,
+        'repository_command_execute',
+        {
+          repo_id: fx.repository.repoId,
+          work_id: fx.workId,
+          command: ['git', 'push', 'origin', 'main'],
+          request_id: 'post-finalize-delivery',
+        },
+        fx.caller,
+      )).toBeUndefined();
+
+      let rejection = '';
+      try {
+        const response = await callRepositoryToolWithPostFinalizeAttribution(
+          fx.controllerHome,
+          'repository_command_execute',
+          mutationArgs,
+          fx.caller,
+        );
+        rejection = JSON.stringify(response?.structuredContent ?? response);
+      } catch (error) {
+        rejection = error instanceof Error ? error.message : String(error);
+      }
+      expect(rejection).toContain('WORK_ATTRIBUTION_INVALID');
+      expect(existsSync(mutationPath)).toBe(false);
+    } finally {
+      rmSync(fx.root, { recursive: true, force: true });
+    }
   });
 });

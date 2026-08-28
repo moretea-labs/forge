@@ -13,7 +13,7 @@ import {
   type MultiRepositoryMcpToolContext,
 } from './multi-repository';
 import { callAccessTool } from './access-tools';
-import { callRepositoryTool } from './repository-tools';
+import { callRepositoryToolWithPostFinalizeAttribution } from './post-finalize-work-attribution';
 import { callRuntimeTool } from '../../runtime/gateway/mcp/runtime-tools';
 import { callExecutionTool } from '../../runtime/gateway/mcp/execution-tools';
 import { callProcessTool } from '../../runtime/gateway/mcp/process-tools';
@@ -892,7 +892,7 @@ export function createForgeMcpServerFromContext(
         if (runtimeResult) return runtimeResult;
         const durableResult = await routeDurableMcpCall(ctx, name, args);
         if (durableResult) return durableResult;
-        const repositoryResult = await callRepositoryTool(ctx.controllerHome, name, args, ctx);
+        const repositoryResult = await callRepositoryToolWithPostFinalizeAttribution(ctx.controllerHome, name, args, ctx);
         if (repositoryResult) return repositoryResult;
         return callMultiRepositoryTool(ctx, name, args);
       });
