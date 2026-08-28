@@ -885,18 +885,35 @@ describe('runtime maintenance executor', () => {
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('finalized');
   });
 
-  it('does not treat active or missing Work ownership as safe stale Edit Session candidates', () => {
-    const active = editFixture({ workStatus: 'running' });
-    const missing = editFixture({ createWork: false });
-    for (const fx of [active, missing]) {
-      const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-      expect(status.candidates).toContainEqual(expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: false }));
-      const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
-        actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
-      });
-      expect(applied.applied.some((candidate) => candidate.id === fx.sessionId && candidate.applied)).toBe(false);
-      expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('dirty');
-    }
+  it('inherits live Work lifecycle authority before classifying an old Edit Session as maintenance debt', () => {
+    const fx = editFixture({ workStatus: 'running' });
+    claimControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: 'work-running', controllerId: 'controller-edit-owner', controllerType: 'chatgpt', sessionId: 'mcp-edit-owner',
+      principalId: 'principal-edit-owner', controllerInstanceId: 'runtime-edit-owner', leaseMs: 60_000,
+    });
+
+    const active = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
+    expect(active.candidates).not.toContainEqual(expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId }));
+
+    releaseControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, 'work-running', 'controller-edit-owner');
+    const released = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
+    expect(released.candidates).toContainEqual(expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: false }));
+    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
+      actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
+    });
+    expect(applied.applied.some((candidate) => candidate.id === fx.sessionId && candidate.applied)).toBe(false);
+    expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('dirty');
+  });
+
+  it('keeps missing Work ownership as an unsafe stale Edit Session candidate', () => {
+    const fx = editFixture({ createWork: false });
+    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
+    expect(status.candidates).toContainEqual(expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: false }));
+    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
+      actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
+    });
+    expect(applied.applied.some((candidate) => candidate.id === fx.sessionId && candidate.applied)).toBe(false);
+    expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('dirty');
   });
 
   it('rolls back an empty stale open session owned by terminal Work without touching source', () => {

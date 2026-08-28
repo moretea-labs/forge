@@ -886,14 +886,20 @@ function scanStaleEditSessionCandidates(
     .filter(({ ageMinutes }) => ageMinutes >= options.minAgeMinutes)
     .sort((left, right) => right.ageMinutes - left.ageMinutes)
     .slice(0, options.maxCandidates)
-    .map(({ session, ageMinutes }) => {
+    .flatMap(({ session, ageMinutes }) => {
       const work = session.workId
         ? getWorkContract({ controllerHome, repoId: repository.repoId }, session.workId)
         : undefined;
       const terminalWork = Boolean(work && isTerminalWorkContractStatus(work.status));
+      if (work && !terminalWork && activeWorkAuthorityRefs(repository, controllerHome, work).length > 0) {
+        // The Edit Session inherits the live Work lifecycle authority. Reporting it
+        // as stale maintenance debt while that authority is active would duplicate
+        // ownership and can permanently block release readiness for valid long work.
+        return [];
+      }
       const contractFreeDirect = !session.workId;
       const safeToReconcile = terminalWork || contractFreeDirect;
-      return {
+      return [{
         kind: 'stale_edit_session' as const,
         id: session.sessionId,
         status: session.status,
@@ -902,11 +908,11 @@ function scanStaleEditSessionCandidates(
           ? 'Edit Session belongs to a terminal WorkContract; cleanup may reconcile metadata only and must refuse unique uncommitted source changes.'
           : contractFreeDirect
             ? 'Contract-free Direct Edit Session has no WorkContract by design; cleanup may reconcile metadata only and must refuse unique uncommitted source changes.'
-            : 'Edit Session WorkContract is missing or still nonterminal; active-session ownership must remain fenced.',
+            : 'Edit Session WorkContract is missing or still nonterminal without live lifecycle authority; active-session ownership must remain fenced.',
         ageMinutes,
         suggestedAction: 'full_maintenance_pass' as const,
         ownershipStatus: safeToReconcile ? 'explicit' as const : 'unknown' as const,
-      };
+      }];
     });
 }
 
