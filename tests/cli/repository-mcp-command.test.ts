@@ -6,7 +6,7 @@ import { spawnSync } from "child_process";
 import { getRepository, listRepositories, registerRepository } from "../../src/cli/repositories/registry";
 import { callMcpTool } from "../../src/cli/mcp/tools";
 import { callRepositoryTool, repositoryToolDefinitions } from "../../src/cli/mcp/repository-tools";
-import { repositoryGitMergeBranch, repositoryGitRebaseOnto } from "../../src/cli/repositories/structured-git";
+import { repositoryGitCommit, repositoryGitMergeBranch, repositoryGitRebaseOnto } from "../../src/cli/repositories/structured-git";
 import { completionReceiptChangedPaths, inspectDirectTargetDelivery, inspectWorkTargetAdvance, planTargetAdvanceValidationAuthority, targetAdvanceLinearMergeCommits, targetAdvanceWorkScopeViolation } from "../../src/runtime/gateway/mcp/execution-tools";
 import { commandFingerprint, verificationInputFingerprint } from "../../src/runtime/control-plane/execution/verification-evidence";
 import type { ControllerCheck } from "../../src/cli/controller/check-runner";
@@ -54,6 +54,87 @@ function writeLocalJobFixture(
   if (output.stdout !== undefined) writeFileSync(join(dir, "stdout.log"), output.stdout);
   if (output.stderr !== undefined) writeFileSync(join(dir, "stderr.log"), output.stderr);
 }
+
+describe("structured repository git merge commits", () => {
+  test("concludes a resolved MERGE_HEAD when the complete staged index is inside the requested scope", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-structured-git-merge-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "repo");
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "base.txt"), "base\n");
+      git(repoRoot, ["add", "base.txt"]);
+      git(repoRoot, ["commit", "-m", "base"]);
+      git(repoRoot, ["switch", "-c", "feature"]);
+      writeFileSync(join(repoRoot, "feature.txt"), "feature\n");
+      git(repoRoot, ["add", "feature.txt"]);
+      git(repoRoot, ["commit", "-m", "feature"]);
+      git(repoRoot, ["switch", "main"]);
+      writeFileSync(join(repoRoot, "main.txt"), "main\n");
+      git(repoRoot, ["add", "main.txt"]);
+      git(repoRoot, ["commit", "-m", "main"]);
+      git(repoRoot, ["switch", "feature"]);
+      git(repoRoot, ["merge", "--no-commit", "main"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+
+      const committed = repositoryGitCommit(controllerHome, repository, {
+        message: "resolved merge",
+        paths: ["main.txt"],
+      });
+
+      expect(committed.committed).toBe(true);
+      expect(spawnSync("git", ["-C", repoRoot, "rev-parse", "-q", "--verify", "MERGE_HEAD"], { encoding: "utf-8" }).status).not.toBe(0);
+      const parents = spawnSync("git", ["-C", repoRoot, "rev-list", "--parents", "-n", "1", "HEAD"], { encoding: "utf-8" }).stdout.trim().split(/\s+/);
+      expect(parents.length).toBe(3);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses a resolved MERGE_HEAD when the staged merge index contains a path outside requested scope", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-structured-git-merge-scope-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "repo");
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "base.txt"), "base\n");
+      git(repoRoot, ["add", "base.txt"]);
+      git(repoRoot, ["commit", "-m", "base"]);
+      git(repoRoot, ["switch", "-c", "feature"]);
+      writeFileSync(join(repoRoot, "feature.txt"), "feature\n");
+      git(repoRoot, ["add", "feature.txt"]);
+      git(repoRoot, ["commit", "-m", "feature"]);
+      git(repoRoot, ["switch", "main"]);
+      writeFileSync(join(repoRoot, "main.txt"), "main\n");
+      writeFileSync(join(repoRoot, "outside.txt"), "outside\n");
+      git(repoRoot, ["add", "main.txt", "outside.txt"]);
+      git(repoRoot, ["commit", "-m", "main"]);
+      git(repoRoot, ["switch", "feature"]);
+      git(repoRoot, ["merge", "--no-commit", "main"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+
+      const blocked = repositoryGitCommit(controllerHome, repository, {
+        message: "must not commit outside scope",
+        paths: ["main.txt"],
+      });
+
+      expect(blocked.committed).toBe(false);
+      expect(blocked.error?.code).toBe("GIT_MERGE_STAGED_SCOPE_MISMATCH");
+      expect(blocked.error?.message).toContain("outside.txt");
+      expect(spawnSync("git", ["-C", repoRoot, "rev-parse", "-q", "--verify", "MERGE_HEAD"], { encoding: "utf-8" }).status).toBe(0);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("repository MCP command tools", () => {
   test("documents the facade-first shortest path without widening the tool surface", () => {

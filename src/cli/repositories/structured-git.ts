@@ -274,7 +274,43 @@ export function repositoryGitCommit(controllerHome: string, repository: Reposito
   if (diffCheck.status === 0 && input.allowEmpty !== true) {
     return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, before, stage, after: repositoryGitStatus(repository), committed: false, error: { code: 'GIT_NOTHING_STAGED', message: 'No staged changes to commit. Pass paths to stage, or allow_empty=true for an empty commit.' } };
   }
-  const commitArgs = ['commit', '-m', message, ...(input.allowEmpty === true ? ['--allow-empty'] : []), ...(paths.length > 0 ? ['--only', '--', ...paths] : [])];
+  const mergeInProgress = runGit(repository, ['rev-parse', '--verify', 'MERGE_HEAD'], 64 * 1024).ok;
+  if (mergeInProgress) {
+    const unresolved = runGit(repository, ['diff', '--name-only', '--diff-filter=U', '-z'], 128 * 1024);
+    const unresolvedPaths = unresolved.stdout.split('\0').map((path) => path.trim()).filter(Boolean);
+    if (!unresolved.ok || unresolvedPaths.length > 0) {
+      return {
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        before,
+        stage,
+        after: repositoryGitStatus(repository),
+        committed: false,
+        error: { code: 'GIT_MERGE_UNRESOLVED', message: unresolvedPaths.length > 0 ? `Merge still has unresolved path(s): ${unresolvedPaths.join(', ')}` : unresolved.stderr || 'Unable to inspect unresolved merge paths.' },
+      };
+    }
+    if (paths.length > 0) {
+      const stagedNames = runGit(repository, ['diff', '--cached', '--name-only', '-z'], 128 * 1024);
+      if (!stagedNames.ok) {
+        return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, before, stage, after: repositoryGitStatus(repository), committed: false, error: { code: 'GIT_MERGE_STAGED_SCOPE_INSPECTION_FAILED', message: stagedNames.stderr || 'Unable to inspect the merge index.' } };
+      }
+      const allowed = new Set(paths);
+      const stagedPaths = stagedNames.stdout.split('\0').map((path) => path.trim()).filter(Boolean);
+      const outsideScope = stagedPaths.filter((path) => !allowed.has(path));
+      if (outsideScope.length > 0) {
+        return {
+          repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          before,
+          stage,
+          after: repositoryGitStatus(repository),
+          committed: false,
+          error: { code: 'GIT_MERGE_STAGED_SCOPE_MISMATCH', message: `Resolved merge index contains staged path(s) outside the requested commit scope: ${outsideScope.join(', ')}` },
+        };
+      }
+    }
+  }
+  const commitArgs = ['commit', '-m', message, ...(input.allowEmpty === true ? ['--allow-empty'] : []), ...(!mergeInProgress && paths.length > 0 ? ['--only', '--', ...paths] : [])];
   const commit = executeRepositoryGitCommand(controllerHome, repository, { args: commitArgs, authorization: 'explicit_user_request', ...input });
   const ok = commit.status === 'executed' && commit.ok === true;
   return {
