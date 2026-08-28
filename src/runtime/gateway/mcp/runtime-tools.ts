@@ -19,6 +19,7 @@ import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobB
 import { waitForExecutionJob } from '../../execution/jobs/wait';
 import type { ExecutionJob } from '../../execution/jobs/types';
 import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS, checkRequiresDurableWorkflow, getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, listRecoverableProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
+import { listWorkBoundRepositoryProcessEvidence } from '../../control-plane/execution/work-process-evidence';
 import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../../execution/process-runtime/command-facade';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
@@ -2500,10 +2501,10 @@ function reconcileTerminalFacadeWorkVerifications(
   ctx: MultiRepositoryMcpToolContext,
   repository: ReturnType<typeof selected>,
   workId: string,
-): { sourceRevision?: string; workspaceFingerprint?: string; workspaceChangedPaths?: string[]; reconciledProcessIds: string[] } {
+): { sourceRevision?: string; workspaceFingerprint?: string; workspaceChangedPaths?: string[]; reconciledProcessIds: string[]; workBoundProcessEvidenceIds: string[] } {
   const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
   const workContract = getWorkContract(store, workId);
-  if (!workContract || workContract.completionReceipt) return { reconciledProcessIds: [] };
+  if (!workContract || workContract.completionReceipt) return { reconciledProcessIds: [], workBoundProcessEvidenceIds: [] };
 
   let verificationRepository: ReturnType<typeof selectRepositoryCheckout>;
   try {
@@ -2511,11 +2512,11 @@ function reconcileTerminalFacadeWorkVerifications(
       ? selectRepositoryCheckout(repository, workContract.checkoutId, { allowArchived: true })
       : repository;
   } catch {
-    return { reconciledProcessIds: [] };
+    return { reconciledProcessIds: [], workBoundProcessEvidenceIds: [] };
   }
   const verificationStatus = repositoryGitStatus(verificationRepository);
   const sourceRevision = verificationStatus.head ?? undefined;
-  if (!sourceRevision) return { reconciledProcessIds: [] };
+  if (!sourceRevision) return { reconciledProcessIds: [], workBoundProcessEvidenceIds: [] };
   const verificationHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
   const deliveryBaseRevision = verificationHandle
     ? workDeliveryBaseRevision(verificationHandle)
@@ -2530,6 +2531,14 @@ function reconcileTerminalFacadeWorkVerifications(
     ...verificationStatus.untracked,
   ])].sort();
   const workspaceFingerprint = workspaceValidationFingerprint(verificationRepository.canonicalRoot, verificationStatus);
+  const workBoundProcessEvidenceIds = workContract.workKind === 'repository_change' && workContract.checks.length === 0
+    ? listWorkBoundRepositoryProcessEvidence({
+        controllerHome: ctx.controllerHome,
+        repoId: repository.repoId,
+        checkoutId: verificationRepository.activeCheckoutId,
+        workId,
+      }).map((evidence) => evidence.processId)
+    : [];
   const availableChecks = listControllerChecks(repository.canonicalRoot);
   const workloopCtx = {
     workStore: store,
@@ -2631,7 +2640,7 @@ function reconcileTerminalFacadeWorkVerifications(
     }
   }
 
-  return { sourceRevision, workspaceFingerprint, workspaceChangedPaths, reconciledProcessIds };
+  return { sourceRevision, workspaceFingerprint, workspaceChangedPaths, reconciledProcessIds, workBoundProcessEvidenceIds };
 }
 
 async function runFacadeVerify(
@@ -4934,7 +4943,16 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
 
         if (operation === 'finalize') {
           const workId = String(args.work_id ?? '').trim();
-          if (workId) reconcileTerminalFacadeWorkVerifications(ctx, repository, workId);
+          const finalizeReconciliation = workId
+            ? reconcileTerminalFacadeWorkVerifications(ctx, repository, workId)
+            : undefined;
+          const semanticFinalizeContext = {
+            ...workloopCtx,
+            sourceRevision: finalizeReconciliation?.sourceRevision ?? workloopCtx.sourceRevision ?? undefined,
+            workspaceFingerprint: finalizeReconciliation?.workspaceFingerprint,
+            workspaceChangedPaths: finalizeReconciliation?.workspaceChangedPaths,
+            workBoundProcessEvidenceIds: finalizeReconciliation?.workBoundProcessEvidenceIds,
+          };
           let before = workId ? getWorkContract(store, workId) : undefined;
           if (before && !before.completionReceipt && args.reconcile_historical_delivery === true) {
             try {
@@ -5058,7 +5076,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                     claimGeneration: owner.claimGeneration,
                   },
                 },
-                () => runGoalWorkloop({ ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined }, 'finalize', args),
+                () => runGoalWorkloop(semanticFinalizeContext, 'finalize', args),
               );
               if (!fenced.allowed) {
                 throw new Error(`WORK_TERMINALIZATION_AUTHORITY_FENCED: ${workId}:${fenced.reason}`);
@@ -5073,7 +5091,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               return result(blocked as unknown as Record<string, unknown>, true);
             }
           } else {
-            facade = runGoalWorkloop({ ...workloopCtx, sourceRevision: workloopCtx.sourceRevision ?? undefined }, 'finalize', args);
+            facade = runGoalWorkloop(semanticFinalizeContext, 'finalize', args);
           }
           const completed = getWorkContract(store, workId);
           // Finalizing a Work proves the Work lifecycle only. A Plan step may aggregate
@@ -5100,6 +5118,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         let continuationSourceRevision = workloopCtx.sourceRevision;
         let continuationWorkspaceFingerprint: string | undefined;
         let continuationWorkspaceChangedPaths: string[] | undefined;
+        let continuationWorkBoundProcessEvidenceIds: string[] | undefined;
         if (operation === 'continue') {
           try {
             const workId = String(args.work_id ?? '').trim();
@@ -5138,6 +5157,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               continuationSourceRevision = reconciled.sourceRevision ?? continuationSourceRevision;
               continuationWorkspaceFingerprint = reconciled.workspaceFingerprint ?? continuationWorkspaceFingerprint;
               continuationWorkspaceChangedPaths = reconciled.workspaceChangedPaths ?? continuationWorkspaceChangedPaths;
+              continuationWorkBoundProcessEvidenceIds = reconciled.workBoundProcessEvidenceIds;
             }
           } catch (error) {
             const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller resume failed.', data: { operation, executionStarted: false, ownershipResumed: false } });
@@ -5157,6 +5177,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           sourceRevision: continuationSourceRevision ?? undefined,
           workspaceFingerprint: continuationWorkspaceFingerprint,
           workspaceChangedPaths: continuationWorkspaceChangedPaths,
+          workBoundProcessEvidenceIds: continuationWorkBoundProcessEvidenceIds,
           semanticAdmissionLocked: semanticAdmissionRequired,
         };
         const facade = semanticAdmissionRequired

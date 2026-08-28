@@ -577,6 +577,10 @@
       "module": "controller",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/work-process-evidence.test.ts": {
+      "module": "process-runtime",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/route-policy.test.ts": {
       "module": "routing",
       "resource": "pure"

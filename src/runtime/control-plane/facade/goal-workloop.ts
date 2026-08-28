@@ -67,6 +67,8 @@ export interface GoalWorkloopContext {
   workspaceFingerprint?: string;
   /** Current net repository paths changed from the Work base plus dirty checkout paths. */
   workspaceChangedPaths?: readonly string[];
+  /** Durable terminal repository Process ids explicitly bound to this Work + checkout. */
+  workBoundProcessEvidenceIds?: readonly string[];
   now?: () => string;
   /** True only while a Gateway caller holds the cross-process primary Work admission lock. */
   semanticAdmissionLocked?: boolean;
@@ -291,6 +293,7 @@ function evaluateWorkCompletionEvidence(
   work: WorkContract,
   currentRevision?: string,
   currentWorkspaceFingerprint?: string,
+  workBoundProcessEvidenceIds: readonly string[] = [],
 ): WorkCompletionEvidenceEvaluation {
   const applicableCheckRefs = work.checkRefs.filter((record) =>
     verificationRecordAppliesToCurrentWorkspace(record, currentRevision, currentWorkspaceFingerprint));
@@ -299,7 +302,8 @@ function evaluateWorkCompletionEvidence(
   );
   const missingChecks = work.checks.filter((checkId) => !history.validPasses.includes(checkId));
   const durableResultEvidence = work.evidenceRefs.some((evidence) => Boolean(evidence.evidenceId || evidence.artifactId))
-    || applicableCheckRefs.some((record) => isAuthoritativeCurrentWorkVerification(work, record, currentRevision));
+    || applicableCheckRefs.some((record) => isAuthoritativeCurrentWorkVerification(work, record, currentRevision))
+    || workBoundProcessEvidenceIds.length > 0;
   const reasons: string[] = [];
 
   if (history.acceptanceFailures.length > 0) {
@@ -1368,7 +1372,12 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
-  const completionEvidence = evaluateWorkCompletionEvidence(work, ctx.sourceRevision, ctx.workspaceFingerprint);
+  const completionEvidence = evaluateWorkCompletionEvidence(
+    work,
+    ctx.sourceRevision,
+    ctx.workspaceFingerprint,
+    ctx.workBoundProcessEvidenceIds,
+  );
   if (completionEvidence.status !== 'complete') {
     const suggested = validateSuggestedNextActions([
       {
@@ -1398,7 +1407,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
         work: summarizeWorkContract(updated),
         backgroundCompleted: false,
         nextStep: 'execute',
-        executionEvidencePresent: false,
+        executionEvidencePresent: Boolean(ctx.workBoundProcessEvidenceIds?.length),
         missingChecks: completionEvidence.missingChecks,
         durableResultEvidence: completionEvidence.durableResultEvidence,
         ignoredWeakReferences: {
@@ -1642,7 +1651,12 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
-  const completionEvidence = evaluateWorkCompletionEvidence(work, ctx.sourceRevision, ctx.workspaceFingerprint);
+  const completionEvidence = evaluateWorkCompletionEvidence(
+    work,
+    ctx.sourceRevision,
+    ctx.workspaceFingerprint,
+    ctx.workBoundProcessEvidenceIds,
+  );
   const history = completionEvidence.history;
 
   if (input.forceFailed || completionEvidence.status === 'failed') {

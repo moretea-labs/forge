@@ -37,6 +37,44 @@ function sharedInput(overrides: Partial<RoutePolicyInput> = {}): RoutePolicyInpu
   };
 }
 describe('single Route Policy authority', () => {
+  test('advances a no-check repository Work only with source changes plus exact durable Process evidence', () => {
+    const root = temp('forge-no-check-process-evidence-');
+    const workStore = { root: join(root, 'work') };
+    const context = {
+      workStore,
+      handoffStore: { root: join(root, 'handoffs') },
+      repoId: 'repo-no-check-process-evidence',
+      availableChecks: [],
+      sourceRevision: 'revision-a',
+      workspaceFingerprint: 'workspace-a',
+      workspaceChangedPaths: ['src/example.ts'],
+    };
+    const started = routeWorkStart(context, {
+      objective: 'Apply and validate one bounded repository repair without a named check.',
+      acceptanceCriteria: ['The repository repair has durable Work-bound execution evidence.'],
+      modeInput: {
+        scopeClear: true,
+        mutation: true,
+        expectedFiles: 1,
+        expectedChangedLines: 20,
+        requiresRecovery: true,
+        risk: 'local_repo_write',
+      },
+    });
+    const workId = (started.data as { work?: { workId?: string } }).work?.workId;
+    expect(workId).toBeTruthy();
+
+    const blocked = continueGoalWorkloop(context, { workId: workId! });
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.summary).toContain('No durable result evidence');
+
+    const continued = continueGoalWorkloop({
+      ...context,
+      workBoundProcessEvidenceIds: ['proc-exact-work-bound-success'],
+    }, { workId: workId! });
+    expect(continued.status).toBe('ok');
+    expect(continued.data).toMatchObject({ nextStep: 'finalize' });
+  });
   test('returns the identical replayable RouteDecision through the remaining adapters', () => {
     const input = sharedInput();
     const cli = assessWorkMode({ description: input.intent.objective, routePolicyInput: input }).routeDecision;
