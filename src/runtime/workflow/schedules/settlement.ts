@@ -5,7 +5,7 @@ import {
   getSchedule,
   recordScheduleOccurrenceHandoff,
   saveOccurrence,
-  saveSchedule,
+  updateSchedule,
   type ScheduleOccurrenceHandoffInput,
 } from './store';
 
@@ -27,7 +27,7 @@ function computeScheduleFailureState(schedule: ReturnType<typeof getSchedule>, n
     consecutiveFailures: nextFailures,
     nextEligibleAt: computeScheduleBackoff(schedule, nextFailures),
     enabled: shouldPause ? false : schedule.enabled,
-    pausedReason: shouldPause ? 'Maximum consecutive failures reached.' : undefined,
+    pausedReason: shouldPause ? 'Maximum consecutive failures reached.' : schedule.enabled ? undefined : schedule.pausedReason,
   };
 }
 
@@ -62,16 +62,15 @@ export function applyScheduleFailure(
 
   const countFailure = options.countFailure !== false;
   const nextSchedule = options.pauseReason
-    ? saveSchedule(controllerHome, {
-      ...schedule,
+    ? updateSchedule(controllerHome, repoId, scheduleId, (current) => ({
       enabled: false,
       pausedReason: options.pauseReason,
       nextEligibleAt: undefined,
-      consecutiveFailures: countFailure ? schedule.consecutiveFailures + 1 : schedule.consecutiveFailures,
-    })
+      consecutiveFailures: countFailure ? current.consecutiveFailures + 1 : current.consecutiveFailures,
+    }))
     : countFailure
-      ? saveSchedule(controllerHome, { ...schedule, ...computeScheduleFailureState(schedule, schedule.consecutiveFailures + 1) })
-      : schedule;
+      ? updateSchedule(controllerHome, repoId, scheduleId, (current) => computeScheduleFailureState(current, current.consecutiveFailures + 1))
+      : getSchedule(controllerHome, repoId, scheduleId);
   return { schedule: nextSchedule, occurrence: nextOccurrence };
 }
 
@@ -87,7 +86,6 @@ export function applyScheduleRetryableFailure(
     countFailure?: boolean;
   },
 ): { schedule: ReturnType<typeof getSchedule>; occurrence?: ScheduleOccurrence } {
-  const schedule = getSchedule(controllerHome, repoId, scheduleId);
   const occurrence = getOccurrence(controllerHome, repoId, occurrenceId);
   let nextOccurrence = occurrence;
   if (occurrence && !TERMINAL_OCCURRENCE_STATUSES.has(occurrence.status)) {
@@ -99,23 +97,22 @@ export function applyScheduleRetryableFailure(
     });
   }
   const countFailure = options.countFailure !== false;
-  const nextFailures = countFailure ? schedule.consecutiveFailures + 1 : schedule.consecutiveFailures;
-  const failureState = countFailure && schedule.enabled
-    ? computeScheduleFailureState(schedule, nextFailures)
-    : {
-      consecutiveFailures: nextFailures,
-      nextEligibleAt: countFailure
-        ? schedule.nextEligibleAt
-        : computeScheduleBackoff(schedule, Math.max(1, nextFailures)),
-      enabled: schedule.enabled,
-      pausedReason: schedule.enabled ? undefined : schedule.pausedReason,
-    };
-  const nextSchedule = saveSchedule(controllerHome, {
-    ...schedule,
-    ...failureState,
+  const nextSchedule = updateSchedule(controllerHome, repoId, scheduleId, (current) => {
+    const nextFailures = countFailure ? current.consecutiveFailures + 1 : current.consecutiveFailures;
+    const failureState = countFailure && current.enabled
+      ? computeScheduleFailureState(current, nextFailures)
+      : {
+        consecutiveFailures: nextFailures,
+        nextEligibleAt: countFailure
+          ? current.nextEligibleAt
+          : computeScheduleBackoff(current, Math.max(1, nextFailures)),
+        enabled: current.enabled,
+        pausedReason: current.enabled ? undefined : current.pausedReason,
+      };
     // One transient fault backs off and re-arms. Repeated faults have crossed
     // the already-declared failure budget and must stop before they consume
     // further controller sessions or browser interactions.
+    return failureState;
   });
   return { schedule: nextSchedule, occurrence: nextOccurrence };
 }
@@ -150,7 +147,6 @@ export function settleScheduledExecution(
   const occurrenceId = typeof job.payload.occurrenceId === 'string' ? job.payload.occurrenceId : undefined;
   if (!scheduleId || !occurrenceId) return;
   try {
-    const schedule = getSchedule(controllerHome, job.repoId, scheduleId);
     const occurrence = getOccurrence(controllerHome, job.repoId, occurrenceId);
     if (occurrence && !['succeeded', 'failed', 'shadowed', 'skipped'].includes(occurrence.status)) {
       saveOccurrence(controllerHome, {
@@ -183,12 +179,11 @@ export function settleScheduledExecution(
       });
       return;
     }
-    saveSchedule(controllerHome, {
-      ...schedule,
+    updateSchedule(controllerHome, job.repoId, scheduleId, (current) => ({
       consecutiveFailures: 0,
       nextEligibleAt: undefined,
-      pausedReason: undefined,
-    });
+      ...(current.enabled ? { pausedReason: undefined } : {}),
+    }));
   } catch {
     // Job terminal state remains authoritative even if an old schedule record
     // has already been removed. Reconciliation must not be blocked by it.

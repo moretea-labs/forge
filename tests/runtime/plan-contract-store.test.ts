@@ -11,6 +11,7 @@ import {
   createPlanContract,
   getPlanContract,
   listPlanContracts,
+  repairDraftPlanContract,
   supersedePlanContract,
 } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import {
@@ -124,6 +125,69 @@ test('persists facade Plan contracts as independently revisioned SQLite records'
   const approved = approvePlanContract(options, 'plan-1');
   expect(approved.status).toBe('approved');
   expect(readControlPlaneRecord(options.controllerHome, 'plan_contract', 'repo-1', 'plan-1')?.revision).toBe(2);
+});
+
+test('repairs a legacy malformed draft in place without replacing Plan authority', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-draft-repair-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-draft-repair', now: () => '2026-08-28T00:00:00.000Z' };
+  const legacy = {
+    schemaVersion: 1 as const,
+    planId: 'plan-legacy-malformed',
+    repoId: options.repoId,
+    scopeKey: 'legacy-scope',
+    sourceRevision: '',
+    goal: '',
+    nonGoals: [], assumptions: [], resolvedDecisions: [], stopConditions: [], replanConditions: [],
+    status: 'draft' as const,
+    steps: [], evidenceRefs: [{ title: 'legacy evidence' }],
+    createdAt: '2026-08-27T00:00:00.000Z',
+    updatedAt: '2026-08-27T00:00:00.000Z',
+  };
+  writeControlPlaneRecord(home, { namespace: 'plan_contract', scope: options.repoId, key: legacy.planId, schemaVersion: 1, value: legacy, expectedRevision: null, action: 'seed_legacy_malformed_draft' });
+
+  const repaired = repairDraftPlanContract(options, legacy.planId, {
+    scopeKey: 'legacy-scope',
+    sourceRevision: '101a8920',
+    goal: 'Repair the existing Plan authority rather than creating a second Plan.',
+    steps: [{ id: 'repair', objective: 'restore a reviewable Plan draft', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['same Plan identity is approvable'] }],
+  });
+
+  expect(repaired).toMatchObject({
+    planId: legacy.planId,
+    repoId: options.repoId,
+    scopeKey: 'legacy-scope',
+    sourceRevision: '101a8920',
+    status: 'draft',
+    createdAt: legacy.createdAt,
+    evidenceRefs: legacy.evidenceRefs,
+  });
+  expect(listPlanContracts({ ...options, status: 'all' })).toHaveLength(1);
+  expect(approvePlanContract(options, legacy.planId).status).toBe('approved');
+  expect(() => repairDraftPlanContract(options, legacy.planId, {
+    scopeKey: 'legacy-scope', sourceRevision: 'later', goal: 'must not rewrite approved authority',
+    steps: [{ id: 'repair', objective: 'invalid', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['never runs'] }],
+  })).toThrow(`PLAN_DRAFT_REPAIR_STATUS_INVALID: ${legacy.planId}:approved`);
+});
+
+test('rejects an incomplete draft repair before mutating the existing Plan authority', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-draft-repair-invalid-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-draft-repair-invalid', now: () => '2026-08-28T00:00:00.000Z' };
+  const plan = createPlanContract(options, {
+    planId: 'plan-incomplete-repair', repoId: options.repoId, scopeKey: 'repair-scope', sourceRevision: '', goal: '', steps: [],
+  });
+
+  expect(() => repairDraftPlanContract(options, plan.planId, {
+    scopeKey: plan.scopeKey, sourceRevision: '', goal: '', steps: [],
+  })).toThrow('PLAN_DRAFT_REPAIR_INVALID: source_revision is required; goal is required; at least one plan step is required');
+  expect(getPlanContract(options, plan.planId)).toMatchObject({
+    planId: plan.planId,
+    sourceRevision: '',
+    goal: '',
+    steps: [],
+    status: 'draft',
+  });
 });
 
 test('rejects a dangling Requirement reference before Plan persistence', () => {

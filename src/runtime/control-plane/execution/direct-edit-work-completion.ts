@@ -1,12 +1,12 @@
 import { createHash } from 'crypto';
 import { getEditSession, listEditSessions, type EditSession } from '../../../cli/editing/edit-session';
-import { globMatches } from '../../../cli/mcp/paths';
 import { runProcess } from '../../../effects/process-runner';
 import { completeRequirementFromWork } from '../persistence/requirement-store';
 import { appendWorkEvidence, getWorkContract, recordWorkCompletionReceipt, updateWorkContract } from '../facade/work-contract-store';
 import { isDirectEditWorkCompletionReceipt, isTerminalWorkContractStatus, type DirectEditWorkCompletionReceipt, type WorkReconciliationRecord } from '../facade/types';
 import { historicalVerificationEvidenceAtRevision } from './verification-evidence';
 import { readWorkHandle } from './work-handle-store';
+import { assertWorkPathsWithinScope, findWorkPathScopeViolation } from './work-path-scope';
 
 export interface DirectEditWorkCompletionReconciliation {
   completedWorkIds: string[];
@@ -100,6 +100,15 @@ export function reconcileFinalizedDirectEditWorksAfterCommit(input: {
     if (isTerminalWorkContractStatus(work.status)) continue;
     if (!requestedChecksPassed(session)) {
       skipped.push({ sessionId: session.sessionId, workId: session.workId, reason: 'configured_checks_not_passed' });
+      continue;
+    }
+    const scopeViolation = findWorkPathScopeViolation(work, paths);
+    if (scopeViolation) {
+      skipped.push({
+        sessionId: session.sessionId,
+        workId: session.workId,
+        reason: `${scopeViolation.kind === 'forbidden' ? 'work_scope_forbidden' : 'work_scope_out_of_scope'}:${scopeViolation.path}`,
+      });
       continue;
     }
     const status = git(input.repoRoot, ['status', '--porcelain=v1', '--', ...paths]);
@@ -248,10 +257,10 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
   if (comparedPaths.length !== actualPaths.length || comparedPaths.some((path, index) => path !== actualPaths[index])) {
     throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_PATH_COMPARISON_MISMATCH');
   }
-  for (const path of comparedPaths) {
-    if (work.forbiddenPaths.some((pattern) => globMatches(pattern, path))) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_FORBIDDEN_PATH: ${path}`);
-    if (work.allowedPaths.length > 0 && !work.allowedPaths.some((pattern) => globMatches(pattern, path))) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_PATH_OUT_OF_SCOPE: ${path}`);
-  }
+  assertWorkPathsWithinScope(work, comparedPaths, {
+    forbidden: 'DIRECT_EDIT_WORK_RECONCILIATION_FORBIDDEN_PATH',
+    outOfScope: 'DIRECT_EDIT_WORK_RECONCILIATION_PATH_OUT_OF_SCOPE',
+  });
   const dirty = git(input.repoRoot, ['status', '--porcelain=v1', '--', ...comparedPaths]);
   if (!dirty.ok || dirty.stdout.trim()) throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_OWNED_PATHS_DIRTY');
 

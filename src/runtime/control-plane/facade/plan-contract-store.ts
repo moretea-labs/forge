@@ -60,6 +60,8 @@ export interface AdmitPlanContractInput extends CreatePlanContractInput {
   relatedPlanId?: string;
 }
 
+export interface RepairDraftPlanContractInput extends Omit<CreatePlanContractInput, 'planId' | 'repoId' | 'requirementId' | 'evidenceRefs'> {}
+
 export type AdmitPlanContractResult = PlanAdmissionResolution;
 
 export interface PlanContractSummary {
@@ -254,6 +256,32 @@ function buildPlanContract(input: CreatePlanContractInput, at: string): PlanCont
   };
 }
 
+function draftContentErrors(plan: PlanContract): string[] {
+  const errors: string[] = [];
+  if (!plan.sourceRevision) errors.push('source_revision is required');
+  if (!plan.scopeKey || plan.scopeKey === 'unknown') errors.push('scope_key is required');
+  if (!plan.goal) errors.push('goal is required');
+  if (plan.steps.length === 0) errors.push('at least one plan step is required');
+  const ids = new Set<string>();
+  for (const step of plan.steps) {
+    if (!step.id || step.id === 'unknown') errors.push('every plan step needs an id');
+    else if (ids.has(step.id)) errors.push(`duplicate plan step id: ${step.id}`);
+    else ids.add(step.id);
+    if (!step.objective) errors.push(`step ${step.id || 'unknown'} needs an objective`);
+    if (step.checks.length === 0) errors.push(`step ${step.id || 'unknown'} needs at least one machine-checkable check`);
+    if (step.acceptanceCriteria.length === 0) errors.push(`step ${step.id || 'unknown'} needs acceptance criteria`);
+    if (step.status !== 'pending') errors.push(`step ${step.id || 'unknown'} must be pending before approval`);
+  }
+  for (const step of plan.steps) {
+    for (const dependency of step.dependencies) {
+      const dependencyStep = plan.steps.find((candidate) => candidate.id === dependency);
+      if (!dependencyStep) errors.push(`step ${step.id} references unknown dependency ${dependency}`);
+      else if (dependencyStep.status !== 'pending') errors.push(`step ${step.id} dependency ${dependency} must be pending before approval`);
+    }
+  }
+  return [...new Set(errors)];
+}
+
 function createPlanContractUnlocked(options: PlanContractStoreOptions, input: CreatePlanContractInput): PlanContract {
   assertRequirementReference(options, input.requirementId);
   const at = nowIso(options);
@@ -293,6 +321,61 @@ function replacePlanContractUnlocked(
   contracts[predecessorIndex] = { ...predecessor, status: 'superseded', supersededBy: successor.planId, updatedAt: at };
   writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts: [successor, ...contracts] });
   return successor;
+}
+
+function repairDraftPlanContractUnlocked(
+  options: PlanContractStoreOptions,
+  planId: string,
+  input: RepairDraftPlanContractInput,
+): PlanContract {
+  const store = readPlanContractStore(options);
+  const key = sanitizeFileComponent(planId);
+  const index = store.contracts.findIndex((contract) => contract.planId === key);
+  if (index < 0) throw new Error(`plan contract not found: ${key}`);
+  const current = store.contracts[index]!;
+  if (current.status !== 'draft') throw new Error(`PLAN_DRAFT_REPAIR_STATUS_INVALID: ${current.planId}:${current.status}`);
+  assertRequirementReference(options, current.requirementId);
+  const at = nowIso(options);
+  const candidate = buildPlanContract({
+    ...input,
+    planId: current.planId,
+    repoId: current.repoId,
+    requirementId: current.requirementId,
+    evidenceRefs: current.evidenceRefs,
+  }, at);
+  const contentErrors = draftContentErrors(candidate);
+  if (contentErrors.length > 0) {
+    throw new Error(`PLAN_DRAFT_REPAIR_INVALID: ${contentErrors.join('; ')}`);
+  }
+  const conflictingScope = store.contracts.find((existing, candidateIndex) => candidateIndex !== index
+    && !isTerminalPlanContractStatus(existing.status)
+    && existing.scopeKey === candidate.scopeKey);
+  if (conflictingScope) throw new Error(`PLAN_SCOPE_ALREADY_OWNED: ${candidate.scopeKey}:${conflictingScope.planId}`);
+  const repaired: PlanContract = {
+    ...candidate,
+    createdAt: current.createdAt,
+    updatedAt: at,
+  };
+  const contracts = [...store.contracts];
+  contracts[index] = repaired;
+  writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts });
+  return repaired;
+}
+
+export function repairDraftPlanContract(
+  options: PlanContractStoreOptions,
+  planId: string,
+  input: RepairDraftPlanContractInput,
+): PlanContract {
+  return withPlanAdmissionLock(options, () => repairDraftPlanContractUnlocked(options, planId, input));
+}
+
+export async function repairDraftPlanContractAsync(
+  options: PlanContractStoreOptions,
+  planId: string,
+  input: RepairDraftPlanContractInput,
+): Promise<PlanContract> {
+  return await withPlanAdmissionLockAsync(options, () => repairDraftPlanContractUnlocked(options, planId, input));
 }
 
 export function createPlanContract(options: PlanContractStoreOptions, input: CreatePlanContractInput): PlanContract {
@@ -366,28 +449,7 @@ export function summarizePlanContract(plan: PlanContract): PlanContractSummary {
 }
 
 function approvalErrors(plan: PlanContract, allPlans: readonly PlanContract[]): string[] {
-  const errors: string[] = [];
-  if (!plan.sourceRevision) errors.push('source_revision is required before approval');
-  if (!plan.scopeKey || plan.scopeKey === 'unknown') errors.push('scope_key is required before approval');
-  if (!plan.goal) errors.push('goal is required before approval');
-  if (plan.steps.length === 0) errors.push('at least one plan step is required before approval');
-  const ids = new Set<string>();
-  for (const step of plan.steps) {
-    if (!step.id || step.id === 'unknown') errors.push('every plan step needs an id');
-    else if (ids.has(step.id)) errors.push(`duplicate plan step id: ${step.id}`);
-    else ids.add(step.id);
-    if (!step.objective) errors.push(`step ${step.id || 'unknown'} needs an objective`);
-    if (step.checks.length === 0) errors.push(`step ${step.id || 'unknown'} needs at least one machine-checkable check`);
-    if (step.acceptanceCriteria.length === 0) errors.push(`step ${step.id || 'unknown'} needs acceptance criteria`);
-    if (step.status !== 'pending') errors.push(`step ${step.id || 'unknown'} must be pending before approval`);
-  }
-  for (const step of plan.steps) {
-    for (const dependency of step.dependencies) {
-      const dependencyStep = plan.steps.find((candidate) => candidate.id === dependency);
-      if (!dependencyStep) errors.push(`step ${step.id} references unknown dependency ${dependency}`);
-      else if (dependencyStep.status !== 'pending') errors.push(`step ${step.id} dependency ${dependency} must be pending before approval`);
-    }
-  }
+  const errors = draftContentErrors(plan).map((error) => `${error} before approval`);
   const scopeIsCommitted = (status: PlanContractStatus): boolean => [
     'approved',
     'executing',

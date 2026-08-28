@@ -385,6 +385,128 @@ describe("repository MCP command tools", () => {
     }
   });
 
+  test("Work-bound safe patches cannot widen the durable Work path scope", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-work-bound-patch-scope-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "sample-repo");
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "README.md"), "base\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-m", "init"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
+      const workId = "WORK-PATCH-SCOPE";
+      createWorkContract({ controllerHome, repoId: repository.repoId }, {
+        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: "goal_workloop",
+        objective: "Only mutate the Work-owned source subtree.", acceptanceCriteria: [],
+        allowedPaths: ["src/**"], forbiddenPaths: ["src/secret/**"], checks: [],
+        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
+      });
+      const caller = { sessionId: "session-patch-scope", principalId: "principal-patch-scope", controllerInstanceId: "runtime-patch-scope" };
+      claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+        workId, controllerId: caller.principalId, controllerType: "chatgpt", sessionId: caller.sessionId,
+        principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+      });
+
+      const outside = await json(callRepositoryTool(controllerHome, "repository_safe_patch_apply", {
+        repo_id: repository.repoId, work_id: workId, purpose: "must stay in Work scope",
+        operations: [{ type: "create", path: "docs/outside.txt", content: "no\n" }],
+      }, caller));
+      expect(outside.error).toMatchObject({ code: "WORK_MUTATION_PATH_OUT_OF_SCOPE" });
+      expect(existsSync(join(repoRoot, "docs/outside.txt"))).toBe(false);
+
+      const forbidden = await json(callRepositoryTool(controllerHome, "repository_safe_patch_apply", {
+        repo_id: repository.repoId, work_id: workId, purpose: "must honor Work forbidden scope",
+        operations: [{ type: "create", path: "src/secret/value.txt", content: "no\n" }],
+      }, caller));
+      expect(forbidden.error).toMatchObject({ code: "WORK_MUTATION_FORBIDDEN_PATH" });
+      expect(existsSync(join(repoRoot, "src/secret/value.txt"))).toBe(false);
+
+      const allowed = await json(callRepositoryTool(controllerHome, "repository_safe_patch_apply", {
+        repo_id: repository.repoId, work_id: workId, purpose: "inside Work scope",
+        operations: [{ type: "create", path: "src/allowed.txt", content: "yes\n" }],
+      }, caller));
+      expect(allowed.status).toBe("applied");
+      expect(allowed.session.workId).toBe(workId);
+      expect(readFileSync(join(repoRoot, "src/allowed.txt"), "utf8")).toBe("yes\n");
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("terminal Work ids remain usable only as explicit read-only historical context", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-terminal-readonly-context-"));
+    const controllerHome = join(workspace, "controller");
+    const repoRoot = join(workspace, "repo");
+    mkdirSync(repoRoot, { recursive: true });
+    try {
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "README.md"), "base\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-m", "init"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
+      const workId = "WORK-TERMINAL-READONLY-CONTEXT";
+      createWorkContract({ controllerHome, repoId: repository.repoId }, {
+        workId,
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        mode: "goal_workloop",
+        objective: "preserve post-finalize read-only observation without reviving Work authority",
+        acceptanceCriteria: ["terminal Work is context only"],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: "chatgpt",
+        status: "failed",
+      });
+      const caller = { sessionId: "session-terminal-readonly", principalId: "principal-terminal-readonly", controllerInstanceId: "runtime-terminal-readonly" };
+      startExecutionSession(controllerHome, caller);
+      updateExecutionSession(controllerHome, caller, {
+        activeRepositoryId: repository.repoId,
+        activeCheckoutId: repository.activeCheckoutId,
+        activeWorkId: workId,
+      });
+
+      const observed = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        work_id: workId,
+        command: ["git", "status", "--short"],
+      }, caller));
+      expect(observed.accepted).toBe(true);
+      expect(observed.ok).toBe(true);
+      expect(observed.historicalWorkContext).toEqual({
+        workId,
+        status: "failed",
+        mode: "historical_read_only_observation",
+        attribution: "not_active_work",
+      });
+      expect(observed.processId).toBeUndefined();
+
+      const blockedMutation = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        work_id: workId,
+        command: ["touch", "should-not-exist.txt"],
+        request_id: "terminal-context-mutation-must-fail",
+      }, caller));
+      expect(blockedMutation.error).toMatchObject({
+        code: "WORK_ATTRIBUTION_INVALID",
+        message: `WORK_ATTRIBUTION_INVALID: ${workId}`,
+      });
+      expect(existsSync(join(repoRoot, "should-not-exist.txt"))).toBe(false);
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("does not let an unrelated active Work monopolize default-branch delivery", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-unrelated-work-delivery-"));
     const controllerHome = join(workspace, "controller-home");
@@ -1476,6 +1598,7 @@ describe("repository MCP command tools", () => {
       expect(targetAdvanceWorkScopeViolation(workScope, advance.candidateChangedPaths)).toBeUndefined();
       expect(targetAdvanceWorkScopeViolation(workScope, advance.targetChangedPaths)).toEqual({ kind: "forbidden", path: iosProject });
       expect(targetAdvanceWorkScopeViolation(workScope, [iosProject])).toEqual({ kind: "forbidden", path: iosProject });
+      expect(targetAdvanceWorkScopeViolation({ allowedPaths: [], forbiddenPaths: [] }, advance.candidateChangedPaths)).toBeUndefined();
 
       git(repoRoot, ["switch", "work/android-only"]);
       const rebased = repositoryGitRebaseOnto(controllerHome, repository, {

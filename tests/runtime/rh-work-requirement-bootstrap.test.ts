@@ -28,7 +28,10 @@ function git(repoRoot: string, ...args: string[]): string {
 
 function initRepo(repoRoot: string): string {
   mkdirSync(join(repoRoot, 'src'), { recursive: true });
-  writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({ name: 'requirement-bootstrap-fixture' }, null, 2));
+  writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({
+    name: 'requirement-bootstrap-fixture',
+    scripts: { 'check:type': 'node -e "process.exit(0)"' },
+  }, null, 2));
   writeFileSync(join(repoRoot, 'src', 'index.ts'), 'export const ready = true;\n');
   git(repoRoot, 'init', '-b', 'main');
   git(repoRoot, 'config', 'user.email', 'test@example.com');
@@ -118,5 +121,70 @@ describe('rh_work Requirement bootstrap', () => {
     }));
     expect(planned.status).toBe('ok');
     expect(planned.data.planContractCreated).toBe(true);
+  }, 15_000);
+
+  test('repairs a malformed draft Plan in place through rh_work without creating a second authority', async () => {
+    const repoRoot = tempRoot('forge-plan-repair-repo-');
+    const controllerHome = tempRoot('forge-plan-repair-home-');
+    const sourceRevision = initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Plan repair fixture' });
+    const ctx = mcpContext(controllerHome, repository);
+
+    const malformed = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'PLAN-LEGACY-MALFORMED',
+      scope_key: 'legacy-malformed-scope',
+      source_revision: '',
+      objective: '',
+      plan_steps: [],
+    }));
+    expect(malformed.status).toBe('ok');
+    expect(malformed.data.planContractCreated).toBe(true);
+
+    const diagnosed = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'repair',
+      plan_id: 'PLAN-LEGACY-MALFORMED',
+      repair_operation: 'diagnose',
+      dry_run: true,
+    }));
+    expect(diagnosed.status).toBe('ok');
+    expect(diagnosed.data.repairRequired).toBe(true);
+    expect(diagnosed.data.plan.planId).toBe('PLAN-LEGACY-MALFORMED');
+
+    const repaired = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'repair',
+      plan_id: 'PLAN-LEGACY-MALFORMED',
+      repair_operation: 'repair',
+      dry_run: false,
+      scope_key: 'legacy-malformed-scope',
+      source_revision: sourceRevision,
+      objective: 'Restore the existing draft to a reviewable PlanContract.',
+      plan_steps: [{
+        id: 'repair',
+        objective: 'Repair the draft authority in place.',
+        dependencies: [],
+        authoritative_files: ['src/index.ts'],
+        allowed_paths: ['src/**'],
+        forbidden_paths: [],
+        check_ids: ['package:check:type'],
+        acceptance_criteria: ['The same Plan can be approved.'],
+      }],
+    }));
+    expect(repaired.status).toBe('ok');
+    expect(repaired.data.repaired).toBe(true);
+    expect(repaired.data.replacementPlanCreated).toBe(false);
+    expect(repaired.data.plan.planId).toBe('PLAN-LEGACY-MALFORMED');
+
+    const approved = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_approve',
+      plan_id: 'PLAN-LEGACY-MALFORMED',
+    }));
+    expect(approved.status).toBe('ok');
+    expect(approved.data.plan.status).toBe('approved');
   }, 15_000);
 });

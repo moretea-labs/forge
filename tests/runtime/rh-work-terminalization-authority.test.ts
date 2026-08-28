@@ -10,6 +10,7 @@ import { registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
@@ -146,6 +147,60 @@ describe('rh_work terminalization authority', () => {
       { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, requested_by: 'chatgpt', reason: 'current owner semantic disposition' },
     ));
     expect(current.status).toBe('ok');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('cancelled');
+  }, 15_000);
+
+  test('terminal cleanup resolves legacy exact-id WorkHandles without workContractId', async () => {
+    const fx = fixture();
+    const workId = 'work-legacy-handle-terminal-cleanup';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const caller = {
+      principalId: 'principal-legacy-cleanup',
+      sessionId: 'transport-legacy-cleanup',
+      controllerInstanceId: 'runtime-legacy-cleanup',
+    };
+    claimControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+    const now = new Date().toISOString();
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      repositoryId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      worktreePath: fx.repoRoot,
+      branch: 'main',
+      managedWorktree: false,
+      baseCommit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim(),
+      permissionSnapshotVersion: 1,
+      state: 'prepared',
+      createdAt: now,
+      updatedAt: now,
+      finalization: {
+        validation: 'pending',
+        commit: 'pending',
+        merge: 'pending',
+        branchCleanup: 'pending',
+        worktreeCleanup: 'pending',
+      },
+    });
+
+    const stopped = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, requested_by: 'user', reason: 'legacy exact-id cleanup regression' },
+    ));
+
+    expect(stopped.status).toBe('ok');
+    expect(stopped.summary).not.toContain('WORK_CONTROLLER_CLAIM_TERMINAL');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('cancelled');
   }, 15_000);
 

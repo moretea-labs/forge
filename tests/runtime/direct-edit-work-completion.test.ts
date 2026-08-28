@@ -330,6 +330,31 @@ describe('standalone Direct Edit Work completion', () => {
     })).toThrow('DIRECT_EDIT_WORK_RECONCILIATION_PATH_COMPARISON_MISMATCH');
   });
 
+  test('does not complete a finalized edit whose paths escape the durable Work scope', () => {
+    const fx = fixture();
+    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      allowedPaths: ['docs/**'],
+    });
+    commitExample(fx.repoRoot);
+
+    const reconciliation = reconcileFinalizedDirectEditWorksAfterCommit({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repoId,
+      checkoutId: fx.checkoutId,
+      repoRoot: fx.repoRoot,
+      committedPaths: ['src/example.ts'],
+      fallbackBranch: 'main',
+    });
+
+    expect(reconciliation.completedWorkIds).toEqual([]);
+    expect(reconciliation.skipped).toContainEqual({
+      sessionId: fx.sessionId,
+      workId: fx.workId,
+      reason: 'work_scope_out_of_scope:src/example.ts',
+    });
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.status).toBe('running');
+  });
+
   test('does not complete Work when the committed content no longer matches the finalized edit', () => {
     const fx = fixture();
     commitExample(fx.repoRoot, 'export const value = 2;\n');

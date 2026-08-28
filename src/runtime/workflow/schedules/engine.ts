@@ -27,8 +27,8 @@ import {
   recordScheduleOccurrenceHandoff,
   listSchedules,
   saveOccurrence,
-  saveSchedule,
   saveScheduleDecision,
+  updateSchedule,
 } from './store';
 import { applyScheduleFailure, applyScheduleRetryableFailure } from './settlement';
 import { classifyScheduledBrowserObservation, executeScheduledBrowserProbe } from './browser-probe';
@@ -462,27 +462,27 @@ async function executeExternalControllerWake(
   const workStore = { controllerHome, repoId: schedule.repoId };
   const work = getWorkContract(workStore, workId);
   if (!work) {
-    saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: `Work ${workId} no longer exists.`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
+    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ enabled: false, pausedReason: `Work ${workId} no longer exists.`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
     return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', `EXTERNAL_CONTROLLER_WAKE_WORK_NOT_FOUND:${workId}`);
   }
   if (isTerminalWorkContractStatus(work.status)) {
-    saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: `Work ${workId} is terminal (${work.status}).`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
+    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ enabled: false, pausedReason: `Work ${workId} is terminal (${work.status}).`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
     return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} is terminal (${work.status}); automatic continuation stopped.`);
   }
   const existingOwner = getControllerSession(workStore, workId);
   const occurrenceNowMs = Date.parse(timestamp);
   const nowMs = Number.isFinite(occurrenceNowMs) ? occurrenceNowMs : Date.now();
   if (workHasActiveExecution(controllerHome, schedule.repoId, workId)) {
-    saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
+    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
     return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} has active execution; duplicate Controller wake suppressed.`);
   }
   if (existingOwner && controllerSessionBlocksRecovery(workStore, workId, { nowMs })) {
-    saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
+    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
     return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} has a recently active Controller ${existingOwner.controllerId}.`);
   }
   const launchReservation = getExternalControllerLaunchReservation(workStore, workId);
   if (launchReservation) {
-    saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
+    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
     return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} already has a pending external Controller launch ${launchReservation.reservationId}.`);
   }
   const wakeDecision = decideOccurrence(
@@ -550,15 +550,13 @@ async function executeExternalControllerWake(
           browserSessionId: dispatched.browserSessionId,
           conversationUrl: dispatched.conversationUrl,
         });
-        const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
-        saveSchedule(controllerHome, {
-          ...latest,
+        updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
           lastTriggeredAt: timestamp,
           lastOccurrenceId: occurrence.occurrenceId,
           consecutiveFailures: 0,
           nextEligibleAt: undefined,
-          pausedReason: undefined,
-        });
+          ...(current.enabled ? { pausedReason: undefined } : {}),
+        }));
         const succeededOccurrence = saveOccurrence(controllerHome, {
           ...wakeDecision,
           status: 'succeeded',
@@ -580,8 +578,7 @@ async function executeExternalControllerWake(
           });
         }
         if (error instanceof Error && error.message.startsWith('CONTROLLER_RELAY_ROUND_ALREADY_OPEN:')) {
-          const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
-          saveSchedule(controllerHome, { ...latest, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
+          updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
           return decideOccurrence(controllerHome, schedule, wakeDecision, 'nothing_to_do', 'skipped', `Work ${workId} already has an open ChatGPT controller round awaiting claim or disposition.`);
         }
         throw error;
@@ -602,15 +599,13 @@ async function executeExternalControllerWake(
       continuationPrompt,
       cwd: repository.canonicalRoot,
     });
-    const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
-    saveSchedule(controllerHome, {
-      ...latest,
+    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
       lastTriggeredAt: timestamp,
       lastOccurrenceId: occurrence.occurrenceId,
       consecutiveFailures: 0,
       nextEligibleAt: undefined,
-      pausedReason: undefined,
-    });
+      ...(current.enabled ? { pausedReason: undefined } : {}),
+    }));
     return saveOccurrence(controllerHome, {
       ...wakeDecision,
       status: 'succeeded',
@@ -629,12 +624,10 @@ async function executeExternalControllerWake(
           : `Controller wake deferred by transient readiness; schedule remains active with bounded backoff: ${reason}`,
         countFailure: !semanticWait,
       });
-      const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
-      saveSchedule(controllerHome, {
-        ...latest,
+      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
         lastTriggeredAt: timestamp,
         lastOccurrenceId: occurrence.occurrenceId,
-      });
+      }));
       return deferred.occurrence ?? saveOccurrence(controllerHome, {
         ...wakeDecision,
         status: semanticWait ? 'skipped' : 'failed',
@@ -660,8 +653,7 @@ async function executeExternalControllerWake(
         attemptedActions: [`schedule:${schedule.scheduleId}`, `work:${workId}`, `controller:${controllerType}`],
       },
     });
-    const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
-    saveSchedule(controllerHome, { ...latest, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId });
+    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
     return failed.occurrence ?? saveOccurrence(controllerHome, { ...wakeDecision, status: 'failed', reason });
   }
 }
@@ -672,6 +664,10 @@ export async function evaluateSchedule(
   force = false,
   triggerContext?: ScheduleTriggerContext,
 ): Promise<ScheduleOccurrence | undefined> {
+  // The persisted Schedule record is the authority. Callers may legitimately
+  // retain the object returned by create/list/get across multiple trigger
+  // attempts, so never let an older in-memory revision become execution state.
+  schedule = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
   // Preserve retired schedule records as evidence, but do not create a new
   // occurrence or resume a controller/external action from their old payload.
   if (retiredScheduleReason(schedule)) return undefined;
@@ -726,7 +722,7 @@ export async function evaluateSchedule(
         attemptedActions: [`operation:${schedule.action.operation}`],
       },
     );
-    saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
+    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));
     return externalControllerHandoff;
   }
 
@@ -763,7 +759,10 @@ export async function evaluateSchedule(
     return decideOccurrence(controllerHome, schedule, occurrence, 'active_occurrence', 'skipped', 'Maximum active occurrences reached.');
   }
   if (schedule.consecutiveFailures >= schedule.policy.maxFailures) {
-    saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: 'Maximum consecutive failures reached.' });
+    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
+      enabled: false,
+      pausedReason: current.enabled ? 'Maximum consecutive failures reached.' : current.pausedReason,
+    }));
     return decideOccurrence(controllerHome, schedule, occurrence, 'stopped', 'skipped', 'Schedule paused after repeated failures.');
   }
   if (schedule.nextEligibleAt && Date.parse(schedule.nextEligibleAt) > Date.now() && !force) {
@@ -817,14 +816,14 @@ export async function evaluateSchedule(
           readyForExecution: preview.status.readyForExecution,
         }));
       }
-      saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
+      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));
       return decideOccurrence(controllerHome, schedule, occurrence, 'would_execute', 'shadowed', 'Shadow mode records the live maintenance decision without applying it.', occurrenceDecisionEvidence({
         actionId: preview.actionId,
         safeCandidates: preview.selectedCandidateIds.length,
         typedSafeCandidates: preview.selectedTypedCandidateIds.length,
       }));
     }
-    saveSchedule(controllerHome, { ...schedule, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
+    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));
     return decideOccurrence(controllerHome, schedule, occurrence, 'would_execute', 'shadowed', 'Shadow mode records the decision without modifying the repository.', due.evidence);
   }
 
@@ -880,28 +879,29 @@ export async function evaluateSchedule(
     try {
       const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
       const observation = await executeScheduledGithubIssueWatch({ repoRoot: repository.canonicalRoot, args, observedAt: timestamp });
-      const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
       const evidence = occurrenceDecisionEvidence({
         githubRepository: typeof args.github_repository === 'string' ? args.github_repository : undefined,
         observationStatus: observation.status,
         observedIssueCount: observation.issues.length,
         changedIssueNumbers: observation.changedOpenIssues.map((issue) => issue.number),
       });
-      const persistObservation = () => saveSchedule(controllerHome, {
-        ...getSchedule(controllerHome, schedule.repoId, schedule.scheduleId),
-        action: {
-          ...latest.action,
-          arguments: { ...(latest.action.arguments ?? {}), issue_watch_state: observation.nextState, issue_watch_since: undefined },
-        },
-        lastTriggeredAt: timestamp,
-        lastOccurrenceId: occurrenceId,
-        lastObservationAt: timestamp,
-        lastObservationStatus: observation.status,
-        lastObservationChangedAt: observation.shouldWake ? timestamp : latest.lastObservationChangedAt,
-        consecutiveFailures: 0,
-        consecutiveNoops: observation.shouldWake ? 0 : (latest.consecutiveNoops ?? 0) + 1,
-        nextEligibleAt: undefined,
-        pausedReason: undefined,
+      const persistObservation = () => updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => {
+        if (current.action.operation !== GITHUB_ISSUE_WATCH_OPERATION) throw new Error('SCHEDULE_ACTION_CHANGED_DURING_GITHUB_OBSERVATION');
+        return {
+          action: {
+            ...current.action,
+            arguments: { ...(current.action.arguments ?? {}), issue_watch_state: observation.nextState, issue_watch_since: undefined },
+          },
+          lastTriggeredAt: timestamp,
+          lastOccurrenceId: occurrenceId,
+          lastObservationAt: timestamp,
+          lastObservationStatus: observation.status,
+          lastObservationChangedAt: observation.shouldWake ? timestamp : current.lastObservationChangedAt,
+          consecutiveFailures: 0,
+          consecutiveNoops: observation.shouldWake ? 0 : (current.consecutiveNoops ?? 0) + 1,
+          nextEligibleAt: undefined,
+          ...(current.enabled ? { pausedReason: undefined } : {}),
+        };
       });
       if (!observation.shouldWake) {
         const observedSchedule = persistObservation();
@@ -955,11 +955,11 @@ export async function evaluateSchedule(
       const workStore = { controllerHome, repoId: schedule.repoId };
       const work = getWorkContract(workStore, workId);
       if (!work) {
-        saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: `Work ${workId} no longer exists.`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
+        updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ enabled: false, pausedReason: `Work ${workId} no longer exists.`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));
         return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', `SCHEDULE_BROWSER_PROBE_WORK_NOT_FOUND:${workId}`);
       }
       if (isTerminalWorkContractStatus(work.status)) {
-        saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: `Work ${workId} is terminal (${work.status}).`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
+        updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ enabled: false, pausedReason: `Work ${workId} is terminal (${work.status}).`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));
         return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} is terminal (${work.status}); browser watcher stopped before probing.`);
       }
     }
@@ -977,16 +977,15 @@ export async function evaluateSchedule(
       });
 
       if (probe.status === 'auth_required') {
-        const observedSchedule = saveSchedule(controllerHome, {
-          ...latest,
+        const observedSchedule = updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
           lastTriggeredAt: timestamp,
           lastOccurrenceId: occurrenceId,
           lastObservationAt: timestamp,
           lastObservationStatus: 'auth_required',
           consecutiveFailures: 0,
           nextEligibleAt: undefined,
-          pausedReason: undefined,
-        });
+          ...(current.enabled ? { pausedReason: undefined } : {}),
+        }));
         if (args.wake_on_auth_required !== false) {
           const authPrompt = typeof args.auth_required_prompt === 'string'
             ? args.auth_required_prompt
@@ -1029,8 +1028,7 @@ export async function evaluateSchedule(
       }
 
       if (probe.status === 'keepalive') {
-        const observedSchedule = saveSchedule(controllerHome, {
-          ...latest,
+        const observedSchedule = updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
           lastTriggeredAt: timestamp,
           lastOccurrenceId: occurrenceId,
           lastObservationAt: timestamp,
@@ -1038,8 +1036,8 @@ export async function evaluateSchedule(
           consecutiveFailures: 0,
           consecutiveNoops: 0,
           nextEligibleAt: undefined,
-          pausedReason: undefined,
-        });
+          ...(current.enabled ? { pausedReason: undefined } : {}),
+        }));
         return decideOccurrence(controllerHome, observedSchedule, occurrence, 'execute', 'succeeded', 'Browser session keepalive refreshed successfully.', observationEvidence);
       }
 
@@ -1051,19 +1049,18 @@ export async function evaluateSchedule(
       const changed = observation.status === 'changed';
       const shouldWake = args.wake_on_change !== false && observation.shouldWake;
       const observationStatus: RepositorySchedule['lastObservationStatus'] = observation.status;
-      const observedSchedule = saveSchedule(controllerHome, {
-        ...latest,
+      const observedSchedule = updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
         lastTriggeredAt: timestamp,
         lastOccurrenceId: occurrenceId,
         lastObservationAt: timestamp,
         lastObservationFingerprint: probe.fingerprint,
-        lastObservationChangedAt: changed ? timestamp : latest.lastObservationChangedAt,
+        lastObservationChangedAt: changed ? timestamp : current.lastObservationChangedAt,
         lastObservationStatus: observationStatus,
         consecutiveFailures: 0,
-        consecutiveNoops: shouldWake ? 0 : (latest.consecutiveNoops ?? 0) + 1,
+        consecutiveNoops: shouldWake ? 0 : (current.consecutiveNoops ?? 0) + 1,
         nextEligibleAt: undefined,
-        pausedReason: undefined,
-      });
+        ...(current.enabled ? { pausedReason: undefined } : {}),
+      }));
 
       if (!shouldWake) {
         const reason = observation.status === 'baseline'
@@ -1098,8 +1095,7 @@ export async function evaluateSchedule(
           attemptedActions: [`schedule:${schedule.scheduleId}`, `work:${workId}`, 'operation:browser_probe'],
         },
       });
-      const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
-      saveSchedule(controllerHome, { ...latest, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId });
+      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));
       return failed.occurrence ?? saveOccurrence(controllerHome, { ...occurrence, status: 'failed', decision: 'execute', reason });
     }
   }
@@ -1144,15 +1140,13 @@ export async function evaluateSchedule(
       cancelPendingApprovals: false,
     });
     const appliedCount = result.applied.filter((candidate) => candidate.applied).length;
-    const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
-    saveSchedule(controllerHome, {
-      ...latest,
+    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
       lastTriggeredAt: timestamp,
       lastOccurrenceId: occurrenceId,
       consecutiveFailures: 0,
       nextEligibleAt: undefined,
-      pausedReason: undefined,
-    });
+      ...(current.enabled ? { pausedReason: undefined } : {}),
+    }));
     return saveOccurrence(controllerHome, {
       ...decision,
       status: 'succeeded',
@@ -1181,12 +1175,10 @@ export async function evaluateSchedule(
         ],
       },
     });
-    const latest = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
-    saveSchedule(controllerHome, {
-      ...latest,
+    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
       lastTriggeredAt: timestamp,
       lastOccurrenceId: occurrenceId,
-    });
+    }));
     return failed.occurrence ?? saveOccurrence(controllerHome, {
       ...decision,
       status: 'failed',

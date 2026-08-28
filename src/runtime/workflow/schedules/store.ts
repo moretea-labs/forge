@@ -28,6 +28,7 @@ interface ScheduleRequestRecord {
   createdAt: string;
 }
 type CreateScheduleInput = Omit<RepositorySchedule, 'schemaVersion' | 'revision' | 'scheduleId' | 'createdAt' | 'updatedAt' | 'consecutiveFailures'>;
+type ScheduleMutableUpdate = Partial<Omit<RepositorySchedule, 'schemaVersion' | 'revision' | 'scheduleId' | 'repoId' | 'requestId' | 'createdAt' | 'updatedAt'>>;
 
 export interface ScheduleOccurrenceHandoffInput {
   title: string;
@@ -165,13 +166,57 @@ export function getSchedule(controllerHome: string, repoId: string, scheduleId: 
   };
 }
 
+function persistScheduleRevision(
+  controllerHome: string,
+  current: RepositorySchedule,
+  candidate: RepositorySchedule,
+): RepositorySchedule {
+  const next: RepositorySchedule = {
+    ...candidate,
+    schemaVersion: current.schemaVersion,
+    revision: current.revision + 1,
+    scheduleId: current.scheduleId,
+    repoId: current.repoId,
+    requestId: current.requestId,
+    createdAt: current.createdAt,
+    updatedAt: new Date().toISOString(),
+  };
+  writeJsonAtomic(schedulePath(controllerHome, next.repoId, next.scheduleId), next);
+  appendRuntimeEvent(controllerHome, { repoId: next.repoId, entityType: 'schedule', entityId: next.scheduleId, eventType: 'schedule_updated', requestId: next.requestId, revision: next.revision, data: { enabled: next.enabled, pausedReason: next.pausedReason } });
+  return next;
+}
+
+/**
+ * Persist a caller-owned Schedule snapshot only when its revision is still the
+ * current authority. User/configuration mutations use this path so stale
+ * writers fail closed instead of overwriting a newer decision.
+ */
 export function saveSchedule(controllerHome: string, schedule: RepositorySchedule): RepositorySchedule {
   return withControllerLock(controllerHome, { scope: 'task', repoId: schedule.repoId, taskId: `schedule-${schedule.scheduleId}` }, `save-schedule:${schedule.scheduleId}`, () => {
     const current = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
-    const next = { ...schedule, revision: current.revision + 1, updatedAt: new Date().toISOString() };
-    writeJsonAtomic(schedulePath(controllerHome, next.repoId, next.scheduleId), next);
-    appendRuntimeEvent(controllerHome, { repoId: next.repoId, entityType: 'schedule', entityId: next.scheduleId, eventType: 'schedule_updated', requestId: next.requestId, revision: next.revision, data: { enabled: next.enabled, pausedReason: next.pausedReason } });
-    return next;
+    if (schedule.revision !== current.revision) {
+      throw new Error(`SCHEDULE_REVISION_CONFLICT: ${schedule.scheduleId}:expected=${schedule.revision}:actual=${current.revision}`);
+    }
+    return persistScheduleRevision(controllerHome, current, schedule);
+  }, 10_000);
+}
+
+/**
+ * Apply runtime-owned settlement/observation fields to the latest Schedule
+ * authority while holding the Schedule lock. Identity and revision fields are
+ * never writable through this path. Long-running occurrences use this instead
+ * of replaying a stale whole-record snapshot after user state may have changed.
+ */
+export function updateSchedule(
+  controllerHome: string,
+  repoId: string,
+  scheduleId: string,
+  update: (current: RepositorySchedule) => ScheduleMutableUpdate,
+): RepositorySchedule {
+  return withControllerLock(controllerHome, { scope: 'task', repoId, taskId: `schedule-${scheduleId}` }, `update-schedule:${scheduleId}`, () => {
+    const current = getSchedule(controllerHome, repoId, scheduleId);
+    const changes = update(current);
+    return persistScheduleRevision(controllerHome, current, { ...current, ...changes });
   }, 10_000);
 }
 

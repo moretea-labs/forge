@@ -4,6 +4,7 @@ import { resolveEphemeralWorkspaceTarget } from '../repositories/ephemeral-works
 import type { ResolvedExecutionIdentity } from '../../runtime/control-plane/execution/execution-identity';
 import { readExecutionSession } from '../../runtime/control-plane/execution/session-store';
 import { getWorkContract } from '../../runtime/control-plane/facade/work-contract-store';
+import { assertWorkPathsWithinScope } from '../../runtime/control-plane/execution/work-path-scope';
 import { getControllerSession, listControllerSessions } from '../../runtime/control-plane/facade/controller-session-store';
 import { isTerminalWorkContractStatus } from '../../runtime/control-plane/facade/types';
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../repositories/command-executor';
@@ -53,6 +54,7 @@ import {
   executeRepositoryCommandViaProcessRuntime,
 } from '../../runtime/execution/process-runtime/command-facade';
 import { assessWorkMode, parseExplicitTaskMode } from '../controller/work-mode';
+import { classifyRepositoryCommand } from '../repositories/command-classifier';
 import { normalizeRepositoryCommand } from '../repositories/command-normalization';
 import { readRepositoryRange } from '../repository/inspector';
 import { getMcpPolicy } from './policy';
@@ -445,6 +447,32 @@ function rawDefaultBranchMergeCommand(repository: ReturnType<typeof resolveRepos
   return /(?:^|[;&|]\s*)git\s+merge\b/.test(normalized.shellCommand ?? '');
 }
 
+interface HistoricalReadOnlyWorkContext {
+  workId: string;
+  status: string;
+  mode: 'historical_read_only_observation';
+  attribution: 'not_active_work';
+}
+
+function historicalReadOnlyWorkContext(
+  controllerHome: string,
+  repository: ReturnType<typeof resolveRepositorySelection>,
+  args: Record<string, unknown>,
+): HistoricalReadOnlyWorkContext | undefined {
+  const requestedWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+  if (!requestedWorkId) return undefined;
+  const work = getWorkContract({ controllerHome, repoId: repository.repoId }, requestedWorkId);
+  if (!work || !isTerminalWorkContractStatus(work.status)) return undefined;
+  const classification = classifyRepositoryCommand(args.command as string | string[], repository.defaultBranch);
+  if (classification.risk !== 'readonly') return undefined;
+  return {
+    workId: work.workId,
+    status: work.status,
+    mode: 'historical_read_only_observation',
+    attribution: 'not_active_work',
+  };
+}
+
 function resolveRepositoryCommandTarget(
   controllerHome: string,
   args: Record<string, unknown>,
@@ -454,6 +482,7 @@ function resolveRepositoryCommandTarget(
   repository: ReturnType<typeof resolveRepositorySelection>;
   executionIdentity: ResolvedExecutionIdentity;
   workspace?: { workspaceId: string; root: string; registered: false };
+  historicalWorkContext?: HistoricalReadOnlyWorkContext;
 } {
   const workspaceRoot = typeof args.workspace_root === 'string' ? args.workspace_root.trim() : '';
   const checkoutId = typeof args.checkout_id === 'string' ? args.checkout_id.trim() : '';
@@ -474,6 +503,33 @@ function resolveRepositoryCommandTarget(
       workspace: { workspaceId: target.workspaceId, root: target.canonicalRoot, registered: false },
     };
   }
+  // A terminal Work no longer owns mutation or checkout authority. An exact
+  // terminal work_id may still accompany a read-only observation immediately
+  // after finalize, so preserve it as explicit historical context while
+  // executing against the caller-selected/current repository checkout. Any
+  // non-read-only command continues through claimed Work resolution and fails
+  // closed for terminal attribution.
+  const selectedRepository = resolveRepositorySelection({
+    repoId: repoIdValue || undefined,
+    checkoutId: checkoutId || undefined,
+    controllerHome,
+    allowSoleRepository: true,
+  });
+  const historicalWorkContext = historicalReadOnlyWorkContext(controllerHome, selectedRepository, args);
+  if (historicalWorkContext) {
+    return {
+      repository: selectedRepository,
+      executionIdentity: {
+        schemaVersion: 1,
+        authority: 'repository',
+        repositoryId: selectedRepository.repoId,
+        checkoutId: selectedRepository.activeCheckoutId,
+        canonicalRoot: selectedRepository.canonicalRoot,
+      },
+      historicalWorkContext,
+    };
+  }
+
   const repository = resolveRepositorySelectionForClaimedWork(controllerHome, args, repoIdValue, caller);
   const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
   const workId = explicitWorkId
@@ -615,6 +671,7 @@ function compactProcessCommandPayload(input: {
   repoId: string;
   checkoutId?: string;
   workspace?: { workspaceId: string; root: string; registered: false };
+  historicalWorkContext?: HistoricalReadOnlyWorkContext;
   processId?: string;
   process?: unknown;
   completed?: boolean;
@@ -653,6 +710,7 @@ function compactProcessCommandPayload(input: {
       repoId: input.repoId,
       ...(input.checkoutId ? { checkoutId: input.checkoutId } : {}),
       ...(input.workspace ? { workspace: input.workspace } : {}),
+      ...(input.historicalWorkContext ? { historicalWorkContext: input.historicalWorkContext } : {}),
       ...(input.processId ? { processId: input.processId } : {}),
       ...(completed ? { exitCode: input.exitCode ?? (ok ? 0 : 1) } : {}),
       // A running default response otherwise loses its only dependency-bound
@@ -693,6 +751,7 @@ function compactProcessCommandPayload(input: {
     repoId: input.repoId,
     ...(input.checkoutId ? { checkoutId: input.checkoutId } : {}),
     ...(input.workspace ? { workspace: input.workspace } : {}),
+    ...(input.historicalWorkContext ? { historicalWorkContext: input.historicalWorkContext } : {}),
     ...(input.processId ? { processId: input.processId } : {}),
     ok: input.ok,
     exitCode: input.exitCode,
@@ -998,6 +1057,16 @@ export async function callRepositoryTool(
       case 'repository_safe_patch_apply': {
         const repository = resolveRepositorySelectionForClaimedWork(controllerHome, args, repoIdValue, caller);
         const binding = safePatchEditBinding(controllerHome, repository, caller, args);
+        if (binding?.workId) {
+          const work = getWorkContract({ controllerHome, repoId: repository.repoId }, binding.workId);
+          if (!work) throw new Error(`WORK_NOT_FOUND: ${binding.workId}`);
+          const requestedPaths = buildSafePatchPlan(repository, { operations: args.operations, chunkSize: args.chunk_size })
+            .chunks.flatMap((chunk) => chunk.paths);
+          assertWorkPathsWithinScope(work, requestedPaths, {
+            forbidden: 'WORK_MUTATION_FORBIDDEN_PATH',
+            outOfScope: 'WORK_MUTATION_PATH_OUT_OF_SCOPE',
+          });
+        }
         const applied = withControllerLock(
           controllerHome,
           { scope: 'repository', repoId: repository.repoId },
@@ -1098,7 +1167,7 @@ export async function callRepositoryTool(
       case 'repository_command_execute': {
         const explorationGuidance = fragmentedRepositoryExplorationGuidance(args.command);
         const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
-        const { repository, executionIdentity } = target;
+        const { repository, executionIdentity, historicalWorkContext } = target;
         const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
         if (!explicitWorkId) assertNoBoundExecutionSessionMutation(controllerHome, repository, caller);
         const deliveryWorkId = rawDefaultBranchMergeCommand(repository, args.command)
@@ -1279,6 +1348,7 @@ export async function callRepositoryTool(
                   repoId: repository.repoId,
                   checkoutId: repository.activeCheckoutId,
                   workspace: target.workspace,
+                  historicalWorkContext,
                   processId: handle?.processId,
                   process: detailLevel === 'detail' ? handle : undefined,
                   completed,

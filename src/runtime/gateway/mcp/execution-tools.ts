@@ -33,6 +33,7 @@ import { assertExecutionIdentity, executionIdentityForWork, executionIdentityFro
 import { withWorkPrepareRequest } from '../../control-plane/execution/work-prepare-request-store';
 import { markWorkHandleFailed, newWorkId, readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle, type WorkFinalizationStages, type WorkHandleState, type WorkTerminalOutcome } from '../../control-plane/execution/work-handle-store';
 import { cleanupTerminalWork } from '../../control-plane/execution/work-terminal-cleanup';
+import { assertWorkPathsWithinScope, findWorkPathScopeViolation } from '../../control-plane/execution/work-path-scope';
 import { pushExactWorkRemoteDelivery, type WorkRemoteDeliveryReceipt } from '../../control-plane/execution/work-remote-delivery';
 import { assertResolvedAuthorization, createGoalDelegation, decideAuthorization, resolveAuthorizationRequest, type AuthorizationDecision, type AuthorizationRiskClass } from '../../control-plane/governance/authorization';
 import { readControllerResult, searchControllerResult, writeControllerResult } from '../../evidence/result-store';
@@ -374,13 +375,8 @@ export function targetAdvanceWorkScopeViolation(
   changedPaths: string[],
 ): { kind: 'forbidden' | 'out_of_scope'; path: string } | undefined {
   if (!scope) return undefined;
-  for (const path of changedPaths) {
-    if (scope.forbiddenPaths.some((pattern) => globMatches(pattern, path))) return { kind: 'forbidden', path };
-    if (scope.allowedPaths.length > 0 && !scope.allowedPaths.some((pattern) => globMatches(pattern, path))) {
-      return { kind: 'out_of_scope', path };
-    }
-  }
-  return undefined;
+  const violation = findWorkPathScopeViolation(scope, changedPaths);
+  return violation ? { kind: violation.kind, path: violation.path } : undefined;
 }
 
 function replaceTargetAdvanceScopeEvidence(
@@ -811,7 +807,13 @@ function makeBoundedResult(ctx: MultiRepositoryMcpToolContext, session: Executio
 }
 
 function contractFor(ctx: MultiRepositoryMcpToolContext, handle: WorkHandleState) {
-  return handle.workContractId ? getWorkContract({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, handle.workContractId) : undefined;
+  // WorkContract is the semantic lifecycle authority. Legacy WorkHandles can
+  // predate the explicit workContractId binding, but their exact workId is the
+  // same stable authority key inside the same repository. Falling back only to
+  // that exact id keeps cleanup fail-closed without inventing a second lookup or
+  // fuzzy ownership rule.
+  const workContractId = handle.workContractId?.trim() || handle.workId;
+  return getWorkContract({ controllerHome: ctx.controllerHome, repoId: handle.repositoryId }, workContractId);
 }
 
 function findWorkHandle(
@@ -1093,14 +1095,10 @@ function adoptExistingWorkHead(
     : undefined;
   const scopeBaseHead = sourceHead ? gitMergeBase(handle.worktreePath, sourceHead, candidateHead) : previousHead;
   const changedPaths = gitChangedPaths(handle.worktreePath, scopeBaseHead, candidateHead);
-  for (const path of changedPaths) {
-    if (contract.forbiddenPaths.some((pattern) => globMatches(pattern, path))) {
-      throw new Error(`WORK_HEAD_ADOPTION_FORBIDDEN_PATH: ${path}`);
-    }
-    if (contract.allowedPaths.length === 0 || !contract.allowedPaths.some((pattern) => globMatches(pattern, path))) {
-      throw new Error(`WORK_HEAD_ADOPTION_PATH_OUT_OF_SCOPE: ${path}`);
-    }
-  }
+  assertWorkPathsWithinScope(contract, changedPaths, {
+    forbidden: 'WORK_HEAD_ADOPTION_FORBIDDEN_PATH',
+    outOfScope: 'WORK_HEAD_ADOPTION_PATH_OUT_OF_SCOPE',
+  });
 
   claimHeadAdoptionOwnership(ctx, session, handle, args);
 

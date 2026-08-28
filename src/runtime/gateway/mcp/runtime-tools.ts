@@ -186,6 +186,7 @@ import {
   resolvePlanAdmission,
   withPrimaryWorkAdmissionLockAsync,
   repairDanglingPlanStepWorkBinding,
+  repairDraftPlanContractAsync,
   completePlanStepForWork,
   summarizePlanContract,
   supersedePlanContract,
@@ -2335,11 +2336,84 @@ async function runFacadeRepair(
   const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
   const planStepId = typeof args.plan_step_id === 'string' ? args.plan_step_id.trim() : '';
 
-  if (planId || planStepId) {
-    if (!planId || !planStepId) {
-      const facade = buildFacadeResult({ status: 'blocked', summary: 'PLAN_STEP_REPAIR_CONTEXT_REQUIRED: plan_id and plan_step_id are both required.', data: { operation: repairOperation, dryRun, repaired: false } });
+  if (planId && !planStepId) {
+    const plan = getPlanContract(store, planId);
+    if (!plan) {
+      const facade = buildFacadeResult({ status: 'not_found', summary: `PlanContract ${planId} not found.`, data: { operation: repairOperation, dryRun, planId, repaired: false } });
       return result(facade as unknown as Record<string, unknown>, true);
     }
+    if (plan.status !== 'draft') {
+      const facade = buildFacadeResult({ status: 'blocked', summary: `PLAN_DRAFT_REPAIR_STATUS_INVALID: ${plan.planId}:${plan.status}`, data: { operation: repairOperation, dryRun, planId, repaired: false } });
+      return result(facade as unknown as Record<string, unknown>, true);
+    }
+    if (repairOperation !== 'repair' || dryRun) {
+      const facade = buildFacadeResult({
+        summary: `PlanContract ${plan.planId} is a draft. Exact in-place repair is available; the Plan identity and Requirement authority are preserved and only a fully valid draft may be persisted.`,
+        data: { operation: repairOperation, dryRun, plan: summarizePlanContract(plan), repaired: false, repairRequired: true },
+        suggestedNextActions: [{ label: 'Repair this exact draft Plan', tool: 'rh_work', operation: 'repair', payload: { plan_id: plan.planId, repair_operation: 'repair', dry_run: false }, risk: 'workspace_write', confidence: 'high' }],
+      });
+      return result(facade as unknown as Record<string, unknown>);
+    }
+    const rawSteps = Array.isArray(args.plan_steps)
+      ? args.plan_steps
+      : plan.steps.map((step) => ({
+          id: step.id, objective: step.objective, dependencies: step.dependencies, authoritative_files: step.authoritativeFiles,
+          allowed_paths: step.allowedPaths, forbidden_paths: step.forbiddenPaths, check_ids: step.checks, acceptance_criteria: step.acceptanceCriteria,
+        }));
+    const steps = rawSteps
+      .filter((step): step is Record<string, unknown> => Boolean(step) && typeof step === 'object' && !Array.isArray(step))
+      .map((step) => ({
+        id: String(step.id ?? ''),
+        objective: String(step.objective ?? ''),
+        dependencies: Array.isArray(step.dependencies) ? step.dependencies.map(String) : [],
+        authoritativeFiles: Array.isArray(step.authoritative_files) ? step.authoritative_files.map(String) : [],
+        allowedPaths: Array.isArray(step.allowed_paths) ? step.allowed_paths.map(String) : [],
+        forbiddenPaths: Array.isArray(step.forbidden_paths) ? step.forbidden_paths.map(String) : [],
+        checks: Array.isArray(step.check_ids) ? step.check_ids.map(String) : [],
+        acceptanceCriteria: Array.isArray(step.acceptance_criteria) ? step.acceptance_criteria.map(String) : [],
+      }));
+    const availableChecks = listControllerChecks(repository.canonicalRoot);
+    const normalizedPlanChecks = normalizeCheckIds(steps.flatMap((step) => step.checks), availableChecks);
+    if (normalizedPlanChecks.invalidCheckIds.length > 0) {
+      const facade = buildFacadeResult({
+        status: 'failed',
+        summary: `PLAN_CHECKS_INVALID: ${normalizedPlanChecks.invalidCheckIds.join(', ')}. Draft repair was not persisted.`,
+        data: { operation: repairOperation, dryRun: false, planId, repaired: false, normalizedChecks: normalizedPlanChecks, registeredCheckIds: availableChecks.map((check) => check.id).slice(0, 80) },
+        suggestedNextActions: [],
+      });
+      return result(facade as unknown as Record<string, unknown>, true);
+    }
+    try {
+      const repaired = await repairDraftPlanContractAsync(store, planId, {
+        scopeKey: typeof args.scope_key === 'string' ? args.scope_key : plan.scopeKey,
+        sourceRevision: typeof args.source_revision === 'string' ? args.source_revision : plan.sourceRevision,
+        goal: typeof args.objective === 'string' ? args.objective : plan.goal,
+        nonGoals: Array.isArray(args.non_goals) ? args.non_goals.map(String) : plan.nonGoals,
+        assumptions: Array.isArray(args.assumptions) ? args.assumptions.map(String) : plan.assumptions,
+        resolvedDecisions: Array.isArray(args.resolved_decisions) ? args.resolved_decisions.map(String) : plan.resolvedDecisions,
+        stopConditions: Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : plan.stopConditions,
+        replanConditions: Array.isArray(args.replan_conditions) ? args.replan_conditions.map(String) : plan.replanConditions,
+        integrationStrategy: typeof args.integration_strategy === 'string' ? args.integration_strategy : plan.integrationStrategy,
+        steps,
+      });
+      const facade = buildFacadeResult({
+        summary: `PlanContract ${repaired.planId} draft repaired in place; identity and Requirement authority were preserved.`,
+        data: { operation: repairOperation, dryRun: false, plan: summarizePlanContract(repaired), repaired: true, replacementPlanCreated: false },
+        suggestedNextActions: [{ label: 'Approve reviewed plan', tool: 'rh_work', operation: 'plan_approve', payload: { plan_id: repaired.planId }, risk: 'workspace_write', confidence: 'medium' }],
+      });
+      return result(facade as unknown as Record<string, unknown>);
+    } catch (error) {
+      const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'PLAN_DRAFT_REPAIR_FAILED', data: { operation: repairOperation, dryRun: false, planId, repaired: false } });
+      return result(facade as unknown as Record<string, unknown>, true);
+    }
+  }
+
+  if (planStepId && !planId) {
+    const facade = buildFacadeResult({ status: 'blocked', summary: 'PLAN_STEP_REPAIR_CONTEXT_REQUIRED: plan_id and plan_step_id are both required.', data: { operation: repairOperation, dryRun, repaired: false } });
+    return result(facade as unknown as Record<string, unknown>, true);
+  }
+
+  if (planId && planStepId) {
     const plan = getPlanContract(store, planId);
     const step = plan?.steps.find((candidate) => candidate.id === planStepId);
     if (!plan || !step) {

@@ -34,7 +34,7 @@ import {
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { awaitExternalControllerWake, classifyChatgptWakeFailure, evaluateSchedule, externalControllerWakeTimeoutMs } from '../../src/runtime/workflow/schedules/engine';
 import { applyScheduleRetryableFailure } from '../../src/runtime/workflow/schedules/settlement';
-import { createSchedule, getSchedule, recordScheduleOccurrenceHandoff, saveOccurrence, saveSchedule } from '../../src/runtime/workflow/schedules/store';
+import { createSchedule, getSchedule, recordScheduleOccurrenceHandoff, saveOccurrence, saveSchedule, updateSchedule } from '../../src/runtime/workflow/schedules/store';
 import {
   buildSchedulerHealthSnapshot,
   normalizeSchedulerConfig,
@@ -738,6 +738,63 @@ describe('scheduled external Controller wake', () => {
     const explicitPause = applyScheduleRetryableFailure(controllerHome, schedule.scheduleId, repository.repoId, 'OCC-RETRY-4', { outcome: 'failed', decision: 'execute', reason: 'HTTP 502' });
     expect(explicitPause.schedule.enabled).toBe(false);
     expect(explicitPause.schedule.pausedReason).toBe('Explicit maintenance pause.');
+  });
+
+  test('Schedule revision is an actual write fence so stale settlement cannot overwrite a newer human pause', () => {
+    const root = temp('forge-schedule-revision-fence-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'schedule@example.test'], ['config', 'user.name', 'Schedule Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'schedule\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'schedule-revision-fence' });
+    const stale = createSchedule(controllerHome, {
+      requestId: 'revision-fence', repoId: repository.repoId, name: 'revision fence', enabled: true,
+      trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: true },
+      action: { operation: 'external_controller_wake', target: 'runtime', arguments: { work_id: 'WORK-REVISION-FENCE', controller_type: 'chatgpt' } }, stopConditions: [],
+    });
+    const paused = saveSchedule(controllerHome, { ...stale, enabled: false, pausedReason: 'Explicit human pause.' });
+    expect(paused.revision).toBe(stale.revision + 1);
+
+    expect(() => saveSchedule(controllerHome, {
+      ...stale,
+      lastTriggeredAt: new Date().toISOString(),
+      consecutiveFailures: 0,
+      pausedReason: undefined,
+    })).toThrow(`SCHEDULE_REVISION_CONFLICT: ${stale.scheduleId}:expected=${stale.revision}:actual=${paused.revision}`);
+    expect(getSchedule(controllerHome, repository.repoId, stale.scheduleId)).toMatchObject({
+      enabled: false,
+      pausedReason: 'Explicit human pause.',
+      revision: paused.revision,
+    });
+  });
+
+  test('runtime Schedule settlement updates current metadata without overriding a newer human pause', () => {
+    const root = temp('forge-schedule-runtime-update-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'schedule@example.test'], ['config', 'user.name', 'Schedule Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'schedule\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'schedule-runtime-update' });
+    const schedule = createSchedule(controllerHome, {
+      requestId: 'runtime-update', repoId: repository.repoId, name: 'runtime update', enabled: true,
+      trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: true },
+      action: { operation: 'external_controller_wake', target: 'runtime', arguments: { work_id: 'WORK-RUNTIME-UPDATE', controller_type: 'chatgpt' } }, stopConditions: [],
+    });
+    const paused = saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: 'Explicit human pause.' });
+    const triggeredAt = new Date().toISOString();
+
+    const settled = updateSchedule(controllerHome, repository.repoId, schedule.scheduleId, (current) => ({
+      lastTriggeredAt: triggeredAt,
+      lastOccurrenceId: 'OCC-RUNTIME-SETTLEMENT',
+      consecutiveFailures: 0,
+      ...(current.enabled ? { pausedReason: undefined } : {}),
+    }));
+
+    expect(settled).toMatchObject({
+      enabled: false,
+      pausedReason: 'Explicit human pause.',
+      lastTriggeredAt: triggeredAt,
+      lastOccurrenceId: 'OCC-RUNTIME-SETTLEMENT',
+      revision: paused.revision + 1,
+    });
   });
 
   test('acknowledges a dispatched ChatGPT round only after an exact Work claim and only recovers liveness when that claimed round is abandoned', () => {
