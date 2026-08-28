@@ -694,6 +694,16 @@ export function resolveProcessRunnerEntryPath(
   const configured = env.FORGE_PROCESS_RUNNER_ENTRY?.trim();
   if (configured && existsSync(configured)) return configured;
 
+  // macOS launchd runs the immutable Runtime through a stable mirrored
+  // executable path for TCC identity. In that mode process.execPath is not a
+  // sibling of the active release sidecars, so use the release authority path
+  // exported by the launch contract before any executable/source fallback.
+  const releaseRoot = env.FORGE_RELEASE_PATH?.trim();
+  if (releaseRoot) {
+    const releaseRunner = join(releaseRoot, 'process-runner.js');
+    if (existsSync(releaseRunner)) return releaseRunner;
+  }
+
   // Compiled daemon/Gateway entrypoints and process-runner.js are siblings in
   // every immutable release. Prefer that closed release surface before looking
   // at source paths recorded only for diagnostics and development fallback.

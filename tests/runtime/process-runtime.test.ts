@@ -31,6 +31,7 @@ import {
   waitForProcess,
 } from '../../src/runtime/execution/process-runtime';
 import { createProcessRecord, listProcessRecords, updateProcessRecord } from '../../src/runtime/execution/process-runtime/store';
+import { resolveProcessRunnerEntryPath } from '../../src/runtime/execution/process-runtime/runtime';
 import {
   claimRunnerStarted,
   runProcessRunnerFromDescriptor,
@@ -184,6 +185,29 @@ function fixture() {
 }
 
 describe('Unified Process Runtime', () => {
+  test('resolves immutable process runner from FORGE_RELEASE_PATH when execPath is the stable mirror', () => {
+    const root = mkdtempSync(join(tmpdir(), 'process-runner-release-path-'));
+    roots.push(root);
+    const releaseRoot = join(root, 'release');
+    const stableRoot = join(root, 'stable');
+    mkdirSync(releaseRoot, { recursive: true });
+    mkdirSync(stableRoot, { recursive: true });
+    const releaseRunner = join(releaseRoot, 'process-runner.js');
+    const configuredRunner = join(root, 'configured-runner.js');
+    writeFileSync(releaseRunner, 'release runner\n');
+    writeFileSync(configuredRunner, 'configured runner\n');
+
+    const mirroredExec = join(stableRoot, 'forge-runtime');
+    expect(resolveProcessRunnerEntryPath(mirroredExec, {
+      FORGE_RELEASE_PATH: releaseRoot,
+      FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: releaseRoot,
+    }, root)).toBe(releaseRunner);
+    expect(resolveProcessRunnerEntryPath(mirroredExec, {
+      FORGE_PROCESS_RUNNER_ENTRY: configuredRunner,
+      FORGE_RELEASE_PATH: releaseRoot,
+    }, root)).toBe(configuredRunner);
+  });
+
   test('repository command facade blocks inline plugin execution bypass before spawning or leasing', async () => {
     const fx = fixture();
     const runtime = bindCanonicalRuntime(fx.controllerHome);
