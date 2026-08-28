@@ -72,6 +72,8 @@ export interface ExecuteRepositoryCommandInput {
   allowNonGitWorkspace?: boolean;
   /** Internal: command-facade already classified this as a bounded local script; retain policy/snapshot/audit without durable Process state. */
   allowOpaqueLocalScript?: boolean;
+  /** Internal/test seam: bound dirty-path fingerprint enrichment independently from child execution lifetime. */
+  snapshotFingerprintTimeoutMs?: number;
 }
 
 
@@ -98,6 +100,8 @@ export interface RepositoryCommandExecution {
   authorizationDecision?: AuthorizationDecision;
   approvalRequestId?: string;
   infrastructureError?: { code: string; message: string };
+  /** Child execution completed, but post-execution repository evidence could not be proven. Mutation state is unknown until a later authoritative inspection. */
+  evidenceError?: { code: string; message: string };
   externalPathUsages?: RepositoryCommandExternalPathUsage[];
 }
 
@@ -307,6 +311,7 @@ async function prepareRepositoryCommandExecutionAsync(
     ? emptyWorkspaceSnapshot()
     : await repositorySnapshotAsync(root, input.signal, {
         pathFingerprints: !(classification.risk === 'readonly' && controllerHome === undefined),
+        fingerprintTimeoutMs: input.snapshotFingerprintTimeoutMs,
       }));
   return finalizePreparedExecution(
     repository,
@@ -565,9 +570,19 @@ export async function executeRepositoryCommandAsync(
     ...hooks,
     signal,
   });
-  const after = input.allowNonGitWorkspace
-    ? before
-    : await repositorySnapshotAsync(root, signal?.aborted ? undefined : signal);
+  let after: RepositoryCommandSnapshot | undefined = input.allowNonGitWorkspace ? before : undefined;
+  let evidenceError: RepositoryCommandExecution['evidenceError'];
+  if (!input.allowNonGitWorkspace) {
+    try {
+      after = await repositorySnapshotAsync(root, signal?.aborted ? undefined : signal, {
+        fingerprintTimeoutMs: input.snapshotFingerprintTimeoutMs,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const code = message.includes(':') ? message.slice(0, message.indexOf(':')) : 'POST_EXECUTION_EVIDENCE_FAILED';
+      evidenceError = { code, message };
+    }
+  }
   const execution: RepositoryCommandExecution = {
     ...base,
     status: 'executed',
@@ -578,8 +593,9 @@ export async function executeRepositoryCommandAsync(
     stdout: result.stdout,
     stderr: result.stderr,
     after,
-    repositoryChanged: snapshotChanged(before, after),
-    changedPaths: changedSnapshotPaths(before, after),
+    repositoryChanged: after ? snapshotChanged(before, after) : undefined,
+    changedPaths: after ? changedSnapshotPaths(before, after) : undefined,
+    evidenceError,
     policyDecision: 'allowed',
     externalPathUsages: externalPathUsages.length > 0 ? externalPathUsages : undefined,
     infrastructureError: result.timedOut
@@ -594,7 +610,9 @@ export async function executeRepositoryCommandAsync(
         }
         : undefined,
   };
-  if (execution.repositoryChanged) invalidateRepositoryReadCaches(root);
+  // Unknown post-execution mutation evidence is conservatively cache-invalidating;
+  // later reads must re-observe the repository rather than reuse a false unchanged state.
+  if (execution.repositoryChanged === true || execution.evidenceError) invalidateRepositoryReadCaches(root);
   auditCommand(controllerHome, repository, execution);
   return execution;
 }

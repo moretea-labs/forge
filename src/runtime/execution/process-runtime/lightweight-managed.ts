@@ -52,6 +52,8 @@ interface LightweightExecutionResult {
   cancelled?: boolean;
   stdout?: string;
   stderr?: string;
+  /** Child execution completed, but repository mutation evidence could not be proven. */
+  evidenceError?: { code: string; message: string };
 }
 
 interface LightweightExitObservation {
@@ -714,16 +716,31 @@ export async function startLightweightRepositoryCommand(
           timedOut: result.timedOut,
           cancelled: result.cancelled,
         };
-        persistRunningReceipt(entry, true);
+        // Child exit is the authoritative Process terminal boundary. Repository
+        // post-processing may continue, but it must never keep this Process
+        // logically running or make process_get/process_wait lose the exit fact.
+        entry.result = result;
+        entry.finishedAtMs = Date.now();
+        input.execution.signal?.removeEventListener('abort', onCallerAbort);
+        persistTerminalReceipt(input.controllerHome, entry);
       },
     },
   ).then((result) => {
+    // Enriched execution evidence may replace the compact child-exit result in
+    // memory. The already-persisted terminal Process identity remains stable.
+    // Work lifecycle settlement belongs here, after repository evidence has
+    // either been proven or explicitly marked unavailable.
     entry.result = result;
-    entry.finishedAtMs = Date.now();
-    input.execution.signal?.removeEventListener('abort', onCallerAbort);
     input.onCompleted?.(result);
     persistTerminalReceipt(input.controllerHome, entry);
     return result;
+  }).catch((error) => {
+    // Once child exit has been observed, later bookkeeping failure cannot revoke
+    // the terminal Process fact or trigger command replay. Expected snapshot
+    // degradation is represented by RepositoryCommandExecution.evidenceError;
+    // this catch is the final fail-safe for any later post-processing exception.
+    if (entry.exitObservation && entry.result) return entry.result;
+    throw error;
   });
   entry.promise = input.deferStart
     ? new Promise<LightweightExecutionResult>((resolve, reject) => {

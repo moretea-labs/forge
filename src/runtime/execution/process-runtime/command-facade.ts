@@ -454,6 +454,11 @@ export async function executeRepositoryCommandViaProcessRuntime(
         deferStart: deferLongPreparation,
         reuseActiveEquivalent: deferLongPreparation,
         onCompleted: (result) => {
+          // A terminal child exit is sufficient to close the Process, but not to
+          // advance Work mutation authority when post-execution repository
+          // evidence is unavailable. Finalization must keep failing closed until
+          // a later authoritative repository inspection proves the new HEAD.
+          if (result.evidenceError) return;
           settleWorkHandleExpectedHeadAfterRepositoryCommand({
             controllerHome: input.controllerHome,
             repository: input.repository,

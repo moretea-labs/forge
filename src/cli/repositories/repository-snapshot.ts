@@ -84,7 +84,7 @@ const MAX_DIRTY_PATHS = 200;
 export async function repositorySnapshotAsync(
   root: string,
   signal?: AbortSignal,
-  options: { pathFingerprints?: boolean } = {},
+  options: { pathFingerprints?: boolean; fingerprintTimeoutMs?: number } = {},
 ): Promise<RepositoryCommandSnapshot> {
   const [headResult, branchResult, statusResult, refsResult] = await Promise.all([
     gitAsync(root, ['rev-parse', '--verify', 'HEAD'], signal), gitAsync(root, ['branch', '--show-current'], signal),
@@ -107,7 +107,10 @@ export async function repositorySnapshotAsync(
   let pathFingerprints: Record<string, string> = {};
   if (includePathFingerprints) {
     const { computePathFingerprintsAsync } = await import('../../runtime/execution/thin-harness/fingerprint-worker');
-    const fingerprint = await computePathFingerprintsAsync({ root, paths, statusByPath: Object.fromEntries(byPath), maxFileBytes: 256 * 1024, maxTotalBytes: 8 * 1024 * 1024, maxPaths: MAX_DIRTY_PATHS }, { signal, timeoutMs: 5_000 });
+    const fingerprintTimeoutMs = typeof options.fingerprintTimeoutMs === 'number' && Number.isFinite(options.fingerprintTimeoutMs)
+      ? Math.max(1, Math.trunc(options.fingerprintTimeoutMs))
+      : 5_000;
+    const fingerprint = await computePathFingerprintsAsync({ root, paths, statusByPath: Object.fromEntries(byPath), maxFileBytes: 256 * 1024, maxTotalBytes: 8 * 1024 * 1024, maxPaths: MAX_DIRTY_PATHS }, { signal, timeoutMs: fingerprintTimeoutMs });
     pathFingerprints = fingerprint.pathFingerprints;
   }
   return { head, branch: branchResult.ok ? branchResult.stdout || null : null, status: statusResult.stdout, dirty: paths.length > 0, refsHash: createHash('sha256').update(refs).digest('hex'), paths, pathFingerprints };

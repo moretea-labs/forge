@@ -11,6 +11,7 @@ import {
   submitLocalBridgeJob} from '../../src/cli/local-bridge/job-store';
 import {
   executeRepositoryCommand,
+  executeRepositoryCommandAsync,
   executeRepositoryReadOnlyCommandDirect,
   previewRepositoryCommandExecution,
   REPOSITORY_COMMAND_DEFAULT_TIMEOUT_MS,
@@ -357,6 +358,37 @@ describe('repository command execution lifecycle', () => {
     expect(result.after).toBe(result.before);
     expect(result.repositoryChanged).toBe(false);
     expect(result.changedPaths).toEqual([]);
+  });
+
+  test('post-execution fingerprint timeout preserves child success while marking repository evidence unknown', async () => {
+    const controllerHome = tempRoot('forge-cmd-post-evidence-home-');
+    const repoRoot = tempRoot('forge-cmd-post-evidence-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    writeFileSync(join(repoRoot, 'write-three.mjs'), [
+      "await Bun.write('evidence-a.txt', 'a\\n');",
+      "await Bun.write('evidence-b.txt', 'b\\n');",
+      "await Bun.write('evidence-c.txt', 'c\\n');",
+    ].join('\n'));
+    git(repoRoot, ['add', 'write-three.mjs']);
+    git(repoRoot, ['commit', '-m', 'add evidence timeout fixture']);
+
+    const result = await executeRepositoryCommandAsync(controllerHome, repository, {
+      command: [process.execPath, 'write-three.mjs'],
+      timeoutMs: 10_000,
+      snapshotFingerprintTimeoutMs: 1,
+    });
+
+    expect(result).toMatchObject({
+      status: 'executed',
+      ok: true,
+      exitCode: 0,
+      repositoryChanged: undefined,
+      changedPaths: undefined,
+      evidenceError: { code: 'SNAPSHOT_WORKER_TIMEOUT' },
+    });
+    expect(result.after).toBeUndefined();
+    expect(readFileSync(join(repoRoot, 'evidence-a.txt'), 'utf-8')).toBe('a\n');
   });
 
   test('write-capable command execution still reports repository changes', () => {

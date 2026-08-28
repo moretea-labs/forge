@@ -58,6 +58,7 @@ import {
   getLightweightProcessHandle,
   readLightweightProcessLogs,
   startLightweightInternalProcess,
+  startLightweightRepositoryCommand,
   waitForLightweightProcess,
 } from '../../src/runtime/execution/process-runtime/lightweight-managed';
 import { classifyGatewayExecutionPath } from '../../src/runtime/gateway/mcp/router';
@@ -1085,6 +1086,47 @@ describe('run_check Process Runtime facade', () => {
     expect(result.durableSideEffects.executionJobCount).toBe(0);
     expect(result.durableSideEffects.localJobCount).toBe(0);
     expect(result.durableSideEffects.workerSpawnCount).toBe(0);
+  });
+
+  test('lightweight process joins the authoritative child exit when post-execution fingerprint evidence times out', async () => {
+    const fx = fixture();
+    writeFileSync(join(fx.repoRoot, 'write-three.mjs'), [
+      "await Bun.write('terminal-a.txt', 'a\\n');",
+      "await Bun.write('terminal-b.txt', 'b\\n');",
+      "await Bun.write('terminal-c.txt', 'c\\n');",
+    ].join('\n'));
+    spawnSync('git', ['-C', fx.repoRoot, 'add', 'write-three.mjs'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', fx.repoRoot, 'commit', '-m', 'add terminal timeout fixture'], { encoding: 'utf8' });
+
+    let completedEvidence: { evidenceError?: { code: string; message: string } } | undefined;
+    const started = await startLightweightRepositoryCommand({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      execution: {
+        command: [process.execPath, 'write-three.mjs'],
+        snapshotFingerprintTimeoutMs: 1,
+      },
+      interactiveWaitMs: 0,
+      timeoutMs: 10_000,
+      commandId: 'post-snapshot-timeout-terminal',
+      onCompleted: (result) => { completedEvidence = result; },
+    });
+    expect(started.handle.processId).toStartWith('lightweight:');
+
+    const terminal = await waitForLightweightProcess(
+      fx.controllerHome,
+      fx.repository.repoId,
+      started.handle.processId,
+      { timeoutMs: 2_000 },
+    );
+    expect(terminal).toMatchObject({ completed: true, status: 'succeeded', ok: true, exitCode: 0 });
+    const recovered = getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, started.handle.processId);
+    expect(recovered).toMatchObject({ completed: true, status: 'succeeded', ok: true, exitCode: 0 });
+
+    for (let attempt = 0; attempt < 40 && completedEvidence === undefined; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(completedEvidence?.evidenceError?.code).toBe('SNAPSHOT_WORKER_TIMEOUT');
   });
 
   test('ordinary long check returns an in-memory lightweight handle without Process or Lease state', async () => {
