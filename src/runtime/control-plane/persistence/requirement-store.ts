@@ -165,18 +165,6 @@ export function updateRequirement(
   });
 }
 
-/** @deprecated Migration/legacy compatibility only. New Plan creation must bind Plan.requirementId and derive active Plan slices by query. */
-export function setRequirementPlan(
-  options: RequirementStoreOptions,
-  input: { requirementId: string; planId: string; action?: string },
-): Requirement {
-  return updateRequirement(options, {
-    requirementId: input.requirementId,
-    action: input.action ?? 'requirement_active_plan_bound',
-    mutate: (current) => ({ ...current, activePlanId: id(input.planId) }),
-  });
-}
-
 export interface RequirementCompletionInput {
   requirementId: string;
   work: Pick<WorkContract,

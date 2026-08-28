@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { backupControlPlaneDatabase, restoreControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { completeRequirementFromWork, createRequirement, readRequirement, setRequirementPlan, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { completeRequirementFromWork, createRequirement, readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { createWorkContract, recordWorkCompletionReceipt, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { buildRequirementBoard } from '../../src/runtime/control-plane/facade/requirement-board';
@@ -24,9 +24,7 @@ test('keeps user Requirement lifecycle separate from its active technical plan',
   });
   expect(requirement.state).toBe('planned');
 
-  const planned = setRequirementPlan(options, { requirementId: 'req-1', planId: 'plan-1' });
-  expect(planned.state).toBe('planned');
-  expect(planned.activePlanId).toBe('plan-1');
+  expect(requirement.activePlanId).toBeUndefined();
 
   const active = updateRequirement(options, {
     requirementId: 'req-1',
@@ -34,8 +32,8 @@ test('keeps user Requirement lifecycle separate from its active technical plan',
     mutate: (current) => ({ ...current, state: 'active' }),
   });
   expect(active.state).toBe('active');
-  expect(active.revision).toBe(3);
-  expect(readRequirement(options, 'req-1')?.revision).toBe(3);
+  expect(active.revision).toBe(2);
+  expect(readRequirement(options, 'req-1')?.revision).toBe(2);
 });
 
 test('derives multiple active Plan slices from Plan.requirementId without a mutable Requirement pointer', () => { const home = mkdtempSync(join('/tmp', 'forge-requirement-')); homes.push(home); const requirementOptions = { controllerHome: home }; createRequirement(requirementOptions, { requirementId: 'req-derived-plans', title: 'Derived plan slices', outcomeStatement: 'Plan relationships are queried from Plan.requirementId.' }); const planOptions = { controllerHome: home, repoId: 'repo-derived-plans' }; for (const [planId, scopeKey] of [['plan-a', 'slice-a'], ['plan-b', 'slice-b']] as const) createPlanContract(planOptions, { planId, repoId: 'repo-derived-plans', requirementId: 'req-derived-plans', scopeKey, sourceRevision: 'revision-a', goal: `Deliver ${scopeKey}`, steps: [{ id: 'step-1', objective: 'Implement slice', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: [], acceptanceCriteria: [] }] }); expect(readRequirement(requirementOptions, 'req-derived-plans')?.value.activePlanId).toBeUndefined(); const board = buildRequirementBoard({ controllerHome: home, repoId: 'repo-derived-plans' }) as { requirements: Array<{ requirementId: string; activePlanId?: string; activePlanIds: string[] }> }; const item = board.requirements.find((entry) => entry.requirementId === 'req-derived-plans'); expect(item?.activePlanIds).toEqual(['plan-b', 'plan-a']); expect(item?.activePlanId).toBe('plan-b'); });
