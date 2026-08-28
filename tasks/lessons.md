@@ -75,6 +75,13 @@
 - Prevention rule: Preserve the candidate-stager's same-checkout fence, but compare canonical physical paths for both the requested source root and current working directory.
 - Where to apply next time: candidate release staging and any deployment command that binds a caller-supplied repository root to a process working directory.
 
+## Controller timeouts must cover the complete browser dispatch
+- Date: 2026-08-28
+- Triggered by correction: A scheduled ChatGPT controller wake remained `running` past its configured 120-second timeout because navigation, execution-preference selection, and prompt submission each received that timeout independently.
+- Mistake pattern: Passing a timeout to nested tool calls while leaving the composite controller operation without a deadline, allowing tool stalls to accumulate indefinitely.
+- Prevention rule: Clamp external Controller wake timeouts to 5–120 seconds and race the complete Work-bound dispatch against that one deadline. On expiry, close the relay as failed and let the schedule's bounded retry circuit decide whether to pause; never leave a dispatching relay or running occurrence behind.
+- Where to apply next time: external Controller wake engine, browser/desktop composite workflows, and any schedule operation with more than one blocking provider call.
+
 ## A running cloud VM is not a healthy Forge execution node
 - Date: 2026-08-26
 - Triggered by correction: The Google Cloud `forge-cloud` e2-micro remained `RUNNING`, but Forge_Cloud calls alternated between Secure Tunnel HTTP 404/429, direct SSH and IAP SSH failed, and serial logs showed repeated WARP main-loop watchdog hangs, QUIC idle timeout, NTP timeout, and journald watchdog restarts.

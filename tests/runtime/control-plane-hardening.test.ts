@@ -32,7 +32,7 @@ import {
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
-import { classifyChatgptWakeFailure, evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
+import { awaitExternalControllerWake, classifyChatgptWakeFailure, evaluateSchedule, externalControllerWakeTimeoutMs } from '../../src/runtime/workflow/schedules/engine';
 import { applyScheduleRetryableFailure } from '../../src/runtime/workflow/schedules/settlement';
 import { createSchedule, getSchedule, recordScheduleOccurrenceHandoff, saveOccurrence, saveSchedule } from '../../src/runtime/workflow/schedules/store';
 import {
@@ -647,10 +647,18 @@ describe('scheduled external Controller wake', () => {
   test('classifies only explicit readiness failures as retryable while keeping consent and unknown failures fail-closed', () => {
     expect(classifyChatgptWakeFailure('PLUGIN_BROWSER_ATTACH_UNAVAILABLE: Chrome attach failed')).toBe('retryable_readiness');
     expect(classifyChatgptWakeFailure('HTTP 502 from primary connector')).toBe('retryable_readiness');
+    expect(classifyChatgptWakeFailure('CONTROLLER_WAKE_TOTAL_TIMEOUT: external Controller dispatch exceeded 120000ms.')).toBe('retryable_readiness');
     expect(classifyChatgptWakeFailure('CONTROLLER_RELAY_LAUNCH_BLOCKED: repeated_state:2>=2')).toBe('semantic_wait');
     expect(classifyChatgptWakeFailure('CHATGPT_AUTOMATION_LOGIN_REQUIRED')).toBe('user_action_required');
     expect(classifyChatgptWakeFailure('PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED')).toBe('user_action_required');
     expect(classifyChatgptWakeFailure('PLUGIN_CONFIGURATION_INVALID')).toBe('ordinary_failure');
+  });
+
+  test('bounds a whole external Controller wake instead of multiplying timeout across browser substeps', async () => {
+    expect(externalControllerWakeTimeoutMs(undefined)).toBe(60_000);
+    expect(externalControllerWakeTimeoutMs(1)).toBe(5_000);
+    expect(externalControllerWakeTimeoutMs(600_000)).toBe(120_000);
+    await expect(awaitExternalControllerWake(new Promise<never>(() => {}), 5)).rejects.toThrow('CONTROLLER_WAKE_TOTAL_TIMEOUT');
   });
 
   test('does not treat an old unexpired Controller lease as work, while a live Work Process remains authoritative', () => {

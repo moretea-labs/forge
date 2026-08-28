@@ -45,6 +45,8 @@ const LIVE_MAINTENANCE_OPERATION = 'runtime_maintenance_apply';
 const EXTERNAL_CONTROLLER_WAKE_OPERATION = 'external_controller_wake';
 const BROWSER_PROBE_OPERATION = 'browser_probe';
 const GITHUB_ISSUE_WATCH_OPERATION = 'github_issue_watch';
+const DEFAULT_EXTERNAL_CONTROLLER_WAKE_TIMEOUT_MS = 60_000;
+const MAX_EXTERNAL_CONTROLLER_WAKE_TIMEOUT_MS = 120_000;
 
 function isDeterministicSchedule(schedule: RepositorySchedule): boolean {
   // Kernel executes only typed, bounded dispatch operations.
@@ -372,6 +374,25 @@ function decideOccurrence(
 
 export type ChatgptWakeFailureClass = 'retryable_readiness' | 'semantic_wait' | 'user_action_required' | 'ordinary_failure';
 
+export function externalControllerWakeTimeoutMs(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_EXTERNAL_CONTROLLER_WAKE_TIMEOUT_MS;
+  return Math.max(5_000, Math.min(Math.trunc(value), MAX_EXTERNAL_CONTROLLER_WAKE_TIMEOUT_MS));
+}
+
+export async function awaitExternalControllerWake<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`CONTROLLER_WAKE_TOTAL_TIMEOUT: external Controller dispatch exceeded ${timeoutMs}ms.`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export function classifyChatgptWakeFailure(reason: string): ChatgptWakeFailureClass {
   const normalized = reason.toUpperCase();
   if (
@@ -395,6 +416,7 @@ export function classifyChatgptWakeFailure(reason: string): ChatgptWakeFailureCl
     'CHATGPT_AUTOMATION_COMPOSER_UNAVAILABLE',
     'CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE',
     'CHATGPT_AUTOMATION_REPLACEMENT_SESSION_NOT_CONFIRMED',
+    'CONTROLLER_WAKE_TOTAL_TIMEOUT',
     'HTTP 502',
     'ECONNREFUSED',
     'ECONNRESET',
@@ -489,6 +511,7 @@ async function executeExternalControllerWake(
     if (controllerType === 'chatgpt') {
       const reasoning = args.reasoning === 'medium' || args.reasoning === 'xhigh' ? args.reasoning : 'high';
       const tabPolicy = args.tab_policy === 'reuse' || args.tab_policy === 'new' ? args.tab_policy : 'auto';
+      const timeoutMs = externalControllerWakeTimeoutMs(args.timeout_ms);
       let relay;
       try {
         relay = beginInitialControllerRoundDispatch(workStore, {
@@ -505,7 +528,7 @@ async function executeExternalControllerWake(
         });
         if (relay.status === 'blocked') throw new Error(`CONTROLLER_RELAY_LAUNCH_BLOCKED: ${relay.blockedReason ?? relay.relayScopeId}`);
         const relayPrompt = `${buildControllerRoundRelayPrompt(workStore, relay, { exactOriginWork: true })}\n\nScheduled continuation hint: ${continuationPrompt}`;
-        const dispatched = await runWorkChatgptContinuation({
+        const dispatched = await awaitExternalControllerWake(runWorkChatgptContinuation({
           controllerHome,
           repoId: schedule.repoId,
           repoRoot: repository.canonicalRoot,
@@ -517,8 +540,8 @@ async function executeExternalControllerWake(
           model: typeof args.model === 'string' ? args.model : 'gpt-5.6',
           reasoning,
           tabPolicy,
-          timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-        });
+          timeoutMs,
+        }), timeoutMs);
         if (dispatched.status === 'failed') throw new Error(dispatched.error?.message ?? 'CHATGPT_WORK_CONTINUATION_FAILED');
         const completedRelay = finishControllerRoundRelayDispatch(workStore, {
           workId,
