@@ -289,12 +289,30 @@ export function repositoryGitCommit(controllerHome: string, repository: Reposito
   };
 }
 
-export function repositoryGitFinishWorkflow(controllerHome: string, repository: RepositoryRecord, input: { targetBranch?: unknown; featureBranch?: unknown; deleteBranch?: unknown; noFf?: unknown; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; workId?: string; goalId?: string }): RepositoryGitFinishResult {
+export function repositoryGitFinishWorkflow(controllerHome: string, repository: RepositoryRecord, input: { targetBranch?: unknown; featureBranch?: unknown; deleteBranch?: unknown; noFf?: unknown; preserveDirtyTargetPaths?: unknown; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; workId?: string; goalId?: string }): RepositoryGitFinishResult {
   const before = repositoryGitStatus(repository);
   const featureBranch = assertSafeBranchName(input.featureBranch ?? before.branch);
   const targetBranch = assertSafeBranchName(input.targetBranch ?? repository.defaultBranch ?? 'main');
   const steps: RepositoryGitFinishResult['steps'] = [];
   const alreadyOnTarget = before.branch === targetBranch;
+  const requestedPreservedDirtyPaths = normalizePaths(input.preserveDirtyTargetPaths);
+  const currentDirtyPaths = [...new Set([...before.staged, ...before.unstaged, ...before.untracked])].sort();
+  const preserveDirtyTargetInPlace = alreadyOnTarget && requestedPreservedDirtyPaths.length > 0;
+  if (preserveDirtyTargetInPlace) {
+    const requested = new Set(requestedPreservedDirtyPaths);
+    if (requested.size !== currentDirtyPaths.length || currentDirtyPaths.some((path) => !requested.has(path))) {
+      return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: before, completed: false, error: { code: 'GIT_DIRTY_TARGET_OWNERSHIP_MISMATCH', message: 'The exact current dirty target paths no longer match the Work-owned preservation set; retry ownership inspection before integration.' } };
+    }
+    const candidateDiff = runGit(repository, ['diff', '--name-only', `${targetBranch}..${featureBranch}`], 128 * 1024);
+    if (!candidateDiff.ok) {
+      return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: before, completed: false, error: { code: 'GIT_DIRTY_TARGET_PREFLIGHT_FAILED', message: candidateDiff.stderr || 'Unable to inspect candidate paths before dirty-target integration.' } };
+    }
+    const candidatePaths = new Set(candidateDiff.stdout.split(/\r?\n/).map((path) => path.trim()).filter(Boolean));
+    const overlapping = currentDirtyPaths.filter((path) => candidatePaths.has(path));
+    if (overlapping.length > 0) {
+      return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: before, completed: false, error: { code: 'GIT_DIRTY_TARGET_PATH_CONFLICT', message: `Work-owned dirty target path(s) overlap the integration candidate: ${overlapping.join(', ')}` } };
+    }
+  }
   if (!before.clean && !alreadyOnTarget) {
     return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: before, completed: false, error: { code: 'GIT_WORKTREE_NOT_CLEAN', message: 'Commit or revert changes before switching branches to finish a workflow.' } };
   }
@@ -306,7 +324,7 @@ export function repositoryGitFinishWorkflow(controllerHome: string, repository: 
     steps.push({ name: 'switch_target', execution: switchTarget });
     if (switchTarget.status !== 'executed' || switchTarget.ok !== true) return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_SWITCH_TARGET_FAILED', message: switchTarget.stderr || 'git switch failed' } };
   }
-  const protectTrackedChanges = alreadyOnTarget && (before.staged.length > 0 || before.unstaged.length > 0);
+  const protectTrackedChanges = alreadyOnTarget && !preserveDirtyTargetInPlace && (before.staged.length > 0 || before.unstaged.length > 0);
   const finishAuthorization = 'explicit_user_request' as const;
   let stashRef: string | null = null;
   if (protectTrackedChanges) {

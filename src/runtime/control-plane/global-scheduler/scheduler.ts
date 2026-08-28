@@ -199,8 +199,12 @@ export class GlobalScheduler {
   ) {
     this.controllerHome = controllerHome;
     this.controllerPid = runtime.controllerPid ?? process.pid;
-    this.actors = new RepoActorRegistry(controllerHome);
     this.config = normalizeSchedulerConfig(config);
+    // The per-repository mailbox must not impose a hidden concurrency ceiling
+    // below the scheduler's global worker budget. Resource leases still serialize
+    // conflicting workspace/path/integration claims, while independent jobs in a
+    // busy single repository may use the available global worker capacity.
+    this.actors = new RepoActorRegistry(controllerHome, { maxConcurrentWorkers: this.config.maxWorkers });
     this.runtimeSourceRoot = runtime.runtimeSourceRoot ? resolve(runtime.runtimeSourceRoot) : undefined;
     this.workerEntrypoint = runtime.workerEntrypoint ? resolve(runtime.workerEntrypoint) : undefined;
     this.fatalOnTickError = runtime.fatalOnTickError === true;

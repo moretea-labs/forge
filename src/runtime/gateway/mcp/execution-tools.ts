@@ -21,7 +21,7 @@ import { globMatches } from '../../../cli/mcp/paths';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { listControllerChecks, type ControllerCheck } from '../../../cli/controller/check-runner';
 import { readRepositoryAccessPolicy } from '../../control-plane/governance/access-policy';
-import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, transitionWorkContractPhase, updateWorkContract, appendVerificationRecord } from '../../control-plane/facade/work-contract-store';
+import { appendWorkEvidence, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, transitionWorkContractPhase, updateWorkContract, appendVerificationRecord } from '../../control-plane/facade/work-contract-store';
 import { completeRequirementFromWork } from '../../control-plane/persistence/requirement-store';
 import { isTerminalWorkContractStatus, type VerificationRecord, type WorkReconciliationRecord } from '../../control-plane/facade/types';
 import { buildWorkContinuationSnapshot } from '../../control-plane/facade/work-continuation';
@@ -504,6 +504,61 @@ function workOwnedDirtyPaths(
     return contract.allowedPaths.length === 0 || contract.allowedPaths.some((pattern) => globMatches(pattern, path));
   });
   return { dirtyPaths, ownedPaths };
+}
+
+export interface TargetDirtyWorkOwnershipInspection {
+  owned: boolean;
+  dirtyPaths: string[];
+  owners: Record<string, string>;
+  unownedPaths: string[];
+  ambiguousPaths: string[];
+}
+
+/**
+ * Positive ownership proof for dirty content preserved in a shared canonical
+ * target checkout. Exact observed Work scope wins; a unique explicit allow-list
+ * is the fallback. Repository-wide/legacy scope is never enough to move another
+ * Work's dirty content through target integration.
+ */
+export function inspectTargetDirtyWorkOwnership(input: {
+  dirtyPaths: string[];
+  targetCheckoutId: string;
+  currentWorkId: string;
+  activeWorks: Array<{
+    workId: string;
+    checkoutId?: string;
+    allowedPaths: string[];
+    forbiddenPaths: string[];
+    scopeEvidence?: { actualChangedPaths: string[] };
+  }>;
+}): TargetDirtyWorkOwnershipInspection {
+  const dirtyPaths = [...new Set(input.dirtyPaths.map((path) => path.trim()).filter(Boolean))].sort();
+  const candidates = input.activeWorks.filter((work) =>
+    work.workId !== input.currentWorkId
+    && work.checkoutId === input.targetCheckoutId,
+  );
+  const owners: Record<string, string> = {};
+  const unownedPaths: string[] = [];
+  const ambiguousPaths: string[] = [];
+  for (const path of dirtyPaths) {
+    const exactOwners = candidates.filter((work) => work.scopeEvidence?.actualChangedPaths?.includes(path));
+    const scopedOwners = exactOwners.length > 0 ? exactOwners : candidates.filter((work) =>
+      work.allowedPaths.length > 0
+      && !work.forbiddenPaths.some((pattern) => globMatches(pattern, path))
+      && work.allowedPaths.some((pattern) => globMatches(pattern, path)),
+    );
+    const ownerIds = [...new Set(scopedOwners.map((work) => work.workId))].sort();
+    if (ownerIds.length === 1) owners[path] = ownerIds[0];
+    else if (ownerIds.length === 0) unownedPaths.push(path);
+    else ambiguousPaths.push(path);
+  }
+  return {
+    owned: dirtyPaths.length > 0 && unownedPaths.length === 0 && ambiguousPaths.length === 0,
+    dirtyPaths,
+    owners,
+    unownedPaths,
+    ambiguousPaths,
+  };
 }
 
 export interface DirectCanonicalTargetAdvanceInspection {
@@ -3012,7 +3067,60 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
         detailLevel: 'summary',
       });
     } else {
-      merged = repositoryGitFinishWorkflow(ctx.controllerHome, target, { featureBranch: current.branch, targetBranch: explicitTargetBranch, deleteBranch: !deleteAfterWorktreeCleanup && deleteBranchRequested, noFf: args.no_ff === true, authorizationDecision: gitAuthorization, sessionId: session.sessionId, principalId: session.principalId, workId: current.workId, goalId: current.goalId });
+      const integrationLockKey = { scope: 'task' as const, repoId: current.repositoryId, taskId: `target-integration:${targetBranch}` };
+      try {
+        merged = withControllerLock(
+          ctx.controllerHome,
+          integrationLockKey,
+          `work-finalize-target:${current.workId}`,
+          () => {
+            const lockedTargetStatus = repositoryGitStatus(target);
+            const lockedDirtyPaths = [...new Set([
+              ...lockedTargetStatus.staged,
+              ...lockedTargetStatus.unstaged,
+              ...lockedTargetStatus.untracked,
+            ])].sort();
+            let preserveDirtyTargetPaths: string[] | undefined;
+            if (lockedDirtyPaths.length > 0) {
+              const ownership = inspectTargetDirtyWorkOwnership({
+                dirtyPaths: lockedDirtyPaths,
+                targetCheckoutId: target.activeCheckoutId,
+                currentWorkId: current.workId,
+                activeWorks: listWorkContracts({ controllerHome: ctx.controllerHome, repoId: current.repositoryId, status: 'active', limit: 200 }),
+              });
+              if (!ownership.owned) {
+                const detail = [
+                  ownership.unownedPaths.length ? `unowned=[${ownership.unownedPaths.join(', ')}]` : '',
+                  ownership.ambiguousPaths.length ? `ambiguous=[${ownership.ambiguousPaths.join(', ')}]` : '',
+                ].filter(Boolean).join(' ');
+                throw new Error(`WORK_TARGET_DIRTY_OWNERSHIP_REQUIRED: target ${targetBranch} has dirty path(s) that cannot be attributed uniquely to another active Work. ${detail}`.trim());
+              }
+              preserveDirtyTargetPaths = ownership.dirtyPaths;
+              appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
+                title: 'concurrent target dirty ownership preserved',
+                summary: `Target ${targetBranch} retained ${ownership.dirtyPaths.length} dirty path(s) owned by other active Work while this Work entered only the target-branch mutation critical section.`,
+                detailLevel: 'summary',
+              });
+            }
+            return repositoryGitFinishWorkflow(ctx.controllerHome, target, {
+              featureBranch: current.branch,
+              targetBranch: explicitTargetBranch,
+              deleteBranch: !deleteAfterWorktreeCleanup && deleteBranchRequested,
+              noFf: args.no_ff === true,
+              preserveDirtyTargetPaths,
+              authorizationDecision: gitAuthorization,
+              sessionId: session.sessionId,
+              principalId: session.principalId,
+              workId: current.workId,
+              goalId: current.goalId,
+            });
+          },
+          30_000,
+          5_000,
+        );
+      } catch (error) {
+        return failStage('merge', error instanceof Error ? error.message : String(error));
+      }
     }
     const pendingAuthorization = merged.steps.find((step) => step.execution.authorizationDecision?.decision === 'user_confirmation_required')?.execution.authorizationDecision;
     if (pendingAuthorization) return { authorization: pendingAuthorization, work: compactHandle(current), stages: current.finalization };

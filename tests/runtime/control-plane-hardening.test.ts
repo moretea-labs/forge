@@ -51,6 +51,7 @@ import { selectSchedulerProjectionRefreshTargets } from '../../src/runtime/contr
 import { evaluateSchedulerWorkerExitCandidate } from '../../src/runtime/control-plane/global-scheduler/worker-exit-decision';
 import { reconcileSchedulerWorkerExit } from '../../src/runtime/control-plane/global-scheduler/worker-exit-reconciler';
 import { runSchedulerDurableAdmission } from '../../src/runtime/control-plane/global-scheduler/durable-admission';
+import { RepoActorRegistry } from '../../src/runtime/control-plane/repo-actor/registry';
 
 const roots: string[] = [];
 
@@ -104,6 +105,11 @@ describe('control-plane hardening', () => {
       heartbeatIntervalMs: 2_000,
       heartbeatTimeoutMs: 12_000,
     });
+  });
+
+  test('does not hide a per-repository worker ceiling below the scheduler worker budget', () => {
+    const actors = new RepoActorRegistry('/tmp/forge-repo-actor-config-test', { maxConcurrentWorkers: 7 });
+    expect(actors.get('repo-a').config.maxConcurrentWorkers).toBe(7);
   });
 
   test('isolates Scheduler state restoration and snapshot serialization from lifecycle mutation', () => {
