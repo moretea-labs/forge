@@ -186,6 +186,86 @@ function resendAction(repoRoot: string, actionId: string, args: Record<string, u
   });
 }
 
+describe('pre-existing local-effect plugin receipt binding', () => {
+  test('binds only successful mutating typed receipts to the exact owning local-effect Work', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-local-effect-plugin-receipt-'));
+    roots.push(controllerHome);
+    const businessRoot = mkdtempSync(join(tmpdir(), 'forge-local-effect-plugin-work-'));
+    roots.push(businessRoot);
+    expect(spawnSync('git', ['init', '-b', 'main'], { cwd: businessRoot, encoding: 'utf8' }).status).toBe(0);
+    writeFileSync(join(businessRoot, 'README.md'), 'fixture\n');
+    expect(spawnSync('git', ['add', '.'], { cwd: businessRoot, encoding: 'utf8' }).status).toBe(0);
+    expect(spawnSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge@example.test', 'commit', '-m', 'init'], { cwd: businessRoot, encoding: 'utf8' }).status).toBe(0);
+    const businessRepository = registerRepository({ path: businessRoot, controllerHome, displayName: 'local-effect-plugin-work' });
+    const providerRepository = controllerPluginRepository(controllerHome);
+    const context = {
+      workStore: { controllerHome, repoId: businessRepository.repoId },
+      handoffStore: { controllerHome, repoId: businessRepository.repoId },
+      repoId: businessRepository.repoId,
+      checkoutId: businessRepository.activeCheckoutId,
+    };
+    const startLocalEffect = (objective: string) => startGoalWorkloop(context, {
+      objective,
+      acceptanceCriteria: ['A durable typed local plugin effect receipt exists.'],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      modeInput: {
+        scopeClear: true, mutation: true, requiresExternalEffect: true, remoteWrite: false,
+        risk: 'workspace_write', requiresRecovery: true, requiresWorker: false, requiresApproval: false,
+      },
+    });
+    const first = startLocalEffect('Own one controller-scoped plugin mutation.');
+    const firstWorkId = String((first.data as { work?: { workId?: string } }).work?.workId ?? '');
+    const unrelated = startLocalEffect('Remain independent from another Work receipt.');
+    const unrelatedWorkId = String((unrelated.data as { work?: { workId?: string } }).work?.workId ?? '');
+    expect(firstWorkId).toBeTruthy();
+    expect(unrelatedWorkId).toBeTruthy();
+    expect(firstWorkId).not.toBe(unrelatedWorkId);
+
+    const readonly = await submitAssistantPluginAction(controllerHome, providerRepository, {
+      pluginId: 'plugin_management', actionId: 'list_registrations', requestId: 'local-effect-readonly-observation',
+      workId: firstWorkId, workRepoId: businessRepository.repoId, args: {}, origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(readonly.receipt).toMatchObject({ status: 'succeeded', workId: firstWorkId, workRepoId: businessRepository.repoId });
+    expect(getWorkContract(context.workStore, firstWorkId)?.evidenceRefs.some((evidence) => evidence.evidenceId === readonly.receipt.receiptId)).toBe(false);
+    expect(finalizeGoalWorkloop(context, { workId: firstWorkId }).summary).toContain('No durable result evidence');
+
+    const registration = {
+      pluginId: 'receipt_fixture', providerPluginId: 'receipt_fixture', displayName: 'Receipt Fixture', provider: 'local-test',
+      pluginVersion: '0.1.0', protocolVersion: '1.0', scope: 'controller' as const, enabled: false,
+      transport: { kind: 'unix_socket_jsonl' as const, socketPath: join(controllerHome, 'receipt-fixture.sock') },
+      permissions: [], capabilities: [], actions: [],
+    };
+    const mutated = await submitAssistantPluginAction(controllerHome, providerRepository, {
+      pluginId: 'plugin_management', actionId: 'install_registration', requestId: 'local-effect-mutating-receipt',
+      workId: firstWorkId, workRepoId: businessRepository.repoId,
+      args: { registration, expected_revision: 0 }, confirmAuthorization: Boolean(1), confirmationText: 'install receipt fixture',
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(mutated.receipt).toMatchObject({ status: 'succeeded', workId: firstWorkId, workRepoId: businessRepository.repoId });
+    const bound = getWorkContract(context.workStore, firstWorkId)!;
+    expect(bound).toMatchObject({ status: 'ready', workKind: 'local_effect' });
+    expect(bound.completionReceipt).toBeUndefined();
+    expect(bound.evidenceRefs.filter((evidence) => evidence.evidenceId === mutated.receipt.receiptId)).toHaveLength(1);
+    expect(getWorkContract(context.workStore, unrelatedWorkId)?.evidenceRefs.some((evidence) => evidence.evidenceId === mutated.receipt.receiptId)).toBe(false);
+    expect(finalizeGoalWorkloop(context, { workId: unrelatedWorkId }).summary).toContain('No durable result evidence');
+
+    const completed = finalizeGoalWorkloop(context, { workId: firstWorkId });
+    expect(completed).toMatchObject({ status: 'ok', data: { finalStatus: 'completed' } });
+    expect(getWorkContract(context.workStore, firstWorkId)).toMatchObject({
+      status: 'completed', workKind: 'local_effect', completionOutcome: 'completed_local',
+    });
+
+    const replayed = await submitAssistantPluginAction(controllerHome, providerRepository, {
+      pluginId: 'plugin_management', actionId: 'install_registration', requestId: 'local-effect-mutating-receipt',
+      workId: firstWorkId, workRepoId: businessRepository.repoId,
+      args: { registration, expected_revision: 0 }, confirmAuthorization: Boolean(1), confirmationText: 'install receipt fixture',
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(replayed.deduplicated).toBe(true);
+    expect(getWorkContract(context.workStore, firstWorkId)?.evidenceRefs.filter((evidence) => evidence.evidenceId === mutated.receipt.receiptId)).toHaveLength(1);
+  });
+});
+
 describe('plugin management external registration lifecycle', () => {
   test('previews, installs, probes, executes, updates, disables, and removes through typed plugin actions', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-plugin-management-'));

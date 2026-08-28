@@ -794,6 +794,29 @@ function attributedWorkForPluginAction(
   return work;
 }
 
+function bindLocalEffectReceiptToAttributedWork(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  action: AssistantPluginActionDescriptor,
+  request: AssistantPluginActionRequest,
+  receipt: PluginActionReceipt,
+  work?: WorkContract,
+): WorkContract | undefined {
+  if (!request.workId || receipt.status !== 'succeeded') return work;
+  const workRepoId = workAttributionRepoId(repository, request);
+  const attributed = work ?? getWorkContract({ controllerHome, repoId: workRepoId }, request.workId.trim());
+  if (!attributed) throw new Error(`WORK_PLUGIN_ATTRIBUTION_NOT_FOUND: ${workRepoId}:${request.workId.trim()}`);
+  if (attributed.workKind !== 'local_effect' || action.readOnly || action.risk === 'readonly') return attributed;
+  if (attributed.evidenceRefs.some((evidence) => evidence.evidenceId === receipt.receiptId)) return attributed;
+  if (isTerminalWorkContractStatus(attributed.status)) return attributed;
+  return appendWorkEvidence({ controllerHome, repoId: workRepoId }, attributed.workId, {
+    evidenceId: receipt.receiptId,
+    title: 'typed local plugin effect completed',
+    summary: `${receipt.pluginId}/${receipt.actionId} completed with durable receipt ${receipt.receiptId}.`,
+    detailLevel: 'summary',
+  });
+}
+
 export function finalizeRemoteEffectWorkFromActionReceipt(
   controllerHome: string,
   repoId: string,
@@ -963,7 +986,11 @@ export async function submitAssistantPluginAction(
     if (requestedWorkRepoId && (index.workRepoId ?? index.repoId) !== requestedWorkRepoId) {
       throw new Error(`WORK_PLUGIN_ATTRIBUTION_REPO_CONFLICT: ${request.requestId} already belongs to Work repository ${index.workRepoId ?? index.repoId}`);
     }
-    if (request.workId && action.risk === 'remote_write') bindRemoteEffectReceiptToWork(controllerHome, repository, action, request, existing);
+    if (request.workId && action.risk === 'remote_write') {
+      bindRemoteEffectReceiptToWork(controllerHome, repository, action, request, existing);
+    } else if (request.workId) {
+      bindLocalEffectReceiptToAttributedWork(controllerHome, repository, action, request, existing);
+    }
     return {
       manifest,
       action,
@@ -1230,7 +1257,11 @@ export async function submitAssistantPluginAction(
       semanticKey: key,
       createdAt,
     } satisfies PluginActionRequestIndex);
-    if (boundRemoteWork) bindRemoteEffectReceiptToWork(controllerHome, repository, action, request, receipt);
+    if (boundRemoteWork) {
+      bindRemoteEffectReceiptToWork(controllerHome, repository, action, request, receipt);
+    } else if (attributedWork) {
+      bindLocalEffectReceiptToAttributedWork(controllerHome, repository, action, request, receipt, attributedWork);
+    }
     const nextManifest = getAssistantPluginManifest(controllerHome, repository, request.pluginId);
     return {
       manifest: nextManifest,
