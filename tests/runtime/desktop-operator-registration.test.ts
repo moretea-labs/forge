@@ -90,12 +90,12 @@ describe('Desktop Operator trusted external registration', () => {
     expect(input.permissions.some((permission) => permission.scope === 'desktop.permissions' && permission.granted)).toBe(true);
   });
 
-  test('accepts the official v0.2.1 legacy broker handshake and remains strict when browser metadata is declared', () => {
+  test('requires the declared browser capability contract before dispatching an automation action', () => {
     expect(() => validateMacOsCapabilityBrokerHandshake({
       pluginId: 'desktop_operator',
       pluginVersion: '0.2.1',
       protocolVersion: '1.0',
-    }, 'metadata')).not.toThrow();
+    }, 'metadata')).toThrow('PLUGIN_MACOS_CAPABILITY_BROKER_CAPABILITY_UNSUPPORTED');
 
     expect(() => validateMacOsCapabilityBrokerHandshake({
       pluginId: 'desktop_operator',

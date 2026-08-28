@@ -54,14 +54,6 @@ export function validateMacOsCapabilityBrokerHandshake(
     ? handshake.browserAutomationActions.filter((entry): entry is string => typeof entry === 'string')
     : [];
   const browserProtocolVersion = handshake.browserAutomationProtocolVersion;
-  const declaresBrowserMetadata = Array.isArray(handshake.internalCapabilities)
-    || Array.isArray(handshake.browserAutomationActions)
-    || browserProtocolVersion !== undefined;
-  // Desktop Operator v0.2.1 predates optional browser capability metadata in its handshake,
-  // but it implements the separately routed macos_browser_automation method. In that legacy
-  // shape, let the real method/action call prove support. Unsupported methods/actions still
-  // fail closed at the provider boundary.
-  if (!declaresBrowserMetadata) return;
   if (!capabilities.includes(BROWSER_AUTOMATION_CAPABILITY)
     || browserProtocolVersion !== BROWSER_AUTOMATION_PROTOCOL_VERSION
     || (requestedAction && !actions.includes(requestedAction))) {

@@ -398,6 +398,7 @@ export function classifyChatgptWakeFailure(reason: string): ChatgptWakeFailureCl
   if (
     normalized.includes('CHATGPT_AUTOMATION_LOGIN_REQUIRED')
     || normalized.includes('PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED')
+    || normalized.includes('PLUGIN_MACOS_CAPABILITY_BROKER_CAPABILITY_UNSUPPORTED')
     || normalized.includes('AUTHENTICATION_REQUIRED')
     || normalized.includes('CONSENT_REQUIRED')
   ) return 'user_action_required';
