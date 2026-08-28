@@ -1535,10 +1535,14 @@ describe('scheduled external Controller wake', () => {
     const browserFirst = await evaluateSchedule(controllerHome, browserSchedule, true, { source: 'manual', eventId: 'browser-old-noise' });
     expect(browserFirst?.decision).toBe('would_execute');
 
-    createHandoffItem({ controllerHome, repoId: repository.repoId }, { id: 'HND-WORK-SCOPE', repoId: repository.repoId, workId, title: 'Current Work needs review', severity: 'needs_review', creationReason: 'ambiguous_outcome', reason: 'Current Work is blocked.', summary: 'Bounded review required.', currentState: { repoId: repository.repoId, workId, statusSummary: 'blocked' }, attemptedActions: [], evidenceRefs: [], recommendedDecision: 'Review current Work.', recommendedPrompt: 'Review current Work.', suggestedNextActions: [] });
-    const second = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'current-handoff' });
-    expect(second).toMatchObject({ decision: 'stopped', status: 'skipped' });
-    expect(second?.reason).toContain('HND-WORK-SCOPE');
+    createHandoffItem({ controllerHome, repoId: repository.repoId }, { id: 'HND-WORK-SCOPE', repoId: repository.repoId, workId, title: 'Current Work needs controller review', severity: 'needs_review', creationReason: 'ambiguous_outcome', reason: 'Current Work needs semantic review.', summary: 'Bounded controller review required.', currentState: { repoId: repository.repoId, workId, statusSummary: 'reviewable' }, attemptedActions: [], evidenceRefs: [], recommendedDecision: 'Review current Work.', recommendedPrompt: 'Review current Work.', suggestedNextActions: [] });
+    const second = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'controller-review-handoff' });
+    expect(second?.decision).toBe('would_execute');
+
+    createHandoffItem({ controllerHome, repoId: repository.repoId }, { id: 'HND-WORK-HUMAN', repoId: repository.repoId, workId, title: 'Current Work requires authorization', severity: 'needs_review', creationReason: 'policy_approval_required', reason: 'Explicit user authorization is required.', summary: 'Human approval required before continuation.', currentState: { repoId: repository.repoId, workId, statusSummary: 'approval required' }, attemptedActions: [], evidenceRefs: [], recommendedDecision: 'Request approval.', recommendedPrompt: 'Request explicit approval.', suggestedNextActions: [] });
+    const third = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'human-review-handoff' });
+    expect(third).toMatchObject({ decision: 'stopped', status: 'skipped' });
+    expect(third?.reason).toContain('HND-WORK-HUMAN');
   });
 
   test('deduplicates recurring infrastructure handoffs by failure class and resolves them after recovery', () => {

@@ -262,6 +262,19 @@ function workBoundScheduleWorkId(schedule: RepositorySchedule): string | undefin
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+const HUMAN_ONLY_HANDOFF_REASONS = new Set([
+  'policy_approval_required',
+  'missing_authorization',
+  'invalid_objective',
+  'destructive_action_requires_confirmation',
+]);
+
+function handoffRequiresHumanReview(item: ReturnType<typeof listHandoffItems>[number]): boolean {
+  if (item.approvalAction) return true;
+  if (!item.creationReason) return true;
+  return HUMAN_ONLY_HANDOFF_REASONS.has(item.creationReason);
+}
+
 async function stopReason(controllerHome: string, schedule: RepositorySchedule): Promise<string | undefined> {
   const projection = readRepositoryProjection(controllerHome, schedule.repoId);
   const workId = workBoundScheduleWorkId(schedule);
@@ -269,8 +282,8 @@ async function stopReason(controllerHome: string, schedule: RepositorySchedule):
   if (schedule.stopConditions.includes('human_review_required')) {
     if (workId) {
       const activeHandoff = listHandoffItems({ controllerHome, repoId: schedule.repoId, status: 'active', limit: 100 })
-        .find((item) => item.workId === workId);
-      if (activeHandoff) return `Work ${workId} has active Handoff ${activeHandoff.id} requiring review.`;
+        .find((item) => item.workId === workId && handoffRequiresHumanReview(item));
+      if (activeHandoff) return `Work ${workId} has active Handoff ${activeHandoff.id} requiring human review.`;
     } else if (projection.currentAttention.length > 0) {
       return 'Repository has jobs requiring human attention.';
     }
