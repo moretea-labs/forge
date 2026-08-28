@@ -11,7 +11,9 @@ import {
   acknowledgeControllerRoundClaim,
   beginInitialControllerRoundDispatch,
   finishControllerRoundRelayDispatch,
+  getControllerRoundRelay,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
+import { runSchedulerControllerRoundRecovery } from '../../src/runtime/control-plane/global-scheduler/maintenance';
 import { claimControllerSession, getControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { createWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { bindChatgptWorkConversation } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
@@ -321,5 +323,116 @@ describe('autonomous continuation lifecycle', () => {
     expect(launched.prompt).toContain(`work_id=${workId}`);
     expect(launched.prompt).toContain('Only after that exact Work claim succeeds');
     expect(launched.prompt).not.toContain('First call rh_work continue');
+  });
+
+  test('stalled ChatGPT Work recovery uses the exact Work continuation with durable bounded backoff', async () => {
+    const root = temp('forge-autonomous-recovery-backoff-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'autonomous-recovery-backoff' });
+    const workId = 'WORK-AUTONOMOUS-RECOVERY-BACKOFF';
+    const store = { controllerHome, repoId: repository.repoId };
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Recover an unclosed dispatched round without losing durable Work identity.',
+      acceptanceCriteria: ['retry is Work-bound and bounded'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: 'schedule:recovery',
+        principalId: 'forge-scheduler',
+        controllerInstanceId: 'runtime-test',
+        sessionId: 'occurrence-recovery',
+      },
+      browserSessionId: 'browser-recovery',
+      conversationUrl: 'https://chatgpt.com/c/recovery-conversation',
+      maxFailures: 2,
+    });
+    const dispatched = finishControllerRoundRelayDispatch(store, {
+      workId,
+      ok: true,
+      browserSessionId: opened.browserSessionId,
+      conversationUrl: opened.conversationUrl,
+    })!;
+    const firstRecoveryAt = Date.parse(dispatched.updatedAt) + 61_000;
+    const observed: Array<Record<string, unknown>> = [];
+    const dispatchPrompt = async (input: any) => {
+      observed.push(input);
+      return {
+        status: 'failed' as const,
+        provider: 'controller-browser' as const,
+        browserSessionId: input.browserSessionId ?? 'browser-recovery',
+        conversationUrl: input.conversationUrl,
+        resumedFromBinding: false,
+        model: 'gpt-5.6',
+        reasoning: 'high' as const,
+        tabPolicy: 'auto' as const,
+        executionPreferenceVerified: false,
+        error: { code: 'TRANSIENT_RECOVERY_FAILURE', message: 'Connection closed' },
+      };
+    };
+
+    const first = await runSchedulerControllerRoundRecovery({
+      controllerHome,
+      nowMs: firstRecoveryAt,
+      repositories: [repository],
+      graceMs: 60_000,
+      maxRecoveries: 1,
+      authorizeWake: () => undefined,
+      dispatchPrompt,
+    });
+    expect(first).toEqual({ claimed: 1, dispatched: 0, failed: 1 });
+    expect(observed[0]).toMatchObject({
+      repoId: repository.repoId,
+      repoRoot: repository.canonicalRoot ?? repository.localRoot,
+      workId,
+      browserSessionId: 'browser-recovery',
+      conversationUrl: 'https://chatgpt.com/c/recovery-conversation',
+    });
+    const retryPending = getControllerRoundRelay(store, workId)!;
+    expect(retryPending).toMatchObject({ status: 'dispatching', consecutiveFailures: 1, lastError: 'Connection closed' });
+    expect(retryPending.nextRecoveryAt).toBeTruthy();
+    const retryAt = Date.parse(retryPending.nextRecoveryAt!);
+    expect(retryAt).toBe(firstRecoveryAt + 60_000);
+
+    const early = await runSchedulerControllerRoundRecovery({
+      controllerHome,
+      nowMs: retryAt - 1,
+      repositories: [repository],
+      graceMs: 60_000,
+      maxRecoveries: 1,
+      authorizeWake: () => undefined,
+      dispatchPrompt,
+    });
+    expect(early).toEqual({ claimed: 0, dispatched: 0, failed: 0 });
+
+    const second = await runSchedulerControllerRoundRecovery({
+      controllerHome,
+      nowMs: retryAt,
+      repositories: [repository],
+      graceMs: 60_000,
+      maxRecoveries: 1,
+      authorizeWake: () => undefined,
+      dispatchPrompt,
+    });
+    expect(second).toEqual({ claimed: 1, dispatched: 0, failed: 1 });
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      status: 'blocked',
+      consecutiveFailures: 2,
+      blockedReason: 'consecutive_failures:2>=2',
+    });
+    expect(getControllerRoundRelay(store, workId)?.nextRecoveryAt).toBeUndefined();
   });
 });

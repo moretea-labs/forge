@@ -11,7 +11,7 @@ import {
   finishControllerRoundRelayDispatch,
 } from '../facade/controller-round-relay';
 import { assertAutomatedOperationAllowed } from '../governance/external-effects';
-import { runStandaloneChatgptPrompt } from '../launcher/chatgpt-work-continuation';
+import { runWorkChatgptContinuation } from '../launcher/chatgpt-work-continuation';
 
 export async function runSchedulerPeriodicCleanup(input: {
   controllerHome: string;
@@ -83,13 +83,13 @@ export async function runSchedulerValidationReconciliation(input: {
 export async function runSchedulerControllerRoundRecovery(input: {
   controllerHome: string;
   nowMs: number;
-  repositories: readonly Pick<RepositoryRecord, 'repoId'>[];
+  repositories: readonly Pick<RepositoryRecord, 'repoId' | 'canonicalRoot' | 'localRoot'>[];
   graceMs?: number;
   maxRecoveries?: number;
-  dispatchPrompt?: typeof runStandaloneChatgptPrompt;
+  dispatchPrompt?: typeof runWorkChatgptContinuation;
   authorizeWake?: typeof assertAutomatedOperationAllowed;
 }): Promise<{ claimed: number; dispatched: number; failed: number }> {
-  const dispatchPrompt = input.dispatchPrompt ?? runStandaloneChatgptPrompt;
+  const dispatchPrompt = input.dispatchPrompt ?? runWorkChatgptContinuation;
   const authorizeWake = input.authorizeWake ?? assertAutomatedOperationAllowed;
   const maxRecoveries = Math.max(1, Math.min(Math.trunc(input.maxRecoveries ?? 2), 8));
   let claimed = 0;
@@ -116,8 +116,9 @@ export async function runSchedulerControllerRoundRecovery(input: {
         const result = await dispatchPrompt({
           controllerHome: input.controllerHome,
           repoId: repository.repoId,
-          scopeId: `controller-relay:${record.relayScopeId}`,
-          prompt: buildControllerRoundRelayPrompt(store, record),
+          repoRoot: repository.canonicalRoot ?? repository.localRoot,
+          workId: record.originWorkId,
+          prompt: buildControllerRoundRelayPrompt(store, record, { exactOriginWork: true }),
           browserSessionId: record.browserSessionId,
           conversationUrl: record.conversationUrl,
           model: 'gpt-5.6',
@@ -135,7 +136,13 @@ export async function runSchedulerControllerRoundRecovery(input: {
         dispatched += 1;
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        finishControllerRoundRelayDispatch(store, { workId: record.originWorkId, ok: false, error: reason });
+        finishControllerRoundRelayDispatch(store, {
+          workId: record.originWorkId,
+          ok: false,
+          error: reason,
+          recovery: true,
+          nowMs: input.nowMs,
+        });
         failed += 1;
         console.error(`[forge controller relay] stalled round recovery failed for ${record.relayScopeId}:`, reason);
       }

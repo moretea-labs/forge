@@ -92,6 +92,7 @@ export interface ControllerRoundRelayRecord {
   conversationUrl?: string;
   blockedReason?: string;
   lastError?: string;
+  nextRecoveryAt?: string;
   submittedAt: string;
   updatedAt: string;
   dispatchedAt?: string;
@@ -149,6 +150,8 @@ const DEFAULT_MAX_REPEATED_STATE = 2;
 const DEFAULT_MAX_FAILURES = 3;
 const DEFAULT_UNCLOSED_ROUND_GRACE_MS = 10 * 60_000;
 const MAX_UNCLOSED_ROUND_GRACE_MS = 60 * 60_000;
+const DEFAULT_STALLED_RECOVERY_BACKOFF_MS = 60_000;
+const MAX_STALLED_RECOVERY_BACKOFF_MS = 15 * 60_000;
 
 function nowIso(options: ControllerRoundRelayStoreOptions): string {
   return options.now?.() ?? new Date().toISOString();
@@ -724,20 +727,27 @@ export function reconcileControllerRoundAfterAbandonedRelease(
 
 export function finishControllerRoundRelayDispatch(
   options: ControllerRoundRelayStoreOptions,
-  input: { workId: string; ok: boolean; browserSessionId?: string; conversationUrl?: string; error?: string },
+  input: { workId: string; ok: boolean; browserSessionId?: string; conversationUrl?: string; error?: string; recovery?: boolean; nowMs?: number },
 ): ControllerRoundRelayRecord | undefined {
   const initial = readRelayRecord(options, input.workId);
   if (!initial || initial.value.status !== 'dispatching') return initial?.value;
   return relayLock(options, initial.value.relayScopeId, `controller-relay-finish:${input.workId}`, () => {
     const current = readRelayRecord(options, input.workId);
     if (!current || current.value.status !== 'dispatching') return current?.value;
-    const at = nowIso(options);
+    const at = typeof input.nowMs === 'number' ? new Date(input.nowMs).toISOString() : nowIso(options);
+    const nextFailureCount = current.value.consecutiveFailures + 1;
+    const recoveryBlocked = input.recovery === true && nextFailureCount >= current.value.maxFailures;
+    const recoveryDelayMs = Math.min(
+      MAX_STALLED_RECOVERY_BACKOFF_MS,
+      DEFAULT_STALLED_RECOVERY_BACKOFF_MS * 2 ** Math.max(0, nextFailureCount - 1),
+    );
     const next: ControllerRoundRelayRecord = input.ok
       ? {
           ...current.value,
           status: 'dispatched',
           consecutiveFailures: 0,
           lastError: undefined,
+          nextRecoveryAt: undefined,
           blockedReason: undefined,
           tabSettlementStatus: 'round_open',
           tabSettlementAt: undefined,
@@ -747,20 +757,39 @@ export function finishControllerRoundRelayDispatch(
           dispatchedAt: at,
           updatedAt: at,
         }
-      : {
-          ...current.value,
-          status: 'failed',
-          consecutiveFailures: current.value.consecutiveFailures + 1,
-          lastError: bounded(input.error, 2_000) ?? 'CONTROLLER_RELAY_DISPATCH_FAILED',
-          updatedAt: at,
-        };
+      : input.recovery
+        ? {
+            ...current.value,
+            status: recoveryBlocked ? 'blocked' : 'dispatching',
+            consecutiveFailures: nextFailureCount,
+            lastError: bounded(input.error, 2_000) ?? 'CHATGPT_CONTROLLER_RELAY_RECOVERY_FAILED',
+            blockedReason: recoveryBlocked
+              ? `consecutive_failures:${nextFailureCount}>=${current.value.maxFailures}`
+              : undefined,
+            nextRecoveryAt: recoveryBlocked
+              ? undefined
+              : new Date(Date.parse(at) + recoveryDelayMs).toISOString(),
+            updatedAt: at,
+          }
+        : {
+            ...current.value,
+            status: 'failed',
+            consecutiveFailures: nextFailureCount,
+            nextRecoveryAt: undefined,
+            lastError: bounded(input.error, 2_000) ?? 'CONTROLLER_RELAY_DISPATCH_FAILED',
+            updatedAt: at,
+          };
     writeControlPlaneRecord(options.controllerHome, {
       namespace: NAMESPACE,
       scope: options.repoId,
       key: input.workId,
       schemaVersion: SCHEMA_VERSION,
       value: next,
-      action: input.ok ? 'controller_round_relay_dispatched' : 'controller_round_relay_failed',
+      action: input.ok
+        ? 'controller_round_relay_dispatched'
+        : input.recovery
+          ? recoveryBlocked ? 'controller_round_relay_recovery_blocked' : 'controller_round_relay_recovery_retry_scheduled'
+          : 'controller_round_relay_failed',
       expectedRevision: current.revision,
     });
     return next;
@@ -943,8 +972,13 @@ export function claimStalledControllerRoundRelays(
   for (const candidate of latestRelayRecordsByScope(options)) {
     if (claimed.length >= limit) break;
     if (!['pending_release', 'dispatching', 'dispatched', 'claimed'].includes(candidate.status)) continue;
-    const roundOpenedAtMs = Date.parse(candidate.claimedAt ?? candidate.dispatchedAt ?? candidate.updatedAt);
-    if (!Number.isFinite(roundOpenedAtMs) || nowMs - roundOpenedAtMs < graceMs) continue;
+    const scheduledRecoveryAtMs = candidate.nextRecoveryAt ? Date.parse(candidate.nextRecoveryAt) : Number.NaN;
+    if (Number.isFinite(scheduledRecoveryAtMs)) {
+      if (nowMs < scheduledRecoveryAtMs) continue;
+    } else {
+      const roundOpenedAtMs = Date.parse(candidate.claimedAt ?? candidate.dispatchedAt ?? candidate.updatedAt);
+      if (!Number.isFinite(roundOpenedAtMs) || nowMs - roundOpenedAtMs < graceMs) continue;
+    }
     const requirement = requirementForRelay(options, candidate.requirementId);
     if (requirement && !['planned', 'active'].includes(requirement.state)) continue;
     const candidateWorks = relevantWork(options, candidate);
@@ -955,8 +989,13 @@ export function claimStalledControllerRoundRelays(
     const next = relayLock(options, candidate.relayScopeId, `controller-relay-recover:${candidate.originWorkId}`, () => {
       const latest = relayHistory(options, candidate.relayScopeId)[0];
       if (!latest || latest.originWorkId !== candidate.originWorkId || latest.updatedAt !== candidate.updatedAt || latest.status !== candidate.status) return undefined;
-      const latestRoundOpenedAtMs = Date.parse(latest.claimedAt ?? latest.dispatchedAt ?? latest.updatedAt);
-      if (!Number.isFinite(latestRoundOpenedAtMs) || nowMs - latestRoundOpenedAtMs < graceMs) return undefined;
+      const latestRecoveryAtMs = latest.nextRecoveryAt ? Date.parse(latest.nextRecoveryAt) : Number.NaN;
+      if (Number.isFinite(latestRecoveryAtMs)) {
+        if (nowMs < latestRecoveryAtMs) return undefined;
+      } else {
+        const latestRoundOpenedAtMs = Date.parse(latest.claimedAt ?? latest.dispatchedAt ?? latest.updatedAt);
+        if (!Number.isFinite(latestRoundOpenedAtMs) || nowMs - latestRoundOpenedAtMs < graceMs) return undefined;
+      }
       const latestRequirement = requirementForRelay(options, latest.requirementId);
       if (latestRequirement && !['planned', 'active'].includes(latestRequirement.state)) return undefined;
       const works = relevantWork(options, latest);
@@ -986,11 +1025,14 @@ export function claimStalledControllerRoundRelays(
         stateFingerprint,
         roundCount,
         repeatedStateCount,
-        lastError: latest.status === 'pending_release'
-          ? 'CONTROLLER_RELAY_RELEASE_TRANSITION_INCOMPLETE'
-          : latest.status === 'dispatching'
-            ? 'CONTROLLER_RELAY_DISPATCH_TRANSITION_INCOMPLETE'
-            : latest.status === 'claimed' ? 'CONTROLLER_RELAY_CLAIMED_ROUND_UNCLOSED' : 'CONTROLLER_RELAY_ROUND_UNCLOSED',
+        lastError: latest.nextRecoveryAt
+          ? latest.lastError
+          : latest.status === 'pending_release'
+            ? 'CONTROLLER_RELAY_RELEASE_TRANSITION_INCOMPLETE'
+            : latest.status === 'dispatching'
+              ? 'CONTROLLER_RELAY_DISPATCH_TRANSITION_INCOMPLETE'
+              : latest.status === 'claimed' ? 'CONTROLLER_RELAY_CLAIMED_ROUND_UNCLOSED' : 'CONTROLLER_RELAY_ROUND_UNCLOSED',
+        nextRecoveryAt: undefined,
         claimedAt: undefined,
         ...(blockedReason ? { blockedReason } : { blockedReason: undefined }),
         updatedAt: at,

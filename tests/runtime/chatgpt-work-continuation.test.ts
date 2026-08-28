@@ -59,6 +59,20 @@ describe('ChatGPT Work conversation binding', () => {
     expect(() => parseChatgptConversationIdentity('https://example.com/c/abc')).toThrow('CHATGPT_WORK_CONVERSATION_URL_INVALID');
   });
 
+  test('does not persist a ChatGPT root seed URL without a conversation id', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-root-seed-binding-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    ensureControllerHome(controllerHome);
+    const options = { controllerHome, repoId: 'repo-chatgpt-root-seed' };
+    expect(() => bindChatgptWorkConversation(options, {
+      workId: 'WORK-ROOT-SEED',
+      conversationUrl: 'https://chatgpt.com/',
+      latestBrowserSessionId: 'browser-root-seed',
+    })).toThrow('CHATGPT_WORK_CONVERSATION_ID_MISSING');
+    expect(getChatgptWorkConversationBinding(options, 'WORK-ROOT-SEED')).toBeUndefined();
+  });
+
   test('persists one Work-to-conversation binding and refuses silent rebind', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-work-binding-'));
     roots.push(root);
