@@ -26,6 +26,7 @@ export const CONTROLLER_ROUND_DISPOSITIONS = [
 ] as const;
 export type ControllerRoundDisposition = (typeof CONTROLLER_ROUND_DISPOSITIONS)[number];
 
+export const CONTROLLER_RELAY_ABANDONED_RELEASE_ERROR = 'CONTROLLER_RELAY_CLAIM_RELEASED_WITHOUT_DISPOSITION';
 const CONTROLLER_DISPOSITION_COMPATIBILITY_PREFIX = 'controller.disposition:';
 
 export function parseControllerDispositionCompatibilityCapability(
@@ -568,6 +569,8 @@ export function beginInitialControllerRoundDispatch(
     if (previous && ['pending_release', 'dispatching', 'dispatched', 'claimed'].includes(previous.status)) {
       throw new Error(`CONTROLLER_RELAY_ROUND_ALREADY_OPEN: ${relayScopeId}`);
     }
+    const abandonedReleasedRound = previous?.status === 'failed'
+      && previous.lastError === CONTROLLER_RELAY_ABANDONED_RELEASE_ERROR;
     const requestedMaxRounds = boundedInteger(input.maxRounds, DEFAULT_MAX_ROUNDS, 1, 32);
     const requestedMaxRepeatedState = boundedInteger(input.maxRepeatedState, DEFAULT_MAX_REPEATED_STATE, 1, 8);
     const requestedMaxFailures = boundedInteger(input.maxFailures, DEFAULT_MAX_FAILURES, 1, 8);
@@ -575,16 +578,16 @@ export function beginInitialControllerRoundDispatch(
     const maxRepeatedState = previous ? Math.min(previous.maxRepeatedState, requestedMaxRepeatedState) : requestedMaxRepeatedState;
     const maxFailures = previous ? Math.min(previous.maxFailures, requestedMaxFailures) : requestedMaxFailures;
     const stateFingerprint = mechanicalStateFingerprint(options, work, requirementId, relayScopeId);
-    // beginInitialControllerRoundDispatch is entered only for a fresh external
-    // wake after any prior round has closed. Mechanical round/repeated-state
-    // budgets fence one immediate relay chain; carrying them across an explicit
-    // later schedule/manual occurrence eventually blocks healthy periodic Work
-    // whose repository state intentionally remains unchanged. Open-round
-    // duplicate suppression above still rejects a second wake for the same live
-    // chain, while submit/recovery paths continue to accumulate these budgets.
-    const roundCount = 1;
-    const repeatedStateCount = 0;
-    const consecutiveFailures = 0;
+    // Ordinary later schedule/manual occurrences intentionally receive a fresh
+    // mechanical budget. A claimed round explicitly released without any semantic
+    // disposition is different: launcher_start is recovering the same abandoned
+    // relay chain, so it must consume round/repeated-state budget rather than reset
+    // it and thereby weaken repeated-state fencing.
+    const roundCount = abandonedReleasedRound ? previous!.roundCount + 1 : 1;
+    const repeatedStateCount = abandonedReleasedRound
+      ? (previous!.stateFingerprint === stateFingerprint ? previous!.repeatedStateCount + 1 : 0)
+      : 0;
+    const consecutiveFailures = abandonedReleasedRound ? previous!.consecutiveFailures : 0;
     let blockedReason: string | undefined;
     if (roundCount > maxRounds) blockedReason = `round_budget_exhausted:${roundCount}>${maxRounds}`;
     else if (repeatedStateCount >= maxRepeatedState) blockedReason = `repeated_state:${repeatedStateCount}>=${maxRepeatedState}`;
@@ -613,7 +616,7 @@ export function beginInitialControllerRoundDispatch(
       maxRounds,
       maxRepeatedState,
       maxFailures,
-      reason: 'launcher_start_requested_continuation',
+      reason: abandonedReleasedRound ? 'launcher_start_recovered_abandoned_claim' : 'launcher_start_requested_continuation',
       ...(bounded(input.browserSessionId, 500) ? { browserSessionId: bounded(input.browserSessionId, 500) } : previous?.browserSessionId ? { browserSessionId: previous.browserSessionId } : {}),
       ...(bounded(input.conversationUrl, 2_000) ? { conversationUrl: bounded(input.conversationUrl, 2_000) } : previous?.conversationUrl ? { conversationUrl: previous.conversationUrl } : {}),
       ...(blockedReason ? { blockedReason } : {}),
@@ -663,6 +666,59 @@ export function beginControllerRoundRelayAfterRelease(
       expectedRevision: current.revision,
     });
     return dispatching;
+  });
+}
+
+/**
+ * Mechanically close a claimed ChatGPT round only after its exact controller
+ * epoch has been released and durable state proves no controller lease remains.
+ * This never invents a semantic disposition; launcher_start must open a new round.
+ */
+export function reconcileControllerRoundAfterAbandonedRelease(
+  options: ControllerRoundRelayStoreOptions,
+  input: { workId: string; releasedSession: ControllerSession },
+): ControllerRoundRelayRecord | undefined {
+  const initial = readRelayRecord(options, input.workId);
+  if (!initial || initial.value.status !== 'claimed') return undefined;
+  return relayLock(options, initial.value.relayScopeId, `controller-relay-abandoned-release:${input.releasedSession.controllerId}`, () => {
+    const current = readRelayRecord(options, input.workId);
+    if (!current || current.value.status !== 'claimed') return undefined;
+    const record = current.value;
+    const releasedPrincipal = input.releasedSession.principalId?.trim() || input.releasedSession.controllerId;
+    const releasedInstanceId = input.releasedSession.controllerInstanceId?.trim() || '';
+    if (
+      record.claimGeneration !== input.releasedSession.claimGeneration
+      || record.controllerId !== input.releasedSession.controllerId
+      || record.principalId !== releasedPrincipal
+      || record.controllerInstanceId !== releasedInstanceId
+      || record.sessionId !== input.releasedSession.sessionId
+    ) {
+      throw new Error(`CONTROLLER_RELAY_RELEASE_FENCE_MISMATCH: ${input.workId}`);
+    }
+    if (getControllerSession(options, input.workId)) {
+      throw new Error(`CONTROLLER_RELAY_ABANDONED_RELEASE_ACTIVE_CLAIM: ${input.workId}`);
+    }
+    const work = getWorkContract(options, input.workId);
+    if (!work || isTerminalWorkContractStatus(work.status)) return undefined;
+
+    const at = nowIso(options);
+    const abandoned: ControllerRoundRelayRecord = {
+      ...record,
+      status: 'failed',
+      lastError: CONTROLLER_RELAY_ABANDONED_RELEASE_ERROR,
+      claimedAt: undefined,
+      updatedAt: at,
+    };
+    writeControlPlaneRecord(options.controllerHome, {
+      namespace: NAMESPACE,
+      scope: options.repoId,
+      key: input.workId,
+      schemaVersion: SCHEMA_VERSION,
+      value: abandoned,
+      action: 'controller_round_relay_claim_abandoned_after_release',
+      expectedRevision: current.revision,
+    });
+    return abandoned;
   });
 }
 

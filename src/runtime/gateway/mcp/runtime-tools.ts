@@ -214,6 +214,7 @@ import {
   acknowledgeControllerRoundClaim,
   beginControllerRoundRelayAfterRelease,
   beginInitialControllerRoundDispatch,
+  reconcileControllerRoundAfterAbandonedRelease,
   buildControllerRoundRelayPrompt,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
@@ -4359,6 +4360,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               relayStore,
               { workId, releasedSession: owner },
             ) : undefined;
+            const abandonedRelay = owner && !relay
+              ? reconcileControllerRoundAfterAbandonedRelease(relayStore, { workId, releasedSession: owner })
+              : undefined;
             if (relay?.status === 'dispatching') {
               try {
                 assertAutomatedOperationAllowed('external_controller_wake', {
@@ -4428,8 +4432,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               }
             }
             return result(buildFacadeResult({
-              summary: 'Controller lease released.',
-              data: { relay: getControllerRoundRelay(relayStore, workId) ?? relay, tabSettlement },
+              summary: abandonedRelay
+                ? 'Controller lease released; the claimed round was mechanically marked abandoned without semantic completion and can be relaunched through the bounded launcher path.'
+                : 'Controller lease released.',
+              data: { relay: getControllerRoundRelay(relayStore, workId) ?? abandonedRelay ?? relay, tabSettlement },
             }) as unknown as Record<string, unknown>);
           } catch (error) {
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller release failed.', data: {} }) as unknown as Record<string, unknown>, true);

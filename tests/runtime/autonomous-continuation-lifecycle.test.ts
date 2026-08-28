@@ -189,6 +189,96 @@ describe('autonomous continuation lifecycle', () => {
     expect(getControllerSession(store, workId)).toBeUndefined();
   });
 
+  test('controller_release marks an undisposed claimed round abandoned and a later explicit launch reopens the same fenced chain', async () => {
+    const root = temp('forge-autonomous-abandoned-release-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'autonomous-abandoned-release' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workId = 'WORK-AUTONOMOUS-ABANDONED-RELEASE';
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Release an undisposed claimed round without wedging future explicit continuation.',
+      acceptanceCriteria: ['abandoned release remains mechanical and relaunchable'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      maxRepeatedState: 3,
+      identity: {
+        controllerId: 'schedule:test',
+        principalId: 'forge-scheduler',
+        controllerInstanceId: 'runtime-test',
+        sessionId: 'occurrence-abandoned',
+      },
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true });
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: 'chatgpt-principal',
+      controllerType: 'chatgpt',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-test',
+      sessionId: 'mcp-undisposed',
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: owner })?.status).toBe('claimed');
+
+    const released = structured(await callRuntimeTool(
+      mcpContext(controllerHome, repository, {
+        principalId: 'chatgpt-principal',
+        sessionId: 'mcp-undisposed',
+        controllerInstanceId: 'runtime-test',
+      }),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        operation: 'controller_release',
+        work_id: workId,
+      },
+    ));
+    expect(released.status).toBe('ok');
+    expect(getControllerSession(store, workId)).toBeUndefined();
+    expect(released.data.relay).toMatchObject({
+      originWorkId: workId,
+      relayScopeId: opened.relayScopeId,
+      disposition: 'continue_immediately',
+      status: 'failed',
+      lastError: 'CONTROLLER_RELAY_CLAIM_RELEASED_WITHOUT_DISPOSITION',
+      roundCount: 1,
+      repeatedStateCount: 0,
+    });
+    expect(released.data.relay.claimedAt).toBeUndefined();
+
+    const reopened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      maxRepeatedState: 3,
+      identity: {
+        controllerId: 'schedule:test-relaunch',
+        principalId: 'forge-scheduler',
+        controllerInstanceId: 'runtime-test',
+        sessionId: 'occurrence-relaunch',
+      },
+    });
+    expect(reopened).toMatchObject({
+      status: 'dispatching',
+      relayScopeId: opened.relayScopeId,
+      roundCount: 2,
+      repeatedStateCount: 1,
+      reason: 'launcher_start_recovered_abandoned_claim',
+    });
+  });
+
   test('a continued ChatGPT conversation is still instructed to claim the exact Work before continue', async () => {
     const root = temp('forge-autonomous-continuation-launcher-');
     const controllerHome = join(root, 'controller');
