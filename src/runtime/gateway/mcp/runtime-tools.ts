@@ -1493,11 +1493,42 @@ async function finalizeFacadeWorkHandle(
     });
   }
 
-  const worktree = selectRepositoryCheckout(repository, handle.checkoutId, { allowArchived: true });
+  let worktree: ReturnType<typeof selectRepositoryCheckout>;
+  try {
+    worktree = selectRepositoryCheckout(repository, handle.checkoutId, { allowArchived: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const exactChangedHead = Boolean(handle.managedWorktree
+      && handle.expectedHead
+      && handle.baseCommit
+      && handle.expectedHead !== handle.baseCommit);
+    if (
+      !exactChangedHead
+      || args.cleanup === false
+      || (!message.startsWith('CHECKOUT_NOT_ACTIVE:') && !message.startsWith('checkout not found for '))
+    ) throw error;
+    // Physical cleanup can succeed before the Work completion receipt is
+    // persisted. Retry through the lower finalizer's exact target-containment
+    // reconciliation instead of requiring a checkout that is already gone.
+    // commit/merge are intentionally disabled here: the missing checkout may
+    // never become permission to replay mutation. If expectedHead is not
+    // already contained by targetBranch, work_finalize fails closed.
+    return callExecutionTool(ctx, 'work_finalize', {
+      ...common,
+      commit: false,
+      merge: false,
+      completion_outcome: 'completed_changed',
+    });
+  }
   const status = repositoryGitStatus(worktree);
   const head = status.head ?? handle.expectedHead ?? handle.baseCommit;
   const committedDelta = Boolean(head && handle.baseCommit && head !== handle.baseCommit);
-  const commit = typeof args.commit === 'boolean' ? args.commit : !status.clean;
+  const requestedCommit = typeof args.commit === 'boolean' ? args.commit : !status.clean;
+  // A clean checkout whose HEAD already differs from base is already committed.
+  // Treat commit=true as satisfied by that exact candidate instead of trying to
+  // manufacture an empty commit and recording GIT_NOTHING_STAGED as a delivery
+  // failure. The candidate is still adopted/revalidated and merge-fenced below.
+  const commit = status.clean && committedDelta ? false : requestedCommit;
   const workContract = getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, workId);
   if (
     status.clean

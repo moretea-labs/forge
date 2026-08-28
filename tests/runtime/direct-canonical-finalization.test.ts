@@ -5,10 +5,12 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
+import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import type { WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { repositoryGitFinishWorkflow, repositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
-import { inspectDirectCanonicalTargetAdvanceReconciliation, inspectTargetDirtyWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
+import { inspectCleanupOnlyMergedHead, inspectDirectCanonicalTargetAdvanceReconciliation, inspectTargetDirtyWorkOwnership, resetFinalizationStagesForRequest } from '../../src/runtime/gateway/mcp/execution-tools';
 
 const roots: string[] = [];
 
@@ -120,6 +122,74 @@ function inspectFresh(
 }
 
 describe('direct canonical Work target advancement reconciliation', () => {
+  test('reconciles an already-integrated candidate after managed checkout and branch cleanup completed before receipt persistence', () => {
+    const fx = fixture('post-cleanup-retry');
+    const workId = 'work-post-cleanup-retry';
+    const branch = 'work/post-cleanup-retry';
+    git(fx.repoRoot, ['switch', '-c', branch]);
+    writeFileSync(join(fx.repoRoot, 'target.txt'), 'delivered-before-receipt\n');
+    git(fx.repoRoot, ['add', 'target.txt']);
+    git(fx.repoRoot, ['commit', '-m', 'delivered candidate']);
+    const candidateHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    git(fx.repoRoot, ['switch', 'main']);
+    git(fx.repoRoot, ['merge', '--ff-only', branch]);
+    git(fx.repoRoot, ['branch', '-d', branch]);
+
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      repoId: fx.repository.repoId,
+      mode: 'goal_workloop',
+      objective: 'post-cleanup retry regression',
+      acceptanceCriteria: ['reconcile exact delivered candidate'],
+      allowedPaths: ['target.txt'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const handle: WorkHandleState = {
+      schemaVersion: 1,
+      workId,
+      sessionId: 'session-post-cleanup',
+      principalId: 'principal-post-cleanup',
+      repositoryId: fx.repository.repoId,
+      checkoutId: 'checkout-removed-post-cleanup',
+      worktreePath: join(fx.repoRoot, 'already-removed-worktree'),
+      branch,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      managedWorktree: true,
+      workContractId: workId,
+      baseCommit: fx.expectedHead,
+      deliveryBaseCommit: fx.expectedHead,
+      expectedHead: candidateHead,
+      permissionSnapshotVersion: 1,
+      state: 'merged',
+      finalization: {
+        validation: 'done',
+        commit: 'failed',
+        merge: 'done',
+        branchCleanup: 'done',
+        worktreeCleanup: 'done',
+        lastError: 'GIT_NOTHING_STAGED',
+      },
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: '2026-08-28T00:00:00.000Z' },
+      createdAt: '2026-08-28T00:00:00.000Z',
+      updatedAt: '2026-08-28T00:00:00.000Z',
+    };
+
+    const proof = inspectCleanupOnlyMergedHead(
+      { controllerHome: fx.controllerHome } as any,
+      handle,
+      { cleanup: true, commit: false, merge: false, target_branch: 'main' },
+    );
+    expect(proof).toEqual({ currentHead: candidateHead, cancelledContract: false, worktreeMissing: true });
+
+    const reconciled = resetFinalizationStagesForRequest(handle.finalization, { commit: false, merge: false, cleanup: true });
+    expect(reconciled.commit).toBe('failed');
+    expect(proof?.currentHead).toBe(candidateHead);
+  });
+
   test('attributes dirty canonical paths to exactly one other active Work before concurrent integration', () => {
     expect(inspectTargetDirtyWorkOwnership({
       dirtyPaths: ['owned.txt'],

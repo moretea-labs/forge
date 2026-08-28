@@ -1980,7 +1980,7 @@ function runCleanup(targetRoot: string, worktreePath: string): { ok: boolean; me
  * successful worktree cleanup. This lets a retry finish branch cleanup after a
  * crash without turning a missing checkout into proof of safety.
  */
-function cleanupOnlyMergedHead(
+export function inspectCleanupOnlyMergedHead(
   ctx: MultiRepositoryMcpToolContext,
   current: WorkHandleState,
   args: Record<string, unknown>,
@@ -1997,7 +1997,13 @@ function cleanupOnlyMergedHead(
   const branchHeadResult = spawnSync('git', ['-C', target.canonicalRoot, 'rev-parse', '--verify', `refs/heads/${current.branch}`], {
     encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
   });
-  const currentHead = branchHeadResult.status === 0 ? String(branchHeadResult.stdout ?? '').trim() : '';
+  const branchHead = branchHeadResult.status === 0 ? String(branchHeadResult.stdout ?? '').trim() : '';
+  // A previous cleanup attempt may already have deleted the Work branch before
+  // completion-receipt persistence failed. Only the exact durable expectedHead
+  // may replace that missing ref, and only after branchCleanup itself is durably
+  // recorded done.
+  const currentHead = branchHead
+    || (current.finalization.branchCleanup === 'done' ? current.expectedHead ?? '' : '');
   if (!currentHead) return undefined;
   const merged = spawnSync('git', ['-C', target.canonicalRoot, 'merge-base', '--is-ancestor', currentHead, targetBranch], {
     encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
@@ -2006,7 +2012,11 @@ function cleanupOnlyMergedHead(
 
   const worktreeMissing = !existsSync(current.worktreePath);
   if (worktreeMissing) {
-    if (!cancelledContract || current.finalization.worktreeCleanup !== 'done') return undefined;
+    const integratedDeliveryRecorded = current.state === 'merged'
+      || current.state === 'cleaned'
+      || current.finalization.merge === 'done';
+    if (current.finalization.worktreeCleanup !== 'done') return undefined;
+    if (!cancelledContract && !integratedDeliveryRecorded) return undefined;
     return { currentHead, cancelledContract, worktreeMissing: true };
   }
 
@@ -2567,7 +2577,7 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
     && !wants.merge;
   const cleanupReconciliation = requestedOutcome === 'completed_no_change'
     ? undefined
-    : cleanupOnlyMergedHead(ctx, current, args);
+    : inspectCleanupOnlyMergedHead(ctx, current, args);
   if (cancelledCleanupRequested && !cleanupReconciliation) {
     throw new Error('WORK_CANCELLED_CLEANUP_UNSAFE: cancelled Work cleanup requires an unchanged clean managed worktree (or a previously recorded cleanup) and a branch HEAD already contained in the target branch');
   }
@@ -2580,9 +2590,14 @@ async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<str
       finalization: {
         ...fresh.finalization,
         validation: cleanupReconciliation.worktreeMissing ? 'done' : fresh.finalization.validation,
-        commit: fresh.finalization.commit === 'pending' ? 'skipped' : fresh.finalization.commit,
+        // Exact target containment proves an already-committed candidate. A
+        // previous GIT_NOTHING_STAGED failure is superseded rather than kept as
+        // a permanent failed stage after successful delivery.
+        commit: fresh.finalization.commit === 'done' ? 'done' : 'skipped',
         merge: 'done',
-        branchCleanup: deleteBranchRequested ? 'pending' : 'skipped',
+        branchCleanup: deleteBranchRequested
+          ? (fresh.finalization.branchCleanup === 'done' ? 'done' : 'pending')
+          : 'skipped',
         lastError: undefined,
       },
     }));
