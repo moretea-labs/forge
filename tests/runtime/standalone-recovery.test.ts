@@ -173,7 +173,7 @@ async function runtimeServer(options: { challengeUnauthenticatedMcp?: boolean } 
     body,
   });
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
-    if (request.method === 'GET' && (request.url === '/health' || request.url === '/ready')) {
+    if (request.method === 'GET' && (request.url === '/health' || request.url === '/ready' || request.url === '/transport-ready')) {
       record(request);
       response.setHeader('content-type', 'application/json');
       response.end(JSON.stringify({ status: 'ok' }));
@@ -279,7 +279,7 @@ async function saturatedPublicGatewayServer(): Promise<{ endpoint: string; reque
       body: '',
     });
     response.setHeader('content-type', 'application/json');
-    if (request.method === 'GET' && request.url === '/ready') {
+    if (request.method === 'GET' && request.url === '/transport-ready') {
       response.statusCode = 503;
       response.end(JSON.stringify({
         status: 'saturated',
@@ -309,6 +309,57 @@ async function saturatedPublicGatewayServer(): Promise<{ endpoint: string; reque
   });
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('public Gateway test server unavailable');
+  return { endpoint: `http://127.0.0.1:${address.port}/mcp`, requests };
+}
+
+async function healthyTransportWithHungLegacyReadinessServer(): Promise<{ endpoint: string; requests: RuntimeRequestRecord[] }> {
+  const requests: RuntimeRequestRecord[] = [];
+  const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+    requests.push({
+      method: request.method,
+      url: request.url,
+      authorizationPresent: typeof request.headers.authorization === 'string',
+      accept: request.headers.accept,
+      contentType: request.headers['content-type'],
+      body: '',
+    });
+    response.setHeader('content-type', 'application/json');
+    if (request.method === 'GET' && request.url === '/transport-ready') {
+      response.statusCode = 200;
+      response.end(JSON.stringify({
+        ready: true,
+        sessionCapacity: {
+          active: 0,
+          maximum: 64,
+          acceptingNewSessions: true,
+          activePosts: 0,
+          activeStreams: 0,
+          recoveryRecommended: false,
+        },
+      }));
+      return;
+    }
+    if (request.method === 'POST' && request.url === '/mcp') {
+      response.statusCode = 401;
+      response.setHeader('www-authenticate', 'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp"');
+      response.end(JSON.stringify({ error: 'invalid_token' }));
+      return;
+    }
+    if (request.method === 'GET' && request.url === '/ready') {
+      // Exact regression shape: the legacy whole-control-plane readiness route
+      // never answers even though the public MCP transport itself is healthy.
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: 'not_found' }));
+  });
+  servers.push(server);
+  await new Promise<void>((done, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => done());
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('hung legacy readiness test server unavailable');
   return { endpoint: `http://127.0.0.1:${address.port}/mcp`, requests };
 }
 
@@ -367,7 +418,7 @@ function healthyVerify(): VerifyResult {
   };
 }
 
-test('standalone Recovery restarts only the configured primary Connector service', async () => {
+test('standalone Recovery restarts only the configured primary Connector service with durable request attribution', async () => {
   const home = controllerHome();
   const plistPath = join(home, 'connector.plist');
   writeFileSync(plistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
@@ -376,10 +427,16 @@ test('standalone Recovery restarts only the configured primary Connector service
     primaryConnectorService: { platform: 'launchd', label: 'com.moretea.forge.mcp-gateway', plistPath },
   });
   const commands: string[][] = [];
+  let observedLock: Record<string, unknown> | undefined;
   const result = await restartPrimaryConnector(config, {
+    requestId: 'recovery-gateway:test-primary-connector-restart',
     platform: 'darwin',
     currentUid: async () => 501,
     verifyLocal: async () => healthyVerify(),
+    repairConnectorBinding: async () => {
+      observedLock = JSON.parse(readFileSync(join(home, 'recovery', 'locks', 'operation.lock'), 'utf8')) as Record<string, unknown>;
+      return { ok: true, attempted: false, noOp: true, detail: 'binding already current' };
+    },
     reconnect: async () => ({ ok: true, detail: 'public MCP reachable', verify: healthyVerify() }),
     runCommand: async (name, args) => {
       commands.push([name, ...args]);
@@ -387,8 +444,42 @@ test('standalone Recovery restarts only the configured primary Connector service
     },
   });
   expect(result).toMatchObject({ ok: true, attempted: true, serviceTarget: 'gui/501/com.moretea.forge.mcp-gateway' });
+  expect(observedLock).toMatchObject({
+    action: 'restart_primary_connector',
+    requestId: 'recovery-gateway:test-primary-connector-restart',
+    pid: process.pid,
+  });
   expect(commands).toContainEqual(['launchctl', 'print', 'gui/501/com.moretea.forge.mcp-gateway']);
   expect(commands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
+});
+
+test('standalone Recovery fails closed on a live legacy mutation lock without request identity', async () => {
+  const home = controllerHome();
+  const plistPath = join(home, 'connector.plist');
+  writeFileSync(plistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
+  const config = createRecoveryConfig(home, {
+    publicMcpUrl: 'https://mcp.example.test/mcp',
+    primaryConnectorService: { platform: 'launchd', label: 'com.moretea.forge.mcp-gateway', plistPath },
+  });
+  const lockFile = join(home, 'recovery', 'locks', 'operation.lock');
+  mkdirSync(dirname(lockFile), { recursive: true });
+  writeFileSync(lockFile, JSON.stringify({
+    schemaVersion: 1,
+    pid: process.pid,
+    instanceId: 'legacy-live-lock',
+    acquiredAt: new Date().toISOString(),
+    action: 'restart_primary_connector',
+  }));
+
+  await expect(restartPrimaryConnector(config, {
+    requestId: 'recovery-gateway:new-primary-connector-restart',
+    platform: 'darwin',
+    currentUid: async () => 501,
+    verifyLocal: async () => healthyVerify(),
+  })).rejects.toThrow('RECOVERY_OPERATION_LOCK_IDENTITY_UNCERTAIN');
+
+  expect(JSON.parse(readFileSync(lockFile, 'utf8'))).toMatchObject({ instanceId: 'legacy-live-lock' });
+  expect(readFileSync(join(home, 'recovery', 'audit', 'recovery.jsonl'), 'utf8')).toContain('recovery_operation_lock_identity_uncertain');
 });
 
 test('standalone Recovery repairs immutable Connector release binding before deciding whether kickstart is still needed', async () => {
@@ -739,7 +830,7 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(existsSync(join(home, 'recovery', 'state', 'known-good.json'))).toBe(false);
   });
 
-  test('probes Runtime readiness at /ready and MCP with POST initialize while accepting a Bearer challenge', async () => {
+  test('probes cheap Connector transport readiness at /transport-ready and MCP with POST initialize while accepting a Bearer challenge', async () => {
     const home = controllerHome();
     const activeManifest = manifest(home, 'release-probe', 'artifact-probe');
     ensureActiveRuntimeRelease(home, activeManifest);
@@ -756,7 +847,7 @@ describe('standalone recovery on canonical Runtime', () => {
     await verifyStableRuntime(config, failedTransport); await verifyStableRuntime(config, failedTransport);
     const diagnostics = JSON.parse(readFileSync(join(home, 'recovery', 'state', 'watchdog-diagnostics.json'), 'utf8')); expect(diagnostics.entries).toHaveLength(1);
     expect(diagnostics.entries[0]).toMatchObject({ components: expect.arrayContaining(['gateway', 'public_mcp']), occurrences: 2, failedProbes: expect.arrayContaining([expect.objectContaining({ name: 'active_gateway', status: 503 })]) });
-    expect(runtime.requests.some((request) => request.method === 'GET' && request.url === '/ready')).toBe(true);
+    expect(runtime.requests.some((request) => request.method === 'GET' && request.url === '/transport-ready')).toBe(true);
     expect(runtime.requests.some((request) => request.method === 'GET' && request.url === '/health')).toBe(false);
     expect(runtime.requests.some((request) => request.method === 'GET' && request.url === '/mcp')).toBe(false);
 
@@ -778,6 +869,37 @@ describe('standalone recovery on canonical Runtime', () => {
       jsonrpc: '2.0',
       method: 'initialize',
     });
+  });
+
+  test('keeps primary Connector readiness healthy when legacy /ready hangs but transport and external MCP are healthy', async () => {
+    const home = controllerHome();
+    const activeManifest = manifest(home, 'release-transport-ready-isolated', 'artifact-transport-ready-isolated');
+    ensureActiveRuntimeRelease(home, activeManifest);
+    const runtime = await runtimeServer();
+    const publicGateway = await healthyTransportWithHungLegacyReadinessServer();
+    writeMainToken(home);
+    startObservedRuntime(home, runtime.endpoint, 'release-transport-ready-isolated', 'artifact-transport-ready-isolated');
+    const config = createRecoveryConfig(home, {
+      publicMcpUrl: publicGateway.endpoint,
+      primaryConnectorService: {
+        platform: 'launchd',
+        label: 'com.moretea.forge.mcp-gateway',
+      },
+    });
+
+    const startedAt = Date.now();
+    const verified = await verifyStableRuntime(config, undefined, { probeMcpProtocol: false });
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(verified.runtime.ok).toBe(true);
+    expect(verified.probes.active_gateway).toMatchObject({ ok: true, status: 200 });
+    expect(verified.probes.external_mcp_http).toMatchObject({ ok: true, status: 401 });
+    expect(verified.probes.primary_connector_ready).toMatchObject({
+      ok: true,
+      status: 200,
+      detail: 'transport-ready HTTP 200',
+    });
+    expect(publicGateway.requests.some((request) => request.method === 'GET' && request.url === '/transport-ready')).toBe(true);
+    expect(publicGateway.requests.some((request) => request.method === 'GET' && request.url === '/ready')).toBe(false);
   });
 
   test('keeps an unmanaged external 530 separate from a healthy local primary Connector', async () => {
@@ -853,7 +975,7 @@ describe('standalone recovery on canonical Runtime', () => {
       status: 503,
       value: { admissibleSessionCount: 0, recoveryRecommended: true },
     });
-    expect(gateway.requests.some((request) => request.method === 'GET' && request.url === '/ready')).toBe(true);
+    expect(gateway.requests.some((request) => request.method === 'GET' && request.url === '/transport-ready')).toBe(true);
 
     const firstTick = await watchdogTick(config, {
       failures: 0,

@@ -508,7 +508,7 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
     }
     case 'restart_primary_connector': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      return restartPrimaryConnector(config);
+      return restartPrimaryConnector(config, { requestId: `recovery-gateway:${args.request_id}` });
     }
     case 'recover_primary_runtime': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');

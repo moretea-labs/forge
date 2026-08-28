@@ -272,6 +272,25 @@ describe('mcp http transport', () => {
           },
         });
 
+        const transportReady = await fetch(`http://127.0.0.1:${port}/transport-ready`);
+        expect(transportReady.status).toBe(200);
+        expect(await transportReady.json()).toMatchObject({
+          ready: true,
+          gateway: 'ready',
+          sessionCapacity: {
+            active: 0,
+            maximum: 64,
+            acceptingNewSessions: true,
+            activePosts: 0,
+            activeStreams: 0,
+            recoveryRecommended: false,
+          },
+          runtimeCapacity: {
+            initializing: 0,
+            activePosts: 0,
+          },
+        });
+
         const noAuth = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
