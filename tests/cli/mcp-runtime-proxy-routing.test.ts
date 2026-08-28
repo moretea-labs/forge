@@ -15,9 +15,12 @@ import {
   CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS,
   DEFAULT_CANONICAL_RUNTIME_PROXY_LANES,
   MAX_CANONICAL_RUNTIME_PROXY_LANES,
+  callCanonicalRuntimeToolWithReplay,
   canonicalRuntimeForwardingIdentity,
   canonicalRuntimeProxyLaneLimit,
   canonicalRuntimeReleaseHandoffInProgress,
+  canonicalRuntimeToolCallFailureIsTransient,
+  canonicalRuntimeToolCallIsReplaySafe,
   createCanonicalRuntimeProxy,
   createCanonicalRuntimeLaneScheduler,
   createForgeMcpServerFromContext,
@@ -104,6 +107,72 @@ describe('MCP canonical Runtime proxy routing', () => {
     };
     expect(sameCanonicalRuntimeProxyIdentity(baseline, { ...baseline })).toBe(true);
     expect(sameCanonicalRuntimeProxyIdentity(baseline, { ...baseline, runtimeInstanceId: 'runtime-b' })).toBe(false);
+  });
+
+  test('replays one transient inner disconnect only for a keyed Work-attributed repository command', async () => {
+    const args = {
+      repo_id: 'repo-fixture',
+      work_id: 'WORK-REPLAY-SAFE',
+      request_id: 'stable-process-request',
+      command: ['bun', 'x', 'tsc', '--noEmit'],
+    };
+    expect(canonicalRuntimeToolCallIsReplaySafe('repository_command_execute', args)).toBe(true);
+    expect(canonicalRuntimeToolCallIsReplaySafe('repository_command_execute', { ...args, request_id: '' })).toBe(false);
+    expect(canonicalRuntimeToolCallIsReplaySafe('rh_work', args)).toBe(false);
+    expect(canonicalRuntimeToolCallFailureIsTransient(new Error('Connection closed'))).toBe(true);
+    expect(canonicalRuntimeToolCallFailureIsTransient(new Error('WORK_CONTROLLER_CLAIM_REQUIRED'))).toBe(false);
+
+    let calls = 0;
+    let reconnects = 0;
+    const result = await callCanonicalRuntimeToolWithReplay({
+      name: 'repository_command_execute',
+      args,
+      call: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('Connection closed');
+        return 'original-process';
+      },
+      reconnect: async () => { reconnects += 1; },
+    });
+    expect(result).toBe('original-process');
+    expect(calls).toBe(2);
+    expect(reconnects).toBe(1);
+
+    let unkeyedCalls = 0;
+    let unkeyedReconnects = 0;
+    await expect(callCanonicalRuntimeToolWithReplay({
+      name: 'repository_command_execute',
+      args: { ...args, request_id: '' },
+      call: async () => { unkeyedCalls += 1; throw new Error('Connection closed'); },
+      reconnect: async () => { unkeyedReconnects += 1; },
+    })).rejects.toThrow('Connection closed');
+    expect(unkeyedCalls).toBe(1);
+    expect(unkeyedReconnects).toBe(0);
+  });
+
+  test('does not replay keyed Work commands for non-transient failures or beyond one retry', async () => {
+    const args = { work_id: 'WORK-REPLAY-BOUND', request_id: 'stable-bound', command: ['true'] };
+    let semanticCalls = 0;
+    let semanticReconnects = 0;
+    await expect(callCanonicalRuntimeToolWithReplay({
+      name: 'repository_command_execute',
+      args,
+      call: async () => { semanticCalls += 1; throw new Error('WORK_CONTROLLER_OWNERSHIP_MISMATCH'); },
+      reconnect: async () => { semanticReconnects += 1; },
+    })).rejects.toThrow('WORK_CONTROLLER_OWNERSHIP_MISMATCH');
+    expect(semanticCalls).toBe(1);
+    expect(semanticReconnects).toBe(0);
+
+    let repeatedCalls = 0;
+    let repeatedReconnects = 0;
+    await expect(callCanonicalRuntimeToolWithReplay({
+      name: 'repository_command_execute',
+      args,
+      call: async () => { repeatedCalls += 1; throw new Error('Connection closed'); },
+      reconnect: async () => { repeatedReconnects += 1; },
+    })).rejects.toThrow('Connection closed');
+    expect(repeatedCalls).toBe(2);
+    expect(repeatedReconnects).toBe(1);
   });
 
   test('reuses one shared Runtime proxy across outer MCP sessions without collapsing caller session identity', async () => {

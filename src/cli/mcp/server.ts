@@ -450,6 +450,36 @@ export function sameCanonicalRuntimeProxyIdentity(
     && left.runtimeInstanceId === right.runtimeInstanceId;
 }
 
+export function canonicalRuntimeToolCallIsReplaySafe(name: string, args: Record<string, unknown>): boolean {
+  if (name !== 'repository_command_execute') return false;
+  const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+  const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+  return Boolean(workId && requestId);
+}
+
+export function canonicalRuntimeToolCallFailureIsTransient(error: unknown): boolean {
+  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error ?? '');
+  return /Connection closed|socket[^\n]*closed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|UND_ERR_SOCKET|fetch failed|MCP_REQUEST_FAILED/i.test(message);
+}
+
+export async function callCanonicalRuntimeToolWithReplay<T>(input: {
+  name: string;
+  args: Record<string, unknown>;
+  call: () => Promise<T>;
+  reconnect: () => Promise<void>;
+}): Promise<T> {
+  try {
+    return await input.call();
+  } catch (error) {
+    if (!canonicalRuntimeToolCallIsReplaySafe(input.name, input.args)
+      || !canonicalRuntimeToolCallFailureIsTransient(error)) {
+      throw error;
+    }
+    await input.reconnect();
+    return await input.call();
+  }
+}
+
 export interface CanonicalRuntimeProxy {
   listTools(): Promise<{ tools: Tool[] }>;
   callTool(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>, timing?: MutableGatewayProxyTiming): Promise<CallToolResult>;
@@ -743,22 +773,36 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
       }
     },
     async callTool(callerContext, name, args, timing = {}) {
-      const { laneId, client } = await prepareLane(timing, name === 'process_wait' ? 'wait' : 'interactive');
+      const prepared = await prepareLane(timing, name === 'process_wait' ? 'wait' : 'interactive');
+      const laneId = prepared.laneId;
+      let activeClient = prepared.client;
       const gatewayCallStartedAtMs = Date.now();
       const callStarted = performance.now();
+      const forwardedRequest = {
+        name,
+        arguments: args,
+        _meta: canonicalRuntimeForwardingMeta(callerContext),
+      } as Parameters<Client['callTool']>[0];
       try {
         // The outer Connector session is already bound to the Canonical Runtime
         // schema and fenced by the Runtime-published fingerprint before dispatch.
         // Caller identity stays request-scoped while the inner MCP lane is reused.
-        const response = await client.callTool(
-          {
-            name,
-            arguments: args,
-            _meta: canonicalRuntimeForwardingMeta(callerContext),
-          } as Parameters<Client['callTool']>[0],
-          undefined,
-          { timeout: CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS },
-        );
+        // Only keyed Work-attributed Process Runtime commands may replay after a
+        // transient inner disconnect: the stable request_id resolves to the
+        // original Process instead of spawning the side effect twice.
+        const response = await callCanonicalRuntimeToolWithReplay({
+          name,
+          args,
+          call: async () => await activeClient.callTool(
+            forwardedRequest,
+            undefined,
+            { timeout: CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS },
+          ),
+          reconnect: async () => {
+            await closeLane(laneId, activeClient);
+            activeClient = await clientForCurrentRuntime(laneId, timing);
+          },
+        });
         const result = response as unknown as CallToolResult;
         timing.gatewayProxyCallMs = roundedMs(performance.now() - callStarted);
         Object.assign(timing, deriveCanonicalForwardingTiming({
@@ -771,7 +815,7 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
         timing.gatewayProxyCallMs = roundedMs(performance.now() - callStarted);
         // Poison only the failed lane. Other hot lanes remain available so one
         // Runtime/session failure cannot collapse the whole Gateway proxy pool.
-        await closeLane(laneId, client);
+        await closeLane(laneId, activeClient);
         throw error;
       } finally {
         scheduler.release(laneId);
