@@ -2184,7 +2184,9 @@ async function openNativeAttachedContext(
         savedTab,
       };
     } catch (error) {
-      if (error instanceof AssistantPluginError && error.code === 'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN') {
+      if (error instanceof AssistantPluginError
+        && error.code === 'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN'
+        && savedOwnership === 'user_owned') {
         throw error;
       }
       if (savedOwnership === 'user_owned') {

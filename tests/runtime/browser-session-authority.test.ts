@@ -411,6 +411,107 @@ describe('browser session controller authority', () => {
     expect(inventoryCalls).toBe(3);
   });
 
+  test('replaces a missing plugin-owned native tab after exact identity becomes stale', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    }));
+
+    const separator = String.fromCharCode(30);
+    const fieldSeparator = String.fromCharCode(31);
+    const url = 'https://example.com/forge-owned';
+    const userUrl = 'https://user.example.net/keep';
+    let ownedTabId = '';
+    let ownedExists = false;
+    let createCalls = 0;
+    const metadata = () => [
+      'false', ownedExists ? url : userUrl, ownedExists ? 'Forge Owned' : 'User Tab',
+      '0', '0', '1200', '800', '7', ownedExists ? ownedTabId : '3', ownedExists ? 'false' : 'true', 'false',
+    ].join(separator);
+    const userTab = () => ({ windowId: '7', tabId: '3', active: true, url: userUrl, title: 'User Tab' });
+    const inventoryRaw = () => {
+      const records = [`7${fieldSeparator}3${fieldSeparator}true${fieldSeparator}${userUrl}${fieldSeparator}User Tab`];
+      if (ownedExists) records.push(`7${fieldSeparator}${ownedTabId}${fieldSeparator}false${fieldSeparator}${url}${fieldSeparator}Forge Owned`);
+      return `false${separator}${records.join(separator)}`;
+    };
+
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      tabInventory: async () => ({
+        product: 'chrome',
+        truncated: false,
+        tabs: ownedExists
+          ? [
+              userTab(),
+              { windowId: '7', tabId: ownedTabId, active: false, url, title: 'Forge Owned' },
+            ]
+          : [userTab()],
+      }),
+      runAppleScript: async (script, args = []) => {
+        if (script.includes('set outputText to "false"')) return inventoryRaw();
+        if (script.includes('make new tab at end of tabs of targetWindow')) {
+          createCalls += 1;
+          ownedTabId = createCalls === 1 ? '9' : '10';
+          ownedExists = true;
+          return `7${separator}${ownedTabId}`;
+        }
+        if (script.includes('close targetTab')) {
+          ownedExists = false;
+          return '';
+        }
+        if (script.includes('execute targetTab javascript')) {
+          const source = args[0] ?? '';
+          const value = source.includes('document.readyState')
+            ? 'complete'
+            : source.includes('textContent') || source.includes('innerText')
+              ? 'Recovered Body'
+              : { url, title: 'Forge Owned' };
+          return JSON.stringify({ ok: true, value, page: { url, title: 'Forge Owned' } });
+        }
+        return metadata();
+      },
+    });
+
+    const baseInput = {
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      origin: { surface: 'mcp' as const, actor: 'test' },
+    };
+    const opened = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'stale-owned-open',
+      actionId: 'create_session',
+      args: { url, browser_mode: 'attach_preferred', native_browser_candidates: ['chrome'], cdp_attach_fallback: 'fail_closed' },
+    });
+    const sessionId = String((opened.session as { sessionId: string }).sessionId);
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '9' });
+
+    ownedExists = false;
+    invalidateMacOsBrowserPageHandles();
+    const observed = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'stale-owned-read',
+      actionId: 'get_text',
+      args: { session_id: sessionId, selector: 'body' },
+    });
+
+    expect(observed.text).toBe('Recovered Body');
+    expect(createCalls).toBe(2);
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '10' });
+  });
+
   test('native cold rebind reports and persists the live same-origin URL after external drift', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
