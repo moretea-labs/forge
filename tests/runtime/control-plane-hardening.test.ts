@@ -34,7 +34,7 @@ import {
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { awaitExternalControllerWake, classifyChatgptWakeFailure, evaluateSchedule, externalControllerWakeTimeoutMs } from '../../src/runtime/workflow/schedules/engine';
 import { applyScheduleRetryableFailure } from '../../src/runtime/workflow/schedules/settlement';
-import { createSchedule, getSchedule, recordScheduleOccurrenceHandoff, saveOccurrence, saveSchedule, updateSchedule } from '../../src/runtime/workflow/schedules/store';
+import { createSchedule, getOccurrence, getSchedule, recordScheduleOccurrenceHandoff, saveOccurrence, saveSchedule, updateSchedule } from '../../src/runtime/workflow/schedules/store';
 import {
   buildSchedulerHealthSnapshot,
   normalizeSchedulerConfig,
@@ -764,6 +764,35 @@ describe('scheduled external Controller wake', () => {
       enabled: false,
       pausedReason: 'Explicit human pause.',
       revision: paused.revision,
+    });
+  });
+
+  test('ScheduleOccurrence revision fences stale asynchronous settlement from overwriting newer occurrence state', () => {
+    const root = temp('forge-occurrence-revision-fence-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'occurrence@example.test'], ['config', 'user.name', 'Occurrence Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'occurrence\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'occurrence-revision-fence' });
+    const schedule = createSchedule(controllerHome, {
+      requestId: 'occurrence-revision-fence', repoId: repository.repoId, name: 'occurrence revision fence', enabled: true,
+      trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: true },
+      action: { operation: 'external_controller_wake', target: 'runtime', arguments: { work_id: 'WORK-OCCURRENCE-FENCE', controller_type: 'chatgpt' } }, stopConditions: [],
+    });
+    const createdAt = new Date().toISOString();
+    const stale = saveOccurrence(controllerHome, {
+      schemaVersion: 1, revision: 0, occurrenceId: 'OCC-REVISION-FENCE', scheduleId: schedule.scheduleId, repoId: repository.repoId,
+      windowKey: 'manual-1', status: 'created', decision: 'nothing_to_do', createdAt, updatedAt: createdAt,
+    });
+    const running = saveOccurrence(controllerHome, { ...stale, status: 'running', decision: 'execute', reason: 'Worker claimed occurrence.' });
+    expect(running.revision).toBe(stale.revision + 1);
+
+    expect(() => saveOccurrence(controllerHome, { ...stale, status: 'failed', decision: 'execute', reason: 'Stale failure.' }))
+      .toThrow(`SCHEDULE_OCCURRENCE_REVISION_CONFLICT: ${stale.occurrenceId}:expected=${stale.revision}:actual=${running.revision}`);
+    expect(getOccurrence(controllerHome, repository.repoId, stale.occurrenceId)).toMatchObject({
+      status: 'running',
+      decision: 'execute',
+      reason: 'Worker claimed occurrence.',
+      revision: running.revision,
     });
   });
 

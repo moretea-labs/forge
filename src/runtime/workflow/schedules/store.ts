@@ -334,7 +334,11 @@ export function saveOccurrence(controllerHome: string, occurrence: ScheduleOccur
   const next = withControllerLock(controllerHome, { scope: 'task', repoId: occurrence.repoId, taskId: `schedule-${occurrence.scheduleId}` }, `save-occurrence:${occurrence.occurrenceId}`, () => {
     const existingPath = occurrencePath(controllerHome, occurrence.repoId, occurrence.occurrenceId);
     const previous = existsSync(existingPath) ? readJsonFile<ScheduleOccurrence>(existingPath) : undefined;
-    const saved = { ...occurrence, revision: (previous?.revision ?? occurrence.revision ?? 0) + 1, updatedAt: new Date().toISOString() };
+    const expectedRevision = previous?.revision ?? 0;
+    if (occurrence.revision !== expectedRevision) {
+      throw new Error(`SCHEDULE_OCCURRENCE_REVISION_CONFLICT: ${occurrence.occurrenceId}:expected=${occurrence.revision}:actual=${expectedRevision}`);
+    }
+    const saved = { ...occurrence, revision: expectedRevision + 1, updatedAt: new Date().toISOString() };
     writeJsonAtomic(existingPath, saved);
     upsertOccurrenceIndexUnlocked(controllerHome, saved);
     const schedule = getSchedule(controllerHome, saved.repoId, saved.scheduleId);
