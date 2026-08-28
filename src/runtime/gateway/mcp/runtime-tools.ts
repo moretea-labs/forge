@@ -8,6 +8,7 @@ import { collectRuntimePerformanceDiagnostics, inferLocalControllerProcess } fro
 import { defaultSemanticProviderRegistry, type SemanticNavigationKind, type SemanticNavigationRequest } from '../../context/semantic-navigation';
 import type { McpToolDefinition, CallToolResult } from '../../../cli/mcp/tools';
 import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
+import { legacyIosPluginInvocation } from './legacy-ios-tool-adapter';
 import { repositoryScopedToolArgs } from '../../../cli/mcp/multi-repository';
 import { resolveMcpPath } from '../../../cli/mcp/paths';
 import { freshGitIdentity } from '../../../cli/repository/inspector';
@@ -1644,29 +1645,22 @@ function pluginRepository(
     : selected(ctx, args);
 }
 
-function definedArguments(value: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
-}
-
-function legacyIosPluginAction(
+async function legacyIosPluginAction(
   ctx: MultiRepositoryMcpToolContext,
   legacyTool: string,
   args: Record<string, unknown>,
-  actionId: string,
-  actionArgs: Record<string, unknown>,
 ): Promise<CallToolResult | undefined> {
   const repository = selected(ctx, args);
-  const requestId = typeof args.request_id === 'string' && args.request_id.trim()
-    ? args.request_id.trim()
-    : `legacy-${legacyTool}-${Date.now()}`;
+  const invocation = legacyIosPluginInvocation(legacyTool, args);
+  if (!invocation) return undefined;
   return callRuntimeTool(ctx, 'plugin_action_execute', {
     repo_id: repository.repoId,
     checkout_id: repository.activeCheckoutId,
     plugin_id: 'ios',
-    action_id: actionId,
-    request_id: requestId,
-    arguments: definedArguments(actionArgs),
-    ...(args.confirm_authorization === true ? { confirm_authorization: true } : {}),
+    action_id: invocation.actionId,
+    request_id: invocation.requestId,
+    arguments: invocation.arguments,
+    ...(invocation.confirmAuthorization ? { confirm_authorization: true } : {}),
   });
 }
 
@@ -6678,52 +6672,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         return result(buildWorkflowWatchdogReport(ctx.controllerHome, repository, { staleMinutes: args.stale_minutes, includeProcesses: args.include_processes }) as unknown as Record<string, unknown>);
       }
       case 'ios_xcode_status':
-        return legacyIosPluginAction(ctx, name, args, 'xcode_status', {});
       case 'ios_simulators_list':
-        return legacyIosPluginAction(ctx, name, args, 'list_simulators', {
-          runtime: typeof args.runtime === 'string' ? args.runtime : undefined,
-          name: typeof args.name === 'string' ? args.name : undefined,
-        });
       case 'ios_project_discover':
-        return legacyIosPluginAction(ctx, name, args, 'discover_project', {});
       case 'ios_schemes_list':
-        return legacyIosPluginAction(ctx, name, args, 'list_schemes', {
-          workspace: typeof args.workspace === 'string' ? args.workspace : undefined,
-          project: typeof args.project === 'string' ? args.project : undefined,
-        });
       case 'ios_simulator_boot':
-        return legacyIosPluginAction(ctx, name, args, 'launch_simulator', {
-          udid: String(args.udid ?? '').trim(),
-          open_simulator: args.open_simulator !== false,
-          timeout_ms: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-        });
       case 'ios_app_build':
-        return legacyIosPluginAction(ctx, name, args, 'build', {
-          scheme: String(args.scheme ?? '').trim(),
-          udid: typeof args.udid === 'string' ? args.udid : undefined,
-          simulator_name: typeof args.simulator_name === 'string' ? args.simulator_name : undefined,
-          workspace: typeof args.workspace === 'string' ? args.workspace : undefined,
-          project: typeof args.project === 'string' ? args.project : undefined,
-          configuration: typeof args.configuration === 'string' ? args.configuration : undefined,
-          timeout_ms: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-        });
       case 'ios_simulator_screenshot':
-        return legacyIosPluginAction(ctx, name, args, 'capture_screenshot', {
-          udid: String(args.udid ?? '').trim(),
-          label: typeof args.label === 'string' ? args.label : undefined,
-        });
       case 'ios_ui_smoke_test':
-        return legacyIosPluginAction(ctx, name, args, 'smoke_review', {
-          scheme: typeof args.scheme === 'string' ? args.scheme : undefined,
-          bundle_id: typeof args.bundle_id === 'string' ? args.bundle_id : undefined,
-          udid: typeof args.udid === 'string' ? args.udid : undefined,
-          simulator_name: typeof args.simulator_name === 'string' ? args.simulator_name : undefined,
-          workspace: typeof args.workspace === 'string' ? args.workspace : undefined,
-          project: typeof args.project === 'string' ? args.project : undefined,
-          configuration: typeof args.configuration === 'string' ? args.configuration : undefined,
-          app_path: typeof args.app_path === 'string' ? args.app_path : undefined,
-          screenshot_label: typeof args.screenshot_label === 'string' ? args.screenshot_label : undefined,
-        });
+        return legacyIosPluginAction(ctx, name, args);
       case 'ios_app_install':
       case 'ios_app_launch':
       case 'ios_simulator_log_tail':
