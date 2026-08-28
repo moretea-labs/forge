@@ -7,6 +7,7 @@ import {
 } from '../facade';
 import {
   attachExternalControllerLaunchPid,
+  recordExternalControllerLaunchDiagnostics,
   recordExternalControllerLaunchExit,
   releaseExternalControllerLaunchReservation,
   reserveExternalControllerLaunch,
@@ -16,6 +17,7 @@ import { getControllerSession } from '../facade/controller-session-store';
 import { codexMcpConfigArgs, resolveProviderMcpBootstrap, type ProviderMcpBootstrap } from './provider-mcp-bootstrap';
 import { getChatgptWorkConversationBinding } from './chatgpt-work-binding-store';
 import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
+import { redactProcessOutput } from '../../../effects/process-runner';
 
 export interface ThinLauncherRequest {
   controllerType: Exclude<ControllerType, 'human'>;
@@ -48,6 +50,20 @@ export interface ThinLauncherResult {
 const LAUNCHER_STARTUP_GRACE_MS = 250;
 const CODEX_WORK_CLAIM_TIMEOUT_MS = 30_000;
 const CODEX_WORK_CLAIM_POLL_INTERVAL_MS = 100;
+const STARTUP_DIAGNOSTIC_BYTES = 8 * 1024;
+
+function appendStartupDiagnosticTail(current: string, chunk: unknown): string {
+  const text = redactProcessOutput(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk ?? ''));
+  const buffer = Buffer.from(`${current}${text}`, 'utf8');
+  return buffer.length <= STARTUP_DIAGNOSTIC_BYTES
+    ? buffer.toString('utf8')
+    : buffer.subarray(buffer.length - STARTUP_DIAGNOSTIC_BYTES).toString('utf8');
+}
+
+function startupDiagnosticSummary(stdoutTail: string, stderrTail: string): string {
+  const value = redactProcessOutput(stderrTail.trim() || stdoutTail.trim()).replace(/\s+/g, ' ').slice(0, 1200);
+  return value ? `; startup_output=${value}` : '';
+}
 
 interface ExternalControllerClaimExpectation {
   controllerType: 'codex';
@@ -107,6 +123,26 @@ async function awaitExternalControllerStartup(
   await new Promise<void>((resolve, reject) => {
     let startupSettled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let stdoutTail = '';
+    let stderrTail = '';
+    const captureStdout = (chunk: unknown) => { stdoutTail = appendStartupDiagnosticTail(stdoutTail, chunk); };
+    const captureStderr = (chunk: unknown) => { stderrTail = appendStartupDiagnosticTail(stderrTail, chunk); };
+    child.stdout?.on('data', captureStdout);
+    child.stderr?.on('data', captureStderr);
+    const closeStartupPipes = () => {
+      child.stdout?.off('data', captureStdout);
+      child.stderr?.off('data', captureStderr);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    };
+    const persistDiagnostics = () => {
+      if (!stdoutTail && !stderrTail) return;
+      try {
+        recordExternalControllerLaunchDiagnostics(stores.work, workId, reservationId, { stdoutTail, stderrTail });
+      } catch {
+        // Startup diagnostics are evidence only; preserve the primary ownership/claim outcome.
+      }
+    };
     const clearTimer = () => {
       if (timer) clearTimeout(timer);
       timer = undefined;
@@ -126,9 +162,12 @@ async function awaitExternalControllerStartup(
       if (startupSettled) return;
       startupSettled = true;
       clearTimer();
+      persistDiagnostics();
+      closeStartupPipes();
       if (terminate) terminateUnclaimedChild();
       releaseFailure(reason);
-      reject(error);
+      const diagnostics = startupDiagnosticSummary(stdoutTail, stderrTail);
+      reject(diagnostics ? new Error(`${error.message}${diagnostics}`) : error);
     };
     const expectedClaimMatches = (): { matches: boolean; mismatch?: string } => {
       if (!claimExpectation) return { matches: true };
@@ -156,6 +195,8 @@ async function awaitExternalControllerStartup(
         recordExternalControllerLaunchExit(stores.work, workId, reservationId, {
           exitCode,
           signal: signal ? String(signal) : null,
+          stdoutTail,
+          stderrTail,
         });
       } catch {
         // Exit evidence is best-effort after another authority has already released the reservation.
@@ -163,14 +204,16 @@ async function awaitExternalControllerStartup(
       if (startupSettled) return;
       startupSettled = true;
       clearTimer();
+      closeStartupPipes();
       const phase = claimExpectation ? 'before exact Work claim became live' : 'during startup grace';
-      reject(new Error(`LAUNCHER_STARTUP_FAILED: external Controller exited ${phase} (code=${String(exitCode ?? 'null')}, signal=${signal ?? 'none'})`));
+      reject(new Error(`LAUNCHER_STARTUP_FAILED: external Controller exited ${phase} (code=${String(exitCode ?? 'null')}, signal=${signal ?? 'none'})${startupDiagnosticSummary(stdoutTail, stderrTail)}`));
     });
 
     if (!claimExpectation) {
       timer = setTimeout(() => {
         if (startupSettled) return;
         startupSettled = true;
+        closeStartupPipes();
         resolve();
       }, LAUNCHER_STARTUP_GRACE_MS);
       return;
@@ -213,6 +256,7 @@ async function awaitExternalControllerStartup(
           }
           startupSettled = true;
           timer = undefined;
+          closeStartupPipes();
           resolve();
         }, LAUNCHER_STARTUP_GRACE_MS);
         return;
@@ -345,7 +389,7 @@ export async function launchSuperController(
     const child = spawn(invocation.executable, invocation.args, {
       cwd: request.cwd,
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: launcherProcessEnvironment(mcpBootstrap?.env ?? process.env),
     });
     attachExternalControllerLaunchPid(stores.work, work.workId, reservation.reservationId, child.pid);

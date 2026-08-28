@@ -325,6 +325,54 @@ export function resumeControllerSession(
   );
 }
 
+/**
+ * Rebind one active Work to the authenticated Controller transport/Runtime that
+ * is serving the current request. Same-instance transport rollover needs only
+ * principal/controller proof. A Runtime-instance change additionally requires
+ * positive proof that the requested instance is the live canonical Runtime;
+ * this prevents a stale old Runtime request from migrating ownership backwards.
+ * The observed claim generation is always supplied as a CAS fence.
+ */
+export function bindControllerSessionToCurrentRuntime(
+  options: ControllerSessionStoreOptions,
+  input: ControllerSessionClaimInput & {
+    principalId: string;
+    controllerInstanceId: string;
+    currentRuntimeInstanceId?: string;
+    allowClaimIfMissing?: boolean;
+  },
+): ControllerSession {
+  assertIdentity(input);
+  const current = getControllerSession(options, input.workId);
+  if (!current) {
+    if (input.allowClaimIfMissing !== true) throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${input.workId}`);
+    return claimControllerSession(options, { ...input, expectedClaimGeneration: 0 });
+  }
+  const currentPrincipal = current.principalId?.trim() || current.controllerId;
+  if (current.controllerId !== input.controllerId) {
+    throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${input.workId} is owned by ${current.controllerId}`);
+  }
+  if (current.controllerType !== input.controllerType) {
+    throw new Error(`WORK_CONTROLLER_TYPE_MISMATCH: ${input.workId} is owned by ${current.controllerType}`);
+  }
+  if (currentPrincipal !== input.principalId.trim()) {
+    throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${input.workId}`);
+  }
+  const ownerInstanceId = current.controllerInstanceId?.trim() || '';
+  const requestedInstanceId = input.controllerInstanceId.trim();
+  if (ownerInstanceId !== requestedInstanceId) {
+    const currentRuntimeInstanceId = input.currentRuntimeInstanceId?.trim() || '';
+    if (!currentRuntimeInstanceId || currentRuntimeInstanceId !== requestedInstanceId) {
+      throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${input.workId}`);
+    }
+  }
+  if (ownerInstanceId === requestedInstanceId && current.sessionId === input.sessionId) return current;
+  return resumeControllerSession(options, {
+    ...input,
+    expectedClaimGeneration: current.claimGeneration,
+  });
+}
+
 export function releaseControllerSession(options: ControllerSessionStoreOptions, workId: string, controllerId: string): void {
   withControllerLock(
     options.controllerHome,

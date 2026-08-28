@@ -5,6 +5,7 @@ import {
   writeControlPlaneRecord,
 } from '../persistence/sqlite-store';
 import type { ControllerType } from '../facade/types';
+import { redactProcessOutput } from '../../../effects/process-runner';
 
 const NAMESPACE = 'external_controller_launch_reservation';
 const DEFAULT_TTL_MS = 2 * 60_000;
@@ -24,6 +25,9 @@ export interface ExternalControllerLaunchReservation {
   exitSignal?: string;
   releasedAt?: string;
   releaseReason?: string;
+  /** Bounded, redacted provider output captured only during launcher startup. */
+  stdoutTail?: string;
+  stderrTail?: string;
 }
 
 export interface LaunchReservationStoreOptions {
@@ -55,6 +59,14 @@ export function getExternalControllerLaunchReservation(
   workId: string,
 ): ExternalControllerLaunchReservation | undefined {
   return active(record(options, workId)?.value);
+}
+
+/** Read the latest reservation record including released/failed startup evidence. */
+export function readExternalControllerLaunchReservationRecord(
+  options: LaunchReservationStoreOptions,
+  workId: string,
+): ExternalControllerLaunchReservation | undefined {
+  return record(options, workId)?.value;
 }
 
 export function reserveExternalControllerLaunch(
@@ -131,11 +143,43 @@ export function attachExternalControllerLaunchPid(
   );
 }
 
+export function recordExternalControllerLaunchDiagnostics(
+  options: LaunchReservationStoreOptions,
+  workId: string,
+  reservationId: string,
+  diagnostics: { stdoutTail?: string; stderrTail?: string },
+): ExternalControllerLaunchReservation | undefined {
+  return withControllerLock(
+    options.controllerHome,
+    { scope: 'task', repoId: options.repoId, taskId: `controller-launch-${workId}` },
+    `controller-launch-diagnostics:${reservationId}`,
+    () => {
+      const existing = record(options, workId);
+      if (!existing || existing.value.reservationId !== reservationId) return existing?.value;
+      const next: ExternalControllerLaunchReservation = {
+        ...existing.value,
+        ...(diagnostics.stdoutTail ? { stdoutTail: redactProcessOutput(diagnostics.stdoutTail).slice(-8 * 1024) } : {}),
+        ...(diagnostics.stderrTail ? { stderrTail: redactProcessOutput(diagnostics.stderrTail).slice(-8 * 1024) } : {}),
+      };
+      writeControlPlaneRecord(options.controllerHome, {
+        namespace: NAMESPACE,
+        scope: options.repoId,
+        key: workId,
+        schemaVersion: 1,
+        value: next,
+        action: 'external_controller_launch_diagnostics',
+        expectedRevision: existing.revision,
+      });
+      return next;
+    },
+  );
+}
+
 export function recordExternalControllerLaunchExit(
   options: LaunchReservationStoreOptions,
   workId: string,
   reservationId: string,
-  exit: { exitCode: number | null; signal: string | null },
+  exit: { exitCode: number | null; signal: string | null; stdoutTail?: string; stderrTail?: string },
 ): ExternalControllerLaunchReservation | undefined {
   return withControllerLock(
     options.controllerHome,
@@ -143,16 +187,21 @@ export function recordExternalControllerLaunchExit(
     `controller-launch-exit:${reservationId}`,
     () => {
       const existing = record(options, workId);
-      if (!existing || existing.value.reservationId !== reservationId || existing.value.releasedAt) return existing?.value;
+      if (!existing || existing.value.reservationId !== reservationId) return existing?.value;
       const exitedAt = nowIso(options);
+      const alreadyReleased = Boolean(existing.value.releasedAt);
       const next: ExternalControllerLaunchReservation = {
         ...existing.value,
-        expiresAt: exitedAt,
+        expiresAt: alreadyReleased ? existing.value.expiresAt : exitedAt,
         exitedAt,
         ...(exit.exitCode === null ? {} : { exitCode: exit.exitCode }),
         ...(exit.signal ? { exitSignal: exit.signal } : {}),
-        releasedAt: exitedAt,
-        releaseReason: `process_exit:code=${String(exit.exitCode ?? 'null')}:signal=${exit.signal ?? 'none'}`.slice(0, 240),
+        ...(exit.stdoutTail ? { stdoutTail: redactProcessOutput(exit.stdoutTail).slice(-8 * 1024) } : {}),
+        ...(exit.stderrTail ? { stderrTail: redactProcessOutput(exit.stderrTail).slice(-8 * 1024) } : {}),
+        ...(alreadyReleased ? {} : {
+          releasedAt: exitedAt,
+          releaseReason: `process_exit:code=${String(exit.exitCode ?? 'null')}:signal=${exit.signal ?? 'none'}`.slice(0, 240),
+        }),
       };
       writeControlPlaneRecord(options.controllerHome, {
         namespace: NAMESPACE,

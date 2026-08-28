@@ -191,6 +191,7 @@ import {
   supersedePlanContract,
   verifyGoalWorkloop,
   type FacadeTool,
+  bindControllerSessionToCurrentRuntime,
   claimControllerSession,
   getControllerSession,
   releaseControllerSession,
@@ -851,6 +852,7 @@ export interface RuntimeIdentitySnapshot {
   runtimeInstanceId?: string;
   controllerInstanceId?: string;
   endpoint?: string;
+  running?: boolean;
   ready?: boolean;
   reasonCodes?: string[];
   toolset?: string;
@@ -871,6 +873,7 @@ export function runtimeIdentitySnapshot(ctx: MultiRepositoryMcpToolContext): Run
     runtimeInstanceId: snapshot?.runtimeInstanceId,
     controllerInstanceId: snapshot?.runtimeInstanceId,
     endpoint: snapshot?.endpoint,
+    running: observation.running,
     ready: observation.ready,
     reasonCodes: observation.reasonCodes,
     toolset: ctx.toolset,
@@ -1149,6 +1152,27 @@ function authenticatedFacadeControllerIdentity(
     controllerType: transportControllerType ?? requestedControllerType ?? 'chatgpt',
     controllerInstanceId: ctx.controllerInstanceId?.trim() || currentControllerInstanceId(),
   };
+}
+
+function bindFacadeControllerOwnership(
+  ctx: MultiRepositoryMcpToolContext,
+  store: { controllerHome: string; repoId: string },
+  workId: string,
+  identity: ReturnType<typeof authenticatedFacadeControllerIdentity>,
+  options: { allowClaimIfMissing?: boolean; leaseMs?: number } = {},
+) {
+  const runtime = runtimeIdentitySnapshot(ctx);
+  return bindControllerSessionToCurrentRuntime(store, {
+    workId,
+    controllerId: identity.controllerId,
+    controllerType: identity.controllerType,
+    sessionId: identity.sessionId,
+    principalId: identity.principalId,
+    controllerInstanceId: identity.controllerInstanceId,
+    currentRuntimeInstanceId: runtime.running ? runtime.runtimeInstanceId : undefined,
+    allowClaimIfMissing: options.allowClaimIfMissing,
+    leaseMs: options.leaseMs ?? 3_600_000,
+  });
 }
 
 function ensureFacadeWorkHandle(
@@ -4272,21 +4296,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               // rewrite a terminal Work lease here; terminal authorization is fenced
               // by the already-claimed relay lineage in submitControllerRoundDisposition.
               if (!terminalGoalComplete) {
-                if (!currentOwner.controllerInstanceId?.trim() || currentOwner.controllerInstanceId.trim() !== identity.controllerInstanceId) {
-                  throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
-                }
-                if (currentOwner.sessionId !== identity.sessionId) {
-                  resumeControllerSession(store, {
-                    workId,
-                    controllerId: identity.controllerId,
-                    controllerType: 'chatgpt',
-                    sessionId: identity.sessionId,
-                    principalId: identity.principalId,
-                    controllerInstanceId: identity.controllerInstanceId,
-                    expectedClaimGeneration: currentOwner.claimGeneration,
-                    leaseMs: 3_600_000,
-                  });
-                }
+                bindFacadeControllerOwnership(ctx, store, workId, { ...identity, controllerType: 'chatgpt' });
               }
             }
             const chatgptBinding = getChatgptWorkConversationBinding(store, workId);
@@ -4320,19 +4330,11 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           try {
             const workId = String(args.work_id ?? '').trim();
             const identity = authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true });
-            const owner = getControllerSession(store, workId);
+            const observedOwner = getControllerSession(store, workId);
+            const owner = observedOwner ? bindFacadeControllerOwnership(ctx, store, workId, identity) : undefined;
             if (owner) {
               const ownerPrincipal = owner.principalId?.trim() || owner.controllerId;
               const ownerInstanceId = owner.controllerInstanceId?.trim() || '';
-              if (owner.controllerId !== identity.controllerId) {
-                throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workId} is owned by ${owner.controllerId}`);
-              }
-              if (ownerPrincipal !== identity.principalId) {
-                throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${workId}`);
-              }
-              if (!ownerInstanceId || ownerInstanceId !== identity.controllerInstanceId) {
-                throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
-              }
               if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) {
                 throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workId}`);
               }
@@ -4849,23 +4851,18 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           if (currentOwner) {
             try {
               const identity = authenticatedFacadeControllerIdentity(ctx, args);
-              const ownerPrincipal = currentOwner.principalId?.trim() || currentOwner.controllerId;
-              const ownerInstanceId = currentOwner.controllerInstanceId?.trim() || '';
-              if (currentOwner.controllerId !== identity.controllerId || ownerPrincipal !== identity.principalId) {
-                throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workId}`);
-              }
-              if (!ownerInstanceId || ownerInstanceId !== identity.controllerInstanceId) {
-                throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
-              }
-              if (typeof currentOwner.claimGeneration !== 'number' || currentOwner.claimGeneration < 1) {
+              const reboundOwner = bindFacadeControllerOwnership(ctx, store, workId, identity);
+              const ownerPrincipal = reboundOwner.principalId?.trim() || reboundOwner.controllerId;
+              const ownerInstanceId = reboundOwner.controllerInstanceId?.trim() || '';
+              if (typeof reboundOwner.claimGeneration !== 'number' || reboundOwner.claimGeneration < 1) {
                 throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workId}`);
               }
               terminalizationAuthority = {
-                controllerId: currentOwner.controllerId,
-                controllerType: currentOwner.controllerType,
+                controllerId: reboundOwner.controllerId,
+                controllerType: reboundOwner.controllerType,
                 principalId: ownerPrincipal,
                 controllerInstanceId: ownerInstanceId,
-                claimGeneration: currentOwner.claimGeneration,
+                claimGeneration: reboundOwner.claimGeneration,
               };
             } catch (error) {
               const blocked = buildFacadeResult({
@@ -4961,6 +4958,18 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             workBoundProcessEvidenceIds: finalizeReconciliation?.workBoundProcessEvidenceIds,
           };
           let before = workId ? getWorkContract(store, workId) : undefined;
+          // Physical finalization may itself consult ControllerSession ownership.
+          // Rebind the same authenticated Controller to the current canonical
+          // Runtime before any commit/merge/cleanup stage, not after it.
+          if (before && !['completed', 'failed', 'cancelled'].includes(before.status)) {
+            try {
+              const identity = authenticatedFacadeControllerIdentity(ctx, args);
+              bindFacadeControllerOwnership(ctx, store, workId, identity, { allowClaimIfMissing: true });
+            } catch (error) {
+              const blocked = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : `Work ${workId} Controller continuity check failed.`, data: { workId, lifecycleClosed: false } });
+              return result(blocked as unknown as Record<string, unknown>, true);
+            }
+          }
           if (before && !before.completionReceipt && args.reconcile_historical_delivery === true) {
             try {
               const identity = authenticatedFacadeControllerIdentity(ctx, args);
@@ -5051,24 +5060,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           if (semanticWork && !['completed', 'failed', 'cancelled'].includes(semanticWork.status)) {
             try {
               const identity = authenticatedFacadeControllerIdentity(ctx, args);
-              let owner = getControllerSession(store, workId);
-              if (!owner) {
-                owner = claimControllerSession(store, {
-                  workId,
-                  controllerId: identity.controllerId,
-                  controllerType: identity.controllerType,
-                  sessionId: identity.sessionId,
-                  principalId: identity.principalId,
-                  controllerInstanceId: identity.controllerInstanceId,
-                  expectedClaimGeneration: 0,
-                  leaseMs: 3_600_000,
-                });
-              }
+              const owner = bindFacadeControllerOwnership(ctx, store, workId, identity, { allowClaimIfMissing: true });
               const ownerPrincipal = owner.principalId?.trim() || owner.controllerId;
               const ownerInstanceId = owner.controllerInstanceId?.trim() || '';
-              if (owner.controllerId !== identity.controllerId) throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workId}`);
-              if (ownerPrincipal !== identity.principalId) throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${workId}`);
-              if (!ownerInstanceId || ownerInstanceId !== identity.controllerInstanceId) throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
               if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workId}`);
               const fenced = withControllerSessionTerminalizationFence(
                 store,
