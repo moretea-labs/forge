@@ -153,6 +153,9 @@ describe('ChatGPT Work conversation binding', () => {
     expect(chatgptAutomationNavigationRequiresReplacement(new Error('BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT'))).toBe(true);
     expect(chatgptAutomationNavigationRequiresReplacement(new Error('PLUGIN_BROWSER_SESSION_STATE_LOST: closed automation tab'))).toBe(true);
     expect(chatgptAutomationNavigationRequiresReplacement(new Error('PLUGIN_SESSION_NOT_FOUND: closed automation session'))).toBe(true);
+    expect(chatgptAutomationNavigationRequiresReplacement(new Error('PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN: Saved chrome tab 2095932867 no longer exists in live inventory.'))).toBe(true);
+    expect(chatgptAutomationNavigationRequiresReplacement(new Error('PLUGIN_BROWSER_NATIVE_OPERATION_FAILED: Google Chrome Apple Events operation failed: PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN: Saved chrome tab 2095932906 no longer exists in live inventory.'))).toBe(true);
+    expect(chatgptAutomationNavigationRequiresReplacement(new Error('PLUGIN_MACOS_CAPABILITY_BROKER_UNAVAILABLE: desktop-operator.sock unavailable'))).toBe(false);
     expect(chatgptAutomationNavigationRequiresReplacement(new Error('CHATGPT_AUTOMATION_LOGIN_REQUIRED'))).toBe(false);
   });
 
@@ -274,6 +277,7 @@ describe('ChatGPT native background-tab recovery', () => {
   test('launcher recovery creates a replacement page when native navigation requires replacement', () => {
     const source = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
     expect(source).toContain('BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT');
+    expect(source).toContain('PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN');
     expect(source).toContain("controllerBrowserAction(controllerHome, workId, 'open_page'");
     expect(source).toContain('navigation.browserSessionId');
   });

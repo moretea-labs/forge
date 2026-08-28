@@ -440,6 +440,7 @@ export function chatgptAutomationNavigationRequiresReplacement(error: unknown): 
     'BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT',
     'PLUGIN_BROWSER_SESSION_STATE_LOST',
     'PLUGIN_SESSION_NOT_FOUND',
+    'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN',
   ].some((marker) => error.message.includes(marker));
 }
 
