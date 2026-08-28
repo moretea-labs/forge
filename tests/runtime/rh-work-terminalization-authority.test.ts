@@ -9,7 +9,7 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
-import { claimControllerSession, getControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
@@ -205,6 +205,43 @@ describe('rh_work terminalization authority', () => {
     expect(first.claimGeneration).toBe(1);
     expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toBeUndefined();
   }, 15_000);
+
+  test('release of an observed controller session is claim-generation fenced against a newer ownership epoch', () => {
+    const fx = fixture();
+    const workId = 'work-observed-release-generation-fence';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const observed = claimControllerSession(store, {
+      workId,
+      controllerId: 'principal-observed',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-observed',
+      principalId: 'principal-observed',
+      controllerInstanceId: 'runtime-observed',
+      leaseMs: 60_000,
+    });
+    const newer = resumeControllerSession(store, {
+      workId,
+      controllerId: observed.controllerId,
+      controllerType: observed.controllerType,
+      sessionId: 'transport-newer',
+      principalId: 'principal-observed',
+      controllerInstanceId: 'runtime-newer',
+      expectedClaimGeneration: observed.claimGeneration,
+      leaseMs: 60_000,
+    });
+
+    const released = releaseObservedControllerSession(store, {
+      workId,
+      actor: 'test-observed-release',
+      owner: observed,
+    });
+    expect(released.allowed).toBe(false);
+    if (released.allowed) throw new Error('expected stale observed release to be fenced');
+    expect(released.reason).toBe('stale_controller_authority');
+    expect(getControllerSession(store, workId)?.claimGeneration).toBe(newer.claimGeneration);
+    expect(getControllerSession(store, workId)?.controllerInstanceId).toBe('runtime-newer');
+  });
 
   test('stale controller release cannot clear a newer ownership epoch', async () => {
     const fx = fixture();

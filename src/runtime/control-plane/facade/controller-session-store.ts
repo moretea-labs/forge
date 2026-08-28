@@ -177,6 +177,22 @@ export type ControllerTerminalizationFenceResult<T> =
   | { allowed: true; value: T; owner?: ControllerSession }
   | { allowed: false; reason: ControllerTerminalizationFenceReason; owner?: ControllerSession };
 
+export function controllerTerminalizationAuthorityFromSession(
+  owner: ControllerSession,
+): ControllerTerminalizationAuthority | undefined {
+  const principalId = owner.principalId?.trim() || owner.controllerId;
+  const controllerInstanceId = owner.controllerInstanceId?.trim() || '';
+  const claimGeneration = owner.claimGeneration;
+  if (!principalId || !controllerInstanceId || typeof claimGeneration !== 'number' || claimGeneration < 1) return undefined;
+  return {
+    controllerId: owner.controllerId,
+    controllerType: owner.controllerType,
+    principalId,
+    controllerInstanceId,
+    claimGeneration,
+  };
+}
+
 function controllerTerminalizationAuthorityMatches(
   owner: ControllerSession,
   authority: ControllerTerminalizationAuthority,
@@ -260,6 +276,19 @@ export function releaseControllerSessionWithAuthority(
       return { allowed: true, value: undefined, owner };
     },
   );
+}
+
+export function releaseObservedControllerSession(
+  options: ControllerSessionStoreOptions,
+  input: { workId: string; actor: string; owner: ControllerSession },
+): ControllerTerminalizationFenceResult<void> {
+  const authority = controllerTerminalizationAuthorityFromSession(input.owner);
+  if (!authority) return { allowed: false, reason: 'stale_controller_authority', owner: input.owner };
+  return releaseControllerSessionWithAuthority(options, {
+    workId: input.workId,
+    actor: input.actor,
+    authority,
+  });
 }
 
 /**

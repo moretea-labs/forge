@@ -194,8 +194,8 @@ import {
   bindControllerSessionToCurrentRuntime,
   claimControllerSession,
   getControllerSession,
-  releaseControllerSession,
   releaseControllerSessionWithAuthority,
+  releaseObservedControllerSession,
   resumeControllerSession,
   withControllerSessionTerminalizationFence,
   type ControllerTerminalizationAuthority,
@@ -3561,8 +3561,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           if (item.workId && ctx.principalId?.trim() && ctx.sessionId?.trim()) {
             const owner = getControllerSession(store, item.workId);
             if (owner && owner.controllerId === ctx.principalId.trim() && owner.sessionId === ctx.sessionId.trim()) {
-              releaseControllerSession(store, item.workId, owner.controllerId);
-              ownershipReleased = true;
+              const released = releaseObservedControllerSession(store, {
+                workId: item.workId,
+                actor: `handoff-create:${ctx.principalId.trim()}`,
+                owner,
+              });
+              ownershipReleased = released.allowed;
             }
           }
           return result(buildFacadeResult({ summary: `Created handoff ${item.id}.`, data: { item: summarizeHandoffItem(item), ownershipReleased } }) as unknown as Record<string, unknown>);
@@ -5007,7 +5011,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   : transitionWorkHandle(ctx.controllerHome, historicalHandle, 'committed', { expectedHead: reconciliation.receipt.targetRevision, finalization, failureReason: undefined });
                 transitionWorkHandle(ctx.controllerHome, delivered, 'cleaned', { expectedHead: reconciliation.receipt.targetRevision, finalization, failureReason: undefined });
               }
-              releaseControllerSession(store, workId, owner.controllerId);
+              const released = releaseObservedControllerSession(store, {
+                workId,
+                actor: `direct-edit-reconciliation:${identity.principalId}`,
+                owner,
+              });
+              if (!released.allowed) {
+                throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CONTROLLER_RELEASE_FENCED: ${workId}:${released.reason}`);
+              }
               before = getWorkContract(store, workId);
             } catch (error) {
               const blocked = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Historical Work delivery reconciliation failed.', data: { workId, lifecycleClosed: false } });

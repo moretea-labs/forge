@@ -19,7 +19,7 @@ import { managedPathInside, managedWorktreeStorageRoot } from '../../../cli/repo
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { listControlPlaneRecords } from '../persistence/sqlite-store';
 import { getWorkContract } from '../facade/work-contract-store';
-import { getControllerSession, releaseControllerSession } from '../facade/controller-session-store';
+import { getControllerSession, releaseObservedControllerSession } from '../facade/controller-session-store';
 import { isRepositoryCompletionReceipt, isTerminalWorkContractStatus, type WorkContract } from '../facade/types';
 import {
   cancelProcess,
@@ -968,8 +968,18 @@ export async function reconcileTerminalWorkCleanups(
         const workId = cleaned.handle.workContractId ?? cleaned.handle.workId;
         const controllerSession = getControllerSession({ controllerHome, repoId: repository.repoId }, workId);
         if (controllerSession) {
-          releaseControllerSession({ controllerHome, repoId: repository.repoId }, workId, controllerSession.controllerId);
-          cleaned.receipt.ownership.controllerLease = 'released';
+          const released = releaseObservedControllerSession(
+            { controllerHome, repoId: repository.repoId },
+            { workId, actor: `terminal-cleanup:${originalHandle.workId}`, owner: controllerSession },
+          );
+          if (released.allowed) {
+            cleaned.receipt.ownership.controllerLease = 'released';
+          } else {
+            cleaned.receipt.complete = false;
+            cleaned.receipt.partial = true;
+            cleaned.receipt.completedAt = undefined;
+            cleaned.receipt.blockers = appendUnique(cleaned.receipt.blockers, `controller lease release fenced: ${released.reason}`);
+          }
         } else {
           cleaned.receipt.ownership.controllerLease = 'already_released';
         }
