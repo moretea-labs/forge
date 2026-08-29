@@ -773,6 +773,8 @@ export function runControllerCheck(repoRoot: string, id: string, requestedTimeou
 
 export interface AsyncControllerCheckOptions {
   snapshot?: ControllerCheckSnapshot;
+  /** Explicit isolated authority for Candidate verification child processes. */
+  isolatedControllerHome?: string;
   requestedTimeoutMs?: number;
   onSpawn?: (pid: number) => void;
   subscriberId?: string;
@@ -912,12 +914,15 @@ async function executeControllerCheckAsync(
   check: ControllerCheck,
   timeoutMs: number,
   onSpawn?: (pid: number) => void,
+  isolatedControllerHome?: string,
 ): Promise<ControllerCheckResult> {
   const maxOutputBytes = 256 * 1024;
   const command = [check.command[0], ...check.command.slice(1)];
+  const childEnvironment = repositoryChildProcessEnvironment();
+  if (isolatedControllerHome?.trim()) childEnvironment.FORGE_CONTROLLER_HOME = resolve(isolatedControllerHome);
   const supervised = await runBoundedChild(check.command[0], check.command.slice(1), {
     cwd: resolve(repoRoot, check.cwd),
-    env: repositoryChildProcessEnvironment(),
+    env: childEnvironment,
     timeoutMs,
     maxOutputBytes,
     stdio: 'capture',
@@ -1050,7 +1055,7 @@ export function runControllerCheckAsync(
     const result = await executeControllerCheckAsync(repoRoot, check, timeoutMs, (pid) => {
       lease?.setChildPid(pid);
       notifySpawn(pid);
-    });
+    }, options.isolatedControllerHome);
     const completedRevision = currentControllerCheckRevision(repoRoot);
     const stale = completedRevision !== revision;
     const finalized = {

@@ -30,6 +30,8 @@ export interface WorkVerificationSnapshotScope {
 
 export interface WorkVerificationSnapshot {
   root: string;
+  /** Ephemeral Controller Home visible only to Candidate verification children. */
+  isolatedControllerHome: string;
   sourceHead: string;
   includedPaths: string[];
   excludedPaths: string[];
@@ -233,9 +235,11 @@ export function materializeWorkVerificationSnapshot(input: {
       allowedPaths: [...input.scope.allowedPaths].sort(),
       forbiddenPaths: [...input.scope.forbiddenPaths].sort(),
     })).digest('hex');
+    const isolatedControllerHome = join(root, '.git', 'forge-candidate-controller');
+    mkdirSync(isolatedControllerHome, { recursive: true, mode: 0o700 });
     mkdirSync(dirname(join(root, SNAPSHOT_MARKER)), { recursive: true });
     writeFileSync(join(root, SNAPSHOT_MARKER), `${JSON.stringify({ schemaVersion: 1, ...input.scope, sourceHead, includedPaths, excludedPaths, ownershipDigest }, null, 2)}\n`);
-    return { root, sourceHead, includedPaths, excludedPaths, ownershipDigest };
+    return { root, isolatedControllerHome, sourceHead, includedPaths, excludedPaths, ownershipDigest };
   } catch (error) {
     rmSync(root, { recursive: true, force: true });
     throw error;

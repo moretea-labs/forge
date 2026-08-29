@@ -106,6 +106,7 @@
     "test:coverage": "bun test --coverage",
     "check:type": "bun x tsc --noEmit",
     "check:runtime-architecture": "node scripts/check-runtime-architecture.mjs",
+    "check:generated-authority": "node scripts/sync-generated-authority.mjs --check",
     "check:executable-modes": "bun scripts/repair-executable-modes.ts --check",
     "repair:executable-modes": "bun scripts/repair-executable-modes.ts",
     "check:test-governance": "bun scripts/test-governance.ts validate",
@@ -151,7 +152,8 @@
     "test:bun": "bun -e 'console.error(\"[tests] test:bun is deprecated; running explicit test:full\")' && bun run test:full",
     "test:node-smoke": "node --test tests/node/*.test.mjs",
     "check:ci:portable": "FORGE_ALLOW_NODE_ONLY=1 bash scripts/check-ci.sh",
-    "dev:controller-ui": "vite --config src/cli/local-bridge/frontend/vite.config.ts"
+    "dev:controller-ui": "vite --config src/cli/local-bridge/frontend/vite.config.ts",
+    "prepack": "node scripts/sync-generated-authority.mjs --check"
   },
   "devDependencies": {
     "@colbymchenry/codegraph": "1.0.1",

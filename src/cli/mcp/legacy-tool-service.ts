@@ -71,7 +71,8 @@ import {
 import { normalizeCheckIds } from '../../runtime/control-plane/facade/check-normalization';
 import { buildExecutionDiagnostics, buildRequirementBoard } from '../../runtime/control-plane/facade/requirement-board';
 import { acceptVerifiedTaskFromControllerWork } from '../../runtime/control-plane/execution/work-task-receipt';
-import { createWorkContract, getWorkContract } from '../../runtime/control-plane/facade/work-contract-store';
+import { getWorkContract } from '../../runtime/control-plane/facade/work-contract-store';
+import { admitDirectEditWorkContract } from '../../runtime/control-plane/facade/repository-work-admission';
 import { decideRoute } from '../../runtime/control-plane/routing/route-policy';
 import { listCapabilityDescriptors, summarizeCapabilityGroups } from '../../runtime/control-plane/facade/capability-registry';
 import {
@@ -4578,7 +4579,7 @@ export async function callMcpTool(
         const existingWork = getWorkContract(workStore, workId);
         if (requestedWorkId && !existingWork) return errorResult("WORK_NOT_FOUND", `WorkContract ${workId} not found`);
         if (!existingWork) {
-          createWorkContract(workStore, {
+          admitDirectEditWorkContract(workStore, {
             workId,
             repoId,
             checkoutId: identity.checkoutId,
@@ -4586,28 +4587,13 @@ export async function callMcpTool(
             controllerInstanceId: identity.controllerInstanceId,
             baseRevision: git.head ?? undefined,
             workspaceFingerprint: workspaceIdentity,
-            routeDecisionFingerprint: routeDecision.inputFingerprint,
             routeDecision,
-            mode: "direct_control",
             objective: purpose,
-            acceptanceCriteria: [],
-            constraints: { workspaceMode: "current", requireWorktree: false, requireHandoffOnAmbiguity: true },
-            risk: "low",
-            status: "running",
-            phase: "implementation",
             issueId: typeof args.issue_id === "string" ? args.issue_id : undefined,
             taskId: typeof args.task_id === "string" ? args.task_id : undefined,
-            scopeSummary: purpose,
             allowedPaths,
-            forbiddenPaths: [],
             checks,
             requestedBy: "chatgpt",
-            evidenceRefs: [],
-            handoffRefs: [],
-            suggestedNextActions: [],
-            policyDecisions: [],
-            checkRefs: [],
-            reconciliations: [],
           });
         }
         const session = beginEditSession(ctx.repoRoot, {

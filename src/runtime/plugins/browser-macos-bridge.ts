@@ -1302,7 +1302,11 @@ export class MacOsAppleEventsPage {
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    throw new Error(`Timeout waiting for browser load state ${state}.`);
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_LOAD_STATE_TIMEOUT',
+      `Timed out waiting for native browser load state ${state}.`,
+      { retryable: true, details: { state, timeoutMs: timeout, requireHttpUrl } },
+    );
   }
 
   locator(_selector: string): { screenshot: (options?: Record<string, unknown>) => Promise<Buffer> } {

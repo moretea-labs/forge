@@ -21,7 +21,8 @@ import { globMatches } from '../../../cli/mcp/paths';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { listControllerChecks, type ControllerCheck } from '../../../cli/controller/check-runner';
 import { readRepositoryAccessPolicy } from '../../control-plane/governance/access-policy';
-import { appendWorkEvidence, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, transitionWorkContractPhase, updateWorkContract, appendVerificationRecord } from '../../control-plane/facade/work-contract-store';
+import { appendWorkEvidence, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, transitionWorkContractPhase, updateWorkContract, appendVerificationRecord } from '../../control-plane/facade/work-contract-store';
+import { admitPreparedRepositoryWorkContract } from '../../control-plane/facade/repository-work-admission';
 import { completeRequirementFromWork } from '../../control-plane/persistence/requirement-store';
 import { isTerminalWorkContractStatus, type VerificationRecord, type WorkReconciliationRecord } from '../../control-plane/facade/types';
 import { buildWorkContinuationSnapshot } from '../../control-plane/facade/work-continuation';
@@ -1413,20 +1414,21 @@ function prepareWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, un
       throw new Error(`WORK_PREPARE_REQUEST_TERMINAL: ${requestId} belongs to ${contract.status} Work ${createdWorkId}`);
     }
     if (!contract) {
-      contract = createWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, {
-        workId: createdWorkId,
-        repoId: repository.repoId,
-        mode: useWorktree ? 'goal_workloop' : 'direct_control',
-        objective,
-        acceptanceCriteria,
-        allowedPaths,
-        forbiddenPaths: [],
-        checks,
-        constraints: { accessMode: policy.mode, workspaceMode: useWorktree ? 'isolated' : 'current', requireWorktree: useWorktree, allowCommit: true, allowMerge: true, allowCleanup: true },
-        worktreePolicy: { required: useWorktree, reason: useWorktree ? 'work_prepare selected isolated worktree execution' : 'explicitly reused a registered checkout' },
-        requestedBy: 'chatgpt',
-        requestId,
-      });
+      contract = admitPreparedRepositoryWorkContract(
+        { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+        {
+          workId: createdWorkId,
+          repoId: repository.repoId,
+          objective,
+          acceptanceCriteria,
+          allowedPaths,
+          checks,
+          accessMode: policy.mode,
+          isolated: useWorktree,
+          requestedBy: 'chatgpt',
+          requestId,
+        },
+      );
     }
     const delegation = createGoalDelegation({
       sessionId: session.sessionId,

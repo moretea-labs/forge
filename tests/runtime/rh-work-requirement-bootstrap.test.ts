@@ -6,7 +6,8 @@ import { join } from 'path';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
+import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { readRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 
@@ -208,4 +209,60 @@ describe('rh_work Requirement bootstrap', () => {
     expect(approved.status).toBe('ok');
     expect(approved.data.plan.status).toBe('approved');
   }, 15_000);
+});
+
+describe('rh_work verification registry', () => {
+  test('resolves checks from the Work checkout when candidate content adds a package check after admission', async () => {
+    const repoRoot = tempRoot('forge-verify-registry-repo-');
+    const controllerHome = tempRoot('forge-verify-registry-home-');
+    const sourceRevision = initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Verification registry fixture' });
+    const worktreeParent = tempRoot('forge-verify-registry-worktree-');
+    const candidateRoot = join(worktreeParent, 'candidate');
+    git(repoRoot, 'worktree', 'add', '-b', 'candidate-registry', candidateRoot);
+    const repositoryWithCandidate = addRepositoryCheckout({
+      controllerHome,
+      repoId: repository.repoId,
+      path: candidateRoot,
+    });
+    const candidateCheckout = repositoryWithCandidate.checkouts.find((checkout) => checkout.checkoutId !== repository.activeCheckoutId);
+    expect(candidateCheckout).toBeTruthy();
+
+    const workId = 'WORK-VERIFY-CANDIDATE-REGISTRY';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: candidateCheckout!.checkoutId,
+      baseRevision: sourceRevision,
+      mode: 'goal_workloop',
+      objective: 'Verify a check introduced only by the candidate checkout.',
+      acceptanceCriteria: ['Candidate check is resolved from the Work checkout.'],
+      allowedPaths: ['package.json'],
+      forbiddenPaths: [],
+      checks: ['package:check:candidate'],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+
+    writeFileSync(join(candidateRoot, 'package.json'), JSON.stringify({
+      name: 'requirement-bootstrap-fixture',
+      scripts: {
+        'check:type': 'node -e "process.exit(0)"',
+        'check:candidate': 'node -e "process.exit(0)"',
+      },
+    }, null, 2));
+
+    const verified = structured(await callRuntimeTool(mcpContext(controllerHome, repositoryWithCandidate), 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'verify',
+      work_id: workId,
+      check_id: 'package:check:candidate',
+      simulate_check: true,
+    }));
+    expect(verified.status).toBe('ok');
+    expect(verified.data.verification).toMatchObject({ checkId: 'package:check:candidate', outcome: 'valid_pass' });
+    expect(verified.summary).not.toContain('not registered');
+  });
 });

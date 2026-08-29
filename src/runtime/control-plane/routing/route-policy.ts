@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 
-export const ROUTE_POLICY_VERSION = 'route-policy-v4' as const;
+export const ROUTE_POLICY_VERSION = 'route-policy-v5' as const;
 
 export type RouteExecutionMode = 'direct_control' | 'goal_workloop' | 'handoff_only';
 export type RouteWorkMode = 'direct_edit' | 'bounded_work' | 'quick_agent' | 'issue_task';
@@ -50,6 +50,10 @@ export interface RoutePolicyInput {
     dirty?: boolean;
     checkoutId?: string;
     fingerprint?: string;
+    /** Canonical typed placement constraint resolved before routing. */
+    placement?: 'current' | 'isolated' | 'auto';
+    /** Admission fence: Direct Control/current-main mutation is not permitted. */
+    directMainProhibited?: boolean;
   };
   policy: {
     risk?: string;
@@ -234,9 +238,11 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
   const protectedPath = paths.some((path) => PROTECTED_PATH.test(path));
   const explicitMode = input.intent.explicitMode;
   const explicitParallelMode = explicitMode === 'scale';
-  const requiresIsolation = explicitMode === 'direct'
-    ? false
-    : input.recovery.isolationRequired === true || explicitParallelMode;
+  const placementIsolationRequired = input.workspace.placement === 'isolated'
+    || input.workspace.directMainProhibited === true;
+  const requiresIsolation = placementIsolationRequired
+    || input.recovery.isolationRequired === true
+    || explicitParallelMode;
   const requiresRecovery = input.recovery.required === true
     || explicitMode === 'release'
     || explicitMode === 'scale';
@@ -295,6 +301,8 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
   if (explicitMode) reasons.push({ code: `explicit_${explicitMode}`, message: `Explicit -${explicitMode} mode overrides automatic work topology while policy gates remain authoritative.` });
   if (protectedPath) reasons.push({ code: 'protected_path', message: 'The predicted scope includes a protected or release-sensitive path.' });
   if (requiresRecovery) reasons.push({ code: 'recovery_required', message: 'The operation needs resumable Work and bounded recovery.' });
+  if (input.workspace.placement === 'isolated') reasons.push({ code: 'placement_isolated', message: 'Typed Work admission requires an isolated workspace.' });
+  if (input.workspace.directMainProhibited === true) reasons.push({ code: 'direct_main_prohibited', message: 'Typed Work admission forbids the Direct Control/current-main mutation lane.' });
   if (requiresIsolation) reasons.push({ code: 'isolation_required', message: 'The operation requires an isolated checkout or serialized lane.' });
   if (input.intent.requiresLongRunningChecks) reasons.push({ code: 'long_checks', message: 'Long-running checks may use a lightweight handle; duration alone does not require durable Work.' });
   if (input.intent.requiresInvestigation) reasons.push({ code: 'investigation', message: 'Investigation is required before or during implementation.' });
@@ -303,7 +311,11 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
 
   const explicitBoundedMode = explicitMode === 'plan'
     || explicitMode === 'release';
-  const complex = explicitMode === 'direct'
+  const directModeCanRemainFast = explicitMode === 'direct'
+    && !requiresIsolation
+    && !requiresRecovery
+    && !coordinationRequired;
+  const complex = directModeCanRemainFast
     ? false
     : coordinationRequired
     || explicitBoundedMode
@@ -320,7 +332,7 @@ export function decideRoute(input: RoutePolicyInput): RouteDecision {
   // Work topology is independent from executor/provider choice. Independent or
   // parallel deliverables stay in the durable Goal Workloop and are decomposed by
   // PlanContract/Work rather than introducing another project-level lifecycle.
-  const workMode: RouteWorkMode = explicitMode === 'direct'
+  const workMode: RouteWorkMode = directModeCanRemainFast
     ? 'direct_edit'
     : coordinationRequired
     ? 'bounded_work'

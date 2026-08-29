@@ -39,8 +39,14 @@ export interface RuntimeReleaseManifest {
   browserNodeBridgeArtifactIdentity?: string;
   browserHandoffEntrypoint?: 'browser-handoff-host.js';
   browserHandoffArtifactIdentity?: string;
+  processRunnerEntrypoint?: 'process-runner.js';
+  processRunnerArtifactIdentity?: string;
+  checkRunnerEntrypoint?: 'forge-check-runner';
+  checkRunnerArtifactIdentity?: string;
   pluginActionSidecarEntrypoint?: 'forge-plugin-action-sidecar';
   pluginActionSidecarArtifactIdentity?: string;
+  externalPluginProbeEntrypoint?: 'external-unix-socket-probe.cjs';
+  externalPluginProbeArtifactIdentity?: string;
   browserAutomationHelperEntrypoint?: 'browser-automation-helper';
   browserAutomationHelperArtifactIdentity?: string;
   browserAutomationHelperContractIdentity?: string;
@@ -50,6 +56,8 @@ export interface RuntimeReleaseManifest {
   codeGraphSidecarArtifactIdentity?: string;
   codeGraphLibraryRoot?: 'codegraph-lib';
   codeGraphLibraryArtifactIdentity?: string;
+  controllerUiRoot?: 'ui-dist';
+  controllerUiArtifactIdentity?: string;
   arguments: string[];
   configurationSchemaVersion: 1;
   controllerHome: string;

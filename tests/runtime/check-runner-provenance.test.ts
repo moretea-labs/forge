@@ -3,7 +3,7 @@ import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { basename, join } from 'path';
+import { basename, dirname, join } from 'path';
 import {
   controllerCheckExecutionIdentity,
   listControllerChecks,
@@ -22,7 +22,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(checks: Record<string, { command: string[]; effects?: unknown }>) {
+function fixture(checks: Record<string, { command: string[]; effects?: unknown; timeoutMs?: number }>) {
   const repoRoot = mkdtempSync(join(tmpdir(), 'forge-check-provenance-repo-'));
   roots.push(repoRoot);
   spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
@@ -307,6 +307,53 @@ describe('controller check provenance and failure classification', () => {
     expect(controllerCheckExecutionIdentity(repoRoot, 'networked').crossCheckoutReusable).toBe(false);
     expect(controllerCheckExecutionIdentity(repoRoot, 'external_tool').crossCheckoutReusable).toBe(false);
   });
+
+  test('injects only the explicit candidate Controller Home after generic authority sanitization', async () => {
+    const probePath = join(mkdtempSync(join(tmpdir(), 'forge-check-isolated-home-probe-')), 'controller-home.txt');
+    roots.push(dirname(probePath));
+    const isolatedControllerHome = mkdtempSync(join(tmpdir(), 'forge-check-isolated-home-'));
+    roots.push(isolatedControllerHome);
+    const repoRoot = fixture({
+      isolated_home: {
+        command: [process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(probePath)}, process.env.FORGE_CONTROLLER_HOME || '<missing>')`],
+      },
+    });
+    const previousControllerHome = process.env.FORGE_CONTROLLER_HOME;
+    const previousWriterSlot = process.env.FORGE_WRITER_SLOT;
+    try {
+      process.env.FORGE_CONTROLLER_HOME = '/host/controller/home/must-not-leak';
+      process.env.FORGE_WRITER_SLOT = 'host-writer-must-not-leak';
+      const result = await runControllerCheckAsync(repoRoot, 'isolated_home', { isolatedControllerHome });
+      expect(result.ok).toBe(true);
+      expect(readFileSync(probePath, 'utf8')).toBe(isolatedControllerHome);
+    } finally {
+      if (previousControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+      else process.env.FORGE_CONTROLLER_HOME = previousControllerHome;
+      if (previousWriterSlot === undefined) delete process.env.FORGE_WRITER_SLOT;
+      else process.env.FORGE_WRITER_SLOT = previousWriterSlot;
+    }
+  });
+
+  test.each([
+    ['crash', `require('fs').mkdirSync(process.env.FORGE_CONTROLLER_HOME,{recursive:true});require('fs').writeFileSync(require('path').join(process.env.FORGE_CONTROLLER_HOME,'candidate-write'),'crash');process.exit(17)`, 10_000],
+    ['timeout', `require('fs').mkdirSync(process.env.FORGE_CONTROLLER_HOME,{recursive:true});require('fs').writeFileSync(require('path').join(process.env.FORGE_CONTROLLER_HOME,'candidate-write'),'timeout');setInterval(()=>{},1000)`, 5_000],
+  ])('keeps Candidate Controller writes isolated when the check %s', async (_mode, script, timeoutMs) => {
+    const hostControllerHome = mkdtempSync(join(tmpdir(), 'forge-check-host-controller-'));
+    const isolatedControllerHome = mkdtempSync(join(tmpdir(), 'forge-check-candidate-controller-'));
+    roots.push(hostControllerHome, isolatedControllerHome);
+    const repoRoot = fixture({ candidate_failure: { command: [process.execPath, '-e', script], timeoutMs } });
+    const previousControllerHome = process.env.FORGE_CONTROLLER_HOME;
+    try {
+      process.env.FORGE_CONTROLLER_HOME = hostControllerHome;
+      const result = await runControllerCheckAsync(repoRoot, 'candidate_failure', { isolatedControllerHome, requestedTimeoutMs: timeoutMs });
+      expect(result.ok).toBe(false);
+      expect(existsSync(join(isolatedControllerHome, 'candidate-write'))).toBe(true);
+      expect(existsSync(join(hostControllerHome, 'candidate-write'))).toBe(false);
+    } finally {
+      if (previousControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+      else process.env.FORGE_CONTROLLER_HOME = previousControllerHome;
+    }
+  }, 15_000);
 
   test('strips Controller writer and Supervisor authority from sync and async check children', async () => {
     const authorityKeys = [

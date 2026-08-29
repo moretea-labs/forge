@@ -565,6 +565,10 @@
       "module": "repository",
       "resource": "git-worktree"
     },
+    "tests/runtime/repository-work-admission.test.ts": {
+      "module": "routing",
+      "resource": "pure"
+    },
     "tests/runtime/requirement-portfolio-migration.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"

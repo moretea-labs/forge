@@ -16,6 +16,7 @@ interface ParsedArgs {
   expectedCheckFingerprint: string;
   resultReceiptPath?: string;
   cleanupRoot?: string;
+  isolatedControllerHome?: string;
 }
 
 function requiredValue(argv: string[], flag: string): string {
@@ -38,6 +39,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     expectedCheckFingerprint: requiredValue(argv, '--expected-check-fingerprint'),
     resultReceiptPath: argv.includes('--result-receipt') ? requiredValue(argv, '--result-receipt') : undefined,
     cleanupRoot: argv.includes('--cleanup-root') ? requiredValue(argv, '--cleanup-root') : undefined,
+    isolatedControllerHome: argv.includes('--isolated-controller-home') ? requiredValue(argv, '--isolated-controller-home') : undefined,
   };
 }
 
@@ -51,7 +53,11 @@ export async function runPersistedCheckSidecar(argv = process.argv.slice(2)): Pr
       throw new Error('CHECK_SNAPSHOT_CHANGED: registered check changed before Process Runtime execution');
     }
     const identity = controllerCheckExecutionIdentity(root, args.checkId, args.timeoutMs, snapshot);
-    const result = await runControllerCheckAsync(root, args.checkId, { requestedTimeoutMs: args.timeoutMs, snapshot });
+    const result = await runControllerCheckAsync(root, args.checkId, {
+      requestedTimeoutMs: args.timeoutMs,
+      snapshot,
+      isolatedControllerHome: args.isolatedControllerHome,
+    });
     if (args.resultReceiptPath) {
       writePersistedCheckResultReceipt(args.resultReceiptPath, {
         checkId: args.checkId,

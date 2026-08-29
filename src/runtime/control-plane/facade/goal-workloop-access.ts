@@ -65,6 +65,7 @@ function constraintsValue(value: unknown): WorkContractConstraints | undefined {
         ? 'isolated'
         : record.workspaceMode === 'auto' || record.workspace_mode === 'auto' ? 'auto' : undefined,
     requireWorktree: booleanValue(record, 'requireWorktree', 'require_worktree'),
+    directMainProhibited: booleanValue(record, 'directMainProhibited', 'direct_main_prohibited'),
   };
   return Object.fromEntries(
     Object.entries(constraints).filter(([, entry]) => entry !== undefined),

@@ -291,7 +291,7 @@ export function buildControllerContextPack(
       const addStructuralPath = (path: string, reason: string, line?: number): void => {
         if (!path || !coveredByGlob(path, searchIncludeGlobs) || excludeGlobs.some((glob) => globMatches(glob, path))) return;
         const readable = readableFile(repoRoot, policy, path);
-        if (!readable.ok) {
+        if (readable.ok === false) {
           deniedPaths.push({ path: readable.path, reason: readable.reason });
           return;
         }
@@ -443,7 +443,15 @@ export function buildControllerContextPack(
       return left.path.localeCompare(right.path);
     });
   const isExactKnownCandidate = (entry: { reasons: string[] }): boolean => entry.reasons.includes("explicit-known-path");
-  const multiWaveEligible = retrievalMode !== "implementation";
+  // Adaptive closure is enabled whenever the caller asks for investigation/review
+  // evidence or leaves structural discovery enabled. A deliberately narrow
+  // implementation read with structural discovery disabled stays single-wave.
+  // This keeps the common exact-file edit path cheap without making the default
+  // implementation mode a permanent evidence-closure blind spot.
+  const multiWaveEligible = retrievalMode !== "implementation"
+    || structuralMode !== "off"
+    || impactDomains.length > 0
+    || explicitKnownPaths.length > 1;
   timingsMs.expansionBudgetMax = multiWaveEligible ? Math.min(6, Math.max(2, Math.ceil(maxFiles / 2))) : 0;
   const rankedExactKnownCount = rankedCandidates.filter(isExactKnownCandidate).length;
   const initialCandidateLimit = multiWaveEligible
@@ -524,7 +532,7 @@ export function buildControllerContextPack(
     }
   }
 
-  // Investigation modes perform bounded internal evidence-closure waves after
+  // Evidence-closure eligible requests perform bounded internal waves after
   // Wave 1 raw source materialization. Each later wave derives concrete paths
   // from the source that was just read plus current CodeGraph adjacency, then
   // materializes those paths in the same context request.
@@ -807,6 +815,7 @@ export function buildControllerContextPack(
     ...expansionSignals,
     ...(likelyRelatedNotInspected.length > 0 ? ["likely_related_files_not_inspected"] : []),
   ])).slice(0, 80);
+  const materialRelationshipUnresolved = unresolvedExpansionPaths.length > 0;
   const readinessReasonCodes = Array.from(new Set([
     ...(files.length === 0 ? ["raw_source_unavailable"] : []),
     ...(rawSnippetTruncated ? ["raw_source_truncated"] : []),
@@ -817,9 +826,12 @@ export function buildControllerContextPack(
     ...(policyDeniedFiles > 0 || deniedPaths.length > 0 ? ["policy_denied_evidence"] : []),
     ...(skippedLargeFiles > 0 ? ["large_evidence_skipped"] : []),
     ...(expansionBudgetExhausted ? ["expansion_budget_exhausted"] : []),
+    ...(materialRelationshipUnresolved ? ["material_relationship_unresolved"] : []),
     ...(likelyRelatedNotInspected.length > 0 ? ["related_evidence_not_materialized"] : []),
   ])).slice(0, 40);
-  const readinessStatus = files.length === 0 || (structuralMode === "required" && !structuralContext.requiredSatisfied)
+  const readinessStatus = files.length === 0
+    || (structuralMode === "required" && !structuralContext.requiredSatisfied)
+    || materialRelationshipUnresolved
     ? "insufficient" as const
     : readinessReasonCodes.length > 0
       ? "degraded" as const

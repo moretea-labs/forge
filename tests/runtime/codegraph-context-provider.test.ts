@@ -687,8 +687,10 @@ describe('CodeGraph read provider', () => {
     const second = buildControllerContextPack(root, getMcpPolicy('controller'), options, { queryCodeGraph });
     expect(firstCalls).toBeGreaterThan(0);
     expect(calls).toBe(firstCalls);
-    expect(first.cache.structuralHits).toBe(0);
-    expect(second.cache.structuralHits).toBe(firstCalls);
+    expect(first.cache.structuralMisses).toBe(firstCalls);
+    expect(first.cache.structuralHits).toBeGreaterThan(0);
+    expect(second.cache.structuralMisses).toBe(0);
+    expect(second.cache.structuralHits).toBeGreaterThanOrEqual(firstCalls);
     expect(second.cache.reused).toBe(true);
   });
 
@@ -748,6 +750,27 @@ describe('CodeGraph read provider', () => {
     expect(pack.readiness.structural).toMatchObject({ requested: 'off', status: 'disabled', requiredSatisfied: true });
   });
 
+  test('allows default implementation retrieval to close concrete source relationships in the same request', () => {
+    const root = contextRepo();
+    writeFileSync(join(root, 'src/service.ts'), "import { helper } from './helper';\nexport function runService() { return helper(); }\n");
+    writeFileSync(join(root, 'src/helper.ts'), 'export function helper() { return 42; }\n');
+    const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      description: 'Implement runService safely with current structural evidence',
+      searchTerms: ['runService'],
+      retrievalMode: 'implementation',
+      structuralContext: 'auto',
+      maxFiles: 4,
+      maxSnippets: 8,
+    }, {
+      queryCodeGraph: (_repoRoot, request) => request.operation === 'file_dependencies'
+        ? structuralResponse({ operation: 'file_dependencies', result: { filePath: request.filePath, dependencies: [], dependents: [] } })
+        : structuralResponse(),
+    });
+    expect(pack.expansion.expansionPerformed).toBe(true);
+    expect(pack.expansion.materializedPaths).toContain('src/helper.ts');
+    expect(pack.files.find((file) => file.path === 'src/helper.ts')?.reasons).toContain('source-reference:src/service.ts');
+  });
+
   test('keeps unmaterialized expansion evidence explicit when the bounded file budget is exhausted', () => {
     const root = contextRepo();
     writeFileSync(join(root, 'src/service.ts'), "import './alpha';\nimport './beta';\nexport const ENTRY_MARKER = true;\n");
@@ -759,7 +782,7 @@ describe('CodeGraph read provider', () => {
     expect(pack.contextContract.expansionSignals).toContain('evidence_expansion_budget_exhausted');
     expect(pack.readiness.unresolvedReasonCodes).toContain('expansion_budget_exhausted');
     expect(pack.coverage.likelyRelatedNotInspected.length).toBeGreaterThan(0);
-    expect(pack.readiness.readyForHighConfidenceMutation).toBe(false);
+    expect(pack.readiness).toMatchObject({ status: 'insufficient', readyForHighConfidenceMutation: false });
   });
 
   test('keeps stale structural relationships diagnostic-only instead of promoting them into source selection', () => {

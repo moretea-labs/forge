@@ -23,9 +23,9 @@ import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS, checkRequiresDurableWorkflow, getProc
 import { listWorkBoundRepositoryProcessEvidence } from '../../control-plane/execution/work-process-evidence';
 import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../../execution/process-runtime/command-facade';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
-import { readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
+import { readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
+import { ensureRepositoryWorkHandle, rebindRepositoryWorkHandleControllerIdentity } from '../../control-plane/execution/work-handle-authority';
 import { recoverTerminalWorkHandle } from '../../control-plane/execution/work-terminal-cleanup';
-import { gitCommitAtRef, gitWorktreeSnapshot } from '../../control-plane/execution/work-lifecycle-audit';
 import { executionIdentityForRepository } from '../../control-plane/execution/execution-identity';
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from '../../control-plane/execution/verification-evidence';
 import { acceptReviewedDirectEditWorkReconciliation, reconcileFinalizedDirectEditWorksAfterCommit } from '../../control-plane/execution/direct-edit-work-completion';
@@ -176,8 +176,6 @@ import {
   listWorkContracts,
   getWorkContract,
   getWorkContractByRequestId,
-  updateWorkContract,
-  resumeRetainedCancelledWorkContract,
   buildWorkContinuationSnapshot,
   acceptPlanStepEvidence,
   admitPlanContractAsync,
@@ -204,8 +202,11 @@ import {
 } from '../../control-plane/facade';
 import { currentControllerInstanceId, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../control-plane/execution/session-store';
 import { changedPaths as workChangedPaths } from '../../control-plane/execution/work-task-receipt';
-import { createRequirement, readRequirement } from '../../control-plane/persistence/requirement-store';
+import { readRequirement } from '../../control-plane/persistence/requirement-store';
+import { admitRequirement } from '../../control-plane/facade/requirement-authority';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
+import { materializeRepositoryWorkPlacement } from '../../control-plane/facade/repository-work-admission';
+import { reauthorizeRetainedCancelledRepositoryWork } from '../../control-plane/execution/retained-work-resume';
 import { currentPermissionSnapshotVersion } from '../../control-plane/execution/validation';
 import { observeRuntimeStatus } from '../../root/status';
 import { reconcileWorkValidation } from './work-validation-reconciler';
@@ -1183,38 +1184,12 @@ function ensureFacadeWorkHandle(
   workId: string,
   args: Record<string, unknown>,
 ): WorkHandleState | undefined {
-  const existing = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
-  if (existing) return existing;
-  const contract = getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, workId);
-  if (!contract || contract.workKind !== 'repository_change' || contract.mode !== 'goal_workloop' || !contract.checkoutId) return undefined;
-  const executionRepository = resolveRepositorySelection({ repoId: repository.repoId, checkoutId: contract.checkoutId, controllerHome: ctx.controllerHome, allowSoleRepository: false });
-  const checkout = selectRepositoryCheckout(executionRepository, contract.checkoutId, { allowArchived: true });
-  const status = repositoryGitStatus(checkout);
-  if (!status.branch) throw new Error(`WORKTREE_DETACHED: ${contract.checkoutId} has no branch`);
   const identity = authenticatedFacadeControllerIdentity(ctx, args);
-  const at = new Date().toISOString();
-  const managedWorktree = Boolean(contract.worktreeRef) && resolve(contract.worktreeRef!) === resolve(checkout.canonicalRoot) && resolve(checkout.canonicalRoot) !== resolve(repository.canonicalRoot);
-  return writeWorkHandle(ctx.controllerHome, {
-    schemaVersion: 1,
+  return ensureRepositoryWorkHandle({
+    controllerHome: ctx.controllerHome,
+    repository,
     workId,
-    sessionId: identity.sessionId,
-    principalId: identity.principalId,
-    repositoryId: repository.repoId,
-    checkoutId: contract.checkoutId,
-    worktreePath: checkout.canonicalRoot,
-    branch: status.branch,
-    sourceCheckoutId: repository.activeCheckoutId,
-    managedWorktree,
-    workContractId: contract.workId,
-    baseCommit: contract.baseRevision ?? status.head ?? undefined,
-    deliveryBaseCommit: contract.baseRevision ?? status.head ?? undefined,
-    expectedHead: status.head ?? contract.baseRevision,
-    permissionSnapshotVersion: currentPermissionSnapshotVersion(ctx.controllerHome, repository.repoId),
-    state: 'prepared',
-    createdAt: at,
-    updatedAt: at,
-    finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
-    cleanupResponsibility: { owner: 'work_finalizer', registeredAt: at },
+    identity: { sessionId: identity.sessionId, principalId: identity.principalId },
   });
 }
 
@@ -1224,198 +1199,22 @@ function materializeFacadeWorkPlacement(
   workId: string,
   args: Record<string, unknown>,
 ) {
-  const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
-  const contract = getWorkContract(store, workId);
-  if (!contract || contract.worktreePolicy.required !== true || contract.worktreeRef) return contract;
-  const workspace = ensureManagedWorkspace(ctx.controllerHome, repository, {
-    requestId: workId,
-    title: contract.objective,
-    baseRef: contract.baseRevision,
-    prepareDependencies: args.needs_dependencies === true,
-  });
-  if (!workspace.managed || !workspace.checkoutId || !workspace.root || workspace.checkoutId === repository.activeCheckoutId) {
-    throw new Error('MANAGED_WORKSPACE_NOT_MATERIALIZED');
-  }
-  return updateWorkContract(store, workId, {
-    checkoutId: workspace.checkoutId,
-    baseRevision: workspace.baseRevision ?? contract.baseRevision,
-    worktreeRef: workspace.root,
-    driver: { ...contract.driver, preferred: 'isolated_worktree', allowDirectEdit: false },
-  });
-}
-
-function reauthorizeCancelledFacadeWork(
-  ctx: MultiRepositoryMcpToolContext,
-  repository: ReturnType<typeof selected>,
-  workId: string,
-  args: Record<string, unknown>,
-): { reconstructedCheckout: boolean } {
-  const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
-  let work = getWorkContract(store, workId);
-  if (!work || work.status !== 'cancelled') return { reconstructedCheckout: false };
-  if (args.approval_confirmed !== true || args.requested_by !== 'user') {
-    throw new Error(`WORK_CANCELLED_RESUME_REAUTHORIZATION_REQUIRED: ${workId}; use exact work_id with requested_by=user and approval_confirmed=true`);
-  }
-  const identity = authenticatedFacadeControllerIdentity(ctx, args);
-  if (!work.principalId?.trim() || work.principalId.trim() !== identity.principalId) {
-    throw new Error(`WORK_CANCELLED_RESUME_PRINCIPAL_MISMATCH: ${workId}`);
-  }
-  const owner = getControllerSession(store, workId);
-  if (owner && (owner.principalId?.trim() || owner.controllerId) !== identity.principalId) {
-    throw new Error(`WORK_CANCELLED_RESUME_CONTROLLER_OWNERSHIP_MISMATCH: ${workId}`);
-  }
-  if (work.completionReceipt || work.completionOutcome) throw new Error(`WORK_CANCELLED_RESUME_COMPLETION_CONFLICT: ${workId}`);
-  if (work.reconciliations.length > 0) throw new Error(`WORK_CANCELLED_RESUME_DELIVERY_HISTORY_AMBIGUOUS: ${workId}`);
-  if (work.phase !== 'cleanup' || work.phaseEvidence.cleanup.state !== 'skipped' || work.phaseEvidence.cleanup.source !== 'recorded') {
-    throw new Error(`WORK_CANCELLED_RESUME_HISTORY_AMBIGUOUS: ${workId}`);
-  }
-  if (work.workKind !== 'repository_change' || work.worktreePolicy.required !== true) {
-    throw new Error(`WORK_CANCELLED_RESUME_ISOLATED_REPOSITORY_WORK_REQUIRED: ${workId}`);
-  }
-
-  let handle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
-  if (handle) {
-    if (handle.repositoryId !== repository.repoId || (handle.workContractId && handle.workContractId !== workId)) {
-      throw new Error(`WORK_CANCELLED_RESUME_HANDLE_IDENTITY_MISMATCH: ${workId}`);
-    }
-    if (handle.principalId !== identity.principalId) throw new Error(`WORK_CANCELLED_RESUME_HANDLE_PRINCIPAL_MISMATCH: ${workId}`);
-    if (['committed', 'merged', 'cleaned', 'failed_terminal_cleanup'].includes(handle.state)
-      || handle.finalization.commit === 'done'
-      || handle.finalization.merge === 'done'
-      || handle.cleanupReceipt?.complete === true) {
-      throw new Error(`WORK_CANCELLED_RESUME_DELIVERY_OR_CLEANUP_CONFLICT: ${workId}`);
-    }
-  }
-
-  const registryRepository = listRepositories(ctx.controllerHome, { includeRemoved: true })
-    .find((candidate) => candidate.repoId === repository.repoId);
-  if (!registryRepository) throw new Error(`WORK_CANCELLED_RESUME_REPOSITORY_MISSING: ${workId}`);
-  const recordedCheckoutId = work.checkoutId?.trim();
-  const recordedWorktree = work.worktreeRef?.trim();
-  const checkoutRecord = recordedCheckoutId
-    ? registryRepository.checkouts.find((candidate) => candidate.checkoutId === recordedCheckoutId)
-    : undefined;
-  const checkoutActive = checkoutRecord?.lifecycle === 'active';
-  const worktreePresent = Boolean(recordedWorktree && existsSync(recordedWorktree));
-
-  if (checkoutActive && worktreePresent && recordedCheckoutId && recordedWorktree) {
-    const retained = selectRepositoryCheckout(registryRepository, recordedCheckoutId);
-    if (resolve(retained.canonicalRoot) !== resolve(recordedWorktree)) {
-      throw new Error(`WORK_CANCELLED_RESUME_CHECKOUT_REUSED: ${workId}`);
-    }
-    if (!handle) throw new Error(`WORK_CANCELLED_RESUME_HANDLE_REQUIRED: ${workId}`);
-    if (handle.checkoutId !== recordedCheckoutId || resolve(handle.worktreePath) !== resolve(recordedWorktree)) {
-      throw new Error(`WORK_CANCELLED_RESUME_CHECKOUT_OWNERSHIP_MISMATCH: ${workId}`);
-    }
-    const status = repositoryGitStatus(retained);
-    if (!status.branch || status.branch !== handle.branch) throw new Error(`WORK_CANCELLED_RESUME_BRANCH_OWNERSHIP_MISMATCH: ${workId}`);
-    writeWorkHandle(ctx.controllerHome, {
-      ...handle,
-      principalId: identity.principalId,
-      sessionId: identity.sessionId,
-      updatedAt: new Date().toISOString(),
-    });
-    resumeRetainedCancelledWorkContract(store, workId, {
-      principalId: identity.principalId,
-      controllerInstanceId: identity.controllerInstanceId,
-      summary: 'Explicit current user re-authorized the same retained cancelled Work; exact managed checkout ownership was revalidated.',
-    });
-    return { reconstructedCheckout: false };
-  }
-
-  if (checkoutActive) throw new Error(`WORK_CANCELLED_RESUME_PRESERVATION_AMBIGUOUS: ${workId}`);
-  if (!recordedCheckoutId || !recordedWorktree || !handle) throw new Error(`WORK_CANCELLED_RESUME_HANDLE_REQUIRED: ${workId}`);
-
-  const actualChangedPaths = work.scopeEvidence?.actualChangedPaths;
-  if (!actualChangedPaths || actualChangedPaths.length !== 0
-    || work.checks.length !== 0
-    || work.checkRefs.length !== 0
-    || work.evidenceState !== 'none') {
-    throw new Error(`WORK_CANCELLED_RESUME_ZERO_DELTA_PROOF_REQUIRED: ${workId}`);
-  }
-  const recordedBase = work.baseRevision?.trim();
-  if (!recordedBase) throw new Error(`WORK_CANCELLED_RESUME_BASE_REVISION_REQUIRED: ${workId}`);
-  const baseRevision = gitCommitAtRef(repository.canonicalRoot, recordedBase);
-  if (!baseRevision) throw new Error(`WORK_CANCELLED_RESUME_BASE_REVISION_MISSING: ${workId}`);
-  const handleBase = handle.baseCommit ? gitCommitAtRef(repository.canonicalRoot, handle.baseCommit) : undefined;
-  const handleHead = handle.expectedHead ? gitCommitAtRef(repository.canonicalRoot, handle.expectedHead) : undefined;
-  if ((handle.baseCommit && handleBase !== baseRevision) || (handle.expectedHead && handleHead !== baseRevision)) {
-    throw new Error(`WORK_CANCELLED_RESUME_REVISION_AMBIGUOUS: ${workId}`);
-  }
-  if (handle.checkoutId !== recordedCheckoutId || resolve(handle.worktreePath) !== resolve(recordedWorktree)) {
-    throw new Error(`WORK_CANCELLED_RESUME_CHECKOUT_OWNERSHIP_MISMATCH: ${workId}`);
-  }
-  if (handle.branch) {
-    const historicalBranchHead = gitCommitAtRef(repository.canonicalRoot, `refs/heads/${handle.branch}`);
-    if (historicalBranchHead && historicalBranchHead !== baseRevision) {
-      throw new Error(`WORK_CANCELLED_RESUME_UNIQUE_COMMIT_CONFLICT: ${workId}`);
-    }
-  }
-  if (worktreePresent) {
-    const retainedSnapshot = gitWorktreeSnapshot(recordedWorktree);
-    if (!retainedSnapshot || !retainedSnapshot.clean || retainedSnapshot.head !== baseRevision || (handle.branch && retainedSnapshot.branch !== handle.branch)) {
-      throw new Error(`WORK_CANCELLED_RESUME_ZERO_DELTA_PHYSICAL_CONFLICT: ${workId}`);
-    }
-  }
-
-  const branchName = `work/resume-${workId.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 42)}-${baseRevision.slice(0, 12)}`;
-  const existingResumeBranch = gitCommitAtRef(repository.canonicalRoot, `refs/heads/${branchName}`);
-  if (existingResumeBranch && existingResumeBranch !== baseRevision) {
-    throw new Error(`WORK_CANCELLED_RESUME_RECONSTRUCTION_BRANCH_CONFLICT: ${workId}`);
-  }
-  const workspace = ensureManagedWorkspace(ctx.controllerHome, repository, {
-    requestId: `${workId}:explicit-user-resume:${baseRevision}`,
-    title: `${work.objective} explicit user resume`,
-    branchName,
-    baseRef: baseRevision,
-    prepareDependencies: args.needs_dependencies === true,
-  });
-  if (!workspace.managed || !workspace.checkoutId || !workspace.root || !workspace.branch) {
-    throw new Error(`WORK_CANCELLED_RESUME_RECONSTRUCTION_FAILED: ${workId}`);
-  }
-  const refreshedRepository = listRepositories(ctx.controllerHome, { includeRemoved: true })
-    .find((candidate) => candidate.repoId === repository.repoId);
-  if (!refreshedRepository) throw new Error(`WORK_CANCELLED_RESUME_REPOSITORY_MISSING: ${workId}`);
-  const reconstructed = selectRepositoryCheckout(refreshedRepository, workspace.checkoutId);
-  const reconstructedStatus = repositoryGitStatus(reconstructed);
-  if (!reconstructedStatus.clean || reconstructedStatus.head !== baseRevision || reconstructedStatus.branch !== workspace.branch) {
-    throw new Error(`WORK_CANCELLED_RESUME_RECONSTRUCTION_REVISION_MISMATCH: ${workId}`);
-  }
-
-  work = updateWorkContract(store, workId, {
-    checkoutId: workspace.checkoutId,
-    worktreeRef: workspace.root,
-    baseRevision,
-    controllerInstanceId: identity.controllerInstanceId,
-  });
-  const now = new Date().toISOString();
-  handle = writeWorkHandle(ctx.controllerHome, {
-    ...handle,
-    principalId: identity.principalId,
-    sessionId: identity.sessionId,
-    checkoutId: workspace.checkoutId,
-    worktreePath: workspace.root,
-    branch: workspace.branch,
-    sourceCheckoutId: repository.activeCheckoutId,
-    managedWorktree: true,
-    baseCommit: baseRevision,
-    deliveryBaseCommit: baseRevision,
-    expectedHead: baseRevision,
-    state: 'prepared',
-    validatedInputFingerprint: undefined,
-    failureReason: undefined,
-    cleanupReceipt: undefined,
-    finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
-    updatedAt: now,
-  });
-  resumeRetainedCancelledWorkContract(store, workId, {
-    principalId: identity.principalId,
-    controllerInstanceId: identity.controllerInstanceId,
-    summary: 'Explicit current user re-authorized the same cancelled Work; prior managed checkout was absent and a fresh isolated checkout was reconstructed at the exact zero-delta base revision.',
-    checkoutId: workspace.checkoutId,
-    worktreeRef: workspace.root,
-  });
-  return { reconstructedCheckout: true };
+  return materializeRepositoryWorkPlacement(
+    { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+    workId,
+    (contract) => {
+      const workspace = ensureManagedWorkspace(ctx.controllerHome, repository, {
+        requestId: workId,
+        title: contract.objective,
+        baseRef: contract.baseRevision,
+        prepareDependencies: args.needs_dependencies === true,
+      });
+      if (workspace.checkoutId === repository.activeCheckoutId) {
+        throw new Error('MANAGED_WORKSPACE_NOT_MATERIALIZED');
+      }
+      return workspace;
+    },
+  );
 }
 
 function claimNewFacadeWork(
@@ -2775,16 +2574,10 @@ async function runFacadeVerify(
   args: Record<string, unknown>,
 ): Promise<CallToolResult> {
   const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
-  const checks = listControllerChecks(repository.canonicalRoot);
-  const workloopCtx = {
-    workStore: store,
-    handoffStore: store,
-    repoId: repository.repoId,
-    availableChecks: checks,
-  };
   const workId = typeof args.work_id === 'string' ? args.work_id : '';
   const checkId = String(args.check_id ?? args.checkId ?? '').trim();
   if (!checkId) {
+    const checks = listControllerChecks(repository.canonicalRoot);
     return result(buildFacadeResult({
       status: 'blocked',
       summary: 'rh_work verify requires a registered check_id.',
@@ -2802,6 +2595,35 @@ async function runFacadeVerify(
     }) as unknown as Record<string, unknown>, true);
   }
   const workContract = workId ? getWorkContract(store, workId) : undefined;
+  let verificationRepository = repository;
+  if (workContract?.checkoutId) {
+    try {
+      verificationRepository = selectRepositoryCheckout(repository, workContract.checkoutId, { allowArchived: true });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Work checkout could not be resolved';
+      return result(buildFacadeResult({
+        status: 'blocked',
+        summary: `WORK_VERIFICATION_CHECKOUT_UNAVAILABLE: ${detail}`,
+        data: {
+          verification: {
+            checkId,
+            outcome: 'infrastructure_failure',
+            isAcceptanceFailure: false,
+            isInfrastructureIssue: true,
+            doesNotRequestTaskChanges: true,
+          },
+        },
+        warnings: ['Work verification never falls back to the canonical/main check registry when the Work-bound checkout is unavailable.'],
+      }) as unknown as Record<string, unknown>, true);
+    }
+  }
+  const checks = listControllerChecks(verificationRepository.canonicalRoot);
+  const workloopCtx = {
+    workStore: store,
+    handoffStore: store,
+    repoId: repository.repoId,
+    availableChecks: checks,
+  };
   if (workId && (!workContract || workContract.status === 'completed' || workContract.status === 'cancelled' || workContract.status === 'failed')) {
     const facade = verifyGoalWorkloop(workloopCtx, { workId, checkId });
     return result(facade as unknown as Record<string, unknown>, facade.status === 'failed');
@@ -2868,9 +2690,6 @@ async function runFacadeVerify(
     const requestId = typeof args.request_id === 'string' && args.request_id.trim()
       ? args.request_id.trim()
       : undefined;
-    const verificationRepository = workContract?.checkoutId
-      ? selectRepositoryCheckout(repository, workContract.checkoutId, { allowArchived: true })
-      : repository;
     const verificationStatus = repositoryGitStatus(verificationRepository);
     const observedGitHead = verificationStatus.head;
     const workspaceFingerprint = workspaceValidationFingerprint(verificationRepository.canonicalRoot, verificationStatus);
@@ -4698,57 +4517,46 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         };
 
         if (operation === 'requirement_create') {
-          const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
-          const title = typeof args.requirement_title === 'string' ? args.requirement_title.trim().slice(0, 500) : '';
-          const outcomeStatement = typeof args.requirement_outcome === 'string' ? args.requirement_outcome.trim().slice(0, 2_000) : '';
-          const acceptanceCriteria = Array.isArray(args.requirement_acceptance_criteria)
-            ? args.requirement_acceptance_criteria.map((value) => String(value).trim()).filter(Boolean).slice(0, 50).map((value) => value.slice(0, 500))
-            : [];
-          const requiredDeliveryReferences = Array.isArray(args.requirement_delivery_references)
-            ? args.requirement_delivery_references.map((value) => String(value).trim()).filter(Boolean).slice(0, 50).map((value) => value.slice(0, 500))
-            : [];
-          const legacyAliases = Array.isArray(args.requirement_legacy_aliases)
-            ? args.requirement_legacy_aliases.map((value) => String(value).trim()).filter(Boolean).slice(0, 20).map((value) => value.slice(0, 160))
-            : [];
-          if (!requirementId || !title || !outcomeStatement) {
+          const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id : '';
+          const title = typeof args.requirement_title === 'string' ? args.requirement_title : '';
+          const outcomeStatement = typeof args.requirement_outcome === 'string' ? args.requirement_outcome : '';
+          if (!requirementId.trim() || !title.trim() || !outcomeStatement.trim()) {
             return result(buildFacadeResult({
               status: 'blocked',
               summary: 'REQUIREMENT_CREATE_INPUT_REQUIRED: requirement_id, requirement_title, and requirement_outcome are required.',
               data: { requirementCreated: false },
             }) as unknown as Record<string, unknown>, true);
           }
-          const existing = readRequirement({ controllerHome: ctx.controllerHome }, requirementId)?.value;
-          if (existing) {
-            const identical = existing.title === title
-              && existing.outcomeStatement === outcomeStatement
-              && JSON.stringify(existing.acceptanceCriteria) === JSON.stringify(acceptanceCriteria)
-              && JSON.stringify(existing.requiredDeliveryReferences) === JSON.stringify(requiredDeliveryReferences)
-              && JSON.stringify(existing.legacyAliases) === JSON.stringify(legacyAliases);
-            if (!identical) {
-              return result(buildFacadeResult({
-                status: 'blocked',
-                summary: `REQUIREMENT_ALREADY_EXISTS_CONFLICT: ${requirementId}. Existing Requirement authority was not changed.`,
-                data: { requirement: existing, requirementCreated: false, admissionDecision: 'existing_conflict' },
-                suggestedNextActions: [],
-              }) as unknown as Record<string, unknown>, true);
-            }
+          let admission;
+          try {
+            admission = admitRequirement({ controllerHome: ctx.controllerHome }, {
+              requirementId,
+              title,
+              outcomeStatement,
+              acceptanceCriteria: Array.isArray(args.requirement_acceptance_criteria) ? args.requirement_acceptance_criteria.map(String) : [],
+              requiredDeliveryReferences: Array.isArray(args.requirement_delivery_references) ? args.requirement_delivery_references.map(String) : [],
+              legacyAliases: Array.isArray(args.requirement_legacy_aliases) ? args.requirement_legacy_aliases.map(String) : [],
+            });
+          } catch (error) {
             return result(buildFacadeResult({
-              summary: `REQUIREMENT_AUTHORITY_REUSED: ${requirementId}. Requirement authority does not imply a Plan; Controller chooses the next action.`,
-              data: { requirement: existing, requirementCreated: false, admissionDecision: 'reuse_existing' },
-              suggestedNextActions: [],
-            }) as unknown as Record<string, unknown>);
+              status: 'blocked',
+              summary: error instanceof Error ? error.message : String(error),
+              data: { requirementCreated: false },
+            }) as unknown as Record<string, unknown>, true);
           }
-          const requirement = createRequirement({ controllerHome: ctx.controllerHome }, {
-            requirementId,
-            title,
-            outcomeStatement,
-            acceptanceCriteria,
-            requiredDeliveryReferences,
-            legacyAliases,
-          });
+          if (admission.decision === 'existing_conflict') {
+            return result(buildFacadeResult({
+              status: 'blocked',
+              summary: `REQUIREMENT_ALREADY_EXISTS_CONFLICT: ${admission.requirement.requirementId}. Existing Requirement authority was not changed.`,
+              data: { requirement: admission.requirement, requirementCreated: false, admissionDecision: admission.decision },
+              suggestedNextActions: [],
+            }) as unknown as Record<string, unknown>, true);
+          }
           return result(buildFacadeResult({
-            summary: `Requirement ${requirementId} created. Requirement authority does not imply a Plan; Controller chooses the next action.`,
-            data: { requirement, requirementCreated: true, admissionDecision: 'created' },
+            summary: admission.decision === 'created'
+              ? `Requirement ${admission.requirement.requirementId} created. Requirement authority does not imply a Plan; Controller chooses the next action.`
+              : `REQUIREMENT_AUTHORITY_REUSED: ${admission.requirement.requirementId}. Requirement authority does not imply a Plan; Controller chooses the next action.`,
+            data: { requirement: admission.requirement, requirementCreated: admission.created, admissionDecision: admission.decision },
             suggestedNextActions: [],
           }) as unknown as Record<string, unknown>);
         }
@@ -5264,7 +5072,16 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             const workId = String(args.work_id ?? '').trim();
             let work = getWorkContract(store, workId);
             if (work?.status === 'cancelled') {
-              const resumed = reauthorizeCancelledFacadeWork(ctx, repository, workId, args);
+              const identity = authenticatedFacadeControllerIdentity(ctx, args);
+              const resumed = reauthorizeRetainedCancelledRepositoryWork({
+                controllerHome: ctx.controllerHome,
+                repository,
+                workId,
+                identity,
+                requestedBy: typeof args.requested_by === 'string' ? args.requested_by : undefined,
+                approvalConfirmed: args.approval_confirmed === true,
+                prepareDependencies: args.needs_dependencies === true,
+              });
               cancelledWorkReauthorized = true;
               reconstructedCancelledCheckout = resumed.reconstructedCheckout;
               work = getWorkContract(store, workId);
@@ -5280,14 +5097,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 controllerInstanceId: identity.controllerInstanceId,
                 leaseMs: 3_600_000,
               });
-              const existingHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
-              if (existingHandle && (existingHandle.principalId !== identity.principalId || existingHandle.sessionId !== identity.sessionId)) {
-                writeWorkHandle(ctx.controllerHome, {
-                  ...existingHandle,
-                  principalId: identity.principalId,
-                  sessionId: identity.sessionId,
-                });
-              }
+              rebindRepositoryWorkHandleControllerIdentity({
+                controllerHome: ctx.controllerHome,
+                repositoryId: repository.repoId,
+                workId,
+                identity: { sessionId: identity.sessionId, principalId: identity.principalId },
+              });
               if (work.worktreePolicy.required === true && !work.worktreeRef) {
                 materializeFacadeWorkPlacement(ctx, repository, workId, args);
               }

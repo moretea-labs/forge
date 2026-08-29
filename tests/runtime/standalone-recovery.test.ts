@@ -637,12 +637,24 @@ test('standalone Recovery stages only its configured Runtime source and hands a 
   const releasePath = join(home, 'runtime', 'releases', 'release-new');
   mkdirSync(releasePath, { recursive: true });
   const manifestPath = join(releasePath, 'manifest.json');
-  writeFileSync(manifestPath, JSON.stringify({
+  const runtimePath = join(releasePath, 'forge-runtime');
+  writeFileSync(runtimePath, '#!/bin/sh\n# release-new\nexit 0\n', { mode: 0o700 });
+  const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(runtimePath)).digest('hex')}`;
+  const manifestText = `${JSON.stringify({
     schemaVersion: 1,
     releaseId: 'release-new',
+    artifactIdentity,
+    entrypoint: 'forge-runtime',
     futureSidecarEntrypoint: 'future-sidecar-v2',
-  }));
-  writeFileSync(join(releasePath, 'forge-runtime'), 'binary');
+    arguments: [],
+    configurationSchemaVersion: 1,
+    controllerHome: resolve(home),
+    databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+    workerProtocolVersion: 1,
+    sourceCommit: 'a'.repeat(40),
+    createdAt: '2026-08-14T00:00:00.000Z',
+  }, null, 2)}\n`;
+  writeFileSync(manifestPath, manifestText);
   writeFileSync(join(releasePath, 'future-sidecar-v2'), 'future-sidecar');
   const baseline = verifiedManifest(home, 'release-baseline');
   ensureActiveRuntimeRelease(home, baseline.path);
@@ -654,11 +666,12 @@ test('standalone Recovery stages only its configured Runtime source and hands a 
     stage: (input) => {
       stagedFrom = input.sourceRoot;
       return {
+        controllerHome: input.controllerHome,
         releasePath,
         manifestPath,
         releaseId: 'release-new',
-        artifactIdentity: 'sha256:test',
-        manifestSha256: 'manifest-sha',
+        artifactIdentity,
+        manifestSha256: createHash('sha256').update(readFileSync(manifestPath)).digest('hex'),
         sourceCommit: 'a'.repeat(40),
       };
     },

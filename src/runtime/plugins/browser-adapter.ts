@@ -2614,7 +2614,37 @@ async function openBrowser(
   return openManagedContext(runtimeHooks.loadPlaywright(repoRoot), repoRoot, config, target, args, requestedMode, requestedMode);
 }
 
+const BROWSER_POST_DISPATCH_REPLAY_SAFE_ACTIONS = new Set([
+  'wait_for_load_state',
+  'get_text',
+  'get_html',
+  'query_selector',
+  'query_all',
+  'get_attribute',
+  'list_frames',
+  'verify_state',
+  'screenshot',
+  'extract_links',
+  'extract_tables',
+  'extract_forms',
+  'snapshot_interactive',
+  'get_console_errors',
+  'get_failed_requests',
+  'wait_for_selector',
+]);
+
+/**
+ * Only observation-only actions may be replayed after dispatch. Browser
+ * interactions and navigation can have an externally visible effect even when
+ * the provider later reports a timeout, so a transient post-dispatch failure is
+ * an unknown outcome, never an automatic retry signal.
+ */
+export function browserActionCanReplayAfterDispatch(actionId: string, requireExistingResource = true): boolean {
+  return requireExistingResource && BROWSER_POST_DISPATCH_REPLAY_SAFE_ACTIONS.has(actionId);
+}
+
 async function withPage<T>(
+  actionId: string,
   repoRoot: string,
   config: BrowserPluginConfig,
   target: BrowserActionTarget,
@@ -2623,16 +2653,23 @@ async function withPage<T>(
   options: { persistSession?: boolean; requireExistingResource?: boolean; pruneStaleSessionMetadata?: boolean } = {},
 ): Promise<T> {
   const retries = Math.min(Math.max(positiveNumber(args.retries, 1), 1), 3);
+  const requireExistingResource = options.requireExistingResource ?? Boolean(target.existingSession);
+  const postDispatchReplaySafe = browserActionCanReplayAfterDispatch(actionId, requireExistingResource);
   let lastError: unknown;
   for (let attempt = 1; attempt <= retries; attempt += 1) {
     let handle: BrowserOpenHandle | undefined;
+    // Opening a browser resource may itself create or navigate a tab before a
+    // handle is returned. Replay is safe only for an observation action that is
+    // fenced to an already-existing resource. Anything else is potentially
+    // externally mutating from the outset.
+    let actionDispatched = !postDispatchReplaySafe;
     try {
       if (target.existingSession) assertBrowserSessionAvailable(repoRoot, target.sessionId);
-      const requireExistingResource = options.requireExistingResource ?? Boolean(target.existingSession);
       const browserArgs = requireExistingResource
         ? { ...args, __forge_require_existing_resource: true }
         : args;
       handle = await openBrowser(repoRoot, config, target, browserArgs);
+      actionDispatched = true;
       const result = await run(handle.page, handle.diagnostics, handle.connection);
       if (options.persistSession) {
         const identity = await readPageIdentity(handle.page, handle.connection, target.url);
@@ -2664,8 +2701,18 @@ async function withPage<T>(
         removeSession(repoRoot, target.sessionId);
       }
       const message = error instanceof Error ? error.message : String(error);
-      const transient = /timeout|net::|ERR_|Navigation failed|Target closed|Protocol error/i.test(message);
-      if (!transient || attempt >= retries) throw error;
+      const transient = error instanceof AssistantPluginError
+        ? error.retryable
+        : /timeout|timed out|net::|ERR_|Navigation failed|Target closed|Protocol error/i.test(message);
+      if (!transient) throw error;
+      if (actionDispatched && !postDispatchReplaySafe) {
+        throw new AssistantPluginError(
+          'PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN',
+          `Browser action ${actionId} reported a transient failure after dispatch. Forge refused automatic replay because the external mutation outcome is unknown; verify current browser state before retrying.`,
+          { retryable: false, details: { actionId, requestedRetries: retries } },
+        );
+      }
+      if (attempt >= retries) throw error;
     } finally {
       if (handle) await handle.close();
     }
@@ -4689,7 +4736,7 @@ async function executeBrowserPluginActionInternal(
               : {}),
           };
         }
-        return await withPage(input.repoRoot, current, target, input.args, async (page, diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, diagnostics, connection) => {
           const identity = await readPageIdentity(page, connection, target.url);
           const session = saveSession(input.repoRoot, sessionFromPage(target, identity.url, identity.title, connection));
           return {
@@ -4711,7 +4758,7 @@ async function executeBrowserPluginActionInternal(
       case 'go_back':
       case 'wait_for_load_state': {
         const target = resolveActionTarget(input.repoRoot, input.args);
-        return await withPage(input.repoRoot, current, target, input.args, async (page, diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, diagnostics, connection) => {
           if (input.actionId === 'reload') {
             if (page.reload) await page.reload({ waitUntil: waitUntil(input.args.wait_until), timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
             else await page.goto(target.url, { waitUntil: waitUntil(input.args.wait_until), timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
@@ -4741,7 +4788,7 @@ async function executeBrowserPluginActionInternal(
       }
       case 'get_text': {
         const target = resolveActionTarget(input.repoRoot, input.args);
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           const selection = resolveBrowserEvaluationScope(page, input.args, connection);
           return {
             provider: browserResultProvider(connection.provider),
@@ -4755,7 +4802,7 @@ async function executeBrowserPluginActionInternal(
       }
       case 'get_html': {
         const target = resolveActionTarget(input.repoRoot, input.args);
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           const selection = resolveBrowserEvaluationScope(page, input.args, connection);
           const raw = await selection.scope.evaluate<string>(EXTRACTION_SCRIPTS.html(stringValue(input.args.selector)));
           return {
@@ -4773,7 +4820,7 @@ async function executeBrowserPluginActionInternal(
         const target = resolveActionTarget(input.repoRoot, input.args);
         const selector = requiredString(input.args.selector, 'selector');
         const limit = Math.min(positiveNumber(input.args.limit, 25), 100);
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           const selection = resolveBrowserEvaluationScope(page, input.args, connection);
           const matches = await selection.scope.evaluate<Array<Record<string, unknown>>>(EXTRACTION_SCRIPTS.query(selector, input.actionId === 'query_selector' ? 1 : limit));
           return {
@@ -4793,7 +4840,7 @@ async function executeBrowserPluginActionInternal(
         const target = resolveActionTarget(input.repoRoot, input.args);
         const selector = requiredString(input.args.selector, 'selector');
         const attribute = requiredString(input.args.attribute, 'attribute');
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           const selection = resolveBrowserEvaluationScope(page, input.args, connection);
           return {
             provider: browserResultProvider(connection.provider),
@@ -4810,7 +4857,7 @@ async function executeBrowserPluginActionInternal(
       case 'list_frames': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         const limit = Math.min(positiveNumber(input.args.limit, 50), 100);
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (connection.provider === 'macos-apple-events' || !page.frames) {
             throw new AssistantPluginError('PLUGIN_BROWSER_FRAME_SCOPE_UNAVAILABLE', 'Frame discovery requires a Playwright/CDP-controlled page; native Apple Events sessions fail closed.', {
               retryable: false,
@@ -4845,7 +4892,7 @@ async function executeBrowserPluginActionInternal(
         if (requireVisible && !selector) {
           throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'require_visible requires selector.', { retryable: false });
         }
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           const selection = resolveBrowserEvaluationScope(page, input.args, connection);
           const observedUrl = selection.frame?.url ?? page.url();
           const checks: Array<Record<string, unknown>> = [];
@@ -4887,7 +4934,7 @@ async function executeBrowserPluginActionInternal(
         const target = resolveActionTarget(input.repoRoot, input.args);
         const file = screenshotFilePath(input.repoRoot, 'screenshot', target.sessionId, target.url);
         const selector = stringValue(input.args.selector);
-        const screenshot = await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        const screenshot = await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           let bytes: number;
           if (selector && page.locator) {
             bytes = (await page.locator(selector).screenshot({ path: file })).length;
@@ -4913,7 +4960,7 @@ async function executeBrowserPluginActionInternal(
       case 'snapshot_interactive': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         const limit = Math.min(positiveNumber(input.args.limit, 50), 200);
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           const script = input.actionId === 'extract_links'
             ? EXTRACTION_SCRIPTS.links(limit)
             : input.actionId === 'extract_tables'
@@ -4961,7 +5008,7 @@ async function executeBrowserPluginActionInternal(
       case 'get_console_errors':
       case 'get_failed_requests': {
         const target = resolveActionTarget(input.repoRoot, input.args);
-        return await withPage(input.repoRoot, current, target, input.args, async (_page, diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (_page, diagnostics, connection) => {
           if (connection.provider === 'macos-apple-events') {
             throw new AssistantPluginError(
               'PLUGIN_BROWSER_DIAGNOSTICS_UNAVAILABLE',
@@ -4983,7 +5030,7 @@ async function executeBrowserPluginActionInternal(
       }
       case 'activate_page': {
         const target = resolveActionTarget(input.repoRoot, input.args);
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           const waitMs = positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS);
           if (connection.provider === 'macos-apple-events') {
             await establishAuthoritativeNativeForeground(input, page, connection, target, waitMs);
@@ -5003,7 +5050,7 @@ async function executeBrowserPluginActionInternal(
         if (text.length > 200) {
           throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'text must be 200 characters or fewer.', { retryable: false });
         }
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           const clicked = await page.evaluate((payload) => {
             const args = payload as { text: string };
             const normalize = (value: string) => value.replace(/\s+/g, ' ').trim();
@@ -5049,7 +5096,7 @@ async function executeBrowserPluginActionInternal(
         const selector = requiredString(input.args.selector, 'selector');
         const timeoutMs = positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
         try {
-          return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+          return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
             if (input.actionId === 'click' && openShadowSelectorParts(selector).length > 1) {
               const parts = openShadowSelectorParts(selector);
               await page.evaluate((payload) => {
@@ -5108,7 +5155,7 @@ async function executeBrowserPluginActionInternal(
         const selector = requiredString(input.args.selector, 'selector');
         const text = requiredString(input.args.text, 'text');
         const timeoutMs = positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (input.actionId === 'fill' || !page.type) await page.fill(selector, text, { timeout: timeoutMs });
           else await page.type(selector, text, { timeout: timeoutMs });
           await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
@@ -5123,7 +5170,7 @@ async function executeBrowserPluginActionInternal(
         const selector = requiredString(input.args.selector, 'selector');
         const values = Array.isArray(input.args.values) ? input.args.values.map(String) : [];
         if (values.length === 0) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'values is required.', { retryable: false });
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (!page.selectOption) {
             throw new AssistantPluginError('PLUGIN_BROWSER_SELECT_OPTION_UNAVAILABLE', 'The active browser provider cannot select options safely.', { retryable: false });
           }
@@ -5139,7 +5186,7 @@ async function executeBrowserPluginActionInternal(
         const target = resolveActionTarget(input.repoRoot, input.args);
         const selector = requiredString(input.args.selector, 'selector');
         const key = requiredString(input.args.key, 'key');
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           await page.press(selector, key, { timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
           await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'press', `Pressed ${key} on ${selector}.`, {
@@ -5151,7 +5198,7 @@ async function executeBrowserPluginActionInternal(
       case 'keyboard_shortcut': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         const key = requiredString(input.args.key, 'key');
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (page.keyboard?.press) await page.keyboard.press(key);
           else await page.press('body', key, { timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
           await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
@@ -5172,7 +5219,7 @@ async function executeBrowserPluginActionInternal(
         if (guardSelector && kind !== 'click' && kind !== 'drag') {
           throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'guard_selector is supported only for trusted_input click or drag.', { retryable: false });
         }
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           const nativeTrustedInput = connection.provider === 'macos-apple-events';
           if (nativeTrustedInput && !page.trustedInput) {
             throw new AssistantPluginError(
@@ -5307,7 +5354,7 @@ async function executeBrowserPluginActionInternal(
         if (!/^[A-Za-z][A-Za-z0-9:_-]{0,63}$/.test(event)) {
           throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'event must be a simple DOM event name (letters, digits, colon, underscore, or hyphen; max 64 chars).', { retryable: false });
         }
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           const dispatched = await page.evaluate((payload) => {
             const args = payload as { selector: string; event: string };
             const element = document.querySelector(args.selector);
@@ -5328,7 +5375,7 @@ async function executeBrowserPluginActionInternal(
         const target = resolveActionTarget(input.repoRoot, input.args);
         const selector = requiredString(input.args.selector, 'selector');
         const state = waitForSelectorState(input.args.state);
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           await page.waitForSelector(selector, {
             state,
             timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS),
@@ -5375,7 +5422,7 @@ async function executeBrowserPluginActionInternal(
           }
           return lexicalPath;
         });
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           await page.evaluate((payload) => {
             const args = payload as { selector: string; count: number };
             const el = document.querySelector(args.selector) as HTMLInputElement | null;
@@ -5402,7 +5449,7 @@ async function executeBrowserPluginActionInternal(
         const requestedName = stringValue(input.args.suggested_name);
         const downloadDir = stateDir(input.repoRoot, 'downloads');
         mkdirSync(downloadDir, { recursive: true });
-        return await withPage(input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (connection.provider === 'macos-apple-events') {
             throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_ACTION_UNSUPPORTED', 'Native Apple Events attachment does not support download capture. Use CDP or a managed browser context.', { retryable: false });
           }

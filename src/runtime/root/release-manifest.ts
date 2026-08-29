@@ -13,6 +13,76 @@ function canonicalExistingPathIdentity(path: string): string {
   return existsSync(resolved) ? realpathSync(resolved) : resolved;
 }
 
+function requireSha256Identity(value: unknown, field: string): string {
+  const identity = requireString(value, field);
+  if (!/^sha256:[a-f0-9]{64}$/i.test(identity)) {
+    throw new Error(`RELEASE_MANIFEST_INVALID: ${field} must be sha256:<64 hex>`);
+  }
+  return identity;
+}
+
+type RuntimeComponentPair<KEntry extends keyof RuntimeReleaseManifest, KIdentity extends keyof RuntimeReleaseManifest> = Pick<
+  RuntimeReleaseManifest,
+  KEntry | KIdentity
+>;
+
+function optionalRuntimeComponent<
+  KEntry extends keyof RuntimeReleaseManifest,
+  KIdentity extends keyof RuntimeReleaseManifest,
+>(input: {
+  value: Record<string, unknown>;
+  entryField: KEntry;
+  identityField: KIdentity;
+  canonicalEntry: RuntimeReleaseManifest[KEntry];
+}): RuntimeComponentPair<KEntry, KIdentity> | undefined {
+  const rawEntry = input.value[input.entryField as string];
+  const rawIdentity = input.value[input.identityField as string];
+  if (rawEntry === undefined && rawIdentity === undefined) return undefined;
+  const entry = requireString(rawEntry, input.entryField as string);
+  if (entry !== input.canonicalEntry) {
+    throw new Error(`RELEASE_MANIFEST_INVALID: ${String(input.entryField)} must be ${String(input.canonicalEntry)}, got ${entry}`);
+  }
+  const identity = requireSha256Identity(rawIdentity, input.identityField as string);
+  return {
+    [input.entryField]: input.canonicalEntry,
+    [input.identityField]: identity,
+  } as RuntimeComponentPair<KEntry, KIdentity>;
+}
+
+export const COMPILED_RUNTIME_RELEASE_COMPONENT_FIELDS = [
+  'diagnosticEntrypoint', 'diagnosticArtifactIdentity',
+  'browserNodeBridgeEntrypoint', 'browserNodeBridgeArtifactIdentity',
+  'browserHandoffEntrypoint', 'browserHandoffArtifactIdentity',
+  'processRunnerEntrypoint', 'processRunnerArtifactIdentity',
+  'checkRunnerEntrypoint', 'checkRunnerArtifactIdentity',
+  'pluginActionSidecarEntrypoint', 'pluginActionSidecarArtifactIdentity',
+  'externalPluginProbeEntrypoint', 'externalPluginProbeArtifactIdentity',
+  'codeGraphNodeEntrypoint', 'codeGraphNodeArtifactIdentity',
+  'codeGraphSidecarEntrypoint', 'codeGraphSidecarArtifactIdentity',
+  'codeGraphLibraryRoot', 'codeGraphLibraryArtifactIdentity',
+  'controllerUiRoot', 'controllerUiArtifactIdentity',
+] as const satisfies readonly (keyof RuntimeReleaseManifest)[];
+
+/**
+ * Compiled self-host candidates have a closed execution surface. Package
+ * launcher releases are a separate source-backed release form and therefore
+ * intentionally do not satisfy this contract.
+ */
+export type CompleteCompiledRuntimeReleaseManifest = RuntimeReleaseManifest & Required<Pick<
+  RuntimeReleaseManifest,
+  typeof COMPILED_RUNTIME_RELEASE_COMPONENT_FIELDS[number]
+>>;
+
+export function requireCompleteCompiledRuntimeReleaseManifest(
+  manifest: RuntimeReleaseManifest,
+): asserts manifest is CompleteCompiledRuntimeReleaseManifest {
+  for (const field of COMPILED_RUNTIME_RELEASE_COMPONENT_FIELDS) {
+    if (manifest[field] === undefined) {
+      throw new Error(`RUNTIME_RELEASE_COMPILED_COMPONENT_MISSING: ${field}`);
+    }
+  }
+}
+
 export function loadRuntimeReleaseManifest(
   path: string,
   expectedControllerHome: string,
@@ -50,18 +120,54 @@ export function loadRuntimeReleaseManifest(
       `RELEASE_DATABASE_SCHEMA_INCOMPATIBLE: runtime=${CONTROL_PLANE_SCHEMA_VERSION} supported=${minimum}-${maximum}`,
     );
   }
-  let diagnosticEntrypoint: 'forge-cli' | undefined;
-  let diagnosticArtifactIdentity: string | undefined;
-  if (value.diagnosticEntrypoint !== undefined) {
-    const diagnosticEntry = requireString(value.diagnosticEntrypoint, 'diagnosticEntrypoint');
-    if (diagnosticEntry !== 'forge-cli') {
-      throw new Error(`RELEASE_MANIFEST_INVALID: diagnosticEntrypoint must be forge-cli, got ${diagnosticEntry}`);
-    }
-    diagnosticEntrypoint = 'forge-cli';
-    diagnosticArtifactIdentity = requireString(value.diagnosticArtifactIdentity, 'diagnosticArtifactIdentity');
-  } else if (value.diagnosticArtifactIdentity !== undefined) {
-    throw new Error('RELEASE_MANIFEST_INVALID: diagnosticArtifactIdentity requires diagnosticEntrypoint');
-  }
+  const diagnostic = optionalRuntimeComponent({
+    value,
+    entryField: 'diagnosticEntrypoint',
+    identityField: 'diagnosticArtifactIdentity',
+    canonicalEntry: 'forge-cli',
+  });
+  const browserNodeBridge = optionalRuntimeComponent({
+    value,
+    entryField: 'browserNodeBridgeEntrypoint',
+    identityField: 'browserNodeBridgeArtifactIdentity',
+    canonicalEntry: 'browser-node-bridge-host.js',
+  });
+  const browserHandoff = optionalRuntimeComponent({
+    value,
+    entryField: 'browserHandoffEntrypoint',
+    identityField: 'browserHandoffArtifactIdentity',
+    canonicalEntry: 'browser-handoff-host.js',
+  });
+  const processRunner = optionalRuntimeComponent({
+    value,
+    entryField: 'processRunnerEntrypoint',
+    identityField: 'processRunnerArtifactIdentity',
+    canonicalEntry: 'process-runner.js',
+  });
+  const checkRunner = optionalRuntimeComponent({
+    value,
+    entryField: 'checkRunnerEntrypoint',
+    identityField: 'checkRunnerArtifactIdentity',
+    canonicalEntry: 'forge-check-runner',
+  });
+  const pluginActionSidecar = optionalRuntimeComponent({
+    value,
+    entryField: 'pluginActionSidecarEntrypoint',
+    identityField: 'pluginActionSidecarArtifactIdentity',
+    canonicalEntry: 'forge-plugin-action-sidecar',
+  });
+  const externalPluginProbe = optionalRuntimeComponent({
+    value,
+    entryField: 'externalPluginProbeEntrypoint',
+    identityField: 'externalPluginProbeArtifactIdentity',
+    canonicalEntry: 'external-unix-socket-probe.cjs',
+  });
+  const controllerUi = optionalRuntimeComponent({
+    value,
+    entryField: 'controllerUiRoot',
+    identityField: 'controllerUiArtifactIdentity',
+    canonicalEntry: 'ui-dist',
+  });
   const browserAutomationHelperFields = [
     value.browserAutomationHelperEntrypoint,
     value.browserAutomationHelperArtifactIdentity,
@@ -112,11 +218,11 @@ export function loadRuntimeReleaseManifest(
     }
     codeGraphRuntime = {
       codeGraphNodeEntrypoint: 'codegraph-node',
-      codeGraphNodeArtifactIdentity: requireString(value.codeGraphNodeArtifactIdentity, 'codeGraphNodeArtifactIdentity'),
+      codeGraphNodeArtifactIdentity: requireSha256Identity(value.codeGraphNodeArtifactIdentity, 'codeGraphNodeArtifactIdentity'),
       codeGraphSidecarEntrypoint: 'codegraph-sidecar.cjs',
-      codeGraphSidecarArtifactIdentity: requireString(value.codeGraphSidecarArtifactIdentity, 'codeGraphSidecarArtifactIdentity'),
+      codeGraphSidecarArtifactIdentity: requireSha256Identity(value.codeGraphSidecarArtifactIdentity, 'codeGraphSidecarArtifactIdentity'),
       codeGraphLibraryRoot: 'codegraph-lib',
-      codeGraphLibraryArtifactIdentity: requireString(value.codeGraphLibraryArtifactIdentity, 'codeGraphLibraryArtifactIdentity'),
+      codeGraphLibraryArtifactIdentity: requireSha256Identity(value.codeGraphLibraryArtifactIdentity, 'codeGraphLibraryArtifactIdentity'),
     };
   }
 
@@ -136,9 +242,16 @@ export function loadRuntimeReleaseManifest(
     releaseId: requireString(value.releaseId, 'releaseId'),
     artifactIdentity: requireString(value.artifactIdentity, 'artifactIdentity'),
     entrypoint: 'forge-runtime',
-    ...(diagnosticEntrypoint ? { diagnosticEntrypoint, diagnosticArtifactIdentity } : {}),
+    ...(diagnostic ?? {}),
+    ...(browserNodeBridge ?? {}),
+    ...(browserHandoff ?? {}),
+    ...(processRunner ?? {}),
+    ...(checkRunner ?? {}),
+    ...(pluginActionSidecar ?? {}),
+    ...(externalPluginProbe ?? {}),
     ...(browserAutomationHelper ?? {}),
     ...(codeGraphRuntime ?? {}),
+    ...(controllerUi ?? {}),
     arguments: argumentsValue as string[],
     configurationSchemaVersion: 1,
     controllerHome,

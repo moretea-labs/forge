@@ -276,7 +276,10 @@ export async function runPersistedCheckViaProcessRuntime(
     checkFingerprint,
     '--result-receipt',
     checkResultReceiptPath,
-    ...(verificationSnapshot ? ['--cleanup-root', verificationSnapshot.root] : []),
+    ...(verificationSnapshot ? [
+      '--isolated-controller-home', verificationSnapshot.isolatedControllerHome,
+      '--cleanup-root', verificationSnapshot.root,
+    ] : []),
   ];
   const invocation = resolvePersistedCheckProcessInvocation(cliTarget, checkArgs);
   let handle;

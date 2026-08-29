@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { resolveBunExecutable } from '../shared/process-environment';
 import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlite-store';
+import { loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest } from './release-manifest';
 
 /**
  * Stage one immutable Forge Runtime release below Controller Home. The staged
@@ -24,6 +25,7 @@ export interface MacOSRuntimeCodeSigning {
 }
 
 export interface StagedRuntimeRelease {
+  controllerHome: string;
   releasePath: string;
   manifestPath: string;
   releaseId: string;
@@ -309,6 +311,13 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
   let rawManifest: Record<string, unknown>;
   try { rawManifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>; }
   catch (error) { throw new Error(`RUNTIME_RELEASE_CANDIDATE_MANIFEST_INVALID: ${error instanceof Error ? error.message : String(error)}`); }
+  const manifest = loadRuntimeReleaseManifest(manifestPath, controllerHome);
+  requireCompleteCompiledRuntimeReleaseManifest(manifest);
+  if (manifest.releaseId !== receipt.releaseId
+    || manifest.artifactIdentity !== receipt.artifactIdentity
+    || manifest.sourceCommit !== receipt.sourceCommit) {
+    throw new Error('RUNTIME_RELEASE_CANDIDATE_MANIFEST_RECEIPT_MISMATCH');
+  }
   const platform = dependencies.platform ?? process.platform;
   const macosCodeSigning = parseMacOSRuntimeCodeSigning(rawManifest.macosCodeSigning, 'RUNTIME_RELEASE_CANDIDATE_SIGNING_INVALID');
   if (platform === 'darwin') {
@@ -322,15 +331,29 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
     }
   }
 
-  return {
+  const staged: StagedRuntimeRelease = {
+    controllerHome,
     releasePath,
     manifestPath,
     releaseId: receipt.releaseId,
     artifactIdentity: receipt.artifactIdentity,
+    diagnosticArtifactIdentity: manifest.diagnosticArtifactIdentity,
+    browserNodeBridgeArtifactIdentity: manifest.browserNodeBridgeArtifactIdentity,
+    browserHandoffArtifactIdentity: manifest.browserHandoffArtifactIdentity,
+    processRunnerArtifactIdentity: manifest.processRunnerArtifactIdentity,
+    checkRunnerArtifactIdentity: manifest.checkRunnerArtifactIdentity,
+    pluginActionSidecarArtifactIdentity: manifest.pluginActionSidecarArtifactIdentity,
+    externalPluginProbeArtifactIdentity: manifest.externalPluginProbeArtifactIdentity,
+    codeGraphNodeArtifactIdentity: manifest.codeGraphNodeArtifactIdentity,
+    codeGraphSidecarArtifactIdentity: manifest.codeGraphSidecarArtifactIdentity,
+    codeGraphLibraryArtifactIdentity: manifest.codeGraphLibraryArtifactIdentity,
+    controllerUiArtifactIdentity: manifest.controllerUiArtifactIdentity,
     ...(macosCodeSigning ? { macosCodeSigning } : {}),
     manifestSha256: receipt.manifestSha256,
     sourceCommit: receipt.sourceCommit,
   };
+  assertRuntimeReleaseFiles(staged, dependencies);
+  return staged;
 }
 
 function defaultCompileBinary(input: { sourceRoot: string; outputPath: string; entryPath?: string }): { ok: boolean; stderr?: string; stdout?: string; error?: string } {
@@ -592,6 +615,7 @@ export function stageRuntimeRelease(input: {
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
     renameSync(staging, releasePath);
     return {
+      controllerHome: resolve(input.controllerHome),
       releasePath,
       manifestPath: join(releasePath, 'manifest.json'),
       releaseId,
@@ -602,6 +626,7 @@ export function stageRuntimeRelease(input: {
       browserHandoffArtifactIdentity,
       processRunnerArtifactIdentity,
       checkRunnerArtifactIdentity,
+      pluginActionSidecarArtifactIdentity,
       externalPluginProbeArtifactIdentity,
       codeGraphNodeArtifactIdentity,
       codeGraphSidecarArtifactIdentity,
@@ -617,13 +642,53 @@ export function stageRuntimeRelease(input: {
 }
 
 export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease, dependencies: { platform?: NodeJS.Platform; inspectMacOSRuntime?: (executable: string) => MacOSRuntimeCodeSigning } = {}): void {
+  const assertRegularFile = (path: string, missingCode: string): void => {
+    if (!existsSync(path)) throw new Error(`${missingCode}: ${path}`);
+    const status = lstatSync(path);
+    if (status.isSymbolicLink() || !status.isFile()) throw new Error(`RUNTIME_RELEASE_PATH_NOT_REGULAR_FILE: ${path}`);
+  };
+  const assertExecutable = (path: string): void => {
+    if ((statSync(path).mode & 0o111) === 0) throw new Error(`RUNTIME_RELEASE_ENTRYPOINT_NOT_EXECUTABLE: ${path}`);
+  };
+  const assertFileIdentity = (path: string, expected: string): void => {
+    const actual = `sha256:${sha256(path)}`;
+    if (actual !== expected) throw new Error(`RUNTIME_RELEASE_ARTIFACT_IDENTITY_MISMATCH: ${path}`);
+  };
+  const assertDirectoryIdentity = (path: string, expected: string): void => {
+    if (!existsSync(path)) throw new Error(`RUNTIME_RELEASE_DIRECTORY_MISSING: ${path}`);
+    const status = lstatSync(path);
+    if (status.isSymbolicLink() || !status.isDirectory()) throw new Error(`RUNTIME_RELEASE_PATH_NOT_DIRECTORY: ${path}`);
+    const actual = `sha256:${sha256Directory(path)}`;
+    if (actual !== expected) throw new Error(`RUNTIME_RELEASE_ARTIFACT_IDENTITY_MISMATCH: ${path}`);
+  };
+  const assertComponentFile = (input: { path: string; identity?: string; missingCode: string; executable?: boolean }): void => {
+    if (!input.identity) return;
+    assertRegularFile(input.path, input.missingCode);
+    assertFileIdentity(input.path, input.identity);
+    if (input.executable) assertExecutable(input.path);
+  };
+
   if (!existsSync(release.releasePath) || !existsSync(release.manifestPath)) {
     throw new Error(`RUNTIME_RELEASE_FILES_MISSING: ${release.releasePath}`);
   }
-  const runtimePath = join(release.releasePath, 'forge-runtime');
-  if (!existsSync(runtimePath)) {
-    throw new Error(`RUNTIME_RELEASE_ENTRYPOINT_MISSING: ${runtimePath}`);
+  const releasesRoot = join(resolve(release.controllerHome), 'runtime', 'releases');
+  if (resolve(release.releasePath) !== join(releasesRoot, release.releaseId)
+    || resolve(release.manifestPath) !== join(release.releasePath, 'manifest.json')) {
+    throw new Error('RUNTIME_RELEASE_PATH_OUTSIDE_CONTROLLER_HOME');
   }
+  const releaseStatus = lstatSync(release.releasePath);
+  const manifestStatus = lstatSync(release.manifestPath);
+  if (releaseStatus.isSymbolicLink() || !releaseStatus.isDirectory()
+    || manifestStatus.isSymbolicLink() || !manifestStatus.isFile()) {
+    throw new Error(`RUNTIME_RELEASE_PATH_NOT_PHYSICAL: ${release.releasePath}`);
+  }
+  if (sha256(release.manifestPath) !== release.manifestSha256) {
+    throw new Error('RUNTIME_RELEASE_MANIFEST_IDENTITY_MISMATCH');
+  }
+  const runtimePath = join(release.releasePath, 'forge-runtime');
+  assertRegularFile(runtimePath, 'RUNTIME_RELEASE_ENTRYPOINT_MISSING');
+  assertExecutable(runtimePath);
+  assertFileIdentity(runtimePath, release.artifactIdentity);
   const platform = dependencies.platform ?? process.platform;
   if (platform === 'darwin' && release.macosCodeSigning) {
     const actual = (dependencies.inspectMacOSRuntime ?? inspectMacOSRuntimeCodeSigning)(runtimePath);
@@ -634,38 +699,27 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease, depende
       throw new Error('RUNTIME_RELEASE_MACOS_SIGNING_MISMATCH');
     }
   }
-  if (release.diagnosticArtifactIdentity && !existsSync(join(release.releasePath, 'forge-cli'))) {
-    throw new Error(`RUNTIME_RELEASE_DIAGNOSTIC_ENTRYPOINT_MISSING: ${join(release.releasePath, 'forge-cli')}`);
+  assertComponentFile({ path: join(release.releasePath, 'forge-cli'), identity: release.diagnosticArtifactIdentity, missingCode: 'RUNTIME_RELEASE_DIAGNOSTIC_ENTRYPOINT_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'browser-node-bridge-host.js'), identity: release.browserNodeBridgeArtifactIdentity, missingCode: 'RUNTIME_RELEASE_BROWSER_NODE_HOST_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'browser-handoff-host.js'), identity: release.browserHandoffArtifactIdentity, missingCode: 'RUNTIME_RELEASE_BROWSER_HANDOFF_HOST_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'process-runner.js'), identity: release.processRunnerArtifactIdentity, missingCode: 'RUNTIME_RELEASE_PROCESS_RUNNER_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'forge-check-runner'), identity: release.checkRunnerArtifactIdentity, missingCode: 'RUNTIME_RELEASE_CHECK_RUNNER_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'forge-plugin-action-sidecar'), identity: release.pluginActionSidecarArtifactIdentity, missingCode: 'RUNTIME_RELEASE_PLUGIN_ACTION_SIDECAR_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'external-unix-socket-probe.cjs'), identity: release.externalPluginProbeArtifactIdentity, missingCode: 'RUNTIME_RELEASE_EXTERNAL_PLUGIN_PROBE_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'codegraph-node'), identity: release.codeGraphNodeArtifactIdentity, missingCode: 'RUNTIME_RELEASE_CODEGRAPH_NODE_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'codegraph-sidecar.cjs'), identity: release.codeGraphSidecarArtifactIdentity, missingCode: 'RUNTIME_RELEASE_CODEGRAPH_SIDECAR_MISSING', executable: true });
+  if (release.codeGraphLibraryArtifactIdentity) {
+    const libraryRoot = join(release.releasePath, 'codegraph-lib');
+    if (!existsSync(join(libraryRoot, 'dist', 'index.js'))) {
+      throw new Error(`RUNTIME_RELEASE_CODEGRAPH_LIBRARY_MISSING: ${join(libraryRoot, 'dist', 'index.js')}`);
+    }
+    assertDirectoryIdentity(libraryRoot, release.codeGraphLibraryArtifactIdentity);
   }
-  if (release.browserNodeBridgeArtifactIdentity && !existsSync(join(release.releasePath, 'browser-node-bridge-host.js'))) {
-    throw new Error(`RUNTIME_RELEASE_BROWSER_NODE_HOST_MISSING: ${join(release.releasePath, 'browser-node-bridge-host.js')}`);
-  }
-  if (release.browserHandoffArtifactIdentity && !existsSync(join(release.releasePath, 'browser-handoff-host.js'))) {
-    throw new Error(`RUNTIME_RELEASE_BROWSER_HANDOFF_HOST_MISSING: ${join(release.releasePath, 'browser-handoff-host.js')}`);
-  }
-  if (release.processRunnerArtifactIdentity && !existsSync(join(release.releasePath, 'process-runner.js'))) {
-    throw new Error(`RUNTIME_RELEASE_PROCESS_RUNNER_MISSING: ${join(release.releasePath, 'process-runner.js')}`);
-  }
-  if (release.checkRunnerArtifactIdentity && !existsSync(join(release.releasePath, 'forge-check-runner'))) {
-    throw new Error(`RUNTIME_RELEASE_CHECK_RUNNER_MISSING: ${join(release.releasePath, 'forge-check-runner')}`);
-  }
-  if (release.pluginActionSidecarArtifactIdentity && !existsSync(join(release.releasePath, 'forge-plugin-action-sidecar'))) {
-    throw new Error(`RUNTIME_RELEASE_PLUGIN_ACTION_SIDECAR_MISSING: ${join(release.releasePath, 'forge-plugin-action-sidecar')}`);
-  }
-  if (release.externalPluginProbeArtifactIdentity && !existsSync(join(release.releasePath, 'external-unix-socket-probe.cjs'))) {
-    throw new Error(`RUNTIME_RELEASE_EXTERNAL_PLUGIN_PROBE_MISSING: ${join(release.releasePath, 'external-unix-socket-probe.cjs')}`);
-  }
-  if (release.codeGraphNodeArtifactIdentity && !existsSync(join(release.releasePath, 'codegraph-node'))) {
-    throw new Error(`RUNTIME_RELEASE_CODEGRAPH_NODE_MISSING: ${join(release.releasePath, 'codegraph-node')}`);
-  }
-  if (release.codeGraphSidecarArtifactIdentity && !existsSync(join(release.releasePath, 'codegraph-sidecar.cjs'))) {
-    throw new Error(`RUNTIME_RELEASE_CODEGRAPH_SIDECAR_MISSING: ${join(release.releasePath, 'codegraph-sidecar.cjs')}`);
-  }
-  if (release.codeGraphLibraryArtifactIdentity && !existsSync(join(release.releasePath, 'codegraph-lib', 'dist', 'index.js'))) {
-    throw new Error(`RUNTIME_RELEASE_CODEGRAPH_LIBRARY_MISSING: ${join(release.releasePath, 'codegraph-lib', 'dist', 'index.js')}`);
-  }
-  if (release.controllerUiArtifactIdentity
-    && (!existsSync(join(release.releasePath, 'ui-dist', 'app.js')) || !existsSync(join(release.releasePath, 'ui-dist', 'app.css')))) {
-    throw new Error(`RUNTIME_RELEASE_CONTROLLER_UI_MISSING: ${join(release.releasePath, 'ui-dist')}`);
+  if (release.controllerUiArtifactIdentity) {
+    const uiRoot = join(release.releasePath, 'ui-dist');
+    if (!existsSync(join(uiRoot, 'app.js')) || !existsSync(join(uiRoot, 'app.css'))) {
+      throw new Error(`RUNTIME_RELEASE_CONTROLLER_UI_MISSING: ${uiRoot}`);
+    }
+    assertDirectoryIdentity(uiRoot, release.controllerUiArtifactIdentity);
   }
 }

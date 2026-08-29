@@ -15,3 +15,5 @@ export * from './goal-workloop-access';
 export * from './codex-delegation';
 export * from './self-healing-loop';
 export * from './operation-digest';
+export * from './requirement-authority';
+export * from './repository-work-admission';

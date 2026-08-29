@@ -51,6 +51,7 @@ import type {
   WorkRisk,
 } from './types';
 import { selectExecutionMode } from './types';
+import { resolveWorkspaceAdmissionConstraint } from '../routing/workspace-admission';
 
 export type GoalWorkloopOperation = 'start' | 'continue' | 'verify' | 'finalize' | 'stop';
 
@@ -349,6 +350,22 @@ export function routeWorkStart(
   ctx: GoalWorkloopContext,
   input: GoalWorkloopStartInput,
 ): FacadeResult {
+  const placementResolution = resolveWorkspaceAdmissionConstraint(input.constraints);
+  if (placementResolution.ok === false) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `${placementResolution.code}: ${placementResolution.message}`,
+      data: { executionStarted: false, workContractCreated: false, placementConstraintConflict: true },
+      rawAvailable: false,
+    });
+  }
+  const placementConstraint = placementResolution.constraint;
+  const canonicalConstraints: WorkContract['constraints'] = {
+    ...(input.constraints ?? {}),
+    workspaceMode: placementConstraint.workspaceMode,
+    requireWorktree: placementConstraint.requireWorktree,
+    directMainProhibited: placementConstraint.directMainProhibited,
+  };
   const strategyConflictRequiresApproval = input.constraints?.architectureStrategyChange === true
     || input.constraints?.conflictsWithThinHarnessPolicy === true
     || input.constraints?.changesDefaultExecutionStrategy === true;
@@ -356,6 +373,8 @@ export function routeWorkStart(
     ...input.modeInput,
     objective: input.objective,
     knownPaths: input.allowedPaths,
+    workspacePlacement: placementConstraint.workspaceMode,
+    directMainProhibited: placementConstraint.directMainProhibited,
     mutation: input.modeInput.mutation ?? input.modeInput.risk !== 'readonly',
     approvalConfirmed: input.approvalConfirmed === true,
     requiresUserApproval: input.approvalConfirmed === true
@@ -400,12 +419,24 @@ export function routeWorkStart(
   });
 
   let selectedMode = selectExecutionMode(effectiveModeInput);
+  if (input.forceMode === 'direct_control' && selectedMode.routeDecision.requiresIsolation) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: 'WORKSPACE_PLACEMENT_DIRECT_CONTROL_FORBIDDEN: typed placement requires isolation, so force_mode=direct_control cannot override admission policy.',
+      data: { executionStarted: false, workContractCreated: false, routeDecision: selectedMode.routeDecision },
+      rawAvailable: false,
+    });
+  }
   let policy = evaluateAccessPolicy(selectedMode);
   if (policy.decision === 'allowed' && effectiveModeInput.requiresUserApproval !== true) {
     selectedMode = selectExecutionMode({ ...effectiveModeInput, approvalConfirmed: true });
     policy = evaluateAccessPolicy(selectedMode);
   }
   let mode = applyForcedMode(selectedMode);
+  const routeApprovalRequired = mode.routeDecision.requiresApproval
+    && mode.routeDecision.waitForUser
+    && mode.routeDecision.approvalState !== 'blocked_by_policy';
+  const approvalRequired = policy.decision === 'approval_required' || routeApprovalRequired;
 
   // Route Policy is the sole execution-depth authority. Existing Work is
   // ownership context, not a reason to upgrade an otherwise Direct operation
@@ -492,7 +523,7 @@ export function routeWorkStart(
       severity: policy.decision === 'denied' ? 'blocked' : 'needs_review',
       creationReason: !input.modeInput.scopeClear
         ? 'invalid_objective'
-        : policy.decision === 'approval_required'
+        : approvalRequired
           ? (input.modeInput.destructive ? 'destructive_action_requires_confirmation' : 'policy_approval_required')
           : 'missing_authorization',
       reason: mode.reason,
@@ -505,13 +536,13 @@ export function routeWorkStart(
       },
       attemptedActions: ['route_execution_mode'],
       evidenceRefs: [],
-      blockingDecision: policy.decision === 'approval_required'
+      blockingDecision: approvalRequired
         ? 'Approve side effects or restate a safer objective.'
         : 'Clarify objective, scope, and acceptance criteria.',
       recommendedDecision: 'Provide a clear objective and authorization, or cancel the request.',
       recommendedPrompt: `Resolve handoff and restate work for repo ${ctx.repoId}.`,
       recommendedContinuationPrompt: `After approval, start the approved work for ${ctx.repoId}.`,
-      approvalAction: policy.decision === 'approval_required'
+      approvalAction: approvalRequired
         ? {
             operation: 'start',
             label: 'Approve and start work',
@@ -532,6 +563,9 @@ export function routeWorkStart(
               requiresApproval: input.modeInput.requiresApproval === true || input.modeInput.requiresUserApproval === true,
               destructive: input.modeInput.destructive === true,
               accessMode: input.constraints?.accessMode,
+              workspaceMode: placementConstraint.workspaceMode,
+              requireWorktree: placementConstraint.requireWorktree,
+              directMainProhibited: placementConstraint.directMainProhibited,
               approvalConfirmed: true,
               forceMode: 'goal_workloop',
             },
@@ -549,7 +583,7 @@ export function routeWorkStart(
     });
 
     return buildFacadeResult({
-      status: policy.decision === 'denied' ? 'blocked' : policy.decision === 'approval_required' ? 'approval_required' : 'blocked',
+      status: policy.decision === 'denied' ? 'blocked' : approvalRequired ? 'approval_required' : 'blocked',
       summary: `Handoff-only: no WorkContract created and no execution started. ${mode.reason}`,
       data: {
         mode,
@@ -579,7 +613,7 @@ export function routeWorkStart(
     });
   }
 
-  return startGoalWorkloop(ctx, input, policy, 'goal_workloop', mode.routeDecision);
+  return startGoalWorkloop(ctx, { ...input, constraints: canonicalConstraints }, policy, 'goal_workloop', mode.routeDecision);
 }
 
 export function startGoalWorkloop(
@@ -589,6 +623,22 @@ export function startGoalWorkloop(
   executionMode: 'direct_control' | 'goal_workloop' = 'goal_workloop',
   routeDecision = selectExecutionMode({ ...input.modeInput, objective: input.objective, knownPaths: input.allowedPaths }).routeDecision,
 ): FacadeResult {
+  const placementResolution = resolveWorkspaceAdmissionConstraint(input.constraints);
+  if (placementResolution.ok === false) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `${placementResolution.code}: ${placementResolution.message}`,
+      data: { executionStarted: false, workContractCreated: false, placementConstraintConflict: true },
+      rawAvailable: false,
+    });
+  }
+  const placementConstraint = placementResolution.constraint;
+  const canonicalConstraints: WorkContract['constraints'] = {
+    ...(input.constraints ?? {}),
+    workspaceMode: placementConstraint.workspaceMode,
+    requireWorktree: placementConstraint.requireWorktree,
+    directMainProhibited: placementConstraint.directMainProhibited,
+  };
   const hasStrongAdmissionBinding = Boolean(input.planId || input.planStepId || input.requirementId || input.relatedWorkId || input.workRelation);
   if (hasStrongAdmissionBinding && !ctx.semanticAdmissionLocked) {
     return withPrimaryWorkAdmissionLock(ctx.workStore, () => startGoalWorkloop(
@@ -601,7 +651,7 @@ export function startGoalWorkloop(
   }
   const at = nowIso(ctx);
   const available = ctx.availableChecks ?? [];
-  const workspaceMode = input.constraints?.workspaceMode ?? 'auto';
+  const workspaceMode = placementConstraint.workspaceMode;
   const activeWorks = listWorkContracts({ ...ctx.workStore, status: 'active', limit: 100 })
     .filter((candidate) => (candidate.lifecycleRole ?? 'primary') === 'primary');
   const workspaceOwner = ctx.checkoutId
@@ -807,11 +857,10 @@ export function startGoalWorkloop(
   }
 
   const placementConflict = Boolean(workspaceOwner);
-  const needsWorktree = executionMode === 'goal_workloop' && (input.constraints?.requireWorktree
-    ?? (workspaceMode === 'isolated'
-      || placementConflict
-      || input.modeInput.requiresParallelism === true
-      || (workspaceMode === 'auto' && routeDecision.requiresIsolation === true)));
+  const needsWorktree = executionMode === 'goal_workloop' && (placementConstraint.requireWorktree
+    || placementConflict
+    || input.modeInput.requiresParallelism === true
+    || routeDecision.requiresIsolation === true);
   if (!needsWorktree && workspaceOwner) {
     return buildFacadeResult({
       status: 'blocked',
@@ -890,7 +939,7 @@ export function startGoalWorkloop(
     objective: input.objective,
     acceptanceCriteria: effectiveAcceptanceCriteria,
     constraints: {
-      ...(input.constraints ?? { requireHandoffOnAmbiguity: true }),
+      ...canonicalConstraints,
       ...(remoteDeliveryRequired ? { remoteDeliveryRequired: true } : {}),
     },
     risk: workRiskFor(input),

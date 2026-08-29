@@ -205,6 +205,27 @@ describe('Work validation receipt convergence', () => {
     expect(result.summary).toContain('check cacheKey');
   });
   test('verification snapshot metadata does not change Check content identity', () => { const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-controller-')); const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-repo-')); roots.push(controllerHome, repoRoot); writeFileSync(join(repoRoot, 'source.ts'), 'export const value = 1;\n'); execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot }); execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot }); execFileSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot }); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot }); const sourceIdentity = currentControllerCheckRevision(repoRoot); const snapshot = materializeWorkVerificationSnapshot({ controllerHome, repoId: 'repo-validation-snapshot', sourceRoot: repoRoot, scope: { workId: 'work-validation-snapshot', allowedPaths: ['**'], forbiddenPaths: [] } }); expect(existsSync(join(snapshot.root, '.ai/harness/controller/work-verification-snapshot.json'))).toBe(true); expect(currentControllerCheckRevision(snapshot.root)).toBe(sourceIdentity); });
+  test('verification snapshot provisions an isolated Controller Home inside the candidate namespace', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-host-controller-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-isolated-home-repo-'));
+    roots.push(controllerHome, repoRoot);
+    writeFileSync(join(repoRoot, 'source.ts'), 'export const value = 1;\n');
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot });
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const snapshot = materializeWorkVerificationSnapshot({
+      controllerHome,
+      repoId: 'repo-validation-isolated-home',
+      sourceRoot: repoRoot,
+      scope: { workId: 'work-validation-isolated-home', allowedPaths: ['**'], forbiddenPaths: [] },
+    });
+    expect(snapshot.isolatedControllerHome).toBe(join(snapshot.root, '.git', 'forge-candidate-controller'));
+    expect(execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: snapshot.root, encoding: 'utf8' })).not.toContain('forge-candidate-controller');
+    expect(snapshot.isolatedControllerHome).not.toBe(controllerHome);
+    expect(existsSync(snapshot.isolatedControllerHome)).toBe(true);
+  });
   test('verification snapshot treats empty allowed paths as an unfenced Work scope while preserving forbidden exclusions', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-unfenced-controller-'));
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-unfenced-repo-'));

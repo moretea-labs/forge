@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -180,19 +180,59 @@ describe('runtime release materialization', () => {
   test('accepts a first-generation candidate release with a parent-unknown sidecar', () => {
     const { root, controllerHome } = sourceFixture();
     const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
-    const releaseId = `future-${sourceCommit}`, releasePath = join(controllerHome, 'runtime', 'releases', releaseId);
-    const runtime = 'candidate-runtime', artifactIdentity = `sha256:${sha256Text(runtime)}`;
-    mkdirSync(releasePath, { recursive: true });
-    writeFileSync(join(releasePath, 'forge-runtime'), runtime); writeFileSync(join(releasePath, 'future-sidecar-v2'), 'future');
-    const manifestPath = join(releasePath, 'manifest.json');
-    const manifestText = `${JSON.stringify({ schemaVersion: 1, releaseId, artifactIdentity, entrypoint: 'forge-runtime', futureSidecarEntrypoint: 'future-sidecar-v2', arguments: [], configurationSchemaVersion: 1, controllerHome, databaseSchemaCompatibility: { minimum: 1, maximum: 1 }, workerProtocolVersion: 1, sourceCommit, createdAt: '2026-08-10T00:00:00.000Z' })}\n`;
-    writeFileSync(manifestPath, manifestText);
     const staged = stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, { platform: 'linux', runCandidateStager: (request) => {
       expect([request.scriptPath, request.sourceRoot, request.expectedHead]).toEqual([join(root, 'scripts', 'stage-runtime-release.ts'), root, sourceCommit]);
-      return { ok: true, stdout: JSON.stringify({ schemaVersion: 1, releasePath, manifestPath, releaseId, artifactIdentity, manifestSha256: sha256Text(manifestText), sourceCommit, futureSidecarEntrypoint: 'future-sidecar-v2' }) };
+      const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+        platform: 'linux',
+        now: () => 1_700_000_000_100,
+        uuid: () => 'future-candidate',
+        compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-binary'); return { ok: true }; },
+        bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-node-host'); return { ok: true }; },
+        bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-process-runner'); return { ok: true }; },
+        materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
+      });
+      writeFileSync(join(candidate.releasePath, 'future-sidecar-v2'), 'future');
+      const manifest = JSON.parse(readFileSync(candidate.manifestPath, 'utf8')) as Record<string, unknown>;
+      manifest.futureSidecarEntrypoint = 'future-sidecar-v2';
+      const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
+      writeFileSync(candidate.manifestPath, manifestText);
+      return { ok: true, stdout: JSON.stringify({
+        schemaVersion: 1,
+        releasePath: candidate.releasePath,
+        manifestPath: candidate.manifestPath,
+        releaseId: candidate.releaseId,
+        artifactIdentity: candidate.artifactIdentity,
+        manifestSha256: sha256Text(manifestText),
+        sourceCommit,
+        futureSidecarEntrypoint: 'future-sidecar-v2',
+      }) };
     } });
     expect(existsSync(join(staged.releasePath, 'future-sidecar-v2'))).toBe(true);
-    expect(loadRuntimeReleaseManifest(staged.manifestPath, controllerHome).releaseId).toBe(releaseId);
+    expect(loadRuntimeReleaseManifest(staged.manifestPath, controllerHome).releaseId).toBe(staged.releaseId);
+  });
+
+  test('rejects a compiled candidate whose manifest omits the Process Runner authority pair', () => {
+    const { root, controllerHome } = sourceFixture();
+    const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+    expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, { platform: 'linux', runCandidateStager: () => {
+      const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+        platform: 'linux',
+        compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-binary'); return { ok: true }; },
+        bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-node-host'); return { ok: true }; },
+        bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'candidate-process-runner'); return { ok: true }; },
+        materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
+      });
+      const manifest = JSON.parse(readFileSync(candidate.manifestPath, 'utf8')) as Record<string, unknown>;
+      delete manifest.processRunnerEntrypoint;
+      delete manifest.processRunnerArtifactIdentity;
+      const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
+      writeFileSync(candidate.manifestPath, manifestText);
+      return { ok: true, stdout: JSON.stringify({
+        schemaVersion: 1, releasePath: candidate.releasePath, manifestPath: candidate.manifestPath,
+        releaseId: candidate.releaseId, artifactIdentity: candidate.artifactIdentity,
+        manifestSha256: sha256Text(manifestText), sourceCommit,
+      }) };
+    } })).toThrow('RUNTIME_RELEASE_COMPILED_COMPONENT_MISSING: processRunnerEntrypoint');
   });
 
   test.each([
@@ -340,19 +380,29 @@ describe('runtime release materialization', () => {
     })).toThrow('RUNTIME_RELEASE_MACOS_SIGNING_MISMATCH');
   });
 
-  test('rejects a macOS candidate that omits the stable signing contract', () => {
+  test('rejects a complete macOS candidate that omits the stable signing contract', () => {
     const { root, controllerHome } = sourceFixture();
     const sourceCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
-    const releaseId = `unsigned-${sourceCommit}`, releasePath = join(controllerHome, 'runtime', 'releases', releaseId);
-    const runtime = 'unsigned-runtime', artifactIdentity = `sha256:${sha256Text(runtime)}`;
-    mkdirSync(releasePath, { recursive: true });
-    writeFileSync(join(releasePath, 'forge-runtime'), runtime);
-    const manifestPath = join(releasePath, 'manifest.json');
-    const manifestText = `${JSON.stringify({ schemaVersion: 1, releaseId, artifactIdentity, entrypoint: 'forge-runtime', arguments: [], configurationSchemaVersion: 1, controllerHome, databaseSchemaCompatibility: { minimum: 1, maximum: 1 }, workerProtocolVersion: 1, sourceCommit, createdAt: '2026-08-14T00:00:00.000Z' })}\n`;
-    writeFileSync(manifestPath, manifestText);
+    const candidate = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+      platform: 'linux',
+      now: () => 1_700_000_000_200,
+      uuid: () => 'unsigned-candidate',
+      compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'unsigned-candidate-binary'); return { ok: true }; },
+      bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'unsigned-candidate-node-host'); return { ok: true }; },
+      bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'unsigned-candidate-process-runner'); return { ok: true }; },
+      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
+    });
     expect(() => stageRuntimeReleaseFromCandidateSource({ controllerHome, sourceRoot: root }, {
       platform: 'darwin',
-      runCandidateStager: () => ({ ok: true, stdout: JSON.stringify({ schemaVersion: 1, releasePath, manifestPath, releaseId, artifactIdentity, manifestSha256: sha256Text(manifestText), sourceCommit }) }),
+      runCandidateStager: () => ({ ok: true, stdout: JSON.stringify({
+        schemaVersion: 1,
+        releasePath: candidate.releasePath,
+        manifestPath: candidate.manifestPath,
+        releaseId: candidate.releaseId,
+        artifactIdentity: candidate.artifactIdentity,
+        manifestSha256: candidate.manifestSha256,
+        sourceCommit,
+      }) }),
     })).toThrow('RUNTIME_RELEASE_CANDIDATE_MACOS_SIGNING_REQUIRED');
   });
 
@@ -454,5 +504,31 @@ describe('runtime release materialization', () => {
     });
     rmSync(join(staged.releasePath, 'browser-handoff-host.js'));
     expect(() => assertRuntimeReleaseFiles(staged)).toThrow('RUNTIME_RELEASE_BROWSER_HANDOFF_HOST_MISSING');
+  });
+
+  test('release assertion rejects a component whose bytes no longer match its manifest identity', () => {
+    const { root, controllerHome } = sourceFixture();
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+      platform: 'linux',
+      compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'binary'); return { ok: true }; },
+      bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
+      bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
+      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
+    });
+    writeFileSync(join(staged.releasePath, 'process-runner.js'), 'tampered-process-runner');
+    expect(() => assertRuntimeReleaseFiles(staged)).toThrow('RUNTIME_RELEASE_ARTIFACT_IDENTITY_MISMATCH');
+  });
+
+  test('release assertion rejects a declared executable component without an execute bit', () => {
+    const { root, controllerHome } = sourceFixture();
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+      platform: 'linux',
+      compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'binary'); return { ok: true }; },
+      bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
+      bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
+      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
+    });
+    chmodSync(join(staged.releasePath, 'process-runner.js'), 0o600);
+    expect(() => assertRuntimeReleaseFiles(staged)).toThrow('RUNTIME_RELEASE_ENTRYPOINT_NOT_EXECUTABLE');
   });
 });

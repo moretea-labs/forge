@@ -10,6 +10,7 @@ import { continueGoalWorkloop, finalizeGoalWorkloop, routeWorkStart, verifyGoalW
 import { approvePlanContract, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkScopeEvidence } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { selectExecutionMode } from '../../src/runtime/control-plane/facade/types';
+import { getHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { decideRoute, type RoutePolicyInput } from '../../src/runtime/control-plane/routing/route-policy';
 const roots: string[] = [];
 afterEach(() => {
@@ -234,6 +235,98 @@ describe('single Route Policy authority', () => {
       expect(assessment.routeDecision.reasons.some((reason) => reason.code === `explicit_${mode}`)).toBe(true);
     }
   });
+  test('typed isolated placement overrides an explicit Direct routing preference before admission', () => {
+    const decision = decideRoute(sharedInput({
+      intent: { objective: 'Apply one isolated edit', scopeClear: true, mutation: true, explicitMode: 'direct' },
+      workspace: { knownPaths: ['src/example.ts'], placement: 'isolated', directMainProhibited: true },
+    }));
+    expect(decision).toMatchObject({
+      executionMode: 'goal_workloop',
+      executionPath: 'durable',
+      requiresWork: true,
+      requiresIsolation: true,
+    });
+    expect(decision.reasons.map((reason) => reason.code)).toEqual(expect.arrayContaining(['placement_isolated', 'direct_main_prohibited']));
+  });
+
+  test('routeWorkStart canonicalizes typed isolated placement and refuses force_mode Direct downgrade', () => {
+    const root = temp('route-isolated-placement-');
+    const context = {
+      workStore: { root: join(root, 'work') },
+      handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-isolated-placement',
+      checkoutId: 'checkout-main',
+      principalId: 'principal-a',
+      controllerInstanceId: 'controller-a',
+      sourceRevision: 'revision-a',
+    };
+    const input = {
+      objective: 'Apply one explicitly isolated repository repair',
+      constraints: { workspaceMode: 'isolated' as const, directMainProhibited: true },
+      modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 5, risk: 'local_repo_write' as const },
+    };
+    const started = routeWorkStart(context, input);
+    expect(started.status).toBe('ok');
+    expect(started.data).toMatchObject({ workContractCreated: true, worktreeRequired: true });
+    const workId = (started.data as { work?: { workId?: string } }).work?.workId;
+    expect(workId).toBeTruthy();
+    const stored = getWorkContract(context.workStore, workId!);
+    expect(stored).toMatchObject({
+      constraints: { workspaceMode: 'isolated', requireWorktree: true, directMainProhibited: true },
+      worktreePolicy: { required: true },
+      routeDecision: { requiresIsolation: true, executionMode: 'goal_workloop' },
+    });
+    expect(stored?.checkoutId).toBeUndefined();
+
+    const forced = routeWorkStart({ ...context, workStore: { root: join(root, 'forced-work') }, handoffStore: { root: join(root, 'forced-handoff') } }, {
+      ...input,
+      forceMode: 'direct_control',
+    });
+    expect(forced.status).toBe('blocked');
+    expect(forced.summary).toContain('WORKSPACE_PLACEMENT_DIRECT_CONTROL_FORBIDDEN');
+    expect(forced.data).toMatchObject({ executionStarted: false, workContractCreated: false });
+  });
+
+  test('preserves typed isolated placement across an approval handoff replay', () => {
+    const root = temp('route-isolated-approval-');
+    const handoffStore = { root: join(root, 'handoff') };
+    const result = routeWorkStart({
+      workStore: { root: join(root, 'work') },
+      handoffStore,
+      repoId: 'repo-isolated-approval',
+    }, {
+      objective: 'Apply an isolated change after explicit approval',
+      constraints: { workspaceMode: 'isolated', directMainProhibited: true },
+      modeInput: { scopeClear: true, mutation: true, requiresUserApproval: true, risk: 'workspace_write' },
+    });
+    expect(result.status).toBe('approval_required');
+    const handoffId = (result.data as { handoffId?: string }).handoffId;
+    expect(handoffId).toBeTruthy();
+    const handoff = getHandoffItem(handoffStore, handoffId!);
+    expect(handoff?.approvalAction?.payload).toMatchObject({
+      workspaceMode: 'isolated',
+      requireWorktree: true,
+      directMainProhibited: true,
+      forceMode: 'goal_workloop',
+    });
+  });
+
+  test('rejects contradictory typed workspace placement instead of guessing a lane', () => {
+    const root = temp('route-placement-conflict-');
+    const result = routeWorkStart({
+      workStore: { root: join(root, 'work') },
+      handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-placement-conflict',
+    }, {
+      objective: 'Conflicting placement request',
+      constraints: { workspaceMode: 'current', requireWorktree: true },
+      modeInput: { scopeClear: true, mutation: true, risk: 'local_repo_write' },
+    });
+    expect(result.status).toBe('blocked');
+    expect(result.summary).toContain('WORKSPACE_PLACEMENT_CONSTRAINT_CONFLICT');
+    expect(result.data).toMatchObject({ executionStarted: false, workContractCreated: false, placementConstraintConflict: true });
+  });
+
   test('explicit mode overrides heuristics while authorization remains authoritative and dirty evidence stays direct', () => {
     const direct = assessWorkMode({
       description: 'Explicitly keep this supervised operation direct',

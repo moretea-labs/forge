@@ -96,6 +96,11 @@ const required = [
   'src/runtime/execution/thin-harness/index.ts',
   'src/runtime/execution/thin-harness/execution-router.ts',
   'src/runtime/control-plane/routing/route-policy.ts',
+  'src/runtime/control-plane/routing/workspace-admission.ts',
+  'src/runtime/control-plane/facade/requirement-authority.ts',
+  'src/runtime/control-plane/facade/repository-work-admission.ts',
+  'src/runtime/control-plane/execution/retained-work-resume.ts',
+  'src/runtime/control-plane/execution/work-handle-authority.ts',
   'docs/architecture/CURRENT.md',
   'src/runtime/resources/leases/store.ts',
   'src/runtime/evidence/event-ledger.ts',
@@ -152,6 +157,26 @@ for (const path of sourceFiles('src')) {
   forbid(path, /requirePlanForGoalWorkloop\s*:\s*true/, 'never restore mandatory Plan gating in production');
 }
 if (routeAuthorityCount !== 1) failures.push(`exactly one decideRoute authority is required; found ${routeAuthorityCount}`);
+forbid(
+  'src/runtime/gateway/mcp/runtime-tools.ts',
+  /\b(?:createRequirement|resumeRetainedCancelledWorkContract)\s*\(/,
+  'keep Requirement admission and retained-cancelled Work lifecycle authority out of the MCP transport',
+);
+forbid(
+  'src/runtime/gateway/mcp/runtime-tools.ts',
+  /\b(?:updateWorkContract|writeWorkHandle)\s*\(/,
+  'keep WorkContract/WorkHandle persistence policy out of the MCP transport',
+);
+forbid(
+  'src/runtime/gateway/mcp/execution-tools.ts',
+  /\bcreateWorkContract\s*\(/,
+  'route compatibility work preparation through canonical Work admission authority',
+);
+forbid(
+  'src/cli/mcp/legacy-tool-service.ts',
+  /\bcreateWorkContract\s*\(/,
+  'keep the legacy MCP surface as translation over canonical Work admission authority',
+);
 requireMissing('src/runtime/control-plane/daemon-entry.ts');
 requireMissing('scripts/smoke-runtime-control-plane.ts');
 requireMissing('src/cli/controller/lifecycle.ts');

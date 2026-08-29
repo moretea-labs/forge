@@ -348,6 +348,8 @@ export interface WorkContractConstraints {
   /** current is the stability-first default; isolated is opt-in or used for explicit parallelism. */
   workspaceMode?: 'current' | 'isolated' | 'auto';
   requireWorktree?: boolean;
+  /** Admission fence: repository mutation must not use the Direct Control/current-main lane. */
+  directMainProhibited?: boolean;
   /** True when a change alters the agreed architecture direction rather than only implementation details. */
   architectureStrategyChange?: boolean;
   /** True when the proposed change weakens the thin-harness / high-performance execution policy. */
@@ -679,6 +681,10 @@ export interface ExecutionModeSelectionInput {
   workspaceDirty?: boolean;
   workspaceFingerprint?: string;
   checkoutId?: string;
+  /** Canonical typed placement constraint; never inferred from objective text. */
+  workspacePlacement?: 'current' | 'isolated' | 'auto';
+  /** Admission fence that has precedence over explicit Direct routing. */
+  directMainProhibited?: boolean;
   requiresInvestigation?: boolean;
   requiresLongRunningChecks?: boolean;
   requiresParallelism?: boolean;
@@ -742,6 +748,8 @@ export function selectExecutionMode(input: ExecutionModeSelectionInput): Executi
       dirty: input.workspaceDirty,
       checkoutId: input.checkoutId,
       fingerprint: input.workspaceFingerprint,
+      placement: input.workspacePlacement,
+      directMainProhibited: input.directMainProhibited,
     },
     policy: {
       risk: input.risk,

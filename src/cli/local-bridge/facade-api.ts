@@ -1042,6 +1042,9 @@ export function startConsoleWork(
     requiresApproval?: boolean;
     destructive?: boolean;
     accessMode?: AccessMode;
+    workspaceMode?: 'current' | 'isolated' | 'auto';
+    requireWorktree?: boolean;
+    directMainProhibited?: boolean;
     approvalConfirmed?: boolean;
     forceMode?: 'direct_control' | 'goal_workloop' | 'handoff_only';
     checkIds?: string[];
@@ -1061,7 +1064,17 @@ export function startConsoleWork(
       allowedPaths: input.allowedPaths,
       forbiddenPaths: input.forbiddenPaths,
       checks: input.checkIds,
-      constraints: input.accessMode ? { accessMode: input.accessMode } : undefined,
+      constraints: input.accessMode !== undefined
+        || input.workspaceMode !== undefined
+        || input.requireWorktree !== undefined
+        || input.directMainProhibited !== undefined
+        ? {
+            ...(input.accessMode !== undefined ? { accessMode: input.accessMode } : {}),
+            ...(input.workspaceMode !== undefined ? { workspaceMode: input.workspaceMode } : {}),
+            ...(input.requireWorktree !== undefined ? { requireWorktree: input.requireWorktree } : {}),
+            ...(input.directMainProhibited !== undefined ? { directMainProhibited: input.directMainProhibited } : {}),
+          }
+        : undefined,
       modeInput: {
         objective: input.objective,
         expectedFiles: input.expectedFiles,
@@ -1276,6 +1289,11 @@ export function approveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId: stri
     requiresApproval: payload.requiresApproval === true,
     destructive: payload.destructive === true,
     accessMode: isAccessMode(payload.accessMode) ? payload.accessMode : undefined,
+    workspaceMode: payload.workspaceMode === 'current' || payload.workspaceMode === 'isolated' || payload.workspaceMode === 'auto'
+      ? payload.workspaceMode
+      : undefined,
+    requireWorktree: typeof payload.requireWorktree === 'boolean' ? payload.requireWorktree : undefined,
+    directMainProhibited: typeof payload.directMainProhibited === 'boolean' ? payload.directMainProhibited : undefined,
     approvalConfirmed: true,
     forceMode: 'goal_workloop',
     checkIds: strings(payload.checkIds),
