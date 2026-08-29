@@ -9,6 +9,7 @@ import {
   stopGoalWorkloop,
 } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { getWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { runGoalWorkloop as runGoalWorkloopWithAccess } from '../../src/runtime/control-plane/facade/goal-workloop-access';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -204,5 +205,63 @@ describe('recoverable read-only review lifecycle', () => {
     expect(blocked.status).toBe('blocked');
     expect(blocked.summary).toContain('requires implementation before verification');
     expect(getWorkContract(context.workStore, workId)?.workKind).toBe('repository_change');
+  });
+});
+
+
+describe('public rh_work read-only review adapter', () => {
+  test('preserves explicit snake_case read-only review semantics through start, continue, and finalize', () => {
+    const context = reviewContext('read-only-public-adapter');
+    const started = runGoalWorkloopWithAccess(context, 'start', {
+      objective: 'READ-ONLY public facade review. No edits.',
+      work_kind: 'read_only_review',
+      scope_clear: true,
+      requires_investigation: true,
+      requires_recovery: true,
+      acceptance_criteria: ['Frozen source remains unchanged', 'Review paths are inspected', 'No findings remain'],
+    });
+    const workId = (started.data as { work?: { workId?: string } }).work?.workId;
+    expect(started.status).toBe('ok');
+    expect(workId).toBeTruthy();
+    expect(getWorkContract(context.workStore, workId!)?.workKind).toBe('read_only_review');
+
+    const continued = runGoalWorkloopWithAccess(context, 'continue', {
+      work_id: workId,
+      inspected_paths: ['src/runtime/control-plane/facade/goal-workloop-access.ts'],
+      review_findings: [],
+    });
+    expect(continued.status).toBe('ok');
+    expect((continued.data as { nextStep?: string }).nextStep).toBe('finalize');
+    expect(getWorkContract(context.workStore, workId!)?.readOnlyReviewEvidence).toMatchObject({
+      sourceRevision: context.sourceRevision,
+      findings: [],
+    });
+
+    const finalized = runGoalWorkloopWithAccess(context, 'finalize', { work_id: workId });
+    expect(finalized.status).toBe('ok');
+    const completed = getWorkContract(context.workStore, workId!)!;
+    expect(completed.status).toBe('completed');
+    expect(completed.workKind).toBe('read_only_review');
+    expect(completed.completionOutcome).toBe('completed_no_change');
+    expect(completed.completionReceipt).toMatchObject({
+      source: 'read_only_review',
+      baseRevision: context.sourceRevision,
+      sourceRevision: context.sourceRevision,
+      findingCount: 0,
+    });
+  });
+
+  test('keeps explicit public read-only review mutation conflicts fenced', () => {
+    const context = reviewContext('read-only-public-mutation-fence');
+    const started = runGoalWorkloopWithAccess(context, 'start', {
+      objective: 'READ-ONLY public facade review with an invalid mutation request.',
+      work_kind: 'read_only_review',
+      requires_investigation: true,
+      requires_recovery: true,
+      requires_external_effect: true,
+    });
+    expect(started.status).toBe('blocked');
+    expect(started.summary).toContain('READ_ONLY_REVIEW_MUTATION_CONFLICT');
+    expect((started.data as { workContractCreated?: boolean }).workContractCreated).toBe(false);
   });
 });

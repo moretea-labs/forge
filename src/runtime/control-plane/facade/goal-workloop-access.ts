@@ -13,7 +13,7 @@ import {
   type GoalWorkloopStartInput,
 } from './goal-workloop';
 import { getWorkContract } from './work-contract-store';
-import type { CapabilityRisk, FacadeResult, WorkContractConstraints } from './types';
+import type { CapabilityRisk, FacadeResult, WorkContractConstraints, WorkKind } from './types';
 
 export {
   continueGoalWorkloop,
@@ -45,6 +45,18 @@ function accessModeValue(value: unknown): AccessMode | undefined {
   const record = value as Record<string, unknown>;
   const candidate = record.accessMode ?? record.access_mode;
   return isAccessMode(candidate) ? candidate : undefined;
+}
+
+function workKindValue(value: unknown): Extract<WorkKind, 'repository_change' | 'completed_no_change' | 'read_only_review' | 'investigation' | 'local_effect' | 'remote_effect' | 'reconciliation'> | undefined {
+  return value === 'repository_change'
+    || value === 'completed_no_change'
+    || value === 'read_only_review'
+    || value === 'investigation'
+    || value === 'local_effect'
+    || value === 'remote_effect'
+    || value === 'reconciliation'
+    ? value
+    : undefined;
 }
 
 function constraintsValue(value: unknown): WorkContractConstraints | undefined {
@@ -144,6 +156,7 @@ export function runGoalWorkloop(
     forbiddenPaths: Array.isArray(args.forbidden_paths) ? args.forbidden_paths.map(String) : undefined,
     checks: Array.isArray(args.check_ids) ? args.check_ids.map(String) : undefined,
     constraints,
+    workKind: workKindValue(args.work_kind),
     modeInput: {
       objective: typeof args.objective === 'string' ? args.objective : undefined,
       expectedFiles: typeof args.expected_files === 'number' ? args.expected_files : undefined,
