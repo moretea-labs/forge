@@ -292,6 +292,15 @@ forbid(
   'keep Work evidence policy in the canonical work-evidence-policy module instead of reimplementing it in the facade',
 );
 requireText('src/runtime/control-plane/facade/goal-workloop.ts', "from '../execution/work-evidence-policy'");
+for (const path of sourceFiles('src/runtime/control-plane')) {
+  if (path === 'src/runtime/control-plane/facade/work-contract-store.ts' || path === 'src/runtime/control-plane/execution/work-completion-authority.ts') continue;
+  forbid(
+    path,
+    /\brecordWorkCompletionReceipt\s*\(/,
+    'route Work completion through the canonical work-completion-authority instead of writing terminal receipts directly',
+  );
+}
+requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'completeWorkWithReceipt(');
 forbid(
   'src/runtime/plugins/browser-handoff-host.ts',
   /browser\/sessions|saveBrowserSession|writeBrowserSession|sessionPath/,

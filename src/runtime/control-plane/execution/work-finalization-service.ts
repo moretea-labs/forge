@@ -11,13 +11,13 @@ import { hasCurrentWorkValidationAuthority, markWorkValidationPending, projectWo
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { withControllerSessionTerminalizationFence } from '../facade/controller-session-store';
 import type { VerificationRecord } from '../facade/types';
-import { appendVerificationRecord, appendWorkEvidence, listWorkContracts, recordWorkCompletionReceipt, transitionWorkContractPhase, updateWorkContract } from '../facade/work-contract-store';
+import { appendVerificationRecord, appendWorkEvidence, listWorkContracts, transitionWorkContractPhase, updateWorkContract } from '../facade/work-contract-store';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
 import { assertResolvedAuthorization, decideAuthorization } from '../governance/authorization';
 import { updateExecutionSession } from './session-store';
 import { validateWorkHandle } from './validation';
 import { effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from './verification-evidence';
-import { projectRequirementDeliveryFromCompletedWork } from './work-completion-authority';
+import { completeWorkWithReceipt } from './work-completion-authority';
 import { markWorkHandleFailed, readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle } from './work-handle-store';
 import type { WorkFinalizationStages, WorkHandleState } from './work-handle-store';
 import { findWorkPathScopeViolation } from './work-path-scope';
@@ -1886,7 +1886,7 @@ export async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Rec
             claimGeneration: ownerClaimGeneration,
           },
         },
-        () => recordWorkCompletionReceipt(
+        () => completeWorkWithReceipt(
           { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
           workId,
           receipt,
@@ -1897,10 +1897,6 @@ export async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Rec
       if (!fencedCompletion.allowed) {
         throw new Error(`WORK_TERMINALIZATION_AUTHORITY_FENCED: ${workId}:${fencedCompletion.reason}`);
       }
-      projectRequirementDeliveryFromCompletedWork(
-        { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
-        fencedCompletion.value,
-      );
     }
     // Successful WorkContract completion always ends controller ownership.
     // Physical branch/worktree retention is represented by finalization stages
