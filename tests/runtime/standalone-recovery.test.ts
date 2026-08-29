@@ -493,6 +493,37 @@ test('standalone Recovery restarts only the configured primary Connector service
   expect(commands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
 });
 
+test('standalone Recovery repairs a failed Connector when only the Connector loopback probe is unhealthy', async () => {
+  const home = controllerHome();
+  const plistPath = join(home, 'connector.plist');
+  writeFileSync(plistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
+  const config = createRecoveryConfig(home, {
+    publicMcpUrl: 'https://mcp.example.test/mcp',
+    primaryConnectorService: { platform: 'launchd', label: 'com.moretea.forge.mcp-gateway', plistPath },
+  });
+  const commands: string[][] = [];
+  const localFailure = {
+    ...healthyVerify(),
+    ok: false,
+    probes: {
+      ...healthyVerify().probes,
+      primary_connector_local: { ok: false, detail: 'connection refused' },
+    },
+  };
+  const result = await restartPrimaryConnector(config, {
+    platform: 'darwin',
+    currentUid: async () => 501,
+    verifyLocal: async () => localFailure,
+    reconnect: async () => ({ ok: true, detail: 'public MCP reachable', verify: healthyVerify() }),
+    runCommand: async (name, args) => {
+      commands.push([name, ...args]);
+      return { ok: true, status: 0, stdout: '', stderr: '' };
+    },
+  });
+  expect(result).toMatchObject({ ok: true, attempted: true, serviceTarget: 'gui/501/com.moretea.forge.mcp-gateway' });
+  expect(commands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
+});
+
 test('standalone Recovery fails closed on a live legacy mutation lock without request identity', async () => {
   const home = controllerHome();
   const plistPath = join(home, 'connector.plist');

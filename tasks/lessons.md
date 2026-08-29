@@ -82,6 +82,13 @@
 - Prevention rule: Clamp external Controller wake timeouts to 5–120 seconds and race the complete Work-bound dispatch against that one deadline. On expiry, close the relay as failed and let the schedule's bounded retry circuit decide whether to pause; never leave a dispatching relay or running occurrence behind.
 - Where to apply next time: external Controller wake engine, browser/desktop composite workflows, and any schedule operation with more than one blocking provider call.
 
+## Connector recovery must gate on canonical Runtime health, not Connector health
+- Date: 2026-08-29
+- Triggered by correction: A public MCP `502` was traced to an unavailable Connector while the Canonical Runtime was ready. The `restart-connector` recovery action rejected the repair because its generic local verification included the failed Connector probe itself.
+- Mistake pattern: Reusing a composite verification result as a recovery precondition, thereby requiring the failed dependency to be healthy before repairing it.
+- Prevention rule: Connector repair may proceed only when the Canonical Runtime is live, ready, non-stale, and its active Gateway answers locally. Connector loopback and public probes remain post-repair verification evidence, not gates that prevent the repair.
+- Where to apply next time: `src/runtime/standalone-recovery/core.ts` (`restartPrimaryConnector`) and failure-injection coverage in `tests/runtime/standalone-recovery.test.ts`.
+
 ## A running cloud VM is not a healthy Forge execution node
 - Date: 2026-08-26
 - Triggered by correction: The Google Cloud `forge-cloud` e2-micro remained `RUNNING`, but Forge_Cloud calls alternated between Secure Tunnel HTTP 404/429, direct SSH and IAP SSH failed, and serial logs showed repeated WARP main-loop watchdog hangs, QUIC idle timeout, NTP timeout, and journald watchdog restarts.

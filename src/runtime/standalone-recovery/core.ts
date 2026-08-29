@@ -1565,7 +1565,16 @@ export async function restartPrimaryConnector(
 ): Promise<PrimaryConnectorRestartResult> {
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
   const initialLocal = await verifyLocal(config);
-  if (!initialLocal.ok) {
+  // `verifyLocalRuntime` also reports the Connector's own loopback probe.
+  // That probe is expected to be false when this recovery action is needed,
+  // so it must not prevent a healthy canonical Runtime from repairing the
+  // Connector service.
+  const canonicalRuntimeHealthy = initialLocal.runtime.ok
+    && initialLocal.runtime.running
+    && initialLocal.runtime.ready
+    && !initialLocal.runtime.stale
+    && initialLocal.probes.active_gateway?.ok === true;
+  if (!canonicalRuntimeHealthy) {
     return {
       ok: false,
       attempted: false,
