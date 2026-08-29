@@ -7,6 +7,7 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import type { WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { workHeadAdoptionFinalizationIsRetryable } from '../../src/runtime/control-plane/execution/work-preparation-service';
 import { repositoryGitFinishWorkflow, repositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
@@ -340,5 +341,31 @@ describe('direct canonical Work target advancement reconciliation', () => {
       reason: 'fresh_verification_missing',
       freshCheckIds: [],
     });
+  });
+});
+
+
+describe('Work successor HEAD adoption finalization fence', () => {
+  const base = {
+    validation: 'done' as const,
+    commit: 'skipped' as const,
+    merge: 'skipped' as const,
+    branchCleanup: 'skipped' as const,
+    worktreeCleanup: 'skipped' as const,
+  };
+
+  test('allows audited successor adoption after a validation-only non-delivery finalize attempt', () => {
+    expect(workHeadAdoptionFinalizationIsRetryable(base)).toBe(true);
+    expect(workHeadAdoptionFinalizationIsRetryable({ ...base, validation: 'pending' })).toBe(true);
+  });
+
+  test('keeps successor adoption fenced after any effectful or ambiguous finalization stage', () => {
+    expect(workHeadAdoptionFinalizationIsRetryable({ ...base, commit: 'done' })).toBe(false);
+    expect(workHeadAdoptionFinalizationIsRetryable({ ...base, merge: 'done' })).toBe(false);
+    expect(workHeadAdoptionFinalizationIsRetryable({ ...base, branchCleanup: 'done' })).toBe(false);
+    expect(workHeadAdoptionFinalizationIsRetryable({ ...base, worktreeCleanup: 'done' })).toBe(false);
+    expect(workHeadAdoptionFinalizationIsRetryable({ ...base, commit: 'failed' })).toBe(false);
+    expect(workHeadAdoptionFinalizationIsRetryable({ ...base, lastError: 'ambiguous finalization result' })).toBe(false);
+    expect(workHeadAdoptionFinalizationIsRetryable({ ...base, validation: 'failed' })).toBe(false);
   });
 });

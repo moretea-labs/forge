@@ -39,6 +39,18 @@ function initialStage(): WorkFinalizationStages {
   return { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' };
 }
 
+/**
+ * A previous finalization request may have validated a Work and explicitly
+ * skipped every effectful stage without delivering or cleaning anything. That
+ * is retryable preparation history, not an irreversible finalization boundary.
+ * Any done/failed effectful stage or retained finalization error stays fenced.
+ */
+export function workHeadAdoptionFinalizationIsRetryable(stages: WorkFinalizationStages): boolean {
+  if (stages.validation === 'failed' || stages.lastError) return false;
+  return [stages.commit, stages.merge, stages.branchCleanup, stages.worktreeCleanup]
+    .every((stage) => stage === 'pending' || stage === 'skipped');
+}
+
 function normalizedRequiredString(args: Record<string, unknown>, key: string): string | undefined {
   return typeof args[key] === 'string' && args[key].trim() ? args[key].trim() : undefined;
 }
@@ -144,14 +156,7 @@ function adoptExistingWorkHead(
   if (handle.state !== 'prepared' && handle.state !== 'editing') {
     throw new Error(`WORK_HEAD_ADOPTION_STATE_INVALID: ${handle.state}`);
   }
-  const finalizationStages = [
-    handle.finalization.validation,
-    handle.finalization.commit,
-    handle.finalization.merge,
-    handle.finalization.branchCleanup,
-    handle.finalization.worktreeCleanup,
-  ];
-  if (finalizationStages.some((stage) => stage !== 'pending')) {
+  if (!workHeadAdoptionFinalizationIsRetryable(handle.finalization)) {
     throw new Error('WORK_HEAD_ADOPTION_FINALIZATION_ALREADY_STARTED');
   }
 
