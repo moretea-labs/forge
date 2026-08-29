@@ -670,9 +670,9 @@ async function probeExternalMcp(transport: RecoveryHttpTransport, url: string): 
   } finally { clearTimeout(timer); }
 }
 
-function publicGatewayReadinessEndpoint(endpoint: string, legacy = false): string {
+function publicGatewayReadinessEndpoint(endpoint: string): string {
   const url = new URL(endpoint);
-  url.pathname = legacy ? '/ready' : '/transport-ready';
+  url.pathname = '/transport-ready';
   url.search = '';
   url.hash = '';
   return url.toString();
@@ -684,22 +684,25 @@ async function probePublicGatewayReadiness(
 ): Promise<{ ok: boolean; detail: string; status?: number; value?: unknown }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort('RECOVERY_HTTP_TIMEOUT'), 4_000);
-  let surface = 'transport-ready';
+  const surface = 'transport-ready';
   try {
-    let response = await transport.request({
+    const response = await transport.request({
       url: publicGatewayReadinessEndpoint(endpoint),
       headers: { accept: 'application/json' },
       timeoutMs: 4_000,
       signal: controller.signal,
     });
     if (response.status === 404 || response.status === 405) {
-      surface = 'legacy-ready';
-      response = await transport.request({
-        url: publicGatewayReadinessEndpoint(endpoint, true),
-        headers: { accept: 'application/json' },
-        timeoutMs: 4_000,
-        signal: controller.signal,
-      });
+      // Older Connectors predate the transport-scoped capacity surface. Their
+      // whole-control-plane /ready route is intentionally not a transport
+      // liveness contract and can depend on the Runtime that Recovery is in the
+      // middle of restarting. Falling back to it creates a circular cutover
+      // dependency. Verify the actual MCP transport instead: a successful
+      // initialize response or the expected OAuth Bearer challenge proves the
+      // legacy Connector transport is reachable without weakening 5xx/timeout
+      // failure handling.
+      const legacy = await probeExternalMcp(transport, endpoint);
+      return { ...legacy, detail: `legacy-mcp ${legacy.detail}` };
     }
     let sessionCapacity: unknown;
     try {
@@ -905,7 +908,8 @@ export async function verifyStableRuntime(
     : { ok: false, detail: 'canonical Runtime endpoint is unavailable' };
   if (config.publicMcpUrl) {
     probes.external_mcp_http = await probeExternalMcp(transport, config.publicMcpUrl);
-    probes.primary_connector_ready = await probePublicGatewayReadiness(transport, config.publicMcpUrl);
+    const connectorReadinessEndpoint = config.primaryConnectorService?.localMcpUrl?.trim() || config.publicMcpUrl;
+    probes.primary_connector_ready = await probePublicGatewayReadiness(transport, connectorReadinessEndpoint);
   }
   const primaryConnectorLocal = await probePrimaryConnectorLocal(config, transport);
   if (primaryConnectorLocal) probes.primary_connector_local = primaryConnectorLocal;

@@ -312,6 +312,46 @@ async function saturatedPublicGatewayServer(): Promise<{ endpoint: string; reque
   return { endpoint: `http://127.0.0.1:${address.port}/mcp`, requests };
 }
 
+async function legacyConnectorTransportServer(mcpStatus = 401): Promise<{ endpoint: string; requests: RuntimeRequestRecord[] }> {
+  const requests: RuntimeRequestRecord[] = [];
+  const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+    requests.push({
+      method: request.method,
+      url: request.url,
+      authorizationPresent: typeof request.headers.authorization === 'string',
+      accept: request.headers.accept,
+      contentType: request.headers['content-type'],
+      body: '',
+    });
+    response.setHeader('content-type', 'application/json');
+    if (request.method === 'GET' && request.url === '/transport-ready') {
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: 'not_found' }));
+      return;
+    }
+    if (request.method === 'POST' && request.url === '/mcp') {
+      response.statusCode = mcpStatus;
+      if (mcpStatus === 401) response.setHeader('www-authenticate', 'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp"');
+      response.end(JSON.stringify(mcpStatus === 401 ? { error: 'invalid_token' } : { error: 'connector_transport_failed' }));
+      return;
+    }
+    if (request.method === 'GET' && request.url === '/ready') {
+      // Legacy whole-control-plane readiness deliberately never answers.
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: 'not_found' }));
+  });
+  servers.push(server);
+  await new Promise<void>((done, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => done());
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('legacy Connector transport test server unavailable');
+  return { endpoint: `http://127.0.0.1:${address.port}/mcp`, requests };
+}
+
 async function healthyTransportWithHungLegacyReadinessServer(): Promise<{ endpoint: string; requests: RuntimeRequestRecord[] }> {
   const requests: RuntimeRequestRecord[] = [];
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
@@ -915,6 +955,65 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(publicGateway.requests.some((request) => request.method === 'GET' && request.url === '/ready')).toBe(false);
   });
 
+  test('uses the configured local legacy Connector transport without falling back to whole-control-plane /ready', async () => {
+    const home = controllerHome();
+    const activeManifest = manifest(home, 'release-legacy-connector', 'artifact-legacy-connector');
+    ensureActiveRuntimeRelease(home, activeManifest);
+    const runtime = await runtimeServer({ challengeUnauthenticatedMcp: true });
+    const publicGateway = await runtimeServer({ challengeUnauthenticatedMcp: true });
+    const connector = await legacyConnectorTransportServer();
+    writeMainToken(home);
+    startObservedRuntime(home, runtime.endpoint, 'release-legacy-connector', 'artifact-legacy-connector');
+    const config = createRecoveryConfig(home, {
+      publicMcpUrl: publicGateway.endpoint,
+      primaryConnectorService: {
+        platform: 'launchd',
+        label: 'com.moretea.forge.mcp-gateway',
+        localMcpUrl: connector.endpoint,
+      },
+    });
+
+    const verified = await verifyStableRuntime(config, undefined, { probeMcpProtocol: false });
+    expect(verified.ok).toBe(true);
+    expect(verified.probes.external_mcp_http).toMatchObject({ ok: true, status: 401 });
+    expect(verified.probes.primary_connector_ready).toMatchObject({
+      ok: true,
+      status: 401,
+      detail: 'legacy-mcp HTTP 401 OAuth challenge',
+    });
+    expect(verified.probes.primary_connector_local).toMatchObject({ ok: true, status: 401 });
+    expect(connector.requests.some((request) => request.method === 'GET' && request.url === '/transport-ready')).toBe(true);
+    expect(connector.requests.some((request) => request.method === 'POST' && request.url === '/mcp')).toBe(true);
+    expect(connector.requests.some((request) => request.method === 'GET' && request.url === '/ready')).toBe(false);
+    expect(publicGateway.requests.some((request) => request.method === 'GET' && request.url === '/transport-ready')).toBe(false);
+  });
+
+  test('keeps legacy Connector MCP transport failures fail-closed', async () => {
+    const home = controllerHome();
+    const activeManifest = manifest(home, 'release-legacy-connector-failed', 'artifact-legacy-connector-failed');
+    ensureActiveRuntimeRelease(home, activeManifest);
+    const runtime = await runtimeServer({ challengeUnauthenticatedMcp: true });
+    const publicGateway = await runtimeServer({ challengeUnauthenticatedMcp: true });
+    const connector = await legacyConnectorTransportServer(503);
+    writeMainToken(home);
+    startObservedRuntime(home, runtime.endpoint, 'release-legacy-connector-failed', 'artifact-legacy-connector-failed');
+    const config = createRecoveryConfig(home, {
+      publicMcpUrl: publicGateway.endpoint,
+      primaryConnectorService: {
+        platform: 'launchd',
+        label: 'com.moretea.forge.mcp-gateway',
+        localMcpUrl: connector.endpoint,
+      },
+    });
+
+    const verified = await verifyStableRuntime(config, undefined, { probeMcpProtocol: false });
+    expect(verified.ok).toBe(false);
+    expect(verified.probes.external_mcp_http).toMatchObject({ ok: true, status: 401 });
+    expect(verified.probes.primary_connector_ready).toMatchObject({ ok: false, status: 503, detail: 'legacy-mcp HTTP 503' });
+    expect(verified.probes.primary_connector_local).toMatchObject({ ok: false, status: 503 });
+    expect(connector.requests.some((request) => request.method === 'GET' && request.url === '/ready')).toBe(false);
+  });
+
   test('keeps an unmanaged external 530 separate from a healthy local primary Connector', async () => {
     const home = controllerHome();
     const activeManifest = manifest(home, 'release-primary-transport-530', 'artifact-primary-transport-530');
@@ -944,7 +1043,7 @@ describe('standalone recovery on canonical Runtime', () => {
     const verified = await verifyStableRuntime(config, undefined, { probeMcpProtocol: false });
     expect(verified.ok).toBe(false);
     expect(verified.probes.external_mcp_http).toMatchObject({ ok: false, status: 530 });
-    expect(verified.probes.primary_connector_ready).toMatchObject({ ok: false, status: 530 });
+    expect(verified.probes.primary_connector_ready).toMatchObject({ ok: true, status: 200, detail: 'transport-ready HTTP 200' });
     expect(verified.probes.primary_connector_local).toMatchObject({ ok: true, status: 401 });
 
     const tick = await watchdogTick(config, {
