@@ -1,20 +1,21 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { getRepository, registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
-import { writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
+import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 
 const roots: string[] = [];
 
@@ -560,6 +561,118 @@ describe('rh_work terminalization authority', () => {
     expect(accepted.status).toBe('ok');
     expect(accepted.data.semanticAcceptanceRecorded).toBe(true);
     expect(getPlanContract(store, planId)?.steps[0]?.status).toBe('completed');
+  }, 15_000);
+
+
+  test('local_effect semantic finalize reconciles and removes its managed worktree', async () => {
+    const fx = fixture();
+    const workId = 'work-local-effect-terminal-cleanup';
+    const caller = {
+      principalId: 'principal-local-effect-cleanup',
+      sessionId: 'transport-local-effect-cleanup',
+      controllerInstanceId: 'runtime-local-effect-cleanup',
+    };
+    const branch = 'work/local-effect-terminal-cleanup';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: 'local-effect-terminal-cleanup',
+      title: 'Local Effect Terminal Cleanup',
+      branchName: branch,
+    });
+    expect(workspace.mode).toBe('isolated');
+    expect(workspace.root).toBeTruthy();
+    expect(workspace.checkoutId).toBeTruthy();
+    expect(existsSync(workspace.root!)).toBe(true);
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const now = new Date().toISOString();
+    const evidenceId = 'PLG-local-effect-terminal-cleanup';
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      baseRevision: workspace.baseRevision ?? undefined,
+      mode: 'goal_workloop',
+      objective: 'Complete a local effect and cleanup its isolated worktree.',
+      acceptanceCriteria: ['A durable local effect receipt is reviewed.'],
+      allowedPaths: [],
+      forbiddenPaths: ['**/*'],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'local_effect',
+      status: 'running',
+      phase: 'implementation',
+      worktreeRef: workspace.root,
+      evidenceRefs: [{ evidenceId, title: 'typed local effect', summary: 'Durable local effect receipt.', detailLevel: 'summary' }],
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      repositoryId: repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      worktreePath: workspace.root!,
+      branch,
+      sourceCheckoutId: repository.activeCheckoutId,
+      workContractId: workId,
+      baseCommit: workspace.baseRevision ?? undefined,
+      deliveryBaseCommit: workspace.baseRevision ?? undefined,
+      expectedHead: workspace.baseRevision ?? undefined,
+      permissionSnapshotVersion: 1,
+      state: 'prepared',
+      managedWorktree: true,
+      createdAt: now,
+      updatedAt: now,
+      finalization: {
+        validation: 'pending',
+        commit: 'pending',
+        merge: 'pending',
+        branchCleanup: 'pending',
+        worktreeCleanup: 'pending',
+      },
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+    });
+
+    const reviewed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        operation: 'continue',
+        work_id: workId,
+        acceptance_evidence: [{
+          criterion: 'A durable local effect receipt is reviewed.',
+          evidence_ids: [evidenceId],
+          rationale: 'The exact durable receipt is attributed to this Work.',
+        }],
+      },
+    ));
+    expect(reviewed.status).toBe('ok');
+
+    const finalized = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        operation: 'finalize',
+        work_id: workId,
+        requested_by: 'chatgpt',
+        commit: false,
+        merge: false,
+        cleanup: true,
+      },
+    ));
+
+    expect(finalized.status).toBe('ok');
+    expect(finalized.data.lifecycleClosed).toBe(true);
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
+      status: 'completed',
+      workKind: 'local_effect',
+      completionOutcome: 'completed_local',
+    });
+    expect(readWorkHandle(fx.controllerHome, repository.repoId, workId)?.finalization.worktreeCleanup).toBe('done');
+    expect(existsSync(workspace.root!)).toBe(false);
+    expect(execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: fx.repoRoot, encoding: 'utf8' })).not.toContain(workspace.root!);
   }, 15_000);
 
 });

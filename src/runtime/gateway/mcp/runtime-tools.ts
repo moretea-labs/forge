@@ -4659,7 +4659,27 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           } else {
             facade = runGoalWorkloop(semanticFinalizeContext, 'finalize', args);
           }
-          const completed = getWorkContract(store, workId);
+          let completed = getWorkContract(store, workId);
+          const postSemanticCleanupPending = Boolean(
+            completed?.completionReceipt
+            && args.cleanup !== false
+            && completed.worktreeRef?.trim()
+            && existsSync(completed.worktreeRef),
+          );
+          if (postSemanticCleanupPending) {
+            try {
+              const physical = await finalizeFacadeWorkHandle(ctx, repository, { ...args, commit: false, merge: false }, 'finalize');
+              if (physical?.isError === true) return physical;
+              completed = getWorkContract(store, workId);
+            } catch (error) {
+              const blocked = buildFacadeResult({
+                status: 'blocked',
+                summary: error instanceof Error ? error.message : `Work ${workId} terminal cleanup reconciliation failed.`,
+                data: { workId, terminalizationApplied: true, lifecycleClosed: false },
+              });
+              return result(blocked as unknown as Record<string, unknown>, true);
+            }
+          }
           // Finalizing a Work proves the Work lifecycle only. A Plan step may aggregate
           // acceptance criteria that are broader than this Work (for example, a canary
           // plus a later stabilization soak), so finalize must never synthesize semantic
