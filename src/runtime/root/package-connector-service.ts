@@ -152,7 +152,10 @@ export function packageConnectorLaunchSpec(input: { release: PackageConnectorRel
   if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || parsed.pathname !== '/mcp' || !Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error('FORGE_PACKAGE_CONNECTOR_ENDPOINT_INVALID');
   }
-  const executable = resolve(input.executable ?? process.execPath);
+  const executable = resolve(input.executable ?? process.env.FORGE_CONNECTOR_EXECUTABLE ?? process.execPath);
+  if (/^forge-recovery-(?:gateway|watchdog)$/i.test(basename(executable))) {
+    throw new Error('FORGE_PACKAGE_CONNECTOR_EXECUTABLE_INVALID');
+  }
   const packageRoot = resolve(input.release.packageRoot);
   const cliEntry = join(packageRoot, 'src', 'cli', 'index.ts');
   const nodeLoader = join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs');
@@ -192,6 +195,7 @@ export function packageConnectorServiceMatchesRelease(input: {
   endpoint: string;
   platform: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
+  executable?: string;
 }): boolean {
   try {
     if (
@@ -200,7 +204,12 @@ export function packageConnectorServiceMatchesRelease(input: {
       || resolve(input.authority.releaseRoot) !== resolve(input.release.releaseRoot)
       || resolve(input.authority.packageRoot) !== resolve(input.release.packageRoot)
     ) return false;
-    const launch = packageConnectorLaunchSpec({ release: input.release, controllerHome: input.controllerHome, endpoint: input.endpoint });
+    const launch = packageConnectorLaunchSpec({
+      release: input.release,
+      controllerHome: input.controllerHome,
+      endpoint: input.endpoint,
+      executable: input.executable,
+    });
     if (input.platform === 'darwin') {
       const paths = packageConnectorServicePaths(input.controllerHome, input.env?.HOME);
       if (input.authority.mode !== 'launchd' || !input.authority.servicePath) return false;
@@ -250,10 +259,15 @@ function startPortable(paths: PackageConnectorServicePaths, launch: ReturnType<t
   } finally { closeSync(stdout); closeSync(stderr); }
 }
 
-export async function installPackageConnectorService(input: { release: PackageConnectorReleaseBinding; controllerHome: string; endpoint: string; platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; forcePortable?: boolean; probeEndpoint?: (endpoint: string) => Promise<boolean> }): Promise<PackageConnectorServiceResult> {
+export async function installPackageConnectorService(input: { release: PackageConnectorReleaseBinding; controllerHome: string; endpoint: string; executable?: string; platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; forcePortable?: boolean; probeEndpoint?: (endpoint: string) => Promise<boolean> }): Promise<PackageConnectorServiceResult> {
   const paths = packageConnectorServicePaths(input.controllerHome, input.env?.HOME);
   mkdirSync(join(paths.serviceRoot, 'logs'), { recursive: true, mode: 0o700 });
-  const launch = packageConnectorLaunchSpec({ release: input.release, controllerHome: input.controllerHome, endpoint: input.endpoint });
+  const launch = packageConnectorLaunchSpec({
+    release: input.release,
+    controllerHome: input.controllerHome,
+    endpoint: input.endpoint,
+    executable: input.executable,
+  });
   const platform = input.platform ?? process.platform, env = input.env ?? process.env;
   if (!input.forcePortable && platform === 'darwin') {
     await retireConflictingForgeLaunchAgents({
@@ -290,6 +304,7 @@ export async function ensurePackageConnectorService(input: {
   release: PackageConnectorReleaseBinding;
   controllerHome: string;
   endpoint: string;
+  executable?: string;
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   forcePortable?: boolean;
@@ -322,6 +337,7 @@ export async function ensurePackageConnectorService(input: {
         endpoint: input.endpoint,
         platform,
         env: input.env,
+        executable: input.executable,
       })
       && await (input.probeEndpoint ?? defaultConnectorEndpointProbe)(input.endpoint)
     ) {

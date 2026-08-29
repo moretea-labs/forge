@@ -340,7 +340,7 @@ function recoveryPlist(input: {
 }): string {
   const xml = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const argumentsList = [
-    '/usr/bin/env', '-i', 'PATH=/usr/bin:/bin:/usr/sbin:/sbin', `FORGE_BUILD_VERSION=${FORGE_VERSION}`,
+    '/usr/bin/env', '-i', 'PATH=/usr/bin:/bin:/usr/sbin:/sbin', `FORGE_BUILD_VERSION=${FORGE_VERSION}`, `FORGE_CONNECTOR_EXECUTABLE=${process.execPath}`,
     input.executable, input.command, '--controller-home', input.controllerHome,
   ];
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${xml(input.label)}</string><key>ProgramArguments</key><array>${argumentsList.map((argument) => `<string>${xml(argument)}</string>`).join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>5</integer><key>StandardOutPath</key><string>${xml(input.logPath)}</string><key>StandardErrorPath</key><string>${xml(input.logPath)}</string></dict></plist>\n`;

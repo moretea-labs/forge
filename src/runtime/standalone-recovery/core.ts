@@ -2856,7 +2856,11 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   }
   const recoveryHealthy = verified.probes.recovery_gateway?.ok !== false
     && verified.probes.recovery_external_http?.ok !== false;
-  const primaryRuntimeHealthy = localVerify.ok;
+  const primaryRuntimeHealthy = localVerify.runtime.ok
+    && localVerify.runtime.running
+    && localVerify.runtime.ready
+    && !localVerify.runtime.stale
+    && localVerify.probes.active_gateway?.ok === true;
   const primaryConnectorConfigured = Boolean(config.primaryConnectorService);
   const primaryConnectorLocalFailed = verified.probes.primary_connector_local?.ok === false;
   const primaryConnectorCapacityFailed = connectorCapacityRecoveryRecommended(verified);
@@ -2984,7 +2988,7 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
         primaryConnectorFailures: 0,
         primaryConnectorFirstFailureAt: undefined,
       };
-  if (!localVerify.ok) state.runtimeHealthySince = undefined;
+  if (!primaryRuntimeHealthy) state.runtimeHealthySince = undefined;
   const primaryConfig = configuredPrimaryRuntimeService(config);
   const decision = decideWatchdog({
     ...state,
@@ -2992,7 +2996,7 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     evidenceClasses,
     activeKnownGood,
     previousKnownGood,
-    primaryRuntimeFailed: !localVerify.ok,
+    primaryRuntimeFailed: !primaryRuntimeHealthy,
     runtimeMaximumRestartAttempts: primaryConfig.maximumRestartAttempts,
     runtimeRestartCooldownMs: primaryConfig.restartCooldownMs,
     runtimeMinimumFailures: primaryConfig.minimumFailures,

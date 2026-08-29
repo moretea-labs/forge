@@ -302,8 +302,9 @@ describe('Forge Runtime service', () => {
         installAttempts += 1;
         return forgeRuntimeServicePaths(fx.home);
       },
-      ensureConnectorService: async () => {
+      ensureConnectorService: async (input) => {
         connectorAttempts += 1;
+        expect(input.executable).toBe(scheduled?.nodeExecutable);
         return { endpoint: 'http://127.0.0.1:8767/mcp', mode: 'launchd', persistent: true };
       },
     });
@@ -377,11 +378,11 @@ describe('Forge Runtime service', () => {
     expect(result.status).toBe('activation_scheduled');
     expect(scheduled?.priorAuthorityPresent).toBe(true);
 
-    const connectorCalls: Array<{ releaseId: string; refresh?: boolean }> = [];
+    const connectorCalls: Array<{ releaseId: string; refresh?: boolean; executable?: string }> = [];
     await expect(activateScheduledPackageRuntimeService(scheduled!, {
       installDarwinService: async () => forgeRuntimeServicePaths(fx.home),
       ensureConnectorService: async (input) => {
-        connectorCalls.push({ releaseId: input.release.releaseId, refresh: input.refresh });
+        connectorCalls.push({ releaseId: input.release.releaseId, refresh: input.refresh, executable: input.executable });
         if (input.release.releaseId === result.release.releaseId) throw new Error('FORGE_PACKAGE_CONNECTOR_ENDPOINT_NOT_READY: synthetic');
         return { endpoint: input.endpoint, mode: 'launchd', persistent: true, releaseId: input.release.releaseId, releaseRoot: input.release.releaseRoot };
       },
@@ -390,8 +391,8 @@ describe('Forge Runtime service', () => {
     })).rejects.toThrow('FORGE_PACKAGE_RUNTIME_ACTIVATION_FAILED_ROLLED_BACK');
 
     expect(connectorCalls).toEqual([
-      { releaseId: result.release.releaseId, refresh: false },
-      { releaseId: priorRelease.releaseId, refresh: true },
+      { releaseId: result.release.releaseId, refresh: false, executable: scheduled?.nodeExecutable },
+      { releaseId: priorRelease.releaseId, refresh: true, executable: scheduled?.nodeExecutable },
     ]);
     expect(readRuntimeReleaseAuthority(fx.home)?.active.releaseId).toBe(priorRelease.releaseId);
     const receipt = readPackageRuntimeActivationReceipt(result.activation!.receiptPath);

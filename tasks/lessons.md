@@ -89,6 +89,20 @@
 - Prevention rule: Connector repair may proceed only when the Canonical Runtime is live, ready, non-stale, and its active Gateway answers locally. Connector loopback and public probes remain post-repair verification evidence, not gates that prevent the repair.
 - Where to apply next time: `src/runtime/standalone-recovery/core.ts` (`restartPrimaryConnector`) and failure-injection coverage in `tests/runtime/standalone-recovery.test.ts`.
 
+## Connector launch bindings must retain the activation interpreter
+- Date: 2026-08-29
+- Triggered by correction: After a source Runtime release activated successfully, its Connector repeatedly returned public MCP `502`. The Connector launchd plist used `forge-recovery-gateway` as its executable, which exited with `RECOVERY_GATEWAY_ROLE_ONLY` instead of starting MCP on port 8767.
+- Mistake pattern: A detached activation already persisted an absolute `nodeExecutable`, but failed to pass it to the Connector install/rollback path. The installer then inherited the current executable, which can be a role-limited Recovery binary.
+- Prevention rule: Treat the absolute interpreter as part of the Connector launch binding. Pass the activation request's `nodeExecutable` to candidate and rollback Connector installs; Recovery retains an explicit Connector interpreter, and Connector launch rendering rejects Recovery-role binaries.
+- Where to apply next time: `src/runtime/root/package-runtime-service.ts`, `src/runtime/root/package-connector-service.ts`, `src/runtime/standalone-recovery/installer.ts`, and `tests/runtime/forge-runtime-service.test.ts`.
+
+## Connector faults must not spend the Runtime recovery budget
+- Date: 2026-08-29
+- Triggered by correction: The 8767 Connector outage left the Canonical Runtime ready, but the Watchdog counted the composite verification failure as a Runtime failure and performed three ineffective whole-Runtime restarts.
+- Mistake pattern: Using a verification aggregate that includes the Connector itself as the Runtime-health predicate.
+- Prevention rule: Define Runtime health from Runtime liveness, readiness, staleness, and the active local Gateway only. Connector failures use their own bounded recovery path and must not clear Runtime health or trigger Runtime rollback accounting.
+- Where to apply next time: `src/runtime/standalone-recovery/core.ts` (`watchdogTick`) and `tests/runtime/standalone-recovery.test.ts`.
+
 ## A running cloud VM is not a healthy Forge execution node
 - Date: 2026-08-26
 - Triggered by correction: The Google Cloud `forge-cloud` e2-micro remained `RUNNING`, but Forge_Cloud calls alternated between Secure Tunnel HTTP 404/429, direct SSH and IAP SSH failed, and serial logs showed repeated WARP main-loop watchdog hangs, QUIC idle timeout, NTP timeout, and journald watchdog restarts.

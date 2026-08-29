@@ -120,6 +120,25 @@ Corrected invariants:
    reason and restart/failure counters) so incident review can distinguish "Recovery
    never fired" from "Recovery fired and the client observed the bounded outage".
 
+## Recurring Connection Failure Ledger
+
+Keep these failure signatures distinct. A public `502` identifies the failed
+hop; it does not identify the failed owner or authorize a whole-Runtime
+rollback.
+
+| Signature | Verified evidence | Correct recovery owner |
+| --- | --- | --- |
+| Runtime activation/port conflict | `RUNTIME_RELEASE_AUTHORITY_MISMATCH`, port `8767` already in use, or orphaned `mcp serve` | Whole-Runtime Recovery transaction; see the 2026-08-23 incident above. |
+| Connector/release binding drift | Runtime `ready=true`, but Connector loopback/public MCP fails or returns `5xx` | Connector Recovery reconciles the active immutable release, then verifies local ownership and the public endpoint. |
+| Connector launched with a Recovery-role binary | Connector plist starts `forge-recovery-gateway` or `forge-recovery-watchdog`; stderr repeats `RECOVERY_*_ROLE_ONLY` | Repair the Connector with the absolute interpreter recorded by Runtime activation. A Connector launch spec must reject a Recovery-role binary. |
+| Connector outage misclassified as a Runtime outage | Runtime status and local active Gateway are healthy while the Watchdog records `restart_primary_runtime` for a Connector probe failure | Count and restart the Connector under its own bounded budget; do not consume the Runtime restart/rollback budget. |
+
+The launch interpreter is part of the Connector's immutable release binding:
+detached activation passes its recorded absolute `nodeExecutable` to candidate
+and rollback Connector installs, and Recovery services retain the same explicit
+interpreter for later binding repair. Regression coverage must exercise a
+failed Connector while the Canonical Runtime remains healthy.
+
 ## Session Continuation Fails With 404 MCP_TOOL_SURFACE_CHANGED (2026-08-23)
 
 Second incident on the same day, different failure mode. After a session is

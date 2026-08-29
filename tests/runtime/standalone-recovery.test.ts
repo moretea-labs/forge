@@ -1001,6 +1001,8 @@ describe('standalone recovery on canonical Runtime', () => {
         platform: 'launchd',
         label: 'com.moretea.forge.mcp-gateway',
         localMcpUrl: connector.endpoint,
+        minimumFailures: 1,
+        minimumFailureDurationMs: 0,
       },
     });
 
@@ -1027,13 +1029,21 @@ describe('standalone recovery on canonical Runtime', () => {
     const publicGateway = await runtimeServer({ challengeUnauthenticatedMcp: true });
     const connector = await legacyConnectorTransportServer(503);
     writeMainToken(home);
-    startObservedRuntime(home, runtime.endpoint, 'release-legacy-connector-failed', 'artifact-legacy-connector-failed');
+    startObservedRuntime(
+      home,
+      runtime.endpoint,
+      'release-legacy-connector-failed',
+      'artifact-legacy-connector-failed',
+      new Date(Date.now() - 120_000).toISOString(),
+    );
     const config = createRecoveryConfig(home, {
       publicMcpUrl: publicGateway.endpoint,
       primaryConnectorService: {
         platform: 'launchd',
         label: 'com.moretea.forge.mcp-gateway',
         localMcpUrl: connector.endpoint,
+        minimumFailures: 1,
+        minimumFailureDurationMs: 0,
       },
     });
 
@@ -1043,6 +1053,17 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(verified.probes.primary_connector_ready).toMatchObject({ ok: false, status: 503, detail: 'legacy-mcp HTTP 503' });
     expect(verified.probes.primary_connector_local).toMatchObject({ ok: false, status: 503 });
     expect(connector.requests.some((request) => request.method === 'GET' && request.url === '/ready')).toBe(false);
+
+    const tick = await watchdogTick(config, {
+      failures: 1,
+      firstFailureAt: Date.now() - 6_000,
+      rollbackUsed: false,
+      primaryConnectorFailures: 1,
+      primaryConnectorFirstFailureAt: Date.now() - 6_000,
+      lastFullVerifyAt: Date.now(),
+    });
+    expect(tick.decision.action).toBe('restart_primary_connector');
+    expect(tick.primaryRuntimeRestart).toBeUndefined();
   });
 
   test('keeps an unmanaged external 530 separate from a healthy local primary Connector', async () => {

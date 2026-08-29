@@ -410,6 +410,7 @@ async function rollbackPackageRuntimeActivation(
         },
         controllerHome: request.controllerHome,
         endpoint: request.connectorEndpoint,
+        executable: request.nodeExecutable,
         platform: 'darwin',
         refresh: true,
       });
@@ -447,6 +448,7 @@ export async function activateScheduledPackageRuntimeService(
         release: request.release,
         controllerHome: request.controllerHome,
         endpoint: request.connectorEndpoint,
+        executable: request.nodeExecutable,
         platform: 'darwin',
         refresh: request.refreshConnector === true,
       });
@@ -616,7 +618,7 @@ export async function installPackageRuntimeService(
   if (!connectorEndpoint || base.status === 'activation_scheduled') return base;
   const ensureConnectorService = dependencies.ensureConnectorService ?? ensurePackageConnectorService;
   const connector = await ensureConnectorService({
-    release, controllerHome, endpoint: connectorEndpoint, platform, env, forcePortable: options.forcePortable === true, refresh: options.refreshConnector === true,
+    release, controllerHome, endpoint: connectorEndpoint, executable: process.execPath, platform, env, forcePortable: options.forcePortable === true, refresh: options.refreshConnector === true,
   });
   return { ...base, connector };
 }
