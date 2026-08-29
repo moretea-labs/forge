@@ -56,6 +56,8 @@ export interface RuntimeReleaseManifest {
   codeGraphSidecarArtifactIdentity?: string;
   codeGraphLibraryRoot?: 'codegraph-lib';
   codeGraphLibraryArtifactIdentity?: string;
+  packageRoot?: 'package';
+  packageArtifactIdentity?: string;
   controllerUiRoot?: 'ui-dist';
   controllerUiArtifactIdentity?: string;
   arguments: string[];

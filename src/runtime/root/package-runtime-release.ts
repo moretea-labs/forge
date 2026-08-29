@@ -107,7 +107,7 @@ function assertPackageRuntimeSnapshot(snapshotRoot: string, records: PackageRunt
   }
 }
 
-function stagePackageRuntimeSnapshot(sourceRoot: string, snapshotRoot: string, records: PackageRuntimeFileRecord[]): void {
+export function stagePackageRuntimeSnapshot(sourceRoot: string, snapshotRoot: string, records: PackageRuntimeFileRecord[]): void {
   mkdirSync(snapshotRoot, { recursive: false, mode: 0o700 });
   for (const record of records) {
     const source = join(sourceRoot, record.path);

@@ -60,6 +60,7 @@ export const COMPILED_RUNTIME_RELEASE_COMPONENT_FIELDS = [
   'codeGraphNodeEntrypoint', 'codeGraphNodeArtifactIdentity',
   'codeGraphSidecarEntrypoint', 'codeGraphSidecarArtifactIdentity',
   'codeGraphLibraryRoot', 'codeGraphLibraryArtifactIdentity',
+  'packageRoot', 'packageArtifactIdentity',
   'controllerUiRoot', 'controllerUiArtifactIdentity',
 ] as const satisfies readonly (keyof RuntimeReleaseManifest)[];
 
@@ -162,6 +163,12 @@ export function loadRuntimeReleaseManifest(
     identityField: 'externalPluginProbeArtifactIdentity',
     canonicalEntry: 'external-unix-socket-probe.cjs',
   });
+  const packageSnapshot = optionalRuntimeComponent({
+    value,
+    entryField: 'packageRoot',
+    identityField: 'packageArtifactIdentity',
+    canonicalEntry: 'package',
+  });
   const controllerUi = optionalRuntimeComponent({
     value,
     entryField: 'controllerUiRoot',
@@ -251,6 +258,7 @@ export function loadRuntimeReleaseManifest(
     ...(externalPluginProbe ?? {}),
     ...(browserAutomationHelper ?? {}),
     ...(codeGraphRuntime ?? {}),
+    ...(packageSnapshot ?? {}),
     ...(controllerUi ?? {}),
     arguments: argumentsValue as string[],
     configurationSchemaVersion: 1,

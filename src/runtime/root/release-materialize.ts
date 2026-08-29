@@ -6,6 +6,7 @@ import { runProcess } from '../../effects/process-runner';
 import { resolveBunExecutable } from '../shared/process-environment';
 import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlite-store';
 import { loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest } from './release-manifest';
+import { packageRuntimeFileIndex, stagePackageRuntimeSnapshot } from './package-runtime-release';
 
 /**
  * Stage one immutable Forge Runtime release below Controller Home. The staged
@@ -40,6 +41,7 @@ export interface StagedRuntimeRelease {
   codeGraphNodeArtifactIdentity?: string;
   codeGraphSidecarArtifactIdentity?: string;
   codeGraphLibraryArtifactIdentity?: string;
+  packageArtifactIdentity?: string;
   controllerUiArtifactIdentity?: string;
   macosCodeSigning?: MacOSRuntimeCodeSigning;
   manifestSha256: string;
@@ -347,6 +349,7 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
     codeGraphNodeArtifactIdentity: manifest.codeGraphNodeArtifactIdentity,
     codeGraphSidecarArtifactIdentity: manifest.codeGraphSidecarArtifactIdentity,
     codeGraphLibraryArtifactIdentity: manifest.codeGraphLibraryArtifactIdentity,
+    packageArtifactIdentity: manifest.packageArtifactIdentity,
     controllerUiArtifactIdentity: manifest.controllerUiArtifactIdentity,
     ...(macosCodeSigning ? { macosCodeSigning } : {}),
     manifestSha256: receipt.manifestSha256,
@@ -570,6 +573,16 @@ export function stageRuntimeRelease(input: {
     cpSync(sourceControllerUiPath, controllerUiPath, { recursive: true, force: false });
     const controllerUiArtifactIdentity = `sha256:${sha256Directory(controllerUiPath)}`;
 
+    // The persistent OAuth/Connector is source-backed even when the primary
+    // Runtime itself is compiled. Co-locate one immutable package snapshot in
+    // the same release so standalone Recovery can bind the Connector to the
+    // exact active release instead of retaining an older package release.
+    const packageRoot = 'package' as const;
+    const packagePath = join(staging, packageRoot);
+    const packageRecords = packageRuntimeFileIndex(sourceRoot);
+    stagePackageRuntimeSnapshot(sourceRoot, packagePath, packageRecords);
+    const packageArtifactIdentity = `sha256:${sha256Directory(packagePath)}`;
+
     const manifest = {
       schemaVersion: 1,
       releaseId,
@@ -596,6 +609,8 @@ export function stageRuntimeRelease(input: {
       codeGraphSidecarArtifactIdentity,
       codeGraphLibraryRoot,
       codeGraphLibraryArtifactIdentity,
+      packageRoot,
+      packageArtifactIdentity,
       controllerUiRoot,
       controllerUiArtifactIdentity,
       arguments: [],
@@ -631,6 +646,7 @@ export function stageRuntimeRelease(input: {
       codeGraphNodeArtifactIdentity,
       codeGraphSidecarArtifactIdentity,
       codeGraphLibraryArtifactIdentity,
+      packageArtifactIdentity,
       controllerUiArtifactIdentity,
       manifestSha256: createHash('sha256').update(`${JSON.stringify(manifest, null, 2)}\n`).digest('hex'),
       sourceCommit,
@@ -714,6 +730,10 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease, depende
       throw new Error(`RUNTIME_RELEASE_CODEGRAPH_LIBRARY_MISSING: ${join(libraryRoot, 'dist', 'index.js')}`);
     }
     assertDirectoryIdentity(libraryRoot, release.codeGraphLibraryArtifactIdentity);
+  }
+  if (release.packageArtifactIdentity) {
+    const packageRoot = join(release.releasePath, 'package');
+    assertDirectoryIdentity(packageRoot, release.packageArtifactIdentity);
   }
   if (release.controllerUiArtifactIdentity) {
     const uiRoot = join(release.releasePath, 'ui-dist');

@@ -44,10 +44,15 @@ function sourceFixture() {
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-runtime-release-controller-'));
   roots.push(root, controllerHome);
   mkdirSync(join(root, 'src/runtime/plugins'), { recursive: true });
+  mkdirSync(join(root, 'src/runtime/shared'), { recursive: true });
   mkdirSync(join(root, 'src/cli/local-bridge/ui-dist'), { recursive: true });
   mkdirSync(join(root, 'bin'), { recursive: true });
   mkdirSync(join(root, 'scripts'), { recursive: true });
   writeFileSync(join(root, 'README.md'), 'fixture\n');
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '1.7.0-test' }));
+  writeFileSync(join(root, 'bin/forge-runtime.mjs'), 'process.exit(0);\n');
+  writeFileSync(join(root, 'src/cli/index.ts'), 'export {};\n');
+  writeFileSync(join(root, 'src/runtime/shared/node-ts-loader.mjs'), 'export {};\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-node-bridge-host.ts'), 'console.log("host");\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-handoff-host.ts'), 'console.log("handoff");\n');
   writeFileSync(join(root, 'src/runtime/plugins/external-unix-socket-probe.cjs'), 'console.log("probe");\n');
@@ -324,6 +329,12 @@ describe('runtime release materialization', () => {
     expect(manifest.codeGraphSidecarArtifactIdentity).toBe(staged.codeGraphSidecarArtifactIdentity);
     expect(manifest.codeGraphLibraryRoot).toBe('codegraph-lib');
     expect(manifest.codeGraphLibraryArtifactIdentity).toBe(staged.codeGraphLibraryArtifactIdentity);
+    expect(existsSync(join(staged.releasePath, 'package', 'package.json'))).toBe(true);
+    expect(existsSync(join(staged.releasePath, 'package', 'src', 'cli', 'index.ts'))).toBe(true);
+    expect(existsSync(join(staged.releasePath, 'package', 'src', 'runtime', 'shared', 'node-ts-loader.mjs'))).toBe(true);
+    expect(staged.packageArtifactIdentity).toMatch(/^sha256:/);
+    expect(manifest.packageRoot).toBe('package');
+    expect(manifest.packageArtifactIdentity).toBe(staged.packageArtifactIdentity);
     expect(existsSync(join(staged.releasePath, 'ui-dist', 'app.js'))).toBe(true);
     expect(existsSync(join(staged.releasePath, 'ui-dist', 'app.css'))).toBe(true);
     expect(readFileSync(join(staged.releasePath, 'ui-dist', 'app.js'), 'utf8')).toContain('console.log');
@@ -337,6 +348,8 @@ describe('runtime release materialization', () => {
       codeGraphSidecarArtifactIdentity: staged.codeGraphSidecarArtifactIdentity,
       codeGraphLibraryRoot: 'codegraph-lib',
       codeGraphLibraryArtifactIdentity: staged.codeGraphLibraryArtifactIdentity,
+      packageRoot: 'package',
+      packageArtifactIdentity: staged.packageArtifactIdentity,
     });
     assertRuntimeReleaseFiles(staged);
   });
@@ -504,6 +517,19 @@ describe('runtime release materialization', () => {
     });
     rmSync(join(staged.releasePath, 'browser-handoff-host.js'));
     expect(() => assertRuntimeReleaseFiles(staged)).toThrow('RUNTIME_RELEASE_BROWSER_HANDOFF_HOST_MISSING');
+  });
+
+  test('release assertion rejects a package snapshot whose bytes no longer match its manifest identity', () => {
+    const { root, controllerHome } = sourceFixture();
+    const staged = stageRuntimeRelease({ controllerHome, sourceRoot: root }, {
+      platform: 'linux',
+      compileBinary: ({ outputPath }) => { writeFileSync(outputPath, 'binary'); return { ok: true }; },
+      bundleNodeHost: ({ outputPath }) => { writeFileSync(outputPath, 'node-host-bundle'); return { ok: true }; },
+      bundleProcessRunner: ({ outputPath }) => { writeFileSync(outputPath, 'process-runner-bundle'); return { ok: true }; },
+      materializeCodeGraphRuntime: materializeFakeCodeGraphRuntime,
+    });
+    writeFileSync(join(staged.releasePath, 'package', 'src', 'cli', 'index.ts'), 'tampered-package-source');
+    expect(() => assertRuntimeReleaseFiles(staged)).toThrow('RUNTIME_RELEASE_ARTIFACT_IDENTITY_MISMATCH');
   });
 
   test('release assertion rejects a component whose bytes no longer match its manifest identity', () => {
