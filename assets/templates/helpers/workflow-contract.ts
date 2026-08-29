@@ -65,6 +65,10 @@ export type WorkflowContract = {
   helpers: {
     runtimeDirectory?: string;
     compatibilityDirectory?: string;
+    /** Legacy manifest field retained for installed contract compatibility. */
+    dir?: string;
+    /** Legacy runtime-source discriminator still present in v1 manifests. */
+    runtimeSource?: string;
     scripts: string[];
   };
   artifacts: {
@@ -185,7 +189,7 @@ export function getHelperScripts(contract: WorkflowContract): string[] {
 }
 
 export function getHelperRuntimeDir(contract: WorkflowContract): string {
-  return contract.helpers.dir ?? "scripts";
+  return contract.helpers.runtimeDirectory ?? contract.helpers.dir ?? contract.helpers.compatibilityDirectory ?? "scripts";
 }
 
 export function getRequiredDirectories(contract: WorkflowContract): string[] {

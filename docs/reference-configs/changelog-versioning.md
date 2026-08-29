@@ -1,13 +1,19 @@
-# Changelog & Versioning Reference
+<!-- forge: reference-config-stub v1 -->
+# forge Reference: changelog-versioning
 
-> Externalized: full reference lives in default brain.
+> **Runtime Docs**: user-level forge reference
+> **Doc ID**: changelog-versioning
+> **Version**: 1.7.0
+> **Source Command**: `forge docs path changelog-versioning`
 
-## Default Brain
+This repo keeps workflow facts and runtime artifacts locally under `.ai/`.
+The full generic runtime guide is supplied by the installed forge
+package/user-level runtime so each repository does not need to refresh a full
+copy of shared documentation.
 
-- File vault: `brain/forge/references/changelog-versioning-reference.md`
-- gbrain slug: `references/changelog-versioning-reference`
+Use:
 
-## Repo Role
-
-The actual release history stays in `docs/CHANGELOG.md`. General changelog and
-versioning practice belongs in the external reference.
+```bash
+forge docs path changelog-versioning
+forge docs show changelog-versioning
+```

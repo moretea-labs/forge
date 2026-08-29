@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync, existsSync, lstatSync, readdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, extname, normalize, resolve } from 'node:path';
 
 const root = resolve(new URL('..', import.meta.url).pathname);
 const failures = [];
@@ -52,6 +53,105 @@ function sourceFiles(directory) {
   return files;
 }
 
+function relativeStaticTypeScriptDependencyGraph(directory = 'src') {
+  let ts;
+  try {
+    ts = createRequire(import.meta.url)('typescript');
+  } catch (error) {
+    failures.push(`TypeScript dependency is required for architecture import-cycle analysis: ${error instanceof Error ? error.message : String(error)}`);
+    return new Map();
+  }
+
+  const files = sourceFiles(directory).sort();
+  const known = new Set(files);
+  const graph = new Map(files.map((path) => [path, new Set()]));
+
+  function resolveTypeScriptImport(fromPath, specifier) {
+    if (!specifier.startsWith('.')) return undefined;
+    const base = normalize(`${dirname(fromPath)}/${specifier}`).replaceAll('\\', '/');
+    const extension = extname(base);
+    const withoutRuntimeExtension = ['.js', '.mjs', '.cjs'].includes(extension)
+      ? base.slice(0, -extension.length)
+      : base;
+    const candidates = extension === '.ts'
+      ? [base]
+      : [withoutRuntimeExtension, `${withoutRuntimeExtension}.ts`, `${withoutRuntimeExtension}/index.ts`];
+    return candidates.find((candidate) => known.has(candidate));
+  }
+
+  for (const path of files) {
+    const sourceFile = ts.createSourceFile(path, text(path), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    for (const statement of sourceFile.statements) {
+      let specifier;
+      if ((ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement))
+          && statement.moduleSpecifier
+          && ts.isStringLiteralLike(statement.moduleSpecifier)) {
+        specifier = statement.moduleSpecifier.text;
+      } else if (ts.isImportEqualsDeclaration(statement)
+          && ts.isExternalModuleReference(statement.moduleReference)
+          && statement.moduleReference.expression
+          && ts.isStringLiteralLike(statement.moduleReference.expression)) {
+        specifier = statement.moduleReference.expression.text;
+      }
+      if (!specifier) continue;
+      const target = resolveTypeScriptImport(path, specifier);
+      if (target) graph.get(path).add(target);
+    }
+  }
+  return graph;
+}
+
+function stronglyConnectedComponents(graph) {
+  let index = 0;
+  const indices = new Map();
+  const lowLinks = new Map();
+  const stack = [];
+  const onStack = new Set();
+  const components = [];
+
+  function visit(node) {
+    indices.set(node, index);
+    lowLinks.set(node, index);
+    index += 1;
+    stack.push(node);
+    onStack.add(node);
+
+    for (const target of graph.get(node) ?? []) {
+      if (!indices.has(target)) {
+        visit(target);
+        lowLinks.set(node, Math.min(lowLinks.get(node), lowLinks.get(target)));
+      } else if (onStack.has(target)) {
+        lowLinks.set(node, Math.min(lowLinks.get(node), indices.get(target)));
+      }
+    }
+
+    if (lowLinks.get(node) !== indices.get(node)) return;
+    const component = [];
+    while (stack.length) {
+      const member = stack.pop();
+      onStack.delete(member);
+      component.push(member);
+      if (member === node) break;
+    }
+    components.push(component.sort());
+  }
+
+  for (const node of [...graph.keys()].sort()) {
+    if (!indices.has(node)) visit(node);
+  }
+  return components;
+}
+
+function requireAcyclicProductionTypeScript() {
+  const graph = relativeStaticTypeScriptDependencyGraph('src');
+  const cyclic = stronglyConnectedComponents(graph).filter((component) =>
+    component.length > 1 || (component.length === 1 && graph.get(component[0])?.has(component[0])),
+  );
+  for (const component of cyclic) {
+    failures.push(`production TypeScript import cycle: ${component.join(' -> ')}`);
+  }
+}
+
 const allowedArchitectureRootMarkdown = new Set(['CURRENT.md', 'EVOLUTION.md', 'history.md', 'index.md']);
 const architectureRootMarkdown = readdirSync(resolve(root, 'docs/architecture'), { withFileTypes: true })
   .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
@@ -101,6 +201,21 @@ const required = [
   'src/runtime/control-plane/facade/repository-work-admission.ts',
   'src/runtime/control-plane/execution/retained-work-resume.ts',
   'src/runtime/control-plane/execution/work-handle-authority.ts',
+  'src/runtime/control-plane/execution/work-verification-context.ts',
+  'src/runtime/control-plane/execution/work-verification-service.ts',
+  'src/runtime/control-plane/execution/repository-work-attribution.ts',
+  'src/runtime/control-plane/execution/work-completion-authority.ts',
+  'src/runtime/control-plane/execution/work-evidence-policy.ts',
+  'src/runtime/control-plane/execution/work-execution-support.ts',
+  'src/runtime/control-plane/execution/work-finalization-service.ts',
+  'src/runtime/control-plane/execution/work-preparation-service.ts',
+  'src/runtime/control-plane/execution/work-operation-service.ts',
+  'src/runtime/control-plane/facade/work-state-machine.ts',
+  'src/runtime/evidence/process-check-execution.ts',
+  'src/runtime/context/semantic-navigation-contract.ts',
+  'src/cli/mcp/tool-contract.ts',
+  'src/cli/github/contracts.ts',
+  'src/runtime/gateway/mcp/runtime-tool-definitions.ts',
   'docs/architecture/CURRENT.md',
   'src/runtime/resources/leases/store.ts',
   'src/runtime/evidence/event-ledger.ts',
@@ -129,19 +244,33 @@ const required = [
   'src/cli/index.ts',
 ];
 for (const path of required) text(path);
+requireAcyclicProductionTypeScript();
+for (const path of sourceFiles('src/runtime/control-plane')) {
+  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])(?:\.\.\/)+gateway\//, 'control-plane domain/application code must not depend on Gateway transport');
+}
 requireText('src/runtime/control-plane/routing/route-policy.ts', "export function decideRoute");
 requireText('src/runtime/control-plane/routing/route-policy.ts', 'inputFingerprint');
 requireText('src/runtime/control-plane/routing/route-policy.ts', 'policyVersion');
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'runPersistedCheckViaProcessRuntime({');
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'interactiveWaitMs: 0');
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'checkContentRevision');
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'observedGitHead');
-forbidBetween(
-  'src/runtime/gateway/mcp/runtime-tools.ts',
-  'async function runFacadeVerify(',
-  'export async function callRuntimeTool',
+requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'runPersistedCheckViaProcessRuntime({');
+requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'interactiveWaitMs: input.interactiveWaitMs ?? 0');
+requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'checkContentRevision');
+requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'observedGitHead');
+requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'executeWorkVerification({');
+requireText('src/cli/local-bridge/facade-api.ts', 'executeWorkVerification({');
+forbid(
+  'src/cli/local-bridge/facade-api.ts',
   /runControllerCheck\s*\(/,
-  'route rh_work verify through persisted Process Runtime instead of synchronous check execution',
+  'Local Bridge Work verification must use the canonical persisted Work verification service',
+);
+forbid(
+  'src/runtime/gateway/mcp/runtime-tools.ts',
+  /function\s+classifyTerminalCheckEvidence\s*\(/,
+  'terminal Check evidence classification belongs to Process Runtime, not the Gateway transport',
+);
+forbid(
+  'src/runtime/control-plane/execution/work-verification-service.ts',
+  /runControllerCheck\s*\(/,
+  'route Work verification through persisted Process Runtime instead of synchronous check execution',
 );
 for (const adapter of [
   'src/cli/controller/work-mode.ts',
@@ -157,6 +286,23 @@ for (const path of sourceFiles('src')) {
   forbid(path, /requirePlanForGoalWorkloop\s*:\s*true/, 'never restore mandatory Plan gating in production');
 }
 if (routeAuthorityCount !== 1) failures.push(`exactly one decideRoute authority is required; found ${routeAuthorityCount}`);
+forbid(
+  'src/runtime/control-plane/facade/goal-workloop.ts',
+  /function\s+(?:evaluateWorkCompletionEvidence|evaluateWorkImplementationEvidence|verificationRecordAppliesToCurrentWorkspace)\s*\(/,
+  'keep Work evidence policy in the canonical work-evidence-policy module instead of reimplementing it in the facade',
+);
+requireText('src/runtime/control-plane/facade/goal-workloop.ts', "from '../execution/work-evidence-policy'");
+forbid(
+  'src/runtime/plugins/browser-handoff-host.ts',
+  /browser\/sessions|saveBrowserSession|writeBrowserSession|sessionPath/,
+  'Browser handoff sidecars must return interaction results and never write BrowserSession authority directly',
+);
+forbid(
+  'src/runtime/plugins/browser-adapter.ts',
+  /BROWSER_POST_DISPATCH_REPLAY_SAFE_ACTIONS|POST_DISPATCH_REPLAY_SAFE_ACTIONS/,
+  'Browser replay safety must come from Browser Runtime transaction policy, not an adapter-local allowlist',
+);
+requireText('src/runtime/plugins/browser-runtime.ts', 'browserActionCanReplayAfterDispatch');
 forbid(
   'src/runtime/gateway/mcp/runtime-tools.ts',
   /\b(?:createRequirement|resumeRetainedCancelledWorkContract)\s*\(/,
@@ -411,7 +557,14 @@ requireText('src/runtime/gateway/mcp/execution-tools.ts', 'isDurableWorkOperatio
 requireText('src/runtime/gateway/mcp/execution-tools.ts', "'work_execute'");
 requireText('src/runtime/gateway/mcp/execution-tools.ts', "'work_validate'");
 requireText('src/runtime/gateway/mcp/execution-tools.ts', "'work_finalize'");
-requireText('src/runtime/execution/workers/executor.ts', 'callExecutionTool(runtimeContext');
+requireText('src/runtime/execution/workers/executor.ts', 'executeWork(runtimeContext');
+requireText('src/runtime/execution/workers/executor.ts', 'validateWork(runtimeContext');
+requireText('src/runtime/execution/workers/executor.ts', 'finalizeWork(runtimeContext');
+forbid(
+  'src/runtime/execution/workers/executor.ts',
+  /gateway\/mcp\/execution-tools|callExecutionTool\s*\(/,
+  'Execution Worker must invoke control-plane Work application services directly, never MCP transport',
+);
 requireText('src/runtime/execution/workers/executor.ts', '__from_durable_worker');
 requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'managedProcessOperationDigest');
 forbid(
@@ -607,14 +760,50 @@ forbidBetween(
 requireText('src/runtime/control-plane/execution/session-store.ts', 'lastValidatedAt: now');
 requireText('src/runtime/control-plane/execution/validation.ts', 'warnings.push');
 requireText('src/runtime/control-plane/execution/work-handle-store.ts', "failed: ['validating', 'editing', 'committed', 'merged', 'cleaned', 'failed_terminal_cleanup']");
-requireText('src/runtime/gateway/mcp/execution-tools.ts', 'resetFinalizationStagesForRequest');
-requireText('src/runtime/gateway/mcp/execution-tools.ts', 'finalizationComplete');
-forbidBetween(
+requireText('src/runtime/gateway/mcp/execution-tools.ts', "from '../../control-plane/execution/work-finalization-service'");
+requireText('src/runtime/gateway/mcp/execution-tools.ts', "from '../../control-plane/execution/work-preparation-service'");
+requireText('src/runtime/gateway/mcp/execution-tools.ts', "from '../../control-plane/execution/work-operation-service'");
+requireText('src/runtime/gateway/mcp/execution-tools.ts', 'Compatibility exports: implementation authority lives in control-plane execution.');
+requireText('src/runtime/gateway/mcp/execution-tools.ts', 'resetFinalizationStagesForRequest,');
+requireText('src/runtime/gateway/mcp/execution-tools.ts', 'selectDefaultWorkValidationChecks');
+requireText('src/runtime/gateway/mcp/runtime-tools.ts', "callExecutionTool(ctx, 'work_finalize'");
+forbid(
+  'src/runtime/gateway/mcp/runtime-tools.ts',
+  /repositoryGit(?:Commit|FinishWorkflow|MergeBranch|DeleteBranch|RebaseOnto)\s*\(/,
+  'rh_work facade finalization must delegate to the canonical Work finalization application service instead of performing Git delivery itself',
+);
+forbid(
   'src/runtime/gateway/mcp/execution-tools.ts',
-  'function finalizeWork(',
-  'export async function callExecutionTool',
+  /function\s+finalizeWork\s*\(/,
+  'MCP execution transport must delegate Work finalization to the control-plane application service',
+);
+forbid(
+  'src/runtime/gateway/mcp/execution-tools.ts',
+  /function\s+(?:prepareWork|adoptExistingWorkHead)\s*\(/,
+  'MCP execution transport must delegate Work preparation/adoption to the control-plane application service',
+);
+forbid(
+  'src/runtime/gateway/mcp/execution-tools.ts',
+  /function\s+(?:executeWork|validateWork)\s*\(/,
+  'MCP execution transport must delegate Work execute/validate operations to the control-plane application service',
+);
+forbid(
+  'src/runtime/gateway/mcp/execution-tools.ts',
+  /(?:ensureManagedWorkspace|admitPreparedRepositoryWorkContract)\s*\(/,
+  'MCP execution transport must not own managed-workspace or WorkContract preparation admission',
+);
+requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'export function prepareWork(');
+requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'function adoptExistingWorkHead(');
+requireText('src/runtime/control-plane/execution/work-operation-service.ts', 'export async function executeWork(');
+requireText('src/runtime/control-plane/execution/work-operation-service.ts', 'export async function validateWork(');
+requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'resetFinalizationStagesForRequest');
+requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'finalizationComplete');
+forbidBetween(
+  'src/runtime/control-plane/execution/work-finalization-service.ts',
+  'export async function finalizeWork(',
+  '// WORK_FINALIZATION_SERVICE_END',
   /withControllerLock\([\s\S]{0,900}?(?:repositoryGitCommit|repositoryGitFinishWorkflow|runCleanup|repositoryGitDeleteBranch)/,
-  'work_finalize must not hold the controller lock while committing, merging, deleting branches, or removing worktrees',
+  'Work finalization must not hold the controller lock while committing, merging, deleting branches, or removing worktrees',
 );
 requireText('src/runtime/workflow/schedules/types.ts', "'repository-event'");
 requireText('src/runtime/workflow/schedules/types.ts', "'dependency-checkpoint'");
@@ -639,6 +828,10 @@ for (const path of [
   forbid(path, /\b(?:spawnSync|execSync|execFileSync)\s*\(/, 'the non-blocking Gateway/Controller hot-path rule');
 }
 
+requireText('scripts/run-governed-gate.ts', "label: 'source duplication'");
+requireText('scripts/run-governed-gate.ts', "args: ['scripts/check-source-duplication.mjs']");
+requireText('scripts/run-governed-gate.ts', "label: 'controller UI bundle'");
+requireText('scripts/run-governed-gate.ts', "args: ['run', 'check:controller-ui']");
 requireText('docs/architecture/CURRENT.md', '## State ownership');
 requireText('docs/architecture/CURRENT.md', '## Runtime and MCP boundary');
 requireText('docs/architecture/CURRENT.md', '## Testing and verification');

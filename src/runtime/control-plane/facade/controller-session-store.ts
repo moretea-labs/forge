@@ -160,12 +160,67 @@ export function listControllerSessions(options: ControllerSessionStoreOptions): 
   return read(options).sessions.filter((session) => Date.parse(session.leaseExpiresAt) > at);
 }
 
-export interface ControllerTerminalizationAuthority {
+export interface ControllerOwnershipAuthority {
   controllerId: string;
   controllerType: ControllerType;
   principalId: string;
   controllerInstanceId: string;
   claimGeneration: number;
+}
+
+export type ControllerTerminalizationAuthority = ControllerOwnershipAuthority;
+
+export function controllerSessionPrincipalId(
+  owner: Pick<ControllerSession, 'principalId' | 'controllerId'>,
+): string {
+  return owner.principalId?.trim() || owner.controllerId;
+}
+
+export function requireControllerOwnershipAuthority(
+  owner: ControllerSession,
+  workId: string = owner.workId,
+): ControllerOwnershipAuthority {
+  const principalId = controllerSessionPrincipalId(owner);
+  const controllerInstanceId = owner.controllerInstanceId?.trim() || '';
+  if (!controllerInstanceId) throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
+  if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) {
+    throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workId}`);
+  }
+  return {
+    controllerId: owner.controllerId,
+    controllerType: owner.controllerType,
+    principalId,
+    controllerInstanceId,
+    claimGeneration: owner.claimGeneration,
+  };
+}
+
+export function assertControllerOwnershipAuthority(
+  owner: ControllerSession,
+  expected: {
+    workId?: string;
+    controllerId: string;
+    principalId: string;
+    controllerInstanceId?: string;
+    controllerType?: ControllerType;
+  },
+): ControllerOwnershipAuthority {
+  const workId = expected.workId ?? owner.workId;
+  const authority = requireControllerOwnershipAuthority(owner, workId);
+  if (authority.controllerId !== expected.controllerId.trim()) {
+    throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workId} is owned by ${owner.controllerId}`);
+  }
+  if (expected.controllerType && authority.controllerType !== expected.controllerType) {
+    throw new Error(`WORK_CONTROLLER_TYPE_MISMATCH: ${workId} is owned by ${owner.controllerType}`);
+  }
+  if (authority.principalId !== expected.principalId.trim()) {
+    throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${workId}`);
+  }
+  if (expected.controllerInstanceId !== undefined
+    && authority.controllerInstanceId !== expected.controllerInstanceId.trim()) {
+    throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
+  }
+  return authority;
 }
 
 export type ControllerTerminalizationFenceReason =
@@ -180,24 +235,18 @@ export type ControllerTerminalizationFenceResult<T> =
 export function controllerTerminalizationAuthorityFromSession(
   owner: ControllerSession,
 ): ControllerTerminalizationAuthority | undefined {
-  const principalId = owner.principalId?.trim() || owner.controllerId;
-  const controllerInstanceId = owner.controllerInstanceId?.trim() || '';
-  const claimGeneration = owner.claimGeneration;
-  if (!principalId || !controllerInstanceId || typeof claimGeneration !== 'number' || claimGeneration < 1) return undefined;
-  return {
-    controllerId: owner.controllerId,
-    controllerType: owner.controllerType,
-    principalId,
-    controllerInstanceId,
-    claimGeneration,
-  };
+  try {
+    return requireControllerOwnershipAuthority(owner);
+  } catch {
+    return undefined;
+  }
 }
 
 function controllerTerminalizationAuthorityMatches(
   owner: ControllerSession,
   authority: ControllerTerminalizationAuthority,
 ): boolean {
-  const ownerPrincipal = owner.principalId?.trim() || owner.controllerId;
+  const ownerPrincipal = controllerSessionPrincipalId(owner);
   const ownerInstanceId = owner.controllerInstanceId?.trim() || '';
   return owner.controllerId === authority.controllerId
     && owner.controllerType === authority.controllerType
@@ -377,7 +426,7 @@ export function bindControllerSessionToCurrentRuntime(
     if (input.allowClaimIfMissing !== true) throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${input.workId}`);
     return claimControllerSession(options, { ...input, expectedClaimGeneration: 0 });
   }
-  const currentPrincipal = current.principalId?.trim() || current.controllerId;
+  const currentPrincipal = controllerSessionPrincipalId(current);
   if (current.controllerId !== input.controllerId) {
     throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${input.workId} is owned by ${current.controllerId}`);
   }

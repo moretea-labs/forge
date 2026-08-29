@@ -32,7 +32,6 @@ export interface BrowserHandoffLaunchSpec {
   repoRoot: string;
   interactionId: string;
   sessionId: string;
-  sessionPath: string;
   url: string;
   profileDir: string;
   selectedProfilePath: string;
@@ -50,7 +49,6 @@ export interface BrowserHandoffStartInput {
   requestId: string;
   jobId?: string;
   sessionId: string;
-  sessionPath: string;
   url: string;
   profileDir: string;
   selectedProfilePath: string;
@@ -407,7 +405,6 @@ export async function startBrowserHandoff(input: BrowserHandoffStartInput): Prom
     repoRoot: input.repoRoot,
     interactionId,
     sessionId: input.sessionId,
-    sessionPath: input.sessionPath,
     url: input.url,
     profileDir: input.profileDir,
     selectedProfilePath: input.selectedProfilePath,
@@ -441,6 +438,24 @@ export function resumeBrowserHandoff(repoRoot: string, interactionId: string, re
   if (!isInteractionSessionActive(current.status) || current.status === 'closing') return current;
   writeInteractionCommand(repoRoot, PROVIDER, interactionId, 'resume', requestedBy);
   return current;
+}
+
+export async function resumeBrowserHandoffAndWait(
+  repoRoot: string,
+  interactionId: string,
+  requestedBy: string,
+  timeoutMs = 5_000,
+): Promise<InteractionSessionRecord> {
+  const initial = resumeBrowserHandoff(repoRoot, interactionId, requestedBy);
+  if (!isInteractionSessionActive(initial.status)) return initial;
+  const deadline = Date.now() + Math.max(0, Math.trunc(timeoutMs));
+  let latest = initial;
+  while (Date.now() < deadline) {
+    await hooks.wait(STARTUP_POLL_MS);
+    latest = getBrowserHandoff(repoRoot, interactionId);
+    if (!isInteractionSessionActive(latest.status)) return latest;
+  }
+  return latest;
 }
 
 export function cancelBrowserHandoff(repoRoot: string, interactionId: string, requestedBy: string): InteractionSessionRecord {

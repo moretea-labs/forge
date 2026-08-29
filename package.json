@@ -107,6 +107,7 @@
     "check:type": "bun x tsc --noEmit",
     "check:runtime-architecture": "node scripts/check-runtime-architecture.mjs",
     "check:generated-authority": "node scripts/sync-generated-authority.mjs --check",
+    "check:source-duplication": "node scripts/check-source-duplication.mjs",
     "check:executable-modes": "bun scripts/repair-executable-modes.ts --check",
     "repair:executable-modes": "bun scripts/repair-executable-modes.ts",
     "check:test-governance": "bun scripts/test-governance.ts validate",

@@ -13,7 +13,7 @@ import { join } from "path";
 import { spawnSync } from "child_process";
 
 const ROOT = join(import.meta.dir, "..");
-const SCRIPT = join(ROOT, "scripts/check-agent-tooling.sh");
+const SCRIPT = join(ROOT, "assets/templates/helpers/check-agent-tooling.sh");
 const WAZA_SKILLS = ["think", "hunt", "check", "health"];
 const WAZA_RULES = ["anti-patterns.md", "chinese.md", "durable-context.md", "english.md"];
 

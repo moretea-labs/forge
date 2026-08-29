@@ -18,6 +18,8 @@ export function stepsFor(gate: Gate): Step[] {
     { label: 'typecheck', command: 'bun', args: ['run', 'check:type'], timeoutMs: 10 * 60_000 },
     { label: 'static architecture', command: 'bun', args: ['run', 'check:runtime-architecture'], timeoutMs: 5 * 60_000 },
     { label: 'generated authority', command: 'node', args: ['scripts/sync-generated-authority.mjs', '--check'], timeoutMs: 2 * 60_000 },
+    { label: 'source duplication', command: 'node', args: ['scripts/check-source-duplication.mjs'], timeoutMs: 2 * 60_000 },
+    { label: 'controller UI bundle', command: 'bun', args: ['run', 'check:controller-ui'], timeoutMs: 5 * 60_000 },
     { label: 'test manifest', command: 'bun', args: ['run', 'check:test-governance'], timeoutMs: 5 * 60_000 },
     { label: 'affected tests', command: 'bun', args: ['run', 'test'], timeoutMs: 30 * 60_000 },
   ];

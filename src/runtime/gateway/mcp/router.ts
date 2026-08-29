@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import type { CallToolResult, McpToolDefinition } from '../../../cli/mcp/tools';
+import type { CallToolResult, McpToolDefinition } from '../../../cli/mcp/tool-contract';
 import {
   buildMultiRepositoryToolDefinitions,
   type MultiRepositoryMcpToolContext,
@@ -9,7 +9,7 @@ import {
   claimedSessionEditBinding,
   repositoryToolDefinitions,
 } from '../../../cli/mcp/repository-tools';
-import { runtimeToolDefinitions } from './runtime-tools';
+import { runtimeToolDefinitions } from './runtime-tool-definitions';
 import { executionToolDefinitions } from './execution-tools';
 import { processToolDefinitions } from './process-tools';
 import { resolveRepositorySelection } from '../../../cli/repositories/registry';

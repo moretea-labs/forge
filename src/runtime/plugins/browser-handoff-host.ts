@@ -1,8 +1,8 @@
 import { createRequire } from 'module';
-import { existsSync, rmSync } from 'fs';
+import { rmSync } from 'fs';
 import { basename } from 'path';
 import { spawnSync } from 'child_process';
-import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
+import { readJsonFile } from '../shared/json-files';
 import {
   interactionCommandPath,
   patchInteractionSession,
@@ -100,19 +100,7 @@ async function runNativeHandoff(specPath: string, spec: BrowserHandoffLaunchSpec
         removeInteractionCommand(spec.repoRoot, 'browser', spec.interactionId, 'resume');
         metadata = await readMacOsBrowserOwnedTabMetadata(native.product, native.ref, spec.defaultTimeoutMs);
         assertHttpUrl(metadata.url);
-        const existing = existsSync(spec.sessionPath)
-          ? readJsonFile<Record<string, unknown>>(spec.sessionPath, {})
-          : {};
-        const timestamp = new Date().toISOString();
         const result = { url: metadata.url, title: metadata.title };
-        writeJsonAtomic(spec.sessionPath, {
-          ...existing,
-          schemaVersion: 1,
-          sessionId: spec.sessionId,
-          ...result,
-          createdAt: typeof existing.createdAt === 'string' ? existing.createdAt : timestamp,
-          updatedAt: timestamp,
-        });
         terminalOutcome = { status: 'completed', result };
         patchInteractionSession(spec.repoRoot, 'browser', spec.interactionId, { status: 'closing', result });
         break;
@@ -239,18 +227,7 @@ async function main(): Promise<void> {
       if (resume) {
         removeInteractionCommand(spec.repoRoot, 'browser', spec.interactionId, 'resume');
         assertHttpUrl(page.url());
-        const existing = existsSync(spec.sessionPath)
-          ? readJsonFile<Record<string, unknown>>(spec.sessionPath, {})
-          : {};
-        const timestamp = new Date().toISOString();
         const result = { url: page.url(), title: await page.title() };
-        writeJsonAtomic(spec.sessionPath, {
-          schemaVersion: 1,
-          sessionId: spec.sessionId,
-          ...result,
-          createdAt: typeof existing.createdAt === 'string' ? existing.createdAt : timestamp,
-          updatedAt: timestamp,
-        });
         terminalOutcome = { status: 'completed', result };
         patchInteractionSession(spec.repoRoot, 'browser', spec.interactionId, { status: 'closing', result });
         break;

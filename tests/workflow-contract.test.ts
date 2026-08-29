@@ -14,7 +14,7 @@ import { join, relative } from "path";
 import { spawnSync } from "child_process";
 import { inspectRepo } from "../scripts/inspect-project-state";
 import { migrate } from "../scripts/migrate-workflow-docs";
-import { loadWorkflowContract } from "../scripts/workflow-contract";
+import { getHelperRuntimeDir, loadWorkflowContract, type WorkflowContract } from "../scripts/workflow-contract";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -403,4 +403,27 @@ describe("state inspection and legacy doc migration", () => {
       rmSync(repo, { recursive: true, force: true });
     }
   });
+
+  test("helper runtime directory prefers canonical metadata over legacy compatibility fields", () => {
+    const helpers: WorkflowContract["helpers"] = {
+      runtimeDirectory: "package:assets/templates/helpers",
+      compatibilityDirectory: "scripts",
+      dir: "legacy-package-dir",
+      runtimeSource: "package",
+      scripts: [],
+    };
+
+    expect(getHelperRuntimeDir({ helpers } as WorkflowContract)).toBe("package:assets/templates/helpers");
+  });
+
+  test("helper runtime directory accepts legacy dir metadata from older installed manifests", () => {
+    const helpers: WorkflowContract["helpers"] = {
+      dir: "package:assets/templates/helpers",
+      runtimeSource: "package",
+      scripts: [],
+    };
+
+    expect(getHelperRuntimeDir({ helpers } as WorkflowContract)).toBe("package:assets/templates/helpers");
+  });
+
 });

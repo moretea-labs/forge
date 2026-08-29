@@ -9,12 +9,13 @@ import {
   type BrowserAutomationTrustedInput,
 } from './browser-automation-service';
 import { AssistantPluginError } from './errors';
+import type { BrowserNativeAttachAttempt, BrowserNativeProduct } from './browser-session-types';
 
 const RECORD_SEPARATOR = String.fromCharCode(30);
 const DEFAULT_NATIVE_TIMEOUT_MS = 5_000;
 const MAX_NATIVE_OUTPUT_BYTES = 1_048_576;
 
-export type MacOsBrowserProduct = 'chrome' | 'vivaldi';
+export type MacOsBrowserProduct = BrowserNativeProduct;
 
 interface MacOsBrowserDefinition {
   product: MacOsBrowserProduct;
@@ -71,14 +72,7 @@ export interface MacOsBrowserTabInventory {
   truncated: boolean;
 }
 
-export interface MacOsBrowserAttachAttempt {
-  product: MacOsBrowserProduct;
-  appName: string;
-  bundleId: string;
-  status: 'selected' | 'available' | 'not_installed' | 'not_running' | 'unavailable';
-  frontmost?: boolean;
-  error?: string;
-}
+export type MacOsBrowserAttachAttempt = BrowserNativeAttachAttempt;
 
 export interface MacOsBrowserAttachment {
   metadata: MacOsBrowserMetadata;
@@ -199,6 +193,8 @@ export function parseMacOsBrowserCreateTabBrokerResult(result: Record<string, un
   if (navigation.observedUrlAfterAssignment !== undefined && typeof navigation.observedUrlAfterAssignment !== 'string') {
     throw new AssistantPluginError('PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR', 'Stable Forge macOS capability broker returned invalid create-tab observed URL provenance.', { retryable: true });
   }
+  const acceptedBy = typeof navigation.acceptedBy === 'string' ? navigation.acceptedBy : undefined;
+  const observedUrlAfterAssignment = typeof navigation.observedUrlAfterAssignment === 'string' ? navigation.observedUrlAfterAssignment : undefined;
   return {
     ref,
     refSource,
@@ -206,8 +202,8 @@ export function parseMacOsBrowserCreateTabBrokerResult(result: Record<string, un
       provenanceVersion: 1,
       requestedUrl: navigation.requestedUrl,
       assignmentAccepted: true,
-      ...(navigation.acceptedBy ? { acceptedBy: navigation.acceptedBy } : {}),
-      ...(navigation.observedUrlAfterAssignment ? { observedUrlAfterAssignment: navigation.observedUrlAfterAssignment } : {}),
+      ...(acceptedBy ? { acceptedBy } : {}),
+      ...(observedUrlAfterAssignment ? { observedUrlAfterAssignment } : {}),
     },
   };
 }

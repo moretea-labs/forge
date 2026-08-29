@@ -486,7 +486,7 @@ describe("check-task-workflow sprint validation", () => {
       writeFileSync(join(cwd, "plans/sprints/20260610-0001-weird.sprint.md"), "# Sprint: Weird\n\n> **Status**: Cooking\n");
       writeFileSync(join(cwd, ".ai/harness/sprint/active-sprint"), "plans/sprints/missing.sprint.md");
 
-      const res = run("bash", ["scripts/check-task-workflow.sh", "--strict"], cwd);
+      const res = run("bash", [join(HELPER_DIR, "check-task-workflow.sh"), "--strict"], cwd);
       expect(res.status).toBe(1);
       expect(res.stdout).toContain("PRD section is empty or placeholder-only");
       expect(res.stdout).toContain("row 1 has an invalid mode (expected contract or inline)");
@@ -511,7 +511,7 @@ describe("check-task-workflow sprint validation", () => {
         "# Sprint: Quote\n\n> **Status**: Don't ship\n"
       );
 
-      const res = run("bash", ["scripts/check-task-workflow.sh", "--strict"], cwd);
+      const res = run("bash", [join(HELPER_DIR, "check-task-workflow.sh"), "--strict"], cwd);
       expect(res.status).toBe(1);
       expect(res.stdout).toContain("Sprint has unknown status 'Don't ship'");
     } finally {
@@ -528,7 +528,7 @@ describe("check-task-workflow sprint validation", () => {
       writeFileSync(join(cwd, "outside/victim.sprint.md"), "# Sprint: Victim\n\n> **Status**: Draft\n");
       writeFileSync(join(cwd, ".ai/harness/sprint/active-sprint"), "outside/victim.sprint.md");
 
-      const res = run("bash", ["scripts/check-task-workflow.sh"], cwd);
+      const res = run("bash", [join(HELPER_DIR, "check-task-workflow.sh")], cwd);
       expect(res.stdout).toContain("Active sprint marker points outside plans/sprints");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
@@ -546,7 +546,7 @@ describe("check-task-workflow sprint validation", () => {
       );
       writeActiveSprintFixture(cwd, "plans/sprints/20260610-0001-ready.sprint.md");
 
-      const res = run("bash", ["scripts/check-task-workflow.sh"], cwd);
+      const res = run("bash", [join(HELPER_DIR, "check-task-workflow.sh")], cwd);
       expect(res.stdout).not.toContain("[workflow] Sprint ");
       expect(res.stdout).not.toContain("Active sprint marker");
     } finally {
@@ -651,8 +651,8 @@ describe("sprint projection", () => {
 
 describe("sprint asset parity", () => {
   test("self-host scripts match the distributed template helpers", () => {
-    expect(readFileSync(join(ROOT, "scripts/sprint-backlog.sh"), "utf-8")).toBe(
-      readFileSync(join(HELPER_DIR, "sprint-backlog.sh"), "utf-8")
+    expect(readFileSync(join(ROOT, "scripts/sprint-backlog.sh"), "utf-8")).toContain(
+      'run-forge-helper.sh" "sprint-backlog.sh"'
     );
     expect(readFileSync(join(ROOT, ".claude/templates/sprint.template.md"), "utf-8")).toBe(
       readFileSync(join(ROOT, "assets/templates/sprint.template.md"), "utf-8")
@@ -660,14 +660,17 @@ describe("sprint asset parity", () => {
     expect(readFileSync(join(ROOT, ".claude/templates/prd.template.md"), "utf-8")).toBe(
       readFileSync(join(ROOT, "assets/templates/prd.template.md"), "utf-8")
     );
-    expect(readFileSync(join(ROOT, "scripts/check-task-workflow.sh"), "utf-8")).toBe(
-      readFileSync(join(HELPER_DIR, "check-task-workflow.sh"), "utf-8")
+    expect(readFileSync(join(ROOT, "scripts/check-task-workflow.sh"), "utf-8")).toContain(
+      'run-forge-helper.sh" "check-task-workflow.sh"'
     );
-    expect(readFileSync(join(ROOT, "scripts/refresh-current-status.sh"), "utf-8")).toBe(
-      readFileSync(join(HELPER_DIR, "refresh-current-status.sh"), "utf-8")
+    expect(readFileSync(join(ROOT, "scripts/refresh-current-status.sh"), "utf-8")).toContain(
+      'run-forge-helper.sh" "refresh-current-status.sh"'
     );
-    expect(readFileSync(join(ROOT, "docs/reference-configs/sprint-contracts.md"), "utf-8")).toBe(
-      readFileSync(join(ROOT, "assets/reference-configs/sprint-contracts.md"), "utf-8")
+    expect(readFileSync(join(ROOT, "docs/reference-configs/sprint-contracts.md"), "utf-8")).toContain(
+      "<!-- forge: reference-config-stub v1 -->"
+    );
+    expect(readFileSync(join(ROOT, "docs/reference-configs/sprint-contracts.md"), "utf-8")).toContain(
+      "forge docs path sprint-contracts"
     );
   });
 });

@@ -92,6 +92,11 @@ Explicit **Scale** is the opt-in coordination form of this existing model, not a
 - Durable Process owns persisted command/check lifecycle only when the selected lane is durable.
 - Runtime release/recovery state owns Forge service availability and immutable release activation; it is separate from ordinary command recovery. The canonical OS service executes an atomic byte-identical mirror of the selected signed Runtime entrypoint from the fixed physical `runtime/service/active-forge-runtime` path, while release resources and identity remain manifest-bound. The stable physical path prevents macOS TCC from treating every immutable release directory as a new responsible-process principal.
 - Historical Issue/Task/Local Job and compatibility projections must not become second mutable authorities.
+- Work lifecycle policy is separated from persistence: `work-state-machine.ts` owns legal phase/dispatch/evidence/completion transitions, while `work-contract-store.ts` owns locked persistence and applies that policy. Work completion projection is centralized in `work-completion-authority.ts`, and Work verification execution/evidence is centralized in `work-verification-service.ts`. Transports may submit requests and encode results but must not reimplement these rules.
+- Work delivery/finalization is also an application service: `work-finalization-service.ts` owns the commit/merge/cleanup/receipt transaction and `work-execution-support.ts` owns shared exact identity/cleanup primitives. MCP `execution-tools.ts` and `rh_work` compatibility glue may prepare arguments or reconcile legacy handles, but they must enter that same finalization authority rather than perform Git delivery themselves.
+- Work preparation/adoption is an application service as well: `work-preparation-service.ts` owns managed-workspace selection, WorkContract admission/reuse, exact successor-HEAD adoption and Controller ownership binding. MCP `execution-tools.ts` only decodes `work_prepare` / repository-bind requests and delegates; it must not recreate workspace admission or WorkHandle/WorkContract preparation transitions.
+- Work command execution and validation live in `work-operation-service.ts`. Both MCP Gateway and Durable Worker call this application service directly; Workers must never dynamic-import MCP transport to obtain Work semantics. The architecture gate also forbids any `runtime/control-plane` source from depending back on `runtime/gateway`.
+- Production Browser session persistence is Controller-home SQLite `BrowserSessionAuthority`. Compatibility JSON may be imported or used only when no Controller authority is available; handoff sidecars return interaction results and never write BrowserSession state directly.
 
 ## Runtime and MCP boundary
 
@@ -100,7 +105,8 @@ Explicit **Scale** is the opt-in coordination form of this existing model, not a
 - The default Controller MCP schema is the stable **19-tool** surface.
 - `core` and `advanced` expose that same stable surface.
 - `toolset=full` is an explicit compatibility profile and may contain historical definitions; current default schema construction must not depend on those legacy definitions.
-- Current schemas/handlers should live with their owning module. Legacy compatibility may delegate but must not independently own current business rules.
+- Current schemas/handlers should live with their owning module. Legacy compatibility may delegate but must not independently own current business rules. Shared transport contracts and tool definitions belong in neutral contract/definition modules so the dependency direction remains transport -> application/domain authority rather than transport implementations importing one another.
+- Work-attributed verification is an application service, not an MCP/Local Bridge implementation detail: all Work verification resolves the Work checkout/check registry, runs through Process Runtime, validates terminal receipt identity, and records Work evidence through the same `work-verification-service.ts`.
 
 ### Controller facade and handoff boundary
 
@@ -131,15 +137,17 @@ Browser providers are selected by declared capability. Common DOM and typed brow
 
 Foreground presentation is an explicit effect reserved for capabilities that truly require physical pointer/keyboard input or human handoff. Browser `trusted_input` never silently activates a background tab or converts CSS viewport coordinates into desktop coordinates. If the native broker lacks the required trusted-input capability, Browser fails with a typed capability error; an explicitly requested Desktop Operator foreground/physical action remains a separate authority boundary. Mutating provider actions are complete only when their declared postconditions are verified; transport, Apple Events, Accessibility, socket, or CGEvent success alone is not semantic completion.
 
-The public Browser action surface remains compatible across Playwright/CDP/native providers. Current native compatibility may omit optional broker methods such as global tab inventory while preserving exact-ref lifecycle safety. DOM automation through Chrome/Vivaldi Apple Events still requires the browser's JavaScript-from-Apple-Events permission; missing permission fails closed instead of weakening the provider contract.
+The public Browser action surface remains compatible across Playwright/CDP/native providers. Current native compatibility may omit optional broker methods such as global tab inventory while preserving exact-ref lifecycle safety. DOM automation through Chrome/Vivaldi Apple Events still requires the browser's JavaScript-from-Apple-Events permission; missing permission fails closed instead of weakening the provider contract. Browser replay safety is derived from the Browser Runtime transaction contract rather than an adapter-local action allowlist, and native session liveness/reconciliation is centralized outside the plugin composition root. A human-handoff host may persist its own InteractionSession result, but BrowserSession mutation returns to the canonical Runtime authority.
 
 ## Testing and verification
 
 Tests are verification evidence, not an alternate architecture authority.
 
-- Development/task gate: typecheck + static architecture + manifest validity + affected tests.
+- Development/task gate: typecheck + static architecture + generated-authority drift + source-duplication classification + controller-UI reproduction + manifest validity + affected tests.
 - Main candidate: task gate + core regression + Runtime smoke.
 - Release candidate: main gate + full regression + release packaging/readiness.
+- Static architecture additionally requires the production `src/**/*.ts` relative-import graph to be acyclic. Neutral contracts may break dependency direction; dynamic imports must not be used merely to conceal a static architecture cycle.
+- Source-duplication governance permits only classified distribution/template projections, guidance aliases, and placeholders; unclassified exact duplicates fail the gate. Generated copies may exist for packaging, but manual implementation duplication is not an accepted source-authoring model.
 - Test governance validates registration, resource classification, selection and execution isolation; it does not impose arbitrary global test-line or resource-count budgets.
 - Prefer a small number of architectural invariants, focused module tests and essential integration/E2E coverage. Delete implementation-coupled or retired-compatibility tests when the underlying obligation is removed.
 
@@ -163,7 +171,7 @@ Research notes, tasks, reviews, archived architecture pages, plans and Git histo
 
 ## Intentionally retained compatibility debt
 
-- Explicit `toolset=full` remains a supported legacy compatibility boundary for now.
+- Explicit `toolset=full` remains a supported legacy compatibility boundary for now. Issue/Task/project-board writers are migration-only compatibility and are permanently retired after the SQLite requirement-portfolio cutover marker; they must not become a second current control plane.
 - Some large runtime modules still aggregate multiple responsibilities and should be decomposed only when a clear ownership boundary is available.
 - CodeGraph may be structurally stale between index refreshes; current raw source and changed-file overlays remain authoritative.
 

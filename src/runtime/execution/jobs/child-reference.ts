@@ -1,5 +1,9 @@
 import type { ExecutionJob } from './types';
-import type { OperationReceipt } from './receipt-store';
+
+export interface ChildReferenceReceiptLike {
+  childReference?: unknown;
+  result?: Record<string, unknown>;
+}
 
 /** Durable pointer from a short-lived parent Execution Job to its child Agent Run. */
 export interface ExecutionChildReference {
@@ -72,7 +76,7 @@ export function childReferenceFromUnknown(value: unknown): ExecutionChildReferen
   return pickChildReference(value as Record<string, unknown>);
 }
 
-export function childReferenceFromReceipt(receipt: OperationReceipt | undefined): ExecutionChildReference | undefined {
+export function childReferenceFromReceipt(receipt: ChildReferenceReceiptLike | undefined): ExecutionChildReference | undefined {
   if (!receipt) return undefined;
   return childReferenceFromUnknown(receipt.childReference)
     ?? childReferenceFromUnknown(receipt.result);

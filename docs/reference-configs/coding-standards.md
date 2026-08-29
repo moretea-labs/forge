@@ -1,14 +1,19 @@
-# Coding Standards Reference
+<!-- forge: reference-config-stub v1 -->
+# forge Reference: coding-standards
 
-> Externalized: full reference lives in default brain.
+> **Runtime Docs**: user-level forge reference
+> **Doc ID**: coding-standards
+> **Version**: 1.7.0
+> **Source Command**: `forge docs path coding-standards`
 
-## Default Brain
+This repo keeps workflow facts and runtime artifacts locally under `.ai/`.
+The full generic runtime guide is supplied by the installed forge
+package/user-level runtime so each repository does not need to refresh a full
+copy of shared documentation.
 
-- File vault: `brain/forge/references/coding-standards-reference.md`
-- gbrain slug: `references/coding-standards-reference`
+Use:
 
-## Repo Role
-
-Project-specific coding constraints stay in root agent files, workflow policy,
-tests, and task contracts. General coding standards belong in the external
-reference.
+```bash
+forge docs path coding-standards
+forge docs show coding-standards
+```

@@ -1,14 +1,19 @@
-# AI-Assisted Development Workflows Reference
+<!-- forge: reference-config-stub v1 -->
+# forge Reference: ai-workflows
 
-> Externalized: full reference lives in default brain.
+> **Runtime Docs**: user-level forge reference
+> **Doc ID**: ai-workflows
+> **Version**: 1.7.0
+> **Source Command**: `forge docs path ai-workflows`
 
-## Default Brain
+This repo keeps workflow facts and runtime artifacts locally under `.ai/`.
+The full generic runtime guide is supplied by the installed forge
+package/user-level runtime so each repository does not need to refresh a full
+copy of shared documentation.
 
-- File vault: `brain/forge/references/ai-assisted-workflows-reference.md`
-- gbrain slug: `references/ai-assisted-workflows-reference`
+Use:
 
-## Repo Role
-
-This repo keeps only this pointer so generated projects do not carry a long
-generic workflow catalog by default. Runtime workflow routing remains in
-`docs/reference-configs/agentic-development-flow.md` and `.ai/harness/policy.json`.
+```bash
+forge docs path ai-workflows
+forge docs show ai-workflows
+```

@@ -1575,12 +1575,12 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.post("/api/console/work/verify", (request, response) => {
+  app.post("/api/console/work/verify", async (request, response) => {
     try {
       const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
         ? request.body as Record<string, unknown>
         : {};
-      const result = verifyConsoleWork(consoleCtx(request), {
+      const result = await verifyConsoleWork(consoleCtx(request), {
         workId: queryString(body.workId) ?? "",
         checkId: queryString(body.checkId),
         simulate: body.simulate === true,

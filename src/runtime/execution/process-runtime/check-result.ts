@@ -66,6 +66,37 @@ export interface PersistedCheckTerminalEvidence {
   infrastructureReason?: string;
 }
 
+export interface TerminalCheckEvidenceClassificationInput {
+  processError?: { code: string; message: string };
+  structuredPresent: boolean;
+  structuredMatches: boolean;
+  legacyPresent: boolean;
+  legacyMatches: boolean;
+}
+
+/**
+ * Compatibility-level classifier for terminal Check evidence. Keep this pure so
+ * legacy/public callers and the Process Runtime record adapter share one semantic
+ * authority instead of carrying duplicate decision trees.
+ */
+export function classifyTerminalCheckEvidence(
+  input: TerminalCheckEvidenceClassificationInput,
+): PersistedCheckTerminalEvidence {
+  if (input.structuredMatches || input.legacyMatches) return { state: 'matched' };
+  if (!input.structuredPresent && !input.legacyPresent && input.processError?.message?.trim()) {
+    const reason = input.processError.message.trim().slice(0, 512);
+    return {
+      state: 'process_runtime_failed_before_result',
+      warning: `check process failed before structured result receipt: ${reason}`,
+      infrastructureReason: reason,
+    };
+  }
+  if (input.structuredPresent || input.legacyPresent) {
+    return { state: 'mismatch', warning: 'check result receipt did not match the terminal Process semantic identity' };
+  }
+  return { state: 'missing', warning: 'check result receipt is missing for the terminal Check Process' };
+}
+
 /**
  * Classify one terminal Check Process using the structured result emitted by
  * the check-runner sidecar. A Process Runtime/admission failure can terminate
@@ -74,9 +105,15 @@ export interface PersistedCheckTerminalEvidence {
  * rejected the candidate. Missing/mismatched result identity also fails closed
  * as infrastructure rather than manufacturing acceptance evidence.
  */
+export interface LegacyCheckEvidenceLike {
+  cacheKey?: string;
+  failureClass?: PersistedCheckResultReceipt['failureClass'];
+}
+
 export function classifyPersistedCheckTerminalEvidence(
   record: ManagedProcessRecord,
   expectedCheckId: string,
+  options: { legacyEvidence?: LegacyCheckEvidenceLike } = {},
 ): PersistedCheckTerminalEvidence {
   const structured = readPersistedCheckResultReceipt(record.origin?.checkResultReceiptPath);
   const structuredMatches = Boolean(
@@ -85,22 +122,20 @@ export function classifyPersistedCheckTerminalEvidence(
     && structured.checkId === expectedCheckId
     && structured.cacheKey === record.checkExecution.cacheKey,
   );
-  if (structuredMatches) {
-    return { state: 'matched', failureClass: structured?.failureClass };
-  }
-  if (!structured && record.error?.message?.trim()) {
-    const reason = record.error.message.trim().slice(0, 512);
-    return {
-      state: 'process_runtime_failed_before_result',
-      warning: `check process failed before structured result receipt: ${reason}`,
-      infrastructureReason: reason,
-    };
-  }
-  if (structured) {
-    return {
-      state: 'mismatch',
-      warning: 'check result receipt did not match the terminal Process semantic identity',
-    };
-  }
-  return { state: 'missing', warning: 'check result receipt is missing for the terminal Check Process' };
+  const legacy = options.legacyEvidence;
+  const legacyMatches = Boolean(
+    legacy?.cacheKey
+    && record.checkExecution?.cacheKey
+    && legacy.cacheKey === record.checkExecution.cacheKey,
+  );
+  const classified = classifyTerminalCheckEvidence({
+    processError: record.error,
+    structuredPresent: Boolean(structured),
+    structuredMatches,
+    legacyPresent: Boolean(legacy),
+    legacyMatches,
+  });
+  return classified.state === 'matched'
+    ? { ...classified, failureClass: structuredMatches ? structured?.failureClass : legacy?.failureClass }
+    : classified;
 }

@@ -85,6 +85,7 @@ describe('execution-speed test governance', () => {
   });
 
   test('models task, main, and release as one reusable nested gate DAG', () => {
+    expect(stepsFor('task').some((step) => !('gate' in step) && step.label === 'controller UI bundle')).toBe(true);
     expect(stepsFor('main').some((step) => 'gate' in step && step.gate === 'task')).toBe(true);
     expect(stepsFor('release').some((step) => 'gate' in step && step.gate === 'main')).toBe(true);
     expect(gateDefinitionDigest('release')).not.toBe(gateDefinitionDigest('main'));

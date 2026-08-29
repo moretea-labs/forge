@@ -140,18 +140,8 @@ export interface ProcessRequestBinding {
   createdAt: string;
 }
 
-/** Content-bound Check identity used only to index/reuse Process Runtime evidence. */
-export interface ProcessCheckExecutionIdentity {
-  schemaVersion: 1;
-  checkId: string;
-  cacheKey: string;
-  revision: string;
-  definitionDigest: string;
-  environmentFingerprint: string;
-  timeoutMs: number;
-  reuseScope: 'repository' | 'checkout';
-  scopeKey: string;
-}
+export type { ProcessCheckExecutionIdentity } from '../../evidence/process-check-execution';
+import type { ProcessCheckExecutionIdentity } from '../../evidence/process-check-execution';
 
 /** Persistent semantic Check binding to one physical Process record. */
 export interface ProcessCheckExecutionBinding {

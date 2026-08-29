@@ -1,21 +1,19 @@
-# Development Protocol Reference
+<!-- forge: reference-config-stub v1 -->
+# forge Reference: development-protocol
 
-> Partially externalized: full pattern lives in default brain.
+> **Runtime Docs**: user-level forge reference
+> **Doc ID**: development-protocol
+> **Version**: 1.7.0
+> **Source Command**: `forge docs path development-protocol`
 
-## Default Brain
+This repo keeps workflow facts and runtime artifacts locally under `.ai/`.
+The full generic runtime guide is supplied by the installed forge
+package/user-level runtime so each repository does not need to refresh a full
+copy of shared documentation.
 
-- File vault: `brain/forge/patterns/pattern-agentic-development-protocol.md`
-- gbrain slug: `patterns/pattern-agentic-development-protocol`
+Use:
 
-## Repo Role
-
-The executable source of truth is still repo-local:
-
-- Active execution: `plans/plan-*.md` `## Task Breakdown` plus `tasks/contracts/`
-- Deferred goals: `tasks/todos.md`
-- Plans: `plans/`
-- Contracts: `tasks/contracts/`
-- Reviews: `tasks/reviews/`
-- Hook ownership and parity: `docs/reference-configs/hook-operations.md`
-
-Use the external pattern for broader feature, bug, and response-shaping guidance.
+```bash
+forge docs path development-protocol
+forge docs show development-protocol
+```

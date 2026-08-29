@@ -3,8 +3,8 @@ import { spawnSync } from 'child_process';
 import { getIssue, listIssues, recordTaskVerification, acceptVerifiedTask, projectTaskFromWork } from '../../../cli/controller/issue-store';
 import { resolveCompletionTargetBranch } from '../../../cli/controller/completion-target';
 import type { CompletionReceipt, ControllerIssue } from '../../../cli/controller/types';
-import { completeRequirementFromWork } from '../persistence/requirement-store';
-import { appendWorkEvidence, getWorkContract, recordWorkCompletionReceipt, updateWorkContract } from '../facade/work-contract-store';
+import { getWorkContract, updateWorkContract } from '../facade/work-contract-store';
+import { completeWorkWithReceipt } from './work-completion-authority';
 import { isRepositoryCompletionReceipt, WORK_RECONCILIATION_METHODS, WORK_RECONCILIATION_OUTCOMES } from '../facade/types';
 import type {
   WorkReconciliationMethod,
@@ -289,32 +289,13 @@ export function acceptVerifiedTaskFromReviewedWorkReconciliation(input: Controll
     recordedAt,
   };
   const completionOutcome = noChange ? 'completed_no_change' : contract.workKind === 'remote_effect' ? 'completed_remote' : 'completed_changed';
-  const recorded = recordWorkCompletionReceipt(
+  const recorded = completeWorkWithReceipt(
     { controllerHome: input.controllerHome, repoId: input.repoId },
     input.workId,
     receipt,
     completionOutcome,
     contract.workKind,
   );
-  if (recorded.requirementId) {
-    try {
-      completeRequirementFromWork(
-        { controllerHome: input.controllerHome },
-        { requirementId: recorded.requirementId, work: recorded },
-      );
-    } catch (error) {
-      try {
-        appendWorkEvidence({ controllerHome: input.controllerHome, repoId: input.repoId }, input.workId, {
-          title: 'requirement completion projection pending',
-          summary: `Work completion remains authoritative; Requirement projection could not be applied: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2_000),
-          detailLevel: 'summary',
-        });
-      } catch {
-        // The completion receipt was already persisted; legacy Task projection
-        // remains retryable even if this diagnostic cannot be stored.
-      }
-    }
-  }
   const recordedReceipt = recorded.completionReceipt;
   const projectedReceipt = recordedReceipt && isRepositoryCompletionReceipt(recordedReceipt) ? recordedReceipt : receipt;
   const projectedVerification = { ...task.verification!, completionReceipt: projectedReceipt };
@@ -438,32 +419,12 @@ export function acceptVerifiedTaskFromControllerWork(input: ControllerWorkTaskRe
   // historical Task write is interrupted, the Work authority is still
   // durable and a retry can safely rebuild the projection.
   const completionOutcome = noChange ? 'completed_no_change' : contract.workKind === 'remote_effect' ? 'completed_remote' : 'completed_changed';
-  const recorded = recordWorkCompletionReceipt(
+  const recorded = completeWorkWithReceipt(
     { controllerHome: input.controllerHome, repoId: input.repoId },
     input.workId,
     receipt,
     completionOutcome,
   );
-  if (recorded.requirementId) {
-    try {
-      completeRequirementFromWork(
-        { controllerHome: input.controllerHome },
-        { requirementId: recorded.requirementId, work: recorded },
-      );
-    } catch (error) {
-      try {
-        appendWorkEvidence({ controllerHome: input.controllerHome, repoId: input.repoId }, input.workId, {
-          title: 'requirement completion projection pending',
-          summary: `Work completion remains authoritative; Requirement projection could not be applied: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2_000),
-          detailLevel: 'summary',
-        });
-      } catch {
-        // The Work receipt is canonical and already durable. Keep historical
-        // reconciliation/task projection retryable instead of surfacing a false
-        // completion failure from this downstream diagnostic path.
-      }
-    }
-  }
   const recordedReceipt = recorded.completionReceipt;
   const projectedReceipt = recordedReceipt && isRepositoryCompletionReceipt(recordedReceipt) ? recordedReceipt : receipt;
   const projectedVerification = {

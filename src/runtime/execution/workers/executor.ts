@@ -28,6 +28,8 @@ import { writeExecutionArtifact } from '../../evidence/artifact-store';
 import { existsSync } from 'fs';
 import { isAbsolute, relative, resolve, sep } from 'path';
 import { isAssistantPluginError } from '../../plugins/errors';
+import { executeWork, validateWork } from '../../control-plane/execution/work-operation-service';
+import { finalizeWork } from '../../control-plane/execution/work-finalization-service';
 
 
 function childReferenceFromLocalJob(
@@ -524,23 +526,26 @@ export async function executeExecutionJob(controllerHome: string, job: Execution
       toolset: job.payload.toolset === 'core' || job.payload.toolset === 'full' ? job.payload.toolset : 'advanced',
       toolsetLocked: true,
     };
-    // Public Work mutations are admitted by the Gateway, then executed exactly
-    // once here. Calling the implementation directly avoids recursive Job
-    // creation while preserving the existing Work validation/authorization path.
+    // Durable Work mutations execute through control-plane application services.
+    // The Worker must never import MCP transport to obtain Work semantics.
     const durableWorkOperation = job.payload.operation === 'work_execute'
       || job.payload.operation === 'work_validate'
       || job.payload.operation === 'work_finalize';
-    // Load the Work implementation only for Work Jobs. A static import here
-    // creates an initialization cycle through repository command and Local Bridge
-    // modules, changing unrelated execution behavior.
     const toolArguments = { ...(job.payload.arguments ?? {}) };
-    const executionResult = durableWorkOperation
-      ? await import('../../gateway/mcp/execution-tools').then(({ callExecutionTool }) =>
-        callExecutionTool(runtimeContext, job.payload.operation, {
-          ...toolArguments,
-          __from_durable_worker: true,
-          __execution_job_id: job.jobId,
-        }))
+    const workArguments = {
+      ...toolArguments,
+      __from_durable_worker: true,
+      __execution_job_id: job.jobId,
+    };
+    const executionRecord = job.payload.operation === 'work_execute'
+      ? await executeWork(runtimeContext, workArguments)
+      : job.payload.operation === 'work_validate'
+        ? await validateWork(runtimeContext, workArguments)
+        : job.payload.operation === 'work_finalize'
+          ? await finalizeWork(runtimeContext, workArguments)
+          : undefined;
+    const executionResult: CallToolResult | undefined = durableWorkOperation && executionRecord
+      ? { structuredContent: executionRecord, content: [] }
       : undefined;
     const runtimeResult = executionResult ?? (policy.profile === 'controller'
       ? await callRuntimeTool(runtimeContext, job.payload.operation, toolArguments)

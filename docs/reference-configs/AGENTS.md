@@ -1,13 +1,19 @@
-# Functional Block Agent Context
+<!-- forge: reference-config-stub v1 -->
+# forge Reference: AGENTS
 
-Keep this file focused on the local contract for this primary functional block.
+> **Runtime Docs**: user-level forge reference
+> **Doc ID**: AGENTS
+> **Version**: 1.7.0
+> **Source Command**: `forge docs path AGENTS`
 
-## Local Context Contract
+This repo keeps workflow facts and runtime artifacts locally under `.ai/`.
+The full generic runtime guide is supplied by the installed forge
+package/user-level runtime so each repository does not need to refresh a full
+copy of shared documentation.
 
-- Describe only the ownership, boundaries, stable entrypoints, and local verification commands for this functional block.
-- Keep sibling `CLAUDE.md` and `AGENTS.md` files aligned. Claude Code consumes `CLAUDE.md`; Codex consumes `AGENTS.md`.
-- Record the local LSP/tooling profile here when it differs from the repo default.
-- Route deep implementation detail into nearby docs instead of inflating root agent context files.
-- Treat `.ai/context/context-map.json` as the index of discoverable context files.
-- Do not keep pushing context files deeper by default; add lower-level files only for a separately owned functional block with its own commands and invariants.
-- Prefer repo-local workflow artifacts over tool-specific chat memory.
+Use:
+
+```bash
+forge docs path AGENTS
+forge docs show AGENTS
+```

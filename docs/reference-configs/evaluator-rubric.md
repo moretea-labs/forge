@@ -1,19 +1,19 @@
-# Evaluator Rubric
+<!-- forge: reference-config-stub v1 -->
+# forge Reference: evaluator-rubric
 
-> Partially externalized: full rubric lives in default brain.
+> **Runtime Docs**: user-level forge reference
+> **Doc ID**: evaluator-rubric
+> **Version**: 1.7.0
+> **Source Command**: `forge docs path evaluator-rubric`
 
-## Default Brain
+This repo keeps workflow facts and runtime artifacts locally under `.ai/`.
+The full generic runtime guide is supplied by the installed forge
+package/user-level runtime so each repository does not need to refresh a full
+copy of shared documentation.
 
-- File vault: `brain/forge/references/evaluator-rubric-reference.md`
-- gbrain slug: `references/evaluator-rubric-reference`
+Use:
 
-## Repo Role
-
-Keep pass/fail evidence in `tasks/reviews/<plan-stem>.review.md` and
-`.ai/harness/checks/latest.json`. Use the external rubric for detailed scoring
-dimensions and review examples.
-
-## Hard Threshold
-
-Do not mark a sprint complete unless the review artifact has fresh evidence and
-the active contract verification passes.
+```bash
+forge docs path evaluator-rubric
+forge docs show evaluator-rubric
+```

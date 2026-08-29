@@ -1,14 +1,19 @@
-# AI-Driven Version Control Strategy Reference
+<!-- forge: reference-config-stub v1 -->
+# forge Reference: git-strategy
 
-> Externalized: full reference lives in default brain.
+> **Runtime Docs**: user-level forge reference
+> **Doc ID**: git-strategy
+> **Version**: 1.7.0
+> **Source Command**: `forge docs path git-strategy`
 
-## Default Brain
+This repo keeps workflow facts and runtime artifacts locally under `.ai/`.
+The full generic runtime guide is supplied by the installed forge
+package/user-level runtime so each repository does not need to refresh a full
+copy of shared documentation.
 
-- File vault: `brain/forge/references/ai-driven-version-control-strategy.md`
-- gbrain slug: `references/ai-driven-version-control-strategy`
+Use:
 
-## Repo Role
-
-Repo-local git rules stay in `AGENTS.md`, workflow contracts, and active task
-files. Cross-project branching and version-control strategy guidance lives in
-the external reference.
+```bash
+forge docs path git-strategy
+forge docs show git-strategy
+```

@@ -6,8 +6,9 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { CallToolResult as SdkCallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { collectRuntimePerformanceDiagnostics, inferLocalControllerProcess } from '../../diagnostics/performance';
 import { defaultSemanticProviderRegistry, type SemanticNavigationKind, type SemanticNavigationRequest } from '../../context/semantic-navigation';
-import type { McpToolDefinition, CallToolResult } from '../../../cli/mcp/tools';
+import type { McpToolDefinition, CallToolResult } from '../../../cli/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
+import { allControllerToolDefinitions, controllerExposureSnapshot, controllerToolSurfaceStatus } from '../../../cli/mcp/toolset';
 import { legacyIosPluginInvocation } from './legacy-ios-tool-adapter';
 import { repositoryScopedToolArgs } from '../../../cli/mcp/multi-repository';
 import { resolveMcpPath } from '../../../cli/mcp/paths';
@@ -19,15 +20,18 @@ import { repositoryControllerRoot } from '../../../cli/repositories/controller-h
 import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../execution/jobs/store';
 import { waitForExecutionJob } from '../../execution/jobs/wait';
 import type { ExecutionJob } from '../../execution/jobs/types';
-import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS, checkRequiresDurableWorkflow, getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, listRecoverableProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics, readPersistedCheckResultReceipt, runPersistedCheckViaProcessRuntime, waitForProcess } from '../../execution/process-runtime';
+import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS, getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, listRecoverableProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics } from '../../execution/process-runtime';
+import { classifyPersistedCheckTerminalEvidence } from '../../execution/process-runtime/check-result';
+export { classifyTerminalCheckEvidence } from '../../execution/process-runtime/check-result';
 import { listWorkBoundRepositoryProcessEvidence } from '../../control-plane/execution/work-process-evidence';
 import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../../execution/process-runtime/command-facade';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
 import { ensureRepositoryWorkHandle, rebindRepositoryWorkHandleControllerIdentity } from '../../control-plane/execution/work-handle-authority';
 import { recoverTerminalWorkHandle } from '../../control-plane/execution/work-terminal-cleanup';
-import { executionIdentityForRepository } from '../../control-plane/execution/execution-identity';
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from '../../control-plane/execution/verification-evidence';
+import { resolveWorkVerificationContext } from '../../control-plane/execution/work-verification-context';
+import { executeWorkVerification } from '../../control-plane/execution/work-verification-service';
 import { acceptReviewedDirectEditWorkReconciliation, reconcileFinalizedDirectEditWorksAfterCommit } from '../../control-plane/execution/direct-edit-work-completion';
 import { readJobEvents } from '../../evidence/event-ledger';
 import { readExecutionArtifact } from '../../evidence/artifact-store';
@@ -60,12 +64,6 @@ import {
   triggerWorkContinuationSchedule,
   type ContinuationControllerType,
 } from '../../workflow/schedules/work-continuation';
-import {
-  gatewayRouteBehaviorSnapshot,
-  getMcpToolDefinition,
-  RETIRED_AGENT_OPERATIONS,
-  routeDurableMcpCall,
-} from './router';
 import { assertAutomatedOperationAllowed } from '../../control-plane/governance/external-effects';
 import { ensureRepositoryRuntimeStorage } from '../../../cli/repositories/runtime-storage';
 import { assessWorkMode, parseExplicitTaskMode } from '../../../cli/controller/work-mode';
@@ -193,6 +191,7 @@ import {
   type FacadeTool,
   bindControllerSessionToCurrentRuntime,
   claimControllerSession,
+  controllerSessionPrincipalId,
   getControllerSession,
   releaseControllerSessionWithAuthority,
   releaseObservedControllerSession,
@@ -622,30 +621,6 @@ async function callStandaloneRecoveryTool(
 }
 
 export const RH_WORK_VERIFY_LEASE_WAIT_MS = DEFAULT_WORK_CHECK_LEASE_WAIT_MS;
-
-type TerminalCheckEvidenceState = 'matched' | 'process_runtime_failed_before_result' | 'missing' | 'mismatch';
-
-export function classifyTerminalCheckEvidence(input: {
-  processError?: { code: string; message: string };
-  structuredPresent: boolean;
-  structuredMatches: boolean;
-  legacyPresent: boolean;
-  legacyMatches: boolean;
-}): { state: TerminalCheckEvidenceState; warning?: string; infrastructureReason?: string } {
-  if (input.structuredMatches || input.legacyMatches) return { state: 'matched' };
-  if (!input.structuredPresent && !input.legacyPresent && input.processError?.message?.trim()) {
-    const reason = input.processError.message.trim().slice(0, 512);
-    return {
-      state: 'process_runtime_failed_before_result',
-      warning: `check process failed before structured result receipt: ${reason}`,
-      infrastructureReason: reason,
-    };
-  }
-  if (input.structuredPresent || input.legacyPresent) {
-    return { state: 'mismatch', warning: 'check result receipt did not match the terminal Process semantic identity' };
-  }
-  return { state: 'missing', warning: 'check result receipt is missing for the terminal Check Process' };
-}
 
 function result(value: Record<string, unknown>, isError = false): CallToolResult {
   // Compact text channel by default (no pretty-print bloat).
@@ -1669,6 +1644,111 @@ export async function controllerReadinessEvidence(
   };
 }
 
+/**
+ * Runtime Source drift for MCP readiness.
+ *
+ * `currentRuntimeRoot` is only for tests that pin a Controller Runtime Source
+ * fixture. Callers must never pass an execution repository canonicalRoot here.
+ */
+export function runtimeSourceSnapshotStatus(
+  active: RuntimeSourceIdentity | undefined,
+  currentRuntimeRoot?: string,
+) {
+  const drift = evaluateActiveRuntimeSourceDrift(active, {
+    currentRuntimeRoot,
+  });
+  return {
+    current: drift.current,
+    restartRequired: drift.restartRequired,
+    reasons: drift.reasons,
+    code: drift.code,
+  };
+}
+
+export function repositoryExecutionReadiness(
+  repoRoot: string,
+  availableChecks: ReturnType<typeof listControllerChecks>,
+  requestedCheckIds: string[] = [],
+  schedulingScope: { repoId?: string; checkoutId?: string } = {},
+): Record<string, unknown> {
+  const git = gitSnapshot(repoRoot);
+  const registeredCheckIds = availableChecks.map((check) => check.id);
+  const normalizedChecks = normalizeCheckIds(requestedCheckIds, availableChecks);
+  const hasPackageJson = existsSync(join(repoRoot, 'package.json'));
+  const nodeModulesReady = !hasPackageJson || existsSync(join(repoRoot, 'node_modules'));
+  const lockCandidates = [
+    ['bun', 'bun.lock'],
+    ['bun', 'bun.lockb'],
+    ['pnpm', 'pnpm-lock.yaml'],
+    ['npm', 'package-lock.json'],
+    ['yarn', 'yarn.lock'],
+  ] as const;
+  const detectedLock = lockCandidates.find(([, path]) => existsSync(join(repoRoot, path)));
+  const packageManager = detectedLock?.[0];
+  const bootstrapCommand = hasPackageJson && !nodeModulesReady
+    ? packageManager === 'bun' ? ['bun', 'install', '--frozen-lockfile']
+      : packageManager === 'pnpm' ? ['pnpm', 'install', '--frozen-lockfile']
+        : packageManager === 'npm' ? ['npm', 'ci']
+          : packageManager === 'yarn' ? ['yarn', 'install', '--frozen-lockfile']
+            : undefined
+    : undefined;
+  const hasPythonManifest = existsSync(join(repoRoot, 'pyproject.toml'))
+    || existsSync(join(repoRoot, 'requirements.txt'))
+    || existsSync(join(repoRoot, 'requirements-dev.txt'));
+  const localPythonReady = !hasPythonManifest
+    || existsSync(join(repoRoot, '.venv', 'bin', 'python'))
+    || existsSync(join(repoRoot, '.venv', 'Scripts', 'python.exe'));
+  const checkScheduling = buildCheckExecutionSchedule({
+    checks: availableChecks,
+    requestedCheckIds,
+    repoId: schedulingScope.repoId?.trim() || 'selected-repository',
+    checkoutId: schedulingScope.checkoutId?.trim() || 'active',
+  });
+  const blockers = [
+    ...(!nodeModulesReady ? [{ code: 'NODE_DEPENDENCIES_MISSING', message: 'package.json is present but node_modules is not materialized in this checkout.' }] : []),
+    ...normalizedChecks.invalidCheckIds.map((checkId) => ({ code: 'CHECK_NOT_REGISTERED', message: `Requested check is not registered: ${checkId}`, checkId })),
+  ];
+  return {
+    readyForFocusedExecution: blockers.length === 0,
+    git: { head: git.head, branch: git.branch, dirty: git.dirty },
+    checks: {
+      registeredCount: registeredCheckIds.length,
+      registeredCheckIds: registeredCheckIds.slice(0, 80),
+      requestedCheckIds: requestedCheckIds.slice(0, 40),
+      normalized: normalizedChecks,
+    },
+    checkScheduling: {
+      waveCount: checkScheduling.waves.length,
+      maxParallel: checkScheduling.maxParallel,
+      waveSummaries: checkScheduling.waves.map((wave) => `wave ${wave.wave}: ${wave.checkIds.join(', ')}`),
+      conflictSummaries: checkScheduling.conflicts.map((conflict) => {
+        const resources = [...new Set(conflict.resources.flatMap(({ left, right }) => [left.resourceKey, right.resourceKey]))];
+        return `${conflict.leftCheckId} <> ${conflict.rightCheckId}: ${resources.join(', ')}`;
+      }),
+      invalidCheckIds: checkScheduling.invalidCheckIds,
+      guidance: checkScheduling.guidance,
+    },
+    dependencies: {
+      node: {
+        applicable: hasPackageJson,
+        ready: nodeModulesReady,
+        packageManager: packageManager ?? null,
+        lockfile: detectedLock?.[1] ?? null,
+        ...(bootstrapCommand ? { bootstrapCommand } : {}),
+      },
+      python: {
+        applicable: hasPythonManifest,
+        localVirtualEnvReady: localPythonReady,
+        advisoryOnly: true,
+      },
+    },
+    blockers,
+    guidance: bootstrapCommand
+      ? [`Materialize checkout dependencies before tests/builds: ${bootstrapCommand.join(' ')}`]
+      : [],
+  };
+}
+
 export async function controllerReadiness(
   ctx: MultiRepositoryMcpToolContext,
   repository = ctx.explicitRepository,
@@ -2427,18 +2507,10 @@ function reconcileTerminalFacadeWorkVerifications(
   repository: ReturnType<typeof selected>,
   workId: string,
 ): { sourceRevision?: string; workspaceFingerprint?: string; workspaceChangedPaths?: string[]; reconciledProcessIds: string[]; workBoundProcessEvidenceIds: string[] } {
-  const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
-  const workContract = getWorkContract(store, workId);
+  const resolvedVerification = resolveWorkVerificationContext({ controllerHome: ctx.controllerHome, repository, workId });
+  if (!resolvedVerification.ok) return { reconciledProcessIds: [], workBoundProcessEvidenceIds: [] };
+  const { store, workContract, repository: verificationRepository, checks: availableChecks } = resolvedVerification.context;
   if (!workContract || workContract.completionReceipt) return { reconciledProcessIds: [], workBoundProcessEvidenceIds: [] };
-
-  let verificationRepository: ReturnType<typeof selectRepositoryCheckout>;
-  try {
-    verificationRepository = workContract.checkoutId
-      ? selectRepositoryCheckout(repository, workContract.checkoutId, { allowArchived: true })
-      : repository;
-  } catch {
-    return { reconciledProcessIds: [], workBoundProcessEvidenceIds: [] };
-  }
   const verificationStatus = repositoryGitStatus(verificationRepository);
   const sourceRevision = verificationStatus.head ?? undefined;
   if (!sourceRevision) return { reconciledProcessIds: [], workBoundProcessEvidenceIds: [] };
@@ -2464,7 +2536,6 @@ function reconcileTerminalFacadeWorkVerifications(
         workId,
       }).map((evidence) => evidence.processId)
     : [];
-  const availableChecks = listControllerChecks(repository.canonicalRoot);
   const workloopCtx = {
     workStore: store,
     handoffStore: store,
@@ -2519,29 +2590,11 @@ function reconcileTerminalFacadeWorkVerifications(
       const latestContract = getWorkContract(store, workId);
       if (latestContract?.checkRefs.some((entry) => entry.receipt?.receiptId === receipt.receiptId)) continue;
 
-      const structuredCheckResult = readPersistedCheckResultReceipt(record.origin?.checkResultReceiptPath);
-      const structuredResultMatchesProcess = Boolean(
-        structuredCheckResult
-        && structuredCheckResult.checkId === normalizedCheckId
-        && structuredCheckResult.cacheKey === record.checkExecution.cacheKey,
-      );
       const legacyEvidence = record.origin?.checkResultReceiptPath
         ? undefined
         : readLatestControllerCheckEvidence(verificationRepository.canonicalRoot, normalizedCheckId);
-      const legacyEvidenceMatchesProcess = Boolean(
-        legacyEvidence?.cacheKey
-        && legacyEvidence.cacheKey === record.checkExecution.cacheKey,
-      );
-      const evidenceState = classifyTerminalCheckEvidence({
-        processError: record.error,
-        structuredPresent: Boolean(structuredCheckResult),
-        structuredMatches: structuredResultMatchesProcess,
-        legacyPresent: Boolean(legacyEvidence),
-        legacyMatches: legacyEvidenceMatchesProcess,
-      });
-      const failureClass = structuredResultMatchesProcess
-        ? structuredCheckResult?.failureClass
-        : legacyEvidenceMatchesProcess ? legacyEvidence?.failureClass : undefined;
+      const evidenceState = classifyPersistedCheckTerminalEvidence(record, normalizedCheckId, { legacyEvidence });
+      const failureClass = evidenceState.failureClass;
       const infrastructureFailed = receipt.timedOut
         || receipt.cancelled
         || evidenceState.state !== 'matched'
@@ -2573,500 +2626,39 @@ async function runFacadeVerify(
   repository: ReturnType<typeof selected>,
   args: Record<string, unknown>,
 ): Promise<CallToolResult> {
-  const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
-  const workId = typeof args.work_id === 'string' ? args.work_id : '';
-  const checkId = String(args.check_id ?? args.checkId ?? '').trim();
-  if (!checkId) {
-    const checks = listControllerChecks(repository.canonicalRoot);
-    return result(buildFacadeResult({
-      status: 'blocked',
-      summary: 'rh_work verify requires a registered check_id.',
-      data: {
-        verification: {
-          outcome: 'check_id_required',
-          isAcceptanceFailure: false,
-          isInfrastructureIssue: true,
-          doesNotRequestTaskChanges: true,
-        },
-        registeredCheckCount: checks.length,
-      },
-      warnings: ['CHECK_ID_REQUIRED: pass check_id for one registered repository check.'],
-      suggestedNextActions: normalizeCheckIds(checks.slice(0, 3).map((check) => check.id), checks).suggestedNextActions,
-    }) as unknown as Record<string, unknown>, true);
-  }
-  const workContract = workId ? getWorkContract(store, workId) : undefined;
-  let verificationRepository = repository;
-  if (workContract?.checkoutId) {
-    try {
-      verificationRepository = selectRepositoryCheckout(repository, workContract.checkoutId, { allowArchived: true });
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : 'Work checkout could not be resolved';
-      return result(buildFacadeResult({
-        status: 'blocked',
-        summary: `WORK_VERIFICATION_CHECKOUT_UNAVAILABLE: ${detail}`,
-        data: {
-          verification: {
-            checkId,
-            outcome: 'infrastructure_failure',
-            isAcceptanceFailure: false,
-            isInfrastructureIssue: true,
-            doesNotRequestTaskChanges: true,
-          },
-        },
-        warnings: ['Work verification never falls back to the canonical/main check registry when the Work-bound checkout is unavailable.'],
-      }) as unknown as Record<string, unknown>, true);
-    }
-  }
-  const checks = listControllerChecks(verificationRepository.canonicalRoot);
-  const workloopCtx = {
-    workStore: store,
-    handoffStore: store,
-    repoId: repository.repoId,
-    availableChecks: checks,
-  };
-  if (workId && (!workContract || workContract.status === 'completed' || workContract.status === 'cancelled' || workContract.status === 'failed')) {
-    const facade = verifyGoalWorkloop(workloopCtx, { workId, checkId });
-    return result(facade as unknown as Record<string, unknown>, facade.status === 'failed');
-  }
-
-  const classified = classifyVerificationOutcome({
-    checkId,
-    available: checks,
-  });
-
-  if (classified.outcome === 'invalid_check_id') {
-    if (workId) {
-      const facade = verifyGoalWorkloop(workloopCtx, { workId, checkId });
-      return result(facade as unknown as Record<string, unknown>);
-    }
-    return result(buildFacadeResult({
-      status: 'ok',
-      summary: classified.summary,
-      data: {
-        verification: {
-          checkId,
-          outcome: 'invalid_check_id',
-          isAcceptanceFailure: false,
-          isInfrastructureIssue: true,
-          doesNotRequestTaskChanges: true,
-        },
-        registeredCheckCount: checks.length,
-      },
-      warnings: classified.warnings,
-      suggestedNextActions: normalizeCheckIds(checks.slice(0, 3).map((check) => check.id), checks).suggestedNextActions,
-    }) as unknown as Record<string, unknown>);
-  }
-
-  // Simulation path for unit tests / explicit dry verification without process execution.
-  if (args.simulate_check === true || args.infrastructure_failed === true || args.check_failed === true || args.skipped === true) {
-    if (!workId) {
-      return result(buildFacadeResult({
-        status: args.check_failed === true ? 'failed' : 'ok',
-        summary: 'Simulated verification without WorkContract.',
-        data: {
-          verification: {
-            checkId: classified.normalizedCheckId,
-            outcome: args.skipped ? 'skipped' : args.infrastructure_failed ? 'infrastructure_failure' : args.check_failed ? 'valid_fail' : 'valid_pass',
-            isAcceptanceFailure: args.check_failed === true,
-            simulated: true,
-          },
-        },
-      }) as unknown as Record<string, unknown>, args.check_failed === true);
-    }
-    const facade = verifyGoalWorkloop(workloopCtx, {
-      workId,
-      checkId: classified.normalizedCheckId ?? checkId,
-      infrastructureFailed: args.infrastructure_failed === true,
-      checkFailed: args.check_failed === true,
-      skipped: args.skipped === true,
-    });
-    return result(facade as unknown as Record<string, unknown>, facade.status === 'failed');
-  }
-
-  // Real checks share the same persisted Process Runtime path as run_check and
-  // work_validate. Never synchronously block the MCP facade on long native tests.
-  try {
-    const normalizedCheckId = classified.normalizedCheckId!;
-    const requestId = typeof args.request_id === 'string' && args.request_id.trim()
-      ? args.request_id.trim()
-      : undefined;
-    const verificationStatus = repositoryGitStatus(verificationRepository);
-    const observedGitHead = verificationStatus.head;
-    const workspaceFingerprint = workspaceValidationFingerprint(verificationRepository.canonicalRoot, verificationStatus);
-    const requestedChecks = workContract?.checks.length ? workContract.checks : [normalizedCheckId];
-    const verificationRequestFingerprint = observedGitHead ? verificationInputFingerprint({
-      sourceRevision: observedGitHead,
-      workspaceFingerprint,
-      checkId: normalizedCheckId,
-      requestedChecks,
-    }) : undefined;
-    const registeredCheck = checks.find((entry) => entry.id === normalizedCheckId);
-    const durableClassCheck = checkRequiresDurableWorkflow(normalizedCheckId, registeredCheck);
-    let allowDurableCheckExecution = false;
-    if (durableClassCheck && workContract?.checks.includes(normalizedCheckId) && !workContract.completionReceipt && workContract.status === 'running') {
+  const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+  const verification = await executeWorkVerification({
+    controllerHome: ctx.controllerHome,
+    repository,
+    workId: workId || undefined,
+    checkId: String(args.check_id ?? args.checkId ?? '').trim(),
+    requestId: typeof args.request_id === 'string' && args.request_id.trim() ? args.request_id.trim() : undefined,
+    timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+    interactiveWaitMs: 0,
+    leaseWaitMs: RH_WORK_VERIFY_LEASE_WAIT_MS,
+    simulate: args.simulate_check === true || args.infrastructure_failed === true || args.check_failed === true || args.skipped === true
+      ? {
+          infrastructureFailed: args.infrastructure_failed === true,
+          checkFailed: args.check_failed === true,
+          skipped: args.skipped === true,
+        }
+      : undefined,
+    allowDurableCheckExecution: workId ? ({ work }) => {
       try {
         const identity = authenticatedFacadeControllerIdentity(ctx, args);
-        const owner = getControllerSession(store, workId);
-        const ownerPrincipal = owner?.principalId?.trim() || owner?.controllerId;
-        allowDurableCheckExecution = Boolean(
+        const owner = getControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, work.workId);
+        return Boolean(
           owner
           && owner.controllerId === identity.controllerId
-          && ownerPrincipal === identity.principalId
+          && controllerSessionPrincipalId(owner) === identity.principalId
           && owner.controllerInstanceId === identity.controllerInstanceId,
         );
       } catch {
-        // Durable-class checks remain deferred when the authenticated claim cannot
-        // be proven exactly. The lower Process Runtime never infers authority.
-        allowDurableCheckExecution = false;
+        return false;
       }
-    }
-    const executed = await runPersistedCheckViaProcessRuntime({
-      controllerHome: ctx.controllerHome,
-      repoId: verificationRepository.repoId,
-      checkoutId: verificationRepository.activeCheckoutId,
-      repoRoot: verificationRepository.canonicalRoot,
-      executionIdentity: executionIdentityForRepository(verificationRepository, workId ? { workId } : {}),
-      checkId: normalizedCheckId,
-      timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-      // rh_work.verify is a control-plane continuation primitive: callers should
-      // be able to keep working and later reattach to the exact same Process.
-      // Absorb brief shared build-cache/resource contention during admission so
-      // a lifecycle verification does not turn a few seconds of contention into
-      // a terminal failed Check that the controller must manually retry.
-      interactiveWaitMs: 0,
-      leaseWaitMs: RH_WORK_VERIFY_LEASE_WAIT_MS,
-      requestId,
-      requestSemanticFingerprint: verificationRequestFingerprint,
-      workId: workId || undefined,
-      commandId: requestId,
-      verificationSnapshot: workContract ? {
-        workId: workContract.workId,
-        allowedPaths: workContract.allowedPaths,
-        forbiddenPaths: workContract.forbiddenPaths,
-      } : undefined,
-      allowDurableCheckExecution,
-    });
-
-    if (executed.mode === 'durable') {
-      return result(buildFacadeResult({
-        status: 'blocked',
-        summary: `Check ${normalizedCheckId} requires an explicit durable workflow; no acceptance result was recorded.`,
-        data: {
-          verification: {
-            checkId: normalizedCheckId,
-            outcome: 'deferred',
-            isAcceptanceFailure: false,
-            isInfrastructureIssue: false,
-            durable: executed.durable,
-            observedGitHead,
-          },
-        },
-        suggestedNextActions: [{
-          label: 'Continue Work with the durable check requirement',
-          tool: 'rh_work',
-          operation: 'continue',
-          payload: { work_id: workId || undefined },
-          risk: 'workspace_write',
-          confidence: 'high',
-        }],
-      }) as unknown as Record<string, unknown>, true);
-    }
-
-    const handle = executed.process;
-    if (!handle) throw new Error(`PROCESS_CHECK_HANDLE_MISSING: ${normalizedCheckId}`);
-    const record = getProcessRecord(ctx.controllerHome, verificationRepository.repoId, handle.processId);
-    const checkContentRevision = record?.checkExecution?.revision;
-
-    if (!handle.completed) {
-      return result(buildFacadeResult({
-        status: 'ok',
-        summary: `Check ${normalizedCheckId} is running through Process Runtime; continue other work and reattach to ${handle.processId}.`,
-        data: {
-          verification: {
-            checkId: normalizedCheckId,
-            outcome: 'running',
-            isAcceptanceFailure: false,
-            isInfrastructureIssue: false,
-            executed: true,
-            completed: false,
-            processId: handle.processId,
-            processStatus: handle.status,
-            deduplicated: handle.deduplicated === true,
-            semanticDeduplicated: handle.semanticDeduplicated === true,
-            checkContentRevision,
-            observedGitHead,
-            verificationIsolation: workContract ? 'work_snapshot' : 'shared_checkout',
-            revisionSemantics: 'checkContentRevision is a content-bound Check identity; observedGitHead is Git HEAD and is not interchangeable.',
-          },
-        },
-        rawAvailable: false,
-      }) as unknown as Record<string, unknown>);
-    }
-
-    if (!record) throw new Error(`PROCESS_CHECK_RECORD_MISSING: ${handle.processId}`);
-    const receipt = processCheckCompletionReceipt(record, {
-      repoId: verificationRepository.repoId,
-      checkId: normalizedCheckId,
-      processId: handle.processId,
-      ...(record.checkExecution ? {
-        checkoutId: verificationRepository.activeCheckoutId,
-        workId: workId || undefined,
-        requestId,
-        checkExecution: {
-          cacheKey: record.checkExecution.cacheKey,
-          revision: record.checkExecution.revision,
-          definitionDigest: record.checkExecution.definitionDigest,
-          environmentFingerprint: record.checkExecution.environmentFingerprint,
-          timeoutMs: record.checkExecution.timeoutMs,
-          scopeKey: record.checkExecution.scopeKey,
-        },
-      } : {}),
-    });
-    const structuredCheckResult = readPersistedCheckResultReceipt(record.origin?.checkResultReceiptPath);
-    const structuredResultMatchesProcess = Boolean(
-      structuredCheckResult
-      && record.checkExecution?.cacheKey
-      && structuredCheckResult.checkId === normalizedCheckId
-      && structuredCheckResult.cacheKey === record.checkExecution.cacheKey,
-    );
-    const legacyEvidence = record.origin?.checkResultReceiptPath
-      ? undefined
-      : readLatestControllerCheckEvidence(verificationRepository.canonicalRoot, normalizedCheckId);
-    const legacyEvidenceMatchesProcess = Boolean(
-      legacyEvidence?.cacheKey
-      && record.checkExecution?.cacheKey
-      && legacyEvidence.cacheKey === record.checkExecution.cacheKey,
-    );
-    const evidenceState = classifyTerminalCheckEvidence({
-      processError: record.error,
-      structuredPresent: Boolean(structuredCheckResult),
-      structuredMatches: structuredResultMatchesProcess,
-      legacyPresent: Boolean(legacyEvidence),
-      legacyMatches: legacyEvidenceMatchesProcess,
-    });
-    const resultMatchesProcess = evidenceState.state === 'matched';
-    const failureClass = structuredResultMatchesProcess
-      ? structuredCheckResult?.failureClass
-      : legacyEvidenceMatchesProcess ? legacyEvidence?.failureClass : undefined;
-    const infrastructureFailed = receipt.timedOut
-      || receipt.cancelled
-      || !resultMatchesProcess
-      || (!receipt.ok && failureClass !== 'acceptance_failure');
-    const checkFailed = !receipt.ok && !infrastructureFailed;
-    const boundedStatus = receipt.ok ? 'pass' : infrastructureFailed ? 'infrastructure_failure' : 'fail';
-    const commonVerification = {
-      checkId: normalizedCheckId,
-      outcome: infrastructureFailed ? 'infrastructure_failure' : receipt.ok ? 'valid_pass' : 'valid_fail',
-      isAcceptanceFailure: checkFailed,
-      isInfrastructureIssue: infrastructureFailed,
-      executed: true,
-      completed: true,
-      processId: receipt.processId,
-      processStatus: receipt.runtimeStatus,
-      ok: receipt.ok,
-      timedOut: receipt.timedOut,
-      cancelled: receipt.cancelled,
-      failureClass: infrastructureFailed ? 'infrastructure_failure' : failureClass,
-      deduplicated: handle.deduplicated === true,
-      semanticDeduplicated: handle.semanticDeduplicated === true,
-      checkContentRevision: receipt.checkRevision,
-      observedGitHead,
-      revisionSemantics: 'checkContentRevision is a content-bound Check identity; observedGitHead is Git HEAD and is not interchangeable.',
-      evidenceArtifactPath: record.origin?.workVerificationSnapshot ? undefined : receipt.artifactPath,
-      evidenceReceiptId: receipt.receiptId,
-      checkResultReceiptId: structuredCheckResult?.receiptId,
-      verificationIsolation: record.origin?.workVerificationSnapshot ? 'work_snapshot' : 'shared_checkout',
-      boundedStatus,
-      evidenceState: evidenceState.state,
-      ...(evidenceState.infrastructureReason ? { infrastructureReason: evidenceState.infrastructureReason } : {}),
-      ...(record.error?.code ? { processErrorCode: record.error.code } : {}),
-    };
-
-    if (workId) {
-      const sourceRevision = observedGitHead ?? undefined;
-      const facade = verifyGoalWorkloop(workloopCtx, {
-        workId,
-        checkId: normalizedCheckId,
-        sourceRevision,
-        workspaceFingerprint,
-        verificationInputFingerprint: sourceRevision ? verificationRequestFingerprint : undefined,
-        commandFingerprint: commandFingerprint(normalizedCheckId, receipt.commandId),
-        receipt,
-        infrastructureFailed,
-        checkFailed,
-      });
-      const data = facade.data as Record<string, unknown>;
-      return result({
-        ...facade,
-        data: {
-          ...data,
-          verification: {
-            ...(typeof data.verification === 'object' && data.verification ? data.verification as Record<string, unknown> : {}),
-            ...commonVerification,
-          },
-        },
-        warnings: infrastructureFailed
-          ? [...facade.warnings, evidenceState.warning ?? 'infrastructure_failure is distinct from acceptance failure']
-          : facade.warnings,
-      } as unknown as Record<string, unknown>, facade.status === 'failed');
-    }
-
-    return result(buildFacadeResult({
-      status: checkFailed ? 'failed' : 'ok',
-      summary: infrastructureFailed
-        ? `Infrastructure failure while running ${normalizedCheckId}; not an acceptance failure.`
-        : receipt.ok
-          ? `Check ${normalizedCheckId} passed with persisted Process evidence.`
-          : `Check ${normalizedCheckId} failed acceptance.`,
-      data: { verification: commonVerification },
-      warnings: infrastructureFailed
-        ? [evidenceState.warning ?? 'infrastructure_failure is distinct from acceptance failure']
-        : [],
-      rawAvailable: false,
-    }) as unknown as Record<string, unknown>, checkFailed);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (workId) {
-      const facade = verifyGoalWorkloop(workloopCtx, {
-        workId,
-        checkId: classified.normalizedCheckId ?? checkId,
-        infrastructureFailed: true,
-      });
-      return result({
-        ...facade,
-        warnings: [...facade.warnings, `check_runner_error: ${message.slice(0, 200)}`],
-        data: {
-          ...(facade.data as Record<string, unknown>),
-          isAcceptanceFailure: false,
-        },
-      } as unknown as Record<string, unknown>);
-    }
-    return result(buildFacadeResult({
-      status: 'ok',
-      summary: `Infrastructure failure invoking Process Runtime for ${classified.normalizedCheckId}; not acceptance failure.`,
-      data: {
-        verification: {
-          checkId: classified.normalizedCheckId,
-          outcome: 'infrastructure_failure',
-          isAcceptanceFailure: false,
-          isInfrastructureIssue: true,
-        },
-      },
-      warnings: [`check_runner_error: ${message.slice(0, 200)}`],
-      suggestedNextActions: [{
-        label: 'Diagnose runtime (dry-run)',
-        tool: 'rh_work',
-        operation: 'repair',
-        payload: { repair_operation: 'diagnose', dry_run: true },
-        risk: 'readonly',
-      }],
-    }) as unknown as Record<string, unknown>);
-  }
-}
-
-/**
- * Runtime Source drift for MCP readiness.
- *
- * `currentRuntimeRoot` is only for tests that pin a Controller Runtime Source
- * fixture. Callers must never pass an execution repository canonicalRoot here.
- */
-export function runtimeSourceSnapshotStatus(
-  active: RuntimeSourceIdentity | undefined,
-  currentRuntimeRoot?: string,
-) {
-  const drift = evaluateActiveRuntimeSourceDrift(active, {
-    currentRuntimeRoot,
+    } : undefined,
   });
-  return {
-    current: drift.current,
-    restartRequired: drift.restartRequired,
-    reasons: drift.reasons,
-    code: drift.code,
-  };
-}
-
-export function repositoryExecutionReadiness(
-  repoRoot: string,
-  availableChecks: ReturnType<typeof listControllerChecks>,
-  requestedCheckIds: string[] = [],
-  schedulingScope: { repoId?: string; checkoutId?: string } = {},
-): Record<string, unknown> {
-  const git = gitSnapshot(repoRoot);
-  const registeredCheckIds = availableChecks.map((check) => check.id);
-  const normalizedChecks = normalizeCheckIds(requestedCheckIds, availableChecks);
-  const hasPackageJson = existsSync(join(repoRoot, 'package.json'));
-  const nodeModulesReady = !hasPackageJson || existsSync(join(repoRoot, 'node_modules'));
-  const lockCandidates = [
-    ['bun', 'bun.lock'],
-    ['bun', 'bun.lockb'],
-    ['pnpm', 'pnpm-lock.yaml'],
-    ['npm', 'package-lock.json'],
-    ['yarn', 'yarn.lock'],
-  ] as const;
-  const detectedLock = lockCandidates.find(([, path]) => existsSync(join(repoRoot, path)));
-  const packageManager = detectedLock?.[0];
-  const bootstrapCommand = hasPackageJson && !nodeModulesReady
-    ? packageManager === 'bun' ? ['bun', 'install', '--frozen-lockfile']
-      : packageManager === 'pnpm' ? ['pnpm', 'install', '--frozen-lockfile']
-        : packageManager === 'npm' ? ['npm', 'ci']
-          : packageManager === 'yarn' ? ['yarn', 'install', '--frozen-lockfile']
-            : undefined
-    : undefined;
-  const hasPythonManifest = existsSync(join(repoRoot, 'pyproject.toml'))
-    || existsSync(join(repoRoot, 'requirements.txt'))
-    || existsSync(join(repoRoot, 'requirements-dev.txt'));
-  const localPythonReady = !hasPythonManifest
-    || existsSync(join(repoRoot, '.venv', 'bin', 'python'))
-    || existsSync(join(repoRoot, '.venv', 'Scripts', 'python.exe'));
-  const checkScheduling = buildCheckExecutionSchedule({
-    checks: availableChecks,
-    requestedCheckIds,
-    repoId: schedulingScope.repoId?.trim() || 'selected-repository',
-    checkoutId: schedulingScope.checkoutId?.trim() || 'active',
-  });
-  const blockers = [
-    ...(!nodeModulesReady ? [{ code: 'NODE_DEPENDENCIES_MISSING', message: 'package.json is present but node_modules is not materialized in this checkout.' }] : []),
-    ...normalizedChecks.invalidCheckIds.map((checkId) => ({ code: 'CHECK_NOT_REGISTERED', message: `Requested check is not registered: ${checkId}`, checkId })),
-  ];
-  return {
-    readyForFocusedExecution: blockers.length === 0,
-    git: { head: git.head, branch: git.branch, dirty: git.dirty },
-    checks: {
-      registeredCount: registeredCheckIds.length,
-      registeredCheckIds: registeredCheckIds.slice(0, 80),
-      requestedCheckIds: requestedCheckIds.slice(0, 40),
-      normalized: normalizedChecks,
-    },
-    checkScheduling: {
-      waveCount: checkScheduling.waves.length,
-      maxParallel: checkScheduling.maxParallel,
-      waveSummaries: checkScheduling.waves.map((wave) => `wave ${wave.wave}: ${wave.checkIds.join(', ')}`),
-      conflictSummaries: checkScheduling.conflicts.map((conflict) => {
-        const resources = [...new Set(conflict.resources.flatMap(({ left, right }) => [left.resourceKey, right.resourceKey]))];
-        return `${conflict.leftCheckId} <> ${conflict.rightCheckId}: ${resources.join(', ')}`;
-      }),
-      invalidCheckIds: checkScheduling.invalidCheckIds,
-      guidance: checkScheduling.guidance,
-    },
-    dependencies: {
-      node: {
-        applicable: hasPackageJson,
-        ready: nodeModulesReady,
-        packageManager: packageManager ?? null,
-        lockfile: detectedLock?.[1] ?? null,
-        ...(bootstrapCommand ? { bootstrapCommand } : {}),
-      },
-      python: {
-        applicable: hasPythonManifest,
-        localVirtualEnvReady: localPythonReady,
-        advisoryOnly: true,
-      },
-    },
-    blockers,
-    guidance: bootstrapCommand
-      ? [`Materialize checkout dependencies before tests/builds: ${bootstrapCommand.join(' ')}`]
-      : [],
-  };
+  return result(verification.facade as unknown as Record<string, unknown>, verification.isError);
 }
 
 export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {
@@ -3096,8 +2688,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             ctx.runtimeSourceRoot,
           );
           const sourceSnapshotStale = runtimeSource.restartRequired;
-          const toolset = await import('../../../cli/mcp/toolset');
-          const exposure = toolset.controllerToolSurfaceStatus(ctx);
+          const exposure = controllerToolSurfaceStatus(ctx);
           const toolSurfaceReady = exposure.ready && exposure.missingToolNames.length === 0;
           const ready = observation.ready && toolSurfaceReady && !sourceSnapshotStale;
           const reasonCodes = [...observation.reasonCodes];
@@ -3238,10 +2829,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         // never against the selected execution repository.
         const runtimeSource = runtimeSourceSnapshotStatus(readiness.daemon.source, ctx.runtimeSourceRoot);
         const sourceSnapshotStale = runtimeSource.restartRequired;
-        // Dynamic import avoids a static cycle: toolset.ts composes runtimeToolDefinitions.
-        const toolset = await import('../../../cli/mcp/toolset');
-        const exposure = toolset.controllerExposureSnapshot(ctx);
-        const localRegisteredToolNames = toolset.allControllerToolDefinitions(ctx).map((tool) => tool.name).sort();
+        const exposure = controllerExposureSnapshot(ctx);
+        const localRegisteredToolNames = allControllerToolDefinitions(ctx).map((tool) => tool.name).sort();
         markDetailPhase('tool_surface');
         const toolSurfaceReady = exposure.ready && exposure.missingToolNames.length === 0;
         // Ordinary interactive execution depends on the execution axis only.
@@ -4210,7 +3799,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             if (currentOwner) {
               if (currentOwner.controllerType !== 'chatgpt') throw new Error(`CONTROLLER_RELAY_CHATGPT_ONLY: ${workId}`);
               if (currentOwner.controllerId !== identity.controllerId) throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workId}`);
-              if ((currentOwner.principalId?.trim() || currentOwner.controllerId) !== identity.principalId) {
+              if ((controllerSessionPrincipalId(currentOwner)) !== identity.principalId) {
                 throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${workId}`);
               }
               // Finalization may terminalize the Work before the prompt-required
@@ -4285,7 +3874,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 : bindFacadeControllerOwnership(ctx, store, workId, identity)
               : undefined;
             if (owner) {
-              const ownerPrincipal = owner.principalId?.trim() || owner.controllerId;
+              const ownerPrincipal = controllerSessionPrincipalId(owner);
               const ownerInstanceId = owner.controllerInstanceId?.trim() || '';
               if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) {
                 throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workId}`);
@@ -4821,7 +4410,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             try {
               const identity = authenticatedFacadeControllerIdentity(ctx, args);
               const reboundOwner = bindFacadeControllerOwnership(ctx, store, workId, identity);
-              const ownerPrincipal = reboundOwner.principalId?.trim() || reboundOwner.controllerId;
+              const ownerPrincipal = controllerSessionPrincipalId(reboundOwner);
               const ownerInstanceId = reboundOwner.controllerInstanceId?.trim() || '';
               if (typeof reboundOwner.claimGeneration !== 'number' || reboundOwner.claimGeneration < 1) {
                 throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workId}`);
@@ -4943,7 +4532,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             try {
               const identity = authenticatedFacadeControllerIdentity(ctx, args);
               const owner = getControllerSession(store, workId);
-              if (!owner || (owner.principalId?.trim() || owner.controllerId) !== identity.principalId) {
+              if (!owner || (controllerSessionPrincipalId(owner)) !== identity.principalId) {
                 throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CONTROLLER_CLAIM_REQUIRED: ${workId}`);
               }
               const historicalHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
@@ -5037,7 +4626,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             try {
               const identity = authenticatedFacadeControllerIdentity(ctx, args);
               const owner = bindFacadeControllerOwnership(ctx, store, workId, identity, { allowClaimIfMissing: true });
-              const ownerPrincipal = owner.principalId?.trim() || owner.controllerId;
+              const ownerPrincipal = controllerSessionPrincipalId(owner);
               const ownerInstanceId = owner.controllerInstanceId?.trim() || '';
               if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workId}`);
               const fenced = withControllerSessionTerminalizationFence(
@@ -6135,8 +5724,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           ? selected(ctx, args)
           : (ctx.explicitRepository ?? (registered.length === 1 ? registered[0] : undefined));
         const readiness = await controllerReadiness(ctx, repository);
-        const toolset = await import('../../../cli/mcp/toolset');
-        const exposure = toolset.controllerExposureSnapshot(ctx);
+        const exposure = controllerExposureSnapshot(ctx);
         const toolSurfaceReady = exposure.ready && exposure.missingToolNames.length === 0;
         const reasonCodes = new Set(readiness.reasonCodes);
         if (!toolSurfaceReady) reasonCodes.add('MCP_TOOL_SURFACE_INCOMPLETE');

@@ -1,4 +1,4 @@
-import type { McpToolDefinition } from './tools';
+import type { McpToolDefinition } from './tool-contract';
 import type { MultiRepositoryMcpToolContext } from './multi-repository';
 import { buildMultiRepositoryToolDefinitions } from './multi-repository';
 import { accessToolDefinitions } from './access-tools';
@@ -7,7 +7,7 @@ import {
   type ControllerAccessState,
 } from './access-mode';
 import { repositoryToolDefinitions } from './repository-tools';
-import { runtimeToolDefinitions } from '../../runtime/gateway/mcp/runtime-tools';
+import { runtimeToolDefinitions } from '../../runtime/gateway/mcp/runtime-tool-definitions';
 import { executionToolDefinitions } from '../../runtime/gateway/mcp/execution-tools';
 import { processToolDefinitions } from '../../runtime/gateway/mcp/process-tools';
 import { injectDurableCommandFields } from '../../runtime/gateway/mcp/router';

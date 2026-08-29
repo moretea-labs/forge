@@ -7,22 +7,8 @@ import type { ControllerIssue, ControllerTask, GitHubIssueLink } from '../contro
 import { readTaskRunEvidence } from '../controller/run-evidence';
 import { resolveEffectiveTaskState, resolveIssueLifecycleStatus } from '../controller/task-status-resolver';
 
-export interface GitHubRepositoryInfo {
-  nameWithOwner: string;
-  owner: string;
-  repo: string;
-  url: string;
-  defaultBranch: string;
-}
-
-export interface GitHubStatus {
-  available: boolean;
-  authenticated: boolean;
-  version?: string;
-  repository?: GitHubRepositoryInfo;
-  agentTaskSupported: boolean;
-  errors: string[];
-}
+export type { GitHubRepositoryInfo, GitHubStatus } from './contracts';
+import type { GitHubRepositoryInfo, GitHubStatus } from './contracts';
 
 export interface PublishIssueOptions {
   repo?: string;

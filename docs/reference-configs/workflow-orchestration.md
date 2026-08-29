@@ -1,14 +1,19 @@
-# Workflow Orchestration Reference
+<!-- forge: reference-config-stub v1 -->
+# forge Reference: workflow-orchestration
 
-> Externalized: full pattern lives in default brain.
+> **Runtime Docs**: user-level forge reference
+> **Doc ID**: workflow-orchestration
+> **Version**: 1.7.0
+> **Source Command**: `forge docs path workflow-orchestration`
 
-## Default Brain
+This repo keeps workflow facts and runtime artifacts locally under `.ai/`.
+The full generic runtime guide is supplied by the installed forge
+package/user-level runtime so each repository does not need to refresh a full
+copy of shared documentation.
 
-- File vault: `brain/forge/patterns/pattern-agentic-workflow-orchestration.md`
-- gbrain slug: `patterns/pattern-agentic-workflow-orchestration`
+Use:
 
-## Repo Role
-
-Concrete project execution still flows through plans, contracts, tasks,
-workstreams, checks, and handoff files. The general multi-phase orchestration
-pattern belongs in the external pattern page.
+```bash
+forge docs path workflow-orchestration
+forge docs show workflow-orchestration
+```

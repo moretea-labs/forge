@@ -1,22 +1,26 @@
 import { createHash, randomUUID } from 'crypto';
 import { createRequire } from 'module';
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { readBrowserBinding } from '../../cli/chatgpt-browser/binding';
 import type {
-  AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
   AssistantPluginAuthorizationContext,
-  AssistantPluginCapability,
   AssistantPluginHealth,
   AssistantPluginManifest,
-  AssistantPluginPermissionScope,
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
+import {
+  browserActions,
+  browserCapabilities,
+  browserPermissions,
+} from './browser-manifest-surface';
 import { executeBrowserActionThroughNode, shouldUseBrowserNodeBridge } from './browser-node-bridge';
 import { BrowserProviderUnavailableBeforeActionError } from './browser-provider-registry';
+import { MAX_BROWSER_CDP_ENDPOINT_CANDIDATES } from './browser-runtime-contract';
 import {
   ALL_BROWSER_PROVIDER_CAPABILITIES,
+  browserActionCanReplayAfterDispatch as canReplayBrowserActionAfterDispatch,
   executeBrowserRuntimeAction,
   invalidateBrowserRuntime,
 } from './browser-runtime';
@@ -24,11 +28,7 @@ import { getExternalPluginAdapter } from './external-adapter';
 import {
   currentBrowserSessionAuthorityContext,
   DEFAULT_BROWSER_SESSION_LIST_LIMIT,
-  findBrowserSession as findBrowserSessionAuthority,
-  listAllBrowserSessionsForRepository,
   MAX_BROWSER_SESSION_LIST_LIMIT,
-  saveBrowserSession as saveBrowserSessionAuthority,
-  tombstoneBrowserSession,
   withBrowserSessionAuthorityContext,
 } from './browser-session-authority';
 import {
@@ -57,27 +57,50 @@ import {
   isRuntimeManagedBrowserHandoff,
   listBrowserHandoffs,
   resolveRuntimeManagedBrowserHandoff,
-  resumeBrowserHandoff,
+  resumeBrowserHandoffAndWait,
   startBrowserHandoff,
   startRuntimeManagedBrowserHandoff,
 } from './browser-handoff';
+import {
+  browserStateDir,
+  findBrowserSession,
+  listSavedBrowserSessions,
+  removeBrowserSession,
+  requireBrowserSession,
+  saveBrowserSession,
+} from './browser-session-store';
+import {
+  closeTrackedNativeOwnedSession,
+  inspectNativeOwnedSessions,
+  nativeTabInventoryUnsupported,
+  nativeOwnedAliasSessionIds,
+} from './browser-native-session-service';
+export { browserActionCanReplayAfterDispatch } from './browser-runtime';
+import type {
+  BrowserCdpAttachFallback,
+  BrowserConnectionFallback,
+  BrowserMode,
+  BrowserProfileMode,
+  BrowserSessionResumeDiagnostic,
+  BrowserSessionState,
+  BrowserSessionConnectionState,
+  BrowserSessionInventoryItem,
+  BrowserTabMatchReason,
+  BrowserTabResumeState,
+  CdpAttachAttempt,
+} from './browser-session-types';
 
 const BROWSER_PLUGIN_ID = 'browser';
 const CONFIG_ROOT = '.forge/plugins';
-const STATE_ROOT = '.forge/browser';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_TEXT_CHARS = 20_000;
 const DEFAULT_POST_ACTION_WAIT_MS = 750;
 const DEFAULT_CDP_DISCOVERY_TIMEOUT_MS = 1_500;
 const MAX_CDP_DISCOVERY_TIMEOUT_MS = 5_000;
-const MAX_CDP_ENDPOINT_CANDIDATES = 5;
 
 type WaitUntil = 'load' | 'domcontentloaded' | 'networkidle';
 type WaitForSelectorState = 'attached' | 'detached' | 'visible' | 'hidden';
-type BrowserMode = 'attach_preferred' | 'managed_persistent' | 'isolated';
-type BrowserProfileMode = 'repo_local' | 'custom';
 type BrowserChannel = 'chromium' | 'chrome' | 'chrome-beta' | 'chrome-dev' | 'chrome-canary';
-type BrowserCdpAttachFallback = 'managed_persistent' | 'fail_closed';
 type BrowserNativeAttachMode = 'auto' | 'disabled';
 
 interface BrowserPluginConfig {
@@ -98,53 +121,6 @@ interface BrowserPluginConfig {
   nativeBrowserCandidates?: MacOsBrowserProduct[];
   defaultTimeoutMs?: number;
 }
-
-interface BrowserTabResumeState {
-  key: string;
-  index: number;
-  url: string;
-  title?: string;
-  matchedBy: BrowserTabMatchReason;
-  inventoryCount: number;
-  capturedAt: string;
-  ownership?: 'plugin_owned' | 'user_owned';
-  ownerToken?: string;
-  windowId?: string;
-  tabId?: string;
-}
-
-interface BrowserSessionConnectionState {
-  mode: BrowserMode;
-  activeMode: BrowserMode;
-  provider: 'playwright-cdp' | 'playwright-persistent-context' | 'macos-apple-events';
-  endpoint?: string;
-  browserVersion?: string;
-  browserProduct?: MacOsBrowserProduct;
-  nativeBrowserCandidates?: MacOsBrowserProduct[];
-  fallback?: BrowserConnectionFallback;
-  tab?: BrowserTabResumeState;
-  sessionResume?: BrowserSessionResumeDiagnostic;
-}
-
-interface BrowserSessionState {
-  schemaVersion: 1;
-  sessionId: string;
-  url: string;
-  title?: string;
-  createdAt: string;
-  updatedAt: string;
-  browser?: BrowserSessionConnectionState;
-}
-
-type BrowserSessionLiveness = 'live' | 'unverified' | 'dead';
-
-type BrowserSessionInventoryItem = {
-  session: BrowserSessionState;
-  liveness: BrowserSessionLiveness;
-  evidence: 'runtime_session_binding' | 'runtime_owner_token' | 'runtime_bound_page_missing' | 'runtime_context_unavailable' | 'runtime_owner_token_not_observed' | 'provider_unverified' | 'native_tab_live' | 'native_tab_missing' | 'native_tab_invalid' | 'native_tab_invalid_closed' | 'native_tab_invalid_close_failed' | 'native_inventory_unavailable';
-  pruned?: boolean;
-  cleanupError?: string;
-};
 
 type BrowserSessionInventory = {
   sessions: BrowserSessionInventoryItem[];
@@ -427,16 +403,12 @@ function configPath(repoRoot: string): string {
   return join(repoRoot, CONFIG_ROOT, 'browser.json');
 }
 
-function stateDir(repoRoot: string, name: 'sessions' | 'screenshots' | 'profiles' | 'downloads' | 'diagnostics'): string {
-  return join(repoRoot, STATE_ROOT, name);
-}
-
 function defaultProfileDir(repoRoot: string): string {
-  return join(stateDir(repoRoot, 'profiles'), 'default');
+  return join(browserStateDir(repoRoot, 'profiles'), 'default');
 }
 
 function isolatedProfileDir(repoRoot: string, sessionId: string): string {
-  return join(stateDir(repoRoot, 'profiles'), 'isolated', sessionId.replace(/[^a-zA-Z0-9_-]/g, '_'));
+  return join(browserStateDir(repoRoot, 'profiles'), 'isolated', sessionId.replace(/[^a-zA-Z0-9_-]/g, '_'));
 }
 
 function resolveConfiguredPath(repoRoot: string, value: string): string {
@@ -481,7 +453,7 @@ function normalizeConfig(raw: Partial<BrowserPluginConfig>): BrowserPluginConfig
     browserChannel: browserChannel(raw.browserChannel) ?? 'chromium',
     executablePath: stringValue(raw.executablePath),
     cdpEndpoint: stringValue(raw.cdpEndpoint),
-    cdpEndpointCandidates: stringList(raw.cdpEndpointCandidates)?.slice(0, MAX_CDP_ENDPOINT_CANDIDATES),
+    cdpEndpointCandidates: stringList(raw.cdpEndpointCandidates)?.slice(0, MAX_BROWSER_CDP_ENDPOINT_CANDIDATES),
     cdpDiscoveryTimeoutMs: typeof raw.cdpDiscoveryTimeoutMs === 'number'
       ? Math.min(positiveNumber(raw.cdpDiscoveryTimeoutMs, DEFAULT_CDP_DISCOVERY_TIMEOUT_MS), MAX_CDP_DISCOVERY_TIMEOUT_MS)
       : undefined,
@@ -503,38 +475,6 @@ function readJson<T>(path: string): T | undefined {
 function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
-}
-
-function writeAtomicJson(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tempPath = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
-  try {
-    writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
-    renameSync(tempPath, path);
-  } finally {
-    rmSync(tempPath, { force: true });
-  }
-}
-
-function readBrowserSessionJson(path: string): BrowserSessionState | undefined {
-  let raw: string;
-  try {
-    raw = readFileSync(path, 'utf-8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return undefined;
-    throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_STATE_READ_FAILED', 'Saved browser session metadata could not be read.', {
-      retryable: true,
-      details: { fileName: basename(path), cause: error instanceof Error ? error.message : String(error) },
-    });
-  }
-  try {
-    return JSON.parse(raw) as BrowserSessionState;
-  } catch (error) {
-    throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_STATE_CORRUPT', 'Saved browser session metadata is malformed; refusing to treat corrupt state as a missing session.', {
-      retryable: false,
-      details: { fileName: basename(path), cause: error instanceof Error ? error.message : String(error) },
-    });
-  }
 }
 
 function legacyChatgptBindingConfig(repoRoot: string): Partial<BrowserPluginConfig> {
@@ -562,14 +502,14 @@ function loadConfig(repoRoot: string): BrowserPluginConfig {
 async function resolveBrowserPluginAuthorizationContextInternal(
   input: AssistantPluginActionExecutionInput,
 ): Promise<AssistantPluginAuthorizationContext | undefined> {
-  const action = actions().find((entry) => entry.actionId === input.actionId);
+  const action = browserActions().find((entry) => entry.actionId === input.actionId);
   if (!action || action.confirmation !== 'authorization' || !action.scopes.includes('browser.interact')) return undefined;
 
   const persistedConfig = loadConfig(input.repoRoot);
   const sessionId = stringValue(input.args.session_id);
   const authorizationBrowserMode = parseBrowserModeInput(input.args.browser_mode) ?? persistedConfig.browserMode;
   if (!sessionId || authorizationBrowserMode === 'isolated') return undefined;
-  const session = findSession(input.repoRoot, sessionId);
+  const session = findBrowserSession(input.repoRoot, sessionId);
   const config = effectiveBrowserActionConfig(persistedConfig, input.args, session);
   const connection = session?.browser;
   if (!session || !connection || connection.activeMode === 'isolated') return undefined;
@@ -629,73 +569,6 @@ function saveConfig(repoRoot: string, patch: Partial<BrowserPluginConfig>): Brow
   const next = normalizeConfig({ ...loadConfig(repoRoot), ...patch });
   writeJson(configPath(repoRoot), next);
   return next;
-}
-
-function sessionPath(repoRoot: string, sessionId: string): string {
-  return join(stateDir(repoRoot, 'sessions'), `${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`);
-}
-
-function saveSession(repoRoot: string, session: BrowserSessionState): BrowserSessionState {
-  const authority = currentBrowserSessionAuthorityContext();
-  if (!authority) {
-    writeAtomicJson(sessionPath(repoRoot, session.sessionId), session);
-    return session;
-  }
-  const saved = saveBrowserSessionAuthority<BrowserSessionState>(authority.controllerHome, authority.repoId, repoRoot, session);
-  if (saved.sessionId === session.sessionId || !saved.browser?.sessionResume) return saved;
-  return {
-    ...saved,
-    browser: {
-      ...saved.browser,
-      sessionResume: { ...saved.browser.sessionResume, sessionId: saved.sessionId },
-    },
-  };
-}
-
-function findSession(repoRoot: string, sessionId: string): BrowserSessionState | undefined {
-  const authority = currentBrowserSessionAuthorityContext();
-  return authority
-    ? findBrowserSessionAuthority<BrowserSessionState>(authority.controllerHome, authority.repoId, repoRoot, sessionId)
-    : readBrowserSessionJson(sessionPath(repoRoot, sessionId));
-}
-
-function listSavedBrowserSessions(repoRoot: string): BrowserSessionState[] {
-  const authority = currentBrowserSessionAuthorityContext();
-  if (authority) {
-    return listAllBrowserSessionsForRepository<BrowserSessionState>(authority.controllerHome, authority.repoId, repoRoot);
-  }
-  const root = stateDir(repoRoot, 'sessions');
-  let names: string[];
-  try {
-    names = readdirSync(root);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
-    throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_STATE_READ_FAILED', 'Saved browser session directory could not be read.', {
-      retryable: true,
-      details: { cause: error instanceof Error ? error.message : String(error) },
-    });
-  }
-  return names
-    .filter((name) => name.endsWith('.json'))
-    .map((name) => readBrowserSessionJson(join(root, name)))
-    .filter((session): session is BrowserSessionState => Boolean(session));
-}
-
-function removeSession(repoRoot: string, sessionId: string): void {
-  const authority = currentBrowserSessionAuthorityContext();
-  if (authority) {
-    tombstoneBrowserSession(authority.controllerHome, authority.repoId, repoRoot, sessionId);
-    return;
-  }
-  rmSync(sessionPath(repoRoot, sessionId), { force: true });
-}
-
-function loadSession(repoRoot: string, sessionId: string): BrowserSessionState {
-  const state = findSession(repoRoot, sessionId);
-  if (!state) {
-    throw new AssistantPluginError('PLUGIN_SESSION_NOT_FOUND', `Browser session not found: ${sessionId}`, { retryable: false });
-  }
-  return state;
 }
 
 function parsedAbsoluteUrl(value: unknown): { raw: string; parsed: URL } {
@@ -841,7 +714,7 @@ function cdpEndpoints(config: BrowserPluginConfig): string[] {
   return Array.from(new Set([
     ...(config.cdpEndpoint ? [config.cdpEndpoint] : []),
     ...(config.cdpEndpointCandidates ?? []),
-  ].map((entry) => entry.trim()).filter(Boolean))).slice(0, MAX_CDP_ENDPOINT_CANDIDATES);
+  ].map((entry) => entry.trim()).filter(Boolean))).slice(0, MAX_BROWSER_CDP_ENDPOINT_CANDIDATES);
 }
 
 function isLoopbackHostname(hostname: string): boolean {
@@ -879,8 +752,8 @@ function validateConfig(config: BrowserPluginConfig): string[] {
   if (config.browserChannel && config.browserChannel !== 'chromium' && config.executablePath) {
     errors.push('browserChannel and executablePath cannot both be set.');
   }
-  if (endpoints.length > MAX_CDP_ENDPOINT_CANDIDATES) {
-    errors.push(`At most ${MAX_CDP_ENDPOINT_CANDIDATES} CDP endpoint candidates are supported.`);
+  if (endpoints.length > MAX_BROWSER_CDP_ENDPOINT_CANDIDATES) {
+    errors.push(`At most ${MAX_BROWSER_CDP_ENDPOINT_CANDIDATES} CDP endpoint candidates are supported.`);
   }
   for (const endpoint of endpoints) {
     const error = cdpEndpointValidationError(endpoint);
@@ -978,7 +851,7 @@ function resolveActionTarget(repoRoot: string, args: Record<string, unknown>): B
     throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Provide either url or session_id.', { retryable: false });
   }
   if (providedSessionId) {
-    const existingSession = loadSession(repoRoot, providedSessionId);
+    const existingSession = requireBrowserSession(repoRoot, providedSessionId);
     const nativeUserOwned = isExplicitNativeUserOwnedSession(existingSession);
     const sessionUrl = normalizedSavedSessionUrl(existingSession);
     if (directUrl) {
@@ -1007,7 +880,7 @@ function sessionFromPage(target: BrowserActionTarget, pageUrl: string, title: st
 }
 
 function screenshotFilePath(repoRoot: string, actionId: string, sessionId: string, url: string): string {
-  const screenshotDir = stateDir(repoRoot, 'screenshots');
+  const screenshotDir = browserStateDir(repoRoot, 'screenshots');
   mkdirSync(screenshotDir, { recursive: true });
   const digest = createHash('sha256').update(url).digest('hex').slice(0, 10);
   const actionLabel = actionId.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -1101,8 +974,6 @@ function selectedProfile(config: BrowserPluginConfig, repoRoot: string, activeMo
   };
 }
 
-type BrowserTabMatchReason = 'owned_token' | 'recovered_tab' | 'saved_url_title' | 'saved_url' | 'exact_url' | 'blank' | 'new_page';
-
 const BROWSER_OWNER_PREFIX = 'forge-browser-owned:';
 
 interface BrowserTabInventoryEntry {
@@ -1115,30 +986,6 @@ interface BrowserTabInventoryEntry {
 
 function ownerTokenForSession(sessionId: string): string {
   return `${BROWSER_OWNER_PREFIX}${createHash('sha256').update(sessionId).digest('hex').slice(0, 24)}`;
-}
-
-interface BrowserSessionResumeDiagnostic {
-  sessionId: string;
-  status: 'matched' | 'stale_tab' | 'no_saved_tab';
-  reason: string;
-  savedTab?: Pick<BrowserTabResumeState, 'key' | 'url' | 'title' | 'index'>;
-}
-
-interface BrowserConnectionFallback {
-  policy: BrowserCdpAttachFallback;
-  from: 'attach_preferred';
-  to: 'managed_persistent';
-  reason: string;
-  attempts: CdpAttachAttempt[];
-  nativeAttempts?: MacOsBrowserAttachAttempt[];
-}
-
-interface CdpAttachAttempt {
-  endpoint: string;
-  discoveredEndpoint?: string;
-  probeUrl?: string;
-  browserVersion?: string;
-  error?: string;
 }
 
 interface BrowserConnectionSummary {
@@ -2149,7 +1996,7 @@ async function openNativeAttachedContext(
 ): Promise<{ handle?: BrowserOpenHandle; attempts: MacOsBrowserAttachAttempt[] }> {
   if (config.nativeAttachMode === 'disabled') return { attempts: [] };
   if (!target.existingSession && !stringValue(args.session_id)) {
-    await inspectNativeOwnedSessions(repoRoot, config, listSavedSessions(repoRoot), { pruneDead: true });
+    await inspectNativeOwnedSessions({ repoRoot, savedSessions: listSavedSessions(repoRoot), timeoutMs: config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS, pruneDead: true });
   }
   const timeout = positiveNumber(args.timeout_ms, config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
   const savedTab = target.existingSession?.browser?.tab;
@@ -2614,35 +2461,6 @@ async function openBrowser(
   return openManagedContext(runtimeHooks.loadPlaywright(repoRoot), repoRoot, config, target, args, requestedMode, requestedMode);
 }
 
-const BROWSER_POST_DISPATCH_REPLAY_SAFE_ACTIONS = new Set([
-  'wait_for_load_state',
-  'get_text',
-  'get_html',
-  'query_selector',
-  'query_all',
-  'get_attribute',
-  'list_frames',
-  'verify_state',
-  'screenshot',
-  'extract_links',
-  'extract_tables',
-  'extract_forms',
-  'snapshot_interactive',
-  'get_console_errors',
-  'get_failed_requests',
-  'wait_for_selector',
-]);
-
-/**
- * Only observation-only actions may be replayed after dispatch. Browser
- * interactions and navigation can have an externally visible effect even when
- * the provider later reports a timeout, so a transient post-dispatch failure is
- * an unknown outcome, never an automatic retry signal.
- */
-export function browserActionCanReplayAfterDispatch(actionId: string, requireExistingResource = true): boolean {
-  return requireExistingResource && BROWSER_POST_DISPATCH_REPLAY_SAFE_ACTIONS.has(actionId);
-}
-
 async function withPage<T>(
   actionId: string,
   repoRoot: string,
@@ -2654,7 +2472,7 @@ async function withPage<T>(
 ): Promise<T> {
   const retries = Math.min(Math.max(positiveNumber(args.retries, 1), 1), 3);
   const requireExistingResource = options.requireExistingResource ?? Boolean(target.existingSession);
-  const postDispatchReplaySafe = browserActionCanReplayAfterDispatch(actionId, requireExistingResource);
+  const postDispatchReplaySafe = canReplayBrowserActionAfterDispatch(actionId, requireExistingResource);
   let lastError: unknown;
   for (let attempt = 1; attempt <= retries; attempt += 1) {
     let handle: BrowserOpenHandle | undefined;
@@ -2673,7 +2491,7 @@ async function withPage<T>(
       const result = await run(handle.page, handle.diagnostics, handle.connection);
       if (options.persistSession) {
         const identity = await readPageIdentity(handle.page, handle.connection, target.url);
-        saveSession(repoRoot, sessionFromPage(target, identity.url, identity.title, handle.connection));
+        saveBrowserSession(repoRoot, sessionFromPage(target, identity.url, identity.title, handle.connection));
         if (result && typeof result === 'object' && !Array.isArray(result) && Object.prototype.hasOwnProperty.call(result, 'url')) {
           (result as Record<string, unknown>).url = identity.url;
         }
@@ -2698,7 +2516,7 @@ async function withPage<T>(
         && target.existingSession
         && error instanceof AssistantPluginError
         && error.code === 'PLUGIN_BROWSER_SESSION_STATE_LOST') {
-        removeSession(repoRoot, target.sessionId);
+        removeBrowserSession(repoRoot, target.sessionId);
       }
       const message = error instanceof Error ? error.message : String(error);
       const transient = error instanceof AssistantPluginError
@@ -2726,213 +2544,6 @@ function listSavedSessions(repoRoot: string): BrowserSessionState[] {
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
-function nativeTabInventoryUnsupported(error: unknown): boolean {
-  if (error instanceof AssistantPluginError && error.code === 'BROWSER_AUTOMATION_ACTION_UNSUPPORTED') return true;
-  const message = error instanceof Error ? error.message : String(error ?? '');
-  return /\bBROWSER_AUTOMATION_ACTION_UNSUPPORTED\b/.test(message);
-}
-
-function isDiscardableNativeOwnedTabUrl(url: string): boolean {
-  const normalized = url.trim().toLowerCase();
-  return isBlankPage(normalized)
-    || normalized === 'chrome://new-tab-page/'
-    || normalized === 'vivaldi://newtab/'
-    || normalized === 'vivaldi://startpage/';
-}
-
-type NativeOwnedSessionInspection = {
-  items: Map<string, BrowserSessionInventoryItem>;
-  liveCount: number;
-  deadCount: number;
-  unverifiedCount: number;
-  prunedCount: number;
-  closedInvalidCount: number;
-  failedCleanupCount: number;
-};
-
-async function inspectNativeOwnedSessions(
-  repoRoot: string,
-  config: BrowserPluginConfig,
-  saved: BrowserSessionState[],
-  options: { pruneDead?: boolean } = {},
-): Promise<NativeOwnedSessionInspection> {
-  const items = new Map<string, BrowserSessionInventoryItem>();
-  const inventories = new Map<MacOsBrowserProduct, Awaited<ReturnType<typeof listMacOsBrowserTabs>> | Error>();
-  const groups = new Map<string, BrowserSessionState[]>();
-  let liveCount = 0;
-  let deadCount = 0;
-  let unverifiedCount = 0;
-  let prunedCount = 0;
-  let closedInvalidCount = 0;
-  let failedCleanupCount = 0;
-  const timeout = config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
-
-  for (const session of saved) {
-    const browser = session.browser;
-    const tab = browser?.tab;
-    const product = browser?.browserProduct;
-    if (browser?.provider !== 'macos-apple-events' || tab?.ownership !== 'plugin_owned' || !product || !tab.windowId || !tab.tabId) continue;
-    const key = `${product}:${tab.windowId}:${tab.tabId}`;
-    const group = groups.get(key) ?? [];
-    group.push(session);
-    groups.set(key, group);
-  }
-
-  for (const group of groups.values()) {
-    const canonical = group.reduce((latest, session) => session.updatedAt > latest.updatedAt ? session : latest);
-    const browser = canonical.browser!;
-    const tab = browser.tab!;
-    const product = browser.browserProduct!;
-    let inventory = inventories.get(product);
-    if (!inventory) {
-      try {
-        inventory = await listMacOsBrowserTabs(product, timeout);
-      } catch (error) {
-        inventory = error instanceof Error ? error : new Error(String(error));
-      }
-      inventories.set(product, inventory);
-    }
-    if (inventory instanceof Error) {
-      if (!nativeTabInventoryUnsupported(inventory)) {
-        for (const session of group) items.set(session.sessionId, { session, liveness: 'unverified', evidence: 'native_inventory_unavailable', cleanupError: inventory.message });
-        unverifiedCount += group.length;
-        continue;
-      }
-
-      const ref = { windowId: tab.windowId!, tabId: tab.tabId! };
-      let metadata: Awaited<ReturnType<typeof readMacOsBrowserOwnedTabMetadata>>;
-      try {
-        metadata = await readMacOsBrowserOwnedTabMetadata(product, ref, timeout);
-      } catch (metadataError) {
-        if (macOsBrowserPageHandleStale(metadataError)) {
-          const pruned = options.pruneDead === true;
-          if (pruned) {
-            for (const session of group) removeSession(repoRoot, session.sessionId);
-            prunedCount += group.length;
-          }
-          for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_missing', pruned });
-          deadCount += group.length;
-        } else {
-          const cleanupError = metadataError instanceof Error ? metadataError.message : String(metadataError);
-          for (const session of group) items.set(session.sessionId, { session, liveness: 'unverified', evidence: 'native_inventory_unavailable', cleanupError });
-          unverifiedCount += group.length;
-        }
-        continue;
-      }
-
-      if (isDiscardableNativeOwnedTabUrl(metadata.url)) {
-        deadCount += group.length;
-        if (options.pruneDead === true) {
-          try {
-            await closeMacOsBrowserOwnedTab(product, ref, timeout);
-            for (const session of group) removeSession(repoRoot, session.sessionId);
-            prunedCount += group.length;
-            closedInvalidCount += 1;
-            for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_invalid_closed', pruned: true });
-          } catch (error) {
-            failedCleanupCount += 1;
-            const cleanupError = error instanceof Error ? error.message : String(error);
-            for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_invalid_close_failed', cleanupError });
-          }
-        } else {
-          for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_invalid' });
-        }
-      } else {
-        for (const session of group) items.set(session.sessionId, { session, liveness: 'live', evidence: 'native_tab_live' });
-        liveCount += group.length;
-      }
-      continue;
-    }
-
-    const live = inventory.tabs.find((entry) => entry.windowId === tab.windowId && entry.tabId === tab.tabId);
-    if (!live) {
-      const pruned = options.pruneDead === true;
-      if (pruned) {
-        for (const session of group) removeSession(repoRoot, session.sessionId);
-        prunedCount += group.length;
-      }
-      for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_missing', pruned });
-      deadCount += group.length;
-      continue;
-    }
-
-    if (isDiscardableNativeOwnedTabUrl(live.url)) {
-      deadCount += group.length;
-      if (options.pruneDead === true) {
-        try {
-          await closeMacOsBrowserOwnedTab(product, { windowId: tab.windowId!, tabId: tab.tabId! }, timeout);
-          for (const session of group) removeSession(repoRoot, session.sessionId);
-          prunedCount += group.length;
-          closedInvalidCount += 1;
-          for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_invalid_closed', pruned: true });
-        } catch (error) {
-          failedCleanupCount += 1;
-          const cleanupError = error instanceof Error ? error.message : String(error);
-          for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_invalid_close_failed', cleanupError });
-        }
-      } else {
-        for (const session of group) items.set(session.sessionId, { session, liveness: 'dead', evidence: 'native_tab_invalid' });
-      }
-      continue;
-    }
-
-    for (const session of group) items.set(session.sessionId, { session, liveness: 'live', evidence: 'native_tab_live' });
-    liveCount += group.length;
-  }
-
-  return { items, liveCount, deadCount, unverifiedCount, prunedCount, closedInvalidCount, failedCleanupCount };
-}
-
-async function closeTrackedNativeOwnedSession(
-  session: BrowserSessionState,
-  config: BrowserPluginConfig,
-): Promise<{ resourceClosed: boolean; resourceAlreadyMissing: boolean }> {
-  const browser = session.browser;
-  const tab = browser?.tab;
-  if (browser?.provider !== 'macos-apple-events' || tab?.ownership !== 'plugin_owned') {
-    return { resourceClosed: false, resourceAlreadyMissing: false };
-  }
-  if (!browser.browserProduct || !tab.windowId || !tab.tabId) {
-    throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Tracked plugin-owned native tab is missing stable browser identity; retaining session metadata instead of orphaning the tab.', {
-      retryable: false, details: { sessionId: session.sessionId, browserProduct: browser.browserProduct, windowId: tab.windowId, tabId: tab.tabId },
-    });
-  }
-  const timeout = config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const ref = { windowId: tab.windowId, tabId: tab.tabId };
-  let inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>> | undefined;
-  try {
-    inventory = await listMacOsBrowserTabs(browser.browserProduct, timeout);
-  } catch (error) {
-    if (!nativeTabInventoryUnsupported(error)) throw error;
-    try {
-      await readMacOsBrowserOwnedTabMetadata(browser.browserProduct, ref, timeout);
-    } catch (metadataError) {
-      if (macOsBrowserPageHandleStale(metadataError)) return { resourceClosed: false, resourceAlreadyMissing: true };
-      throw metadataError;
-    }
-  }
-  if (inventory && !inventory.tabs.some((entry) => entry.windowId === tab.windowId && entry.tabId === tab.tabId)) {
-    return { resourceClosed: false, resourceAlreadyMissing: true };
-  }
-  await closeMacOsBrowserOwnedTab(browser.browserProduct, ref, timeout);
-  return { resourceClosed: true, resourceAlreadyMissing: false };
-}
-
-function nativeOwnedAliasSessionIds(repoRoot: string, session: BrowserSessionState): string[] {
-  const browser = session.browser;
-  const tab = browser?.tab;
-  if (browser?.provider !== 'macos-apple-events' || tab?.ownership !== 'plugin_owned' || !browser.browserProduct || !tab.windowId || !tab.tabId) {
-    return [session.sessionId];
-  }
-  return listSavedSessions(repoRoot)
-    .filter((candidate) => candidate.browser?.provider === 'macos-apple-events'
-      && candidate.browser.browserProduct === browser.browserProduct
-      && candidate.browser.tab?.ownership === 'plugin_owned'
-      && candidate.browser.tab.windowId === tab.windowId
-      && candidate.browser.tab.tabId === tab.tabId)
-    .map((candidate) => candidate.sessionId);
-}
-
 async function inspectSavedSessions(
   repoRoot: string,
   config: BrowserPluginConfig,
@@ -2944,7 +2555,7 @@ async function inspectSavedSessions(
   let unverifiedSessionCount = 0;
   let deadManagedSessionCount = 0;
   let prunedSessionCount = 0;
-  const native = await inspectNativeOwnedSessions(repoRoot, config, saved, options);
+  const native = await inspectNativeOwnedSessions({ repoRoot, savedSessions: saved, timeoutMs: config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS, pruneDead: options.pruneDead });
   let liveNativeSessionCount = native.liveCount;
   let deadNativeSessionCount = native.deadCount;
   let closedInvalidNativeSessionCount = native.closedInvalidCount;
@@ -2993,7 +2604,7 @@ async function inspectSavedSessions(
       const pruned = options.pruneDead === true;
       if (pruned) {
         state.pagesBySession.delete(session.sessionId);
-        removeSession(repoRoot, session.sessionId);
+        removeBrowserSession(repoRoot, session.sessionId);
         prunedSessionCount += 1;
       }
       sessions.push({ session, liveness: 'dead', evidence: 'runtime_bound_page_missing', pruned });
@@ -3446,7 +3057,7 @@ async function finalizeInteractiveAction(
   const identity = await readPageIdentity(page, connection, target.url);
   const title = identity.title;
   const pageUrl = identity.url;
-  const session = saveSession(repoRoot, sessionFromPage(target, pageUrl, title, connection));
+  const session = saveBrowserSession(repoRoot, sessionFromPage(target, pageUrl, title, connection));
   let screenshot: BrowserActionScreenshot | undefined;
   const silentNativeEvidence = connection.provider === 'macos-apple-events';
   if (!silentNativeEvidence) {
@@ -3466,598 +3077,6 @@ async function finalizeInteractiveAction(
       sessionResume: session.browser?.sessionResume,
     },
   };
-}
-
-function permissions(ready: boolean): AssistantPluginPermissionScope[] {
-  return [
-    {
-      scope: 'browser.read',
-      mode: 'read',
-      description: 'Open pages, extract text, and capture screenshots.',
-      granted: ready,
-      required: true,
-    },
-    {
-      scope: 'browser.interact',
-      mode: 'write',
-      description: 'Click, type, press keys, and wait on allowed browser pages after explicit authorization.',
-      granted: ready,
-      required: true,
-    },
-    {
-      scope: 'browser.profile',
-      mode: 'write',
-      description: 'Persist the dedicated local browser profile, session metadata, and screenshots.',
-      granted: ready,
-      required: true,
-    },
-  ];
-}
-
-function capabilities(): AssistantPluginCapability[] {
-  return [
-    {
-      capabilityId: 'browser-session',
-      title: 'Browser Sessions',
-      description: 'Create, list, reuse, and close persistent browser sessions.',
-      scopes: ['browser.read', 'browser.profile'],
-      actions: ['create_session', 'list_sessions', 'reconcile_sessions', 'close_session', 'close_page', 'clear_session'],
-    },
-    {
-      capabilityId: 'browser-human-handoff',
-      title: 'Browser Human Handoff',
-      description: 'Present the persistent browser in the foreground, keep it open for manual verification, and resume safely.',
-      scopes: ['browser.read', 'browser.profile'],
-      actions: ['request_human_handoff', 'get_handoff_status', 'resolve_handoff'],
-    },
-    {
-      capabilityId: 'browser-readonly',
-      title: 'Read-only Browser',
-      description: 'Navigate allowed pages, extract DOM/text, capture screenshots, and collect diagnostics.',
-      scopes: ['browser.read', 'browser.profile'],
-      actions: [
-        'open_page', 'navigate', 'reload', 'go_back', 'wait_for_load_state',
-        'get_text', 'get_html', 'query_selector', 'query_all', 'get_attribute', 'list_frames', 'verify_state',
-        'screenshot', 'extract_links', 'extract_tables', 'extract_forms', 'snapshot_interactive',
-        'get_console_errors', 'get_failed_requests',
-      ],
-    },
-    {
-      capabilityId: 'browser-interaction',
-      title: 'Browser Interaction',
-      description: 'Perform explicit form and pointer interactions on HTTP(S) pages through the persistent Playwright profile.',
-      scopes: ['browser.interact', 'browser.profile'],
-      actions: [
-        'activate_page', 'click', 'click_text', 'double_click', 'hover', 'focus', 'type', 'fill', 'select_option',
-        'check', 'uncheck', 'press', 'keyboard_shortcut', 'trusted_input', 'dispatch_event', 'wait_for_selector', 'attach_local_file', 'await_file_transfer',
-      ],
-    },
-  ];
-}
-
-function sessionTargetSchema(extra: Record<string, unknown> = {}, required: string[] = []): Record<string, unknown> {
-  return {
-    type: 'object',
-    properties: {
-      session_id: { type: 'string' },
-      url: { type: 'string' },
-      wait_until: { type: 'string', enum: ['load', 'domcontentloaded', 'networkidle'] },
-      timeout_ms: { type: 'number' },
-      retries: { type: 'number' },
-      browser_mode: { type: 'string', enum: ['attach_preferred', 'managed_persistent', 'isolated'] },
-      cdp_attach_fallback: { type: 'string', enum: ['managed_persistent', 'fail_closed'] },
-      native_attach_mode: { type: 'string', enum: ['auto', 'disabled'] },
-      native_browser_candidates: { type: 'array', items: { type: 'string', enum: ['vivaldi', 'chrome'] }, maxItems: 2 },
-      ...extra,
-    },
-    ...(required.length > 0 ? { required } : {}),
-    additionalProperties: false,
-  };
-}
-
-const frameScopeProperties = {
-  frame_url: { type: 'string' },
-  frame_name: { type: 'string' },
-};
-
-function interactSchema(extra: Record<string, unknown>, required: string[]): Record<string, unknown> {
-  return sessionTargetSchema({
-    post_action_wait_ms: { type: 'number' },
-    ...extra,
-  }, required);
-}
-
-function actions(): AssistantPluginActionDescriptor[] {
-  const readRemote = [
-    { resource: 'remote' as const, mode: 'read' as const },
-    { resource: 'repo-state' as const, mode: 'write' as const },
-  ];
-  const writeRemote = [
-    { resource: 'remote' as const, mode: 'exclusive' as const },
-    { resource: 'repo-state' as const, mode: 'write' as const },
-  ];
-  const descriptors: AssistantPluginActionDescriptor[] = [
-    {
-      actionId: 'configure',
-      title: 'Configure browser plugin',
-      description: 'Enable or update the local browser plugin configuration.',
-      readOnly: false,
-      risk: 'workspace_write',
-      confirmation: 'authorization',
-      defaultTimeoutMs: 30_000,
-      cancellable: true,
-      idempotent: true,
-      scopes: ['browser.profile'],
-      resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
-      argumentsSchema: {
-        type: 'object',
-        properties: {
-          enabled: { type: 'boolean' },
-          browser_mode: { type: 'string', enum: ['attach_preferred', 'managed_persistent', 'isolated'] },
-          profile_mode: { type: 'string', enum: ['repo_local', 'custom'] },
-          profile_dir: { type: 'string' },
-          profile_directory: { type: 'string' },
-          clear_profile_dir: { type: 'boolean' },
-          clear_profile_directory: { type: 'boolean' },
-          browser_channel: { type: 'string', enum: ['chromium', 'chrome', 'chrome-beta', 'chrome-dev', 'chrome-canary'] },
-          clear_browser_channel: { type: 'boolean' },
-          browser_executable_path: { type: 'string' },
-          clear_browser_executable_path: { type: 'boolean' },
-          cdp_endpoint: { type: 'string' },
-          clear_cdp_endpoint: { type: 'boolean' },
-          cdp_endpoint_candidates: { type: 'array', items: { type: 'string' }, maxItems: MAX_CDP_ENDPOINT_CANDIDATES },
-          clear_cdp_endpoint_candidates: { type: 'boolean' },
-          cdp_discovery_timeout_ms: { type: 'number' },
-          cdp_attach_fallback: { type: 'string', enum: ['managed_persistent', 'fail_closed'] },
-          native_attach_mode: { type: 'string', enum: ['auto', 'disabled'] },
-          native_browser_candidates: { type: 'array', items: { type: 'string', enum: ['vivaldi', 'chrome'] }, maxItems: 2 },
-          default_timeout_ms: { type: 'number' },
-        },
-        additionalProperties: false,
-      },
-    },
-    {
-      actionId: 'create_session',
-      title: 'Create browser session',
-      description: 'Open an HTTP(S) URL or explicitly adopt the matching frontmost native tab, then persist a reusable session id.',
-      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }, ...readRemote],
-      argumentsSchema: sessionTargetSchema({
-        extract_text: { type: 'boolean' },
-        max_chars: { type: 'number' },
-        native_browser_product: { type: 'string', enum: ['chrome', 'vivaldi'] },
-        native_window_id: { type: 'string' },
-        native_tab_id: { type: 'string' },
-        native_active_tab: { type: 'boolean' },
-      }, ['url']),
-    },
-    {
-      actionId: 'list_sessions',
-      title: 'List browser sessions',
-      description: 'List saved browser session metadata without secrets or cookies.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'read' }],
-      argumentsSchema: {
-        type: 'object',
-        properties: {
-          limit: { type: 'number', minimum: 1, maximum: MAX_BROWSER_SESSION_LIST_LIMIT, default: DEFAULT_BROWSER_SESSION_LIST_LIMIT },
-          cursor: { type: 'string' },
-        },
-        additionalProperties: false,
-      },
-    },
-    {
-      actionId: 'reconcile_sessions',
-      title: 'Reconcile browser sessions',
-      description: 'Prune only saved managed-session metadata whose exact Runtime-bound page is positively proven gone. Never removes profiles, cookies, or unverified native sessions.',
-      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
-      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
-    },
-    {
-      actionId: 'close_session',
-      title: 'Close browser session',
-      description: 'Remove one saved session metadata record.',
-      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
-      argumentsSchema: { type: 'object', properties: { session_id: { type: 'string' } }, required: ['session_id'], additionalProperties: false },
-    },
-    {
-      actionId: 'clear_session',
-      title: 'Clear all browser sessions',
-      description: 'Remove all saved session metadata while keeping the profile.',
-      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
-      argumentsSchema: { type: 'object', properties: {}, additionalProperties: false },
-    },
-    {
-      actionId: 'request_human_handoff',
-      title: 'Request human browser handoff',
-      description: 'Keep a saved browser session open for CAPTCHA, login, two-factor authentication, or another manual step.',
-      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: readRemote,
-      argumentsSchema: sessionTargetSchema({
-        reason: { type: 'string', enum: ['captcha', 'login', 'two_factor', 'manual_review', 'sensitive_confirmation'] },
-        instructions: { type: 'string' },
-        handoff_timeout_ms: { type: 'number' },
-      }, ['session_id']),
-    },
-    {
-      actionId: 'get_handoff_status',
-      title: 'Get browser handoff status',
-      description: 'Read durable browser handoff status and reconcile a stale or crashed host.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'read' }],
-      argumentsSchema: { type: 'object', properties: { interaction_id: { type: 'string' } }, required: ['interaction_id'], additionalProperties: false },
-    },
-    {
-      actionId: 'resolve_handoff',
-      title: 'Resolve browser handoff',
-      description: 'Resume or cancel a foreground browser handoff.',
-      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
-      argumentsSchema: {
-        type: 'object',
-        properties: {
-          interaction_id: { type: 'string' },
-          resolution: { type: 'string', enum: ['resume', 'cancel'] },
-        },
-        required: ['interaction_id', 'resolution'],
-        additionalProperties: false,
-      },
-    },
-    {
-      actionId: 'open_page',
-      title: 'Open page',
-      description: 'Open an HTTP(S) URL with the persistent profile and save a lightweight session.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.read'], resourceClaims: readRemote,
-      argumentsSchema: sessionTargetSchema({ extract_text: { type: 'boolean' }, max_chars: { type: 'number' } }, ['url']),
-    },
-    {
-      actionId: 'navigate',
-      title: 'Navigate',
-      description: 'Navigate an existing session or open a new page to an HTTP(S) URL.',
-      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.read', 'browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: sessionTargetSchema({}, ['url']),
-    },
-    {
-      actionId: 'reload',
-      title: 'Reload page',
-      description: 'Reload the current page for a session.',
-      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.read', 'browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: sessionTargetSchema({}, ['session_id']),
-    },
-    {
-      actionId: 'go_back',
-      title: 'Go back',
-      description: 'Navigate back in history for a session.',
-      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.read', 'browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: sessionTargetSchema({}, ['session_id']),
-    },
-    {
-      actionId: 'wait_for_load_state',
-      title: 'Wait for load state',
-      description: 'Wait for load/domcontentloaded/networkidle on a session page.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read'], resourceClaims: readRemote,
-      argumentsSchema: sessionTargetSchema({ state: { type: 'string', enum: ['load', 'domcontentloaded', 'networkidle'] } }),
-    },
-    {
-      actionId: 'get_text',
-      title: 'Get text',
-      description: 'Extract text from a URL or saved browser session.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({ selector: { type: 'string' }, max_chars: { type: 'number' }, ...frameScopeProperties }),
-    },
-    {
-      actionId: 'get_html',
-      title: 'Get HTML',
-      description: 'Extract HTML for the page or a selector (bounded).',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({ selector: { type: 'string' }, max_chars: { type: 'number' }, ...frameScopeProperties }),
-    },
-    {
-      actionId: 'query_selector',
-      title: 'Query selector',
-      description: 'Return the first matching element summary with a stable selector hint.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({ selector: { type: 'string' }, ...frameScopeProperties }, ['selector']),
-    },
-    {
-      actionId: 'query_all',
-      title: 'Query all selectors',
-      description: 'Return matching element summaries (bounded).',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({ selector: { type: 'string' }, limit: { type: 'number' }, ...frameScopeProperties }, ['selector']),
-    },
-    {
-      actionId: 'get_attribute',
-      title: 'Get attribute',
-      description: 'Read one attribute from a selector.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({ selector: { type: 'string' }, attribute: { type: 'string' }, ...frameScopeProperties }, ['selector', 'attribute']),
-    },
-    {
-      actionId: 'list_frames',
-      title: 'List page frames',
-      description: 'List bounded Playwright/CDP frame identities for explicit frame-scoped DOM observation.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({ limit: { type: 'number', minimum: 1, maximum: 100 } }),
-    },
-    {
-      actionId: 'verify_state',
-      title: 'Verify browser state',
-      description: 'Observe URL, selector existence/visibility, and bounded text criteria in one read-only call for post-action verification.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({
-        expected_url: { type: 'string' },
-        url_contains: { type: 'string' },
-        selector: { type: 'string' },
-        require_visible: { type: 'boolean' },
-        text_contains: { type: 'string', maxLength: 10000 },
-        max_chars: { type: 'number', minimum: 1, maximum: 100000 },
-        ...frameScopeProperties,
-      }, ['session_id']),
-    },
-    {
-      actionId: 'screenshot',
-      title: 'Screenshot',
-      description: 'Capture a page, full-page, or element screenshot under browser artifact storage.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.read'], resourceClaims: readRemote,
-      argumentsSchema: sessionTargetSchema({ full_page: { type: 'boolean' }, selector: { type: 'string' } }),
-    },
-    {
-      actionId: 'extract_links',
-      title: 'Extract links',
-      description: 'Extract anchors with href/text from the page.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({ limit: { type: 'number' } }),
-    },
-    {
-      actionId: 'extract_tables',
-      title: 'Extract tables',
-      description: 'Extract simple HTML tables as row arrays.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({ limit: { type: 'number' } }),
-    },
-    {
-      actionId: 'extract_forms',
-      title: 'Extract forms',
-      description: 'Extract form field summaries without values that look like secrets.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({ limit: { type: 'number' } }),
-    },
-    {
-      actionId: 'snapshot_interactive',
-      title: 'Snapshot interactive elements',
-      description: 'Snapshot interactive elements with stable selector hints plus CSS-pixel viewport geometry for screenshot-to-input grounding.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({ limit: { type: 'number' }, ...frameScopeProperties }),
-    },
-    {
-      actionId: 'get_console_errors',
-      title: 'Get console errors',
-      description: 'Return captured console error messages for a page open cycle.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({}),
-    },
-    {
-      actionId: 'get_failed_requests',
-      title: 'Get failed requests',
-      description: 'Return failed network requests captured during a page open cycle.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({}),
-    },
-    {
-      actionId: 'activate_page',
-      title: 'Activate browser page',
-      description: 'Bring the exact saved browser page/tab to the foreground without opening or replacing a tab.',
-      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({}, []),
-    },
-    {
-      actionId: 'click',
-      title: 'Click element',
-      description: 'Click a selector on an allowed page after authorization.',
-      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({ selector: { type: 'string' } }, ['selector']),
-    },
-    {
-      actionId: 'click_text',
-      title: 'Click exact visible text',
-      description: 'Click the smallest visible standard DOM element whose normalized text exactly matches the requested text. Closed shadow roots are intentionally not traversed.',
-      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({ text: { type: 'string', minLength: 1, maxLength: 200 } }, ['text']),
-    },
-    {
-      actionId: 'double_click',
-      title: 'Double-click element',
-      description: 'Double-click a selector after authorization.',
-      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({ selector: { type: 'string' } }, ['selector']),
-    },
-    {
-      actionId: 'hover',
-      title: 'Hover element',
-      description: 'Hover a selector after authorization.',
-      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({ selector: { type: 'string' } }, ['selector']),
-    },
-    {
-      actionId: 'focus',
-      title: 'Focus element',
-      description: 'Focus a selector after authorization.',
-      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({ selector: { type: 'string' } }, ['selector']),
-    },
-    {
-      actionId: 'type',
-      title: 'Type into element',
-      description: 'Type text into a selector (append-style) after authorization.',
-      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({ selector: { type: 'string' }, text: { type: 'string' } }, ['selector', 'text']),
-    },
-    {
-      actionId: 'fill',
-      title: 'Fill element',
-      description: 'Replace the value of a selector after authorization.',
-      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({ selector: { type: 'string' }, text: { type: 'string' } }, ['selector', 'text']),
-    },
-    {
-      actionId: 'select_option',
-      title: 'Select option',
-      description: 'Select one or more option values on a <select> after authorization.',
-      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({ selector: { type: 'string' }, values: { type: 'array', items: { type: 'string' } } }, ['selector', 'values']),
-    },
-    {
-      actionId: 'check',
-      title: 'Check checkbox',
-      description: 'Check a checkbox/radio after authorization.',
-      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({ selector: { type: 'string' } }, ['selector']),
-    },
-    {
-      actionId: 'uncheck',
-      title: 'Uncheck checkbox',
-      description: 'Uncheck a checkbox after authorization.',
-      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({ selector: { type: 'string' } }, ['selector']),
-    },
-    {
-      actionId: 'press',
-      title: 'Press key',
-      description: 'Press a key on a selector on an allowed page after authorization.',
-      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({ selector: { type: 'string' }, key: { type: 'string' } }, ['selector', 'key']),
-    },
-    {
-      actionId: 'keyboard_shortcut',
-      title: 'Keyboard shortcut',
-      description: 'Press a keyboard shortcut (e.g. Meta+A) after authorization.',
-      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({ key: { type: 'string' } }, ['key']),
-    },
-    {
-      actionId: 'trusted_input',
-      title: 'Trusted browser input',
-      description: 'Send bounded mouse, wheel, drag, key, or text input after authorization. Playwright/CDP uses page input primitives; native macOS sessions require the exact saved tab to already be foreground/active and use the stable Desktop Operator input broker without activating another tab.',
-      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({
-        kind: { type: 'string', enum: ['click', 'move', 'wheel', 'drag', 'key', 'text'] },
-        x: { type: 'number', minimum: 0, maximum: 100000 },
-        y: { type: 'number', minimum: 0, maximum: 100000 },
-        from_x: { type: 'number', minimum: 0, maximum: 100000 },
-        from_y: { type: 'number', minimum: 0, maximum: 100000 },
-        to_x: { type: 'number', minimum: 0, maximum: 100000 },
-        to_y: { type: 'number', minimum: 0, maximum: 100000 },
-        delta_x: { type: 'number', minimum: -100000, maximum: 100000 },
-        delta_y: { type: 'number', minimum: -100000, maximum: 100000 },
-        button: { type: 'string', enum: ['left', 'middle', 'right'] },
-        click_count: { type: 'number', minimum: 1, maximum: 3 },
-        steps: { type: 'number', minimum: 1, maximum: 100 },
-        key: { type: 'string', minLength: 1, maxLength: 100 },
-        text: { type: 'string', maxLength: 10000 },
-        guard_selector: { type: 'string' },
-        ...frameScopeProperties,
-      }, ['kind']),
-    },
-    {
-      actionId: 'dispatch_event',
-      title: 'Dispatch DOM event',
-      description: 'Dispatch one named bubbling/composed DOM CustomEvent on an explicit selector after authorization. No arbitrary JavaScript payload is accepted.',
-      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({ selector: { type: 'string' }, event: { type: 'string', minLength: 1, maxLength: 64 } }, ['selector', 'event']),
-    },
-    {
-      actionId: 'wait_for_selector',
-      title: 'Wait for selector',
-      description: 'Wait for a selector state on an allowed page after authorization.',
-      readOnly: true, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: readRemote,
-      argumentsSchema: sessionTargetSchema({
-        selector: { type: 'string' },
-        state: { type: 'string', enum: ['attached', 'detached', 'visible', 'hidden'] },
-      }, ['selector']),
-    },
-    {
-      actionId: 'attach_local_file',
-      title: 'Attach local file(s)',
-      description: 'Set one or more allowed local files on input[type=file] after authorization. file_path remains backward-compatible; file_paths supports multiple selection. Never auto-opens executables.',
-      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({
-        selector: { type: 'string' },
-        file_path: { type: 'string' },
-        file_paths: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'string' } },
-      }, ['selector']),
-    },
-    {
-      actionId: 'await_file_transfer',
-      title: 'Await file transfer',
-      description: 'Capture a browser download into bounded artifact storage after authorization. Never auto-opens downloaded files.',
-      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 120_000, cancellable: true, idempotent: false,
-      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
-      argumentsSchema: interactSchema({ selector: { type: 'string' }, suggested_name: { type: 'string' } }, ['selector']),
-    },
-    {
-      actionId: 'close_page',
-      title: 'Close session',
-      description: 'Remove saved session metadata while keeping the persistent profile.',
-      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }],
-      argumentsSchema: { type: 'object', properties: { session_id: { type: 'string' } }, required: ['session_id'], additionalProperties: false },
-    },
-  ];
-  const foregroundRequired = new Set(['activate_page', 'request_human_handoff']);
-  const foregroundPossible = new Set([
-    'create_session', 'open_page', 'navigate', 'reload', 'go_back', 'resolve_handoff',
-    'click', 'click_text', 'double_click', 'hover', 'focus', 'type', 'fill', 'select_option',
-    'check', 'uncheck', 'press', 'keyboard_shortcut', 'trusted_input', 'dispatch_event',
-    'wait_for_selector', 'attach_local_file', 'await_file_transfer',
-  ]);
-  return descriptors.map((descriptor) => ({
-    ...descriptor,
-    foregroundEffect: foregroundRequired.has(descriptor.actionId)
-      ? 'required'
-      : foregroundPossible.has(descriptor.actionId)
-        ? 'possible'
-        : 'none',
-  }));
 }
 
 function browserUserFacingStatus(config: BrowserPluginConfig, ready: boolean, sessionCount = 0): string {
@@ -4221,9 +3240,9 @@ export function buildBrowserPluginManifest(previousRevision = 0, previousUpdated
             : state.errors[0],
     },
     health: state,
-    permissions: permissions(state.ready),
-    capabilities: capabilities(),
-    actions: actions(),
+    permissions: browserPermissions(state.ready),
+    capabilities: browserCapabilities(),
+    actions: browserActions(),
     updatedAt: previousUpdatedAt ?? now(),
   };
 }
@@ -4245,7 +3264,7 @@ async function executeBrowserPluginActionInternal(
 ): Promise<Record<string, unknown>> {
   const persisted = loadConfig(input.repoRoot);
   const actionSessionId = input.actionId === 'configure' ? undefined : stringValue(input.args.session_id);
-  const actionSession = actionSessionId ? findSession(input.repoRoot, actionSessionId) : undefined;
+  const actionSession = actionSessionId ? findBrowserSession(input.repoRoot, actionSessionId) : undefined;
   const current = input.actionId === 'configure' ? persisted : effectiveBrowserActionConfig(persisted, input.args, actionSession);
   if (!current.enabled && input.actionId !== 'configure') {
     throw new AssistantPluginError('PLUGIN_DISABLED', 'Browser plugin is disabled.', { retryable: false });
@@ -4417,12 +3436,12 @@ async function executeBrowserPluginActionInternal(
       case 'close_page': {
         const sessionId = requiredString(input.args.session_id, 'session_id');
         assertBrowserSessionAvailable(input.repoRoot, sessionId);
-        const session = findSession(input.repoRoot, sessionId);
+        const session = findBrowserSession(input.repoRoot, sessionId);
         const tab = session?.browser?.tab;
         const managedClosed = session ? await closeManagedSessionPage(input.repoRoot, current, session) : false;
-        const nativeClose = session ? await closeTrackedNativeOwnedSession(session, current) : { resourceClosed: false, resourceAlreadyMissing: false };
+        const nativeClose = session ? await closeTrackedNativeOwnedSession(session, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) : { resourceClosed: false, resourceAlreadyMissing: false };
         const closedSessionIds = session ? nativeOwnedAliasSessionIds(input.repoRoot, session) : [sessionId];
-        for (const closedSessionId of closedSessionIds) removeSession(input.repoRoot, closedSessionId);
+        for (const closedSessionId of closedSessionIds) removeBrowserSession(input.repoRoot, closedSessionId);
         return {
           closed: true, sessionId,
           resourceClosed: managedClosed || nativeClose.resourceClosed,
@@ -4442,10 +3461,10 @@ async function executeBrowserPluginActionInternal(
         let resourceAlreadyMissingCount = 0;
         for (const session of sessions) {
           try {
-            const nativeClose = await closeTrackedNativeOwnedSession(session, current);
+            const nativeClose = await closeTrackedNativeOwnedSession(session, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
             if (nativeClose.resourceClosed) resourceClosedCount += 1;
             if (nativeClose.resourceAlreadyMissing) resourceAlreadyMissingCount += 1;
-            removeSession(input.repoRoot, session.sessionId);
+            removeBrowserSession(input.repoRoot, session.sessionId);
             removedCount += 1;
           } catch (error) {
             failedSessionIds.push(session.sessionId);
@@ -4474,7 +3493,6 @@ async function executeBrowserPluginActionInternal(
             requestId: input.requestId,
             jobId: input.jobId,
             sessionId: target.sessionId,
-            sessionPath: sessionPath(input.repoRoot, target.sessionId),
             url: target.url,
             profileDir: managedTarget.profile.profileDir,
             selectedProfilePath: managedTarget.profile.selectedProfilePath,
@@ -4523,7 +3541,6 @@ async function executeBrowserPluginActionInternal(
           requestId: input.requestId,
           jobId: input.jobId,
           sessionId: target.sessionId,
-          sessionPath: sessionPath(input.repoRoot, target.sessionId),
           url: target.url,
           profileDir: profile.profileDir,
           selectedProfilePath,
@@ -4546,6 +3563,17 @@ async function executeBrowserPluginActionInternal(
       case 'get_handoff_status': {
         const interactionId = requiredString(input.args.interaction_id, 'interaction_id');
         const handoff = getBrowserHandoff(input.repoRoot, interactionId);
+        if (handoff.status === 'completed' && handoff.result?.url) {
+          const session = findBrowserSession(input.repoRoot, handoff.sessionId);
+          if (session) {
+            saveBrowserSession(input.repoRoot, {
+              ...session,
+              url: handoff.result.url,
+              title: handoff.result.title,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+        }
         return {
           provider: isRuntimeManagedBrowserHandoff(handoff)
             ? 'playwright-runtime-managed-handoff'
@@ -4563,13 +3591,13 @@ async function executeBrowserPluginActionInternal(
         }
         const currentHandoff = getBrowserHandoff(input.repoRoot, interactionId);
         if (isRuntimeManagedBrowserHandoff(currentHandoff)) {
-          const session = findSession(input.repoRoot, currentHandoff.sessionId);
+          const session = findBrowserSession(input.repoRoot, currentHandoff.sessionId);
           const managedTarget = session ? await runtimeManagedPageForSession(input.repoRoot, current, session) : undefined;
           const result = managedTarget
             ? { url: managedTarget.page.url(), title: await managedTarget.page.title().catch(() => session?.title) }
             : currentHandoff.result;
           if (resolution === 'resume' && session && result?.url) {
-            saveSession(input.repoRoot, {
+            saveBrowserSession(input.repoRoot, {
               ...session,
               url: result.url,
               title: result.title,
@@ -4584,8 +3612,19 @@ async function executeBrowserPluginActionInternal(
           };
         }
         const handoff = resolution === 'resume'
-          ? resumeBrowserHandoff(input.repoRoot, interactionId, input.requestId)
+          ? await resumeBrowserHandoffAndWait(input.repoRoot, interactionId, input.requestId)
           : cancelBrowserHandoff(input.repoRoot, interactionId, input.requestId);
+        if (resolution === 'resume' && handoff.status === 'completed' && handoff.result?.url) {
+          const session = findBrowserSession(input.repoRoot, handoff.sessionId);
+          if (session) {
+            saveBrowserSession(input.repoRoot, {
+              ...session,
+              url: handoff.result.url,
+              title: handoff.result.title,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+        }
         return {
           provider: handoff.targetId.startsWith('macos-apple-events:') ? 'macos-apple-events-handoff-host' : 'playwright-handoff-host',
           resolutionRequested: resolution,
@@ -4606,7 +3645,7 @@ async function executeBrowserPluginActionInternal(
           : normalizedUrl(input.args.url);
         const existingSessionId = stringValue(input.args.session_id);
         const target: BrowserActionTarget = existingSessionId
-          ? { sessionId: existingSessionId, url, existingSession: findSession(input.repoRoot, existingSessionId) }
+          ? { sessionId: existingSessionId, url, existingSession: findBrowserSession(input.repoRoot, existingSessionId) }
           : { sessionId: sessionIdFor(url), url };
         if (hasNativeAdoption) {
           if (input.actionId !== 'create_session' || (nativeProduct && !normalizedNativeProduct)) {
@@ -4725,7 +3764,7 @@ async function executeBrowserPluginActionInternal(
                   : 'Explicitly adopted an existing user-owned native browser tab.',
             },
           }, requestedUrl, title, 'saved_url', { ownership: 'user_owned', windowId: adoptedRef.windowId, tabId: adoptedRef.tabId });
-          const session = saveSession(input.repoRoot, sessionFromPage(target, requestedUrl, title, connection));
+          const session = saveBrowserSession(input.repoRoot, sessionFromPage(target, requestedUrl, title, connection));
           return {
             provider: 'macos-apple-events',
             session,
@@ -4738,7 +3777,7 @@ async function executeBrowserPluginActionInternal(
         }
         return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, diagnostics, connection) => {
           const identity = await readPageIdentity(page, connection, target.url);
-          const session = saveSession(input.repoRoot, sessionFromPage(target, identity.url, identity.title, connection));
+          const session = saveBrowserSession(input.repoRoot, sessionFromPage(target, identity.url, identity.title, connection));
           return {
             provider: browserResultProvider(connection.provider),
             session,
@@ -4770,7 +3809,7 @@ async function executeBrowserPluginActionInternal(
             });
           }
           const identity = await readPageIdentity(page, connection);
-          const session = saveSession(input.repoRoot, sessionFromPage(target, identity.url, identity.title, connection));
+          const session = saveBrowserSession(input.repoRoot, sessionFromPage(target, identity.url, identity.title, connection));
           return {
             provider: browserResultProvider(connection.provider),
             session,
@@ -5447,7 +4486,7 @@ async function executeBrowserPluginActionInternal(
         const target = resolveActionTarget(input.repoRoot, input.args);
         const selector = requiredString(input.args.selector, 'selector');
         const requestedName = stringValue(input.args.suggested_name);
-        const downloadDir = stateDir(input.repoRoot, 'downloads');
+        const downloadDir = browserStateDir(input.repoRoot, 'downloads');
         mkdirSync(downloadDir, { recursive: true });
         return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (connection.provider === 'macos-apple-events') {

@@ -1,3 +1,5 @@
+export const MAX_BROWSER_CDP_ENDPOINT_CANDIDATES = 5;
+
 export type BrowserProviderCapability =
   | 'dom.read'
   | 'dom.interact'

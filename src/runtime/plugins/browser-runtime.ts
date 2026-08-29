@@ -85,6 +85,16 @@ export function browserRuntimeActionPolicy(actionId: string): BrowserRuntimeActi
   };
 }
 
+
+/**
+ * Post-dispatch replay is a semantic BrowserRuntime decision. Only read-only
+ * actions fenced to an already-existing resource may be replayed after a
+ * transient provider failure; mutations retain unknown-outcome semantics.
+ */
+export function browserActionCanReplayAfterDispatch(actionId: string, requireExistingResource = true): boolean {
+  return requireExistingResource && browserRuntimeActionPolicy(actionId).replaySafety === 'read_only';
+}
+
 function stringArgument(args: Record<string, unknown>, key: string): string | undefined {
   const value = args[key];
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;

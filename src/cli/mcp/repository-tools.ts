@@ -2,10 +2,9 @@ import { bindRepositoryEntities } from '../repositories/entity-migration';
 import { bootstrapLocalProject, diagnoseLatestLocalProjectSource } from '../repositories/local-project-onboarding';
 import { resolveEphemeralWorkspaceTarget } from '../repositories/ephemeral-workspace';
 import type { ResolvedExecutionIdentity } from '../../runtime/control-plane/execution/execution-identity';
-import { readExecutionSession } from '../../runtime/control-plane/execution/session-store';
+import { assertNoBoundExecutionSessionMutation, resolveClaimedRepositoryWorkId, resolveExplicitClaimedRepositoryWork, type RepositoryWorkAttributionCaller } from '../../runtime/control-plane/execution/repository-work-attribution';
 import { getWorkContract } from '../../runtime/control-plane/facade/work-contract-store';
 import { assertWorkPathsWithinScope } from '../../runtime/control-plane/execution/work-path-scope';
-import { getControllerSession, listControllerSessions } from '../../runtime/control-plane/facade/controller-session-store';
 import { isTerminalWorkContractStatus } from '../../runtime/control-plane/facade/types';
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../repositories/command-executor';
 import { withControllerLock } from '../repositories/locks';
@@ -59,7 +58,7 @@ import { normalizeRepositoryCommand } from '../repositories/command-normalizatio
 import { readRepositoryRange } from '../repository/inspector';
 import { getMcpPolicy } from './policy';
 import { redactMcpText } from './redaction';
-import type { CallToolResult, McpToolDefinition } from './tools';
+import type { CallToolResult, McpToolDefinition } from './tool-contract';
 import {
   boundUtf8,
   compactCommandOutput,
@@ -289,87 +288,7 @@ function withResponseMeta(payload: Record<string, unknown>, startedAt: number): 
   return response;
 }
 
-export interface RepositoryToolCallerContext {
-  sessionId?: string;
-  principalId?: string;
-  controllerInstanceId?: string;
-}
-
-function claimedExplicitWork(
-  controllerHome: string,
-  repoId: string,
-  caller: RepositoryToolCallerContext | undefined,
-  requestedWorkId: string,
-) {
-  if (!caller?.principalId?.trim()) return undefined;
-  const work = getWorkContract({ controllerHome, repoId }, requestedWorkId);
-  if (!work || isTerminalWorkContractStatus(work.status)) throw new Error(`WORK_ATTRIBUTION_INVALID: ${requestedWorkId}`);
-  const owner = getControllerSession({ controllerHome, repoId }, requestedWorkId);
-  if (!owner) throw new Error(`WORK_CONTROLLER_CLAIM_REQUIRED: ${requestedWorkId}`);
-  if ((owner.principalId?.trim() || owner.controllerId) !== caller.principalId.trim()) throw new Error(`WORK_CONTROLLER_OWNERSHIP_MISMATCH: ${requestedWorkId}`);
-  return work;
-}
-
-function assertNoBoundExecutionSessionMutation(
-  controllerHome: string,
-  repository: ReturnType<typeof resolveRepositorySelection>,
-  caller?: RepositoryToolCallerContext,
-): void {
-  if (!caller?.principalId?.trim() || !caller.sessionId?.trim()) return;
-  const executionSession = readExecutionSession(controllerHome, {
-    sessionId: caller.sessionId,
-    principalId: caller.principalId,
-    controllerInstanceId: caller.controllerInstanceId,
-  });
-  const workId = executionSession?.activeWorkId?.trim();
-  if (!workId || executionSession?.activeRepositoryId !== repository.repoId) return;
-  const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
-  if (!work) throw new Error(`WORK_ATTRIBUTION_INVALID: ${workId}`);
-  if (isTerminalWorkContractStatus(work.status)) {
-    throw new Error(`WORK_ATTRIBUTION_TERMINAL: ${work.workId}:${work.status}`);
-  }
-  throw new Error(`WORK_ATTRIBUTION_REQUIRED: ${work.workId}; active execution session mutations must pass work_id explicitly`);
-}
-
-function claimedSessionWorkId(
-  controllerHome: string,
-  repository: ReturnType<typeof resolveRepositorySelection>,
-  caller?: RepositoryToolCallerContext,
-  explicitWorkId?: unknown,
-): string | undefined {
-  const requestedWorkId = typeof explicitWorkId === 'string' ? explicitWorkId.trim() : '';
-  if (requestedWorkId) {
-    const work = claimedExplicitWork(controllerHome, repository.repoId, caller, requestedWorkId);
-    if (!work) return undefined;
-    if (work.checkoutId && work.checkoutId !== repository.activeCheckoutId) throw new Error(`WORK_CHECKOUT_MISMATCH: ${requestedWorkId}:${repository.activeCheckoutId}`);
-    return requestedWorkId;
-  }
-  if (!caller?.principalId?.trim()) return undefined;
-  if (caller.sessionId?.trim()) {
-    const executionSession = readExecutionSession(controllerHome, {
-      sessionId: caller.sessionId,
-      principalId: caller.principalId,
-      controllerInstanceId: caller.controllerInstanceId,
-    });
-    const workId = executionSession?.activeWorkId?.trim();
-    if (workId && executionSession?.activeRepositoryId === repository.repoId && (!executionSession.activeCheckoutId || executionSession.activeCheckoutId === repository.activeCheckoutId)) {
-      const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
-      if (work && isTerminalWorkContractStatus(work.status)) {
-        throw new Error(`WORK_ATTRIBUTION_TERMINAL: ${work.workId}:${work.status}`);
-      }
-      const owner = getControllerSession({ controllerHome, repoId: repository.repoId }, workId);
-      if (work && owner?.sessionId === caller.sessionId && (owner.principalId?.trim() || owner.controllerId) === caller.principalId.trim()) return workId;
-    }
-  }
-  const principal = caller.principalId.trim();
-  const candidates = listControllerSessions({ controllerHome, repoId: repository.repoId })
-    .filter((owner) => (owner.principalId?.trim() || owner.controllerId) === principal)
-    .map((owner) => ({ owner, work: getWorkContract({ controllerHome, repoId: repository.repoId }, owner.workId) }))
-    .filter((entry): entry is { owner: ReturnType<typeof listControllerSessions>[number]; work: NonNullable<ReturnType<typeof getWorkContract>> } => Boolean(entry.work && !isTerminalWorkContractStatus(entry.work.status) && (!entry.work.checkoutId || entry.work.checkoutId === repository.activeCheckoutId)));
-  if (candidates.length === 1) return candidates[0].work.workId;
-  if (candidates.length > 1) throw new Error(`WORK_ATTRIBUTION_AMBIGUOUS: principal ${principal} owns ${candidates.length} active Works on checkout ${repository.activeCheckoutId}`);
-  return undefined;
-}
+export type RepositoryToolCallerContext = RepositoryWorkAttributionCaller;
 
 export function claimedSessionEditBinding(
   controllerHome: string,
@@ -377,7 +296,7 @@ export function claimedSessionEditBinding(
   caller?: RepositoryToolCallerContext,
   explicitWorkId?: unknown,
 ): EditSessionBinding | undefined {
-  const workId = claimedSessionWorkId(controllerHome, repository, caller, explicitWorkId);
+  const workId = resolveClaimedRepositoryWorkId(controllerHome, repository, caller, explicitWorkId);
   if (!workId || !caller?.principalId?.trim()) return undefined;
   const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
   if (!work) return undefined;
@@ -425,7 +344,7 @@ function resolveRepositorySelectionForClaimedWork(
     allowSoleRepository: true,
   });
   if (!explicitWorkId || checkoutId) return repository;
-  const work = claimedExplicitWork(controllerHome, repository.repoId, caller, explicitWorkId);
+  const work = resolveExplicitClaimedRepositoryWork(controllerHome, repository, caller, explicitWorkId);
   if (!work?.checkoutId || work.checkoutId === repository.activeCheckoutId) return repository;
   return resolveRepositorySelection({
     repoId: repository.repoId,
@@ -533,7 +452,7 @@ function resolveRepositoryCommandTarget(
   const repository = resolveRepositorySelectionForClaimedWork(controllerHome, args, repoIdValue, caller);
   const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
   const workId = explicitWorkId
-    ? claimedSessionWorkId(controllerHome, repository, caller, explicitWorkId)
+    ? resolveClaimedRepositoryWorkId(controllerHome, repository, caller, explicitWorkId)
     : undefined;
   return {
     repository,

@@ -7,7 +7,7 @@ import type {
   SemanticNavigationOutcome,
   SemanticNavigationProvider,
   SemanticNavigationRequest,
-} from './semantic-navigation';
+} from './semantic-navigation-contract';
 
 export interface GenericLspProviderDescriptor {
   id: string;

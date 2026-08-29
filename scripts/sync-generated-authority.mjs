@@ -54,34 +54,79 @@ function replaceExact(text, before, after, label) {
   return `${text.slice(0, first)}${after}${text.slice(first + before.length)}`;
 }
 
-function projectHelper(name, source) {
-  if (name === 'check-architecture-sync.sh') {
-    const block = `if [[ -f "docs/architecture/current/README.md" ]]; then\n  if [[ ! -f "docs/architecture/CURRENT.md" ]]; then\n    echo "[ArchitectureSync] architecture baseline failed: missing required file docs/architecture/CURRENT.md" >&2\n    exit 1\n  fi\n\n  if ! grep -Fq "Runtime Authority" "docs/architecture/CURRENT.md"; then\n    echo "[ArchitectureSync] architecture baseline failed: docs/architecture/CURRENT.md must contain: Runtime Authority" >&2\n    exit 1\n  fi\n\n  if ! grep -Fq "Not Runtime Authority" "docs/architecture/current/README.md"; then\n    echo "[ArchitectureSync] architecture baseline failed: docs/architecture/current/README.md must contain: Not Runtime Authority" >&2\n    exit 1\n  fi\nfi\n\n`;
-    return replaceExact(source, block, '', `${name}: self-host architecture baseline`);
-  }
-  if (name === 'ensure-task-workflow.sh' || name === 'plan-to-todo.sh') {
-    return replaceExact(source, '    - bun run typecheck\n', '    - bun run check:type\n', `${name}: downstream typecheck command`);
-  }
-  if (name === 'migrate-project-template.sh') {
-    const block = `#\n# The self-host repository invokes this script directly, so delegating to a\n# discovered copy of this same filename used to recurse. Installed helper\n# copies use an explicit source root when one is supplied, otherwise the\n# installed \`forge\` CLI.\n`;
-    return replaceExact(source, block, '', `${name}: self-host recursion note`);
-  }
-  if (name === 'workflow-contract.ts') {
-    return replaceExact(
-      source,
-      '  return contract.helpers.runtimeDirectory ?? contract.helpers.compatibilityDirectory ?? "scripts";\n',
-      '  return contract.helpers.dir ?? "scripts";\n',
-      `${name}: packaged compatibility helper directory`,
-    );
-  }
-  return source;
-}
-
 function projectClaudeTemplate(name, source) {
   if (name === 'contract.template.md') {
     return replaceExact(source, '    - bun run typecheck\n', '    - bun run check:type\n', `${name}: downstream typecheck command`);
   }
   return source;
+}
+
+const PACKAGE_VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
+
+function referenceConfigStub(name) {
+  const docId = name.replace(/\.md$/, '');
+  return `<!-- forge: reference-config-stub v1 -->
+# forge Reference: ${docId}
+
+> **Runtime Docs**: user-level forge reference
+> **Doc ID**: ${docId}
+> **Version**: ${PACKAGE_VERSION}
+> **Source Command**: \`forge docs path ${docId}\`
+
+This repo keeps workflow facts and runtime artifacts locally under \`.ai/\`.
+The full generic runtime guide is supplied by the installed forge
+package/user-level runtime so each repository does not need to refresh a full
+copy of shared documentation.
+
+Use:
+
+\`\`\`bash
+forge docs path ${docId}
+forge docs show ${docId}
+\`\`\`
+`;
+}
+
+function shellCompatibilityWrapper(name) {
+  return `#!/bin/bash\nset -euo pipefail\nSCRIPT_DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)"\nexec "$SCRIPT_DIR/lib/run-forge-helper.sh" "${name}" "$@"\n`;
+}
+
+const MODULE_HELPERS = new Set([
+  'check-skill-version.ts',
+  'workflow-contract.ts',
+  'inspect-project-state.ts',
+  'migrate-workflow-docs.ts',
+]);
+
+function typescriptCompatibilityWrapper(name) {
+  const reexport = MODULE_HELPERS.has(name)
+    ? `export * from "../assets/templates/helpers/${name.replace(/\.ts$/, '')}";\n`
+    : '';
+  return `#!/usr/bin/env bun\n${reexport}import { runTrackedForgeHelper } from "./lib/run-forge-helper";\n\nif (import.meta.main) runTrackedForgeHelper("${name}");\n`;
+}
+
+function syncGeneratedText(targetRel, expected, expectedMode = 0o755) {
+  const targetPath = join(ROOT, targetRel);
+  const actual = readFileSync(targetPath, 'utf8');
+  const actualMode = statSync(targetPath).mode & 0o777;
+  const contentDrift = actual !== expected;
+  const modeDrift = actualMode !== expectedMode;
+  if (!contentDrift && !modeDrift) return false;
+  if (CHECK_ONLY) {
+    const reasons = [contentDrift ? 'content' : '', modeDrift ? `mode:${actualMode.toString(8)}!=${expectedMode.toString(8)}` : ''].filter(Boolean).join(',');
+    console.error(`[generated-authority] drift(${reasons}): ${targetRel} != generated compatibility wrapper`);
+    return true;
+  }
+  if (contentDrift) {
+    const temporary = `${targetPath}.tmp-${process.pid}`;
+    writeFileSync(temporary, expected);
+    chmodSync(temporary, expectedMode);
+    renameSync(temporary, targetPath);
+  } else {
+    chmodSync(targetPath, expectedMode);
+  }
+  console.log(`[generated-authority] updated ${targetRel} compatibility wrapper`);
+  return true;
 }
 
 function syncText(sourceRel, targetRel, transform = (value) => value) {
@@ -114,10 +159,13 @@ function syncText(sourceRel, targetRel, transform = (value) => value) {
 
 let drift = false;
 for (const name of HELPER_FILES) {
-  drift = syncText(`scripts/${name}`, `assets/templates/helpers/${name}`, (source) => projectHelper(name, source)) || drift;
+  const expected = name.endsWith('.sh')
+    ? shellCompatibilityWrapper(name)
+    : typescriptCompatibilityWrapper(name);
+  drift = syncGeneratedText(`scripts/${name}`, expected) || drift;
 }
 for (const name of REFERENCE_CONFIG_FILES) {
-  drift = syncText(`docs/reference-configs/${name}`, `assets/reference-configs/${name}`) || drift;
+  drift = syncGeneratedText(`docs/reference-configs/${name}`, referenceConfigStub(name), 0o644) || drift;
 }
 for (const name of CLAUDE_TEMPLATE_FILES) {
   drift = syncText(`.claude/templates/${name}`, `assets/templates/${name}`, (source) => projectClaudeTemplate(name, source)) || drift;

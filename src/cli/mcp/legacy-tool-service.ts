@@ -1,4 +1,5 @@
-import type { CallToolResult as SdkCallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult, McpToolDefinition } from './tool-contract';
+export type { CallToolResult, McpToolDefinition } from './tool-contract';
 import { createHash } from "crypto";
 import {
   existsSync,
@@ -150,6 +151,11 @@ import { hashMcpInput, tryWriteMcpAuditEntry } from "./audit";
 import { loadMcpRuntimeState } from "./auth";
 import { resolveLocalBridgeSurface, summarizeRecentJobs } from "../../runtime/shared/local-bridge-surface";
 import { resolveRepoPreferredControllerHome } from "../repositories/controller-home";
+import { resolveRepositorySelection } from '../repositories/registry';
+import { executionIdentityForRepository } from '../../runtime/control-plane/execution/execution-identity';
+import { runPersistedCheckViaProcessRuntime } from '../../runtime/gateway/mcp/persisted-check-process';
+import { getProcessRecord } from '../../runtime/execution/process-runtime/store';
+import { processCheckCompletionReceipt } from '../../runtime/execution/process-runtime/check-receipt';
 import { normalizeMcpRelativePath, resolveMcpPath } from "./paths";
 import { currentGitBranch, isForgeAdopted } from "./repo";
 import { repositoryToolNames } from "./repository-tools";
@@ -174,16 +180,6 @@ export interface McpToolContext {
   signal?: AbortSignal;
 }
 
-export interface McpToolDefinition {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-  annotations?: Record<string, unknown>;
-}
-
-export type CallToolResult = Omit<SdkCallToolResult, "content"> & {
-  content: Array<{ type: "text"; text: string }>;
-};
 
 const EMPTY_SCHEMA = { type: "object", additionalProperties: false };
 
@@ -4318,11 +4314,6 @@ export async function callMcpTool(
         const checkIds = normalizedChecks.validCheckIds;
         const checkResults: TaskVerification['checkResults'] = [];
         if (checkIds.length > 0) {
-          const { resolveRepositorySelection } = await import('../repositories/registry');
-          const { executionIdentityForRepository } = await import('../../runtime/control-plane/execution/execution-identity');
-          const { runPersistedCheckViaProcessRuntime } = await import('../../runtime/gateway/mcp/persisted-check-process');
-          const { getProcessRecord } = await import('../../runtime/execution/process-runtime/store');
-          const { processCheckCompletionReceipt } = await import('../../runtime/execution/process-runtime/check-receipt');
           const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
           const repository = resolveRepositorySelection({
             explicitPath: ctx.repoRoot,

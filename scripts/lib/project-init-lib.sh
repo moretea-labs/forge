@@ -1055,7 +1055,9 @@ pi_install_helpers() {
   fi
 
   if [[ "$mode" != "apply" ]]; then
-    if [[ "$source_repo_target" -eq 1 || "$(pi_repo_pins_helper_source "$target_dir" && printf yes || true)" == "yes" ]]; then
+    if [[ "$source_repo_target" -eq 1 ]]; then
+      echo "[dry-run] preserve tracked source helper compatibility surfaces in $scripts_dir"
+    elif [[ "$(pi_repo_pins_helper_source "$target_dir" && printf yes || true)" == "yes" ]]; then
       echo "[dry-run] install source helpers into $scripts_dir"
     else
       echo "[dry-run] install helper compatibility wrappers in $scripts_dir; package runtime dispatches through forge run"
@@ -1083,7 +1085,10 @@ pi_install_helpers() {
           fi
         fi
         if [[ "$source_repo_target" -eq 1 ]]; then
-          cp "$helpers_dir/$helper_name" "$scripts_dir/$helper_name"
+          # Self-host source helpers are tracked compatibility surfaces. Their
+          # implementation authority lives in assets/templates/helpers; never
+          # copy the full runtime implementation back into scripts/.
+          continue
         elif pi_repo_pins_helper_source "$target_dir"; then
           cp "$helpers_dir/$helper_name" "$runtime_dir/$helper_name"
           pi_normalize_installed_helper "$runtime_dir/$helper_name"

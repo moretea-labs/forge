@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { readJsonFile, sanitizeFileComponent } from '../../shared/json-files';
-import type { ProcessCheckExecutionIdentity } from '../../execution/process-runtime/types';
+import type { ProcessCheckExecutionIdentity } from '../../evidence/process-check-execution';
 import { listControlPlaneRecords, mutateControlPlaneRecord, readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
 
 export const WORK_HANDLE_STATES = [

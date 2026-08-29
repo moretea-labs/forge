@@ -1,8 +1,8 @@
 import { createHash } from 'crypto';
 import { getEditSession, listEditSessions, type EditSession } from '../../../cli/editing/edit-session';
 import { runProcess } from '../../../effects/process-runner';
-import { completeRequirementFromWork } from '../persistence/requirement-store';
-import { appendWorkEvidence, getWorkContract, recordWorkCompletionReceipt, updateWorkContract } from '../facade/work-contract-store';
+import { getWorkContract, updateWorkContract } from '../facade/work-contract-store';
+import { completeWorkWithReceipt } from './work-completion-authority';
 import { isDirectEditWorkCompletionReceipt, isTerminalWorkContractStatus, type DirectEditWorkCompletionReceipt, type WorkReconciliationRecord } from '../facade/types';
 import { historicalVerificationEvidenceAtRevision } from './verification-evidence';
 import { readWorkHandle } from './work-handle-store';
@@ -150,7 +150,7 @@ export function reconcileFinalizedDirectEditWorksAfterCommit(input: {
       verifiedAt: session.verifiedAt ?? session.finalizedAt ?? recordedAt,
       recordedAt,
     };
-    recordWorkCompletionReceipt(
+    completeWorkWithReceipt(
       { controllerHome: input.controllerHome, repoId: input.repoId },
       session.workId,
       receipt,
@@ -327,28 +327,12 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
     verifiedAt,
     recordedAt,
   };
-  const recorded = recordWorkCompletionReceipt(
+  completeWorkWithReceipt(
     { controllerHome: input.controllerHome, repoId: input.repoId },
     input.workId,
     receipt,
     'completed_changed',
     'repository_change',
   );
-  if (recorded.requirementId) {
-    try {
-      completeRequirementFromWork({ controllerHome: input.controllerHome }, { requirementId: recorded.requirementId, work: recorded });
-    } catch (error) {
-      try {
-        appendWorkEvidence({ controllerHome: input.controllerHome, repoId: input.repoId }, input.workId, {
-          title: 'requirement completion projection pending',
-          summary: `Work completion remains authoritative; Requirement projection could not be applied: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2_000),
-          detailLevel: 'summary',
-        });
-      } catch {
-        // Reconciliation already recorded the terminal receipt. A diagnostic
-        // write failure cannot make that completed Work non-terminal again.
-      }
-    }
-  }
   return { workId: input.workId, reconciliation, receipt };
 }

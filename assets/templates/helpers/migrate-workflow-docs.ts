@@ -403,11 +403,13 @@ function renderText(summary: MigrationSummary): string {
   return lines.join("\n");
 }
 
-const { repo, mode, format } = parseArgs(process.argv.slice(2));
-const summary = migrate(repo, mode);
+if (import.meta.main) {
+  const { repo, mode, format } = parseArgs(process.argv.slice(2));
+  const summary = migrate(repo, mode);
 
-if (format === "json") {
-  console.log(JSON.stringify(summary, null, 2));
-} else {
-  console.log(renderText(summary));
+  if (format === "json") {
+    console.log(JSON.stringify(summary, null, 2));
+  } else {
+    console.log(renderText(summary));
+  }
 }

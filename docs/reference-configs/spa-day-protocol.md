@@ -1,14 +1,19 @@
-# Spa Day Protocol
+<!-- forge: reference-config-stub v1 -->
+# forge Reference: spa-day-protocol
 
-> Externalized: full runbook lives in default brain.
+> **Runtime Docs**: user-level forge reference
+> **Doc ID**: spa-day-protocol
+> **Version**: 1.7.0
+> **Source Command**: `forge docs path spa-day-protocol`
 
-## Default Brain
+This repo keeps workflow facts and runtime artifacts locally under `.ai/`.
+The full generic runtime guide is supplied by the installed forge
+package/user-level runtime so each repository does not need to refresh a full
+copy of shared documentation.
 
-- File vault: `brain/forge/runbooks/runbook-agentic-spa-day-protocol.md`
-- gbrain slug: `runbooks/runbook-agentic-spa-day-protocol`
+Use:
 
-## Repo Role
-
-This file is only a pointer. Use the external runbook for recurring rule
-consolidation, docs pruning, lesson graduation, and contract hygiene cadence.
-
+```bash
+forge docs path spa-day-protocol
+forge docs show spa-day-protocol
+```

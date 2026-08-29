@@ -60,7 +60,7 @@ function tmpRepo(fn: (cwd: string) => void): void {
       "architecture-event.ts",
       "capability-resolver.ts",
     ]) {
-      copyFileSync(join(ROOT, "scripts", file), join(cwd, "scripts", file));
+      copyFileSync(join(ROOT, "assets/templates/helpers", file), join(cwd, "scripts", file));
     }
     chmodSync(join(cwd, "scripts/check-architecture-sync.sh"), 0o755);
     chmodSync(join(cwd, "scripts/architecture-queue.sh"), 0o755);

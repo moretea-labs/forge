@@ -1,4 +1,4 @@
-import type { GitHubStatus } from "../github/github";
+import type { GitHubStatus } from "../github/contracts";
 import type { McpAgentRunnerName } from "../mcp/types";
 import type { ControllerAgent, ControllerTask } from "../controller/types";
 

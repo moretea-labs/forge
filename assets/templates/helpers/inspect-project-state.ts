@@ -270,11 +270,13 @@ function renderText(result: InspectionResult): string {
   return lines.join("\n");
 }
 
-const { repo, format } = parseArgs(process.argv.slice(2));
-const result = inspectRepo(repo);
+if (import.meta.main) {
+  const { repo, format } = parseArgs(process.argv.slice(2));
+  const result = inspectRepo(repo);
 
-if (format === "text") {
-  console.log(renderText(result));
-} else {
-  console.log(JSON.stringify(result, null, 2));
+  if (format === "text") {
+    console.log(renderText(result));
+  } else {
+    console.log(JSON.stringify(result, null, 2));
+  }
 }

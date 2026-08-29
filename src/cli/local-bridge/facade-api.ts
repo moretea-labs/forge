@@ -10,7 +10,7 @@ import {
   persistControllerAccessMode,
   resolveControllerAccessState,
 } from '../mcp/access-mode';
-import { listControllerChecks, runControllerCheck } from '../controller/check-runner';
+import { listControllerChecks } from '../controller/check-runner';
 import { createMcpToolContext, type MultiRepositoryMcpToolContext } from '../mcp/multi-repository';
 import { readSchedulerHealthSnapshot } from '../../runtime/control-plane/global-scheduler/scheduler';
 import { observeRuntimeStatus } from '../../runtime/root/status';
@@ -27,7 +27,6 @@ import {
   buildFacadeResult,
   buildSyncOperationDigest,
   classifyUserFacingError,
-  classifyVerificationOutcome,
   continueGoalWorkloop,
   delegateToCodexCerebellum,
   dismissHandoffItem,
@@ -44,7 +43,6 @@ import {
   stopGoalWorkloop,
   summarizeHandoffItem,
   summarizeWorkContract,
-  verifyGoalWorkloop,
   type ExecutionModeSelectionInput,
   type FacadeResult,
   type HandoffItem,
@@ -94,6 +92,7 @@ import type {
   WorkSummaryViewModel,
 } from './console-view-models';
 import { listActiveOccurrences, listSchedules } from '../../runtime/workflow/schedules/store';
+import { executeWorkVerification } from '../../runtime/control-plane/execution/work-verification-service';
 
 export type ConsoleFacadeContext = {
   controllerHome: string;
@@ -1105,51 +1104,24 @@ export function continueConsoleWork(ctx: ConsoleFacadeContext, workId: string, n
   );
 }
 
-export function verifyConsoleWork(
+export async function verifyConsoleWork(
   ctx: ConsoleFacadeContext,
   input: { workId: string; checkId?: string; simulate?: boolean; checkFailed?: boolean; infrastructureFailed?: boolean },
-): FacadeResult {
-  const checks = listControllerChecks(ctx.repository.canonicalRoot);
-  const workloopCtx = {
-    workStore: store(ctx),
-    handoffStore: store(ctx),
-    repoId: ctx.repository.repoId,
-    availableChecks: checks,
-  };
-  const work = getWorkContract(store(ctx), input.workId);
-  const requested = input.checkId || work?.checks[0] || checks[0]?.id || '';
-  const classified = classifyVerificationOutcome({ checkId: requested, available: checks });
-  if (classified.outcome === 'invalid_check_id') {
-    return verifyGoalWorkloop(workloopCtx, { workId: input.workId, checkId: requested });
-  }
-  if (input.simulate) {
-    return verifyGoalWorkloop(workloopCtx, {
-      workId: input.workId,
-      checkId: classified.normalizedCheckId ?? requested,
-      checkFailed: input.checkFailed === true,
-      infrastructureFailed: input.infrastructureFailed === true,
-    });
-  }
-  try {
-    const executed = runControllerCheck(ctx.repository.canonicalRoot, classified.normalizedCheckId!);
-    return verifyGoalWorkloop(workloopCtx, {
-      workId: input.workId,
-      checkId: classified.normalizedCheckId!,
-      infrastructureFailed: executed.timedOut === true,
-      checkFailed: !executed.ok && !executed.timedOut,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const facade = verifyGoalWorkloop(workloopCtx, {
-      workId: input.workId,
-      checkId: classified.normalizedCheckId ?? requested,
-      infrastructureFailed: true,
-    });
-    return {
-      ...facade,
-      warnings: [...facade.warnings, `环境执行检查失败：${message.slice(0, 160)}`],
-    };
-  }
+): Promise<FacadeResult> {
+  const verification = await executeWorkVerification({
+    controllerHome: ctx.controllerHome,
+    repository: ctx.repository,
+    workId: input.workId,
+    checkId: input.checkId,
+    interactiveWaitMs: 0,
+    simulate: input.simulate
+      ? {
+          checkFailed: input.checkFailed === true,
+          infrastructureFailed: input.infrastructureFailed === true,
+        }
+      : undefined,
+  });
+  return verification.facade;
 }
 
 export function finalizeConsoleWork(ctx: ConsoleFacadeContext, workId: string): FacadeResult {
