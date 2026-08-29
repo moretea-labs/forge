@@ -56,7 +56,8 @@ describe('handoff and facade contracts', () => {
   test('exposes effect-only WorkKind semantics without forcing a repository diff', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
-    expect(properties?.work_kind?.enum).toEqual(expect.arrayContaining(['local_effect', 'remote_effect', 'repository_change']));
+    expect(properties?.work_kind?.enum).toEqual(expect.arrayContaining(['local_effect', 'remote_effect', 'repository_change', 'read_only_review']));
+    expect((properties as Record<string, unknown>)?.review_findings).toBeTruthy();
   });
 
   test('classifies terminal handoff statuses', () => {

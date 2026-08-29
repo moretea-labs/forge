@@ -155,7 +155,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     expected_files: { type: 'number' },
     expected_changed_lines: { type: 'number' },
     mode: { type: 'string', enum: ['scale'], description: 'Explicit Scale coordination mode for start. Scale requires a bound approved PlanContract step and uses existing Work/Process/resource-claim authorities; it does not create an agent-swarm lifecycle.' },
-    work_kind: { type: 'string', enum: ['repository_change', 'completed_no_change', 'investigation', 'local_effect', 'remote_effect', 'reconciliation'], description: 'Explicit technical Work evidence shape for operation=start. local_effect/remote_effect represent effect-only execution and do not require a repository diff; completed_no_change/investigation/reconciliation likewise do not imply a source mutation. None of these imply semantic completion; ChatGPT must still explicitly finalize after reviewing evidence.' },
+    work_kind: { type: 'string', enum: ['repository_change', 'completed_no_change', 'read_only_review', 'investigation', 'local_effect', 'remote_effect', 'reconciliation'], description: 'Explicit technical Work evidence shape for operation=start. read_only_review is a recoverable source-frozen review lifecycle: it permits inspected-path/finding persistence without repository edits and only clean-finalizes after unchanged-source proof. local_effect/remote_effect represent effect-only execution; completed_no_change/investigation/reconciliation likewise do not imply a source mutation. None imply semantic completion; ChatGPT must still explicitly finalize after reviewing evidence.' },
     scope_clear: { type: 'boolean' },
     requires_investigation: { type: 'boolean' },
     requires_long_running_checks: { type: 'boolean' },
@@ -178,6 +178,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     initial_likely_paths: { type: 'array', items: { type: 'string' }, description: 'Non-authoritative first-pass discovery candidates. May expand after investigation; allowed_paths remains a policy fence only.' },
     additional_likely_paths: { type: 'array', items: { type: 'string' }, description: 'Non-authoritative candidates discovered after Work start. Valid for continue; does not widen allowed_paths.' },
     inspected_paths: { type: 'array', items: { type: 'string' }, description: 'Paths actually inspected during progressive discovery. Valid for continue; does not widen allowed_paths.' },
+    review_findings: { type: 'array', items: { type: 'string' }, description: 'Concise semantic findings for operation=continue on work_kind=read_only_review. Findings are source-bound durable review evidence and prevent clean completed_no_change finalization until a successor repair/review resolves them.' },
     acceptance_failure_decision: { type: 'string', enum: ['repair', 'rescope'], description: 'Explicit Controller decision for operation=continue after a deterministic valid_fail. Bypasses acceptance-review handoff only for this bounded repair/re-scope decision; never inferred from free text.' },
     forbidden_paths: { type: 'array', items: { type: 'string' } },
     constraints: {

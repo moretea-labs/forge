@@ -100,7 +100,7 @@ export interface GoalWorkloopStartInput {
   planId?: string;
   planStepId?: string;
   /** Explicit technical evidence shape chosen by the semantic Controller. Never inferred from objective/check text. */
-  workKind?: Extract<WorkKind, 'repository_change' | 'completed_no_change' | 'investigation' | 'local_effect' | 'remote_effect' | 'reconciliation'>;
+  workKind?: Extract<WorkKind, 'repository_change' | 'completed_no_change' | 'read_only_review' | 'investigation' | 'local_effect' | 'remote_effect' | 'reconciliation'>;
 }
 
 export interface GoalWorkloopContinueInput {
@@ -111,6 +111,8 @@ export interface GoalWorkloopContinueInput {
   checks?: string[];
   additionalLikelyPaths?: string[];
   inspectedPaths?: string[];
+  /** Concise semantic findings discovered by a first-class read-only review. */
+  reviewFindings?: string[];
   /** Explicit Controller decision after deterministic acceptance failure; never inferred from note text. */
   acceptanceFailureDecision?: 'repair' | 'rescope';
 }
@@ -166,6 +168,7 @@ function handoffIdFor(prefix: string): string {
 }
 
 function workRiskFor(input: GoalWorkloopStartInput): WorkRisk {
+  if (input.workKind === 'read_only_review') return 'readonly';
   const risk = input.modeInput.risk;
   if (input.modeInput.secretAccess === true || input.modeInput.destructive === true) return 'destructive';
   if (input.modeInput.remoteWrite === true) return 'high';
@@ -290,11 +293,32 @@ function evaluateWorkImplementationEvidence(
   };
 }
 
+function evaluateReadOnlyReviewSourceIdentity(
+  work: WorkContract,
+  currentRevision?: string,
+  currentWorkspaceChangedPaths?: readonly string[],
+): { status: 'complete' | 'incomplete'; reasons: string[] } {
+  if (work.workKind !== 'read_only_review') return { status: 'complete', reasons: [] };
+  const reasons: string[] = [];
+  if (!work.baseRevision?.trim()) reasons.push('Read-only review has no frozen base revision.');
+  if (!currentRevision?.trim()) reasons.push('Current source revision is unavailable, so unchanged-source proof is incomplete.');
+  if (work.baseRevision && currentRevision && work.baseRevision !== currentRevision) {
+    reasons.push(`Read-only review source drifted from frozen base ${work.baseRevision} to ${currentRevision}.`);
+  }
+  if (currentWorkspaceChangedPaths === undefined) {
+    reasons.push('Current workspace changed-path proof is unavailable for read-only review.');
+  } else if (currentWorkspaceChangedPaths.length > 0) {
+    reasons.push(`Read-only review workspace is not unchanged: ${[...new Set(currentWorkspaceChangedPaths)].slice(0, 12).join(', ')}.`);
+  }
+  return { status: reasons.length === 0 ? 'complete' : 'incomplete', reasons };
+}
+
 function evaluateWorkCompletionEvidence(
   work: WorkContract,
   currentRevision?: string,
   currentWorkspaceFingerprint?: string,
   workBoundProcessEvidenceIds: readonly string[] = [],
+  currentWorkspaceChangedPaths?: readonly string[],
 ): WorkCompletionEvidenceEvaluation {
   const applicableCheckRefs = work.checkRefs.filter((record) =>
     verificationRecordAppliesToCurrentWorkspace(record, currentRevision, currentWorkspaceFingerprint));
@@ -302,9 +326,27 @@ function evaluateWorkCompletionEvidence(
     applicableCheckRefs.map((record) => ({ checkId: record.checkId, outcome: record.outcome, recordedAt: record.recordedAt })),
   );
   const missingChecks = work.checks.filter((checkId) => !history.validPasses.includes(checkId));
+  const readOnlySourceIdentity = evaluateReadOnlyReviewSourceIdentity(work, currentRevision, currentWorkspaceChangedPaths);
+  const readOnlyEvidence = work.readOnlyReviewEvidence;
+  const readOnlyEvidenceMatchesCurrentSource = Boolean(
+    work.workKind === 'read_only_review'
+    && readOnlyEvidence
+    && currentRevision
+    && readOnlyEvidence.sourceRevision === currentRevision
+    && (readOnlyEvidence.workspaceFingerprint === undefined
+      || currentWorkspaceFingerprint === undefined
+      || readOnlyEvidence.workspaceFingerprint === currentWorkspaceFingerprint),
+  );
+  const cleanReadOnlyReviewEvidence = Boolean(
+    readOnlyEvidenceMatchesCurrentSource
+    && readOnlySourceIdentity.status === 'complete'
+    && (readOnlyEvidence?.inspectedPaths.length ?? 0) > 0
+    && (readOnlyEvidence?.findings.length ?? 0) === 0,
+  );
   const durableResultEvidence = work.evidenceRefs.some((evidence) => Boolean(evidence.evidenceId || evidence.artifactId))
     || applicableCheckRefs.some((record) => isAuthoritativeCurrentWorkVerification(work, record, currentRevision))
-    || workBoundProcessEvidenceIds.length > 0;
+    || workBoundProcessEvidenceIds.length > 0
+    || cleanReadOnlyReviewEvidence;
   const reasons: string[] = [];
 
   if (history.acceptanceFailures.length > 0) {
@@ -320,6 +362,17 @@ function evaluateWorkCompletionEvidence(
   if (missingChecks.length > 0) {
     reasons.push(`Declared checks are missing valid_pass evidence: ${missingChecks.join(', ')}.`);
   }
+  if (work.workKind === 'read_only_review') {
+    reasons.push(...readOnlySourceIdentity.reasons);
+    if (!readOnlyEvidence || readOnlyEvidence.inspectedPaths.length === 0) {
+      reasons.push('Read-only review has no persisted inspected-path evidence.');
+    } else if (!readOnlyEvidenceMatchesCurrentSource) {
+      reasons.push('Persisted read-only review evidence is stale for the current source/workspace identity.');
+    }
+    if ((readOnlyEvidence?.findings.length ?? 0) > 0) {
+      reasons.push(`Read-only review has unresolved semantic findings (${readOnlyEvidence!.findings.length}); clean no-change completion is not allowed.`);
+    }
+  }
   if (work.checks.length === 0 && !durableResultEvidence) {
     const staleWorkVerification = work.checkRefs.some((record) =>
       Boolean(record.receipt)
@@ -332,7 +385,8 @@ function evaluateWorkCompletionEvidence(
   const complete = history.infrastructureIssues.length === 0
     && history.invalidCheckIds.length === 0
     && missingChecks.length === 0
-    && (work.checks.length > 0 || durableResultEvidence);
+    && (work.checks.length > 0 || durableResultEvidence)
+    && (work.workKind !== 'read_only_review' || cleanReadOnlyReviewEvidence);
   return {
     status: complete ? 'complete' : 'incomplete',
     history,
@@ -369,13 +423,55 @@ export function routeWorkStart(
   const strategyConflictRequiresApproval = input.constraints?.architectureStrategyChange === true
     || input.constraints?.conflictsWithThinHarnessPolicy === true
     || input.constraints?.changesDefaultExecutionStrategy === true;
+  const relatedLifecycleSource = input.relatedWorkId ? getWorkContract(ctx.workStore, input.relatedWorkId) : undefined;
+  const inheritedReadOnlyReview = Boolean(
+    input.workKind === undefined
+    && input.workRelation === 'new_goal'
+    && relatedLifecycleSource?.workKind === 'read_only_review'
+    && (relatedLifecycleSource.status === 'cancelled' || relatedLifecycleSource.status === 'completed' || relatedLifecycleSource.status === 'failed'),
+  );
+  if (
+    inheritedReadOnlyReview
+    && relatedLifecycleSource?.baseRevision
+    && ctx.sourceRevision
+    && relatedLifecycleSource.baseRevision !== ctx.sourceRevision
+  ) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `READ_ONLY_REVIEW_REPLACEMENT_SOURCE_DRIFT: replacement source ${ctx.sourceRevision} does not match frozen review base ${relatedLifecycleSource.baseRevision}.`,
+      data: { executionStarted: false, workContractCreated: false, relatedWorkId: relatedLifecycleSource.workId, sourceDrift: true },
+    });
+  }
+  const requestedWorkKind = input.workKind ?? (inheritedReadOnlyReview ? 'read_only_review' : undefined);
+  const typedReadOnlyReviewRequested = requestedWorkKind === undefined
+    && (input.modeInput.mutation === false || (input.modeInput.mutation === undefined && input.modeInput.risk === 'readonly'))
+    && input.modeInput.requiresInvestigation === true
+    && input.modeInput.requiresRecovery === true;
+  const effectiveWorkKind = requestedWorkKind ?? (typedReadOnlyReviewRequested ? 'read_only_review' : undefined);
+  const readOnlyReviewRequested = effectiveWorkKind === 'read_only_review';
+  const readOnlyMutationConflict = readOnlyReviewRequested && (
+    input.modeInput.mutation === true
+    || (input.modeInput.expectedFiles ?? 0) > 0
+    || (input.modeInput.expectedChangedLines ?? 0) > 0
+    || input.modeInput.requiresExternalEffect === true
+    || input.modeInput.remoteWrite === true
+    || input.modeInput.destructive === true
+  );
+  if (readOnlyMutationConflict) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: 'READ_ONLY_REVIEW_MUTATION_CONFLICT: read_only_review cannot request repository mutation, external effects, remote writes, or destructive execution.',
+      data: { executionStarted: false, workContractCreated: false, workKind: effectiveWorkKind },
+    });
+  }
   const effectiveModeInput: ExecutionModeSelectionInput = {
     ...input.modeInput,
     objective: input.objective,
     knownPaths: input.allowedPaths,
     workspacePlacement: placementConstraint.workspaceMode,
     directMainProhibited: placementConstraint.directMainProhibited,
-    mutation: input.modeInput.mutation ?? input.modeInput.risk !== 'readonly',
+    mutation: readOnlyReviewRequested ? false : input.modeInput.mutation ?? input.modeInput.risk !== 'readonly',
+    risk: readOnlyReviewRequested ? 'readonly' : input.modeInput.risk,
     approvalConfirmed: input.approvalConfirmed === true,
     requiresUserApproval: input.approvalConfirmed === true
       ? false
@@ -399,7 +495,7 @@ export function routeWorkStart(
     : selected;
   const evaluateAccessPolicy = (selected: ReturnType<typeof selectExecutionMode>) => evaluatePolicyGate({
     capabilityId: selected.mode === 'direct_control' ? 'repository.direct_edit' : selected.mode === 'goal_workloop' ? 'controller.goal_workloop' : 'controller.handoff_inbox',
-    risk: input.modeInput.risk
+    risk: effectiveModeInput.risk
       ?? (input.modeInput.secretAccess === true ? 'raw_secret_config'
         : input.modeInput.destructive === true ? 'destructive'
           : input.modeInput.remoteWrite === true ? 'remote_write'
@@ -613,7 +709,12 @@ export function routeWorkStart(
     });
   }
 
-  return startGoalWorkloop(ctx, { ...input, constraints: canonicalConstraints }, policy, 'goal_workloop', mode.routeDecision);
+  return startGoalWorkloop(ctx, {
+    ...input,
+    constraints: canonicalConstraints,
+    modeInput: effectiveModeInput,
+    workKind: effectiveWorkKind,
+  }, policy, 'goal_workloop', mode.routeDecision);
 }
 
 export function startGoalWorkloop(
@@ -916,11 +1017,17 @@ export function startGoalWorkloop(
   const repositoryChangeIntent = input.workKind === 'repository_change'
     || (input.modeInput.expectedFiles ?? 0) > 0
     || (input.modeInput.expectedChangedLines ?? 0) > 0;
+  const typedRecoverableReadOnlyReview = input.workKind === undefined
+    && input.modeInput.mutation === false
+    && input.modeInput.requiresInvestigation === true
+    && input.modeInput.requiresRecovery === true;
   const resolvedWorkKind = input.workKind ?? (
-    input.modeInput.requiresExternalEffect === true
-    && !repositoryChangeIntent
-      ? (input.modeInput.remoteWrite === true ? 'remote_effect' : 'local_effect')
-      : 'repository_change'
+    typedRecoverableReadOnlyReview
+      ? 'read_only_review'
+      : input.modeInput.requiresExternalEffect === true
+        && !repositoryChangeIntent
+        ? (input.modeInput.remoteWrite === true ? 'remote_effect' : 'local_effect')
+        : 'repository_change'
   );
   const remoteDeliveryRequired = resolvedWorkKind === 'repository_change'
     && input.modeInput.requiresExternalEffect === true
@@ -1083,6 +1190,24 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
+  if ((input.reviewFindings?.length ?? 0) > 0 && work.workKind !== 'read_only_review') {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `READ_ONLY_REVIEW_FINDINGS_KIND_REQUIRED: ${work.workId} is ${work.workKind}, not read_only_review.`,
+      data: { work: summarizeWorkContract(work), reviewFindingsRecorded: false },
+    });
+  }
+  if (work.workKind === 'read_only_review') {
+    const sourceIdentity = evaluateReadOnlyReviewSourceIdentity(work, ctx.sourceRevision, ctx.workspaceChangedPaths);
+    if (sourceIdentity.status !== 'complete') {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `READ_ONLY_REVIEW_SOURCE_IDENTITY_REQUIRED: ${sourceIdentity.reasons.join(' ')}`,
+        data: { work: summarizeWorkContract(work), sourceIdentityProven: false },
+      });
+    }
+  }
+
   const explicitPolicyScope = input.allowedPaths !== undefined
     || input.forbiddenPaths !== undefined
     || input.checks !== undefined;
@@ -1125,6 +1250,31 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
       inspectedPaths: input.inspectedPaths,
     });
   }
+  if (work.workKind === 'read_only_review' && ((input.inspectedPaths?.length ?? 0) > 0 || input.reviewFindings !== undefined)) {
+    const findings = [...new Set([
+      ...(work.readOnlyReviewEvidence?.findings ?? []),
+      ...(input.reviewFindings ?? []).map((finding) => finding.trim()).filter(Boolean),
+    ])].slice(0, 50);
+    const inspectedPaths = [...new Set(work.scopeEvidence?.inspectedPaths ?? [])].slice(0, 200);
+    work = updateWorkContract(ctx.workStore, work.workId, {
+      readOnlyReviewEvidence: {
+        sourceRevision: ctx.sourceRevision!,
+        ...(ctx.workspaceFingerprint ? { workspaceFingerprint: ctx.workspaceFingerprint } : {}),
+        inspectedPaths,
+        findings,
+        recordedAt: nowIso(ctx),
+      },
+    });
+    for (const finding of input.reviewFindings ?? []) {
+      const summary = finding.trim();
+      if (!summary) continue;
+      work = appendWorkEvidence(ctx.workStore, work.workId, {
+        title: 'read-only review finding',
+        summary: summary.slice(0, 1_500),
+        detailLevel: 'summary',
+      });
+    }
+  }
 
   const currentCheckRefs = work.checkRefs.filter((record) =>
     verificationRecordAppliesToCurrentWorkspace(record, ctx.sourceRevision, ctx.workspaceFingerprint));
@@ -1157,7 +1307,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
         acceptanceFailures: history.acceptanceFailures,
         infrastructureIssues: history.infrastructureIssues,
         backgroundCompleted: false,
-        nextStep: 'execute',
+        nextStep: work.workKind === 'read_only_review' ? 'review' : 'execute',
         acceptanceFailureDecision: decision,
       },
       evidenceRefs: work.evidenceRefs.slice(0, 5),
@@ -1426,6 +1576,7 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     ctx.sourceRevision,
     ctx.workspaceFingerprint,
     ctx.workBoundProcessEvidenceIds,
+    ctx.workspaceChangedPaths,
   );
   if (completionEvidence.status !== 'complete') {
     const suggested = validateSuggestedNextActions([
@@ -1441,9 +1592,11 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     ]).actions;
     transitionWorkContractPhase(ctx.workStore, work.workId, {
       status: 'running',
-      phase: 'implementation',
+      phase: work.workKind === 'read_only_review' ? 'verification' : 'implementation',
       state: 'active',
-      summary: `Meaningful implementation evidence is still missing: ${completionEvidence.reasons.join(' ')}`,
+      summary: work.workKind === 'read_only_review'
+        ? `Read-only review completion evidence is incomplete: ${completionEvidence.reasons.join(' ')}`
+        : `Meaningful implementation evidence is still missing: ${completionEvidence.reasons.join(' ')}`,
       evidenceRefs: work.evidenceRefs,
     });
     const updated = updateWorkContract(ctx.workStore, work.workId, {
@@ -1482,7 +1635,9 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     status: 'running',
     phase: 'delivery',
     state: 'active',
-    summary: 'Implementation and verification evidence are sufficient; exact delivery and cleanup receipt is next.',
+    summary: work.workKind === 'read_only_review'
+      ? 'Read-only review evidence is source-bound and clean; semantic no-change finalization is next.'
+      : 'Implementation and verification evidence are sufficient; exact delivery and cleanup receipt is next.',
     evidenceRefs: work.evidenceRefs,
   });
   const updated = updateWorkContract(ctx.workStore, work.workId, {
@@ -1705,6 +1860,7 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     ctx.sourceRevision,
     ctx.workspaceFingerprint,
     ctx.workBoundProcessEvidenceIds,
+    ctx.workspaceChangedPaths,
   );
   const history = completionEvidence.history;
 
@@ -1777,6 +1933,50 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
           risk: 'readonly',
         },
       ],
+    });
+  }
+
+  // Read-only review completion is semantic no-change authority, not Git delivery.
+  // The exact source/workspace fence is re-evaluated above at finalize time; only
+  // a clean review with persisted inspected paths and zero findings can close.
+  if (work.workKind === 'read_only_review' && !work.completionReceipt) {
+    const reviewEvidence = work.readOnlyReviewEvidence!;
+    const recordedAt = nowIso(ctx);
+    const completed = recordWorkCompletionReceipt(
+      ctx.workStore,
+      work.workId,
+      {
+        schemaVersion: 1,
+        receiptId: `ROR-WORK-${randomUUID()}`,
+        source: 'read_only_review',
+        workId: work.workId,
+        baseRevision: work.baseRevision!,
+        sourceRevision: ctx.sourceRevision!,
+        ...(ctx.workspaceFingerprint ? { workspaceFingerprint: ctx.workspaceFingerprint } : {}),
+        workspaceChangedPaths: [],
+        inspectedPaths: reviewEvidence.inspectedPaths,
+        findingCount: 0,
+        recordedAt,
+      },
+      'completed_no_change',
+      'read_only_review',
+    );
+    if (completed.planId && completed.planStepId && ctx.planStore) {
+      completePlanStepForWork(ctx.planStore, { planId: completed.planId, stepId: completed.planStepId, work: completed });
+    }
+    return buildFacadeResult({
+      status: 'ok',
+      summary: `Finalize result: clean read-only review completed with no source change for ${work.workId}.`,
+      data: {
+        work: summarizeWorkContract(completed),
+        finalStatus: 'completed',
+        completionOutcome: 'completed_no_change',
+        completionReceipt: completed.completionReceipt,
+        inspectedPathCount: reviewEvidence.inspectedPaths.length,
+        hiddenFailure: false,
+      },
+      evidenceRefs: completed.evidenceRefs.slice(0, 5),
+      suggestedNextActions: [{ label: 'Read controller status', tool: 'rh_status', operation: 'get', risk: 'readonly' }],
     });
   }
 
@@ -2010,6 +2210,7 @@ export function runGoalWorkloop(
         planStepId: typeof args.plan_step_id === 'string' ? args.plan_step_id : undefined,
         workKind: args.work_kind === 'repository_change'
           || args.work_kind === 'completed_no_change'
+          || args.work_kind === 'read_only_review'
           || args.work_kind === 'investigation'
           || args.work_kind === 'local_effect'
           || args.work_kind === 'remote_effect'
@@ -2026,6 +2227,7 @@ export function runGoalWorkloop(
         checks: Array.isArray(args.check_ids) ? args.check_ids.map(String) : undefined,
         additionalLikelyPaths: Array.isArray(args.additional_likely_paths) ? args.additional_likely_paths.map(String) : undefined,
         inspectedPaths: Array.isArray(args.inspected_paths) ? args.inspected_paths.map(String) : undefined,
+        reviewFindings: Array.isArray(args.review_findings) ? args.review_findings.map(String) : undefined,
         acceptanceFailureDecision: args.acceptance_failure_decision === 'repair' || args.acceptance_failure_decision === 'rescope'
           ? args.acceptance_failure_decision
           : undefined,

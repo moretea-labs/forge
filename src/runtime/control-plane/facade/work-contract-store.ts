@@ -32,6 +32,7 @@ import {
   type WorkPhaseEvidenceState,
   type WorkContractStore,
   isDirectEditWorkCompletionReceipt,
+  isReadOnlyReviewCompletionReceipt,
   isRemoteEffectCompletionReceipt,
   isRepositoryCompletionReceipt,
   isTerminalWorkContractStatus,
@@ -294,6 +295,23 @@ function validateWorkSemantics(contract: WorkContract): WorkContract {
       if (!['repository_change', 'completed_no_change'].includes(contract.workKind)) throw new Error('WORK_COMPLETION_RECEIPT_DIRECT_EDIT_KIND_REQUIRED');
       const expectedOutcome = contract.workKind === 'completed_no_change' ? 'completed_no_change' : 'completed_changed';
       if (contract.completionOutcome !== expectedOutcome) throw new Error('WORK_COMPLETION_RECEIPT_DIRECT_EDIT_OUTCOME_REQUIRED');
+    } else if (isReadOnlyReviewCompletionReceipt(receipt)) {
+      if (contract.workKind !== 'read_only_review') throw new Error('WORK_COMPLETION_RECEIPT_READ_ONLY_REVIEW_KIND_REQUIRED');
+      if (contract.completionOutcome !== 'completed_no_change') throw new Error('WORK_COMPLETION_RECEIPT_READ_ONLY_REVIEW_OUTCOME_REQUIRED');
+      if (!receipt.baseRevision.trim() || receipt.baseRevision !== receipt.sourceRevision) throw new Error('WORK_COMPLETION_RECEIPT_READ_ONLY_REVIEW_SOURCE_REQUIRED');
+      if (contract.baseRevision && receipt.baseRevision !== contract.baseRevision) throw new Error('WORK_COMPLETION_RECEIPT_READ_ONLY_REVIEW_BASE_MISMATCH');
+      if (receipt.workspaceChangedPaths.length !== 0) throw new Error('WORK_COMPLETION_RECEIPT_READ_ONLY_REVIEW_WORKSPACE_CHANGED');
+      const reviewEvidence = contract.readOnlyReviewEvidence;
+      if (!reviewEvidence || reviewEvidence.sourceRevision !== receipt.sourceRevision) throw new Error('WORK_COMPLETION_RECEIPT_READ_ONLY_REVIEW_EVIDENCE_REQUIRED');
+      if (reviewEvidence.findings.length !== 0 || receipt.findingCount !== 0 || receipt.inspectedPaths.length === 0) throw new Error('WORK_COMPLETION_RECEIPT_READ_ONLY_REVIEW_CLEAN_SCOPE_REQUIRED');
+      const evidencePaths = [...new Set(reviewEvidence.inspectedPaths)].sort();
+      const receiptPaths = [...new Set(receipt.inspectedPaths)].sort();
+      if (evidencePaths.length !== receiptPaths.length || evidencePaths.some((path, index) => path !== receiptPaths[index])) {
+        throw new Error('WORK_COMPLETION_RECEIPT_READ_ONLY_REVIEW_SCOPE_MISMATCH');
+      }
+      if (reviewEvidence.workspaceFingerprint && receipt.workspaceFingerprint && reviewEvidence.workspaceFingerprint !== receipt.workspaceFingerprint) {
+        throw new Error('WORK_COMPLETION_RECEIPT_READ_ONLY_REVIEW_WORKSPACE_MISMATCH');
+      }
     } else if (isRemoteEffectCompletionReceipt(receipt)) {
       if (contract.workKind !== 'remote_effect') throw new Error('WORK_COMPLETION_RECEIPT_REMOTE_EFFECT_KIND_REQUIRED');
       if (contract.completionOutcome !== 'completed_remote') throw new Error('WORK_COMPLETION_RECEIPT_REMOTE_EFFECT_OUTCOME_REQUIRED');
@@ -331,8 +349,11 @@ function validateWorkSemantics(contract: WorkContract): WorkContract {
   if (outcome === 'completed_changed' && contract.workKind !== 'repository_change') {
     throw new Error('WORK_SEMANTICS_INVALID: completed_changed requires repository_change WorkKind');
   }
-  if (outcome === 'completed_no_change' && contract.workKind !== 'completed_no_change') {
-    throw new Error('WORK_SEMANTICS_INVALID: completed_no_change requires completed_no_change WorkKind');
+  if (outcome === 'completed_no_change' && !['completed_no_change', 'read_only_review'].includes(contract.workKind)) {
+    throw new Error('WORK_SEMANTICS_INVALID: completed_no_change requires completed_no_change or read_only_review WorkKind');
+  }
+  if (outcome === 'completed_no_change' && contract.workKind === 'read_only_review' && contract.completionReceipt?.source !== 'read_only_review') {
+    throw new Error('WORK_SEMANTICS_INVALID: read_only_review completed_no_change requires a read_only_review completion receipt');
   }
   if (outcome === 'completed_local' && contract.workKind !== 'local_effect') {
     throw new Error('WORK_SEMANTICS_INVALID: completed_local requires local_effect WorkKind');
@@ -805,6 +826,8 @@ function wasPausedByRuntimeReconciliation(contract: WorkContract): boolean {
 
 function hasReviewableWorkOutput(contract: WorkContract): boolean {
   if (contract.checkRefs.length > 0 || contract.handoffRefs.length > 0) return true;
+  if ((contract.scopeEvidence?.inspectedPaths.length ?? 0) > 0) return true;
+  if ((contract.readOnlyReviewEvidence?.inspectedPaths.length ?? 0) > 0 || (contract.readOnlyReviewEvidence?.findings.length ?? 0) > 0) return true;
   return contract.evidenceRefs.some((evidence) =>
     Boolean(evidence.artifactId || evidence.evidenceId)
     || !SYSTEM_ONLY_EVIDENCE_TITLES.has(evidence.title));

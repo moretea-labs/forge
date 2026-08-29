@@ -4987,7 +4987,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             && before.worktreeRef?.trim()
             && existsSync(before.worktreeRef),
           );
-          if (before && before.workKind !== 'local_effect' && (!before.completionReceipt || completedCleanupPending)) {
+          if (before && !['local_effect', 'read_only_review'].includes(before.workKind) && (!before.completionReceipt || completedCleanupPending)) {
             try {
               const physical = await finalizeFacadeWorkHandle(ctx, repository, args, 'finalize');
               if (physical?.isError === true) return physical;

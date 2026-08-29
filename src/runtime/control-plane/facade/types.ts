@@ -120,6 +120,7 @@ export const TERMINAL_WORK_CONTRACT_STATUSES: readonly WorkContractStatus[] = [
 export const WORK_KINDS = [
   'repository_change',
   'completed_no_change',
+  'read_only_review',
   'investigation',
   'local_effect',
   'remote_effect',
@@ -136,6 +137,36 @@ export type EvidenceState = (typeof EVIDENCE_STATES)[number];
 
 export const COMPLETION_OUTCOMES = ['completed_changed', 'completed_no_change', 'completed_local', 'completed_remote', 'superseded'] as const;
 export type CompletionOutcome = (typeof COMPLETION_OUTCOMES)[number];
+
+/** Source-bound semantic evidence accumulated by a recoverable read-only review. */
+export interface ReadOnlyReviewEvidence {
+  sourceRevision: string;
+  workspaceFingerprint?: string;
+  inspectedPaths: string[];
+  findings: string[];
+  recordedAt: string;
+}
+
+/**
+ * Terminal authority for a clean read-only review. This deliberately does not
+ * impersonate repository delivery: it proves the reviewed source stayed at the
+ * frozen base revision with no workspace delta and records the bounded review
+ * scope that justified completed_no_change.
+ */
+export interface ReadOnlyReviewCompletionReceipt {
+  schemaVersion: 1;
+  receiptId: string;
+  source: 'read_only_review';
+  workId: string;
+  baseRevision: string;
+  sourceRevision: string;
+  workspaceFingerprint?: string;
+  /** Explicit unchanged-workspace proof captured by the trusted finalizer. Must be empty. */
+  workspaceChangedPaths: string[];
+  inspectedPaths: string[];
+  findingCount: 0;
+  recordedAt: string;
+}
 
 /**
  * Terminal receipt for a bounded Controller-local side effect that is not a
@@ -197,12 +228,21 @@ export interface DirectEditWorkCompletionReceipt {
   recordedAt: string;
 }
 
-export type WorkCompletionReceipt = RepositoryCompletionReceipt | DirectEditWorkCompletionReceipt | LocalEffectCompletionReceipt | RemoteEffectCompletionReceipt;
+export type WorkCompletionReceipt = RepositoryCompletionReceipt | DirectEditWorkCompletionReceipt | ReadOnlyReviewCompletionReceipt | LocalEffectCompletionReceipt | RemoteEffectCompletionReceipt;
 
 export function isRepositoryCompletionReceipt(
   receipt: WorkCompletionReceipt,
 ): receipt is RepositoryCompletionReceipt {
-  return receipt.source !== 'local_effect' && receipt.source !== 'remote_effect' && receipt.source !== 'direct_edit_work';
+  return receipt.source !== 'local_effect'
+    && receipt.source !== 'remote_effect'
+    && receipt.source !== 'direct_edit_work'
+    && receipt.source !== 'read_only_review';
+}
+
+export function isReadOnlyReviewCompletionReceipt(
+  receipt: WorkCompletionReceipt,
+): receipt is ReadOnlyReviewCompletionReceipt {
+  return receipt.source === 'read_only_review';
 }
 
 export function isRemoteEffectCompletionReceipt(
@@ -492,6 +532,8 @@ export interface WorkContract {
     actualChangedPaths: string[];
     recordedAt: string;
   };
+  /** Source-bound semantic findings/scope for first-class recoverable read-only review Work. */
+  readOnlyReviewEvidence?: ReadOnlyReviewEvidence;
   /** Explicit policy fence. This is not semantic completeness evidence. */
   allowedPaths: string[];
   forbiddenPaths: string[];
