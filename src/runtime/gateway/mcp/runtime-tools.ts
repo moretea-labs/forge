@@ -4254,7 +4254,36 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             const workId = String(args.work_id ?? '').trim();
             const identity = authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true });
             const observedOwner = getControllerSession(store, workId);
-            const owner = observedOwner ? bindFacadeControllerOwnership(ctx, store, workId, identity) : undefined;
+            const work = getWorkContract(store, workId);
+            const terminalWork = work ? ['completed', 'failed', 'cancelled'].includes(work.status) : false;
+            const owner = observedOwner
+              ? terminalWork
+                ? (() => {
+                    // A terminal Work cannot be rebound to a replacement MCP transport.
+                    // Authenticate the caller against the observed durable controller epoch
+                    // without mutating it; releaseControllerSessionWithAuthority remains the
+                    // exact claim-generation CAS authority for physical lease release.
+                    const ownerPrincipal = observedOwner.principalId?.trim() || observedOwner.controllerId;
+                    const ownerInstanceId = observedOwner.controllerInstanceId?.trim() || '';
+                    if (observedOwner.controllerId !== identity.controllerId) {
+                      throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workId}`);
+                    }
+                    if (observedOwner.controllerType !== identity.controllerType) {
+                      throw new Error(`WORK_CONTROLLER_TYPE_MISMATCH: ${workId}`);
+                    }
+                    if (ownerPrincipal !== identity.principalId) {
+                      throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${workId}`);
+                    }
+                    if (!ownerInstanceId || ownerInstanceId !== identity.controllerInstanceId) {
+                      throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
+                    }
+                    if (typeof observedOwner.claimGeneration !== 'number' || observedOwner.claimGeneration < 1) {
+                      throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workId}`);
+                    }
+                    return observedOwner;
+                  })()
+                : bindFacadeControllerOwnership(ctx, store, workId, identity)
+              : undefined;
             if (owner) {
               const ownerPrincipal = owner.principalId?.trim() || owner.controllerId;
               const ownerInstanceId = owner.controllerInstanceId?.trim() || '';

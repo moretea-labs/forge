@@ -182,6 +182,23 @@ describe('autonomous continuation lifecycle', () => {
     // Terminal semantic closure must not rewrite or reclaim the physical Work lease.
     expect(getControllerSession(store, workId)?.sessionId).toBe('mcp-before-finalize');
 
+    const wrongInstanceRelease = structured(await callRuntimeTool(
+      mcpContext(controllerHome, repository, {
+        principalId: 'chatgpt-principal',
+        sessionId: 'mcp-after-finalize-wrong-instance',
+        controllerInstanceId: 'runtime-other',
+      }),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        operation: 'controller_release',
+        work_id: workId,
+      },
+    ));
+    expect(wrongInstanceRelease.status).toBe('blocked');
+    expect(wrongInstanceRelease.summary).toContain('WORK_CONTROLLER_INSTANCE_MISMATCH');
+    expect(getControllerSession(store, workId)?.sessionId).toBe('mcp-before-finalize');
+
     const released = structured(await callRuntimeTool(rotatedContext, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'controller_release',

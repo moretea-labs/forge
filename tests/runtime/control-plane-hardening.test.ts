@@ -1350,6 +1350,64 @@ describe('scheduled external Controller wake', () => {
     expect(claimStalledControllerRoundRelays(store, { nowMs: afterGrace, graceMs: 60_000 })).toEqual([]);
   });
 
+  test('controller relay claim wins a claim-before-dispatch-finish race and remains claimed', () => {
+    const root = temp('forge-controller-relay-claim-race-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'relay claim race\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-claim-race' });
+    const workId = 'WORK-CONTROLLER-RELAY-CLAIM-RACE';
+    const store = { controllerHome, repoId: repository.repoId };
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Keep relay ownership coherent when the controller claims before launcher dispatch completion is recorded.',
+      acceptanceCriteria: ['A live controller claim is stronger evidence than the transient dispatching state.'],
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
+    });
+    expect(opened.status).toBe('dispatching');
+    const session = claimControllerSession(store, {
+      workId,
+      controllerId: 'chatgpt-controller',
+      controllerType: 'chatgpt',
+      sessionId: 'mcp-claim-before-dispatch-finish',
+      principalId: 'chatgpt-controller',
+      controllerInstanceId: 'runtime-test',
+    });
+    const claimed = acknowledgeControllerRoundClaim(store, { workId, session });
+    expect(claimed).toMatchObject({
+      status: 'claimed',
+      controllerId: 'chatgpt-controller',
+      principalId: 'chatgpt-controller',
+      sessionId: 'mcp-claim-before-dispatch-finish',
+      claimGeneration: session.claimGeneration,
+    });
+    expect(finishControllerRoundRelayDispatch(store, { workId, ok: true })).toEqual(claimed);
+    expect(submitControllerRoundDisposition(store, {
+      workId,
+      relayScopeId: opened.relayScopeId,
+      identity: {
+        controllerId: session.controllerId,
+        principalId: session.principalId!,
+        controllerInstanceId: session.controllerInstanceId!,
+        sessionId: session.sessionId,
+      },
+      disposition: 'wait',
+      reason: 'A real claim must be able to submit its semantic disposition even when it won the dispatch-finish race.',
+    })).toMatchObject({ status: 'waiting', disposition: 'wait' });
+  });
+
   test('migrates a claimed ChatGPT relay only to the exact live same-principal controller session after runtime rotation', () => {
     const root = temp('forge-controller-relay-runtime-migration-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });

@@ -810,7 +810,7 @@ export function acknowledgeControllerRoundClaim(
     ) return initial.value;
   } else if (initial.value.status === 'blocked') {
     if (!initial.value.blockedReason?.startsWith('repeated_state:')) return initial.value;
-  } else if (initial.value.status !== 'dispatched') return initial.value;
+  } else if (!['dispatching', 'dispatched'].includes(initial.value.status)) return initial.value;
   if (input.session.controllerType !== 'chatgpt') throw new Error(`CONTROLLER_RELAY_CHATGPT_CLAIM_REQUIRED: ${input.workId}`);
 
   return relayLock(options, initial.value.relayScopeId, `controller-relay-claim:${input.session.controllerId}`, () => {
@@ -920,7 +920,7 @@ export function acknowledgeControllerRoundClaim(
       });
       return rearmed;
     }
-    if (current.value.status !== 'dispatched') return current.value;
+    if (!['dispatching', 'dispatched'].includes(current.value.status)) return current.value;
     const owner = getControllerSession(options, input.workId);
     if (!owner) throw new Error(`CONTROLLER_RELAY_ACTIVE_CLAIM_REQUIRED: ${input.workId}`);
     if (
