@@ -1421,6 +1421,7 @@ export interface PrimaryRuntimeRecoveryDependencies {
   runCommand?: CommandRunner;
   verifyLocal?: (config: RecoveryConfig) => Promise<VerifyResult>;
   runtimeRunning?: (config: RecoveryConfig) => boolean;
+  ensureRuntimeLaunchContract?: (controllerHome: string) => void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -1998,6 +1999,19 @@ export async function recoverPrimaryRuntime(
     if (!rollback.ok) {
       audit(config, 'primary_runtime_recovery_rollback_failed', { serviceTarget: service.target, detail: rollback.detail });
       return { ok: false, attempted: true, detail: rollback.detail, serviceTarget: service.target, rollback, verify: rollback.verify ?? await verifyLocal(config) } satisfies PrimaryRuntimeRecoveryResult;
+    }
+
+    try {
+      // rollbackPreviousLocked restores release authority and SQLite while the
+      // Runtime is stopped. The launchd contract is release-pinned, so rebind
+      // it to the restored authority before any restart can occur.
+      const ensureRuntimeLaunchContract = dependencies.ensureRuntimeLaunchContract
+        ?? ((controllerHome: string) => { ensureForgeRuntimeLaunchAgentContract({ controllerHome, installUserLaunchAgent: true }); });
+      ensureRuntimeLaunchContract(config.controllerHome);
+    } catch (error) {
+      const detail = `primary Runtime launchd contract rebuild failed after rollback: ${error instanceof Error ? error.message : String(error)}`;
+      audit(config, 'primary_runtime_recovery_launchd_contract_failed', { serviceTarget: service.target, detail, rollbackOperationId: rollback.operationId });
+      return { ok: false, attempted: true, detail, serviceTarget: service.target, rollback, verify: await verifyLocal(config) } satisfies PrimaryRuntimeRecoveryResult;
     }
 
     const started = await ensureLaunchdServiceStarted(service, runCommand);

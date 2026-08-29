@@ -1228,8 +1228,69 @@ describe('standalone recovery on canonical Runtime', () => {
       });
       expect(result).toMatchObject({ ok: true, attempted: true, rollback: { ok: true } });
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+      const reboundLaunchContract = readFileSync(paths.installedPlistPath, 'utf8');
+      expect(reboundLaunchContract).toContain(join(home, 'runtime', 'releases', 'release-a', 'manifest.json'));
+      expect(reboundLaunchContract).not.toContain(join(home, 'runtime', 'releases', 'release-b', 'manifest.json'));
       expect(commands.some((args) => args.includes('bootout'))).toBe(true);
       expect(commands.some((args) => args.includes('kickstart'))).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('fails closed without starting a stale Runtime when rollback launch-contract rebuild fails', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const first = manifest(home, 'release-a', 'artifact-a');
+      const second = manifest(home, 'release-b', 'artifact-b', 2);
+      ensureActiveRuntimeRelease(home, first);
+      const runtime = await runtimeServer();
+      writeMainToken(home);
+      const ownership = startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
+      const config = createRecoveryConfig(home, {
+        publicMcpUrl: runtime.endpoint,
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      await attestKnownGood(config);
+      removeOwnership(ownership);
+      publishRuntimeRelease(home, second, 'publish-release-b');
+      const paths = forgeRuntimeServicePaths(home);
+      runtimeServiceConfig(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+
+      let launchdLoaded = true;
+      const commands: string[][] = [];
+      const result = await recoverPrimaryRuntime(config, 'test rollback contract failure', {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (_command, args) => {
+          commands.push(args);
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'print') return launchdLoaded
+            ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
+            : { ok: false, status: 113, stdout: '', stderr: 'service not loaded' };
+          if (args[0] === 'bootstrap') launchdLoaded = true;
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        ensureRuntimeLaunchContract: () => { throw new Error('simulated launch contract write failure'); },
+        verifyLocal: async () => ({
+          ...healthyVerify(),
+          ok: false,
+          runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] },
+        }),
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+
+      expect(result).toMatchObject({ ok: false, attempted: true, rollback: { ok: true } });
+      expect(result.detail).toContain('launchd contract rebuild failed after rollback');
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+      expect(commands.some((args) => args.includes('bootstrap') || args.includes('kickstart'))).toBe(false);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
