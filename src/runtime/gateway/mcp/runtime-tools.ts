@@ -2528,7 +2528,15 @@ function reconcileTerminalFacadeWorkVerifications(
     ...verificationStatus.untracked,
   ])].sort();
   const workspaceFingerprint = workspaceValidationFingerprint(verificationRepository.canonicalRoot, verificationStatus);
-  const workBoundProcessEvidenceIds = workContract.workKind === 'repository_change' && workContract.checks.length === 0
+  // Work-bound repository Process evidence remains semantic/result evidence,
+  // never a typed check receipt. repository_change may use it only when no
+  // checks are declared. local_effect may bind the same exact durable Process
+  // ids for Controller semantic review even when checks are declared; the
+  // normal missing-check gate below still requires typed verification receipts.
+  const workBoundProcessEvidenceIds = (
+    workContract.workKind === 'local_effect'
+    || (workContract.workKind === 'repository_change' && workContract.checks.length === 0)
+  )
     ? listWorkBoundRepositoryProcessEvidence({
         controllerHome: ctx.controllerHome,
         repoId: repository.repoId,

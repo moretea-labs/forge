@@ -16,6 +16,8 @@ import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
+import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
+import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
 
 const roots: string[] = [];
 
@@ -563,6 +565,126 @@ describe('rh_work terminalization authority', () => {
     expect(getPlanContract(store, planId)?.steps[0]?.status).toBe('completed');
   }, 15_000);
 
+
+  test('local_effect continue re-derives exact Work-bound repository Process evidence without substituting for checks', async () => {
+    const fx = fixture();
+    const workId = 'work-local-effect-process-semantic-evidence';
+    const criterion = 'A durable repository process result is reviewed.';
+    const caller = {
+      principalId: 'principal-local-effect-process-evidence',
+      sessionId: 'transport-local-effect-process-evidence',
+      controllerInstanceId: 'runtime-local-effect-process-evidence',
+    };
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: 'local-effect-process-semantic-evidence',
+      title: 'Local Effect Process Semantic Evidence',
+      branchName: 'work/local-effect-process-semantic-evidence',
+    });
+    expect(workspace.mode).toBe('isolated');
+    expect(workspace.root).toBeTruthy();
+    expect(workspace.checkoutId).toBeTruthy();
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      worktreeRef: workspace.root,
+      mode: 'goal_workloop',
+      objective: 'Review an exact durable repository Process as a local effect result.',
+      acceptanceCriteria: [criterion],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: ['fixture-release-check'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'local_effect',
+      status: 'running',
+      phase: 'implementation',
+    });
+    claimControllerSession(store, {
+      workId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+
+    const now = new Date().toISOString();
+    const processId = 'proc-local-effect-process-semantic-evidence';
+    const process: ManagedProcessRecord = {
+      schemaVersion: 1,
+      processId,
+      repoId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      workId,
+      commandId: 'command-local-effect-process-semantic-evidence',
+      controllerHome: fx.controllerHome,
+      status: 'succeeded',
+      route: 'managed',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: workspace.root! },
+      origin: {
+        surface: 'command',
+        toolName: 'repository_command_execute',
+        requestId: 'request-local-effect-process-semantic-evidence',
+        correlationId: workId,
+      },
+      resourceClaims: [],
+      interactiveWaitMs: 0,
+      timeoutMs: 30_000,
+      maxOutputBytes: 1_024,
+      startedAt: now,
+      updatedAt: now,
+      finishedAt: now,
+      exitCode: 0,
+      terminalFenceToken: 1,
+      terminalWritten: true,
+      leaseReleaseState: 'released',
+      leasesReleased: true,
+    };
+    createProcessRecord(process);
+
+    const unknown = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'continue',
+        work_id: workId,
+        acceptance_evidence: [{ criterion, evidence_ids: ['proc-unrelated'], rationale: 'This id is not owned by the Work.' }],
+      },
+    ));
+    expect(unknown.status).toBe('blocked');
+    expect(unknown.summary).toContain('WORK_SEMANTIC_ACCEPTANCE_EVIDENCE_UNKNOWN');
+
+    const rotatedSessionId = 'transport-local-effect-process-evidence-rotated';
+    const reviewed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, caller.principalId, rotatedSessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'continue',
+        work_id: workId,
+        acceptance_evidence: [{
+          criterion,
+          evidence_ids: [processId],
+          rationale: 'The canonical Process store proves this exact successful terminal repository command belongs to the Work and checkout.',
+        }],
+      },
+    ));
+    expect(reviewed.status).toBe('ok');
+    expect(reviewed.data?.nextStep).toBe('verify');
+    expect(reviewed.data?.remainingChecks).toEqual(['fixture-release-check']);
+    expect(getWorkContract(store, workId)?.semanticAcceptanceEvidence).toEqual([
+      expect.objectContaining({ criterion, evidenceIds: [processId] }),
+    ]);
+    expect(getControllerSession(store, workId)).toMatchObject({
+      principalId: caller.principalId,
+      sessionId: rotatedSessionId,
+      controllerInstanceId: caller.controllerInstanceId,
+    });
+  }, 15_000);
 
   test('local_effect semantic finalize reconciles and removes its managed worktree', async () => {
     const fx = fixture();
