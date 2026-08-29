@@ -377,6 +377,10 @@
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
+    "tests/runtime/read-only-review-lifecycle.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/controller-home-migration.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
