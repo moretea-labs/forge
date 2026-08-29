@@ -104,6 +104,12 @@ export interface GoalWorkloopStartInput {
   workKind?: Extract<WorkKind, 'repository_change' | 'completed_no_change' | 'read_only_review' | 'investigation' | 'local_effect' | 'remote_effect' | 'reconciliation'>;
 }
 
+export interface GoalWorkloopAcceptanceEvidenceBinding {
+  criterion: string;
+  evidenceIds: string[];
+  rationale: string;
+}
+
 export interface GoalWorkloopContinueInput {
   workId: string;
   note?: string;
@@ -114,6 +120,8 @@ export interface GoalWorkloopContinueInput {
   inspectedPaths?: string[];
   /** Concise semantic findings discovered by a first-class read-only review. */
   reviewFindings?: string[];
+  /** Explicit Controller-reviewed bindings from exact declared criteria to durable Work evidence. */
+  acceptanceEvidence?: GoalWorkloopAcceptanceEvidenceBinding[];
   /** Explicit Controller decision after deterministic acceptance failure; never inferred from note text. */
   acceptanceFailureDecision?: 'repair' | 'rescope';
 }
@@ -1078,6 +1086,79 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
       inspectedPaths: input.inspectedPaths,
     });
   }
+  if ((input.acceptanceEvidence?.length ?? 0) > 0) {
+    if (work.workKind !== 'local_effect') {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `WORK_SEMANTIC_ACCEPTANCE_LOCAL_EFFECT_REQUIRED: ${work.workId} is ${work.workKind}.`,
+        data: { work: summarizeWorkContract(work), semanticAcceptanceRecorded: false },
+      });
+    }
+    const declaredCriteria = new Map(work.acceptanceCriteria.map((criterion) => [criterion.trim(), criterion]));
+    const availableEvidenceIds = new Set([
+      ...work.evidenceRefs.flatMap((evidence) => [evidence.evidenceId, evidence.artifactId])
+        .map((value) => value?.trim())
+        .filter((value): value is string => Boolean(value)),
+      ...(ctx.workBoundProcessEvidenceIds ?? []).map((value) => value.trim()).filter(Boolean),
+    ]);
+    const normalizedBindings: Array<{ criterion: string; evidenceIds: string[]; rationale: string }> = [];
+    for (const binding of input.acceptanceEvidence ?? []) {
+      const requestedCriterion = binding.criterion.trim();
+      const criterion = declaredCriteria.get(requestedCriterion);
+      if (!criterion) {
+        return buildFacadeResult({
+          status: 'blocked',
+          summary: `WORK_SEMANTIC_ACCEPTANCE_CRITERION_UNKNOWN: ${requestedCriterion || '<empty>'}.`,
+          data: { work: summarizeWorkContract(work), semanticAcceptanceRecorded: false },
+        });
+      }
+      const evidenceIds = [...new Set(binding.evidenceIds.map((value) => value.trim()).filter(Boolean))];
+      if (evidenceIds.length === 0) {
+        return buildFacadeResult({
+          status: 'blocked',
+          summary: `WORK_SEMANTIC_ACCEPTANCE_EVIDENCE_REQUIRED: ${criterion}.`,
+          data: { work: summarizeWorkContract(work), semanticAcceptanceRecorded: false },
+        });
+      }
+      const unknownEvidenceIds = evidenceIds.filter((evidenceId) => !availableEvidenceIds.has(evidenceId));
+      if (unknownEvidenceIds.length > 0) {
+        return buildFacadeResult({
+          status: 'blocked',
+          summary: `WORK_SEMANTIC_ACCEPTANCE_EVIDENCE_UNKNOWN: ${unknownEvidenceIds.join(', ')}.`,
+          data: { work: summarizeWorkContract(work), semanticAcceptanceRecorded: false },
+        });
+      }
+      const rationale = binding.rationale.trim();
+      if (!rationale) {
+        return buildFacadeResult({
+          status: 'blocked',
+          summary: `WORK_SEMANTIC_ACCEPTANCE_RATIONALE_REQUIRED: ${criterion}.`,
+          data: { work: summarizeWorkContract(work), semanticAcceptanceRecorded: false },
+        });
+      }
+      normalizedBindings.push({ criterion, evidenceIds, rationale: rationale.slice(0, 1_000) });
+    }
+    const recordedAt = nowIso(ctx);
+    const byCriterion = new Map((work.semanticAcceptanceEvidence ?? []).map((review) => [review.criterion, review]));
+    for (const binding of normalizedBindings) {
+      const previous = byCriterion.get(binding.criterion);
+      byCriterion.set(binding.criterion, {
+        criterion: binding.criterion,
+        evidenceIds: [...new Set([...(previous?.evidenceIds ?? []), ...binding.evidenceIds])].slice(0, 50),
+        rationale: binding.rationale,
+        recordedAt,
+      });
+    }
+    work = updateWorkContract(ctx.workStore, work.workId, {
+      semanticAcceptanceEvidence: [...byCriterion.values()].slice(0, 20),
+    });
+    work = appendWorkEvidence(ctx.workStore, work.workId, {
+      title: 'Controller semantic acceptance review',
+      summary: `Controller reviewed ${normalizedBindings.length} exact acceptance criterion binding(s) against durable Work evidence.`,
+      detailLevel: 'summary',
+    });
+  }
+
   if (work.workKind === 'read_only_review' && ((input.inspectedPaths?.length ?? 0) > 0 || input.reviewFindings !== undefined)) {
     const findings = [...new Set([
       ...(work.readOnlyReviewEvidence?.findings ?? []),
@@ -2056,6 +2137,13 @@ export function runGoalWorkloop(
         additionalLikelyPaths: Array.isArray(args.additional_likely_paths) ? args.additional_likely_paths.map(String) : undefined,
         inspectedPaths: Array.isArray(args.inspected_paths) ? args.inspected_paths.map(String) : undefined,
         reviewFindings: Array.isArray(args.review_findings) ? args.review_findings.map(String) : undefined,
+        acceptanceEvidence: Array.isArray(args.acceptance_evidence)
+          ? args.acceptance_evidence.filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object').map((value) => ({
+              criterion: typeof value.criterion === 'string' ? value.criterion : '',
+              evidenceIds: Array.isArray(value.evidence_ids) ? value.evidence_ids.map(String) : [],
+              rationale: typeof value.rationale === 'string' ? value.rationale : '',
+            }))
+          : undefined,
         acceptanceFailureDecision: args.acceptance_failure_decision === 'repair' || args.acceptance_failure_decision === 'rescope'
           ? args.acceptance_failure_decision
           : undefined,

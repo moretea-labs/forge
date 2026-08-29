@@ -8,6 +8,8 @@ export interface WorkCompletionEvidenceEvaluation {
   history: ReconciledVerificationHistory;
   missingChecks: string[];
   durableResultEvidence: boolean;
+  semanticAcceptanceComplete: boolean;
+  missingSemanticAcceptanceCriteria: string[];
   reasons: string[];
 }
 
@@ -121,15 +123,30 @@ export function evaluateWorkCompletionEvidence(
     && (readOnlyEvidence?.inspectedPaths.length ?? 0) > 0
     && (readOnlyEvidence?.findings.length ?? 0) === 0,
   );
-  const durableResultEvidence = work.evidenceRefs.some((evidence) => Boolean(evidence.evidenceId || evidence.artifactId))
+  const workEvidenceIds = work.evidenceRefs.flatMap((evidence) => [evidence.evidenceId, evidence.artifactId])
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  const availableDurableEvidenceIds = new Set([
+    ...workEvidenceIds,
+    ...workBoundProcessEvidenceIds.map((value) => value.trim()).filter(Boolean),
+  ]);
+  const durableResultEvidence = availableDurableEvidenceIds.size > 0
     || applicableCheckRefs.some((record) => isAuthoritativeCurrentWorkVerification(work, record, currentRevision))
-    || workBoundProcessEvidenceIds.length > 0
     || cleanReadOnlyReviewEvidence;
+  const requiresSemanticAcceptance = work.workKind === 'local_effect' && work.checks.length === 0;
+  const acceptedCriteria = new Set((work.semanticAcceptanceEvidence ?? [])
+    .filter((review) => review.evidenceIds.length > 0 && review.evidenceIds.every((evidenceId) => availableDurableEvidenceIds.has(evidenceId)))
+    .map((review) => review.criterion));
+  const missingSemanticAcceptanceCriteria = requiresSemanticAcceptance
+    ? work.acceptanceCriteria.filter((criterion) => !acceptedCriteria.has(criterion))
+    : [];
+  const semanticAcceptanceComplete = !requiresSemanticAcceptance
+    || (work.acceptanceCriteria.length > 0 && missingSemanticAcceptanceCriteria.length === 0);
   const reasons: string[] = [];
 
   if (history.acceptanceFailures.length > 0) {
     reasons.push(`Acceptance checks failed: ${history.acceptanceFailures.join(', ')}.`);
-    return { status: 'failed', history, missingChecks, durableResultEvidence, reasons };
+    return { status: 'failed', history, missingChecks, durableResultEvidence, semanticAcceptanceComplete, missingSemanticAcceptanceCriteria, reasons };
   }
   if (history.infrastructureIssues.length > 0) {
     reasons.push(`Infrastructure issues remain: ${history.infrastructureIssues.join(', ')}.`);
@@ -159,17 +176,25 @@ export function evaluateWorkCompletionEvidence(
       ? 'Work-bound verification evidence is stale for the current source/workspace identity.'
       : 'No durable result evidence (evidenceId, artifactId, or current Work-bound verification receipt) was recorded for this no-check WorkContract.');
   }
+  if (requiresSemanticAcceptance && !semanticAcceptanceComplete) {
+    reasons.push(work.acceptanceCriteria.length === 0
+      ? 'No-check local-effect Work has no declared acceptance criteria to review.'
+      : `Controller-reviewed semantic acceptance evidence is incomplete; missing criteria: ${missingSemanticAcceptanceCriteria.join(' | ')}.`);
+  }
 
   const complete = history.infrastructureIssues.length === 0
     && history.invalidCheckIds.length === 0
     && missingChecks.length === 0
     && (work.checks.length > 0 || durableResultEvidence)
+    && semanticAcceptanceComplete
     && (work.workKind !== 'read_only_review' || cleanReadOnlyReviewEvidence);
   return {
     status: complete ? 'complete' : 'incomplete',
     history,
     missingChecks,
     durableResultEvidence,
+    semanticAcceptanceComplete,
+    missingSemanticAcceptanceCriteria,
     reasons,
   };
 }

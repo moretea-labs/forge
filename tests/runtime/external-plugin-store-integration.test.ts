@@ -7,7 +7,7 @@ import { installExternalPluginRegistration, type ExternalPluginRegistration } fr
 import { createExternalPluginAdapter } from '../../src/runtime/plugins/external-adapter';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { finalizeGoalWorkloop, startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
+import { continueGoalWorkloop, finalizeGoalWorkloop, runGoalWorkloop, startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
 import { createFirstPartyPluginAdapterMap } from '../../src/runtime/plugins/first-party-registry';
 import { getPluginActionCapabilitySchema } from '../../src/runtime/control-plane/facade/capability-registry';
@@ -249,6 +249,32 @@ describe('pre-existing local-effect plugin receipt binding', () => {
     expect(getWorkContract(context.workStore, unrelatedWorkId)?.evidenceRefs.some((evidence) => evidence.evidenceId === mutated.receipt.receiptId)).toBe(false);
     expect(finalizeGoalWorkloop(context, { workId: unrelatedWorkId }).summary).toContain('No durable result evidence');
 
+    const premature = finalizeGoalWorkloop(context, { workId: firstWorkId });
+    expect(premature.status).toBe('blocked');
+    expect(premature.summary).toContain('Controller-reviewed semantic acceptance evidence is incomplete');
+    expect(getWorkContract(context.workStore, firstWorkId)?.status).not.toBe('completed');
+
+    const unknownCriterion = continueGoalWorkloop(context, {
+      workId: firstWorkId,
+      acceptanceEvidence: [{ criterion: 'A different criterion.', evidenceIds: [mutated.receipt.receiptId], rationale: 'Not declared.' }],
+    });
+    expect(unknownCriterion.summary).toContain('WORK_SEMANTIC_ACCEPTANCE_CRITERION_UNKNOWN');
+    const unknownEvidence = continueGoalWorkloop(context, {
+      workId: firstWorkId,
+      acceptanceEvidence: [{ criterion: 'A durable typed local plugin effect receipt exists.', evidenceIds: ['PLG-not-owned'], rationale: 'Unknown receipt.' }],
+    });
+    expect(unknownEvidence.summary).toContain('WORK_SEMANTIC_ACCEPTANCE_EVIDENCE_UNKNOWN');
+
+    const reviewed = runGoalWorkloop(context, 'continue', {
+      work_id: firstWorkId,
+      acceptance_evidence: [{
+        criterion: 'A durable typed local plugin effect receipt exists.',
+        evidence_ids: [mutated.receipt.receiptId],
+        rationale: 'The exact mutating plugin receipt is durable, successful, and attributed to this Work.',
+      }],
+    });
+    expect(reviewed).toMatchObject({ status: 'ok', data: { nextStep: 'finalize' } });
+
     const completed = finalizeGoalWorkloop(context, { workId: firstWorkId });
     expect(completed).toMatchObject({ status: 'ok', data: { finalStatus: 'completed' } });
     expect(getWorkContract(context.workStore, firstWorkId)).toMatchObject({
@@ -263,6 +289,53 @@ describe('pre-existing local-effect plugin receipt binding', () => {
     });
     expect(replayed.deduplicated).toBe(true);
     expect(getWorkContract(context.workStore, firstWorkId)?.evidenceRefs.filter((evidence) => evidence.evidenceId === mutated.receipt.receiptId)).toHaveLength(1);
+  });
+
+  test('requires explicit criterion review before Work-bound process evidence can complete a no-check local-effect Work', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-local-effect-process-evidence-'));
+    roots.push(controllerHome);
+    const businessRoot = mkdtempSync(join(tmpdir(), 'forge-local-effect-process-work-'));
+    roots.push(businessRoot);
+    expect(spawnSync('git', ['init', '-b', 'main'], { cwd: businessRoot, encoding: 'utf8' }).status).toBe(0);
+    writeFileSync(join(businessRoot, 'README.md'), 'fixture\n');
+    expect(spawnSync('git', ['add', '.'], { cwd: businessRoot, encoding: 'utf8' }).status).toBe(0);
+    expect(spawnSync('git', ['-c', 'user.name=Forge Test', '-c', 'user.email=forge@example.test', 'commit', '-m', 'init'], { cwd: businessRoot, encoding: 'utf8' }).status).toBe(0);
+    const repository = registerRepository({ path: businessRoot, controllerHome, displayName: 'local-effect-process-work' });
+    const baseContext = {
+      workStore: { controllerHome, repoId: repository.repoId },
+      handoffStore: { controllerHome, repoId: repository.repoId },
+      repoId: repository.repoId, checkoutId: repository.activeCheckoutId,
+    };
+    const started = startGoalWorkloop(baseContext, {
+      objective: 'Produce an evidence-backed external investigation result.',
+      acceptanceCriteria: ['Candidate filtering is complete.', 'A ranked result or evidence-backed no-candidate result exists.'],
+      allowedPaths: [], forbiddenPaths: [], checks: [], workKind: 'local_effect',
+      modeInput: {
+        scopeClear: true, mutation: true, requiresExternalEffect: true, remoteWrite: false,
+        risk: 'workspace_write', requiresRecovery: true, requiresWorker: false, requiresApproval: false,
+      },
+    });
+    const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
+    expect(workId).toBeTruthy();
+    const context = { ...baseContext, workBoundProcessEvidenceIds: ['proc-ranked-result'] };
+
+    const unreviewed = continueGoalWorkloop(context, { workId });
+    expect(unreviewed.status).toBe('blocked');
+    expect(unreviewed.summary).toContain('Controller-reviewed semantic acceptance evidence is incomplete');
+    expect(getWorkContract(baseContext.workStore, workId)).toMatchObject({ phase: 'implementation' });
+
+    const partial = continueGoalWorkloop(context, {
+      workId,
+      acceptanceEvidence: [{ criterion: 'Candidate filtering is complete.', evidenceIds: ['proc-ranked-result'], rationale: 'The durable process output contains the completed filtering result.' }],
+    });
+    expect(partial.status).toBe('blocked');
+    expect(partial.summary).toContain('A ranked result or evidence-backed no-candidate result exists.');
+
+    const complete = continueGoalWorkloop(context, {
+      workId,
+      acceptanceEvidence: [{ criterion: 'A ranked result or evidence-backed no-candidate result exists.', evidenceIds: ['proc-ranked-result'], rationale: 'The same durable process output contains the ranked result.' }],
+    });
+    expect(complete).toMatchObject({ status: 'ok', data: { nextStep: 'finalize' } });
   });
 });
 

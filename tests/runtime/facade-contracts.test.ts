@@ -58,6 +58,7 @@ describe('handoff and facade contracts', () => {
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
     expect(properties?.work_kind?.enum).toEqual(expect.arrayContaining(['local_effect', 'remote_effect', 'repository_change', 'read_only_review']));
     expect((properties as Record<string, unknown>)?.review_findings).toBeTruthy();
+    expect((properties as Record<string, unknown>)?.acceptance_evidence).toBeTruthy();
   });
 
   test('classifies terminal handoff statuses', () => {

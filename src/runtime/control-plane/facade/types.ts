@@ -147,6 +147,14 @@ export interface ReadOnlyReviewEvidence {
   recordedAt: string;
 }
 
+/** Controller-reviewed binding from one exact Work acceptance criterion to durable evidence. */
+export interface WorkSemanticAcceptanceEvidence {
+  criterion: string;
+  evidenceIds: string[];
+  rationale: string;
+  recordedAt: string;
+}
+
 /**
  * Terminal authority for a clean read-only review. This deliberately does not
  * impersonate repository delivery: it proves the reviewed source stayed at the
@@ -534,6 +542,8 @@ export interface WorkContract {
   };
   /** Source-bound semantic findings/scope for first-class recoverable read-only review Work. */
   readOnlyReviewEvidence?: ReadOnlyReviewEvidence;
+  /** Explicit Controller-reviewed acceptance bindings. Mechanical evidence attribution alone never writes this field. */
+  semanticAcceptanceEvidence?: WorkSemanticAcceptanceEvidence[];
   /** Explicit policy fence. This is not semantic completeness evidence. */
   allowedPaths: string[];
   forbiddenPaths: string[];
