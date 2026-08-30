@@ -19,6 +19,7 @@ import { executionJobRoot, rebuildExecutionJobIndexes } from '../../src/runtime/
 import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
 import type { TaskLedgerProjection } from '../../src/cli/controller/task-ledger';
 import { recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostics/mcp-timing';
+import { classifyForgeIncidentForRepair, maybeRegisterMcpIncidentRepair } from '../../src/runtime/diagnostics/incident-repair';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { createMcpToolContext as createMultiRepositoryContext } from '../../src/cli/mcp/multi-repository';
 import { createForgeMcpServer } from '../../src/cli/mcp/server';
@@ -30,7 +31,8 @@ import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from '../../src/
 import { collectRuntimeSourceIdentity, rotateRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
-import { createWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { listWorkContinuationSchedules } from '../../src/runtime/workflow/schedules/work-continuation';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '../../src/cli/mcp/toolset-names';
 import { FORGE_VERSION } from '../../src/cli/controller/runtime-config';
@@ -628,6 +630,113 @@ describe('runtime observability', () => {
         route: 'process_managed',
       });
       expect(incident).toMatchObject({ traceId, requestId, code: 'PUBLIC_STABLE_ENDPOINT_UNHEALTHY' });
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('promotes only recurrent source-authority-proven Forge incidents into one canonical repair Work', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-incident-repair-controller-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-incident-repair-repo-'));
+    try {
+      spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot, stdio: 'ignore' });
+      writeFileSync(join(repoRoot, 'package.json'), '{\"name\":\"forge-incident-repair-fixture\",\"private\":true}\n');
+      spawnSync('git', ['add', '.'], { cwd: repoRoot, stdio: 'ignore' });
+      spawnSync('git', ['commit', '-m', 'fixture'], { cwd: repoRoot, stdio: 'ignore' });
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+      const makeIncident = (index: number) => ({
+        traceId: `trace-recurrent-${index}`,
+        requestId: `request-recurrent-${index}`,
+        tool: index % 2 === 0 ? 'rh_work' : 'repository_command_execute',
+        kind: 'tool_error' as const,
+        code: 'CONTROLLER_AUTHENTICATED_SESSION_REQUIRED',
+        message: 'reconnect or provide session_id through the authenticated MCP transport',
+        repoId: 'repo-business-affected',
+      });
+
+      expect(classifyForgeIncidentForRepair(makeIncident(1))).toMatchObject({ eligible: true, rootCode: 'CONTROLLER_AUTHENTICATED_SESSION_REQUIRED' });
+      expect(classifyForgeIncidentForRepair({ ...makeIncident(1), code: 'TOOL_NOT_FOUND' })).toMatchObject({ eligible: false });
+
+      let repairWorkId: string | undefined;
+      for (let index = 1; index <= 4; index += 1) {
+        const incident = makeIncident(index);
+        recordMcpIncident(controllerHome, incident);
+        const result = maybeRegisterMcpIncidentRepair({ controllerHome, runtimeSourceRoot: repoRoot, incident });
+        if (index < 3) {
+          expect(result).toMatchObject({ eligible: true, recurrent: false, occurrenceCount: index });
+          expect(result.workId).toBeUndefined();
+          continue;
+        }
+        if (index === 3) {
+          expect(result).toMatchObject({ eligible: true, recurrent: true, repairRepoId: repository.repoId, reusedExistingWork: false });
+          expect(result.workId).toBeTruthy();
+          expect(result.scheduleId).toBeTruthy();
+          repairWorkId = result.workId;
+        } else {
+          expect(result).toMatchObject({ eligible: true, recurrent: true, workId: repairWorkId, reusedExistingWork: true });
+        }
+      }
+
+      const works = listWorkContracts({ controllerHome, repoId: repository.repoId, status: 'all', limit: 100 })
+        .filter((work) => work.requestId?.startsWith('forge-incident-repair:'));
+      expect(works).toHaveLength(1);
+      expect(works[0]).toMatchObject({
+        workId: repairWorkId,
+        requestedBy: 'system',
+        workKind: 'repository_change',
+        status: 'running',
+      });
+      expect(works[0]?.evidenceRefs.filter((entry) => entry.evidenceId?.startsWith('MCPINC-')).length).toBe(4);
+      const schedules = listWorkContinuationSchedules(controllerHome, repository.repoId, { workId: repairWorkId });
+      expect(schedules.schedules).toHaveLength(1);
+      expect(schedules.schedules[0]).toMatchObject({
+        enabled: true,
+        trigger: { type: 'interval', everyMinutes: 5 },
+        policy: { shadowMode: false },
+        action: { operation: 'external_controller_wake', arguments: { work_id: repairWorkId, controller_type: 'chatgpt' } },
+      });
+
+      updateWorkContract({ controllerHome, repoId: repository.repoId }, repairWorkId!, { status: 'cancelled' });
+      const recurrentAfterTerminal = makeIncident(5);
+      recordMcpIncident(controllerHome, recurrentAfterTerminal);
+      const successor = maybeRegisterMcpIncidentRepair({ controllerHome, runtimeSourceRoot: repoRoot, incident: recurrentAfterTerminal });
+      expect(successor).toMatchObject({ eligible: true, recurrent: true, reusedExistingWork: false, repairRepoId: repository.repoId });
+      expect(successor.workId).toBeTruthy();
+      expect(successor.workId).not.toBe(repairWorkId);
+      const generations = listWorkContracts({ controllerHome, repoId: repository.repoId, status: 'all', limit: 100 })
+        .filter((work) => work.requestId?.startsWith('forge-incident-repair:'))
+        .sort((left, right) => (left.requestId ?? '').localeCompare(right.requestId ?? ''));
+      expect(generations).toHaveLength(2);
+      expect(generations.map((work) => work.requestId?.split(':').at(-1))).toEqual(['g1', 'g2']);
+      expect(getWorkContract({ controllerHome, repoId: repository.repoId }, successor.workId!)?.evidenceRefs)
+        .toEqual(expect.arrayContaining([expect.objectContaining({ title: 'incident repair predecessor' })]));
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('does not promote recurrent incidents when Runtime source authority cannot be proven', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-incident-unmapped-controller-'));
+    try {
+      let latest;
+      for (let index = 1; index <= 3; index += 1) {
+        const incident = {
+          traceId: `trace-unmapped-${index}`,
+          requestId: `request-unmapped-${index}`,
+          tool: 'rh_status',
+          kind: 'exception' as const,
+          code: 'MCP_REQUEST_EXCEPTION',
+          message: 'Connection failed while contacting Canonical Runtime',
+        };
+        recordMcpIncident(controllerHome, incident);
+        latest = maybeRegisterMcpIncidentRepair({ controllerHome, runtimeSourceRoot: join(controllerHome, 'unknown-release'), incident });
+      }
+      expect(latest).toMatchObject({ eligible: true, recurrent: true });
+      expect(latest?.workId).toBeUndefined();
+      expect(latest?.reason).toContain('source authority');
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }

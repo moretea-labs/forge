@@ -90,6 +90,8 @@ export interface GoalWorkloopStartInput {
   constraints?: WorkContract['constraints'];
   modeInput: ExecutionModeSelectionInput;
   requestedBy?: WorkContract['requestedBy'];
+  /** Stable durable admission identity for system-originated Work such as recurrent incident repair. */
+  requestId?: string;
   relatedWorkId?: string;
   workRelation?: WorkAdmissionRelation;
   requirementId?: string;
@@ -938,6 +940,7 @@ export function startGoalWorkloop(
       handoffOnAmbiguity: true,
     },
     requestedBy: input.requestedBy ?? 'chatgpt',
+    requestId: input.requestId?.trim() || undefined,
     evidenceRefs: [initialEvidence(input.objective)],
     policyDecisions: policy ? [policy] : [],
     suggestedNextActions: initialSuggestedNextActions,
