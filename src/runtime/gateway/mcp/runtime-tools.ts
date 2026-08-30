@@ -1217,7 +1217,7 @@ function currentFacadeTerminalizationAuthority(
   workId: string,
   args: Record<string, unknown>,
 ): ControllerTerminalizationAuthority {
-  const owner = getControllerSession(store, workId);
+  let owner = getControllerSession(store, workId);
   if (!owner) {
     throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${workId}; terminalization requires an explicit controller_claim for this exact Work.`);
   }
@@ -1233,20 +1233,34 @@ function currentFacadeTerminalizationAuthority(
     throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${workId}`);
   }
   const ownerInstanceId = owner.controllerInstanceId?.trim() || '';
-  if (!ownerInstanceId || ownerInstanceId !== identity.controllerInstanceId) {
+  if (!ownerInstanceId) {
     throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
   }
-  if (owner.sessionId !== identity.sessionId) {
-    throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; terminalization cannot rebind ownership implicitly. Call controller_claim for this exact Work in the current controller scope, then retry.`);
+  if (ownerInstanceId !== identity.controllerInstanceId || owner.sessionId !== identity.sessionId) {
+    const relay = assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+    if (!relay?.authorityId?.trim()) {
+      if (ownerInstanceId !== identity.controllerInstanceId) {
+        throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
+      }
+      throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; terminalization cannot rebind ownership implicitly. Call controller_claim for this exact Work in the current controller scope, then retry.`);
+    }
+    // The opaque per-round relay capability is the durable conversation-round
+    // authority. MCP transport sessions are replaceable execution bindings, so
+    // an exact upgraded relay may reconcile the same authenticated owner onto
+    // the current canonical Runtime/session before the claim-generation fence is
+    // captured for terminalization. Foreign or legacy rounds fail above.
+    owner = bindFacadeControllerOwnership(ctx, store, workId, identity);
   }
+  const reboundPrincipal = controllerSessionPrincipalId(owner);
+  const reboundInstanceId = owner.controllerInstanceId?.trim() || '';
   if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) {
     throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workId}`);
   }
   return {
     controllerId: owner.controllerId,
     controllerType: owner.controllerType,
-    principalId: ownerPrincipal,
-    controllerInstanceId: ownerInstanceId,
+    principalId: reboundPrincipal,
+    controllerInstanceId: reboundInstanceId,
     claimGeneration: owner.claimGeneration,
   };
 }

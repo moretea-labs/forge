@@ -336,22 +336,28 @@ describe('rh_work terminalization authority', () => {
     ));
     expect(owningClaimAfterTransportRotation.status).toBe('ok');
     expect(getControllerSession(store, workA)?.sessionId).toBe('transport-a-rotated');
+    const owningGeneration = getControllerSession(store, workA)?.claimGeneration;
 
+    // Real ChatGPT MCP calls can rotate transport again between the successful
+    // claim and the immediately following terminalization call. The exact same
+    // upgraded relay-round capability must authorize only this transient rebind.
     const owningStopAfterTransportRotation = structured(await callRuntimeTool(
-      ctx(fx.controllerHome, fx.repository, principalId, 'transport-a-rotated', runtimeInstanceId),
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-a-terminal', runtimeInstanceId),
       'rh_work',
       {
         repo_id: fx.repository.repoId,
         operation: 'stop',
         work_id: workA,
         requested_by: 'chatgpt',
-        reason: 'owning conversation semantic stop after MCP transport rotation',
+        reason: 'owning conversation semantic stop after another MCP transport rotation',
         relay_scope_id: relayA.relayScopeId,
         controller_authority_id: relayA.authorityId,
       },
     ));
     expect(owningStopAfterTransportRotation.status).toBe('ok');
     expect(getWorkContract(store, workA)?.status).toBe('cancelled');
+    expect(getControllerSession(store, workA)?.sessionId).toBe('transport-a-terminal');
+    expect(getControllerSession(store, workA)?.claimGeneration).toBe(owningGeneration);
     expect(getWorkContract(store, workB)?.status).toBe('ready');
   }, 15_000);
 
