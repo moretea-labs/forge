@@ -4,6 +4,19 @@ All notable public Forge changes are recorded here. Release entries are tied to 
 
 ## Unreleased
 
+## 1.7.1 - 2026-08-30
+
+### Runtime and lifecycle stabilization
+
+- Prevent effect-only Work from losing repository source deltas during finalization, and recognize successful trusted Work-bound `git push` Process receipts as remote-effect completion authority.
+- Harden controller continuation and terminalization across MCP/session rollover while keeping unrelated conversations isolated, and add stable Requirement-backed business-goal identity so stale continuation cannot silently revive superseded goals.
+- Add bounded post-deadline external Codex claim settlement plus precise Work checkout-mismatch diagnostics, preserving fail-closed fencing without false launcher timeouts.
+
+### Browser and release closure
+
+- Converge Browser/desktop automation on the signed Forge Desktop Operator boundary, retain Runtime packaging for the browser handoff host, and close historical capability/permission drift without granting privileged macOS access to Runtime.
+- Re-run the full main, MCP compatibility, package, public-surface, open-source, tarball-install, Runtime Recovery, schedule, and tool-surface release contracts before publication.
+
 ## 1.7.0 - 2026-08-27
 
 ### Persistent autonomous control

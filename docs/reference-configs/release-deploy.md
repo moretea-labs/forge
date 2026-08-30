@@ -3,7 +3,7 @@
 
 > **Runtime Docs**: user-level forge reference
 > **Doc ID**: release-deploy
-> **Version**: 1.7.0
+> **Version**: 1.7.1
 > **Source Command**: `forge docs path release-deploy`
 
 This repo keeps workflow facts and runtime artifacts locally under `.ai/`.
