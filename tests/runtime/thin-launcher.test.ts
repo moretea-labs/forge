@@ -164,6 +164,43 @@ describe('Thin Launcher startup observability', () => {
     }
   });
 
+  test('accepts the exact Codex claim during the bounded post-deadline settlement grace', async () => {
+    const fx = launcherFixture();
+    const bootstrap = codexBootstrap();
+    const claimTimer = setTimeout(() => {
+      claimControllerSession(fx.store, {
+        workId: fx.workId,
+        controllerId: bootstrap.principalId,
+        controllerType: 'codex',
+        sessionId: bootstrap.sessionId,
+        principalId: bootstrap.principalId,
+        controllerInstanceId: 'runtime-codex-launch-late-claim-test',
+      });
+    }, 130);
+    try {
+      const launched = await launchSuperController({ work: fx.store, handoff: fx.store }, {
+        controllerType: 'codex',
+        executable: sleepingExecutable(fx.root),
+        workId: fx.workId,
+        cwd: fx.root,
+      }, {
+        resolveProviderMcpBootstrap: () => bootstrap,
+        claimTimeoutMs: 100,
+        claimSettlementGraceMs: 120,
+        claimPollIntervalMs: 10,
+      });
+      if (launched.pid) launchedPids.push(launched.pid);
+
+      expect(launched.pid).toBeGreaterThan(0);
+      expect(getExternalControllerLaunchReservation(fx.store, fx.workId)).toMatchObject({
+        reservationId: launched.reservationId,
+        pid: launched.pid,
+      });
+    } finally {
+      clearTimeout(claimTimer);
+    }
+  });
+
   test('fails closed and releases the reservation when Codex stays alive without claiming the Work', async () => {
     const fx = launcherFixture();
     let message = '';
@@ -176,6 +213,7 @@ describe('Thin Launcher startup observability', () => {
       }, {
         resolveProviderMcpBootstrap: () => codexBootstrap(),
         claimTimeoutMs: 120,
+        claimSettlementGraceMs: 40,
         claimPollIntervalMs: 10,
       });
     } catch (error) {
@@ -199,7 +237,7 @@ describe('Thin Launcher startup observability', () => {
         principalId: 'external:codex:wrong-reservation',
         controllerInstanceId: 'runtime-codex-launch-test',
       });
-    }, 40);
+    }, 130);
     let message = '';
     try {
       await launchSuperController({ work: fx.store, handoff: fx.store }, {
@@ -209,7 +247,8 @@ describe('Thin Launcher startup observability', () => {
         cwd: fx.root,
       }, {
         resolveProviderMcpBootstrap: () => bootstrap,
-        claimTimeoutMs: 1_000,
+        claimTimeoutMs: 100,
+        claimSettlementGraceMs: 120,
         claimPollIntervalMs: 10,
       });
     } catch (error) {

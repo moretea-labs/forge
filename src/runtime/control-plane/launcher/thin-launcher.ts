@@ -49,6 +49,7 @@ export interface ThinLauncherResult {
 
 const LAUNCHER_STARTUP_GRACE_MS = 250;
 const CODEX_WORK_CLAIM_TIMEOUT_MS = 30_000;
+const CODEX_WORK_CLAIM_SETTLEMENT_GRACE_MS = 1_500;
 const CODEX_WORK_CLAIM_POLL_INTERVAL_MS = 100;
 const STARTUP_DIAGNOSTIC_BYTES = 8 * 1024;
 
@@ -75,6 +76,7 @@ interface ExternalControllerClaimExpectation {
 export interface ThinLauncherDependencies {
   resolveProviderMcpBootstrap?: typeof resolveProviderMcpBootstrap;
   claimTimeoutMs?: number;
+  claimSettlementGraceMs?: number;
   claimPollIntervalMs?: number;
 }
 
@@ -118,7 +120,7 @@ async function awaitExternalControllerStartup(
   workId: string,
   reservationId: string,
   claimExpectation?: ExternalControllerClaimExpectation,
-  options: { claimTimeoutMs?: number; claimPollIntervalMs?: number } = {},
+  options: { claimTimeoutMs?: number; claimSettlementGraceMs?: number; claimPollIntervalMs?: number } = {},
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     let startupSettled = false;
@@ -220,8 +222,10 @@ async function awaitExternalControllerStartup(
     }
 
     const claimTimeoutMs = Math.max(100, Math.min(options.claimTimeoutMs ?? CODEX_WORK_CLAIM_TIMEOUT_MS, 60_000));
+    const claimSettlementGraceMs = Math.max(0, Math.min(options.claimSettlementGraceMs ?? CODEX_WORK_CLAIM_SETTLEMENT_GRACE_MS, 5_000));
     const claimPollIntervalMs = Math.max(10, Math.min(options.claimPollIntervalMs ?? CODEX_WORK_CLAIM_POLL_INTERVAL_MS, 1_000));
     const claimDeadline = Date.now() + claimTimeoutMs;
+    const claimSettlementDeadline = claimDeadline + claimSettlementGraceMs;
     const pollClaim = () => {
       if (startupSettled) return;
       let observation: ReturnType<typeof expectedClaimMatches>;
@@ -261,10 +265,10 @@ async function awaitExternalControllerStartup(
         }, LAUNCHER_STARTUP_GRACE_MS);
         return;
       }
-      if (Date.now() >= claimDeadline) {
+      if (Date.now() >= claimSettlementDeadline) {
         fail(
-          new Error(`LAUNCHER_CLAIM_TIMEOUT: Codex pid=${String(child.pid ?? 'unknown')} did not claim exact Work ${workId} through Forge MCP within ${claimTimeoutMs}ms`),
-          `claim_timeout:${claimTimeoutMs}ms`,
+          new Error(`LAUNCHER_CLAIM_TIMEOUT: Codex pid=${String(child.pid ?? 'unknown')} did not claim exact Work ${workId} through Forge MCP within ${claimTimeoutMs}ms plus ${claimSettlementGraceMs}ms settlement grace`),
+          `claim_timeout:${claimTimeoutMs}ms+${claimSettlementGraceMs}ms_settlement`,
           true,
         );
         return;
@@ -406,6 +410,7 @@ export async function launchSuperController(
       } : undefined,
       {
         claimTimeoutMs: dependencies.claimTimeoutMs,
+        claimSettlementGraceMs: dependencies.claimSettlementGraceMs,
         claimPollIntervalMs: dependencies.claimPollIntervalMs,
       },
     );
