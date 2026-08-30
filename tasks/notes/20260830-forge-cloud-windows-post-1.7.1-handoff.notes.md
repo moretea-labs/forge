@@ -32,7 +32,7 @@ At the beginning of the next Forge Cloud Windows session:
 
 ## 3. P0 — Immediate Windows Tasks
 
-### P0.1 Fix the real GitHub Windows smoke failure
+### P0.1 Fix the real GitHub Windows smoke failure — completed
 
 Observed on exact 1.7.1 publication commit in GitHub Actions Windows smoke:
 
@@ -49,6 +49,16 @@ Required repair:
 - run the exact GitHub Windows smoke command locally on Windows:
   `bun test tests/cli/install.test.ts tests/runtime/process-environment.test.ts tests/windows-paths.test.ts`;
 - require the GitHub Windows smoke workflow to become green after push.
+
+Closure evidence from Forge Cloud Windows on 2026-08-30:
+
+- delivered commit: `3572c78137e65e45857da3e5b8acde18d92548a7` (`test: make worker stderr path assertion portable`);
+- source delta is test-only: the hard-coded POSIX suffix now uses existing `path.join`; production Scheduler stderr path behavior was not changed;
+- WSL focused smoke: `34 pass / 0 fail` across the exact three requested test files;
+- `package:check:task`: PASS after normalizing this checkout's inherited `umask 0002` working-tree permissions back to Git/index modes; generated authority verified 67 projections and all selected affected tests passed;
+- native Windows execution exercised the exact three-file smoke command with Bun 1.4.0; the repaired `process-environment` Windows assertion passed. The local workstation also exposed unrelated default-5s Bun test scheduling contention in two CLI subprocess integration tests under the combined run; direct CLI timings remained ~0.65-0.70s, so no production behavior or unrelated timeout gate was weakened;
+- GitHub Windows smoke run `33295425501` / #290 completed `success`: dependency install, PowerShell installer dry run, platform contract, installer/Windows policy tests, and Node portable smoke all passed;
+- `origin/main` independently confirmed to contain the exact delivered commit and the main checkout was clean before advancing to P0.2.
 
 ### P0.2 Effect Work -> source delta terminalization authority
 

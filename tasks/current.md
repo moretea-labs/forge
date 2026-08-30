@@ -1,28 +1,30 @@
 # Current Status Snapshot
 
-<!-- updated_at: 2026-08-30T13:20:00+0800 -->
+<!-- updated_at: 2026-08-30T13:48:00+0800 -->
 <!-- stale_after: 24h -->
 
-> **Status**: Handoff
-> **Updated At**: 2026-08-30T13:20:00+0800
+> **Status**: Active
+> **Updated At**: 2026-08-30T13:48:00+0800
 > **Source Branch**: main
 > **Published Baseline Commit**: 1ba073f5fa78dc69202f349afadab785f97d48f9
 > **Target Branch**: main
-> **Reason**: Forge 1.7.1 published; all subsequent Forge source optimization moves to Forge Cloud Windows
+> **Reason**: Forge 1.7.1 published; Forge Cloud Windows P0.1 is delivered and P0.2 lifecycle authority repair is active
 
 This file is a tracked mainline snapshot for the post-1.7.1 handoff. It is not a live lock or a replacement for Forge Work/Plan authority. The tracked handoff note below is the portable source of truth for a fresh Forge Cloud Windows clone.
 
 ## Current Focus
 
-- Status: Handoff to Forge Cloud Windows
+- Status: Active on Forge Cloud Windows
 - Active source-optimization lane: Windows Forge Cloud only
 - Handoff: `tasks/notes/20260830-forge-cloud-windows-post-1.7.1-handoff.notes.md`
-- Next source task: reproduce and fix the failing Windows smoke path assertion, then proceed through the prioritized lifecycle/control-plane backlog in the handoff note
+- P0.1 delivered: `3572c78137e65e45857da3e5b8acde18d92548a7`; GitHub Windows smoke #290 passed
+- Next source task: P0.2 effect Work -> source-delta terminalization authority, including the narrow historical reconciliation path defined in the handoff note
 - Local macOS source lane: frozen after this governance handoff; do not create parallel Forge source optimization unless the user explicitly overrides this policy
 
 ## Published Baseline
 
-- `origin/main`: `1ba073f5fa78dc69202f349afadab785f97d48f9`
+- published 1.7.1 commit: `1ba073f5fa78dc69202f349afadab785f97d48f9`
+- current `origin/main`: `3572c78137e65e45857da3e5b8acde18d92548a7` (P0.1 Windows smoke repair)
 - immutable tag: `v1.7.1` -> `1ba073f5fa78dc69202f349afadab785f97d48f9`
 - npm: `@moretea-labs/forge@1.7.1`, `latest=1.7.1`
 - GitHub Release: `v1.7.1`
@@ -52,8 +54,9 @@ The macOS Controller still reports active/pending historical state. It is **not*
 ## Git Status at Handoff
 
 - branch: `main`
-- baseline: `1ba073f5fa78dc69202f349afadab785f97d48f9`
-- local source tree before this governance-only commit: clean and synchronized with `origin/main`
+- release baseline: `1ba073f5fa78dc69202f349afadab785f97d48f9`
+- current delivered main: `3572c78137e65e45857da3e5b8acde18d92548a7`
+- local source tree is synchronized with `origin/main` before the P0.2 implementation slice
 
 ## Source Artifacts
 
