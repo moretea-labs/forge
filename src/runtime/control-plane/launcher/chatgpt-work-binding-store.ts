@@ -47,6 +47,19 @@ export function parseChatgptConversationIdentity(value: string): { conversationU
   return { conversationUrl: url.toString(), conversationId };
 }
 
+export function hasChatgptConversationIdentity(value: string): boolean {
+  try {
+    parseChatgptConversationIdentity(value);
+    return true;
+  } catch (error) {
+    // ChatGPT root and Project URLs are valid launch seeds, but they are not
+    // durable conversation identities. Persist only the /c/<id> URL observed
+    // after the browser confirms submission.
+    if (error instanceof Error && error.message === 'CHATGPT_WORK_CONVERSATION_ID_MISSING') return false;
+    throw error;
+  }
+}
+
 function record(options: ChatgptWorkBindingStoreOptions, workId: string) {
   return readControlPlaneRecord<ChatgptWorkConversationBinding>(
     options.controllerHome,

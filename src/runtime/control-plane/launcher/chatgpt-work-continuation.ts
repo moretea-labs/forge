@@ -5,6 +5,7 @@ import { getWorkContract } from '../facade/work-contract-store';
 import {
   bindChatgptWorkConversation,
   getChatgptWorkConversationBinding,
+  hasChatgptConversationIdentity,
   parseChatgptConversationIdentity,
   rebindChatgptWorkConversation,
   type ChatgptWorkConversationBinding,
@@ -693,7 +694,7 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
       throw new Error(`CHATGPT_WORK_CONTRACT_NOT_FOUND: ${input.repoId}:${input.workId}`);
     }
     await ensureControllerChatgptBrowser(input.controllerHome, input.workId);
-    if (seedUrl && !binding) {
+    if (seedUrl && !binding && hasChatgptConversationIdentity(seedUrl)) {
       binding = bindChatgptWorkConversation(store, {
         workId: input.workId,
         conversationUrl: seedUrl,

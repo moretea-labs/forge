@@ -18,6 +18,7 @@ import { chatgptBridgeTargetMatchesPage } from '../../src/cli/chatgpt-browser/br
 import {
   bindChatgptWorkConversation,
   getChatgptWorkConversationBinding,
+  hasChatgptConversationIdentity,
   parseChatgptConversationIdentity,
   rebindChatgptWorkConversation,
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
@@ -35,6 +36,7 @@ import {
   stableStandaloneChatgptBrowserSessionId,
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
 import { migrateChatgptAutomationSchedule } from '../../src/runtime/workflow/schedules/chatgpt-automation-migration';
+import { classifyChatgptWakeFailure } from '../../src/runtime/workflow/schedules/engine';
 import type { RepositorySchedule } from '../../src/runtime/workflow/schedules/types';
 
 const roots: string[] = [];
@@ -56,6 +58,10 @@ describe('ChatGPT Work conversation binding', () => {
       conversationId: 'abc-123',
     });
     expect(() => parseChatgptConversationIdentity('https://chatgpt.com/')).toThrow('CHATGPT_WORK_CONVERSATION_ID_MISSING');
+    expect(hasChatgptConversationIdentity('https://chatgpt.com/')).toBe(false);
+    expect(hasChatgptConversationIdentity('https://chatgpt.com/g/g-p-project/project')).toBe(false);
+    expect(hasChatgptConversationIdentity('https://chatgpt.com/c/abc-123')).toBe(true);
+    expect(() => hasChatgptConversationIdentity('https://example.com/c/abc')).toThrow('CHATGPT_WORK_CONVERSATION_URL_INVALID');
     expect(() => parseChatgptConversationIdentity('https://example.com/c/abc')).toThrow('CHATGPT_WORK_CONVERSATION_URL_INVALID');
   });
 
@@ -159,6 +165,12 @@ describe('ChatGPT Work conversation binding', () => {
     expect(chatgptAutomationNavigationRequiresReplacement(new Error('CHATGPT_AUTOMATION_LOGIN_REQUIRED'))).toBe(false);
   });
 
+  test('keeps transient native browser loss retryable without hiding user-auth blockers', () => {
+    expect(classifyChatgptWakeFailure('PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN: saved tab disappeared')).toBe('retryable_readiness');
+    expect(classifyChatgptWakeFailure('PLUGIN_MACOS_CAPABILITY_BROKER_UNAVAILABLE: desktop-operator.sock unavailable')).toBe('retryable_readiness');
+    expect(classifyChatgptWakeFailure('CHATGPT_AUTOMATION_LOGIN_REQUIRED')).toBe('user_action_required');
+  });
+
   test('recognizes contextual ChatGPT reasoning labels without matching unrelated UI', () => {
     expect(chatgptAutomationReasoningLevelFromLabel('High')).toBe('high');
     expect(chatgptAutomationReasoningLevelFromLabel('Thinking: High')).toBe('high');
@@ -221,6 +233,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain('aria-keyshortcuts~=\"ArrowRight\"');
     expect(source).not.toContain(':has-text(');
     expect(source).toContain('waitForChatgptIntelligenceControl'); expect(source).toContain('reasoningLabelMatches'); expect(source).toContain("'main button, main [role=\"button\"]'"); expect(source).toContain('limit: chatgptAutomationControlQueryLimit(selector)'); expect(source).toContain('chatgptAutomationReasoningLevelFromLabel'); expect(source).toContain('CHATGPT_AUTOMATION_LOGIN_REQUIRED'); expect(source).not.toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('runWorkChatgptContinuation'); expect(engine).toContain("if (controllerType === 'chatgpt')"); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/'"); expect(engine).toContain("conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined");
+    expect(source).toContain('seedUrl && !binding && hasChatgptConversationIdentity(seedUrl)');
     expect(source).toContain('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'); expect(source).toContain('workflowToolAttributionInstruction'); expect(source).toContain('repository_command_execute and repository_safe_patch_apply');
     expect(source).toContain("controllerBrowserAction(controllerHome, workId, 'close_page'");
     expect(source).toContain('closeChatgptAutomationTabAfterDispatch');
