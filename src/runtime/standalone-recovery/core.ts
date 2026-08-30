@@ -537,6 +537,12 @@ function recoveryBusyDetail(owner: RecoveryLock): string {
   return `Recovery mutation already in progress: action=${owner.action ?? 'invalid'} request=${owner.requestId ?? 'invalid'} pid=${owner.pid} instance=${owner.instanceId}`;
 }
 
+function liveRecoveryMutationLock(config: RecoveryConfig): RecoveryLock | undefined {
+  const owner = json<RecoveryLock>(lockPath(config));
+  if (!owner || !Number.isInteger(owner.pid) || owner.pid <= 0 || typeof owner.instanceId !== 'string' || !owner.instanceId.trim()) return undefined;
+  return recoveryLockOwnerAlive(owner) ? owner : undefined;
+}
+
 async function withLock<T>(
   config: RecoveryConfig,
   intent: RecoveryLockIntent,
@@ -2516,15 +2522,26 @@ export async function stageAndActivateConfiguredRuntimeRelease(
   // Capture the base before staging. Staging can take long enough for another
   // activation to win; the later publish must prove this base is still current.
   const expectedAuthority = releaseAuthority(config);
-  let staged: StagedRuntimeRelease;
-  try {
-    staged = (dependencies.stage ?? stageRuntimeReleaseFromCandidateSource)({ controllerHome: config.controllerHome, sourceRoot });
-    assertRuntimeReleaseFiles(staged);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : 'Runtime release staging failed';
-    audit(config, 'runtime_release_stage_failed', { sourceRoot, detail });
-    return { ok: false, attempted: false, noOp: true, detail };
+  const stagedAttempt = await withLock(config, {
+    action: 'stage_and_activate_runtime_release',
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+  }, async () => {
+    try {
+      const staged = (dependencies.stage ?? stageRuntimeReleaseFromCandidateSource)({ controllerHome: config.controllerHome, sourceRoot });
+      assertRuntimeReleaseFiles(staged);
+      return { ok: true as const, staged };
+    } catch (error) {
+      return { ok: false as const, detail: error instanceof Error ? error.message : 'Runtime release staging failed' };
+    }
+  });
+  if (!stagedAttempt.acquired) {
+    return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(stagedAttempt.owner) };
   }
+  if (!stagedAttempt.value.ok) {
+    audit(config, 'runtime_release_stage_failed', { sourceRoot, detail: stagedAttempt.value.detail });
+    return { ok: false, attempted: false, noOp: true, detail: stagedAttempt.value.detail };
+  }
+  const staged: StagedRuntimeRelease = stagedAttempt.value.staged;
   const activationGuard: RuntimeReleaseActivationGuard = {
     ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
     expectedAuthorityRevision: expectedAuthority?.revision ?? null,
@@ -2838,6 +2855,35 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     fullVerificationPerformed = true;
   }
   const lastFullVerifyAt = fullVerificationPerformed ? now : scopedPrior.lastFullVerifyAt;
+  const activeMutation = liveRecoveryMutationLock(config);
+  if (activeMutation) {
+    const attributable = recoveryLockOwnerAttributable(activeMutation);
+    if (!attributable) {
+      audit(config, 'recovery_operation_lock_identity_uncertain', {
+        pid: activeMutation.pid,
+        instanceId: activeMutation.instanceId,
+        action: activeMutation.action ?? null,
+        requestId: activeMutation.requestId ?? null,
+        acquiredAt: activeMutation.acquiredAt,
+      });
+    }
+    const reason = attributable
+      ? `Recovery mutation in progress: action=${activeMutation.action} request=${activeMutation.requestId}; watchdog repair escalation suppressed`
+      : 'Recovery mutation lock identity is uncertain; watchdog repair escalation suppressed';
+    const state: WatchdogState = {
+      ...scopedPrior,
+      failures: 0,
+      firstFailureAt: undefined,
+      publicTunnelFailures: 0,
+      publicTunnelFirstFailureAt: undefined,
+      primaryConnectorFailures: 0,
+      primaryConnectorFirstFailureAt: undefined,
+      lastFullVerifyAt,
+      lastDecision: 'degraded',
+      lastReason: reason,
+    };
+    return { state, decision: { action: 'degraded', reason }, verify: verified };
+  }
   if (runtimeStartupGrace && !localVerify.ok) {
     const state: WatchdogState = {
       ...scopedPrior,

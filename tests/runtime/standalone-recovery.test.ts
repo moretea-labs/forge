@@ -736,6 +736,12 @@ test('standalone Recovery stages only its configured Runtime source and hands a 
   const result = await stageAndActivateConfiguredRuntimeRelease(config, {
     stage: (input) => {
       stagedFrom = input.sourceRoot;
+      const operationLock = JSON.parse(readFileSync(join(home, 'recovery', 'locks', 'operation.lock'), 'utf8')) as Record<string, unknown>;
+      expect(operationLock).toMatchObject({
+        pid: process.pid,
+        action: 'stage_and_activate_runtime_release',
+        requestId: 'recovery-gateway:stage-request-1',
+      });
       return {
         controllerHome: input.controllerHome,
         releasePath,
@@ -748,6 +754,7 @@ test('standalone Recovery stages only its configured Runtime source and hands a 
     },
     activate: async (_config, path, guard) => {
       activatedManifest = path;
+      expect(existsSync(join(home, 'recovery', 'locks', 'operation.lock'))).toBe(false);
       expect(existsSync(join(dirname(path), 'future-sidecar-v2'))).toBe(true);
       expect(guard).toMatchObject({
         requestId: 'recovery-gateway:stage-request-1',
@@ -760,6 +767,54 @@ test('standalone Recovery stages only its configured Runtime source and hands a 
   expect(stagedFrom).toBe(resolve(sourceRoot));
   expect(activatedManifest).toBe(manifestPath);
   expect(result).toMatchObject({ ok: true, attempted: true, staged: { releaseId: 'release-new' } });
+});
+
+test('watchdog defers Recovery self-repair while an attributable mutation lock is live', async () => {
+  const home = controllerHome();
+  const activeManifest = manifest(home, 'release-watchdog-mutation', 'artifact-watchdog-mutation');
+  ensureActiveRuntimeRelease(home, activeManifest);
+  const runtime = await runtimeServer();
+  writeMainToken(home);
+  startObservedRuntime(
+    home,
+    runtime.endpoint,
+    'release-watchdog-mutation',
+    'artifact-watchdog-mutation',
+    new Date(Date.now() - 120_000).toISOString(),
+  );
+  const config = createRecoveryConfig(home, {
+    gateway: {
+      host: '127.0.0.1',
+      port: 65534,
+      bearerTokenFile: join(home, 'recovery', 'config', 'gateway-token.json'),
+    },
+  });
+  mkdirSync(join(home, 'recovery', 'locks'), { recursive: true });
+  writeFileSync(join(home, 'recovery', 'locks', 'operation.lock'), JSON.stringify({
+    schemaVersion: 1,
+    pid: process.pid,
+    instanceId: 'test-live-stage-mutation',
+    acquiredAt: new Date().toISOString(),
+    action: 'stage_and_activate_runtime_release',
+    requestId: 'recovery-gateway:test-live-stage-mutation',
+  }));
+
+  const tick = await watchdogTick(config, {
+    failures: 2,
+    firstFailureAt: Date.now() - 6_000,
+    rollbackUsed: false,
+    lastFullVerifyAt: Date.now(),
+  });
+
+  expect(tick.verify.probes.recovery_gateway?.ok).toBe(false);
+  expect(tick.decision).toMatchObject({
+    action: 'degraded',
+    reason: expect.stringContaining('stage_and_activate_runtime_release'),
+  });
+  expect(tick.state.failures).toBe(0);
+  expect(tick.state.firstFailureAt).toBeUndefined();
+  expect(tick.recoveryGatewayRestart).toBeUndefined();
+  expect(tick.primaryRuntimeRestart).toBeUndefined();
 });
 
 describe('standalone recovery on canonical Runtime', () => {
