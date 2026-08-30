@@ -146,4 +146,40 @@ describe('controller Work ownership fencing', () => {
       expectedClaimGeneration: 999,
     })).toThrow(/WORK_CLAIM_GENERATION_MISMATCH/);
   });
+
+  test('allows an explicitly authorized stale recovery to rotate controller ownership after the recovery grace', () => {
+    const home = controllerHome();
+    let nowMs = Date.now();
+    const store = {
+      controllerHome: home,
+      repoId: 'repo-a',
+      now: () => new Date(nowMs).toISOString(),
+    };
+    const first = claimControllerSession(store, {
+      ...claimInput('session-old', 'principal-old', 'instance-old'),
+      leaseMs: 60 * 60_000,
+    });
+    const recovery = {
+      ...claimInput('session-chatgpt', 'principal-chatgpt', 'instance-chatgpt'),
+      leaseMs: 60 * 60_000,
+      expectedClaimGeneration: first.claimGeneration,
+      allowStaleRecovery: true,
+    };
+
+    expect(() => resumeControllerSession(store, recovery)).toThrow(/WORK_CONTROLLER_PRINCIPAL_MISMATCH/);
+
+    nowMs += 6 * 60_000;
+    expect(() => resumeControllerSession(store, {
+      ...recovery,
+      allowStaleRecovery: false,
+    })).toThrow(/WORK_CONTROLLER_PRINCIPAL_MISMATCH/);
+    const recovered = resumeControllerSession(store, recovery);
+    expect(recovered).toMatchObject({
+      controllerId: 'principal-chatgpt',
+      principalId: 'principal-chatgpt',
+      sessionId: 'session-chatgpt',
+      controllerInstanceId: 'instance-chatgpt',
+      claimGeneration: (first.claimGeneration ?? 1) + 1,
+    });
+  });
 });

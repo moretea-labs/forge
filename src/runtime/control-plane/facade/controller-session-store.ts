@@ -18,6 +18,12 @@ export interface ControllerSessionClaimInput {
   controllerInstanceId?: string;
   /** Optional compare-and-swap fence supplied by a recovering caller. */
   expectedClaimGeneration?: number;
+  /**
+   * Permit a different authenticated controller epoch to recover this Work only
+   * after the canonical execution/activity grace has elapsed. Callers must pair
+   * this with expectedClaimGeneration from the owner they observed.
+   */
+  allowStaleRecovery?: boolean;
   leaseMs?: number;
 }
 
@@ -54,9 +60,34 @@ const MAX_CONTROLLER_RECOVERY_GRACE_MS = 60 * 60_000;
 const DEFAULT_CONTROLLER_LEASE_MS = 60 * 60_000;
 const MAX_CONTROLLER_LEASE_MS = 60 * 60_000;
 
-function activeSession(store: ControllerSessionStore, workId: string): ControllerSession | undefined {
-  const at = Date.now();
-  return store.sessions.find((session) => session.workId === workId && Date.parse(session.leaseExpiresAt) > at);
+function optionsNowMs(options: ControllerSessionStoreOptions): number {
+  const parsed = Date.parse(now(options));
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function activeSession(store: ControllerSessionStore, workId: string, atMs: number = Date.now()): ControllerSession | undefined {
+  return store.sessions.find((session) => session.workId === workId && Date.parse(session.leaseExpiresAt) > atMs);
+}
+
+function sessionBlocksRecovery(
+  options: ControllerSessionStoreOptions,
+  owner: ControllerSession,
+  input: { nowMs: number; graceMs?: number },
+): boolean {
+  const execution = peekExecutionSession(options.controllerHome, owner.sessionId);
+  const graceMs = Math.max(60_000, Math.min(input.graceMs ?? DEFAULT_CONTROLLER_RECOVERY_GRACE_MS, MAX_CONTROLLER_RECOVERY_GRACE_MS));
+  if (execution?.invalidatedAt) {
+    const invalidatedAtMs = Date.parse(execution.invalidatedAt);
+    if (!Number.isFinite(invalidatedAtMs)) return true;
+    return input.nowMs - invalidatedAtMs < graceMs;
+  }
+  if (execution?.activeWorkId && execution.activeWorkId !== owner.workId) return false;
+  const activityMs = [execution?.lastValidatedAt, execution?.updatedAt, owner.claimedAt]
+    .map((value) => value ? Date.parse(value) : Number.NaN)
+    .filter(Number.isFinite)
+    .reduce((latest, value) => Math.max(latest, value), Number.NEGATIVE_INFINITY);
+  if (!Number.isFinite(activityMs)) return false;
+  return input.nowMs - activityMs < graceMs;
 }
 
 export function controllerSessionBlocksRecovery(
@@ -64,23 +95,10 @@ export function controllerSessionBlocksRecovery(
   workId: string,
   input: { nowMs?: number; graceMs?: number } = {},
 ): boolean {
-  const owner = activeSession(read(options), workId);
-  if (!owner) return false;
-  const execution = peekExecutionSession(options.controllerHome, owner.sessionId);
   const nowMs = input.nowMs ?? Date.now();
-  const graceMs = Math.max(60_000, Math.min(input.graceMs ?? DEFAULT_CONTROLLER_RECOVERY_GRACE_MS, MAX_CONTROLLER_RECOVERY_GRACE_MS));
-  if (execution?.invalidatedAt) {
-    const invalidatedAtMs = Date.parse(execution.invalidatedAt);
-    if (!Number.isFinite(invalidatedAtMs)) return true;
-    return nowMs - invalidatedAtMs < graceMs;
-  }
-  if (execution?.activeWorkId && execution.activeWorkId !== workId) return false;
-  const activityMs = [execution?.lastValidatedAt, execution?.updatedAt, owner.claimedAt]
-    .map((value) => value ? Date.parse(value) : Number.NaN)
-    .filter(Number.isFinite)
-    .reduce((latest, value) => Math.max(latest, value), Number.NEGATIVE_INFINITY);
-  if (!Number.isFinite(activityMs)) return false;
-  return nowMs - activityMs < graceMs;
+  const owner = activeSession(read(options), workId, nowMs);
+  if (!owner) return false;
+  return sessionBlocksRecovery(options, owner, { nowMs, graceMs: input.graceMs });
 }
 
 function assertIdentity(input: ControllerSessionClaimInput): void {
@@ -142,9 +160,10 @@ function persistClaim(
   previous?: ControllerSession,
 ): ControllerSession {
   const claimedAt = now(options);
+  const claimedAtMs = Date.parse(claimedAt);
   const session = claimedSession(options, input, claimedAt, previous);
   const sessions = [
-    ...store.sessions.filter((entry) => entry.workId !== input.workId && Date.parse(entry.leaseExpiresAt) > Date.now()),
+    ...store.sessions.filter((entry) => entry.workId !== input.workId && Date.parse(entry.leaseExpiresAt) > claimedAtMs),
     session,
   ];
   write(options, { schemaVersion: 1, updatedAt: claimedAt, sessions });
@@ -152,11 +171,11 @@ function persistClaim(
 }
 
 export function getControllerSession(options: ControllerSessionStoreOptions, workId: string): ControllerSession | undefined {
-  return activeSession(read(options), workId);
+  return activeSession(read(options), workId, optionsNowMs(options));
 }
 
 export function listControllerSessions(options: ControllerSessionStoreOptions): ControllerSession[] {
-  const at = Date.now();
+  const at = optionsNowMs(options);
   return read(options).sessions.filter((session) => Date.parse(session.leaseExpiresAt) > at);
 }
 
@@ -281,7 +300,7 @@ export function withControllerSessionTerminalizationFence<T>(
     { scope: 'task', repoId: options.repoId, taskId: `controller-session-${input.workId}` },
     input.actor,
     () => {
-      const owner = activeSession(read(options), input.workId);
+      const owner = activeSession(read(options), input.workId, optionsNowMs(options));
       if (!owner) {
         if (input.authority) return { allowed: false, reason: 'controller_claim_missing' };
         return { allowed: true, value: operation() };
@@ -315,7 +334,7 @@ export function releaseControllerSessionWithAuthority(
     input.actor,
     () => {
       const store = read(options);
-      const owner = activeSession(store, input.workId);
+      const owner = activeSession(store, input.workId, optionsNowMs(options));
       if (!owner) return { allowed: false, reason: 'controller_claim_missing' };
       if (!controllerTerminalizationAuthorityMatches(owner, input.authority)) {
         return { allowed: false, reason: 'stale_controller_authority', owner };
@@ -356,7 +375,7 @@ export function claimControllerSession(
     () => {
       assertWorkClaimable(options, input.workId);
       const store = read(options);
-      const current = activeSession(store, input.workId);
+      const current = activeSession(store, input.workId, optionsNowMs(options));
       assertExpectedGeneration(input, current);
       if (current && (current.controllerId !== input.controllerId || current.sessionId !== input.sessionId)) {
         throw new Error(`WORK_ALREADY_CLAIMED: ${input.workId} is owned by ${current.controllerId}`);
@@ -387,15 +406,19 @@ export function resumeControllerSession(
     () => {
       assertWorkClaimable(options, input.workId);
       const store = read(options);
-      const current = activeSession(store, input.workId);
+      const currentNowMs = optionsNowMs(options);
+      const current = activeSession(store, input.workId, currentNowMs);
       assertExpectedGeneration(input, current);
       if (!current) return persistClaim(options, store, input);
       const priorExecution = peekExecutionSession(options.controllerHome, current.sessionId);
       const currentPrincipal = current.principalId?.trim() || priorExecution?.principalId?.trim() || current.controllerId;
-      if (currentPrincipal !== input.principalId.trim()) {
+      const staleRecoveryAllowed = input.allowStaleRecovery === true
+        && input.expectedClaimGeneration !== undefined
+        && !sessionBlocksRecovery(options, current, { nowMs: currentNowMs });
+      if (currentPrincipal !== input.principalId.trim() && !staleRecoveryAllowed) {
         throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${input.workId} is owned by another authenticated principal`);
       }
-      if (current.controllerId !== input.controllerId) {
+      if (current.controllerId !== input.controllerId && !staleRecoveryAllowed) {
         throw new Error(`WORK_ALREADY_CLAIMED: ${input.workId} is owned by ${current.controllerId}`);
       }
       return persistClaim(options, store, input, current);

@@ -212,7 +212,7 @@ import { reconcileWorkValidation } from './work-validation-reconciler';
 import { callExecutionTool } from './execution-tools';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
 import { runStandaloneChatgptPrompt, runWorkChatgptContinuation, settleWorkChatgptAutomationTab } from '../../control-plane/launcher/chatgpt-work-continuation';
-import { getChatgptWorkConversationBinding } from '../../control-plane/launcher/chatgpt-work-binding-store';
+import { getChatgptWorkConversationBinding, hasChatgptConversationIdentity } from '../../control-plane/launcher/chatgpt-work-binding-store';
 import {
   acknowledgeControllerRoundClaim,
   beginControllerRoundRelayAfterRelease,
@@ -224,6 +224,7 @@ import {
   parseControllerDispositionCompatibilityCapability,
   recordControllerRoundTabSettlement,
   submitControllerRoundDisposition,
+  type ControllerRoundRelayRecord,
   type ControllerRoundDisposition,
 } from '../../control-plane/facade/controller-round-relay';
 
@@ -1130,6 +1131,20 @@ function authenticatedFacadeControllerIdentity(
     controllerType: transportControllerType ?? requestedControllerType ?? 'chatgpt',
     controllerInstanceId: ctx.controllerInstanceId?.trim() || currentControllerInstanceId(),
   };
+}
+
+export function dispatchedChatgptRelayAuthorizesStaleControllerRecovery(
+  relay: ControllerRoundRelayRecord | undefined,
+  controllerType: 'chatgpt' | 'codex' | 'claude' | 'grok' | 'human',
+): boolean {
+  if (controllerType !== 'chatgpt' || relay?.status !== 'dispatched' || !relay.browserSessionId || !relay.conversationUrl) {
+    return false;
+  }
+  try {
+    return hasChatgptConversationIdentity(relay.conversationUrl);
+  } catch {
+    return false;
+  }
 }
 
 function bindFacadeControllerOwnership(
@@ -3745,13 +3760,27 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             const work = getWorkContract(store, workId);
             if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
             const identity = authenticatedFacadeControllerIdentity(ctx, args);
+            const observedOwner = getControllerSession(store, workId);
+            const dispatchedRelay = getControllerRoundRelay(store, workId);
+            const crossOwnerRecovery = Boolean(observedOwner)
+              && (
+                observedOwner!.controllerId !== identity.controllerId
+                || controllerSessionPrincipalId(observedOwner!) !== identity.principalId
+              )
+              && dispatchedChatgptRelayAuthorizesStaleControllerRecovery(dispatchedRelay, identity.controllerType);
             const session = resumeControllerSession(store, {
               workId,
               controllerId: identity.controllerId,
-              controllerType: ['chatgpt', 'codex', 'grok', 'claude', 'human'].includes(String(args.controller_type)) ? String(args.controller_type) as 'chatgpt' | 'codex' | 'grok' | 'claude' | 'human' : 'chatgpt',
+              controllerType: identity.controllerType,
               sessionId: identity.sessionId,
               principalId: identity.principalId,
               controllerInstanceId: identity.controllerInstanceId,
+              ...(crossOwnerRecovery
+                ? {
+                    expectedClaimGeneration: observedOwner!.claimGeneration,
+                    allowStaleRecovery: true,
+                  }
+                : {}),
               leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
             });
             const permissionSnapshotVersion = currentPermissionSnapshotVersion(ctx.controllerHome, repository.repoId);

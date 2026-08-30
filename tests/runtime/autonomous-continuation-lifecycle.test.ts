@@ -75,6 +75,86 @@ function mcpContext(
 }
 
 describe('autonomous continuation lifecycle', () => {
+  test('a dispatched ChatGPT relay reclaims a stale prior controller without weakening ordinary ownership fencing', async () => {
+    const root = temp('forge-autonomous-stale-owner-recovery-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'autonomous-stale-owner-recovery' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workId = 'WORK-AUTONOMOUS-STALE-OWNER-RECOVERY';
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Recover a stale Codex owner into the browser-launched ChatGPT round.',
+      acceptanceCriteria: ['the dispatched ChatGPT relay rotates the stale ownership generation'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+
+    const oldOwner = claimControllerSession({
+      ...store,
+      now: () => new Date(Date.now() - 6 * 60_000).toISOString(),
+    }, {
+      workId,
+      controllerId: 'external:codex:stale',
+      controllerType: 'codex',
+      sessionId: 'external-session:codex:stale',
+      principalId: 'external:codex:stale',
+      controllerInstanceId: 'runtime-old',
+      leaseMs: 60 * 60_000,
+    });
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: 'schedule:test',
+        principalId: 'forge-scheduler',
+        controllerInstanceId: 'runtime-test',
+        sessionId: 'occurrence-test',
+      },
+    });
+    finishControllerRoundRelayDispatch(store, {
+      workId,
+      ok: true,
+      browserSessionId: 'forge-chatgpt-work-test',
+      conversationUrl: 'https://chatgpt.com/c/stale-owner-recovery',
+    });
+
+    const claimed = structured(await callRuntimeTool(
+      mcpContext(controllerHome, repository, {
+        principalId: 'chatgpt-principal',
+        sessionId: 'chatgpt-session',
+        controllerInstanceId: 'runtime-test',
+      }),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        operation: 'controller_claim',
+        controller_type: 'chatgpt',
+        work_id: workId,
+      },
+    ));
+
+    expect(claimed.status).toBe('ok');
+    expect(claimed.data.session).toMatchObject({
+      workId,
+      controllerId: 'chatgpt-principal',
+      controllerType: 'chatgpt',
+      principalId: 'chatgpt-principal',
+      sessionId: 'chatgpt-session',
+      claimGeneration: (oldOwner.claimGeneration ?? 1) + 1,
+    });
+    expect(claimed.data.relay).toMatchObject({ status: 'claimed', originWorkId: workId });
+    expect(getControllerSession(store, workId)?.controllerId).toBe('chatgpt-principal');
+  });
+
   test('frozen-schema goal_complete closes a completed Work after MCP session rotation without reclaiming the terminal Work', async () => {
     const root = temp('forge-autonomous-continuation-facade-');
     const controllerHome = join(root, 'controller');
