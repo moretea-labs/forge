@@ -1,15 +1,15 @@
 # Deferred Goal Ledger
 
 > **Status**: Backlog
-> **Updated**: 2026-08-24 16:03
-> **Scope**: Medium/long-term goals deferred from active plan execution
+> **Updated**: 2026-08-30
+> **Scope**: Goals intentionally deferred outside the active Forge Cloud Windows source-optimization handoff
 
-Current plan tasks live in the active plan's `## Task Breakdown`.
-Do not duplicate that execution checklist here. Record only work intentionally deferred beyond this slice, with the tradeoff and revisit trigger.
+The active post-1.7.1 source checklist is tracked in `tasks/notes/20260830-forge-cloud-windows-post-1.7.1-handoff.notes.md`.
+Do not duplicate that execution checklist here.
 
 ## Deferred Goals
 
 | Goal | Why Deferred | Tradeoff | Revisit Trigger |
 |------|--------------|----------|-----------------|
-| Review historical macOS Automation grants recorded in `tasks/notes/20260811-forge-residual-runtime-issues.notes.md` | The residual-runtime ledger is reconciled with no known P0/P1 correctness debt; only selector-bound System Settings cleanup remains and permission toggles require user action-time confirmation | Historical principals remain visible in macOS Automation settings, but this is P2 operational hygiene and does not block Runtime correctness or delivery | Revisit when the user is present to confirm the exact permission toggles; preserve the stable signed `Forge Desktop Operator` Chrome/Vivaldi grants |
-| Add a stable business-goal identity (`goalKey` / authoritative scope identity) across intentionally isolated WorkContracts | `d2e6c845` now prevents two non-isolated Works from writing the same checkout and preserves ChatGPT schedule conversation affinity; inferring semantic equality across legitimate isolated slices is a broader portfolio/goal-identity design change | An explicit isolated Work can still duplicate an existing product goal if a caller invents a new scope, but it can no longer become a second writer of the canonical checkout | When changing Plan scope semantics, Goal/Portfolio identity, or cross-worktree Work admission |
+| Complete historical macOS Automation/TCC cleanup and macOS-only browser live acceptance | Forge source optimization is moving to Forge Cloud Windows. Selector-bound System Settings cleanup, Accessibility/Screen Recording/Automation grants, and Chrome Apple Events behavior require the macOS host and sometimes user-presence confirmation. | Historical macOS principals or unresolved live-browser proof can remain visible even after platform-neutral source fixes; this must not be misreported as Windows-verifiable closure. | Revisit only on the macOS host when exact TCC/browser evidence is required; preserve the signed `Forge Desktop Operator` authority and do not grant equivalent powers to Runtime. |
+| Recover/export data from the historical logged-out ChatGPT browser profile | This is account/history recovery rather than Forge product-source correctness and the saved old profile is logged out. | Historical data may remain unavailable, but it does not block Forge source development or release correctness. | Revisit only when the user explicitly asks to recover that account/history and can provide required authentication. |

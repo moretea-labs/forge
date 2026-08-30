@@ -1,67 +1,62 @@
 # Current Status Snapshot
 
-<!-- generated-by: forge refresh-current-status v1 -->
-<!-- updated_at: 2026-08-24T12:03:30+0800 -->
+<!-- updated_at: 2026-08-30T13:20:00+0800 -->
 <!-- stale_after: 24h -->
 
-> **Status**: Idle
-> **Updated At**: 2026-08-24T12:03:30+0800
+> **Status**: Handoff
+> **Updated At**: 2026-08-30T13:20:00+0800
 > **Source Branch**: main
-> **Source Commit**: 1910fb29
+> **Published Baseline Commit**: 1ba073f5fa78dc69202f349afadab785f97d48f9
 > **Target Branch**: main
-> **Stale After**: 24h
-> **Reason**: canonical controller migration orphan archive complete
-> **Derived From**: active-plan, active-sprint, workstreams, handoff, checks, git status
+> **Reason**: Forge 1.7.1 published; all subsequent Forge source optimization moves to Forge Cloud Windows
 
-This file is a tracked mainline snapshot derived from repo artifacts. It is not a live lock, not a kanban board, and not an implementation gate. If it is stale, read the source artifacts below.
+This file is a tracked mainline snapshot for the post-1.7.1 handoff. It is not a live lock or a replacement for Forge Work/Plan authority. The tracked handoff note below is the portable source of truth for a fresh Forge Cloud Windows clone.
 
 ## Current Focus
 
-- Status: Idle
-- Active Plan: (none)
-- Plan Status: (none)
-- Next Task: (none)
-- Clear Note: (none)
+- Status: Handoff to Forge Cloud Windows
+- Active source-optimization lane: Windows Forge Cloud only
+- Handoff: `tasks/notes/20260830-forge-cloud-windows-post-1.7.1-handoff.notes.md`
+- Next source task: reproduce and fix the failing Windows smoke path assertion, then proceed through the prioritized lifecycle/control-plane backlog in the handoff note
+- Local macOS source lane: frozen after this governance handoff; do not create parallel Forge source optimization unless the user explicitly overrides this policy
 
-## Mainline Snapshot Reading
+## Published Baseline
 
-- Current worktree: `tasks/current.md`
-- Target branch snapshot: `git show main:tasks/current.md`
-- Rule: non-target worktrees may read the target branch snapshot, but must verify against source artifacts before acting.
+- `origin/main`: `1ba073f5fa78dc69202f349afadab785f97d48f9`
+- immutable tag: `v1.7.1` -> `1ba073f5fa78dc69202f349afadab785f97d48f9`
+- npm: `@moretea-labs/forge@1.7.1`, `latest=1.7.1`
+- GitHub Release: `v1.7.1`
+- final publication check: `package:check:release-published` PASS
 
-## Active Work
+Do not move or rewrite `v1.7.1`. Post-release fixes belong on `main` and a later patch release.
 
-- (none)
-## Active Sprint
+## Local Controller State
 
-- Sprint: (none)
-## Workstreams
+The macOS Controller still reports active/pending historical state. It is **not** portable task authority for Windows Cloud:
 
-- `tasks/workstreams/controller-runtime/transport-lifecycle/openai-secure-tunnel-compat-20260813.md`: status=, current_slice=, source_plan=
-## Handoff
+- `work-publish-forge-1-7-1-from-exact-r-6cf1f181`: publication is complete, but lifecycle terminalization is blocked by the effect-Work/source-delta authority gap tracked as `hnd-1788067200203`.
+- Two active remote-effect Works concern revenue/Devpost activity. They are unrelated business Work and must not be imported into Forge source optimization.
+- Historical pending handoffs must be triaged against current source before any repair; several are already source-fixed and only lack live closure evidence.
 
-- Exact Next Step: (none)
+## Source Optimization Policy
 
-## Checks
+1. Future Forge product/runtime/source optimization runs on Forge Cloud Windows.
+2. Start from fresh `origin/main`; never assume macOS Controller SQLite/leases/sessions are transferable.
+3. Keep one primary Forge optimization lane. Temporary branches/worktrees are allowed only when required by Forge isolation and must be merged/cleaned promptly.
+4. Do not revive old PlanContracts blindly. Reproduce current behavior first and use the tracked handoff priorities.
+5. Preserve fail-closed lifecycle, delivery, controller isolation, and remote-effect authority.
+6. Commit coherent slices and push delivered `main` promptly; do not leave verified source only on a local Windows checkout.
+7. Windows CI/smoke is a first-class acceptance surface.
+8. macOS-only TCC/browser live acceptance may remain an external evidence handoff; do not fake closure from Windows.
 
-- status=(none), source=(none), exit_code=(none), file=.ai/harness/checks/latest.json
+## Git Status at Handoff
 
-## Git Status
-
-- Summary: clean
-
-```
-(none)
-```
+- branch: `main`
+- baseline: `1ba073f5fa78dc69202f349afadab785f97d48f9`
+- local source tree before this governance-only commit: clean and synchronized with `origin/main`
 
 ## Source Artifacts
 
-- Plans: `plans/plan-*.md`
-- Active marker: `.ai/harness/active-plan`
-- Active worktree marker: `.ai/harness/active-worktree`
-- PRDs: `plans/prds/*.prd.md`
-- Sprints: `plans/sprints/*.sprint.md`
-- Active sprint marker: `.ai/harness/sprint/active-sprint`
-- Workstreams: `tasks/workstreams/**/*.md`
-- Handoff: `.ai/harness/session/continuation.md`
-- Checks: `.ai/harness/checks/latest.json`
+- Windows Cloud handoff: `tasks/notes/20260830-forge-cloud-windows-post-1.7.1-handoff.notes.md`
+- Deferred-only ledger: `tasks/todos.md`
+- historical plans: Controller PlanContracts must be treated as superseded by the post-1.7.1 handoff, not re-executed from their old source revisions
