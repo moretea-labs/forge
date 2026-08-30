@@ -120,6 +120,13 @@ The patch release repair:
 - avoids forwarding a second shutdown signal when Linux systemd already signals the entire service cgroup, allowing the Canonical Runtime to complete its own signal-driven stop path;
 - includes a real process-group SIGTERM regression plus a live package upgrade canary in which the active PID/release changed, readiness passed, and no writer-fence recurrence was observed.
 
+Release closure:
+
+- `v1.7.2` is an immutable annotated tag peeled to `c873cfeb11a223ced342e7101c016261b4a93b38`;
+- GitHub Main gate, Windows smoke, and tag-only OIDC Release package workflows passed;
+- npm `@moretea-labs/forge@1.7.2` is `latest`, and the GitHub Release is published (not draft or prerelease);
+- `package:check:release-published` passed registry, dist-tag, tarball, tag, and local-version agreement.
+
 ### P0.4 Supported standalone Recovery self-upgrade/cutover authority
 
 1.7.1 fixed Watchdog interference during Runtime staging, but publication exposed a bootstrap-control gap:
