@@ -113,6 +113,57 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 }
 
 describe('rh_work terminalization authority', () => {
+  test('authenticated principal may use explicit opaque session when transport session is absent', async () => {
+    const fx = fixture();
+    const workA = 'work-explicit-session-a';
+    const workB = 'work-explicit-session-b';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workA);
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workB);
+
+    const withoutTransport = () => ({
+      ...ctx(fx.controllerHome, fx.repository, 'principal-explicit-session', 'placeholder', 'runtime-explicit-session'),
+      sessionId: undefined,
+    }) as unknown as MultiRepositoryMcpToolContext;
+
+    const missing = structured(await callRuntimeTool(
+      withoutTransport(),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workA },
+    ));
+    expect(missing.status).toBe('blocked');
+    expect(missing.summary).toContain('CONTROLLER_AUTHENTICATED_SESSION_REQUIRED');
+
+    const claimA = structured(await callRuntimeTool(
+      withoutTransport(),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workA, session_id: 'opaque-a' },
+    ));
+    expect(claimA.status).toBe('ok');
+    expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workA)?.sessionId).toBe('opaque-a');
+
+    const claimB = structured(await callRuntimeTool(
+      withoutTransport(),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workB, session_id: 'opaque-b' },
+    ));
+    expect(claimB.status).toBe('ok');
+
+    const foreignStop = structured(await callRuntimeTool(
+      withoutTransport(),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workB, requested_by: 'chatgpt', reason: 'foreign explicit session', session_id: 'opaque-a' },
+    ));
+    expect(foreignStop.status).toBe('blocked');
+    expect(foreignStop.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+
+    const ownStop = structured(await callRuntimeTool(
+      withoutTransport(),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workB, requested_by: 'chatgpt', reason: 'own explicit session', session_id: 'opaque-b' },
+    ));
+    expect(ownStop.status).toBe('ok');
+  }, 15_000);
+
   test('terminalization requires an explicit exact-Work claim after transport rotation', async () => {
     const fx = fixture();
     const workId = 'work-claim-before-stale-stop';
