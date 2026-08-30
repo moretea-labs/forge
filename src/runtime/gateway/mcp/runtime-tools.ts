@@ -1148,6 +1148,48 @@ export function dispatchedChatgptRelayAuthorizesStaleControllerRecovery(
   }
 }
 
+function assertFacadeControllerRoundAuthority(
+  ctx: MultiRepositoryMcpToolContext,
+  store: { controllerHome: string; repoId: string },
+  workId: string,
+  args: Record<string, unknown>,
+): ControllerRoundRelayRecord | undefined {
+  const relay = getControllerRoundRelay(store, workId);
+  if (!relay) return undefined;
+
+  const expectedAuthorityId = relay.authorityId?.trim() || '';
+  if (expectedAuthorityId) {
+    const requestedScopeId = typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : '';
+    const requestedAuthorityId = typeof args.controller_authority_id === 'string' ? args.controller_authority_id.trim() : '';
+    if (!requestedScopeId || requestedScopeId !== relay.relayScopeId) {
+      throw new Error(`WORK_CONTROLLER_RELAY_SCOPE_MISMATCH: ${workId}:expected=${relay.relayScopeId}`);
+    }
+    if (!requestedAuthorityId) {
+      throw new Error(`WORK_CONTROLLER_ROUND_AUTHORITY_REQUIRED: ${workId}`);
+    }
+    if (requestedAuthorityId !== expectedAuthorityId) {
+      throw new Error(`WORK_CONTROLLER_ROUND_AUTHORITY_MISMATCH: ${workId}`);
+    }
+    return relay;
+  }
+
+  // Legacy relay records predate the per-round capability. Preserve only the
+  // exact already-claimed durable epoch; never rebind a replacement transport by
+  // shared OAuth principal alone. A fresh launcher/recovery round upgrades the
+  // record and receives an opaque authority capability.
+  const owner = getControllerSession(store, workId);
+  const principalId = ctx.principalId?.trim() || '';
+  const sessionId = ctx.sessionId?.trim() || '';
+  const controllerInstanceId = ctx.controllerInstanceId?.trim() || '';
+  if (
+    owner
+    && owner.sessionId === sessionId
+    && controllerSessionPrincipalId(owner) === principalId
+    && (owner.controllerInstanceId?.trim() || '') === controllerInstanceId
+  ) return relay;
+  throw new Error(`WORK_CONTROLLER_ROUND_AUTHORITY_UPGRADE_REQUIRED: ${workId}`);
+}
+
 function bindFacadeControllerOwnership(
   ctx: MultiRepositoryMcpToolContext,
   store: { controllerHome: string; repoId: string },
@@ -3868,6 +3910,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             const work = getWorkContract(store, workId);
             if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
             const identity = authenticatedFacadeControllerIdentity(ctx, args);
+            assertFacadeControllerRoundAuthority(ctx, store, workId, args);
             const observedOwner = getControllerSession(store, workId);
             const dispatchedRelay = getControllerRoundRelay(store, workId);
             const crossOwnerRecovery = Boolean(observedOwner)
@@ -3987,6 +4030,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           try {
             const workId = String(args.work_id ?? '').trim();
             const identity = authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true });
+            assertFacadeControllerRoundAuthority(ctx, store, workId, args);
             const observedOwner = getControllerSession(store, workId);
             const work = getWorkContract(store, workId);
             const terminalWork = work ? ['completed', 'failed', 'cancelled'].includes(work.status) : false;
@@ -4549,6 +4593,16 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
 
         if (operation === 'stop') {
           const workId = String(args.work_id ?? '').trim();
+          try {
+            if (workId) assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+          } catch (error) {
+            const blocked = buildFacadeResult({
+              status: 'blocked',
+              summary: error instanceof Error ? error.message : `Work ${workId} controller-round authority check failed.`,
+              data: { workId, terminalizationApplied: false },
+            });
+            return result(blocked as unknown as Record<string, unknown>, true);
+          }
           let terminalizationAuthority: ControllerTerminalizationAuthority;
           try {
             terminalizationAuthority = currentFacadeTerminalizationAuthority(ctx, store, workId, args);
@@ -4627,6 +4681,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
 
         if (operation === 'finalize') {
           const workId = String(args.work_id ?? '').trim();
+          try {
+            if (workId) assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+          } catch (error) {
+            const blocked = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : `Work ${workId} controller-round authority check failed.`, data: { workId, lifecycleClosed: false } });
+            return result(blocked as unknown as Record<string, unknown>, true);
+          }
           const finalizeReconciliation = workId
             ? reconcileTerminalFacadeWorkVerifications(ctx, repository, workId)
             : undefined;
@@ -4851,6 +4911,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         if (operation === 'continue') {
           try {
             const workId = String(args.work_id ?? '').trim();
+            if (workId) assertFacadeControllerRoundAuthority(ctx, store, workId, args);
             let work = getWorkContract(store, workId);
             if (work?.status === 'cancelled') {
               const identity = authenticatedFacadeControllerIdentity(ctx, args);

@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { withControllerLock } from '../../../cli/repositories/locks';
 import { readRequirement } from '../persistence/requirement-store';
 import {
@@ -79,6 +79,8 @@ export interface ControllerRoundRelayRecord {
   controllerInstanceId: string;
   sessionId: string;
   claimGeneration: number;
+  /** Opaque per-round capability. Rotates when Forge dispatches a new ChatGPT round. */
+  authorityId?: string;
   stateFingerprint: string;
   roundCount: number;
   repeatedStateCount: number;
@@ -155,6 +157,10 @@ const MAX_STALLED_RECOVERY_BACKOFF_MS = 15 * 60_000;
 
 function nowIso(options: ControllerRoundRelayStoreOptions): string {
   return options.now?.() ?? new Date().toISOString();
+}
+
+function newControllerRoundAuthorityId(): string {
+  return `cra_${randomUUID().replace(/-/g, '')}`;
 }
 
 function bounded(value: string | undefined, max: number): string | undefined {
@@ -520,6 +526,7 @@ export function submitControllerRoundDisposition(
       controllerInstanceId: authority.controllerInstanceId,
       sessionId: authority.sessionId,
       claimGeneration: authority.claimGeneration,
+      authorityId: existing.value.authorityId,
       stateFingerprint,
       roundCount,
       repeatedStateCount,
@@ -612,6 +619,7 @@ export function beginInitialControllerRoundDispatch(
       controllerInstanceId: input.identity.controllerInstanceId.trim().slice(0, 240),
       sessionId: input.identity.sessionId.trim().slice(0, 240),
       claimGeneration: 0,
+      authorityId: newControllerRoundAuthorityId(),
       stateFingerprint,
       roundCount,
       repeatedStateCount,
@@ -658,7 +666,14 @@ export function beginControllerRoundRelayAfterRelease(
       throw new Error(`CONTROLLER_RELAY_RELEASE_FENCE_MISMATCH: ${input.workId}`);
     }
     const at = nowIso(options);
-    const dispatching: ControllerRoundRelayRecord = { ...record, status: 'dispatching', updatedAt: at };
+    // A released round is semantically closed. The successor dispatch receives a
+    // fresh capability so a stale tab/conversation cannot mutate the next round.
+    const dispatching: ControllerRoundRelayRecord = {
+      ...record,
+      authorityId: newControllerRoundAuthorityId(),
+      status: 'dispatching',
+      updatedAt: at,
+    };
     writeControlPlaneRecord(options.controllerHome, {
       namespace: NAMESPACE,
       scope: options.repoId,
@@ -1021,6 +1036,13 @@ export function claimStalledControllerRoundRelays(
       const at = new Date(nowMs).toISOString();
       const recovered: ControllerRoundRelayRecord = {
         ...latest,
+        // Re-dispatching an already dispatched/claimed round creates a new
+        // controller epoch. Retrying an in-flight dispatch keeps its capability.
+        authorityId: blockedReason
+          ? latest.authorityId
+          : latest.status === 'dispatching' && latest.authorityId
+            ? latest.authorityId
+            : newControllerRoundAuthorityId(),
         status: blockedReason ? 'blocked' : 'dispatching',
         stateFingerprint,
         roundCount,
@@ -1084,6 +1106,9 @@ export function buildControllerRoundRelayPrompt(
       ? `This is a Work-bound scheduled round. Claim and advance only origin Work ${record.originWorkId}. Do not select, start, delegate, or resume a sibling Work, create another schedule, or widen scope. If this Work cannot safely advance after one bounded diagnostic or repair attempt, record the exact evidence, submit wait or wait_for_user, release ownership, and end the round.`
       : `Previous relay origin Work: ${record.originWorkId}. Do not assume the next action must continue that Work; select, start, or claim the appropriate Work from the latest semantic state.`,
     `Mechanical relay budget: round=${record.roundCount}/${record.maxRounds}; repeated_state=${record.repeatedStateCount}/${record.maxRepeatedState}; consecutive_failures=${record.consecutiveFailures}/${record.maxFailures}.`,
+    record.authorityId
+      ? `This round's durable controller authority is controller_authority_id=${record.authorityId}. Pass this exact controller_authority_id together with relay_scope_id=${record.relayScopeId} on controller_claim, continue, finalize, stop, and controller_release. The opaque authority survives MCP transport/Runtime rotation within this round and rotates before a successor round; never substitute another Work/conversation's authority.`
+      : `This is a legacy relay record without a controller authority capability. Forge permits only the exact already-claimed MCP/controller epoch to finish it; a replacement transport must reopen/recover the round before mutating Work lifecycle.`,
     ...(['CONTROLLER_RELAY_ROUND_UNCLOSED', 'CONTROLLER_RELAY_CLAIMED_ROUND_UNCLOSED'].includes(record.lastError ?? '')
       ? ['The previous ChatGPT round did not submit an explicit disposition before its liveness grace elapsed. Forge is only recovering liveness: reread durable state, make the semantic decision in ChatGPT, and close this round explicitly.']
       : []),

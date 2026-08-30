@@ -10,6 +10,7 @@ import { getRepository, registerRepository } from '../../src/cli/repositories/re
 import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { resolveExplicitClaimedRepositoryWork } from '../../src/runtime/control-plane/execution/repository-work-attribution';
 import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
@@ -221,6 +222,137 @@ describe('rh_work terminalization authority', () => {
     }));
     expect(ownStopA.status).toBe('ok');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workA)?.status).toBe('cancelled');
+  }, 15_000);
+
+  test('same-principal concurrent ChatGPT conversations cannot claim or stop each other while the owning round survives transport rotation', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const principalId = 'principal-shared-conversations';
+    const runtimeInstanceId = 'runtime-shared-conversations';
+    const workA = 'work-conversation-a';
+    const workB = 'work-conversation-b';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workA);
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workB);
+
+    const beginRound = (workId: string, suffix: string) => {
+      const relay = beginInitialControllerRoundDispatch(store, {
+        workId,
+        identity: {
+          controllerId: principalId,
+          principalId,
+          controllerInstanceId: runtimeInstanceId,
+          sessionId: `launcher-${suffix}`,
+        },
+        relayScopeId: `goal:${workId}`,
+        browserSessionId: `browser-${suffix}`,
+        conversationUrl: `https://chatgpt.com/c/conversation-${suffix}`,
+      });
+      expect(relay.authorityId).toBeTruthy();
+      finishControllerRoundRelayDispatch(store, {
+        workId,
+        ok: true,
+        browserSessionId: `browser-${suffix}`,
+        conversationUrl: `https://chatgpt.com/c/conversation-${suffix}`,
+      });
+      const owner = claimControllerSession(store, {
+        workId,
+        controllerId: principalId,
+        controllerType: 'chatgpt',
+        sessionId: `transport-${suffix}`,
+        principalId,
+        controllerInstanceId: runtimeInstanceId,
+        leaseMs: 60_000,
+      });
+      acknowledgeControllerRoundClaim(store, { workId, session: owner });
+      return relay;
+    };
+
+    const relayA = beginRound(workA, 'a');
+    const relayB = beginRound(workB, 'b');
+
+    const foreignClaim = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-b', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workA,
+        relay_scope_id: relayB.relayScopeId,
+        controller_authority_id: relayB.authorityId,
+      },
+    ));
+    expect(foreignClaim.status).toBe('blocked');
+    expect(foreignClaim.summary).toContain('WORK_CONTROLLER_RELAY_SCOPE_MISMATCH');
+    expect(getControllerSession(store, workA)?.sessionId).toBe('transport-a');
+
+    const foreignStopWithForeignScope = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-b', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'stop',
+        work_id: workA,
+        requested_by: 'chatgpt',
+        reason: 'directive from unrelated conversation',
+        relay_scope_id: relayB.relayScopeId,
+        controller_authority_id: relayB.authorityId,
+      },
+    ));
+    expect(foreignStopWithForeignScope.status).toBe('blocked');
+    expect(foreignStopWithForeignScope.summary).toContain('WORK_CONTROLLER_RELAY_SCOPE_MISMATCH');
+
+    // Scope is intentionally predictable for semantic grouping. It is not the
+    // authority secret: even a foreign round that knows A's scope still fails
+    // without A's opaque per-round capability.
+    const foreignStopWithKnownTargetScope = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-b', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'stop',
+        work_id: workA,
+        requested_by: 'chatgpt',
+        reason: 'foreign conversation knows target Work and relay scope',
+        relay_scope_id: relayA.relayScopeId,
+        controller_authority_id: relayB.authorityId,
+      },
+    ));
+    expect(foreignStopWithKnownTargetScope.status).toBe('blocked');
+    expect(foreignStopWithKnownTargetScope.summary).toContain('WORK_CONTROLLER_ROUND_AUTHORITY_MISMATCH');
+    expect(getWorkContract(store, workA)?.status).toBe('ready');
+    expect(getWorkContract(store, workB)?.status).toBe('ready');
+    expect(getControllerSession(store, workA)?.sessionId).toBe('transport-a');
+
+    const owningClaimAfterTransportRotation = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-a-rotated', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workA,
+        relay_scope_id: relayA.relayScopeId,
+        controller_authority_id: relayA.authorityId,
+      },
+    ));
+    expect(owningClaimAfterTransportRotation.status).toBe('ok');
+    expect(getControllerSession(store, workA)?.sessionId).toBe('transport-a-rotated');
+
+    const owningStopAfterTransportRotation = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-a-rotated', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'stop',
+        work_id: workA,
+        requested_by: 'chatgpt',
+        reason: 'owning conversation semantic stop after MCP transport rotation',
+        relay_scope_id: relayA.relayScopeId,
+        controller_authority_id: relayA.authorityId,
+      },
+    ));
+    expect(owningStopAfterTransportRotation.status).toBe('ok');
+    expect(getWorkContract(store, workA)?.status).toBe('cancelled');
+    expect(getWorkContract(store, workB)?.status).toBe('ready');
   }, 15_000);
 
   test('terminal cleanup resolves legacy exact-id WorkHandles without workContractId', async () => {
@@ -944,6 +1076,15 @@ describe('rh_work terminalization authority', () => {
     execFileSync('git', ['add', 'src/index.ts'], { cwd: workspace.root! });
     execFileSync('git', ['commit', '-m', 'source repair from effect work'], { cwd: workspace.root! });
     const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+    claimControllerSession({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
 
     const finalized = structured(await callRuntimeTool(
       ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
@@ -1040,6 +1181,15 @@ describe('rh_work terminalization authority', () => {
       terminalWritten: true,
       leaseReleaseState: 'released',
       leasesReleased: true,
+    });
+    claimControllerSession({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
     });
 
     const finalized = structured(await callRuntimeTool(

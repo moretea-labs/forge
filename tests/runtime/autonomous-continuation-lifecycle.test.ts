@@ -111,7 +111,7 @@ describe('autonomous continuation lifecycle', () => {
       controllerInstanceId: 'runtime-old',
       leaseMs: 60 * 60_000,
     });
-    beginInitialControllerRoundDispatch(store, {
+    const opened = beginInitialControllerRoundDispatch(store, {
       workId,
       identity: {
         controllerId: 'schedule:test',
@@ -139,6 +139,8 @@ describe('autonomous continuation lifecycle', () => {
         operation: 'controller_claim',
         controller_type: 'chatgpt',
         work_id: workId,
+        relay_scope_id: opened.relayScopeId,
+        controller_authority_id: opened.authorityId,
       },
     ));
 
@@ -273,6 +275,8 @@ describe('autonomous continuation lifecycle', () => {
         repo_id: repository.repoId,
         operation: 'controller_release',
         work_id: workId,
+        relay_scope_id: opened.relayScopeId,
+        controller_authority_id: opened.authorityId,
       },
     ));
     expect(wrongInstanceRelease.status).toBe('blocked');
@@ -283,6 +287,8 @@ describe('autonomous continuation lifecycle', () => {
       repo_id: repository.repoId,
       operation: 'controller_release',
       work_id: workId,
+      relay_scope_id: opened.relayScopeId,
+      controller_authority_id: opened.authorityId,
     }));
     expect(released.status).toBe('ok');
     expect(getControllerSession(store, workId)).toBeUndefined();
@@ -344,6 +350,8 @@ describe('autonomous continuation lifecycle', () => {
         repo_id: repository.repoId,
         operation: 'controller_release',
         work_id: workId,
+        relay_scope_id: opened.relayScopeId,
+        controller_authority_id: opened.authorityId,
       },
     ));
     expect(released.status).toBe('ok');
@@ -376,6 +384,9 @@ describe('autonomous continuation lifecycle', () => {
       repeatedStateCount: 1,
       reason: 'launcher_start_recovered_abandoned_claim',
     });
+    expect(opened.authorityId).toBeTruthy();
+    expect(reopened.authorityId).toBeTruthy();
+    expect(reopened.authorityId).not.toBe(opened.authorityId);
   });
 
   test('a continued ChatGPT conversation is still instructed to claim the exact Work before continue', async () => {

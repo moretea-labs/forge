@@ -92,6 +92,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     handoff_id: { type: 'string', description: 'Optional existing HandoffItem used to resume controller context. Required for controller_disposition=wait_for_user.' },
     disposition: { type: 'string', enum: ['continue_immediately', 'wait', 'wait_for_user', 'goal_complete'], description: 'Explicit ChatGPT end-of-round semantic decision. continue_immediately is consumed only after the current controller lease closes.' },
     relay_scope_id: { type: 'string', description: 'Stable Requirement/Goal relay identity. Requirement-bound Work uses requirement:<id>; otherwise reuse the exact returned goal scope across Works.' },
+    controller_authority_id: { type: 'string', description: 'Opaque durable authority for the currently dispatched ChatGPT controller round. Required with relay_scope_id for lifecycle mutation of relay-bound Work; rotates before a successor round while surviving MCP transport/Runtime rotation within the same round.' },
     state_fingerprint: { type: 'string', description: 'Optional controller-observed semantic-state fingerprint. When omitted, Forge derives a mechanical fingerprint from current Requirement/Work/Handoff state.' },
     max_rounds: { type: 'number', description: 'Mechanical immediate-relay round budget; defaults to 8 and cannot be loosened within an existing relay scope.' },
     max_repeated_state: { type: 'number', description: 'Mechanical repeated-state fence; defaults to 2 repeated observations and cannot be loosened within an existing relay scope.' },
