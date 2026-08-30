@@ -30,6 +30,7 @@ import {
   chatgptAutomationReasoningLevelFromLabel,
   chatgptBrowserActionArgs,
   isChatgptConversationUrl,
+  freshChatgptReplacementBrowserSessionId,
   reconciledChatgptOpenPageSessionId,
   resolveChatgptWorkBrowserSessionId,
   runWorkChatgptContinuation,
@@ -304,11 +305,19 @@ describe('ChatGPT scheduled open_page reconciliation', () => {
     ] }, sessionId, 'https://chatgpt.com/')).toBe(sessionId);
   });
 
-  test('reconciles an unknown open_page outcome read-only instead of replaying the mutation', () => {
+  test('uses a fresh replacement identity instead of reusing the stale Work binding', () => {
+    const stale = stableChatgptWorkBrowserSessionId('repo-1', 'WORK-1');
+    const replacement = freshChatgptReplacementBrowserSessionId(stale);
+    expect(replacement).not.toBe(stale);
+    expect(replacement).toMatch(/^forge-chatgpt-replacement-[0-9a-f]{16}-[0-9a-f]{8}$/);
+  });
+
+  test('reconciles an unknown replacement open_page read-only instead of replaying the mutation', () => {
     const source = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
     expect(source).toContain("controllerBrowserAction(controllerHome, workId, 'list_sessions'");
     expect(source).toContain("browserMutationOutcomeUnknown(error, 'open_page')");
-    expect(source).toContain('session_id: browserSessionId');
+    expect(source).toContain('session_id: replacementSessionId');
+    expect(source).toContain('reconciledChatgptOpenPageSessionId(inventory, replacementSessionId, url)');
   });
 });
 

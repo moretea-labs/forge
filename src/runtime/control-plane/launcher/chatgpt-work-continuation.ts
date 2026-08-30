@@ -155,6 +155,11 @@ export function stableStandaloneChatgptBrowserSessionId(repoId: string, scopeId:
   return `forge-chatgpt-standalone-${digest}`;
 }
 
+export function freshChatgptReplacementBrowserSessionId(staleSessionId: string): string {
+  const digest = createHash('sha256').update(staleSessionId).digest('hex').slice(0, 16);
+  return `forge-chatgpt-replacement-${digest}-${randomUUID().slice(0, 8)}`;
+}
+
 function resolveStandaloneChatgptBrowserSessionId(input: StandaloneChatgptPromptInput): string {
   const policy = normalizeTabPolicy(input.tabPolicy);
   const stable = stableStandaloneChatgptBrowserSessionId(input.repoId, input.scopeId);
@@ -556,25 +561,27 @@ async function navigateWorkConversation(
     retries: 1,
   }, timeoutMs);
   const openReplacement = async (url: string): Promise<string> => {
-    // Reuse the Work-stable session identity so a post-dispatch transport failure
-    // can be reconciled read-only without replaying open_page. The Browser
-    // adapter remains the mutation authority; this launcher only accepts a
-    // positively live exact-session observation after an unknown outcome.
+    // Replacement is entered only after the saved session is proven unusable for
+    // navigation. Never reuse that stale identity: Browser correctly treats an
+    // explicit stale session_id as an existing-session action and fails closed.
+    // Allocate the fresh identity before dispatch so a lost open_page response can
+    // still be reconciled read-only against exactly that identity without replay.
+    const replacementSessionId = freshChatgptReplacementBrowserSessionId(browserSessionId);
     try {
       const opened = await controllerBrowserAction(controllerHome, workId, 'open_page', {
-        session_id: browserSessionId,
+        session_id: replacementSessionId,
         url,
         wait_until: 'domcontentloaded',
         timeout_ms: timeoutMs ?? 60_000,
         retries: 1,
       }, timeoutMs);
-      const replacementSessionId = resultSessionId(opened);
-      if (!replacementSessionId) throw new Error('CHATGPT_AUTOMATION_REPLACEMENT_SESSION_NOT_CONFIRMED');
+      const confirmedSessionId = resultSessionId(opened);
+      if (confirmedSessionId !== replacementSessionId) throw new Error('CHATGPT_AUTOMATION_REPLACEMENT_SESSION_NOT_CONFIRMED');
       return replacementSessionId;
     } catch (error) {
       if (!browserMutationOutcomeUnknown(error, 'open_page')) throw error;
       const inventory = await controllerBrowserAction(controllerHome, workId, 'list_sessions', { limit: 100 }, timeoutMs);
-      const reconciledSessionId = reconciledChatgptOpenPageSessionId(inventory, browserSessionId, url);
+      const reconciledSessionId = reconciledChatgptOpenPageSessionId(inventory, replacementSessionId, url);
       if (!reconciledSessionId) throw error;
       return reconciledSessionId;
     }
