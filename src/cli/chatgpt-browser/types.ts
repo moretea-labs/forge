@@ -26,6 +26,7 @@ export interface BrowserConsultInput {
   model?: string;
   thinking?: ThinkingLevel;
   provider?: BrowserProviderName;
+  dispatchOnly?: boolean;
   chatgptUrl?: string;
   timeoutMs?: number;
   heartbeatSeconds?: number;

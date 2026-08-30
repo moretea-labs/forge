@@ -1,6 +1,8 @@
 import { randomUUID } from 'crypto';
+import { spawnSync } from 'child_process';
+import { existsSync, readFileSync } from 'fs';
 import { writeChatgptBridgeExtension, CHATGPT_BRIDGE_DEFAULT_PORT } from './bridge-extension';
-import { DEFAULT_CHATGPT_URL, ensureBridgeToken, generateBridgeToken } from './binding';
+import { DEFAULT_CHATGPT_URL, ensureBridgeToken } from './binding';
 import { openNativeBrowserPage } from './native-provider';
 import type { BrowserConsultInput, BrowserSessionStatus, PromptBundle } from './types';
 
@@ -29,6 +31,12 @@ interface ExtensionTask {
   prompt: string;
   timeoutMs: number;
   targetUrl?: string;
+  dispatchOnly?: boolean;
+}
+
+interface ExtensionDispatchReceipt {
+  taskId: string;
+  conversationUrl?: string;
 }
 
 interface ExtensionResult {
@@ -116,6 +124,37 @@ function bridgePort(): number {
   return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535 ? parsed : CHATGPT_BRIDGE_DEFAULT_PORT;
 }
 
+export function isWslWindowsRuntime(
+  platform: NodeJS.Platform = process.platform,
+  wslDistroName: string | undefined = process.env.WSL_DISTRO_NAME,
+  osRelease?: string,
+): boolean {
+  if (platform !== 'linux') return false;
+  if (wslDistroName?.trim()) return true;
+  let observedRelease = osRelease;
+  if (observedRelease === undefined) {
+    try { observedRelease = readFileSync('/proc/sys/kernel/osrelease', 'utf8'); } catch { observedRelease = ''; }
+  }
+  return /microsoft|wsl/i.test(observedRelease);
+}
+
+function openWslWindowsBridgeTarget(targetUrl: string): void {
+  if (!isWslWindowsRuntime()) return;
+  const parsed = new URL(targetUrl);
+  if (parsed.protocol !== 'https:' || !['chatgpt.com', 'www.chatgpt.com', 'chat.openai.com'].includes(parsed.hostname)) {
+    throw new Error(`CHATGPT_BRIDGE_TARGET_INVALID: ${targetUrl}`);
+  }
+  const opener = '/mnt/c/Windows/System32/rundll32.exe';
+  if (!existsSync(opener)) throw new Error('CHATGPT_BRIDGE_WINDOWS_INTEROP_UNAVAILABLE');
+  const launched = spawnSync(opener, ['url.dll,FileProtocolHandler', parsed.toString()], {
+    windowsHide: true,
+    stdio: 'ignore',
+    timeout: 10_000,
+  });
+  if (launched.error) throw launched.error;
+  if (launched.status !== 0) throw new Error(`CHATGPT_BRIDGE_WINDOWS_OPEN_FAILED:${launched.status ?? 'unknown'}`);
+}
+
 export async function runBridgeProvider(input: BrowserConsultInput, bundle: PromptBundle): Promise<BridgeProviderResult> {
   if (input.model || input.thinking) {
     return {
@@ -133,8 +172,8 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
   const host = '127.0.0.1';
   const port = bridgePort();
   const bridgeUrl = `http://${host}:${port}`;
-  // Stable per-binding token when bound; ephemeral per-run token otherwise.
-  const token = ensureBridgeToken(input.repoRoot) ?? generateBridgeToken();
+  // Stable controller/repository binding token; bridge-only bindings are created lazily.
+  const token = ensureBridgeToken(input.repoRoot);
   const extension = writeChatgptBridgeExtension(input.repoRoot, bridgeUrl, token);
   const task: ExtensionTask = {
     id: randomUUID(),
@@ -142,11 +181,13 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
     prompt: bundle.rendered,
     timeoutMs,
     targetUrl: input.chatgptUrl,
+    dispatchOnly: input.dispatchOnly === true,
   };
   const state: {
     heartbeat?: ExtensionHeartbeat;
     claimed: boolean;
     started: boolean;
+    dispatched?: ExtensionDispatchReceipt;
     result?: ExtensionResult;
   } = {
     claimed: false,
@@ -178,6 +219,12 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
             ts: typeof body.ts === 'string' ? body.ts : undefined,
             receivedAt: Date.now(),
           };
+          if (body.lastDispatch && typeof body.lastDispatch === 'object' && body.lastDispatch.taskId === task.id) {
+            state.dispatched = {
+              taskId: task.id,
+              conversationUrl: typeof body.lastDispatch.conversationUrl === 'string' ? body.lastDispatch.conversationUrl : undefined,
+            };
+          }
           return jsonResponse({ ok: true });
         }
         if (request.method === 'GET' && url.pathname === '/api/extension/task') {
@@ -190,6 +237,16 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
         if (request.method === 'POST' && url.pathname === '/api/extension/task-started') {
           const body = await readJson(request);
           if (body.taskId === task.id) state.started = true;
+          return jsonResponse({ ok: true });
+        }
+        if (request.method === 'POST' && url.pathname === '/api/extension/dispatched') {
+          const body = await readJson(request);
+          if (body.taskId === task.id) {
+            state.dispatched = {
+              taskId: task.id,
+              conversationUrl: typeof body.conversationUrl === 'string' ? body.conversationUrl : undefined,
+            };
+          }
           return jsonResponse({ ok: true });
         }
         if (request.method === 'POST' && url.pathname === '/api/extension/result') {
@@ -246,10 +303,19 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
   try {
     if (input.profileDir) {
       openNativeBrowserPage(input.browserChannel ?? 'chrome', input.profileDir, input.chatgptUrl ?? DEFAULT_CHATGPT_URL, input.profileDirectory);
+    } else {
+      openWslWindowsBridgeTarget(input.chatgptUrl ?? DEFAULT_CHATGPT_URL);
     }
 
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+      if (input.dispatchOnly === true && state.dispatched) {
+        return {
+          status: 'completed',
+          output: 'ChatGPT bridge prompt dispatch confirmed.',
+          conversationUrl: state.dispatched.conversationUrl ?? state.heartbeat?.url,
+        };
+      }
       if (state.result) {
         return {
           status: state.result.status,
@@ -286,9 +352,19 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
         `Composer visible: ${state.heartbeat?.composerVisible === true ? 'yes' : 'no'}`,
       ].join('\n'),
       error: {
-        code: state.started ? 'CHATGPT_BRIDGE_RESULT_TIMEOUT' : 'CHATGPT_BRIDGE_TASK_NOT_CLAIMED',
-        message: state.started ? 'ChatGPT bridge task did not finish before timeout' : 'ChatGPT bridge extension did not claim the task before timeout',
-        recovery: 'Keep the ChatGPT tab active with the composer visible, then retry with a longer --timeout-ms.',
+        code: input.dispatchOnly === true && state.started
+          ? 'CHATGPT_BRIDGE_MUTATION_OUTCOME_UNKNOWN'
+          : state.started
+            ? 'CHATGPT_BRIDGE_RESULT_TIMEOUT'
+            : 'CHATGPT_BRIDGE_TASK_NOT_CLAIMED',
+        message: input.dispatchOnly === true && state.started
+          ? 'ChatGPT bridge started the dispatch task but did not prove the submission postcondition before timeout'
+          : state.started
+            ? 'ChatGPT bridge task did not finish before timeout'
+            : 'ChatGPT bridge extension did not claim the task before timeout',
+        recovery: input.dispatchOnly === true && state.started
+          ? 'Do not replay blindly; inspect the target ChatGPT conversation before retrying.'
+          : 'Keep the ChatGPT tab active with the composer visible, then retry with a longer --timeout-ms.',
       },
     };
   } finally {

@@ -217,7 +217,7 @@ export function runBrowserSetup(repoRoot: string, opts: BrowserSetupOptions = {}
     if (binding.profileDirectory) lines.push(`[forge chatgpt] Chrome profile: ${binding.profileDirectory}`);
     if (binding.selectedProfilePath) lines.push(`[forge chatgpt] Selected profile path: ${binding.selectedProfilePath}`);
     lines.push(`[forge chatgpt] Browser channel: ${binding.browserChannel}`);
-    if (nativeDebuggingBlockedByDefaultProfile(binding.profileDir, binding.browserChannel)) {
+    if (binding.profileDir && nativeDebuggingBlockedByDefaultProfile(binding.profileDir, binding.browserChannel)) {
       lines.push('[forge chatgpt] Warning: this is the default Chrome data directory. Chrome 136+ blocks native CDP validation for this profile; use a separate automation profile or a session import/bridge path.');
     } else {
       lines.push('[forge chatgpt] Next: run forge chatgpt browser-bind --open, click Bind ChatGPT, then run browser-doctor --provider native --validate-session.');
@@ -227,14 +227,17 @@ export function runBrowserSetup(repoRoot: string, opts: BrowserSetupOptions = {}
 
   const existing = readBrowserBinding(repoRoot);
   if (existing.binding) {
-    lines.push(`[forge chatgpt] Existing ChatGPT profile binding: ${existing.binding.profileDir}`);
+    if (existing.binding.profileDir) lines.push(`[forge chatgpt] Existing ChatGPT profile binding: ${existing.binding.profileDir}`);
+    else lines.push('[forge chatgpt] Existing ChatGPT bridge-only binding configured.');
     if (existing.binding.profileDirectory) lines.push(`[forge chatgpt] Chrome profile: ${existing.binding.profileDirectory}`);
     if (existing.binding.selectedProfilePath) lines.push(`[forge chatgpt] Selected profile path: ${existing.binding.selectedProfilePath}`);
     lines.push(`[forge chatgpt] Browser channel: ${existing.binding.browserChannel}`);
-    if (nativeDebuggingBlockedByDefaultProfile(existing.binding.profileDir, existing.binding.browserChannel)) {
+    if (existing.binding.profileDir && nativeDebuggingBlockedByDefaultProfile(existing.binding.profileDir, existing.binding.browserChannel)) {
       lines.push('[forge chatgpt] Warning: this is the default Chrome data directory. Chrome 136+ blocks native CDP validation for this profile; use a separate automation profile or a session import/bridge path.');
-    } else {
+    } else if (existing.binding.profileDir) {
       lines.push('[forge chatgpt] Next: run forge chatgpt browser-bind --open, click Bind ChatGPT, then run browser-doctor --provider native --validate-session.');
+    } else {
+      lines.push('[forge chatgpt] Bridge binding is ready; load the generated Forge ChatGPT Bridge extension in the browser host.');
     }
   } else {
     lines.push('[forge chatgpt] No ChatGPT profile binding configured.');
@@ -323,7 +326,7 @@ export async function browserDoctor(
     updateBrowserBindingStatus(repoRoot, validation.status);
   }
   const nativeReady = nativePresent && Boolean(profileDir) && !defaultProfileBlocked && (opts.validateSession !== true || validation?.status === 'ready');
-  const bridgeReady = Boolean(profileDir);
+  const bridgeReady = Boolean(binding?.bridgeToken || profileDir);
   // Oracle is the main path: ready iff a resolved binary probes with the
   // browser-mode capabilities we depend on. native is deprecated; bridge is
   // experimental. We no longer overload a single `partial` for all three.

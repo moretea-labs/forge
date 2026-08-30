@@ -72,11 +72,14 @@ async function forgeSleep(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+let forgeLastDispatch = null;
+
 async function forgeHeartbeat() {
   await forgePost('/api/extension/heartbeat', {
     url: location.href,
     title: document.title,
     composerVisible: Boolean(forgeComposer()),
+    lastDispatch: forgeLastDispatch,
     ts: new Date().toISOString(),
   });
 }
@@ -124,6 +127,31 @@ function forgeAssistantText() {
   return (nodes.at(-1)?.innerText || '').replace(/^ChatGPT said:\\s*/i, '').trim();
 }
 
+function forgeComposerText() {
+  const composer = forgeComposer();
+  if (!composer) return '';
+  return ('value' in composer ? composer.value : composer.textContent || '').trim();
+}
+
+async function forgeWaitForSubmission(timeoutMs, initialUrl) {
+  const deadline = Date.now() + timeoutMs;
+  const initialHasConversation = /\/c\/[^/?#]+/.test(new URL(initialUrl).pathname);
+  let submissionObserved = false;
+  while (Date.now() < deadline) {
+    if (!forgeComposerText() || document.querySelector('[data-testid="stop-button"], button[aria-label*="Stop"]')) {
+      submissionObserved = true;
+    }
+    if (submissionObserved) {
+      if (initialHasConversation) return location.href;
+      if (/\/c\/[^/?#]+/.test(location.pathname)) return location.href;
+    }
+    await forgeSleep(100);
+  }
+  throw new Error(submissionObserved
+    ? 'ChatGPT prompt was submitted but no conversation identity was established'
+    : 'ChatGPT prompt submission was not observed');
+}
+
 async function forgeWaitForAssistant(timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let latest = '';
@@ -147,6 +175,12 @@ async function forgeRunTask(task) {
   await forgePost('/api/extension/task-started', {taskId: task.id, url: location.href});
   try {
     await forgeSubmitPrompt(task.prompt);
+    if (task.dispatchOnly === true) {
+      const conversationUrl = await forgeWaitForSubmission(Math.min(task.timeoutMs || 10000, 10000), location.href);
+      forgeLastDispatch = {taskId: task.id, conversationUrl};
+      await forgePost('/api/extension/dispatched', forgeLastDispatch).catch(() => undefined);
+      return;
+    }
     const capture = await forgeWaitForAssistant(task.timeoutMs || 180000);
     await forgePost('/api/extension/result', {
       taskId: task.id,

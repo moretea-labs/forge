@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
+import { runBridgeProvider, isWslWindowsRuntime } from '../../../cli/chatgpt-browser/bridge-provider';
 import { buildBrowserPluginManifest, executeBrowserPluginAction } from '../../plugins/browser-adapter';
 import { controllerPluginRepository } from '../../plugins/store';
 import { getWorkContract } from '../facade/work-contract-store';
@@ -46,7 +47,7 @@ export interface WorkChatgptContinuationInput {
 
 export interface WorkChatgptContinuationResult {
   status: 'dispatched' | 'failed';
-  provider: 'controller-browser';
+  provider: 'controller-browser' | 'chatgpt-bridge';
   browserSessionId: string;
   conversationUrl?: string;
   conversationId?: string;
@@ -148,6 +149,11 @@ function normalizeTabPolicy(value?: ChatgptAutomationTabPolicy): ChatgptAutomati
 export function stableChatgptWorkBrowserSessionId(repoId: string, workId: string): string {
   const digest = createHash('sha256').update(`${repoId}\n${workId}`).digest('hex').slice(0, 20);
   return `forge-chatgpt-work-${digest}`;
+}
+
+export function stableChatgptWorkBridgeSessionId(repoId: string, workId: string): string {
+  const digest = createHash('sha256').update(`${repoId}\nbridge\n${workId}`).digest('hex').slice(0, 20);
+  return `forge-chatgpt-bridge-${digest}`;
 }
 
 export function stableStandaloneChatgptBrowserSessionId(repoId: string, scopeId: string): string {
@@ -545,6 +551,7 @@ export async function settleWorkChatgptAutomationTab(input: {
   browserSessionId: string;
   timeoutMs?: number;
 }): Promise<{ status: ChatgptAutomationTabCleanupStatus; error?: { code: string; message: string } }> {
+  if (input.browserSessionId.startsWith('forge-chatgpt-bridge-')) return { status: 'session_closed' };
   return closeChatgptAutomationTabAfterDispatch(
     input.controllerHome,
     input.workId,
@@ -758,6 +765,85 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
   const model = normalizeModel(input.model);
   const reasoning = normalizeReasoning(input.reasoning);
   const tabPolicy = normalizeTabPolicy(input.tabPolicy);
+  if (isWslWindowsRuntime()) {
+    const bridgeSessionId = stableChatgptWorkBridgeSessionId(input.repoId, input.workId);
+    let binding = existing;
+    try {
+      const work = getWorkContract(store, input.workId);
+      if (!work || work.repoId !== input.repoId) throw new Error(`CHATGPT_WORK_CONTRACT_NOT_FOUND: ${input.repoId}:${input.workId}`);
+      const repository = controllerPluginRepository(input.controllerHome);
+      const bridgeRoot = repository.canonicalRoot ?? repository.localRoot;
+      if (!bridgeRoot) throw new Error('CHATGPT_CONTROLLER_BROWSER_ROOT_UNAVAILABLE');
+      const targetUrl = binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/';
+      const renderedPrompt = `${workflowToolAttributionInstruction(input.workId)}\n\n${input.prompt}`;
+      const bridged = await runBridgeProvider({
+        repoRoot: bridgeRoot,
+        prompt: renderedPrompt,
+        provider: 'bridge',
+        chatgptUrl: targetUrl,
+        timeoutMs: input.timeoutMs ?? 60_000,
+        dispatchOnly: true,
+      }, {
+        prompt: renderedPrompt,
+        rendered: renderedPrompt,
+        files: [],
+        followups: [],
+        totalChars: renderedPrompt.length,
+      });
+      if (bridged.status !== 'completed') {
+        throw new Error(`${bridged.error?.code ?? 'CHATGPT_BRIDGE_DISPATCH_FAILED'}: ${bridged.error?.message ?? bridged.output}`);
+      }
+      const observedUrl = bridged.conversationUrl ?? targetUrl;
+      if (/\/c\/[^/?#]+/.test(observedUrl)) {
+        const observedIdentity = parseChatgptConversationIdentity(observedUrl);
+        binding = binding && binding.conversationId !== observedIdentity.conversationId
+          ? rebindChatgptWorkConversation(store, {
+              workId: input.workId,
+              previousConversationId: binding.conversationId,
+              conversationUrl: observedUrl,
+              latestBrowserSessionId: bridgeSessionId,
+              localAlias: binding.localAlias ?? input.title,
+            })
+          : bindChatgptWorkConversation(store, {
+              workId: input.workId,
+              conversationUrl: observedUrl,
+              latestBrowserSessionId: bridgeSessionId,
+              localAlias: binding?.localAlias ?? input.title,
+            });
+      }
+      return {
+        status: 'dispatched',
+        provider: 'chatgpt-bridge',
+        browserSessionId: bridgeSessionId,
+        conversationUrl: binding?.conversationUrl ?? observedUrl,
+        conversationId: binding?.conversationId,
+        localAlias: binding?.localAlias,
+        resumedFromBinding: Boolean(existing),
+        model,
+        reasoning,
+        tabPolicy,
+        executionPreferenceVerified: false,
+      };
+    } catch (error) {
+      return {
+        status: 'failed',
+        provider: 'chatgpt-bridge',
+        browserSessionId: bridgeSessionId,
+        conversationUrl: binding?.conversationUrl ?? seedUrl,
+        conversationId: binding?.conversationId,
+        localAlias: binding?.localAlias,
+        resumedFromBinding: Boolean(existing),
+        model,
+        reasoning,
+        tabPolicy,
+        executionPreferenceVerified: false,
+        error: {
+          code: error instanceof Error && error.message.includes(':') ? error.message.split(':', 1)[0] : 'CHATGPT_BRIDGE_DISPATCH_FAILED',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  }
   const sessionId = resolveChatgptWorkBrowserSessionId({
     repoId: input.repoId,
     workId: input.workId,
