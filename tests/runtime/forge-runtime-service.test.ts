@@ -19,6 +19,7 @@ import {
   readPackageRuntimeActivationReceipt,
   renderPackageRuntimeActivationLaunchAgent,
   renderForgeRuntimeSystemdUserUnit,
+  systemdRuntimeInstallCommands,
   type PackageRuntimeActivationRequest,
 } from '../../src/runtime/root/package-runtime-service';
 import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
@@ -725,6 +726,14 @@ describe('Forge Runtime service', () => {
   test('renders a systemd user owner with restart and release environment', () => {
     const unit = renderForgeRuntimeSystemdUserUnit({ executable: '/var/tmp/forge-user/.forge/runtime/service/active-forge-runtime', args: ['--port', '8765'], environment: { FORGE_RELEASE_ID: 'package-test', FORGE_CONTROLLER_HOME: '/var/tmp/forge-user/.forge' } });
     for (const expected of ['WantedBy=default.target', 'Restart=on-failure', 'ExecStart="/var/tmp/forge-user/.forge/runtime/service/active-forge-runtime" "--port" "8765"', 'Environment="FORGE_RELEASE_ID=package-test"']) expect(unit).toContain(expected);
+  });
+
+  test('restarts an already-active systemd runtime after replacing its unit', () => {
+    expect(systemdRuntimeInstallCommands('com.moretea.forge.runtime.test.service')).toEqual([
+      ['--user', 'daemon-reload'],
+      ['--user', 'enable', 'com.moretea.forge.runtime.test.service'],
+      ['--user', 'restart', 'com.moretea.forge.runtime.test.service'],
+    ]);
   });
   test('validates the service config before installation', () => {
     const fx = fixture();
