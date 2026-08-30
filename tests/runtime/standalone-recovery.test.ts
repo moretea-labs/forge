@@ -55,7 +55,7 @@ import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureForgeRuntimeLaunchAgentContract, forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { recoveryConnectorDescriptor } from '../../src/cli/commands/recovery';
 import { ensureMcpControllerHomeOAuthPassphrase } from '../../src/cli/mcp/auth';
-import { inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
+import { inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, recoverySystemdUserUnitInput, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -815,6 +815,27 @@ test('watchdog defers Recovery self-repair while an attributable mutation lock i
   expect(tick.state.firstFailureAt).toBeUndefined();
   expect(tick.recoveryGatewayRestart).toBeUndefined();
   expect(tick.primaryRuntimeRestart).toBeUndefined();
+});
+
+describe('standalone recovery systemd user ownership', () => {
+  test('pins Gateway and Watchdog units to the current immutable Recovery release', () => {
+    const controllerHome = '/tmp/forge-recovery-systemd-fixture';
+    const gateway = recoverySystemdUserUnitInput(controllerHome, 'gateway', { PATH: '/usr/bin:/bin' });
+    const watchdog = recoverySystemdUserUnitInput(controllerHome, 'watchdog', { PATH: '/usr/bin:/bin' });
+    expect(gateway).toMatchObject({
+      executable: expect.stringContaining('/recovery/current/forge-recovery-gateway'),
+      args: ['gateway', '--controller-home', controllerHome],
+      restart: 'always',
+      restartSec: 5,
+      environment: { PATH: '/usr/bin:/bin' },
+    });
+    expect(watchdog).toMatchObject({
+      executable: expect.stringContaining('/recovery/current/forge-recovery-watchdog'),
+      args: ['watchdog', '--controller-home', controllerHome],
+      restart: 'always',
+      restartSec: 5,
+    });
+  });
 });
 
 describe('standalone recovery on canonical Runtime', () => {

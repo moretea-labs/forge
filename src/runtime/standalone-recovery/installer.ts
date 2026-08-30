@@ -23,6 +23,12 @@ import {
   type SafeHandoffResult,
 } from '../../cli/controller/launch-agents';
 import { isProcessAlive } from '../shared/process-tree';
+import {
+  installSystemdUserUnit,
+  systemdUserAvailable,
+  systemdUserServicePid,
+  type SystemdUserUnitInput,
+} from '../../cli/controller/systemd-user';
 import { FORGE_VERSION } from '../../version';
 import { initializeStandaloneRecovery, loadRecoveryConfig, type PrimaryConnectorServiceConfig, type PrimaryRuntimeServiceConfig, type PublicTunnelServiceConfig, type RecoveryConfig } from './core';
 import { RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
@@ -129,14 +135,24 @@ export interface RecoveryActivationVerification {
   healthStatus?: number;
 }
 
+
+export interface RecoveryServiceHandoffResult {
+  platform: 'launchd' | 'systemd-user';
+  serviceRegistered: boolean;
+  pidReady: boolean;
+  portReady: boolean;
+  servicePath?: string;
+  pid?: number;
+  launchd?: SafeHandoffResult;
+}
 export interface RecoveryActivationResult {
   release: RecoveryReleaseDescriptor;
   previous?: RecoveryReleaseDescriptor;
   migratedLegacy?: RecoveryReleaseDescriptor;
   noOp?: boolean;
   handoff?: {
-    gateway: SafeHandoffResult;
-    watchdog: SafeHandoffResult;
+    gateway: RecoveryServiceHandoffResult;
+    watchdog: RecoveryServiceHandoffResult;
   };
   verification: RecoveryActivationVerification;
   rollback?: {
@@ -153,6 +169,10 @@ export interface RecoveryInstallResult {
 }
 
 export interface RecoveryInstallerDependencies {
+  platform?: NodeJS.Platform;
+  systemdEnv?: NodeJS.ProcessEnv;
+  systemdAvailable?: typeof systemdUserAvailable;
+  installSystemdUnit?: typeof installSystemdUserUnit;
   now?: () => number;
   uuid?: () => string;
   compileBinary?: (input: { sourceRoot: string; outputPath: string }) => ProcessRunResult;
@@ -331,6 +351,30 @@ export function captureLegacyRecoveryRelease(
   return release;
 }
 
+export function recoverySystemdUserUnitInput(
+  controllerHome: string,
+  role: RecoveryRuntimeRole,
+  env: NodeJS.ProcessEnv = process.env,
+): SystemdUserUnitInput {
+  const binary = role === 'gateway' ? 'forge-recovery-gateway' : 'forge-recovery-watchdog';
+  return {
+    description: role === 'gateway' ? 'Forge Standalone Recovery Gateway' : 'Forge Standalone Recovery Watchdog',
+    executable: join(recoveryCurrentPath(controllerHome), binary),
+    args: [role, '--controller-home', resolve(controllerHome)],
+    environment: {
+      PATH: env.PATH?.trim() || '/usr/bin:/bin:/usr/sbin:/sbin',
+      FORGE_BUILD_VERSION: FORGE_VERSION,
+      FORGE_CONNECTOR_EXECUTABLE: process.execPath,
+    },
+    restart: 'always',
+    restartSec: 5,
+  };
+}
+
+function recoverySystemdLabel(role: RecoveryRuntimeRole): string {
+  return role === 'gateway' ? RECOVERY_GATEWAY_LABEL : RECOVERY_WATCHDOG_LABEL;
+}
+
 function recoveryPlist(input: {
   label: string;
   executable: string;
@@ -375,7 +419,7 @@ export async function verifyRecoveryReleaseActivation(input: {
   config: RecoveryConfig;
   expectedRelease: RecoveryReleaseDescriptor;
   timeoutMs?: number;
-}, dependencies: Pick<RecoveryInstallerDependencies, 'servicePid'> = {}): Promise<RecoveryActivationVerification> {
+}, dependencies: Pick<RecoveryInstallerDependencies, 'servicePid' | 'platform' | 'systemdEnv'> = {}): Promise<RecoveryActivationVerification> {
   const deadline = Date.now() + (input.timeoutMs ?? 60_000);
   let last: RecoveryActivationVerification = {
     ok: false,
@@ -391,16 +435,21 @@ export async function verifyRecoveryReleaseActivation(input: {
     const gateway = readRecoveryRuntimeIdentity(input.controllerHome, 'gateway');
     const watchdog = readRecoveryRuntimeIdentity(input.controllerHome, 'watchdog');
     const observedPids: Partial<Record<RecoveryRuntimeRole, number>> = {};
-    const servicePid = dependencies.servicePid ?? ((_controllerHome: string, role: RecoveryRuntimeRole) => recoveryLaunchdPid(role));
+    const platform = dependencies.platform ?? process.platform;
+    const servicePid = dependencies.servicePid ?? ((_controllerHome: string, role: RecoveryRuntimeRole) => (
+      platform === 'linux'
+        ? systemdUserServicePid(recoverySystemdLabel(role), dependencies.systemdEnv ?? process.env)
+        : recoveryLaunchdPid(role)
+    ));
     for (const [role, identity] of [['gateway', gateway], ['watchdog', watchdog]] as const) {
       const managedPid = servicePid(input.controllerHome, role);
-      if (!managedPid) failures.push(`${role} launchd PID is unavailable`);
+      if (!managedPid) failures.push(`${role} service-owner PID is unavailable`);
       else observedPids[role] = managedPid;
       if (input.expectedRelease.legacy) continue;
       if (!identity) failures.push(`${role} runtime identity missing`);
       else {
         if (!isProcessAlive(identity.pid)) failures.push(`${role} PID ${identity.pid} is not alive`);
-        if (managedPid !== undefined && identity.pid !== managedPid) failures.push(`${role} runtime identity PID does not match launchd PID`);
+        if (managedPid !== undefined && identity.pid !== managedPid) failures.push(`${role} runtime identity PID does not match service-owner PID`);
         if (identity.releasePath !== input.expectedRelease.releasePath) failures.push(`${role} release path mismatch`);
         if (identity.releaseRevision !== input.expectedRelease.releaseRevision) failures.push(`${role} release revision mismatch`);
         if (identity.manifestSha256 !== input.expectedRelease.manifestSha256) failures.push(`${role} manifest hash mismatch`);
@@ -518,8 +567,53 @@ async function handoffRecoveryServices(input: {
   config: RecoveryConfig;
   expectedRelease: RecoveryReleaseDescriptor;
   dependencies: RecoveryInstallerDependencies;
-}): Promise<{ gateway: SafeHandoffResult; watchdog: SafeHandoffResult; verification: RecoveryActivationVerification }> {
-  if (process.platform !== 'darwin' && !input.dependencies.handoff) throw new Error('RECOVERY_RELEASE_ACTIVATION_REQUIRES_MACOS');
+}): Promise<{ gateway: RecoveryServiceHandoffResult; watchdog: RecoveryServiceHandoffResult; verification: RecoveryActivationVerification }> {
+  const platform = input.dependencies.platform ?? process.platform;
+  if (platform === 'linux' && !input.dependencies.handoff) {
+    const env = input.dependencies.systemdEnv ?? process.env;
+    const available = input.dependencies.systemdAvailable ?? systemdUserAvailable;
+    if (!available(env)) throw new Error('RECOVERY_SYSTEMD_USER_UNAVAILABLE');
+    const installUnit = input.dependencies.installSystemdUnit ?? installSystemdUserUnit;
+    const gatewayPath = installUnit({
+      unitName: RECOVERY_GATEWAY_LABEL,
+      unit: recoverySystemdUserUnitInput(input.controllerHome, 'gateway', env),
+      env,
+      errorPrefix: 'RECOVERY_SYSTEMD_INSTALL_FAILED',
+    });
+    const watchdogPath = installUnit({
+      unitName: RECOVERY_WATCHDOG_LABEL,
+      unit: recoverySystemdUserUnitInput(input.controllerHome, 'watchdog', env),
+      env,
+      errorPrefix: 'RECOVERY_SYSTEMD_INSTALL_FAILED',
+    });
+    const verification = await (input.dependencies.verify
+      ?? ((verifyInput) => verifyRecoveryReleaseActivation(verifyInput, input.dependencies)))({
+      controllerHome: input.controllerHome,
+      config: input.config,
+      expectedRelease: input.expectedRelease,
+    });
+    if (!verification.ok) throw new Error(`RECOVERY_RELEASE_VERIFICATION_FAILED: ${verification.failures.join('; ')}`);
+    return {
+      gateway: {
+        platform: 'systemd-user',
+        serviceRegistered: true,
+        pidReady: Boolean(verification.gatewayPid),
+        portReady: verification.healthStatus === 200,
+        servicePath: gatewayPath,
+        pid: verification.gatewayPid,
+      },
+      watchdog: {
+        platform: 'systemd-user',
+        serviceRegistered: true,
+        pidReady: Boolean(verification.watchdogPid),
+        portReady: true,
+        servicePath: watchdogPath,
+        pid: verification.watchdogPid,
+      },
+      verification,
+    };
+  }
+  if (platform !== 'darwin' && !input.dependencies.handoff) throw new Error(`RECOVERY_RELEASE_ACTIVATION_UNSUPPORTED_PLATFORM: ${platform}`);
   const uid = (input.dependencies.uid ?? (() => typeof process.getuid === 'function' ? process.getuid() : Number.NaN))();
   if (!Number.isInteger(uid)) throw new Error('RECOVERY_LAUNCHD_UID_UNAVAILABLE');
   const domain = `gui/${uid}`;
@@ -542,7 +636,7 @@ async function handoffRecoveryServices(input: {
   })();
   const currentPid = input.dependencies.currentPid ?? defaultCurrentPid;
   const handoff = input.dependencies.handoff ?? safeLaunchdHandoff;
-  const gateway = await handoff({
+  const gatewayLaunchd = await handoff({
     label: RECOVERY_GATEWAY_LABEL,
     plistPath: generated.gateway,
     domain,
@@ -551,10 +645,10 @@ async function handoffRecoveryServices(input: {
     maxBootoutWaitMs: 20_000,
     maxBootstrapRetry: 3,
   });
-  if (!gateway.serviceRegistered || !gateway.pidWaitClean || !gateway.portWaitClean) {
+  if (!gatewayLaunchd.serviceRegistered || !gatewayLaunchd.pidWaitClean || !gatewayLaunchd.portWaitClean) {
     throw new Error('RECOVERY_GATEWAY_HANDOFF_FAILED');
   }
-  const watchdog = await handoff({
+  const watchdogLaunchd = await handoff({
     label: RECOVERY_WATCHDOG_LABEL,
     plistPath: generated.watchdog,
     domain,
@@ -562,7 +656,7 @@ async function handoffRecoveryServices(input: {
     maxBootoutWaitMs: 20_000,
     maxBootstrapRetry: 3,
   });
-  if (!watchdog.serviceRegistered || !watchdog.pidWaitClean) throw new Error('RECOVERY_WATCHDOG_HANDOFF_FAILED');
+  if (!watchdogLaunchd.serviceRegistered || !watchdogLaunchd.pidWaitClean) throw new Error('RECOVERY_WATCHDOG_HANDOFF_FAILED');
   const verification = await (input.dependencies.verify
     ?? ((verifyInput) => verifyRecoveryReleaseActivation(verifyInput, input.dependencies)))({
     controllerHome: input.controllerHome,
@@ -570,7 +664,11 @@ async function handoffRecoveryServices(input: {
     expectedRelease: input.expectedRelease,
   });
   if (!verification.ok) throw new Error(`RECOVERY_RELEASE_VERIFICATION_FAILED: ${verification.failures.join('; ')}`);
-  return { gateway, watchdog, verification };
+  return {
+    gateway: { platform: 'launchd', serviceRegistered: gatewayLaunchd.serviceRegistered, pidReady: gatewayLaunchd.pidWaitClean, portReady: gatewayLaunchd.portWaitClean, servicePath: generated.gateway, launchd: gatewayLaunchd },
+    watchdog: { platform: 'launchd', serviceRegistered: watchdogLaunchd.serviceRegistered, pidReady: watchdogLaunchd.pidWaitClean, portReady: watchdogLaunchd.portWaitClean, servicePath: generated.watchdog, launchd: watchdogLaunchd },
+    verification,
+  };
 }
 
 function sameRecoveryReleasePayload(left: RecoveryReleaseDescriptor, right: RecoveryReleaseDescriptor): boolean {
