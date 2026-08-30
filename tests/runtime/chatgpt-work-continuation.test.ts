@@ -30,6 +30,7 @@ import {
   chatgptAutomationReasoningLevelFromLabel,
   chatgptBrowserActionArgs,
   isChatgptConversationUrl,
+  reconciledChatgptOpenPageSessionId,
   resolveChatgptWorkBrowserSessionId,
   runWorkChatgptContinuation,
   stableChatgptWorkBrowserSessionId,
@@ -285,6 +286,31 @@ describe('ChatGPT Work conversation binding', () => {
   });
 });
 
+
+describe('ChatGPT scheduled open_page reconciliation', () => {
+  test('accepts only one exact live Work session after an unknown open_page outcome', () => {
+    const sessionId = stableChatgptWorkBrowserSessionId('repo-1', 'WORK-1');
+    expect(reconciledChatgptOpenPageSessionId({ sessions: [
+      { sessionId, url: 'https://chatgpt.com/c/exact', liveness: 'live' },
+    ] }, sessionId, 'https://chatgpt.com/c/exact')).toBe(sessionId);
+    expect(reconciledChatgptOpenPageSessionId({ sessions: [
+      { sessionId, url: 'https://chatgpt.com/c/exact', liveness: 'unverified' },
+    ] }, sessionId, 'https://chatgpt.com/c/exact')).toBeUndefined();
+    expect(reconciledChatgptOpenPageSessionId({ sessions: [
+      { sessionId, url: 'https://chatgpt.com/c/other', liveness: 'live' },
+    ] }, sessionId, 'https://chatgpt.com/c/exact')).toBeUndefined();
+    expect(reconciledChatgptOpenPageSessionId({ sessions: [
+      { sessionId, url: 'https://chatgpt.com/c/new-conversation', liveness: 'live' },
+    ] }, sessionId, 'https://chatgpt.com/')).toBe(sessionId);
+  });
+
+  test('reconciles an unknown open_page outcome read-only instead of replaying the mutation', () => {
+    const source = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
+    expect(source).toContain("controllerBrowserAction(controllerHome, workId, 'list_sessions'");
+    expect(source).toContain("browserMutationOutcomeUnknown(error, 'open_page')");
+    expect(source).toContain('session_id: browserSessionId');
+  });
+});
 
 describe('ChatGPT native background-tab recovery', () => {
   test('launcher recovery creates a replacement page when native navigation requires replacement', () => {

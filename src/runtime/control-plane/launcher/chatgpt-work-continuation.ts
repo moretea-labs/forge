@@ -435,6 +435,46 @@ function resultSessionId(result: Record<string, unknown>): string | undefined {
     ?? stringField((result.session as Record<string, unknown> | undefined)?.sessionId);
 }
 
+interface ChatgptBrowserSessionInventoryItem {
+  sessionId?: unknown;
+  url?: unknown;
+  liveness?: unknown;
+}
+
+function chatgptUrlMatchesContinuationTarget(observedUrl: string, targetUrl: string): boolean {
+  try {
+    const observed = new URL(observedUrl);
+    const target = new URL(targetUrl);
+    const allowedHosts = new Set(['chatgpt.com', 'www.chatgpt.com', 'chat.openai.com']);
+    if (observed.protocol !== 'https:' || target.protocol !== 'https:' || !allowedHosts.has(observed.hostname) || !allowedHosts.has(target.hostname)) return false;
+    const targetConversation = /\/c\/([^/?#]+)/.exec(target.pathname)?.[1];
+    if (!targetConversation) return true;
+    const observedConversation = /\/c\/([^/?#]+)/.exec(observed.pathname)?.[1];
+    return observedConversation === targetConversation;
+  } catch {
+    return false;
+  }
+}
+
+export function reconciledChatgptOpenPageSessionId(
+  inventory: Record<string, unknown>,
+  expectedSessionId: string,
+  targetUrl: string,
+): string | undefined {
+  const sessions = Array.isArray(inventory.sessions) ? inventory.sessions as ChatgptBrowserSessionInventoryItem[] : [];
+  const matches = sessions.filter((entry) => stringField(entry.sessionId) === expectedSessionId
+    && entry.liveness === 'live'
+    && Boolean(stringField(entry.url))
+    && chatgptUrlMatchesContinuationTarget(stringField(entry.url)!, targetUrl));
+  return matches.length === 1 ? expectedSessionId : undefined;
+}
+
+function browserMutationOutcomeUnknown(error: unknown, actionId: string): boolean {
+  return error instanceof Error
+    && error.message.includes('PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN')
+    && error.message.includes(`Browser action ${actionId}`);
+}
+
 export function chatgptAutomationNavigationRequiresReplacement(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return [
@@ -516,15 +556,28 @@ async function navigateWorkConversation(
     retries: 1,
   }, timeoutMs);
   const openReplacement = async (url: string): Promise<string> => {
-    const opened = await controllerBrowserAction(controllerHome, workId, 'open_page', {
-      url,
-      wait_until: 'domcontentloaded',
-      timeout_ms: timeoutMs ?? 60_000,
-      retries: 1,
-    }, timeoutMs);
-    const replacementSessionId = resultSessionId(opened);
-    if (!replacementSessionId) throw new Error('CHATGPT_AUTOMATION_REPLACEMENT_SESSION_NOT_CONFIRMED');
-    return replacementSessionId;
+    // Reuse the Work-stable session identity so a post-dispatch transport failure
+    // can be reconciled read-only without replaying open_page. The Browser
+    // adapter remains the mutation authority; this launcher only accepts a
+    // positively live exact-session observation after an unknown outcome.
+    try {
+      const opened = await controllerBrowserAction(controllerHome, workId, 'open_page', {
+        session_id: browserSessionId,
+        url,
+        wait_until: 'domcontentloaded',
+        timeout_ms: timeoutMs ?? 60_000,
+        retries: 1,
+      }, timeoutMs);
+      const replacementSessionId = resultSessionId(opened);
+      if (!replacementSessionId) throw new Error('CHATGPT_AUTOMATION_REPLACEMENT_SESSION_NOT_CONFIRMED');
+      return replacementSessionId;
+    } catch (error) {
+      if (!browserMutationOutcomeUnknown(error, 'open_page')) throw error;
+      const inventory = await controllerBrowserAction(controllerHome, workId, 'list_sessions', { limit: 100 }, timeoutMs);
+      const reconciledSessionId = reconciledChatgptOpenPageSessionId(inventory, browserSessionId, url);
+      if (!reconciledSessionId) throw error;
+      return reconciledSessionId;
+    }
   };
   try {
     await navigate(browserSessionId, targetUrl);
