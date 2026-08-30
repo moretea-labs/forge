@@ -301,6 +301,7 @@ for (const path of sourceFiles('src/runtime/control-plane')) {
   );
 }
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'completeWorkWithReceipt(');
+requireText('src/runtime/gateway/mcp/execution-tools.ts', 'resetFinalizationStagesForRequest');
 forbid(
   'src/runtime/plugins/browser-handoff-host.ts',
   /browser\/sessions|saveBrowserSession|writeBrowserSession|sessionPath/,
