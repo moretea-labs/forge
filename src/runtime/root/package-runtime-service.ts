@@ -176,6 +176,20 @@ function cleanRuntimeInstallerEnvironment(env: NodeJS.ProcessEnv, releaseEnviron
   return { ...next, ...releaseEnvironment };
 }
 
+export function systemdRuntimeInstallCommands(unitName: string): string[][] {
+  // `enable --now` only starts an inactive unit. When Forge is already running,
+  // replacing the unit file and calling enable --now leaves the old ExecStart
+  // process alive even though release authority has advanced, fencing that
+  // process from writes. Enable and restart are intentionally separate so both
+  // first install and in-place immutable-release activation converge on the
+  // just-written unit while systemd remains the sole lifecycle owner.
+  return [
+    ['--user', 'daemon-reload'],
+    ['--user', 'enable', unitName],
+    ['--user', 'restart', unitName],
+  ];
+}
+
 function installSystemdUserService(controllerHome: string, env: NodeJS.ProcessEnv): string {
   const entrypoint = activeRuntimeEntrypoint(controllerHome);
   const launch = activeRuntimeLaunchSpec(controllerHome);
@@ -184,7 +198,7 @@ function installSystemdUserService(controllerHome: string, env: NodeJS.ProcessEn
   const unitName = `${label}.service`;
   const unitPath = join(env.HOME ?? homedir(), '.config', 'systemd', 'user', unitName);
   atomicWrite(unitPath, renderForgeRuntimeSystemdUserUnit({ executable: entrypoint, args: launch.args, environment: launch.environment }), 0o644);
-  for (const args of [['--user', 'daemon-reload'], ['--user', 'enable', '--now', unitName]]) {
+  for (const args of systemdRuntimeInstallCommands(unitName)) {
     const result = commandSucceeded('systemctl', args, env);
     if (result.status !== 0) throw new Error(`FORGE_RUNTIME_SYSTEMD_INSTALL_FAILED: systemctl ${args.join(' ')}: ${(result.stderr || result.stdout || '').trim()}`);
   }
