@@ -359,6 +359,32 @@ describe('CodeGraph read provider', () => {
     });
   });
 
+  test('skips Git gitlink directories during sync and async Context lexical discovery', async () => {
+    const root = contextRepo();
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+    mkdirSync(join(root, 'vendor', 'gitlink'), { recursive: true });
+    execFileSync('git', ['update-index', '--add', '--cacheinfo', `160000,${head},vendor/gitlink`], { cwd: root });
+    const options = {
+      searchTerms: ['runService'],
+      knownPaths: ['src', 'missing-context-file.ts'],
+      structuralContext: 'off' as const,
+      retrievalMode: 'debug' as const,
+      maxFiles: 8,
+      maxSnippets: 16,
+    };
+
+    const syncPack = buildControllerContextPack(root, getMcpPolicy('controller'), options);
+    expect(syncPack.files.some((file) => file.path === 'src/service.ts')).toBe(true);
+    expect(syncPack.deniedPaths).toContainEqual({ path: 'missing-context-file.ts', reason: 'path does not exist: missing-context-file.ts' });
+
+    const asyncPack = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), {
+      ...options,
+      session: { sessionId: 'gitlink-directory-inventory', repoId: 'repo-a', checkoutId: 'checkout-a' },
+    });
+    expect(asyncPack.files.some((file) => file.path === 'src/service.ts')).toBe(true);
+    expect(asyncPack.deniedPaths).toContainEqual({ path: 'missing-context-file.ts', reason: 'path does not exist: missing-context-file.ts' });
+  });
+
   test('does not let a known directory starve an exact known file', () => {
     const root = contextRepo();
     writeFileSync(join(root, 'zeta.ts'), 'export const zeta = true;\n');

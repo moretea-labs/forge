@@ -733,7 +733,9 @@ export function searchRepositoryMany(
       policyDeniedFiles += 1;
       continue;
     }
-    const size = statSync(decision.absolutePath).size;
+    const info = statSync(decision.absolutePath);
+    if (!info.isFile()) continue;
+    const size = info.size;
     if (size > policy.maxFileBytes) {
       skippedLargeFiles += 1;
       continue;
@@ -780,6 +782,7 @@ type AsyncSearchCandidate =
   | { path: string; kind: 'denied' }
   | { path: string; kind: 'large' }
   | { path: string; kind: 'binary' }
+  | { path: string; kind: 'nonfile' }
   | { path: string; kind: 'source'; bytes: Buffer }
   | { path: string; kind: 'error'; error: unknown };
 
@@ -792,7 +795,9 @@ async function readSearchCandidateAsync(
   try {
     const decision = resolveMcpPath(repoRoot, path, policy, 'read', canonicalRepoRoot);
     if (!decision.ok || !decision.absolutePath) return { path, kind: 'denied' };
-    const size = (await statAsync(decision.absolutePath)).size;
+    const info = await statAsync(decision.absolutePath);
+    if (!info.isFile()) return { path, kind: 'nonfile' };
+    const size = info.size;
     if (size > policy.maxFileBytes) return { path, kind: 'large' };
     const bytes = await readFileAsync(decision.absolutePath);
     if (binary(bytes)) return { path, kind: 'binary' };
@@ -872,6 +877,7 @@ export async function searchRepositoryManyAsync(
         skippedBinaryFiles += 1;
         continue;
       }
+      if (candidate.kind === 'nonfile') continue;
       if (candidate.kind === 'error') throw candidate.error;
       scannedFiles += 1;
       matchSearchManySource(matchState, candidate.path, candidate.bytes);
@@ -950,7 +956,9 @@ export function searchRepository(repoRoot: string, policy: McpPolicy, opts: Sear
       policyDeniedFiles += 1;
       continue;
     }
-    const size = statSync(decision.absolutePath).size;
+    const info = statSync(decision.absolutePath);
+    if (!info.isFile()) continue;
+    const size = info.size;
     if (size > policy.maxFileBytes) {
       skippedLargeFiles += 1;
       continue;
