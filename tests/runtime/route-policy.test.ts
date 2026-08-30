@@ -507,6 +507,18 @@ describe('single Route Policy authority', () => {
       summary: 'A real timer-origin continuation occurrence completed.',
       detailLevel: 'summary',
     });
+    const evidenceOnlyLocalFinalize = finalizeGoalWorkloop(localContext, { workId: localId! });
+    expect(evidenceOnlyLocalFinalize.status).toBe('blocked');
+    expect(evidenceOnlyLocalFinalize.summary).toContain('Controller-reviewed semantic acceptance evidence is incomplete');
+    const reviewedLocal = continueGoalWorkloop(localContext, {
+      workId: localId!,
+      acceptanceEvidence: [{
+        criterion: 'Local Runtime activation receipt exists',
+        evidenceIds: ['OCC-SCH-local-effect-timer-1'],
+        rationale: 'The durable timer-origin result evidence was explicitly reviewed against the declared local-effect criterion.',
+      }],
+    });
+    expect(reviewedLocal.status).toBe('ok');
     const completedLocal = finalizeGoalWorkloop(localContext, { workId: localId! });
     expect(completedLocal.status).toBe('ok');
     expect(getWorkContract(localStore, localId!)).toMatchObject({
