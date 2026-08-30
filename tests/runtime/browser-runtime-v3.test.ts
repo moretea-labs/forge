@@ -168,10 +168,10 @@ describe('Browser Runtime V3 native create-tab provenance', () => {
 
 describe('Browser Runtime V3 retry fencing', () => {
   test('replays only observation actions after dispatch and fences unknown mutation outcomes', () => {
-    for (const actionId of ['wait_for_load_state', 'get_text', 'query_selector', 'verify_state', 'screenshot', 'wait_for_selector']) {
+    for (const actionId of ['wait_for_load_state', 'get_text', 'query_selector', 'verify_state', 'screenshot', 'wait_for_selector', 'await_file_transfer']) {
       expect(browserActionCanReplayAfterDispatch(actionId)).toBe(true);
     }
-    for (const actionId of ['open_page', 'navigate', 'reload', 'go_back', 'click', 'fill', 'press', 'trusted_input', 'dispatch_event', 'attach_local_file', 'await_file_transfer']) {
+    for (const actionId of ['open_page', 'navigate', 'reload', 'go_back', 'click', 'fill', 'press', 'trusted_input', 'dispatch_event', 'attach_local_file']) {
       expect(browserActionCanReplayAfterDispatch(actionId)).toBe(false);
     }
     expect(browserActionCanReplayAfterDispatch('get_text', false)).toBe(false);

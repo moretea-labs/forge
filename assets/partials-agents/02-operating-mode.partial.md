@@ -8,6 +8,8 @@
 - Claude runtime expectation: `{{CLAUDE_POLICY}}`.
 - Codex runtime expectation: `{{CODEX_POLICY}}`.
 - Do not implement until the user explicitly asks to implement.
+- Once the user asks to execute, minimize avoidable human intervention: continue reversible, policy-allowed implementation, verification, cleanup, and delivery autonomously, stopping only at a genuinely user-only identity/legal/financial/strong-confirmation/irreversible boundary.
+- For authenticated browser work, reuse the user's already-running signed-in Google Chrome with attach-preferred, native-auto, Chrome-only, fail-closed routing. Preserve cookies, tokens, sessions, and settings; never silently switch to a managed, isolated, Vivaldi, or otherwise unauthenticated profile unless the task explicitly requests that mode.
 - Stable product truth: `docs/spec.md`.
 - Research reports: `docs/researches/`.
 - Deferred-goal ledger: `tasks/todos.md` (active execution stays in the plan's `## Task Breakdown`).

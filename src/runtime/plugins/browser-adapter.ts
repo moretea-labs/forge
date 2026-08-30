@@ -2,7 +2,6 @@ import { createHash, randomUUID } from 'crypto';
 import { createRequire } from 'module';
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
-import { readBrowserBinding } from '../../cli/chatgpt-browser/binding';
 import type {
   AssistantPluginActionExecutionInput,
   AssistantPluginAuthorizationContext,
@@ -103,8 +102,12 @@ type WaitForSelectorState = 'attached' | 'detached' | 'visible' | 'hidden';
 type BrowserChannel = 'chromium' | 'chrome' | 'chrome-beta' | 'chrome-dev' | 'chrome-canary';
 type BrowserNativeAttachMode = 'auto' | 'disabled';
 
+const CURRENT_BROWSER_CONFIG_SCHEMA_VERSION = 2 as const;
+const DEFAULT_USER_BROWSER_CHANNEL: BrowserChannel = 'chrome';
+const DEFAULT_USER_NATIVE_BROWSER_CANDIDATES: MacOsBrowserProduct[] = ['chrome'];
+
 interface BrowserPluginConfig {
-  schemaVersion: 1;
+  schemaVersion: 2;
   enabled: boolean;
   provider: 'playwright';
   browserMode?: BrowserMode;
@@ -121,6 +124,10 @@ interface BrowserPluginConfig {
   nativeBrowserCandidates?: MacOsBrowserProduct[];
   defaultTimeoutMs?: number;
 }
+
+type PersistedBrowserPluginConfig = Partial<Omit<BrowserPluginConfig, 'schemaVersion'>> & {
+  schemaVersion?: 1 | 2;
+};
 
 type BrowserSessionInventory = {
   sessions: BrowserSessionInventoryItem[];
@@ -440,17 +447,17 @@ function resolveProfileSelection(repoRoot: string, profileDir: string, profileDi
   };
 }
 
-function normalizeConfig(raw: Partial<BrowserPluginConfig>): BrowserPluginConfig {
+function normalizeConfig(raw: PersistedBrowserPluginConfig): BrowserPluginConfig {
   const normalizedProfileDir = stringValue(raw.profileDir);
   return {
-    schemaVersion: 1,
+    schemaVersion: CURRENT_BROWSER_CONFIG_SCHEMA_VERSION,
     enabled: raw.enabled === true,
     provider: 'playwright',
     browserMode: browserMode(raw.browserMode) ?? 'attach_preferred',
     profileMode: browserProfileMode(raw.profileMode) ?? (normalizedProfileDir ? 'custom' : 'repo_local'),
     profileDir: normalizedProfileDir,
     profileDirectory: stringValue(raw.profileDirectory),
-    browserChannel: browserChannel(raw.browserChannel) ?? 'chromium',
+    browserChannel: browserChannel(raw.browserChannel) ?? DEFAULT_USER_BROWSER_CHANNEL,
     executablePath: stringValue(raw.executablePath),
     cdpEndpoint: stringValue(raw.cdpEndpoint),
     cdpEndpointCandidates: stringList(raw.cdpEndpointCandidates)?.slice(0, MAX_BROWSER_CDP_ENDPOINT_CANDIDATES),
@@ -459,8 +466,25 @@ function normalizeConfig(raw: Partial<BrowserPluginConfig>): BrowserPluginConfig
       : undefined,
     cdpAttachFallback: browserCdpAttachFallback(raw.cdpAttachFallback) ?? 'fail_closed',
     nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'auto',
-    nativeBrowserCandidates: browserProductList(raw.nativeBrowserCandidates) ?? ['chrome', 'vivaldi'],
+    nativeBrowserCandidates: browserProductList(raw.nativeBrowserCandidates) ?? [...DEFAULT_USER_NATIVE_BROWSER_CANDIDATES],
     defaultTimeoutMs: typeof raw.defaultTimeoutMs === 'number' ? positiveNumber(raw.defaultTimeoutMs, DEFAULT_TIMEOUT_MS) : undefined,
+  };
+}
+
+function migrateLegacyRepositoryConfig(raw: PersistedBrowserPluginConfig): PersistedBrowserPluginConfig {
+  if (raw.schemaVersion !== 1) return raw;
+  return {
+    schemaVersion: CURRENT_BROWSER_CONFIG_SCHEMA_VERSION,
+    enabled: raw.enabled,
+    provider: 'playwright',
+    browserMode: 'attach_preferred',
+    profileMode: 'repo_local',
+    browserChannel: DEFAULT_USER_BROWSER_CHANNEL,
+    cdpAttachFallback: 'fail_closed',
+    nativeAttachMode: 'auto',
+    nativeBrowserCandidates: [...DEFAULT_USER_NATIVE_BROWSER_CANDIDATES],
+    defaultTimeoutMs: raw.defaultTimeoutMs,
+    cdpDiscoveryTimeoutMs: raw.cdpDiscoveryTimeoutMs,
   };
 }
 
@@ -477,26 +501,10 @@ function writeJson(path: string, value: unknown): void {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
 }
 
-function legacyChatgptBindingConfig(repoRoot: string): Partial<BrowserPluginConfig> {
-  const binding = readBrowserBinding(repoRoot).binding;
-  if (!binding) return {};
-  return {
-    profileMode: 'custom',
-    profileDir: binding.profileDir,
-    profileDirectory: binding.profileDirectory,
-    browserChannel: browserChannel(binding.browserChannel) ?? 'chromium',
-  };
-}
-
 function loadConfig(repoRoot: string): BrowserPluginConfig {
-  const persisted = readJson<Partial<BrowserPluginConfig>>(configPath(repoRoot));
-  if (!persisted) return normalizeConfig(legacyChatgptBindingConfig(repoRoot));
-  const merged: Partial<BrowserPluginConfig> = { ...legacyChatgptBindingConfig(repoRoot), ...persisted };
-  if (browserProfileMode(persisted.profileMode) === 'repo_local') {
-    merged.profileDir = undefined;
-    merged.profileDirectory = undefined;
-  }
-  return normalizeConfig(merged);
+  const persisted = readJson<PersistedBrowserPluginConfig>(configPath(repoRoot));
+  if (!persisted) return normalizeConfig({});
+  return normalizeConfig(migrateLegacyRepositoryConfig(persisted));
 }
 
 async function resolveBrowserPluginAuthorizationContextInternal(
@@ -778,7 +786,9 @@ function configWarnings(config: BrowserPluginConfig): string[] {
   }
   if (config.browserMode === 'attach_preferred' && cdpEndpoints(config).length === 0) {
     if (config.nativeAttachMode === 'auto' && macOsActiveBrowserAttachSupported()) {
-      warnings.push('browserMode=attach_preferred has no configured CDP endpoint; macOS active-browser attach will be attempted before managed fallback.');
+      warnings.push(config.cdpAttachFallback === 'fail_closed'
+        ? 'browserMode=attach_preferred has no configured CDP endpoint; configured native-browser attach will be attempted and managed fallback is disabled.'
+        : 'browserMode=attach_preferred has no configured CDP endpoint; configured native-browser attach will be attempted before explicit managed fallback.');
     } else {
       warnings.push('browserMode=attach_preferred has no configured CDP endpoint; actions will use the configured fallback policy.');
     }
@@ -2118,7 +2128,7 @@ async function openNativeAttachedContext(
   }
 
   if (!discovered?.attachment) {
-    const candidates = savedProduct ? [savedProduct] : (config.nativeBrowserCandidates ?? ['vivaldi', 'chrome']);
+    const candidates = savedProduct ? [savedProduct] : (config.nativeBrowserCandidates ?? [...DEFAULT_USER_NATIVE_BROWSER_CANDIDATES]);
     discovered = await discoverMacOsBrowserAttachment(candidates, Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));
   }
   if (!discovered.attachment) return { attempts: discovered.attempts };
@@ -3187,7 +3197,9 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
       details: {
         ...baseDetails,
         provider: config.browserMode === 'attach_preferred'
-          ? 'cdp-or-macos-active-browser-or-persistent-context'
+          ? config.cdpAttachFallback === 'managed_persistent'
+            ? 'cdp-or-macos-active-browser-or-persistent-context'
+            : 'cdp-or-macos-active-browser'
           : 'playwright-persistent-context',
         userFacingStatus: 'not ready',
       },
@@ -3234,7 +3246,11 @@ export function buildBrowserPluginManifest(previousRevision = 0, previousUpdated
       reason: !config.enabled
         ? 'Browser plugin is disabled.'
         : state.ready
-          ? `Browser plugin is ready via ${config.browserMode === 'attach_preferred' ? 'CDP, macOS active-browser attach, and explicit managed fallback.' : 'Playwright persistent context.'}`
+          ? `Browser plugin is ready via ${config.browserMode === 'attach_preferred'
+            ? config.cdpAttachFallback === 'managed_persistent'
+              ? 'CDP, macOS native attach, and explicit managed fallback.'
+              : 'CDP or macOS native attach; managed fallback is disabled.'
+            : 'Playwright persistent context.'}`
           : state.state === 'degraded'
             ? state.warnings[0] ?? 'Browser plugin requires a successful live native attach probe.'
             : state.errors[0],
@@ -3667,7 +3683,7 @@ async function executeBrowserPluginActionInternal(
                 { retryable: false },
               );
             }
-            const configuredCandidates = (current.nativeBrowserCandidates ?? ['vivaldi', 'chrome'])
+            const configuredCandidates = (current.nativeBrowserCandidates ?? [...DEFAULT_USER_NATIVE_BROWSER_CANDIDATES])
               .filter((candidate): candidate is MacOsBrowserProduct => candidate === 'chrome' || candidate === 'vivaldi');
             const candidates: MacOsBrowserProduct[] = normalizedNativeProduct ? [normalizedNativeProduct] : configuredCandidates;
             const discovered = await discoverMacOsBrowserAttachment(candidates, Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));

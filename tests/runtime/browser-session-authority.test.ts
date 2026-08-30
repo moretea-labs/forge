@@ -614,7 +614,7 @@ describe('browser session controller authority', () => {
     expect(manifest.actions.find((action) => action.actionId === 'request_human_handoff')?.foregroundEffect).toBe('required');
   });
 
-  test('legacy ChatGPT browser binding seeds Browser profile configuration without overriding explicit Browser config', () => {
+  test('legacy ChatGPT profile state cannot become general Browser authority, while schema-v2 explicit Browser config remains authoritative', () => {
     const { repoA } = fixture();
     mkdirSync(join(repoA, '.forge'), { recursive: true });
     writeFileSync(join(repoA, '.forge', 'chatgpt-browser.local.json'), JSON.stringify({
@@ -622,32 +622,44 @@ describe('browser session controller authority', () => {
       product: 'chatgpt',
       profileDir: '/tmp/forge-live-chrome',
       profileDirectory: 'Profile 1',
-      browserChannel: 'chrome',
+      browserChannel: 'chromium',
       chatgptUrl: 'https://chatgpt.com/',
       updatedAt: '2026-08-24T00:00:00.000Z',
     }));
 
     const migrated = buildBrowserPluginManifest(1, undefined, repoA);
-    expect(migrated.health.details?.profileMode).toBe('custom');
-    expect(migrated.health.details?.profileDir).toBe('/tmp/forge-live-chrome');
-    expect(migrated.health.details?.profileDirectory).toBe('Profile 1');
+    expect(migrated.health.details?.browserMode).toBe('attach_preferred');
+    expect(migrated.health.details?.profileMode).toBe('repo_local');
+    expect(migrated.health.details?.profileDir).toBeUndefined();
+    expect(migrated.health.details?.profileDirectory).toBeUndefined();
     expect(migrated.health.details?.browserChannel).toBe('chrome');
     expect(migrated.health.details?.cdpAttachFallback).toBe('fail_closed');
+    expect(migrated.health.details?.nativeBrowserCandidates).toEqual(['chrome']);
     expect(migrated.authority.sourceOfTruth).toContain('controller-home:sqlite/browser_session');
     expect(migrated.health.details?.sessionCountSemantics).toBe('controller_authority_unavailable');
 
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     writeFileSync(join(repoA, '.forge', 'plugins', 'browser.json'), JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       enabled: true,
       provider: 'playwright',
-      profileMode: 'repo_local',
+      browserMode: 'managed_persistent',
+      profileMode: 'custom',
+      profileDir: '/tmp/explicit-browser-profile',
+      profileDirectory: 'Profile 2',
       browserChannel: 'chromium',
+      cdpAttachFallback: 'managed_persistent',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['vivaldi'],
     }));
     const explicit = buildBrowserPluginManifest(1, undefined, repoA);
-    expect(explicit.health.details?.profileMode).toBe('repo_local');
-    expect(explicit.health.details?.profileDir).toBeUndefined();
+    expect(explicit.health.details?.browserMode).toBe('managed_persistent');
+    expect(explicit.health.details?.profileMode).toBe('custom');
+    expect(explicit.health.details?.profileDir).toBe('/tmp/explicit-browser-profile');
+    expect(explicit.health.details?.profileDirectory).toBe('Profile 2');
     expect(explicit.health.details?.browserChannel).toBe('chromium');
+    expect(explicit.health.details?.cdpAttachFallback).toBe('managed_persistent');
+    expect(explicit.health.details?.nativeBrowserCandidates).toEqual(['vivaldi']);
   });
 
 });
