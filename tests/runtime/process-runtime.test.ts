@@ -1129,6 +1129,49 @@ describe('run_check Process Runtime facade', () => {
     expect(completedEvidence?.evidenceError?.code).toBe('SNAPSHOT_WORKER_TIMEOUT');
   });
 
+  test('lightweight repository command terminalizes a pre-spawn scope denial without poisoning later commands', async () => {
+    const fx = fixture();
+    const outside = join(fx.controllerHome, 'outside.txt');
+    writeFileSync(outside, 'outside\n');
+
+    const denied = await startLightweightRepositoryCommand({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      execution: { command: ['cat', outside] },
+      interactiveWaitMs: 0,
+      timeoutMs: 5_000,
+      commandId: 'scope-denial-before-spawn',
+      deferStart: true,
+    });
+    expect(denied.handle).toMatchObject({ completed: false, status: 'running' });
+
+    const terminal = await waitForLightweightProcess(
+      fx.controllerHome,
+      fx.repository.repoId,
+      denied.handle.processId,
+      { timeoutMs: 2_000 },
+    );
+    expect(terminal).toMatchObject({
+      completed: true,
+      status: 'failed',
+      ok: false,
+      exitCode: 1,
+      timedOut: false,
+      cancelled: false,
+    });
+    expect(terminal.stderr).toContain('EXTERNAL_FILESYSTEM_GRANT_REQUIRED');
+
+    const healthy = await startLightweightRepositoryCommand({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      execution: { command: ['git', 'status', '--short'] },
+      interactiveWaitMs: 5_000,
+      timeoutMs: 5_000,
+      commandId: 'after-scope-denial',
+    });
+    expect(healthy.handle).toMatchObject({ completed: true, status: 'succeeded', ok: true, exitCode: 0 });
+  });
+
   test('ordinary long check returns an in-memory lightweight handle without Process or Lease state', async () => {
     const fx = fixture();
     const before = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;

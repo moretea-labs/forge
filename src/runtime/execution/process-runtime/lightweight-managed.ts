@@ -740,7 +740,31 @@ export async function startLightweightRepositoryCommand(
     // degradation is represented by RepositoryCommandExecution.evidenceError;
     // this catch is the final fail-safe for any later post-processing exception.
     if (entry.exitObservation && entry.result) return entry.result;
-    throw error;
+
+    // Command preparation can fail before spawn (for example a repository-scope
+    // or external-filesystem grant denial). In deferred-start mode that rejection
+    // must belong to this lightweight Process; allowing it to escape would become
+    // an unhandled Runtime rejection and could terminate unrelated in-flight work.
+    const message = error instanceof Error ? error.message : String(error);
+    const failed: LightweightExecutionResult = {
+      ok: false,
+      exitCode: 1,
+      timedOut: false,
+      cancelled: false,
+      stdout: visibleOutput(entry.stdout, maxOutputBytes),
+      stderr: visibleOutput([entry.stderr, message].filter(Boolean).join('\n'), maxOutputBytes),
+    };
+    entry.result = failed;
+    entry.finishedAtMs = Date.now();
+    input.execution.signal?.removeEventListener('abort', onCallerAbort);
+    try {
+      input.onCompleted?.(failed);
+    } catch (callbackError) {
+      const callbackMessage = callbackError instanceof Error ? callbackError.message : String(callbackError);
+      failed.stderr = visibleOutput([failed.stderr, callbackMessage].filter(Boolean).join('\n'), maxOutputBytes);
+    }
+    persistTerminalReceipt(input.controllerHome, entry);
+    return failed;
   });
   entry.promise = input.deferStart
     ? new Promise<LightweightExecutionResult>((resolve, reject) => {
