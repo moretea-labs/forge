@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
@@ -205,6 +205,38 @@ describe('Work validation receipt convergence', () => {
     expect(result.summary).toContain('check cacheKey');
   });
   test('verification snapshot metadata does not change Check content identity', () => { const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-controller-')); const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-repo-')); roots.push(controllerHome, repoRoot); writeFileSync(join(repoRoot, 'source.ts'), 'export const value = 1;\n'); execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot }); execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot }); execFileSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot }); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot }); const sourceIdentity = currentControllerCheckRevision(repoRoot); const snapshot = materializeWorkVerificationSnapshot({ controllerHome, repoId: 'repo-validation-snapshot', sourceRoot: repoRoot, scope: { workId: 'work-validation-snapshot', allowedPaths: ['**'], forbiddenPaths: [] } }); expect(existsSync(join(snapshot.root, '.ai/harness/controller/work-verification-snapshot.json'))).toBe(true); expect(currentControllerCheckRevision(snapshot.root)).toBe(sourceIdentity); });
+  test('verification snapshot normalizes tracked regular-file modes independently of process umask', () => {
+    if (process.platform === 'win32') return;
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-mode-controller-'));
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-mode-repo-'));
+    roots.push(controllerHome, repoRoot);
+    writeFileSync(join(repoRoot, 'script.sh'), '#!/bin/sh\necho ok\n');
+    writeFileSync(join(repoRoot, 'doc.md'), 'mode fixture\n');
+    chmodSync(join(repoRoot, 'script.sh'), 0o755);
+    chmodSync(join(repoRoot, 'doc.md'), 0o644);
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot });
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+
+    // Reproduce a source checkout created under umask=0002. Git does not track
+    // the group-write bit, so this must not leak into the verification clone.
+    chmodSync(join(repoRoot, 'script.sh'), 0o775);
+    chmodSync(join(repoRoot, 'doc.md'), 0o664);
+    const snapshot = materializeWorkVerificationSnapshot({
+      controllerHome,
+      repoId: 'repo-validation-mode-snapshot',
+      sourceRoot: repoRoot,
+      scope: { workId: 'work-validation-mode-snapshot', allowedPaths: ['**'], forbiddenPaths: [] },
+    });
+
+    expect(statSync(join(snapshot.root, 'script.sh')).mode & 0o777).toBe(0o755);
+    expect(statSync(join(snapshot.root, 'doc.md')).mode & 0o777).toBe(0o644);
+    expect(statSync(join(repoRoot, 'script.sh')).mode & 0o777).toBe(0o775);
+    expect(statSync(join(repoRoot, 'doc.md')).mode & 0o777).toBe(0o664);
+  });
+
   test('verification snapshot provisions an isolated Controller Home inside the candidate namespace', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-host-controller-'));
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-work-validation-isolated-home-repo-'));

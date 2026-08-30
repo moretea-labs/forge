@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import {
+  chmodSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -94,6 +95,27 @@ function cloneHead(sourceRoot: string, targetRoot: string, head: string): void {
     throw new Error(`WORK_VERIFICATION_SNAPSHOT_CLONE_FAILED: ${clone.stderr || clone.error?.message || `exit ${clone.status}`}`);
   }
   git(targetRoot, ['checkout', '--detach', '--quiet', head]);
+}
+
+function normalizeTrackedSnapshotModes(sourceRoot: string, targetRoot: string): void {
+  for (const relativePath of nulPaths(git(sourceRoot, ['ls-files', '-z']))) {
+    const source = resolve(sourceRoot, relativePath);
+    const target = resolve(targetRoot, relativePath);
+    try {
+      const sourceStat = lstatSync(source);
+      const targetStat = lstatSync(target);
+      if (!sourceStat.isFile() || !targetStat.isFile()) continue;
+      // Git tracks only the executable bit for regular files. A checkout
+      // created under umask=0002 otherwise materializes 0664/0775 and makes
+      // exact-mode gates depend on the Runtime process umask. Canonicalize the
+      // untracked permission bits while preserving the Work's current
+      // executable semantics (including an uncommitted chmod +/-x).
+      chmodSync(target, (sourceStat.mode & 0o111) !== 0 ? 0o755 : 0o644);
+    } catch {
+      // Deleted paths, symlinks, and concurrently disappearing files are
+      // handled by the normal overlay/deletion path and are not regular files.
+    }
+  }
 }
 
 function pruneEmptySnapshotParents(targetRoot: string, targetPath: string): void {
@@ -245,7 +267,11 @@ export function materializeWorkVerificationSnapshot(input: {
   const root = snapshotRoot(input.controllerHome, input.repoId, input.scope.workId);
   try {
     cloneHead(input.sourceRoot, root, sourceHead);
+    normalizeTrackedSnapshotModes(input.sourceRoot, root);
     for (const path of includedPaths) overlayPath(input.sourceRoot, root, path);
+    // Overlay copies may reintroduce umask-derived group-write bits from the
+    // source Worktree, so normalize tracked regular files again afterwards.
+    normalizeTrackedSnapshotModes(input.sourceRoot, root);
     linkIgnoredNodeModules(input.sourceRoot, root, dirtyPaths);
     const ownershipDigest = createHash('sha256').update(JSON.stringify({
       sourceHead,
