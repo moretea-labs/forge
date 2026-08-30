@@ -275,6 +275,60 @@ describe('rh_work terminalization authority', () => {
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workA)?.status).toBe('cancelled');
   }, 15_000);
 
+  test('explicit controller session capability survives per-call transport rotation without collapsing same-principal conversations', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const principalId = 'principal-direct-connector';
+    const runtimeInstanceId = 'runtime-direct-connector';
+    const workId = 'work-direct-connector-rollover';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+
+    const claimed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-call-1', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workId,
+        session_id: 'conversation-capability-a',
+      },
+    ));
+    expect(claimed.status).toBe('ok');
+    expect(getControllerSession(store, workId)?.sessionId).toBe('conversation-capability-a');
+
+    const foreign = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-call-2', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'stop',
+        work_id: workId,
+        session_id: 'conversation-capability-b',
+        requested_by: 'chatgpt',
+        reason: 'same principal but different conversation capability',
+      },
+    ));
+    expect(foreign.status).toBe('blocked');
+    expect(foreign.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+    expect(getWorkContract(store, workId)?.status).toBe('ready');
+    expect(getControllerSession(store, workId)?.sessionId).toBe('conversation-capability-a');
+
+    const ownStop = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-call-3', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'stop',
+        work_id: workId,
+        session_id: 'conversation-capability-a',
+        requested_by: 'chatgpt',
+        reason: 'same conversation after connector transport rotation',
+      },
+    ));
+    expect(ownStop.status).toBe('ok');
+    expect(getWorkContract(store, workId)?.status).toBe('cancelled');
+  }, 15_000);
+
   test('same-principal concurrent ChatGPT conversations cannot claim or stop each other while the owning round survives transport rotation', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };

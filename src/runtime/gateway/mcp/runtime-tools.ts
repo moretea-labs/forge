@@ -1112,17 +1112,15 @@ function authenticatedFacadeControllerIdentity(
   if (!principalId || (!transportSessionId && !requestedSessionId)) {
     throw new Error('CONTROLLER_AUTHENTICATED_SESSION_REQUIRED: reconnect or provide session_id through the authenticated MCP transport');
   }
-  // Some authenticated Connector transports currently preserve the principal but
-  // omit the replaceable MCP transport session from tool context. In that case,
-  // accept the caller-owned opaque session_id already exposed by the rh_work
-  // contract. This remains fail-closed: an authenticated principal is mandatory,
-  // and whenever the transport supplies its own session it remains authoritative.
-  const sessionId = transportSessionId || requestedSessionId;
+  // The authenticated principal proves who is calling; session_id is the
+  // Controller-owned opaque lease capability that keeps one conversation/round
+  // stable across replaceable MCP transport sessions. Prefer that explicit
+  // capability whenever supplied. A foreign same-principal conversation still
+  // cannot rebind an existing Work unless it possesses the exact opaque session
+  // (or the stronger relay-round capability checked by the caller).
+  const sessionId = requestedSessionId || transportSessionId!;
   if (requestedControllerId && requestedControllerId !== principalId) {
     throw new Error('CONTROLLER_ID_CONTEXT_MISMATCH: controller_id must match the authenticated principal');
-  }
-  if (!options.allowTransportSessionRollover && transportSessionId && requestedSessionId && requestedSessionId !== transportSessionId) {
-    throw new Error('CONTROLLER_SESSION_CONTEXT_MISMATCH: session_id must match the authenticated MCP session');
   }
   const requestedControllerType = typeof args.controller_type === 'string' && ['chatgpt', 'codex', 'claude', 'grok', 'human'].includes(args.controller_type)
     ? args.controller_type as 'chatgpt' | 'codex' | 'claude' | 'grok' | 'human'
