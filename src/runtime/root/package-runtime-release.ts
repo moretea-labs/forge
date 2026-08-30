@@ -156,7 +156,8 @@ function launcherSource(input: { packageRoot: string; indexPath: string; indexSh
     + `const loader=join(packageRoot,'src','runtime','shared','node-ts-loader.mjs');\n`
     + `const args=process.versions?.bun?[entry,...process.argv.slice(2)]:['--loader',loader,entry,...process.argv.slice(2)];\n`
     + `const child=spawn(process.execPath,args,{stdio:'inherit',env:process.env});\n`
-    + `for(const signal of ['SIGINT','SIGTERM','SIGHUP']){try{process.on(signal,()=>child.kill(signal));}catch{}}\n`
+    + `const managerSignalsProcessGroup=process.platform==='linux'&&Boolean(process.env.INVOCATION_ID);\n`
+    + `for(const signal of ['SIGINT','SIGTERM','SIGHUP']){try{process.on(signal,()=>{if(!managerSignalsProcessGroup)child.kill(signal);});}catch{}}\n`
     + `child.on('error',(error)=>{console.error('FORGE_PACKAGE_RUNTIME_LAUNCH_FAILED: '+error.message);process.exit(1);});\n`
     + `child.on('exit',(code)=>process.exit(code??1));\n`;
 }

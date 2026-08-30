@@ -80,6 +80,13 @@ Required architecture:
 - never permit effect-only completion while unresolved source delta exists;
 - add regression coverage for the exact release scenario and use the repaired path to close the historical Work without rewriting `v1.7.1`.
 
+Windows source closure evidence:
+
+- `35915d4bed240fd5e6d5221e11ef81d98a73cc9c` promotes effect Work to repository-change authority before the first governed source mutation and materializes the existing physical WorkHandle authority;
+- the same slice extends the reviewed historical reconciliation path with exact revision/path, validation, branch/remote containment, cleanup, and unresolved-delta fencing instead of adding a second completion store;
+- focused terminalization coverage, typecheck, `check:task`, and `check:main` passed;
+- the historical macOS Controller Work still requires reconciliation on its original non-portable Controller authority and is not falsely reported closed from Windows.
+
 ### P0.3 Controller claim continuity across MCP transport rollover
 
 Relevant pending handoffs:
@@ -95,6 +102,23 @@ Acceptance requirements:
 - another conversation/controller cannot stop/finalize it merely because the authenticated principal is the same;
 - use existing controller id/type, principal, controller instance/round/claim generation authorities rather than creating a second opaque ownership system unless evidence proves the model is insufficient;
 - add multi-session and cross-conversation regression tests plus a live Windows MCP rollover canary.
+
+Windows source closure evidence:
+
+- `810b69170d8a6c5a1bab28f61c04e1ebd4670c4c` admits only an authenticated explicit opaque Controller session when an incidental transport session is absent;
+- `2cf73466e57959b7c1172635a173352b32a7c190` keeps that explicit Controller capability stable across per-call transport rotation while preserving distinct same-principal conversation scopes;
+- focused tests cover transport rotation, concurrent same-principal conversations, stale generations, Runtime handoff fencing, and terminalization; the combined Runtime/route/systemd suite passed 81/81 before the final shutdown regression was added.
+
+### P0.3a Linux/WSL package Runtime activation convergence
+
+Live WSL reproduction proved that package activation advanced release authority while `systemctl enable --now` left an already-active old Runtime process running. The old process then failed every write fence with `release_authority_revision_fenced` until manually restarted.
+
+The patch release repair:
+
+- uses `daemon-reload -> enable -> restart` so both first install and in-place immutable-release activation converge on the newly written unit;
+- keeps systemd as the sole lifecycle owner and does not add another watchdog or release authority;
+- avoids forwarding a second shutdown signal when Linux systemd already signals the entire service cgroup, allowing the Canonical Runtime to complete its own signal-driven stop path;
+- includes a real process-group SIGTERM regression plus a live package upgrade canary in which the active PID/release changed, readiness passed, and no writer-fence recurrence was observed.
 
 ### P0.4 Supported standalone Recovery self-upgrade/cutover authority
 

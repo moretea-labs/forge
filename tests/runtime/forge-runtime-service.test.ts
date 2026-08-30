@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -261,6 +261,41 @@ describe('Forge Runtime service', () => {
     const changed = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'package-test-changed' });
     expect(changed.releaseId).not.toBe(release.releaseId);
     expect(readFileSync(join(changed.packageRoot, 'src', 'runtime.ts'), 'utf8')).toBe('export const runtime = 2;\n');
+  });
+
+  test('does not duplicate a systemd process-group shutdown signal', async () => {
+    if (process.platform === 'win32') return;
+    const fx = fixture(), packageRoot = join(fx.root, 'package-systemd-signal');
+    for (const dir of ['src/runtime/root', 'src/runtime/shared', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
+    writeFileSync(join(packageRoot, 'src', 'runtime', 'root', 'entry.ts'), [
+      `process.stdout.write('ready\\n');`,
+      `process.once('SIGTERM', () => setTimeout(() => process.exit(0), 75));`,
+      `setInterval(() => undefined, 1_000);`,
+      '',
+    ].join('\n'));
+    writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), 'export async function load(url, context, nextLoad) { return nextLoad(url, context); }\n');
+    writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(99);\n');
+    const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'package-systemd-signal' });
+    const launched = spawn(release.entrypointPath, [], {
+      detached: true,
+      env: { ...process.env, INVOCATION_ID: 'forge-systemd-test' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    await new Promise<void>((resolveReady, rejectReady) => {
+      const timer = setTimeout(() => rejectReady(new Error('package Runtime child did not become ready')), 5_000);
+      launched.once('error', rejectReady);
+      launched.stdout?.on('data', (chunk) => {
+        if (!String(chunk).includes('ready')) return;
+        clearTimeout(timer);
+        resolveReady();
+      });
+    });
+    process.kill(-launched.pid!, 'SIGTERM');
+    const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit) => {
+      launched.once('exit', (code, signal) => resolveExit({ code, signal }));
+    });
+    expect(exit).toEqual({ code: 0, signal: null });
   });
 
   test('fails closed instead of repairing bytes inside an existing package release directory', () => {

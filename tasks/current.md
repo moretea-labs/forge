@@ -1,14 +1,14 @@
 # Current Status Snapshot
 
-<!-- updated_at: 2026-08-30T13:48:00+0800 -->
+<!-- updated_at: 2026-08-30T16:05:00+0800 -->
 <!-- stale_after: 24h -->
 
 > **Status**: Active
-> **Updated At**: 2026-08-30T13:48:00+0800
+> **Updated At**: 2026-08-30T16:05:00+0800
 > **Source Branch**: main
 > **Published Baseline Commit**: 1ba073f5fa78dc69202f349afadab785f97d48f9
 > **Target Branch**: main
-> **Reason**: Forge 1.7.1 published; Forge Cloud Windows P0.1 is delivered and P0.2 lifecycle authority repair is active
+> **Reason**: Forge 1.7.1 published; Windows P0.1-P0.3 source repairs are integrated and the 1.7.2 Runtime lifecycle patch is in release validation
 
 This file is a tracked mainline snapshot for the post-1.7.1 handoff. It is not a live lock or a replacement for Forge Work/Plan authority. The tracked handoff note below is the portable source of truth for a fresh Forge Cloud Windows clone.
 
@@ -18,13 +18,16 @@ This file is a tracked mainline snapshot for the post-1.7.1 handoff. It is not a
 - Active source-optimization lane: Windows Forge Cloud only
 - Handoff: `tasks/notes/20260830-forge-cloud-windows-post-1.7.1-handoff.notes.md`
 - P0.1 delivered: `3572c78137e65e45857da3e5b8acde18d92548a7`; GitHub Windows smoke #290 passed
-- Next source task: P0.2 effect Work -> source-delta terminalization authority, including the narrow historical reconciliation path defined in the handoff note
+- P0.2 source repair delivered: `35915d4bed240fd5e6d5221e11ef81d98a73cc9c`; effect Work is promoted before governed source mutation and the narrow reviewed historical reconciliation path remains fail-closed
+- P0.3 source repair delivered through `810b69170d8a6c5a1bab28f61c04e1ebd4670c4c` and `2cf73466e57959b7c1172635a173352b32a7c190`; explicit Controller session capability now survives transport rotation without same-principal conversation leakage
+- Active release task: publish 1.7.2 with the above repairs plus Linux/WSL package Runtime activation convergence and clean systemd shutdown semantics
+- Next post-release source task: P0.4 supported standalone Recovery self-upgrade/cutover authority
 - Local macOS source lane: frozen after this governance handoff; do not create parallel Forge source optimization unless the user explicitly overrides this policy
 
 ## Published Baseline
 
 - published 1.7.1 commit: `1ba073f5fa78dc69202f349afadab785f97d48f9`
-- current `origin/main`: `3572c78137e65e45857da3e5b8acde18d92548a7` (P0.1 Windows smoke repair)
+- latest confirmed remote baseline before the 1.7.2 candidate: `2cf73466e57959b7c1172635a173352b32a7c190`
 - immutable tag: `v1.7.1` -> `1ba073f5fa78dc69202f349afadab785f97d48f9`
 - npm: `@moretea-labs/forge@1.7.1`, `latest=1.7.1`
 - GitHub Release: `v1.7.1`
@@ -55,8 +58,8 @@ The macOS Controller still reports active/pending historical state. It is **not*
 
 - branch: `main`
 - release baseline: `1ba073f5fa78dc69202f349afadab785f97d48f9`
-- current delivered main: `3572c78137e65e45857da3e5b8acde18d92548a7`
-- local source tree is synchronized with `origin/main` before the P0.2 implementation slice
+- current candidate main contains P0.1-P0.3 plus the Linux/WSL Runtime activation repair; release containment is recorded after the 1.7.2 tag is published
+- the local source tree was clean before the 1.7.2 Runtime shutdown regression slice
 
 ## Source Artifacts
 

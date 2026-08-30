@@ -4,6 +4,19 @@ All notable public Forge changes are recorded here. Release entries are tied to 
 
 ## Unreleased
 
+## 1.7.2 - 2026-08-30
+
+### Runtime lifecycle reliability
+
+- Restart an already-active Linux/systemd Runtime after immutable package activation so the running process cannot remain fenced behind a newer release-authority revision.
+- Avoid duplicate systemd process-group shutdown signals from the package launcher, allowing controlled Runtime restarts to terminate cleanly.
+
+### Work and Controller authority
+
+- Promote effect Work to repository-change authority before governed source mutation and add narrowly fenced reconciliation for already-delivered historical effect Work.
+- Preserve authenticated explicit Controller session capability across MCP transport rotation while keeping same-principal conversations isolated.
+- Make the Windows worker-stderr path assertion platform-correct without changing production path behavior.
+
 ## 1.7.1 - 2026-08-30
 
 ### Runtime and lifecycle stabilization
