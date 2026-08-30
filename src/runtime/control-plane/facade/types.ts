@@ -196,18 +196,21 @@ export interface LocalEffectCompletionReceipt {
   recordedAt: string;
 }
 
-/** Durable completion authority for one typed remote plugin effect. */
+/** Durable completion authority for one typed remote effect. */
 export interface RemoteEffectCompletionReceipt {
   schemaVersion: 1;
-  /** Reuse the authoritative PLG-* receipt id rather than manufacturing parallel evidence. */
+  /** Plugin receipts retain their PLG-* id; repository Process effects use their canonical Process id. */
   receiptId: string;
   source: 'remote_effect';
   workId: string;
-  pluginId: string;
+  /** Historical receipts omit this field and are interpreted as plugin_action. */
+  authority?: 'plugin_action' | 'repository_process';
+  pluginId?: string;
   actionId: string;
   requestId: string;
   semanticKey: string;
   resultDigest: string;
+  processId?: string;
   recordedAt: string;
 }
 

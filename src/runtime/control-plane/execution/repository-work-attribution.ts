@@ -29,7 +29,9 @@ export function resolveExplicitClaimedRepositoryWork(
     throw new Error(`WORK_CONTROLLER_OWNERSHIP_MISMATCH: ${workId}`);
   }
   if (work.checkoutId && work.checkoutId !== target.activeCheckoutId) {
-    throw new Error(`WORK_CHECKOUT_MISMATCH: ${workId}:${target.activeCheckoutId}`);
+    throw new Error(
+      `WORK_CHECKOUT_MISMATCH: work=${workId}; resolved_checkout=${target.activeCheckoutId}; expected_work_checkout=${work.checkoutId}; retry with checkout_id=${work.checkoutId} and the same work_id`,
+    );
   }
   return work;
 }

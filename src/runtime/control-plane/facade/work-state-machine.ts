@@ -125,8 +125,15 @@ export function validateWorkSemantics(contract: WorkContract): WorkContract {
     } else if (isRemoteEffectCompletionReceipt(receipt)) {
       if (contract.workKind !== 'remote_effect') throw new Error('WORK_COMPLETION_RECEIPT_REMOTE_EFFECT_KIND_REQUIRED');
       if (contract.completionOutcome !== 'completed_remote') throw new Error('WORK_COMPLETION_RECEIPT_REMOTE_EFFECT_OUTCOME_REQUIRED');
-      if (!receipt.pluginId.trim() || !receipt.actionId.trim() || !receipt.requestId.trim() || !receipt.semanticKey.trim() || !receipt.resultDigest.trim()) {
+      const authority = receipt.authority ?? 'plugin_action';
+      if (!receipt.actionId.trim() || !receipt.requestId.trim() || !receipt.semanticKey.trim() || !receipt.resultDigest.trim()) {
         throw new Error('WORK_COMPLETION_RECEIPT_REMOTE_EFFECT_IDENTITY_REQUIRED');
+      }
+      if (authority === 'plugin_action' && !receipt.pluginId?.trim()) {
+        throw new Error('WORK_COMPLETION_RECEIPT_REMOTE_EFFECT_PLUGIN_IDENTITY_REQUIRED');
+      }
+      if (authority === 'repository_process' && !receipt.processId?.trim()) {
+        throw new Error('WORK_COMPLETION_RECEIPT_REMOTE_EFFECT_PROCESS_IDENTITY_REQUIRED');
       }
     } else {
       if (contract.workKind !== 'local_effect') throw new Error('WORK_COMPLETION_RECEIPT_LOCAL_EFFECT_KIND_REQUIRED');

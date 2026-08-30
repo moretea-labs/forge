@@ -23,7 +23,8 @@ import type { ExecutionJob } from '../../execution/jobs/types';
 import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS, getProcessHandle, getProcessRecord, isManagedProcessActive, listProcessRecords, listRecoverableProcessRecords, processCheckCompletionReceipt, processRuntimeResourceDiagnostics } from '../../execution/process-runtime';
 import { classifyPersistedCheckTerminalEvidence } from '../../execution/process-runtime/check-result';
 export { classifyTerminalCheckEvidence } from '../../execution/process-runtime/check-result';
-import { listWorkBoundRepositoryProcessEvidence } from '../../control-plane/execution/work-process-evidence';
+import { listWorkBoundRepositoryProcessEvidence, listWorkBoundRepositoryRemoteEffectProcessEvidence } from '../../control-plane/execution/work-process-evidence';
+import { appendWorkEvidence, recordWorkCompletionReceipt } from '../../control-plane/facade/work-contract-store';
 import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../../execution/process-runtime/command-facade';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
@@ -2557,6 +2558,73 @@ async function runFacadeRepair(
   return result(facade as unknown as Record<string, unknown>, facade.status === 'blocked' || facade.status === 'approval_required' || facade.status === 'failed');
 }
 
+function repositoryWorkHandleHasSourceDelta(
+  repository: ReturnType<typeof selected>,
+  handle: WorkHandleState,
+): boolean {
+  try {
+    const checkout = selectRepositoryCheckout(repository, handle.checkoutId, { allowArchived: true });
+    const status = repositoryGitStatus(checkout);
+    const head = status.head ?? handle.expectedHead ?? handle.baseCommit;
+    return !status.clean || Boolean(head && handle.baseCommit && head !== handle.baseCommit);
+  } catch (_error) {
+    // A checkout may already have been removed by an earlier bounded cleanup
+    // attempt. The WorkHandle's fenced expectedHead remains authoritative for
+    // whether repository delivery existed and must not be downgraded to an
+    // effect-only semantic completion.
+    return Boolean(handle.expectedHead && handle.baseCommit && handle.expectedHead !== handle.baseCommit);
+  }
+}
+
+function finalizeRemoteEffectWorkFromRepositoryProcessReceipt(
+  ctx: MultiRepositoryMcpToolContext,
+  repository: ReturnType<typeof selected>,
+  workId: string,
+  checkoutId: string,
+) {
+  const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
+  const work = getWorkContract(store, workId);
+  if (!work) throw new Error(`WORK_REMOTE_EFFECT_PROCESS_BINDING_NOT_FOUND: ${workId}`);
+  if (work.workKind !== 'remote_effect') {
+    throw new Error(`WORK_REMOTE_EFFECT_PROCESS_KIND_MISMATCH: ${workId} is ${work.workKind}, expected remote_effect`);
+  }
+  if (work.status === 'completed' && work.completionReceipt?.source === 'remote_effect') return work;
+  const evidence = listWorkBoundRepositoryRemoteEffectProcessEvidence({
+    controllerHome: ctx.controllerHome,
+    repoId: repository.repoId,
+    checkoutId,
+    workId,
+  })[0];
+  if (!evidence) return undefined;
+  if (!work.evidenceRefs.some((candidate) => candidate.evidenceId === evidence.processId)) {
+    appendWorkEvidence(store, workId, {
+      evidenceId: evidence.processId,
+      title: 'trusted repository remote effect completed',
+      summary: `Trusted Work-attributed git push completed with durable Process ${evidence.processId}.`,
+      detailLevel: 'summary',
+    });
+  }
+  return recordWorkCompletionReceipt(
+    store,
+    workId,
+    {
+      schemaVersion: 1,
+      receiptId: evidence.processId,
+      source: 'remote_effect',
+      workId,
+      authority: 'repository_process',
+      actionId: evidence.actionId,
+      requestId: evidence.requestId,
+      semanticKey: evidence.semanticKey,
+      resultDigest: evidence.resultDigest,
+      processId: evidence.processId,
+      recordedAt: evidence.finishedAt ?? new Date().toISOString(),
+    },
+    'completed_remote',
+    'remote_effect',
+  );
+}
+
 function reconcileTerminalFacadeWorkVerifications(
   ctx: MultiRepositoryMcpToolContext,
   repository: ReturnType<typeof selected>,
@@ -4634,24 +4702,46 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               return result(blocked as unknown as Record<string, unknown>, true);
             }
           }
-          // Legacy callers could classify repository mutation + Git remote delivery
-          // as remote_effect. A physical WorkHandle proves this is repository delivery,
-          // so keep it on work_finalize instead of demanding a plugin action receipt.
-          // Pure plugin remote effects have no repository WorkHandle and retain the
-          // action-receipt finalization contract.
           const repositoryDeliveryHandle = workId
             ? readWorkHandle(ctx.controllerHome, repository.repoId, workId)
             : undefined;
-          if (before?.workKind === 'remote_effect' && !before.completionReceipt && !repositoryDeliveryHandle) {
+          const effectHasRepositoryDelta = Boolean(
+            before
+            && ['local_effect', 'remote_effect'].includes(before.workKind)
+            && (
+              (repositoryDeliveryHandle && repositoryWorkHandleHasSourceDelta(repository, repositoryDeliveryHandle))
+              || (finalizeReconciliation?.workspaceChangedPaths?.length ?? 0) > 0
+            )
+          );
+          if (effectHasRepositoryDelta && !repositoryDeliveryHandle) {
+            const blocked = buildFacadeResult({
+              status: 'blocked',
+              summary: `WORK_EFFECT_REPOSITORY_DELIVERY_HANDLE_REQUIRED: ${workId} has repository source delta and cannot use effect-only terminalization without a physical WorkHandle.`,
+              data: { workId, lifecycleClosed: false },
+            });
+            return result(blocked as unknown as Record<string, unknown>, true);
+          }
+          // Pure remote effects may complete from either the canonical plugin
+          // action receipt or the deliberately narrow trusted repository
+          // Process authority (`git push` + exact remote lease). A remote_effect
+          // that acquired source delta is no longer pure and must use physical
+          // repository delivery instead.
+          if (before?.workKind === 'remote_effect' && !before.completionReceipt && !effectHasRepositoryDelta) {
             try {
               before = finalizeRemoteEffectWorkFromActionReceipt(ctx.controllerHome, repository.repoId, workId);
-            } catch (error) {
-              const blocked = buildFacadeResult({
-                status: 'blocked',
-                summary: error instanceof Error ? error.message : 'Remote-effect semantic finalization failed.',
-                data: { workId, lifecycleClosed: false },
-              });
-              return result(blocked as unknown as Record<string, unknown>, true);
+            } catch (pluginError) {
+              const checkoutId = before.checkoutId ?? repositoryDeliveryHandle?.checkoutId ?? repository.activeCheckoutId;
+              const processCompleted = finalizeRemoteEffectWorkFromRepositoryProcessReceipt(ctx, repository, workId, checkoutId);
+              if (processCompleted) {
+                before = processCompleted;
+              } else {
+                const blocked = buildFacadeResult({
+                  status: 'blocked',
+                  summary: pluginError instanceof Error ? pluginError.message : 'Remote-effect semantic finalization failed.',
+                  data: { workId, lifecycleClosed: false },
+                });
+                return result(blocked as unknown as Record<string, unknown>, true);
+              }
             }
           }
           const completedCleanupPending = Boolean(
@@ -4660,7 +4750,15 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             && before.worktreeRef?.trim()
             && existsSync(before.worktreeRef),
           );
-          if (before && !['local_effect', 'read_only_review'].includes(before.workKind) && (!before.completionReceipt || completedCleanupPending)) {
+          const repositoryDeliveryRequired = Boolean(
+            before
+            && before.workKind !== 'read_only_review'
+            && (
+              !['local_effect', 'remote_effect'].includes(before.workKind)
+              || effectHasRepositoryDelta
+            )
+          );
+          if (before && ((repositoryDeliveryRequired && !before.completionReceipt) || completedCleanupPending)) {
             try {
               const physical = await finalizeFacadeWorkHandle(ctx, repository, args, 'finalize');
               if (physical?.isError === true) return physical;

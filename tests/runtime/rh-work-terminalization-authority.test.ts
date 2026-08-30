@@ -11,6 +11,7 @@ import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, trans
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { resolveExplicitClaimedRepositoryWork } from '../../src/runtime/control-plane/execution/repository-work-attribution';
 import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
@@ -881,5 +882,212 @@ describe('rh_work terminalization authority', () => {
     expect(existsSync(workspace.root!)).toBe(false);
     expect(execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: fx.repoRoot, encoding: 'utf8' })).not.toContain(workspace.root!);
   }, 15_000);
+
+
+  test('local_effect with committed repository delta is delivered physically before cleanup instead of emitting LFX', async () => {
+    const fx = fixture();
+    const workId = 'work-local-effect-acquired-source-delta';
+    const caller = {
+      principalId: 'principal-local-effect-source-delta',
+      sessionId: 'transport-local-effect-source-delta',
+      controllerInstanceId: 'runtime-local-effect-source-delta',
+    };
+    const branch = 'work/local-effect-acquired-source-delta';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: 'local-effect-acquired-source-delta',
+      title: 'Local Effect Acquired Source Delta',
+      branchName: branch,
+    });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const now = new Date().toISOString();
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      baseRevision: workspace.baseRevision ?? undefined,
+      mode: 'goal_workloop',
+      objective: 'An initially effect-only Work discovered a real source repair.',
+      acceptanceCriteria: ['The source repair is integrated before cleanup.'],
+      allowedPaths: ['src/index.ts'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'local_effect',
+      status: 'running',
+      phase: 'implementation',
+      worktreeRef: workspace.root,
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      repositoryId: repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      worktreePath: workspace.root!,
+      branch,
+      sourceCheckoutId: repository.activeCheckoutId,
+      workContractId: workId,
+      baseCommit: workspace.baseRevision ?? undefined,
+      deliveryBaseCommit: workspace.baseRevision ?? undefined,
+      expectedHead: workspace.baseRevision ?? undefined,
+      permissionSnapshotVersion: 1,
+      state: 'prepared',
+      managedWorktree: true,
+      createdAt: now,
+      updatedAt: now,
+      finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+    });
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const ready = "physically-delivered";\n');
+    execFileSync('git', ['add', 'src/index.ts'], { cwd: workspace.root! });
+    execFileSync('git', ['commit', '-m', 'source repair from effect work'], { cwd: workspace.root! });
+    const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+
+    const finalized = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt', cleanup: true },
+    ));
+
+    expect(finalized.status).toBe('ok');
+    const completed = getWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, workId)!;
+    expect(completed).toMatchObject({ status: 'completed', workKind: 'repository_change', completionOutcome: 'completed_changed' });
+    expect(completed.completionReceipt?.source).not.toBe('local_effect');
+    expect(execFileSync('git', ['rev-parse', 'main'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(candidate);
+    expect(existsSync(workspace.root!)).toBe(false);
+  }, 20_000);
+
+  test('pure remote_effect may complete from an exact trusted Work-attributed git push Process receipt', async () => {
+    const fx = fixture();
+    const workId = 'work-remote-effect-git-push-process';
+    const caller = {
+      principalId: 'principal-remote-effect-process',
+      sessionId: 'transport-remote-effect-process',
+      controllerInstanceId: 'runtime-remote-effect-process',
+    };
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: 'remote-effect-git-push-process',
+      title: 'Remote Effect Git Push Process',
+      branchName: 'work/remote-effect-git-push-process',
+    });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const now = new Date().toISOString();
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      baseRevision: workspace.baseRevision ?? undefined,
+      mode: 'goal_workloop',
+      objective: 'Deliver an already-validated revision to a Git remote.',
+      acceptanceCriteria: ['The exact governed git push succeeds.'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'remote_effect',
+      status: 'running',
+      phase: 'implementation',
+      worktreeRef: workspace.root,
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      repositoryId: repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      worktreePath: workspace.root!,
+      branch: 'work/remote-effect-git-push-process',
+      sourceCheckoutId: repository.activeCheckoutId,
+      workContractId: workId,
+      baseCommit: workspace.baseRevision ?? undefined,
+      deliveryBaseCommit: workspace.baseRevision ?? undefined,
+      expectedHead: workspace.baseRevision ?? undefined,
+      permissionSnapshotVersion: 1,
+      state: 'prepared',
+      managedWorktree: true,
+      createdAt: now,
+      updatedAt: now,
+      finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+    });
+    const processId = 'proc-remote-effect-git-push-process';
+    createProcessRecord({
+      schemaVersion: 1,
+      processId,
+      repoId: repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      workId,
+      commandId: 'command-remote-effect-git-push-process',
+      controllerHome: fx.controllerHome,
+      status: 'succeeded',
+      route: 'managed',
+      command: { kind: 'argv', executable: '/usr/bin/git', args: ['push', 'origin', 'HEAD:refs/heads/proof'], cwd: workspace.root! },
+      origin: { surface: 'command', toolName: 'repository_command_execute', requestId: 'request-remote-effect-git-push-process', correlationId: workId },
+      resourceClaims: [{ resourceKey: `remote:${repository.repoId}`, mode: 'exclusive', repoId: repository.repoId, checkoutId: workspace.checkoutId!, workId }],
+      identity: { pid: 7301, processStartTime: 'trusted-git-push', executableFingerprint: 'git-push-fingerprint', processGroupId: 7301 },
+      interactiveWaitMs: 0,
+      timeoutMs: 30_000,
+      maxOutputBytes: 1_024,
+      startedAt: now,
+      updatedAt: now,
+      finishedAt: now,
+      exitCode: 0,
+      terminalFenceToken: 1,
+      terminalWritten: true,
+      leaseReleaseState: 'released',
+      leasesReleased: true,
+    });
+
+    const finalized = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt', cleanup: true },
+    ));
+    expect(finalized.status).toBe('ok');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
+      status: 'completed',
+      workKind: 'remote_effect',
+      completionOutcome: 'completed_remote',
+      completionReceipt: { source: 'remote_effect', authority: 'repository_process', processId, receiptId: processId },
+    });
+    expect(existsSync(workspace.root!)).toBe(false);
+  }, 20_000);
+
+  test('WORK_CHECKOUT_MISMATCH reports both resolved and expected Work checkout identities', () => {
+    const fx = fixture();
+    const workId = 'work-checkout-mismatch-diagnostic';
+    const expectedCheckoutId = 'checkout-work-expected';
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: expectedCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Preserve exact Work checkout attribution.',
+      acceptanceCriteria: ['Mismatch diagnostics identify the retry target.'],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running', phase: 'implementation',
+    });
+    claimControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId,
+      controllerId: 'principal-checkout-mismatch',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-checkout-mismatch',
+      principalId: 'principal-checkout-mismatch',
+      controllerInstanceId: 'runtime-checkout-mismatch',
+      leaseMs: 60_000,
+    });
+
+    expect(() => resolveExplicitClaimedRepositoryWork(
+      fx.controllerHome,
+      { repoId: fx.repository.repoId, activeCheckoutId: fx.repository.activeCheckoutId },
+      { principalId: 'principal-checkout-mismatch', sessionId: 'transport-checkout-mismatch', controllerInstanceId: 'runtime-checkout-mismatch' },
+      workId,
+    )).toThrow(`resolved_checkout=${fx.repository.activeCheckoutId}; expected_work_checkout=${expectedCheckoutId}; retry with checkout_id=${expectedCheckoutId}`);
+  });
 
 });
