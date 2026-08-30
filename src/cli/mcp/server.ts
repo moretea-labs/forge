@@ -26,6 +26,7 @@ import { observeRuntimeStatus } from '../../runtime/root/status';
 import { readRuntimeReleaseAuthority } from '../../runtime/root/release-store';
 import { getRuntimeWriteClaim } from '../../runtime/root/write-fence';
 import { recordMcpIncident, recordMcpTiming, type McpTimingTrace } from '../../runtime/diagnostics/mcp-timing';
+import { maybeRegisterMcpIncidentRepair } from '../../runtime/diagnostics/incident-repair';
 import { FORGE_VERSION, forgeToolSurfaceFingerprint } from '../controller/runtime-config';
 
 export type { McpServerOptions } from './multi-repository';
@@ -136,20 +137,37 @@ async function traceControllerMcpRequest(
         errorCode = typeof (error as Record<string, unknown>).code === 'string'
           ? (error as Record<string, unknown>).code as string
           : 'MCP_TOOL_ERROR';
-        recordMcpIncident(ctx.controllerHome, {
+        const structuredRepoId = typeof (value.structuredContent as Record<string, unknown>).repoId === 'string'
+          ? (value.structuredContent as Record<string, unknown>).repoId as string
+          : undefined;
+        const incident = {
           traceId,
           requestId,
           ...(rpcId === undefined ? {} : { rpcId }),
           tool: name,
-          kind: 'tool_error',
+          kind: 'tool_error' as const,
           code: errorCode,
           message: typeof (error as Record<string, unknown>).message === 'string'
             ? (error as Record<string, unknown>).message as string
             : 'MCP tool returned an error.',
-          ...(typeof (value.structuredContent as Record<string, unknown>).repoId === 'string'
-            ? { repoId: (value.structuredContent as Record<string, unknown>).repoId as string }
-            : {}),
-        });
+          ...(structuredRepoId
+            ? { repoId: structuredRepoId }
+            : typeof args.repo_id === 'string' && args.repo_id.trim()
+              ? { repoId: args.repo_id.trim() }
+              : ctx.explicitRepository?.repoId
+                ? { repoId: ctx.explicitRepository.repoId }
+                : {}),
+        };
+        recordMcpIncident(ctx.controllerHome, incident);
+        try {
+          maybeRegisterMcpIncidentRepair({
+            controllerHome: ctx.controllerHome,
+            runtimeSourceRoot: ctx.runtimeSourceRoot,
+            incident,
+          });
+        } catch {
+          // Incident promotion is best-effort and must never alter the MCP result.
+        }
       }
     }
     const serverDurationMs = Math.round((performance.now() - startedAt) * 100) / 100;
@@ -157,15 +175,30 @@ async function traceControllerMcpRequest(
   } catch (error) {
     outcome = 'exception';
     errorCode = 'MCP_REQUEST_EXCEPTION';
-    recordMcpIncident(ctx.controllerHome, {
+    const incident = {
       traceId,
       requestId,
       ...(rpcId === undefined ? {} : { rpcId }),
       tool: name,
-      kind: 'exception',
+      kind: 'exception' as const,
       code: errorCode,
       message: error instanceof Error ? error.message : String(error),
-    });
+      ...(typeof args.repo_id === 'string' && args.repo_id.trim()
+        ? { repoId: args.repo_id.trim() }
+        : ctx.explicitRepository?.repoId
+          ? { repoId: ctx.explicitRepository.repoId }
+          : {}),
+    };
+    recordMcpIncident(ctx.controllerHome, incident);
+    try {
+      maybeRegisterMcpIncidentRepair({
+        controllerHome: ctx.controllerHome,
+        runtimeSourceRoot: ctx.runtimeSourceRoot,
+        incident,
+      });
+    } catch {
+      // Incident promotion is best-effort and must never alter the MCP exception.
+    }
     throw error;
   } finally {
     recordMcpTiming(ctx.controllerHome, {
