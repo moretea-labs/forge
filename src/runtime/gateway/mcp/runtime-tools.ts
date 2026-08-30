@@ -1168,6 +1168,46 @@ function bindFacadeControllerOwnership(
   });
 }
 
+function currentFacadeTerminalizationAuthority(
+  ctx: MultiRepositoryMcpToolContext,
+  store: { controllerHome: string; repoId: string },
+  workId: string,
+  args: Record<string, unknown>,
+): ControllerTerminalizationAuthority {
+  const owner = getControllerSession(store, workId);
+  if (!owner) {
+    throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${workId}; terminalization requires an explicit controller_claim for this exact Work.`);
+  }
+  const identity = authenticatedFacadeControllerIdentity(ctx, args);
+  const ownerPrincipal = controllerSessionPrincipalId(owner);
+  if (owner.controllerId !== identity.controllerId) {
+    throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workId} is owned by ${owner.controllerId}`);
+  }
+  if (owner.controllerType !== identity.controllerType) {
+    throw new Error(`WORK_CONTROLLER_TYPE_MISMATCH: ${workId} is owned by ${owner.controllerType}`);
+  }
+  if (ownerPrincipal !== identity.principalId) {
+    throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${workId}`);
+  }
+  const ownerInstanceId = owner.controllerInstanceId?.trim() || '';
+  if (!ownerInstanceId || ownerInstanceId !== identity.controllerInstanceId) {
+    throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
+  }
+  if (owner.sessionId !== identity.sessionId) {
+    throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; terminalization cannot rebind ownership implicitly. Call controller_claim for this exact Work in the current controller scope, then retry.`);
+  }
+  if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) {
+    throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workId}`);
+  }
+  return {
+    controllerId: owner.controllerId,
+    controllerType: owner.controllerType,
+    principalId: ownerPrincipal,
+    controllerInstanceId: ownerInstanceId,
+    claimGeneration: owner.claimGeneration,
+  };
+}
+
 function ensureFacadeWorkHandle(
   ctx: MultiRepositoryMcpToolContext,
   repository: ReturnType<typeof selected>,
@@ -4441,36 +4481,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
 
         if (operation === 'stop') {
           const workId = String(args.work_id ?? '').trim();
-          const currentOwner = workId ? getControllerSession(store, workId) : undefined;
-          let terminalizationAuthority: ControllerTerminalizationAuthority | undefined;
-          if (currentOwner) {
-            try {
-              const identity = authenticatedFacadeControllerIdentity(ctx, args);
-              const reboundOwner = bindFacadeControllerOwnership(ctx, store, workId, identity);
-              const ownerPrincipal = controllerSessionPrincipalId(reboundOwner);
-              const ownerInstanceId = reboundOwner.controllerInstanceId?.trim() || '';
-              if (typeof reboundOwner.claimGeneration !== 'number' || reboundOwner.claimGeneration < 1) {
-                throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workId}`);
-              }
-              terminalizationAuthority = {
-                controllerId: reboundOwner.controllerId,
-                controllerType: reboundOwner.controllerType,
-                principalId: ownerPrincipal,
-                controllerInstanceId: ownerInstanceId,
-                claimGeneration: reboundOwner.claimGeneration,
-              };
-            } catch (error) {
-              const blocked = buildFacadeResult({
-                status: 'blocked',
-                summary: error instanceof Error ? error.message : `Work ${workId} terminalization authority check failed.`,
-                data: { workId, terminalizationApplied: false },
-              });
-              return result(blocked as unknown as Record<string, unknown>, true);
-            }
-          } else if (!['user', 'system'].includes(String(args.requested_by ?? ''))) {
+          let terminalizationAuthority: ControllerTerminalizationAuthority;
+          try {
+            terminalizationAuthority = currentFacadeTerminalizationAuthority(ctx, store, workId, args);
+          } catch (error) {
             const blocked = buildFacadeResult({
               status: 'blocked',
-              summary: `WORK_CONTROLLER_OWNER_REQUIRED: ${workId}; unclaimed stop requires explicit requested_by=user or requested_by=system authority.`,
+              summary: error instanceof Error ? error.message : `Work ${workId} terminalization authority check failed.`,
               data: { workId, terminalizationApplied: false },
             });
             return result(blocked as unknown as Record<string, unknown>, true);
@@ -4553,15 +4570,16 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             workBoundProcessEvidenceIds: finalizeReconciliation?.workBoundProcessEvidenceIds,
           };
           let before = workId ? getWorkContract(store, workId) : undefined;
-          // Physical finalization may itself consult ControllerSession ownership.
-          // Rebind the same authenticated Controller to the current canonical
-          // Runtime before any commit/merge/cleanup stage, not after it.
+          let terminalizationAuthority: ControllerTerminalizationAuthority | undefined;
+          // Finalize may commit, merge, clean resources, and complete the Work.
+          // It therefore shares the same exact-claim authority as stop. Transport
+          // or Runtime recovery remains an explicit controller_claim operation;
+          // terminalization itself must never rebind an unrelated controller scope.
           if (before && !['completed', 'failed', 'cancelled'].includes(before.status)) {
             try {
-              const identity = authenticatedFacadeControllerIdentity(ctx, args);
-              bindFacadeControllerOwnership(ctx, store, workId, identity, { allowClaimIfMissing: true });
+              terminalizationAuthority = currentFacadeTerminalizationAuthority(ctx, store, workId, args);
             } catch (error) {
-              const blocked = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : `Work ${workId} Controller continuity check failed.`, data: { workId, lifecycleClosed: false } });
+              const blocked = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : `Work ${workId} terminalization authority check failed.`, data: { workId, terminalizationApplied: false, lifecycleClosed: false } });
               return result(blocked as unknown as Record<string, unknown>, true);
             }
           }
@@ -4661,23 +4679,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           let facade;
           if (semanticWork && !['completed', 'failed', 'cancelled'].includes(semanticWork.status)) {
             try {
-              const identity = authenticatedFacadeControllerIdentity(ctx, args);
-              const owner = bindFacadeControllerOwnership(ctx, store, workId, identity, { allowClaimIfMissing: true });
-              const ownerPrincipal = controllerSessionPrincipalId(owner);
-              const ownerInstanceId = owner.controllerInstanceId?.trim() || '';
-              if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workId}`);
+              const authority = terminalizationAuthority ?? currentFacadeTerminalizationAuthority(ctx, store, workId, args);
               const fenced = withControllerSessionTerminalizationFence(
                 store,
                 {
                   workId,
-                  actor: `rh-work-finalize:${identity.controllerId}:${identity.controllerInstanceId}`,
-                  authority: {
-                    controllerId: owner.controllerId,
-                    controllerType: owner.controllerType,
-                    principalId: ownerPrincipal,
-                    controllerInstanceId: ownerInstanceId,
-                    claimGeneration: owner.claimGeneration,
-                  },
+                  actor: `rh-work-finalize:${authority.controllerId}:${authority.controllerInstanceId}`,
+                  authority,
                 },
                 () => runGoalWorkloop(semanticFinalizeContext, 'finalize', args),
               );

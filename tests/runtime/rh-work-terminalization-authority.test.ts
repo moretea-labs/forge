@@ -111,7 +111,7 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 }
 
 describe('rh_work terminalization authority', () => {
-  test('claim-before-stale-stop is rejected while the current owner may stop across transport rotation', async () => {
+  test('terminalization requires an explicit exact-Work claim after transport rotation', async () => {
     const fx = fixture();
     const workId = 'work-claim-before-stale-stop';
     createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
@@ -144,6 +144,23 @@ describe('rh_work terminalization authority', () => {
     expect(staleFinalize.summary).toContain('WORK_CONTROLLER_INSTANCE_MISMATCH');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('ready');
 
+    const rotatedWithoutClaim = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-a', 'transport-rotated', 'runtime-new'),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, requested_by: 'chatgpt', reason: 'current owner semantic disposition' },
+    ));
+    expect(rotatedWithoutClaim.status).toBe('blocked');
+    expect(rotatedWithoutClaim.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('ready');
+
+    const claimed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-a', 'transport-rotated', 'runtime-new'),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId },
+    ));
+    expect(claimed.status).toBe('ok');
+    expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.sessionId).toBe('transport-rotated');
+
     const current = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, 'principal-a', 'transport-rotated', 'runtime-new'),
       'rh_work',
@@ -151,6 +168,58 @@ describe('rh_work terminalization authority', () => {
     ));
     expect(current.status).toBe('ok');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('cancelled');
+  }, 15_000);
+
+  test('two same-principal controller scopes cannot terminally mutate each other', async () => {
+    const fx = fixture();
+    const workA = 'work-controller-scope-a';
+    const workB = 'work-controller-scope-b';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workA);
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workB);
+    const principal = 'principal-shared';
+    const runtime = 'runtime-shared';
+    const scopeA = ctx(fx.controllerHome, fx.repository, principal, 'transport-scope-a', runtime);
+    const scopeB = ctx(fx.controllerHome, fx.repository, principal, 'transport-scope-b', runtime);
+
+    expect(structured(await callRuntimeTool(scopeA, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workA,
+    })).status).toBe('ok');
+    expect(structured(await callRuntimeTool(scopeB, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workB,
+    })).status).toBe('ok');
+
+    const foreignStop = structured(await callRuntimeTool(scopeA, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'stop', work_id: workB, requested_by: 'user', reason: 'foreign conversation directive',
+    }));
+    expect(foreignStop.status).toBe('blocked');
+    expect(foreignStop.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+
+    const foreignFinalize = structured(await callRuntimeTool(scopeA, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'finalize', work_id: workB, requested_by: 'chatgpt',
+    }));
+    expect(foreignFinalize.status).toBe('blocked');
+    expect(foreignFinalize.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workA)?.status).toBe('ready');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workB)?.status).toBe('ready');
+
+    const ownStopB = structured(await callRuntimeTool(scopeB, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'stop', work_id: workB, requested_by: 'user', reason: 'own conversation directive',
+    }));
+    expect(ownStopB.status).toBe('ok');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workB)?.status).toBe('cancelled');
+
+    const foreignStopA = structured(await callRuntimeTool(scopeB, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'stop', work_id: workA, requested_by: 'user', reason: 'foreign conversation directive',
+    }));
+    expect(foreignStopA.status).toBe('blocked');
+    expect(foreignStopA.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workA)?.status).toBe('ready');
+
+    const ownStopA = structured(await callRuntimeTool(scopeA, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'stop', work_id: workA, requested_by: 'user', reason: 'own conversation directive',
+    }));
+    expect(ownStopA.status).toBe('ok');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workA)?.status).toBe('cancelled');
   }, 15_000);
 
   test('terminal cleanup resolves legacy exact-id WorkHandles without workContractId', async () => {
@@ -407,7 +476,7 @@ describe('rh_work terminalization authority', () => {
     expect(Date.parse(shortOwner.leaseExpiresAt) - Date.parse(shortOwner.claimedAt)).toBe(60_000);
   });
 
-  test('claim generation is fenced atomically and explicit unclaimed user stop remains valid', async () => {
+  test('claim generation is fenced atomically and explicit user stop requires a target Work claim', async () => {
     const fx = fixture();
     const workId = 'work-generation-fence';
     createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
@@ -446,8 +515,24 @@ describe('rh_work terminalization authority', () => {
 
     const explicitWorkId = 'work-explicit-user-stop';
     createReadyWork(fx.controllerHome, fx.repository.repoId, explicitWorkId);
+    const explicitContext = ctx(fx.controllerHome, fx.repository, 'principal-user', 'transport-user', 'runtime-user');
+    const unclaimed = structured(await callRuntimeTool(
+      explicitContext,
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'stop', work_id: explicitWorkId, requested_by: 'user', reason: 'explicit user stop' },
+    ));
+    expect(unclaimed.status).toBe('blocked');
+    expect(unclaimed.summary).toContain('WORK_CONTROLLER_OWNER_REQUIRED');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, explicitWorkId)?.status).toBe('ready');
+
+    const explicitClaim = structured(await callRuntimeTool(
+      explicitContext,
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: explicitWorkId },
+    ));
+    expect(explicitClaim.status).toBe('ok');
     const explicit = structured(await callRuntimeTool(
-      ctx(fx.controllerHome, fx.repository, 'principal-user', 'transport-user', 'runtime-user'),
+      explicitContext,
       'rh_work',
       { repo_id: fx.repository.repoId, operation: 'stop', work_id: explicitWorkId, requested_by: 'user', reason: 'explicit user stop' },
     ));
