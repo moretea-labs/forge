@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmdirSync,
   rmSync,
   statSync,
@@ -167,6 +168,21 @@ function primaryWorktreeRoot(sourceRoot: string): string | undefined {
   return candidate;
 }
 
+function isManagedWorktreeDependencyLink(sourceRoot: string, path: string): boolean {
+  if (path !== 'node_modules') return false;
+  const candidate = join(sourceRoot, path);
+  try {
+    if (!lstatSync(candidate).isSymbolicLink()) return false;
+    const primaryRoot = primaryWorktreeRoot(sourceRoot);
+    if (!primaryRoot) return false;
+    const primaryNodeModules = join(primaryRoot, 'node_modules');
+    if (!existsSync(primaryNodeModules)) return false;
+    return realpathSync(candidate) === realpathSync(primaryNodeModules);
+  } catch {
+    return false;
+  }
+}
+
 function linkIgnoredNodeModules(sourceRoot: string, targetRoot: string, dirtyPaths: readonly string[]): void {
   let source = join(sourceRoot, 'node_modules');
   const target = join(targetRoot, 'node_modules');
@@ -185,11 +201,14 @@ function linkIgnoredNodeModules(sourceRoot: string, targetRoot: string, dirtyPat
   // An existing managed-worktree node_modules may itself be a symlink. Git
   // rejects child pathspecs through symlinks, while an absent node_modules
   // needs a virtual child path so directory-only ignore rules still match.
+  const managedDependencyLink = isManagedWorktreeDependencyLink(sourceRoot, 'node_modules');
   const ignoreProbe = existsSync(join(sourceRoot, 'node_modules'))
     ? 'node_modules'
     : 'node_modules/.forge-verification-probe';
-  const ignored = spawnSync('git', ['-C', sourceRoot, 'check-ignore', '--quiet', '--', ignoreProbe], { stdio: 'ignore', timeout: 10_000 });
-  if (ignored.status !== 0) return;
+  const ignored = managedDependencyLink
+    ? true
+    : spawnSync('git', ['-C', sourceRoot, 'check-ignore', '--quiet', '--', ignoreProbe], { stdio: 'ignore', timeout: 10_000 }).status === 0;
+  if (!ignored) return;
   try {
     symlinkSync(source, target, process.platform === 'win32' ? 'junction' : 'dir');
   } catch {
@@ -206,7 +225,8 @@ export function materializeWorkVerificationSnapshot(input: {
 }): WorkVerificationSnapshot {
   const sourceHead = git(input.sourceRoot, ['rev-parse', '--verify', 'HEAD']).toString('utf8').trim();
   const tracked = nulPaths(git(input.sourceRoot, ['diff', '--name-only', '-z', 'HEAD', '--']));
-  const untracked = nulPaths(git(input.sourceRoot, ['ls-files', '--others', '--exclude-standard', '-z']));
+  const untracked = nulPaths(git(input.sourceRoot, ['ls-files', '--others', '--exclude-standard', '-z']))
+    .filter((path) => !isManagedWorktreeDependencyLink(input.sourceRoot, path));
   const dirtyPaths = [...new Set([...tracked, ...untracked])].sort();
   const includedPaths: string[] = [];
   const excludedPaths: string[] = [];

@@ -307,7 +307,7 @@ describe('Work validation receipt convergence', () => {
       controllerHome,
       repoId: 'repo-validation-dependency-reuse',
       sourceRoot: worktreeRoot,
-      scope: { workId: 'work-validation-dependency-reuse-linked', allowedPaths: ['**'], forbiddenPaths: [] },
+      scope: { workId: 'work-validation-dependency-reuse-linked', allowedPaths: ['package.json'], forbiddenPaths: [] },
     });
     expect(realpathSync(join(reusedFromManagedLink.root, 'node_modules'))).toBe(realpathSync(join(repoRoot, 'node_modules')));
     rmSync(join(worktreeRoot, 'node_modules'), { recursive: true, force: true });
