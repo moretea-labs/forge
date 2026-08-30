@@ -30,8 +30,7 @@ import {
   chatgptAutomationReasoningLevelFromLabel,
   chatgptBrowserActionArgs,
   isChatgptConversationUrl,
-  freshChatgptReplacementBrowserSessionId,
-  reconciledChatgptOpenPageSessionId,
+  reconciledNewChatgptOpenPageSessionId,
   resolveChatgptWorkBrowserSessionId,
   runWorkChatgptContinuation,
   stableChatgptWorkBrowserSessionId,
@@ -289,35 +288,48 @@ describe('ChatGPT Work conversation binding', () => {
 
 
 describe('ChatGPT scheduled open_page reconciliation', () => {
-  test('accepts only one exact live Work session after an unknown open_page outcome', () => {
-    const sessionId = stableChatgptWorkBrowserSessionId('repo-1', 'WORK-1');
-    expect(reconciledChatgptOpenPageSessionId({ sessions: [
-      { sessionId, url: 'https://chatgpt.com/c/exact', liveness: 'live' },
-    ] }, sessionId, 'https://chatgpt.com/c/exact')).toBe(sessionId);
-    expect(reconciledChatgptOpenPageSessionId({ sessions: [
-      { sessionId, url: 'https://chatgpt.com/c/exact', liveness: 'unverified' },
-    ] }, sessionId, 'https://chatgpt.com/c/exact')).toBeUndefined();
-    expect(reconciledChatgptOpenPageSessionId({ sessions: [
-      { sessionId, url: 'https://chatgpt.com/c/other', liveness: 'live' },
-    ] }, sessionId, 'https://chatgpt.com/c/exact')).toBeUndefined();
-    expect(reconciledChatgptOpenPageSessionId({ sessions: [
-      { sessionId, url: 'https://chatgpt.com/c/new-conversation', liveness: 'live' },
-    ] }, sessionId, 'https://chatgpt.com/')).toBe(sessionId);
+  test('accepts only one newly-created live matching session after an unknown outcome', () => {
+    const before = { sessions: [
+      { sessionId: 'existing-match', url: 'https://chatgpt.com/c/exact', liveness: 'live' },
+      { sessionId: 'existing-other', url: 'https://chatgpt.com/c/other', liveness: 'live' },
+    ] };
+    expect(reconciledNewChatgptOpenPageSessionId(before, { sessions: [
+      ...before.sessions,
+      { sessionId: 'new-match', url: 'https://chatgpt.com/c/exact', liveness: 'live' },
+    ] }, 'https://chatgpt.com/c/exact')).toBe('new-match');
+    expect(reconciledNewChatgptOpenPageSessionId(before, before, 'https://chatgpt.com/c/exact')).toBeUndefined();
   });
 
-  test('uses a fresh replacement identity instead of reusing the stale Work binding', () => {
-    const stale = stableChatgptWorkBrowserSessionId('repo-1', 'WORK-1');
-    const replacement = freshChatgptReplacementBrowserSessionId(stale);
-    expect(replacement).not.toBe(stale);
-    expect(replacement).toMatch(/^forge-chatgpt-replacement-[0-9a-f]{16}-[0-9a-f]{8}$/);
+  test('fails closed for ambiguous, unverified, mismatched, or truncated inventory deltas', () => {
+    const before = { sessions: [] };
+    expect(reconciledNewChatgptOpenPageSessionId(before, { sessions: [
+      { sessionId: 'new-a', url: 'https://chatgpt.com/c/exact', liveness: 'live' },
+      { sessionId: 'new-b', url: 'https://chatgpt.com/c/exact', liveness: 'live' },
+    ] }, 'https://chatgpt.com/c/exact')).toBeUndefined();
+    expect(reconciledNewChatgptOpenPageSessionId(before, { sessions: [
+      { sessionId: 'new-a', url: 'https://chatgpt.com/c/exact', liveness: 'unverified' },
+    ] }, 'https://chatgpt.com/c/exact')).toBeUndefined();
+    expect(reconciledNewChatgptOpenPageSessionId(before, { sessions: [
+      { sessionId: 'new-a', url: 'https://chatgpt.com/c/other', liveness: 'live' },
+    ] }, 'https://chatgpt.com/c/exact')).toBeUndefined();
+    expect(reconciledNewChatgptOpenPageSessionId({ ...before, nextCursor: 'more' }, { sessions: [
+      { sessionId: 'new-a', url: 'https://chatgpt.com/c/exact', liveness: 'live' },
+    ] }, 'https://chatgpt.com/c/exact')).toBeUndefined();
+    expect(reconciledNewChatgptOpenPageSessionId(before, { sessions: [
+      { sessionId: 'new-root', url: 'https://chatgpt.com/c/not-root', liveness: 'live' },
+    ] }, 'https://chatgpt.com/')).toBeUndefined();
   });
 
-  test('reconciles an unknown replacement open_page read-only instead of replaying the mutation', () => {
+  test('lets Browser create replacement identity and reconciles unknown mutation by inventory delta only', () => {
     const source = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
-    expect(source).toContain("controllerBrowserAction(controllerHome, workId, 'list_sessions'");
-    expect(source).toContain("browserMutationOutcomeUnknown(error, 'open_page')");
-    expect(source).toContain('session_id: replacementSessionId');
-    expect(source).toContain('reconciledChatgptOpenPageSessionId(inventory, replacementSessionId, url)');
+    const replacementStart = source.indexOf('const openReplacement = async');
+    const replacementEnd = source.indexOf('\n  try {\n    await navigate(browserSessionId, targetUrl);', replacementStart);
+    const replacementSource = source.slice(replacementStart, replacementEnd);
+    expect(replacementSource).toContain("controllerBrowserAction(controllerHome, workId, 'open_page'");
+    expect(replacementSource).not.toContain('session_id:');
+    expect(replacementSource.match(/'list_sessions'/g)?.length).toBe(2);
+    expect(replacementSource).toContain("browserMutationOutcomeUnknown(error, 'open_page')");
+    expect(replacementSource).toContain('reconciledNewChatgptOpenPageSessionId(beforeInventory, afterInventory, url)');
   });
 });
 

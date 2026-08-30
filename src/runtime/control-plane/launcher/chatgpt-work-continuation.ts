@@ -155,11 +155,6 @@ export function stableStandaloneChatgptBrowserSessionId(repoId: string, scopeId:
   return `forge-chatgpt-standalone-${digest}`;
 }
 
-export function freshChatgptReplacementBrowserSessionId(staleSessionId: string): string {
-  const digest = createHash('sha256').update(staleSessionId).digest('hex').slice(0, 16);
-  return `forge-chatgpt-replacement-${digest}-${randomUUID().slice(0, 8)}`;
-}
-
 function resolveStandaloneChatgptBrowserSessionId(input: StandaloneChatgptPromptInput): string {
   const policy = normalizeTabPolicy(input.tabPolicy);
   const stable = stableStandaloneChatgptBrowserSessionId(input.repoId, input.scopeId);
@@ -453,25 +448,48 @@ function chatgptUrlMatchesContinuationTarget(observedUrl: string, targetUrl: str
     const allowedHosts = new Set(['chatgpt.com', 'www.chatgpt.com', 'chat.openai.com']);
     if (observed.protocol !== 'https:' || target.protocol !== 'https:' || !allowedHosts.has(observed.hostname) || !allowedHosts.has(target.hostname)) return false;
     const targetConversation = /\/c\/([^/?#]+)/.exec(target.pathname)?.[1];
-    if (!targetConversation) return true;
-    const observedConversation = /\/c\/([^/?#]+)/.exec(observed.pathname)?.[1];
-    return observedConversation === targetConversation;
+    if (targetConversation) {
+      const observedConversation = /\/c\/([^/?#]+)/.exec(observed.pathname)?.[1];
+      return observedConversation === targetConversation;
+    }
+    return observed.pathname === target.pathname;
   } catch {
     return false;
   }
 }
 
-export function reconciledChatgptOpenPageSessionId(
+function completeChatgptBrowserInventorySessions(
   inventory: Record<string, unknown>,
-  expectedSessionId: string,
+): ChatgptBrowserSessionInventoryItem[] | undefined {
+  if (stringField(inventory.nextCursor)) return undefined;
+  return Array.isArray(inventory.sessions)
+    ? inventory.sessions as ChatgptBrowserSessionInventoryItem[]
+    : [];
+}
+
+export function reconciledNewChatgptOpenPageSessionId(
+  beforeInventory: Record<string, unknown>,
+  afterInventory: Record<string, unknown>,
   targetUrl: string,
 ): string | undefined {
-  const sessions = Array.isArray(inventory.sessions) ? inventory.sessions as ChatgptBrowserSessionInventoryItem[] : [];
-  const matches = sessions.filter((entry) => stringField(entry.sessionId) === expectedSessionId
-    && entry.liveness === 'live'
-    && Boolean(stringField(entry.url))
-    && chatgptUrlMatchesContinuationTarget(stringField(entry.url)!, targetUrl));
-  return matches.length === 1 ? expectedSessionId : undefined;
+  const beforeSessions = completeChatgptBrowserInventorySessions(beforeInventory);
+  const afterSessions = completeChatgptBrowserInventorySessions(afterInventory);
+  if (!beforeSessions || !afterSessions) return undefined;
+  const beforeIds = new Set(beforeSessions
+    .map((entry) => stringField(entry.sessionId))
+    .filter((value): value is string => Boolean(value)));
+  const matches = afterSessions.flatMap((entry) => {
+    const sessionId = stringField(entry.sessionId);
+    const url = stringField(entry.url);
+    return sessionId
+      && !beforeIds.has(sessionId)
+      && entry.liveness === 'live'
+      && url
+      && chatgptUrlMatchesContinuationTarget(url, targetUrl)
+      ? [sessionId]
+      : [];
+  });
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function browserMutationOutcomeUnknown(error: unknown, actionId: string): boolean {
@@ -561,27 +579,28 @@ async function navigateWorkConversation(
     retries: 1,
   }, timeoutMs);
   const openReplacement = async (url: string): Promise<string> => {
-    // Replacement is entered only after the saved session is proven unusable for
-    // navigation. Never reuse that stale identity: Browser correctly treats an
-    // explicit stale session_id as an existing-session action and fails closed.
-    // Allocate the fresh identity before dispatch so a lost open_page response can
-    // still be reconciled read-only against exactly that identity without replay.
-    const replacementSessionId = freshChatgptReplacementBrowserSessionId(browserSessionId);
+    // Browser owns new-session identity. Passing any session_id makes open_page an
+    // existing-resource action, which is exactly wrong after the saved Work binding
+    // has proven stale. Snapshot complete inventory before dispatch so an unknown
+    // mutation outcome can be reconciled by one exact new live session only.
+    const beforeInventory = await controllerBrowserAction(controllerHome, workId, 'list_sessions', { limit: 100 }, timeoutMs);
+    if (!completeChatgptBrowserInventorySessions(beforeInventory)) {
+      throw new Error('CHATGPT_AUTOMATION_SESSION_INVENTORY_TRUNCATED');
+    }
     try {
       const opened = await controllerBrowserAction(controllerHome, workId, 'open_page', {
-        session_id: replacementSessionId,
         url,
         wait_until: 'domcontentloaded',
         timeout_ms: timeoutMs ?? 60_000,
         retries: 1,
       }, timeoutMs);
-      const confirmedSessionId = resultSessionId(opened);
-      if (confirmedSessionId !== replacementSessionId) throw new Error('CHATGPT_AUTOMATION_REPLACEMENT_SESSION_NOT_CONFIRMED');
+      const replacementSessionId = resultSessionId(opened);
+      if (!replacementSessionId) throw new Error('CHATGPT_AUTOMATION_REPLACEMENT_SESSION_NOT_CONFIRMED');
       return replacementSessionId;
     } catch (error) {
       if (!browserMutationOutcomeUnknown(error, 'open_page')) throw error;
-      const inventory = await controllerBrowserAction(controllerHome, workId, 'list_sessions', { limit: 100 }, timeoutMs);
-      const reconciledSessionId = reconciledChatgptOpenPageSessionId(inventory, replacementSessionId, url);
+      const afterInventory = await controllerBrowserAction(controllerHome, workId, 'list_sessions', { limit: 100 }, timeoutMs);
+      const reconciledSessionId = reconciledNewChatgptOpenPageSessionId(beforeInventory, afterInventory, url);
       if (!reconciledSessionId) throw error;
       return reconciledSessionId;
     }
