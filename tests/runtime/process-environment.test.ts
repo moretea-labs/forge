@@ -471,7 +471,7 @@ describe('repository child process environment', () => {
     capture.append('abc');
     capture.append(Buffer.from('def'));
 
-    expect(capture.path.endsWith('worker-stderr/job-a-attempt-2.log')).toBe(true);
+    expect(capture.path.endsWith(join('worker-stderr', 'job-a-attempt-2.log'))).toBe(true);
     expect(capture.snapshot()).toEqual({ stderr: 'abcde', stderrTruncated: true });
     expect(readFileSync(capture.path, 'utf8')).toBe('abcde');
   });
