@@ -16,8 +16,9 @@ import { createMcpToolContext } from "../../src/cli/mcp/multi-repository";
 import { getLocalBridgeJob, readLocalBridgeJobOutput, readLocalBridgeJobOutputSnapshot } from "../../src/cli/local-bridge/job-store";
 import { routeDurableMcpCall } from "../../src/runtime/gateway/mcp/router";
 import { getExecutionJob, listExecutionJobs } from "../../src/runtime/execution/jobs/store";
-import { createWorkContract } from "../../src/runtime/control-plane/facade/work-contract-store";
+import { createWorkContract, getWorkContract } from "../../src/runtime/control-plane/facade/work-contract-store";
 import { claimControllerSession } from "../../src/runtime/control-plane/facade/controller-session-store";
+import { readWorkHandle } from "../../src/runtime/control-plane/execution/work-handle-store";
 import { startExecutionSession, updateExecutionSession } from "../../src/runtime/control-plane/execution/session-store";
 import { applyExternalFilesystemGrant, previewExternalFilesystemGrant } from "../../src/runtime/safe-tooling/external-filesystem";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
@@ -434,6 +435,98 @@ describe("repository MCP command tools", () => {
       expect(allowed.status).toBe("applied");
       expect(allowed.session.workId).toBe(workId);
       expect(readFileSync(join(repoRoot, "src/allowed.txt"), "utf8")).toBe("yes\n");
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("effect Work is promoted and receives a physical WorkHandle before its first governed repository mutation", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-effect-work-source-promotion-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "sample-repo");
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "README.md"), "base\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-m", "init"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
+      const workId = "WORK-EFFECT-SOURCE-PROMOTION";
+      createWorkContract({ controllerHome, repoId: repository.repoId }, {
+        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: "goal_workloop",
+        workKind: "remote_effect", objective: "Perform a remote effect, then legitimately repair source under the same Work.",
+        acceptanceCriteria: [], allowedPaths: ["src/**"], forbiddenPaths: [], checks: [],
+        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
+      });
+      const caller = { sessionId: "session-effect-source", principalId: "principal-effect-source", controllerInstanceId: "runtime-effect-source" };
+      claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+        workId, controllerId: caller.principalId, controllerType: "chatgpt", sessionId: caller.sessionId,
+        principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+      });
+
+      const observed = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId, work_id: workId, command: ["git", "status", "--short"], request_id: "effect-readonly-before-source",
+      }, caller));
+      expect(observed.ok).toBe(true);
+      expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.workKind).toBe("remote_effect");
+      expect(readWorkHandle(controllerHome, repository.repoId, workId)).toBeUndefined();
+
+      const applied = await json(callRepositoryTool(controllerHome, "repository_safe_patch_apply", {
+        repo_id: repository.repoId, work_id: workId, purpose: "first governed source mutation",
+        operations: [{ type: "create", path: "src/promoted.ts", content: "export const promoted = true;\n" }],
+      }, caller));
+      expect(applied.status).toBe("applied");
+      expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.workKind).toBe("repository_change");
+      expect(readWorkHandle(controllerHome, repository.repoId, workId)).toMatchObject({
+        workId, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId,
+        sessionId: caller.sessionId, principalId: caller.principalId,
+      });
+      expect(readFileSync(join(repoRoot, "src/promoted.ts"), "utf8")).toBe("export const promoted = true;\n");
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("effect Work command mutation promotes before Process Runtime executes the command", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-effect-work-command-promotion-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "sample-repo");
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "README.md"), "base\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-m", "init"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
+      const workId = "WORK-EFFECT-COMMAND-PROMOTION";
+      createWorkContract({ controllerHome, repoId: repository.repoId }, {
+        workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: "goal_workloop",
+        workKind: "local_effect", objective: "Acquire repository authority before a local effect starts mutating source.",
+        acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
+        constraints: { requireHandoffOnAmbiguity: true }, requestedBy: "chatgpt", status: "running",
+      });
+      const caller = { sessionId: "session-effect-command", principalId: "principal-effect-command", controllerInstanceId: "runtime-effect-command" };
+      claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+        workId, controllerId: caller.principalId, controllerType: "chatgpt", sessionId: caller.sessionId,
+        principalId: caller.principalId, controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+      });
+
+      const mutated = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId, work_id: workId, command: ["touch", "effect-source.txt"], request_id: "effect-command-source-mutation",
+      }, caller));
+      expect(mutated.accepted).toBe(true);
+      expect(mutated.ok).toBe(true);
+      expect(existsSync(join(repoRoot, "effect-source.txt"))).toBe(true);
+      expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.workKind).toBe("repository_change");
+      expect(readWorkHandle(controllerHome, repository.repoId, workId)).toBeDefined();
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });

@@ -5,6 +5,7 @@ import type { ResolvedExecutionIdentity } from '../../runtime/control-plane/exec
 import { assertNoBoundExecutionSessionMutation, resolveClaimedRepositoryWorkId, resolveExplicitClaimedRepositoryWork, type RepositoryWorkAttributionCaller } from '../../runtime/control-plane/execution/repository-work-attribution';
 import { getWorkContract } from '../../runtime/control-plane/facade/work-contract-store';
 import { assertWorkPathsWithinScope } from '../../runtime/control-plane/execution/work-path-scope';
+import { ensureRepositoryMutationWorkHandle } from '../../runtime/control-plane/execution/work-handle-authority';
 import { isTerminalWorkContractStatus } from '../../runtime/control-plane/facade/types';
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../repositories/command-executor';
 import { withControllerLock } from '../repositories/locks';
@@ -990,18 +991,28 @@ export async function callRepositoryTool(
           controllerHome,
           { scope: 'repository', repoId: repository.repoId },
           'mcp:repository_safe_patch_apply',
-          () => applySafePatch(repository, {
-            sessionId: args.session_id,
-            purpose: args.purpose,
-            operations: args.operations,
-            chunkSize: args.chunk_size,
-            expectedRevision: args.expected_revision,
-            allowedPaths: args.allowed_paths,
-            continueOnError: args.continue_on_error,
-            refreshFingerprints: args.refresh_fingerprints,
-            recoverStaleSession: args.recover_stale_session,
-            binding,
-          }),
+          () => {
+            if (binding?.workId) {
+              ensureRepositoryMutationWorkHandle({
+                controllerHome,
+                repository,
+                workId: binding.workId,
+                principalId: binding.principalId ?? caller?.principalId ?? '',
+              });
+            }
+            return applySafePatch(repository, {
+              sessionId: args.session_id,
+              purpose: args.purpose,
+              operations: args.operations,
+              chunkSize: args.chunk_size,
+              expectedRevision: args.expected_revision,
+              allowedPaths: args.allowed_paths,
+              continueOnError: args.continue_on_error,
+              refreshFingerprints: args.refresh_fingerprints,
+              recoverStaleSession: args.recover_stale_session,
+              binding,
+            });
+          },
           60_000,
         );
         const changedFiles = [
@@ -1094,6 +1105,23 @@ export async function callRepositoryTool(
           : undefined;
         if (deliveryWorkId) {
           throw new Error(`WORK_DELIVERY_REQUIRES_FINALIZE: ${deliveryWorkId} must pass Work verification and use rh_work finalize before default-branch integration`);
+        }
+        if (executionIdentity.workId) {
+          const mutationClassification = classifyRepositoryCommand(args.command as string | string[], repository.defaultBranch);
+          if (mutationClassification.risk === 'workspace_write' || mutationClassification.risk === 'destructive') {
+            withControllerLock(
+              controllerHome,
+              { scope: 'repository', repoId: repository.repoId },
+              'mcp:repository_command_execute:mutation-authority',
+              () => ensureRepositoryMutationWorkHandle({
+                controllerHome,
+                repository,
+                workId: executionIdentity.workId!,
+                principalId: caller?.principalId ?? '',
+              }),
+              60_000,
+            );
+          }
         }
         const timeoutMs = typeof args.timeout_ms === 'number'
           ? args.timeout_ms

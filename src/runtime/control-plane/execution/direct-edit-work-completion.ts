@@ -1,4 +1,6 @@
 import { createHash } from 'crypto';
+import { existsSync } from 'fs';
+import { resolve } from 'path';
 import { getEditSession, listEditSessions, type EditSession } from '../../../cli/editing/edit-session';
 import { runProcess } from '../../../effects/process-runner';
 import { getWorkContract, updateWorkContract } from '../facade/work-contract-store';
@@ -184,6 +186,21 @@ function exactCommit(repoRoot: string, revision: string, label: string): string 
   return result.stdout.trim();
 }
 
+function assertRemoteContainmentIfApplicable(repoRoot: string, targetBranch: string, targetRevision: string): void {
+  const remoteResult = git(repoRoot, ['config', '--get', `branch.${targetBranch}.remote`]);
+  const remote = remoteResult.ok ? remoteResult.stdout.trim() : '';
+  if (!remote || remote === '.') return;
+  const mergeResult = git(repoRoot, ['config', '--get', `branch.${targetBranch}.merge`]);
+  const mergeRef = mergeResult.ok ? mergeResult.stdout.trim() : '';
+  if (!mergeRef.startsWith('refs/heads/')) throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_REMOTE_TRACKING_REQUIRED');
+  const remoteRef = `refs/remotes/${remote}/${mergeRef.slice('refs/heads/'.length)}`;
+  const remoteRevision = git(repoRoot, ['rev-parse', '--verify', `${remoteRef}^{commit}`]);
+  if (!remoteRevision.ok || !remoteRevision.stdout.trim()) throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_REMOTE_TRACKING_REQUIRED');
+  if (!git(repoRoot, ['merge-base', '--is-ancestor', targetRevision, remoteRevision.stdout.trim()]).ok) {
+    throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_REMOTE_CONTAINMENT_REQUIRED');
+  }
+}
+
 function comparedRevisionPaths(repoRoot: string, baseRevision: string, targetRevision: string): string[] {
   const result = git(repoRoot, ['diff', '--name-only', '-z', baseRevision, targetRevision]);
   if (!result.ok) throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_CHANGED_PATHS_UNAVAILABLE');
@@ -196,6 +213,20 @@ function normalizedComparedPaths(paths: string[]): string[] {
     throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_PATHS_INVALID');
   }
   return normalized;
+}
+
+function unresolvedRepositorySourcePaths(repoRoot: string): string[] {
+  const tracked = [
+    git(repoRoot, ['diff', '--name-only', '-z']),
+    git(repoRoot, ['diff', '--cached', '--name-only', '-z']),
+  ];
+  if (tracked.some((result) => !result.ok)) throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_EFFECT_SOURCE_STATUS_UNAVAILABLE');
+  const untracked = git(repoRoot, ['ls-files', '--others', '--exclude-standard', '-z']);
+  if (!untracked.ok) throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_EFFECT_SOURCE_STATUS_UNAVAILABLE');
+  return [...new Set([
+    ...tracked.flatMap((result) => result.stdout.split('\0').filter(Boolean)),
+    ...untracked.stdout.split('\0').filter((path) => path && !path.startsWith('.ai/harness/')),
+  ])].sort((left, right) => left.localeCompare(right));
 }
 
 /**
@@ -219,17 +250,23 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
     }
     throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_WORK_TERMINAL: ${input.workId}`);
   }
-  const failedHandle = work.status === 'failed'
-    ? readWorkHandle(input.controllerHome, input.repoId, input.workId)
-    : undefined;
+  const currentHandle = readWorkHandle(input.controllerHome, input.repoId, input.workId);
+  const failedHandle = work.status === 'failed' ? currentHandle : undefined;
   const failedReviewedRecovery = work.workKind === 'repository_change'
     && work.status === 'failed'
     && failedHandle?.managedWorktree === false
     && failedHandle.state === 'failed'
     && failedHandle.finalization.validation === 'failed'
     && String(failedHandle.finalization.lastError ?? failedHandle.failureReason ?? '').includes('WORK_HANDLE_HEAD_CHANGED');
-  if ((isTerminalWorkContractStatus(work.status) && !failedReviewedRecovery) || work.workKind !== 'repository_change') {
+  const historicalEffectRecovery = !currentHandle
+    && !isTerminalWorkContractStatus(work.status)
+    && (work.workKind === 'local_effect' || work.workKind === 'remote_effect');
+  if ((isTerminalWorkContractStatus(work.status) && !failedReviewedRecovery)
+    || (work.workKind !== 'repository_change' && !historicalEffectRecovery)) {
     throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_WORK_NOT_ELIGIBLE: ${input.workId}`);
+  }
+  if (historicalEffectRecovery && work.checks.length === 0) {
+    throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_CHECK_EVIDENCE_REQUIRED');
   }
   if (!work.baseRevision?.trim()) throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_BASE_REVISION_MISSING');
 
@@ -243,6 +280,7 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
   if (!git(input.repoRoot, ['merge-base', '--is-ancestor', targetRevision, targetBranch]).ok) {
     throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_TARGET_UNREACHABLE');
   }
+  assertRemoteContainmentIfApplicable(input.repoRoot, targetBranch, targetRevision);
 
   const comparedPaths = normalizedComparedPaths(input.comparedPaths);
   let comparisonBaseRevision = baseRevision;
@@ -263,6 +301,15 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
   });
   const dirty = git(input.repoRoot, ['status', '--porcelain=v1', '--', ...comparedPaths]);
   if (!dirty.ok || dirty.stdout.trim()) throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_OWNED_PATHS_DIRTY');
+  if (historicalEffectRecovery) {
+    const separateOwnedWorktree = Boolean(work.worktreeRef?.trim())
+      && resolve(work.worktreeRef!) !== resolve(input.repoRoot)
+      && existsSync(work.worktreeRef!);
+    if (separateOwnedWorktree) throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_EFFECT_CLEANUP_REQUIRED');
+    if (unresolvedRepositorySourcePaths(input.repoRoot).length > 0) {
+      throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_EFFECT_SOURCE_DELTA_UNRESOLVED');
+    }
+  }
 
   let verifiedAt = new Date().toISOString();
   for (const checkId of work.checks) {

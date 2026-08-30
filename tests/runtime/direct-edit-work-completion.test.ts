@@ -200,6 +200,61 @@ describe('standalone Direct Edit Work completion', () => {
     expect(completed?.evidenceRefs.some((evidence) => evidence.title === 'requirement completion projection pending' && (evidence.summary ?? '').includes('REQUIREMENT_NOT_FOUND'))).toBe(true);
   });
 
+  test('narrowly reconciles an already-delivered effect Work only with exact validation, remote containment, and a clean source tree', () => {
+    const fx = fixture();
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    commitExample(fx.repoRoot);
+    const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    execFileSync('git', ['remote', 'add', 'origin', '.'], { cwd: fx.repoRoot });
+    execFileSync('git', ['config', 'branch.main.remote', 'origin'], { cwd: fx.repoRoot });
+    execFileSync('git', ['config', 'branch.main.merge', 'refs/heads/main'], { cwd: fx.repoRoot });
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/main', baseRevision], { cwd: fx.repoRoot });
+    const checks = ['package:check:release-published'];
+    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      workKind: 'remote_effect',
+      checks,
+      checkRefs: [verificationRecord({
+        repoId: fx.repoId, checkoutId: fx.checkoutId, workId: fx.workId,
+        checkId: checks[0]!, requestedChecks: checks, sourceRevision: targetRevision,
+        workspaceFingerprint: 'workspace-release', receiptId: 'release-published',
+        commandId: 'release-published-command', recordedAt: '2026-08-30T01:00:00.000Z',
+      })],
+    });
+
+    expect(() => acceptReviewedDirectEditWorkReconciliation(reconciliationInput(fx, targetRevision)))
+      .toThrow('DIRECT_EDIT_WORK_RECONCILIATION_REMOTE_CONTAINMENT_REQUIRED');
+
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/main', targetRevision], { cwd: fx.repoRoot });
+    const result = acceptReviewedDirectEditWorkReconciliation(reconciliationInput(fx, targetRevision));
+    expect(result.receipt).toMatchObject({ source: 'direct_edit_work', targetRevision, changedPaths: ['src/example.ts'] });
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)).toMatchObject({
+      status: 'completed', workKind: 'repository_change', completionOutcome: 'completed_changed',
+    });
+  });
+
+  test('refuses historical effect reconciliation without bound validation receipts or while any source delta remains unresolved', () => {
+    const fx = fixture();
+    commitExample(fx.repoRoot);
+    const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, { workKind: 'remote_effect' });
+    expect(() => acceptReviewedDirectEditWorkReconciliation(reconciliationInput(fx, targetRevision)))
+      .toThrow('DIRECT_EDIT_WORK_RECONCILIATION_CHECK_EVIDENCE_REQUIRED');
+
+    const checks = ['package:check:release-published'];
+    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+      checks,
+      checkRefs: [verificationRecord({
+        repoId: fx.repoId, checkoutId: fx.checkoutId, workId: fx.workId,
+        checkId: checks[0]!, requestedChecks: checks, sourceRevision: targetRevision,
+        workspaceFingerprint: 'workspace-release', receiptId: 'release-published-cleanliness',
+        commandId: 'release-published-cleanliness-command', recordedAt: '2026-08-30T01:00:00.000Z',
+      })],
+    });
+    writeFileSync(join(fx.repoRoot, 'unresolved.txt'), 'unresolved\n');
+    expect(() => acceptReviewedDirectEditWorkReconciliation(reconciliationInput(fx, targetRevision)))
+      .toThrow('DIRECT_EDIT_WORK_RECONCILIATION_EFFECT_SOURCE_DELTA_UNRESOLVED');
+  });
+
   test('selects exact historical verification receipts even when newer same-check receipts exist', () => {
     const fx = fixture();
     commitExample(fx.repoRoot);

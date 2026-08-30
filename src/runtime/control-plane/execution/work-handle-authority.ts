@@ -2,7 +2,9 @@ import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
-import { getWorkContract } from '../facade/work-contract-store';
+import { getWorkContract, updateWorkContract } from '../facade/work-contract-store';
+import { controllerSessionPrincipalId, getControllerSession } from '../facade/controller-session-store';
+import { isTerminalWorkContractStatus } from '../facade/types';
 import { currentPermissionSnapshotVersion } from './validation';
 import { readWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
 
@@ -72,6 +74,58 @@ export function ensureRepositoryWorkHandle(input: {
     },
     cleanupResponsibility: { owner: 'work_finalizer', registeredAt: at },
   });
+}
+
+/**
+ * Upgrades an effect-only Work before the first governed repository mutation
+ * and materializes the existing repository delivery authority. The durable
+ * ControllerSession is the ownership source; the MCP transport session is not
+ * allowed to become a second mutation authority.
+ */
+export function ensureRepositoryMutationWorkHandle(input: {
+  controllerHome: string;
+  repository: RepositoryRecord;
+  workId: string;
+  principalId: string;
+}): { handle: WorkHandleState; promotedFrom?: 'local_effect' | 'remote_effect' } {
+  const store = { controllerHome: input.controllerHome, repoId: input.repository.repoId };
+  let contract = getWorkContract(store, input.workId);
+  if (!contract) throw new Error(`WORK_NOT_FOUND: ${input.workId}`);
+  if (isTerminalWorkContractStatus(contract.status) || contract.completionReceipt) {
+    throw new Error(`WORK_REPOSITORY_MUTATION_TERMINAL: ${input.workId}`);
+  }
+  const principalId = input.principalId.trim();
+  if (!principalId) throw new Error(`WORK_CONTROLLER_AUTHENTICATED_PRINCIPAL_REQUIRED: ${input.workId}`);
+  const owner = getControllerSession(store, input.workId);
+  if (!owner) throw new Error(`WORK_CONTROLLER_CLAIM_REQUIRED: ${input.workId}`);
+  if (controllerSessionPrincipalId(owner) !== principalId) {
+    throw new Error(`WORK_CONTROLLER_OWNERSHIP_MISMATCH: ${input.workId}`);
+  }
+
+  if (!contract.checkoutId) {
+    if (contract.worktreeRef?.trim()) {
+      throw new Error(`WORK_REPOSITORY_MUTATION_CHECKOUT_REQUIRED: ${input.workId}`);
+    }
+    contract = updateWorkContract(store, input.workId, { checkoutId: input.repository.activeCheckoutId });
+  }
+
+  let promotedFrom: 'local_effect' | 'remote_effect' | undefined;
+  if (contract.workKind === 'local_effect' || contract.workKind === 'remote_effect') {
+    promotedFrom = contract.workKind;
+    contract = updateWorkContract(store, input.workId, { workKind: 'repository_change' });
+  }
+  if (contract.workKind !== 'repository_change') {
+    throw new Error(`WORK_REPOSITORY_MUTATION_KIND_INVALID: ${input.workId}:${contract.workKind}`);
+  }
+
+  const handle = ensureRepositoryWorkHandle({
+    controllerHome: input.controllerHome,
+    repository: input.repository,
+    workId: input.workId,
+    identity: { sessionId: owner.sessionId, principalId },
+  });
+  if (!handle) throw new Error(`WORK_REPOSITORY_MUTATION_HANDLE_REQUIRED: ${input.workId}`);
+  return { handle, ...(promotedFrom ? { promotedFrom } : {}) };
 }
 
 /**
