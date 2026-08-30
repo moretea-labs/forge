@@ -210,6 +210,121 @@ describe('canonical single Runtime', () => {
     }
   });
 
+  test('gracefully stops when durable release authority supersedes the running immutable release', async () => {
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-release-superseded' });
+    let observeAuthority: (() => void) | undefined;
+    let monitorStopped = false;
+    let superseded = false;
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
+      readReleaseAuthority: () => superseded ? {
+        schemaVersion: 1,
+        status: 'committed',
+        revision: 2,
+        fencingToken: 'fence-superseded',
+        active: {
+          releaseId: 'release-test-2',
+          artifactIdentity: 'sha256:superseding-artifact',
+          manifestPath: fixture.manifestPath,
+          manifestSha256: 'superseding-manifest',
+          workerProtocolVersion: 1,
+          publishedAt: '2026-08-05T00:00:01.000Z',
+        },
+        operationId: 'test-supersede',
+        committedAt: '2026-08-05T00:00:01.000Z',
+      } : undefined,
+      startReleaseAuthorityMonitor: (observe) => {
+        observeAuthority = observe;
+        return { stop: () => { monitorStopped = true; } };
+      },
+      startScheduler: () => inertScheduler(),
+      startLocalBridge: async () => undefined,
+      startTransport: async () => ({
+        endpoint: 'http://127.0.0.1:9876/mcp',
+        host: '127.0.0.1',
+        port: 9876,
+        close: async () => undefined,
+      }),
+      runMcpProbe: async () => undefined,
+      stopLightweightProcesses: async () => 0,
+      stopContextReadHelpers: async () => undefined,
+      computeToolSurfaceFingerprint: () => 'test-fingerprint',
+    });
+    cleanups.push(() => runtime.stop('TEST_CLEANUP'));
+
+    await runtime.start();
+    expect(runtime.readiness().ready).toBe(true);
+    expect(observeAuthority).toBeDefined();
+
+    superseded = true;
+    observeAuthority!();
+    await runtime.waitForStopped();
+
+    expect(runtime.lastExit?.reasonCode).toBe('RUNTIME_RELEASE_SUPERSEDED');
+    expect(runtime.lastExit?.message).toContain('release-test-1/sha256:test-artifact');
+    expect(runtime.lastExit?.message).toContain('release-test-2/sha256:superseding-artifact');
+    expect(runtime.readiness()).toMatchObject({
+      ready: false,
+      diagnostics: { releaseCoherence: { outcome: 'fail', reasonCode: 'RUNTIME_RELEASE_SUPERSEDED' } },
+    });
+    expect(monitorStopped).toBe(true);
+    expect(getRuntimeWriteClaim()).toBeUndefined();
+  });
+
+  test('does not self-terminate when release authority is absent or still matches the running release', async () => {
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-release-still-active' });
+    let observeAuthority: (() => void) | undefined;
+    let observation: 'missing' | 'matching' = 'missing';
+    let monitorStopped = false;
+    const runtime = new CanonicalForgeRuntime(fixture.config, {
+      readReleaseAuthority: () => observation === 'matching' ? {
+        schemaVersion: 1,
+        status: 'committed',
+        revision: 1,
+        fencingToken: 'fence-current',
+        active: {
+          releaseId: 'release-test-1',
+          artifactIdentity: 'sha256:test-artifact',
+          manifestPath: fixture.manifestPath,
+          manifestSha256: 'current-manifest',
+          workerProtocolVersion: 1,
+          publishedAt: '2026-08-05T00:00:00.000Z',
+        },
+        operationId: 'test-current',
+        committedAt: '2026-08-05T00:00:00.000Z',
+      } : undefined,
+      startReleaseAuthorityMonitor: (observe) => {
+        observeAuthority = observe;
+        return { stop: () => { monitorStopped = true; } };
+      },
+      startScheduler: () => inertScheduler(),
+      startLocalBridge: async () => undefined,
+      startTransport: async () => ({
+        endpoint: 'http://127.0.0.1:9876/mcp',
+        host: '127.0.0.1',
+        port: 9876,
+        close: async () => undefined,
+      }),
+      runMcpProbe: async () => undefined,
+      stopLightweightProcesses: async () => 0,
+      stopContextReadHelpers: async () => undefined,
+      computeToolSurfaceFingerprint: () => 'test-fingerprint',
+    });
+    cleanups.push(() => runtime.stop('TEST_CLEANUP'));
+
+    await runtime.start();
+    observeAuthority!();
+    expect(runtime.lastExit).toBeUndefined();
+    expect(runtime.readiness().ready).toBe(true);
+
+    observation = 'matching';
+    observeAuthority!();
+    expect(runtime.lastExit).toBeUndefined();
+    expect(runtime.readiness().ready).toBe(true);
+
+    await runtime.stop('TEST_CLEANUP');
+    expect(monitorStopped).toBe(true);
+  });
+
   test('Runtime Root rotates an exact source snapshot on every startup', async () => {
     const fixture = createFixture({ runtimeInstanceId: 'runtime-source-snapshot-one' });
     const dependencies: Partial<CanonicalRuntimeDependencies> = {

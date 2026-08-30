@@ -18,7 +18,7 @@ import { startRuntimeMcpTransport, type RuntimeMcpTransportHandle } from './mcp-
 import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from './ownership';
 import { RuntimeReadinessState } from './readiness';
 import { loadRuntimeReleaseManifest } from './release-manifest';
-import { ensureActiveRuntimeRelease, type RuntimeReleaseAuthority } from './release-store';
+import { ensureActiveRuntimeRelease, readRuntimeReleaseAuthority, type RuntimeReleaseAuthority } from './release-store';
 import { bindRuntimeWriteClaim, clearRuntimeWriteClaim } from './write-fence';
 import { startInProcessScheduler, type RuntimeSchedulerHandle } from './scheduler';
 import { startConfiguredRuntimeLocalBridge, type RuntimeLocalBridgeHandle } from './local-bridge';
@@ -30,9 +30,15 @@ import type {
   RuntimeReleaseManifest,
 } from './types';
 
+export interface RuntimeReleaseAuthorityMonitor {
+  stop(): void;
+}
+
 export interface CanonicalRuntimeDependencies {
   loadReleaseManifest(path: string, controllerHome: string): RuntimeReleaseManifest;
   ensureReleaseAuthority(controllerHome: string, manifestPath: string): RuntimeReleaseAuthority;
+  readReleaseAuthority(controllerHome: string): RuntimeReleaseAuthority | undefined;
+  startReleaseAuthorityMonitor(observe: () => void): RuntimeReleaseAuthorityMonitor;
   bindWriteClaim(input: { controllerHome: string; owner: RuntimeOwnershipHandle['record']; authority: RuntimeReleaseAuthority }): void;
   acquireOwnership(controllerHome: string, runtimeInstanceId: string): RuntimeOwnershipHandle;
   inspectDatabase(controllerHome: string): ControlPlaneDatabaseInspection;
@@ -70,9 +76,19 @@ async function defaultMcpProbe(endpoint: string, authToken: string): Promise<voi
   }
 }
 
+const DEFAULT_RELEASE_AUTHORITY_MONITOR_INTERVAL_MS = 1_000;
+
+function startDefaultReleaseAuthorityMonitor(observe: () => void): RuntimeReleaseAuthorityMonitor {
+  const timer = setInterval(observe, DEFAULT_RELEASE_AUTHORITY_MONITOR_INTERVAL_MS);
+  timer.unref?.();
+  return { stop: () => clearInterval(timer) };
+}
+
 const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   loadReleaseManifest: loadRuntimeReleaseManifest,
   ensureReleaseAuthority: ensureActiveRuntimeRelease,
+  readReleaseAuthority: readRuntimeReleaseAuthority,
+  startReleaseAuthorityMonitor: startDefaultReleaseAuthorityMonitor,
   bindWriteClaim: (input) => { bindRuntimeWriteClaim(input); },
   acquireOwnership: acquireRuntimeOwnership,
   inspectDatabase: inspectControlPlaneDatabase,
@@ -98,6 +114,7 @@ export class CanonicalForgeRuntime {
   private transport?: RuntimeMcpTransportHandle;
   private controller?: RuntimeControllerServices;
   private release?: RuntimeReleaseManifest;
+  private releaseAuthorityMonitor?: RuntimeReleaseAuthorityMonitor;
   private stopPromise?: Promise<void>;
   private stoppedResolve!: () => void;
   private readonly stopped = new Promise<void>((resolve) => { this.stoppedResolve = resolve; });
@@ -164,6 +181,35 @@ export class CanonicalForgeRuntime {
 
   endpoint(): string | undefined {
     return this.transport?.endpoint;
+  }
+
+  private startReleaseAuthorityMonitor(): void {
+    const release = this.release;
+    if (!release || this.releaseAuthorityMonitor) return;
+    this.releaseAuthorityMonitor = this.dependencies.startReleaseAuthorityMonitor(() => {
+      if (this.stopping || this.lastExit) return;
+      let authority: RuntimeReleaseAuthority | undefined;
+      try {
+        authority = this.dependencies.readReleaseAuthority(this.config.controllerHome);
+      } catch {
+        // A read failure or ambiguous authority is not proof that this Runtime
+        // was superseded. Existing write fencing remains authoritative.
+        return;
+      }
+      if (!authority) return;
+      const active = authority.active;
+      if (
+        active.releaseId === release.releaseId
+        && active.artifactIdentity === release.artifactIdentity
+        && active.workerProtocolVersion === release.workerProtocolVersion
+      ) return;
+      const reasonCode = 'RUNTIME_RELEASE_SUPERSEDED';
+      this.readinessState.setDiagnostic('releaseCoherence', 'fail', reasonCode);
+      this.failCore(
+        reasonCode,
+        `Active Runtime release authority changed from ${release.releaseId}/${release.artifactIdentity} to ${active.releaseId}/${active.artifactIdentity}.`,
+      );
+    });
   }
 
   async start(): Promise<void> {
@@ -260,6 +306,8 @@ export class CanonicalForgeRuntime {
       this.readinessState.setDiagnostic('mcpEndToEnd', 'pass');
       this.readinessState.markReady();
       this.publishStatus();
+      stage = 'release';
+      this.startReleaseAuthorityMonitor();
     } catch (error) {
       const reason = this.startupReason(stage);
       this.markStartupFailure(stage, reason);
@@ -311,6 +359,10 @@ export class CanonicalForgeRuntime {
       this.stopping = true;
       this.readinessState.markNotReady(reasonCode);
       this.publishStatus();
+      // Stop the release observer before withdrawing MCP work so no second
+      // supersession callback can race the teardown sequence.
+      try { this.releaseAuthorityMonitor?.stop(); } catch { /* cleanup is best effort */ }
+      this.releaseAuthorityMonitor = undefined;
       // Stop accepting new MCP work before quiescing Scheduler activity, then
       // release the Controller Home claim only after all in-process services stop.
       await this.transport?.close().catch(() => undefined);
