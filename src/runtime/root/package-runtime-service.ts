@@ -1,10 +1,15 @@
 import { randomUUID } from 'crypto';
-import { spawn, spawnSync, type SpawnSyncReturns } from 'child_process';
+import { spawn } from 'child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
-import { homedir } from 'os';
 import { setTimeout as sleep } from 'timers/promises';
 import { dirname, join, resolve } from 'path';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
+import {
+  installSystemdUserUnit,
+  renderSystemdUserUnit,
+  systemdUserAvailable as sharedSystemdUserAvailable,
+  systemdUserInstallCommands,
+} from '../../cli/controller/systemd-user';
 import { RUNTIME_WRITE_CLAIM_ENV } from './write-fence';
 import {
   activeRuntimeEntrypoint,
@@ -124,45 +129,17 @@ function atomicWrite(path: string, content: string, mode = 0o600): void {
   renameSync(temporary, path);
 }
 
-function systemdEscape(value: string): string {
-  return `"${value.replaceAll('%', '%%').replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
-}
-
 export function renderForgeRuntimeSystemdUserUnit(input: {
   description?: string;
   executable: string;
   args: string[];
   environment: Record<string, string>;
 }): string {
-  const environment = Object.entries(input.environment)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => `Environment=${systemdEscape(`${key}=${value}`)}`)
-    .join('\n');
-  return [
-    '[Unit]',
-    `Description=${input.description ?? 'Forge Runtime'}`,
-    'After=network-online.target',
-    '',
-    '[Service]',
-    'Type=simple',
-    `ExecStart=${[input.executable, ...input.args].map(systemdEscape).join(' ')}`,
-    ...(environment ? [environment] : []),
-    'Restart=on-failure',
-    'RestartSec=5',
-    '',
-    '[Install]',
-    'WantedBy=default.target',
-    '',
-  ].join('\n');
-}
-
-function commandSucceeded(command: string, args: string[], env: NodeJS.ProcessEnv): SpawnSyncReturns<string> {
-  return spawnSync(command, args, { encoding: 'utf8', env, timeout: 30_000 });
+  return renderSystemdUserUnit({ ...input, description: input.description ?? 'Forge Runtime' });
 }
 
 export function systemdUserAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
-  const result = commandSucceeded('systemctl', ['--user', 'show-environment'], env);
-  return result.status === 0;
+  return sharedSystemdUserAvailable(env);
 }
 
 function cleanRuntimeInstallerEnvironment(env: NodeJS.ProcessEnv, releaseEnvironment: Record<string, string>): NodeJS.ProcessEnv {
@@ -177,32 +154,19 @@ function cleanRuntimeInstallerEnvironment(env: NodeJS.ProcessEnv, releaseEnviron
 }
 
 export function systemdRuntimeInstallCommands(unitName: string): string[][] {
-  // `enable --now` only starts an inactive unit. When Forge is already running,
-  // replacing the unit file and calling enable --now leaves the old ExecStart
-  // process alive even though release authority has advanced, fencing that
-  // process from writes. Enable and restart are intentionally separate so both
-  // first install and in-place immutable-release activation converge on the
-  // just-written unit while systemd remains the sole lifecycle owner.
-  return [
-    ['--user', 'daemon-reload'],
-    ['--user', 'enable', unitName],
-    ['--user', 'restart', unitName],
-  ];
+  return systemdUserInstallCommands(unitName);
 }
 
 function installSystemdUserService(controllerHome: string, env: NodeJS.ProcessEnv): string {
   const entrypoint = activeRuntimeEntrypoint(controllerHome);
   const launch = activeRuntimeLaunchSpec(controllerHome);
   if (!entrypoint || !launch) throw new Error('FORGE_PACKAGE_RUNTIME_LAUNCH_SPEC_MISSING');
-  const label = forgeRuntimeServicePaths(controllerHome).label;
-  const unitName = `${label}.service`;
-  const unitPath = join(env.HOME ?? homedir(), '.config', 'systemd', 'user', unitName);
-  atomicWrite(unitPath, renderForgeRuntimeSystemdUserUnit({ executable: entrypoint, args: launch.args, environment: launch.environment }), 0o644);
-  for (const args of systemdRuntimeInstallCommands(unitName)) {
-    const result = commandSucceeded('systemctl', args, env);
-    if (result.status !== 0) throw new Error(`FORGE_RUNTIME_SYSTEMD_INSTALL_FAILED: systemctl ${args.join(' ')}: ${(result.stderr || result.stdout || '').trim()}`);
-  }
-  return unitPath;
+  return installSystemdUserUnit({
+    unitName: forgeRuntimeServicePaths(controllerHome).label,
+    unit: { description: 'Forge Runtime', executable: entrypoint, args: launch.args, environment: launch.environment },
+    env,
+    errorPrefix: 'FORGE_RUNTIME_SYSTEMD_INSTALL_FAILED',
+  });
 }
 
 function startPortableRuntime(controllerHome: string, env: NodeJS.ProcessEnv): number {
