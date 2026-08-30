@@ -11,6 +11,8 @@ This document defines the currently claimed Forge user experience. It distinguis
 | WSL2 on Windows | Supported and recommended for Windows | Run the Linux Forge Runtime inside WSL2; Windows can still host ChatGPT/browser clients. |
 | Native Windows | Preview | Package install, setup, portable Runtime/MCP, repository registration/inspection, and portable capabilities. Automatic reboot-persistent Runtime ownership and every external provider combination are not yet claimed. |
 
+For scheduled ChatGPT Controller continuation on WSL2, Forge uses the existing ChatGPT Bridge authority rather than macOS native browser attach. The bridge keeps its capability token in the controller-scoped ChatGPT browser binding, opens the exact ChatGPT target through Windows browser interop, and treats prompt dispatch as complete only after the browser extension reports the postcondition. The Windows browser must have the generated `forge ChatGPT Bridge` unpacked extension loaded; this is a host bootstrap requirement, not a second Browser session authority.
+
 ## Base installation requirements
 
 All normal installations require:

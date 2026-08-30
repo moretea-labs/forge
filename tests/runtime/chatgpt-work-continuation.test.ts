@@ -14,7 +14,8 @@ import {
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { createWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { chatgptBridgeTargetMatchesPage } from '../../src/cli/chatgpt-browser/bridge-provider';
+import { chatgptBridgeTargetMatchesPage, isWslWindowsRuntime } from '../../src/cli/chatgpt-browser/bridge-provider';
+import { ensureBridgeToken, readBrowserBinding } from '../../src/cli/chatgpt-browser/binding';
 import {
   bindChatgptWorkConversation,
   getChatgptWorkConversationBinding,
@@ -33,8 +34,10 @@ import {
   reconciledNewChatgptOpenPageSessionId,
   resolveChatgptWorkBrowserSessionId,
   runWorkChatgptContinuation,
+  stableChatgptWorkBridgeSessionId,
   stableChatgptWorkBrowserSessionId,
   stableStandaloneChatgptBrowserSessionId,
+  settleWorkChatgptAutomationTab,
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
 import { migrateChatgptAutomationSchedule } from '../../src/runtime/workflow/schedules/chatgpt-automation-migration';
 import { classifyChatgptWakeFailure } from '../../src/runtime/workflow/schedules/engine';
@@ -135,6 +138,30 @@ describe('ChatGPT Work conversation binding', () => {
     })).toThrow('CHATGPT_WORK_CONVERSATION_REBIND_STALE');
   });
 
+  test('creates one stable bridge-only capability binding without inventing a native browser profile', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-bridge-binding-'));
+    roots.push(root);
+    const first = ensureBridgeToken(root);
+    const second = ensureBridgeToken(root);
+    expect(second).toBe(first);
+    const binding = readBrowserBinding(root).binding;
+    expect(binding?.bridgeToken).toBe(first);
+    expect(binding?.profileDir).toBeUndefined();
+    expect(binding?.chatgptUrl).toBe('https://chatgpt.com/');
+  });
+
+  test('selects the Windows bridge only for WSL and gives it a non-Browser session identity', async () => {
+    expect(isWslWindowsRuntime('linux', 'UbuntuDev', '6.6.0-linux')).toBe(true);
+    expect(isWslWindowsRuntime('linux', undefined, '5.15.153.1-microsoft-standard-WSL2')).toBe(true);
+    expect(isWslWindowsRuntime('linux', undefined, '6.8.0-generic')).toBe(false);
+    expect(isWslWindowsRuntime('darwin', undefined, 'Darwin')).toBe(false);
+    const bridgeSession = stableChatgptWorkBridgeSessionId('repo-1', 'WORK-1');
+    expect(bridgeSession).toBe(stableChatgptWorkBridgeSessionId('repo-1', 'WORK-1'));
+    expect(bridgeSession).toStartWith('forge-chatgpt-bridge-');
+    expect(await settleWorkChatgptAutomationTab({ controllerHome: '/unused', workId: 'WORK-1', browserSessionId: bridgeSession }))
+      .toEqual({ status: 'session_closed' });
+  });
+
   test('uses a stable per-Work browser session and migrates away from the legacy global tab', () => {
     const first = stableChatgptWorkBrowserSessionId('repo-1', 'WORK-1');
     expect(first).toBe(stableChatgptWorkBrowserSessionId('repo-1', 'WORK-1'));
@@ -205,6 +232,19 @@ describe('ChatGPT Work conversation binding', () => {
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/', 'https://chatgpt.com/')).toBe(true);
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/', 'https://chatgpt.com/c/other-id')).toBe(false);
   });
+  test('scheduled WSL continuation uses dispatch-confirmed bridge semantics instead of Browser replay', () => {
+    const launcher = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
+    const provider = readFileSync(join(process.cwd(), 'src/cli/chatgpt-browser/bridge-provider.ts'), 'utf8');
+    const extension = readFileSync(join(process.cwd(), 'src/cli/chatgpt-browser/bridge-extension.ts'), 'utf8');
+    expect(launcher).toContain('if (isWslWindowsRuntime())');
+    expect(launcher).toContain('dispatchOnly: true');
+    expect(launcher).toContain("provider: 'chatgpt-bridge'");
+    expect(provider).toContain("url.pathname === '/api/extension/dispatched'");
+    expect(provider).toContain('state.dispatched');
+    expect(extension).toContain('forgeLastDispatch');
+    expect(extension).toContain("forgePost('/api/extension/dispatched'");
+  });
+
 
 
   test('fails closed when the explicit controller home does not contain the requested WorkContract', async () => {

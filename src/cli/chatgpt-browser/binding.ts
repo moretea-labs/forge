@@ -9,7 +9,7 @@ export const DEFAULT_CHATGPT_URL = 'https://chatgpt.com/';
 export interface ChatgptBrowserBinding {
   version: 1;
   product: 'chatgpt';
-  profileDir: string;
+  profileDir?: string;
   profileDirectory?: string;
   selectedProfilePath?: string;
   browserChannel: NativeBrowserChannel;
@@ -81,7 +81,7 @@ export function readBrowserBinding(repoRoot: string): { path: string; binding?: 
   if (!existsSync(path)) return { path };
   try {
     const binding = JSON.parse(readFileSync(path, 'utf-8')) as ChatgptBrowserBinding;
-    if (binding.version !== 1 || binding.product !== 'chatgpt' || !binding.profileDir) {
+    if (binding.version !== 1 || binding.product !== 'chatgpt' || (!binding.profileDir && !binding.bridgeToken)) {
       return { path, error: 'binding file is malformed' };
     }
     return { path, binding };
@@ -110,17 +110,27 @@ export function writeBrowserBinding(repoRoot: string, opts: BrowserSetupOptions 
 }
 
 /**
- * Return the binding's bridge capability token, lazily generating and persisting
- * one for pre-existing bindings that predate the token. Returns undefined when no
- * binding file exists (callers fall back to an ephemeral per-run token).
+ * Return the stable bridge capability token, lazily generating and persisting
+ * one for pre-existing bindings and creating a bridge-only binding when native
+ * profile configuration does not exist.
  */
-export function ensureBridgeToken(repoRoot: string): string | undefined {
+export function ensureBridgeToken(repoRoot: string): string {
   const current = readBrowserBinding(repoRoot).binding;
-  if (!current) return undefined;
-  if (current.bridgeToken) return current.bridgeToken;
+  if (current?.bridgeToken) return current.bridgeToken;
   const bridgeToken = generateBridgeToken();
-  const next: ChatgptBrowserBinding = { ...current, bridgeToken, updatedAt: new Date().toISOString() };
-  writeFileSync(resolveBrowserBindingPath(repoRoot), `${JSON.stringify(next, null, 2)}\n`, 'utf-8');
+  const next: ChatgptBrowserBinding = current
+    ? { ...current, bridgeToken, updatedAt: new Date().toISOString() }
+    : {
+        version: 1,
+        product: 'chatgpt',
+        browserChannel: 'chrome',
+        chatgptUrl: DEFAULT_CHATGPT_URL,
+        bridgeToken,
+        updatedAt: new Date().toISOString(),
+      };
+  const bindingPath = resolveBrowserBindingPath(repoRoot);
+  mkdirSync(dirname(bindingPath), { recursive: true });
+  writeFileSync(bindingPath, `${JSON.stringify(next, null, 2)}\n`, 'utf-8');
   return bridgeToken;
 }
 
