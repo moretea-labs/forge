@@ -37,6 +37,8 @@ interface ExtensionTask {
 interface ExtensionDispatchReceipt {
   taskId: string;
   conversationUrl?: string;
+  outboundFingerprint: string;
+  confirmedAt?: string;
 }
 
 interface ExtensionResult {
@@ -241,10 +243,18 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
             ts: typeof body.ts === 'string' ? body.ts : undefined,
             receivedAt: Date.now(),
           };
-          if (body.lastDispatch && typeof body.lastDispatch === 'object' && body.lastDispatch.taskId === task.id) {
+          if (
+            body.lastDispatch
+            && typeof body.lastDispatch === 'object'
+            && body.lastDispatch.taskId === task.id
+            && typeof body.lastDispatch.outboundFingerprint === 'string'
+            && body.lastDispatch.outboundFingerprint.trim()
+          ) {
             state.dispatched = {
               taskId: task.id,
               conversationUrl: typeof body.lastDispatch.conversationUrl === 'string' ? body.lastDispatch.conversationUrl : undefined,
+              outboundFingerprint: body.lastDispatch.outboundFingerprint.trim(),
+              confirmedAt: typeof body.lastDispatch.confirmedAt === 'string' ? body.lastDispatch.confirmedAt : undefined,
             };
           }
           return jsonResponse({ ok: true });
@@ -263,10 +273,12 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
         }
         if (request.method === 'POST' && url.pathname === '/api/extension/dispatched') {
           const body = await readJson(request);
-          if (body.taskId === task.id) {
+          if (body.taskId === task.id && typeof body.outboundFingerprint === 'string' && body.outboundFingerprint.trim()) {
             state.dispatched = {
               taskId: task.id,
               conversationUrl: typeof body.conversationUrl === 'string' ? body.conversationUrl : undefined,
+              outboundFingerprint: body.outboundFingerprint.trim(),
+              confirmedAt: typeof body.confirmedAt === 'string' ? body.confirmedAt : undefined,
             };
           }
           return jsonResponse({ ok: true });
@@ -334,7 +346,7 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
       if (input.dispatchOnly === true && state.dispatched) {
         return {
           status: 'completed',
-          output: 'ChatGPT bridge prompt dispatch confirmed.',
+          output: 'ChatGPT bridge semantic outbound dispatch confirmed.',
           conversationUrl: state.dispatched.conversationUrl ?? state.heartbeat?.url,
         };
       }

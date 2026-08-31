@@ -206,6 +206,7 @@ import { currentControllerInstanceId, readExecutionSession, startExecutionSessio
 import { changedPaths as workChangedPaths, changedPathsFromUnbornBase as workChangedPathsFromUnbornBase } from '../../control-plane/execution/work-task-receipt';
 import { readRequirement } from '../../control-plane/persistence/requirement-store';
 import { admitRequirement } from '../../control-plane/facade/requirement-authority';
+import { transitionConvergenceToExclusiveWorkAdmission } from '../../control-plane/facade/work-admission-policy';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { materializeRepositoryWorkPlacement } from '../../control-plane/facade/repository-work-admission';
 import { ensureRunningRepositoryWorkCheckout, reauthorizeRetainedCancelledRepositoryWork } from '../../control-plane/execution/retained-work-resume';
@@ -3801,6 +3802,44 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const frozenScheduleDeleteId = requestedOperation === 'repair' && typeof args.capability_id === 'string' && args.capability_id.startsWith('schedule.delete:')
           ? args.capability_id.slice('schedule.delete:'.length).trim()
           : '';
+        const convergenceExclusiveWorkId = requestedOperation === 'repair' && typeof args.capability_id === 'string' && args.capability_id.startsWith('work.admission:convergence_to_exclusive:')
+          ? args.capability_id.slice('work.admission:convergence_to_exclusive:'.length).trim()
+          : '';
+        if (convergenceExclusiveWorkId) {
+          if (args.requested_by !== 'user') {
+            return result(buildFacadeResult({
+              status: 'blocked',
+              summary: 'WORK_ADMISSION_TRANSITION_USER_REQUIRED: convergence-to-exclusive reservation requires explicit user-directed admission.',
+              data: { reservedWorkId: convergenceExclusiveWorkId },
+            }) as unknown as Record<string, unknown>, true);
+          }
+          try {
+            const policy = transitionConvergenceToExclusiveWorkAdmission(ctx.controllerHome, {
+              allowedWorkId: convergenceExclusiveWorkId,
+              reason: typeof args.reason === 'string' && args.reason.trim()
+                ? args.reason
+                : `Reserve exact Work ${convergenceExclusiveWorkId} while convergence admission remains fail-closed for all unrelated Work.`,
+            });
+            return result(buildFacadeResult({
+              summary: `Convergence admission atomically reserved exact Work ${convergenceExclusiveWorkId}.`,
+              data: { policy, reservedWorkId: convergenceExclusiveWorkId },
+              suggestedNextActions: [{
+                label: 'Start reserved Work',
+                tool: 'rh_work',
+                operation: 'start',
+                payload: { work_id: convergenceExclusiveWorkId, requires_recovery: true },
+                risk: 'workspace_write',
+                confidence: 'high',
+              }],
+            }) as unknown as Record<string, unknown>);
+          } catch (error) {
+            return result(buildFacadeResult({
+              status: 'blocked',
+              summary: error instanceof Error ? error.message : 'Work admission transition failed.',
+              data: { reservedWorkId: convergenceExclusiveWorkId },
+            }) as unknown as Record<string, unknown>, true);
+          }
+        }
         let frozenControllerDisposition: ReturnType<typeof parseControllerDispositionCompatibilityCapability>;
         let frozenControllerRoundOperation: ReturnType<typeof parseControllerRoundCompatibilityCapability>;
         try {
@@ -4204,11 +4243,20 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   workId,
                   browserSessionId,
                 });
-                recordControllerRoundTabSettlement(relayStore, {
-                  workId,
-                  status: tabSettlement.status,
-                  error: tabSettlement.error?.message,
-                });
+              } else {
+                tabSettlement = { status: 'session_closed' as const };
+              }
+              recordControllerRoundTabSettlement(relayStore, {
+                workId,
+                status: tabSettlement.status,
+                error: tabSettlement.error?.message,
+              });
+              if (tabSettlement.status === 'failed') {
+                return result(buildFacadeResult({
+                  status: 'blocked',
+                  summary: `Controller lease released, but mandatory ChatGPT tab settlement failed: ${tabSettlement.error?.message ?? 'unknown cleanup failure'}`,
+                  data: { relay: getControllerRoundRelay(relayStore, workId), tabSettlement },
+                }) as unknown as Record<string, unknown>, true);
               }
             }
             return result(buildFacadeResult({

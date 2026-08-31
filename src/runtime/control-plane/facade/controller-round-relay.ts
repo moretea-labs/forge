@@ -89,6 +89,12 @@ export function parseControllerRoundCompatibilityCapability(
   return { operation: canonicalOperation, authorityId, relayScopeId };
 }
 
+export type ControllerRoundLifecycleStage =
+  | 'dispatching'
+  | 'dispatch_confirmed'
+  | 'controller_claimed'
+  | 'semantic_round_closed';
+
 export type ControllerRoundRelayStatus =
   | 'pending_release'
   | 'dispatching'
@@ -116,6 +122,8 @@ export interface ControllerRoundRelayRecord {
   requirementId?: string;
   disposition: ControllerRoundDisposition;
   status: ControllerRoundRelayStatus;
+  /** Durable semantic stage; transport/session state must never substitute for this lifecycle authority. */
+  lifecycleStage?: ControllerRoundLifecycleStage;
   controllerId: string;
   principalId: string;
   controllerInstanceId: string;
@@ -563,6 +571,7 @@ export function submitControllerRoundDisposition(
       ...(requirementId ? { requirementId } : {}),
       disposition: input.disposition,
       status,
+      lifecycleStage: 'semantic_round_closed',
       controllerId: authority.controllerId,
       principalId: authority.principalId,
       controllerInstanceId: authority.controllerInstanceId,
@@ -656,6 +665,7 @@ export function beginInitialControllerRoundDispatch(
       // launched controller must still submit its own end-of-round disposition.
       disposition: 'continue_immediately',
       status: blockedReason ? 'blocked' : 'dispatching',
+      lifecycleStage: 'dispatching',
       controllerId: input.identity.controllerId.trim().slice(0, 240) || 'chatgpt-launcher',
       principalId: input.identity.principalId.trim().slice(0, 240) || input.identity.controllerId.trim().slice(0, 240),
       controllerInstanceId: input.identity.controllerInstanceId.trim().slice(0, 240),
@@ -714,6 +724,7 @@ export function beginControllerRoundRelayAfterRelease(
       ...record,
       authorityId: newControllerRoundAuthorityId(),
       status: 'dispatching',
+      lifecycleStage: 'dispatching',
       updatedAt: at,
     };
     writeControlPlaneRecord(options.controllerHome, {
@@ -802,6 +813,7 @@ export function finishControllerRoundRelayDispatch(
       ? {
           ...current.value,
           status: 'dispatched',
+          lifecycleStage: 'dispatch_confirmed',
           consecutiveFailures: 0,
           lastError: undefined,
           nextRecoveryAt: undefined,
@@ -906,6 +918,7 @@ export function acknowledgeControllerRoundClaim(
         controllerInstanceId,
         sessionId: owner.sessionId,
         claimGeneration: owner.claimGeneration,
+        lifecycleStage: 'controller_claimed',
         claimedAt: at,
         updatedAt: at,
         lastError: undefined,
@@ -954,6 +967,7 @@ export function acknowledgeControllerRoundClaim(
       const rearmed: ControllerRoundRelayRecord = {
         ...current.value,
         status: 'claimed',
+        lifecycleStage: 'controller_claimed',
         controllerId: owner.controllerId,
         principalId: ownerPrincipal,
         controllerInstanceId,
@@ -995,6 +1009,7 @@ export function acknowledgeControllerRoundClaim(
     const next: ControllerRoundRelayRecord = {
       ...current.value,
       status: 'claimed',
+      lifecycleStage: 'controller_claimed',
       controllerId: owner.controllerId,
       principalId: owner.principalId?.trim() || owner.controllerId,
       controllerInstanceId: owner.controllerInstanceId?.trim() || current.value.controllerInstanceId,

@@ -561,18 +561,18 @@ async function executeExternalControllerWake(
           nextEligibleAt: undefined,
           ...(current.enabled ? { pausedReason: undefined } : {}),
         }));
-        const succeededOccurrence = saveOccurrence(controllerHome, {
+        const dispatchedOccurrence = saveOccurrence(controllerHome, {
           ...wakeDecision,
-          status: 'succeeded',
-          reason: `ChatGPT dispatch action succeeded via ${dispatched.browserSessionId}; relay ${completedRelay?.relayScopeId ?? relay.relayScopeId} remains dispatched until the new Controller claims Work ${workId}.`,
+          status: 'dispatched',
+          reason: `ChatGPT semantic outbound dispatch was confirmed via ${dispatched.browserSessionId}; relay ${completedRelay?.relayScopeId ?? relay.relayScopeId} remains dispatched until the new Controller claims Work ${workId}, and semantic round closure is still pending.`,
         });
         appendWorkEvidence(workStore, workId, {
-          evidenceId: succeededOccurrence.occurrenceId,
+          evidenceId: dispatchedOccurrence.occurrenceId,
           title: 'scheduled ChatGPT continuation dispatched',
-          summary: `Schedule ${schedule.scheduleId} timer occurrence ${succeededOccurrence.occurrenceId} dispatched the Work-bound ChatGPT continuation successfully.`,
+          summary: `Schedule ${schedule.scheduleId} timer occurrence ${dispatchedOccurrence.occurrenceId} confirmed message delivery for the Work-bound ChatGPT continuation; it does not claim Controller or Work success.`,
           detailLevel: 'summary',
         });
-        return succeededOccurrence;
+        return dispatchedOccurrence;
       } catch (error) {
         if (relay) {
           finishControllerRoundRelayDispatch(workStore, {

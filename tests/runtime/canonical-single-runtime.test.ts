@@ -14,6 +14,7 @@ import {
   activateExclusiveWorkAdmission,
   readWorkAdmissionPolicy,
   schedulerDispatchAllowed,
+  transitionConvergenceToExclusiveWorkAdmission,
 } from '../../src/runtime/control-plane/facade/work-admission-policy';
 import {
   acceptSubmittedWorkContract,
@@ -743,6 +744,25 @@ describe('canonical single Runtime', () => {
       historical.workId,
       { status: 'cancelled' },
     ).status).toBe('cancelled');
+
+    const reservedWorkId = 'WORK-CONVERGENCE-RESERVED';
+    expect(transitionConvergenceToExclusiveWorkAdmission(fixture.controllerHome, {
+      allowedWorkId: reservedWorkId,
+      reason: 'Atomically admit the exact closure successor without opening a normal admission window.',
+    })).toMatchObject({ mode: 'exclusive_work', allowedWorkId: reservedWorkId });
+    expect(schedulerDispatchAllowed(fixture.controllerHome)).toBe(false);
+    expect(() => createWorkContract(
+      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
+      workInput('WORK-CONVERGENCE-UNRELATED'),
+    )).toThrow('WORK_ADMISSION_BLOCKED:P0_EXCLUSIVE_WORK');
+    expect(createWorkContract(
+      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
+      workInput(reservedWorkId),
+    ).workId).toBe(reservedWorkId);
+    expect(transitionConvergenceToExclusiveWorkAdmission(fixture.controllerHome, {
+      allowedWorkId: reservedWorkId,
+      reason: 'Idempotent exact reservation.',
+    })).toMatchObject({ mode: 'exclusive_work', allowedWorkId: reservedWorkId });
   });
 
   test('release manifest accepts a logical Controller Home symlink to the same physical directory', () => {

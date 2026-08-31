@@ -353,7 +353,7 @@ describe('rh_work terminalization authority', () => {
     finishControllerRoundRelayDispatch(store, {
       workId,
       ok: true,
-      browserSessionId: 'browser-frozen-round',
+      browserSessionId: 'forge-chatgpt-bridge-frozen-round',
       conversationUrl: 'https://chatgpt.com/c/frozen-round',
     });
     const caller = ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-round', runtimeInstanceId);
