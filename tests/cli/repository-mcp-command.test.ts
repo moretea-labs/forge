@@ -7,7 +7,7 @@ import { getRepository, listRepositories, registerRepository } from "../../src/c
 import { callMcpTool } from "../../src/cli/mcp/tools";
 import { callRepositoryTool, repositoryToolDefinitions } from "../../src/cli/mcp/repository-tools";
 import { repositoryGitCommit, repositoryGitMergeBranch, repositoryGitRebaseOnto } from "../../src/cli/repositories/structured-git";
-import { completionReceiptChangedPaths, inspectDirectTargetDelivery, inspectWorkTargetAdvance, planTargetAdvanceValidationAuthority, targetAdvanceLinearMergeCommits, targetAdvanceWorkScopeViolation } from "../../src/runtime/gateway/mcp/execution-tools";
+import { completionReceiptChangedPaths, inspectDirectTargetDelivery, inspectFailedNonLinearTargetAdvanceRepair, inspectWorkTargetAdvance, planTargetAdvanceValidationAuthority, targetAdvanceLinearMergeCommits, targetAdvanceWorkScopeViolation } from "../../src/runtime/gateway/mcp/execution-tools";
 import { commandFingerprint, verificationInputFingerprint } from "../../src/runtime/control-plane/execution/verification-evidence";
 import type { ControllerCheck } from "../../src/cli/controller/check-runner";
 import type { VerificationRecord } from "../../src/runtime/control-plane/facade/types";
@@ -1714,6 +1714,23 @@ describe("repository MCP command tools", () => {
       expect(alreadyMergedAdvance.relation).toBe("candidate_contains_target");
       expect(targetAdvanceLinearMergeCommits(repoRoot, target, badMergedCandidate)).toEqual([badMergedCandidate]);
 
+      git(repoRoot, ["reset", "--hard", candidate]);
+      const repairAdvance = inspectWorkTargetAdvance(repoRoot, candidate, target);
+      const repairedLinear = repositoryGitRebaseOnto(controllerHome, repository, {
+        onto: target,
+        upstream: repairAdvance.mergeBase,
+        abortOnFailure: true,
+      });
+      expect(repairedLinear.rebased).toBe(true);
+      const repairedCandidate = repairedLinear.after.head!;
+      const repairedInspection = inspectFailedNonLinearTargetAdvanceRepair(repoRoot, badMergedCandidate, repairedCandidate, target);
+      expect(repairedInspection.eligible).toBe(true);
+      expect(repairedInspection.reason).toBe("equivalent_linear_repair");
+      expect(repairedInspection.failedTree).toBe(repairedInspection.repairedTree);
+      expect(repairedInspection.failedMergeCommits).toEqual([badMergedCandidate]);
+      expect(repairedInspection.repairedMergeCommits).toEqual([]);
+
+      git(repoRoot, ["reset", "--hard", candidate]);
       const advance = inspectWorkTargetAdvance(repoRoot, candidate, target);
       expect(advance.relation).toBe("diverged_clean");
       expect(advance.candidateChangedPaths).toEqual(["android/app.txt"]);

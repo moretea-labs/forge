@@ -25,6 +25,7 @@ import {
   rebindChatgptWorkConversation,
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
 import {
+  chatgptOutboundMessageMatchesPrompt,
   chatgptAutomationControlQueryLimit,
   chatgptAutomationControlWaitBudgets,
   chatgptAutomationNavigationRequiresReplacement,
@@ -265,6 +266,15 @@ describe('ChatGPT Work conversation binding', () => {
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/', 'https://chatgpt.com/')).toBe(true);
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/', 'https://chatgpt.com/c/other-id')).toBe(false);
   });
+  test('native ChatGPT outbound matching is semantic and bounded', () => {
+    const prompt = '@forge Continue exact Work work-native-send and preserve the same conversation. '.repeat(6).trim();
+    expect(chatgptOutboundMessageMatchesPrompt(prompt, prompt)).toBe(true);
+    expect(chatgptOutboundMessageMatchesPrompt(prompt.replace(/\s+/g, '   '), prompt)).toBe(true);
+    expect(chatgptOutboundMessageMatchesPrompt(`prefix ${prompt}`, prompt)).toBe(false);
+    expect(chatgptOutboundMessageMatchesPrompt(`${prompt.slice(0, 160)} but wrong tail`, prompt)).toBe(false);
+    expect(chatgptOutboundMessageMatchesPrompt('', prompt)).toBe(false);
+  });
+
   test('scheduled WSL continuation uses semantic outbound dispatch confirmation instead of Browser replay', () => {
     const launcher = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
     const provider = readFileSync(join(process.cwd(), 'src/cli/chatgpt-browser/bridge-provider.ts'), 'utf8');
@@ -361,6 +371,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain('waitForChatgptIntelligenceControl'); expect(source).toContain('reasoningLabelMatches'); expect(source).toContain("'main button, main [role=\"button\"]'"); expect(source).toContain('limit: chatgptAutomationControlQueryLimit(selector)'); expect(source).toContain('chatgptAutomationReasoningLevelFromLabel'); expect(source).toContain('CHATGPT_AUTOMATION_LOGIN_REQUIRED'); expect(source).not.toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('runWorkChatgptContinuation'); expect(engine).toContain("if (controllerType === 'chatgpt')"); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/'"); expect(engine).toContain("conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined");
     expect(source).toContain('seedUrl && !binding && hasChatgptConversationIdentity(seedUrl)');
     expect(source).toContain('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'); expect(source).toContain('workflowToolAttributionInstruction'); expect(source).toContain('repository_command_execute and repository_safe_patch_apply');
+    expect(source).toContain('CHATGPT_USER_MESSAGE_SELECTOR'); expect(source).toContain("from_end: true"); expect(source).toContain("browserMutationOutcomeUnknown(error, 'click')"); expect(source).toContain('chatgptOutboundMessageMatchesPrompt(fullText, renderedPrompt)');
     expect(source).toContain("controllerBrowserAction(controllerHome, workId, 'close_page'");
     expect(source).toContain('closeChatgptAutomationTabAfterDispatch');
     expect(source).toContain('settleWorkChatgptAutomationTab');
