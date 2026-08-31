@@ -11,7 +11,7 @@ import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, trans
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch } from '../../src/runtime/control-plane/facade/controller-round-relay';
-import { ensureRepositoryWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-authority';
+import { ensureRepositoryWorkHandle, reconcileRepositoryWorkHandlePlacement } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { resolveExplicitClaimedRepositoryWork } from '../../src/runtime/control-plane/execution/repository-work-attribution';
 import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
@@ -115,6 +115,138 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 }
 
 describe('rh_work terminalization authority', () => {
+  test('continue upgrades only a proven legacy false-negative managed WorkHandle placement', async () => {
+    const fx = fixture();
+    const workId = 'work-legacy-managed-placement-reconcile';
+    const caller = {
+      principalId: 'principal-legacy-managed-placement',
+      sessionId: 'transport-legacy-managed-placement',
+      controllerInstanceId: 'runtime-legacy-managed-placement',
+    };
+    const branch = 'work/legacy-managed-placement';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'Legacy managed placement reconciliation',
+      branchName: branch,
+    });
+    expect(workspace.root).toBeTruthy();
+    expect(workspace.checkoutId).toBeTruthy();
+    const baseRevision = workspace.baseRevision!;
+    const now = new Date().toISOString();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Reconcile a legacy false-negative managed WorkHandle.',
+      acceptanceCriteria: [],
+      constraints: { requireWorktree: true, directMainProhibited: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+      phase: 'implementation',
+      worktreeRef: workspace.root,
+      scopeEvidence: { initialLikelyPaths: [], inspectedPaths: [], actualChangedPaths: [], recordedAt: now },
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      workContractId: workId,
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      repositoryId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      sourceCheckoutId: workspace.checkoutId!,
+      worktreePath: workspace.root!,
+      branch,
+      managedWorktree: false,
+      baseCommit: baseRevision,
+      deliveryBaseCommit: baseRevision,
+      expectedHead: baseRevision,
+      permissionSnapshotVersion: 1,
+      state: 'prepared',
+      createdAt: now,
+      updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+    });
+    claimControllerSession(store, {
+      workId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+
+    const continued = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'continue', work_id: workId },
+    ));
+    expect(continued.data?.ownershipResumed).toBe(true);
+    const repaired = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
+    expect(repaired.managedWorktree).toBe(true);
+    expect(repaired.sourceCheckoutId).toBe(fx.repository.activeCheckoutId);
+    expect(repaired.checkoutId).toBe(workspace.checkoutId!);
+    expect(repaired.worktreePath).toBe(workspace.root!);
+    expect(repaired.branch).toBe(branch);
+
+    const directWorkId = 'work-direct-placement-remains-direct';
+    createWorkContract(store, {
+      workId: directWorkId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Keep a direct canonical WorkHandle direct.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+      phase: 'implementation',
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId: directWorkId,
+      workContractId: directWorkId,
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      repositoryId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      worktreePath: fx.repoRoot,
+      branch: 'main',
+      managedWorktree: false,
+      baseCommit: baseRevision,
+      deliveryBaseCommit: baseRevision,
+      expectedHead: baseRevision,
+      permissionSnapshotVersion: 1,
+      state: 'prepared',
+      createdAt: now,
+      updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+    });
+    expect(reconcileRepositoryWorkHandlePlacement({
+      controllerHome: fx.controllerHome,
+      repositoryId: fx.repository.repoId,
+      workId: directWorkId,
+    })?.managedWorktree).toBe(false);
+  }, 15_000);
+
   test('continue reconstructs the same running Work before preserving the repository implementation gate', async () => {
     const fx = fixture();
     const workId = 'work-running-checkout-runtime-recovery';

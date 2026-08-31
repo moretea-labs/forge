@@ -5,9 +5,10 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { applyEditOperations, beginEditSession, finalizeEditSession } from '../../src/cli/editing/edit-session';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
-import { acceptReviewedDirectEditWorkReconciliation, reconcileFinalizedDirectEditWorksAfterCommit } from '../../src/runtime/control-plane/execution/direct-edit-work-completion';
+import { acceptReviewedDirectEditWorkReconciliation, hasReviewedDirectEditReconciliationOwnership, isFailedReviewedDirectEditWorkRecovery, reconcileFinalizedDirectEditWorksAfterCommit } from '../../src/runtime/control-plane/execution/direct-edit-work-completion';
 import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
+import type { WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { commandFingerprint, verificationInputFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 
 const roots: string[] = [];
@@ -143,6 +144,57 @@ function reconciliationInput(fx: ReturnType<typeof fixture>, targetRevision: str
 }
 
 describe('standalone Direct Edit Work completion', () => {
+  test('authorizes ownerless failed reviewed recovery only for the exact historical WorkHandle principal', () => {
+    const fx = fixture();
+    const work = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
+    const failedWork = { ...work, workKind: 'repository_change' as const, status: 'failed' as const };
+    const now = new Date().toISOString();
+    const handle: WorkHandleState = {
+      schemaVersion: 1,
+      workId: fx.workId,
+      workContractId: fx.workId,
+      sessionId: 'historical-session',
+      principalId: 'historical-principal',
+      repositoryId: fx.repoId,
+      checkoutId: fx.checkoutId,
+      worktreePath: fx.repoRoot,
+      branch: 'main',
+      managedWorktree: false,
+      permissionSnapshotVersion: 1,
+      state: 'failed',
+      createdAt: now,
+      updatedAt: now,
+      finalization: {
+        validation: 'failed',
+        commit: 'pending',
+        merge: 'pending',
+        branchCleanup: 'pending',
+        worktreeCleanup: 'pending',
+        lastError: 'WORK_HANDLE_HEAD_CHANGED: expected old, found current',
+      },
+    };
+
+    expect(isFailedReviewedDirectEditWorkRecovery(failedWork, handle)).toBe(true);
+    expect(hasReviewedDirectEditReconciliationOwnership({
+      work: failedWork,
+      handle,
+      callerPrincipal: 'historical-principal',
+    })).toBe(true);
+    expect(hasReviewedDirectEditReconciliationOwnership({
+      work: failedWork,
+      handle,
+      callerPrincipal: 'foreign-principal',
+    })).toBe(false);
+    expect(hasReviewedDirectEditReconciliationOwnership({
+      work: failedWork,
+      handle,
+      activeOwnerPrincipal: 'active-foreign-principal',
+      callerPrincipal: 'historical-principal',
+    })).toBe(false);
+    expect(isFailedReviewedDirectEditWorkRecovery({ ...failedWork, status: 'cancelled' }, handle)).toBe(false);
+    expect(isFailedReviewedDirectEditWorkRecovery(failedWork, { ...handle, managedWorktree: true })).toBe(false);
+  });
+
   test('records an exact Work completion receipt after the finalized edit is committed', () => {
     const fx = fixture();
     commitExample(fx.repoRoot);

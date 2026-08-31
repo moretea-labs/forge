@@ -28,12 +28,12 @@ import { appendWorkEvidence, recordWorkCompletionReceipt } from '../../control-p
 import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../../execution/process-runtime/command-facade';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
-import { ensureRepositoryWorkHandle, rebindRepositoryWorkHandleControllerIdentity } from '../../control-plane/execution/work-handle-authority';
+import { ensureRepositoryWorkHandle, rebindRepositoryWorkHandleControllerIdentity, reconcileRepositoryWorkHandlePlacement } from '../../control-plane/execution/work-handle-authority';
 import { recoverTerminalWorkHandle } from '../../control-plane/execution/work-terminal-cleanup';
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from '../../control-plane/execution/verification-evidence';
 import { resolveWorkVerificationContext } from '../../control-plane/execution/work-verification-context';
 import { executeWorkVerification } from '../../control-plane/execution/work-verification-service';
-import { acceptReviewedDirectEditWorkReconciliation, reconcileFinalizedDirectEditWorksAfterCommit } from '../../control-plane/execution/direct-edit-work-completion';
+import { acceptReviewedDirectEditWorkReconciliation, hasReviewedDirectEditReconciliationOwnership, reconcileFinalizedDirectEditWorksAfterCommit } from '../../control-plane/execution/direct-edit-work-completion';
 import { readJobEvents } from '../../evidence/event-ledger';
 import { readExecutionArtifact } from '../../evidence/artifact-store';
 import { readExecutionEvidence } from '../../evidence/evidence-store';
@@ -5024,10 +5024,15 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             try {
               const identity = authenticatedFacadeControllerIdentity(ctx, args);
               const owner = getControllerSession(store, workId);
-              if (!owner || (controllerSessionPrincipalId(owner)) !== identity.principalId) {
+              const historicalHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
+              if (!hasReviewedDirectEditReconciliationOwnership({
+                work: before,
+                handle: historicalHandle,
+                activeOwnerPrincipal: owner ? controllerSessionPrincipalId(owner) : undefined,
+                callerPrincipal: identity.principalId,
+              })) {
                 throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CONTROLLER_CLAIM_REQUIRED: ${workId}`);
               }
-              const historicalHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
               if (historicalHandle?.managedWorktree) {
                 const managedCleanupComplete = historicalHandle.finalization.merge === 'done'
                   && historicalHandle.finalization.branchCleanup === 'done'
@@ -5057,13 +5062,15 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   : transitionWorkHandle(ctx.controllerHome, historicalHandle, 'committed', { expectedHead: reconciliation.receipt.targetRevision, finalization, failureReason: undefined });
                 transitionWorkHandle(ctx.controllerHome, delivered, 'cleaned', { expectedHead: reconciliation.receipt.targetRevision, finalization, failureReason: undefined });
               }
-              const released = releaseObservedControllerSession(store, {
-                workId,
-                actor: `direct-edit-reconciliation:${identity.principalId}`,
-                owner,
-              });
-              if (!released.allowed) {
-                throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CONTROLLER_RELEASE_FENCED: ${workId}:${released.reason}`);
+              if (owner) {
+                const released = releaseObservedControllerSession(store, {
+                  workId,
+                  actor: `direct-edit-reconciliation:${identity.principalId}`,
+                  owner,
+                });
+                if (!released.allowed) {
+                  throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CONTROLLER_RELEASE_FENCED: ${workId}:${released.reason}`);
+                }
               }
               before = getWorkContract(store, workId);
             } catch (error) {
@@ -5278,6 +5285,11 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 repositoryId: repository.repoId,
                 workId,
                 identity: { sessionId: identity.sessionId, principalId: identity.principalId },
+              });
+              reconcileRepositoryWorkHandlePlacement({
+                controllerHome: ctx.controllerHome,
+                repositoryId: repository.repoId,
+                workId,
               });
               const recovered = ensureRunningRepositoryWorkCheckout({
                 controllerHome: ctx.controllerHome,
