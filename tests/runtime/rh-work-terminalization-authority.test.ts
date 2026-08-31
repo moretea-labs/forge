@@ -6,11 +6,12 @@ import { join } from 'path';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
-import { getRepository, registerRepository } from '../../src/cli/repositories/registry';
+import { getRepository, registerRepository, selectRepositoryCheckout } from '../../src/cli/repositories/registry';
 import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch } from '../../src/runtime/control-plane/facade/controller-round-relay';
+import { ensureRepositoryWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { resolveExplicitClaimedRepositoryWork } from '../../src/runtime/control-plane/execution/repository-work-attribution';
 import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
@@ -1126,6 +1127,86 @@ describe('rh_work terminalization authority', () => {
     expect(execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: fx.repoRoot, encoding: 'utf8' })).not.toContain(workspace.root!);
   }, 15_000);
 
+
+  test('isolated WorkHandle preserves canonical source identity and adopts an unscoped clean descendant before finalization', async () => {
+    const fx = fixture();
+    const workId = 'work-isolated-unscoped-head-adoption';
+    const caller = {
+      principalId: 'principal-isolated-unscoped-head',
+      sessionId: 'transport-isolated-unscoped-head',
+      controllerInstanceId: 'runtime-isolated-unscoped-head',
+    };
+    const branch = 'work/isolated-unscoped-head-adoption';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: 'isolated-unscoped-head-adoption',
+      title: 'Isolated Unscoped Head Adoption',
+      branchName: branch,
+    });
+    const canonicalRepository = getRepository(fx.repository.repoId, fx.controllerHome);
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: canonicalRepository.repoId }, {
+      workId,
+      repoId: canonicalRepository.repoId,
+      checkoutId: workspace.checkoutId!,
+      baseRevision: workspace.baseRevision ?? undefined,
+      mode: 'goal_workloop',
+      objective: 'Adopt a clean committed successor for an isolated repository-scoped Work.',
+      acceptanceCriteria: ['The exact clean descendant is delivered.'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'repository_change',
+      status: 'running',
+      phase: 'implementation',
+      worktreeRef: workspace.root,
+    });
+    claimControllerSession({ controllerHome: fx.controllerHome, repoId: canonicalRepository.repoId }, {
+      workId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+
+    const selectedWorktree = selectRepositoryCheckout(canonicalRepository, workspace.checkoutId!);
+    const handle = ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome,
+      repository: selectedWorktree,
+      workId,
+      identity: { sessionId: caller.sessionId, principalId: caller.principalId },
+    });
+    expect(handle).toMatchObject({
+      checkoutId: workspace.checkoutId,
+      worktreePath: workspace.root,
+      sourceCheckoutId: canonicalRepository.activeCheckoutId,
+      managedWorktree: true,
+      expectedHead: workspace.baseRevision,
+    });
+
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const ready = \"isolated-unscoped-delivery\";\n');
+    execFileSync('git', ['add', 'src/index.ts'], { cwd: workspace.root! });
+    execFileSync('git', ['commit', '-m', 'isolated unscoped delivery'], { cwd: workspace.root! });
+    const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+    expect(candidate).not.toBe(handle?.expectedHead);
+    expect(readWorkHandle(fx.controllerHome, canonicalRepository.repoId, workId)?.expectedHead).toBe(workspace.baseRevision ?? undefined);
+
+    const finalized = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, canonicalRepository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: canonicalRepository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt', cleanup: true },
+    ));
+    expect(finalized.status).toBe('ok');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: canonicalRepository.repoId }, workId)).toMatchObject({
+      status: 'completed',
+      workKind: 'repository_change',
+      completionOutcome: 'completed_changed',
+    });
+    expect(execFileSync('git', ['rev-parse', 'main'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(candidate);
+    expect(existsSync(workspace.root!)).toBe(false);
+  }, 20_000);
 
   test('local_effect with committed repository delta is delivered physically before cleanup instead of emitting LFX', async () => {
     const fx = fixture();

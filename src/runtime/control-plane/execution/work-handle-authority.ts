@@ -1,6 +1,6 @@
 import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
-import { resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
+import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { getWorkContract, updateWorkContract } from '../facade/work-contract-store';
 import { controllerSessionPrincipalId, getControllerSession } from '../facade/controller-session-store';
@@ -33,19 +33,27 @@ export function ensureRepositoryWorkHandle(input: {
   if (!contract || contract.workKind !== 'repository_change' || contract.mode !== 'goal_workloop' || !contract.checkoutId) {
     return undefined;
   }
+  // Callers may already be scoped to the Work checkout. Re-read the unselected
+  // registry record so WorkHandle source/delivery authority never mistakes an
+  // isolated execution worktree for the canonical source checkout.
+  const registeredRepository = getRepository(input.repository.repoId, input.controllerHome, { includeRemoved: true });
   const executionRepository = resolveRepositorySelection({
-    repoId: input.repository.repoId,
+    repoId: registeredRepository.repoId,
     checkoutId: contract.checkoutId,
     controllerHome: input.controllerHome,
     allowSoleRepository: false,
   });
   const checkout = selectRepositoryCheckout(executionRepository, contract.checkoutId, { allowArchived: true });
+  const registeredCheckout = registeredRepository.checkouts.find((entry) => entry.checkoutId === contract.checkoutId);
+  if (!registeredCheckout) throw new Error(`WORK_CHECKOUT_NOT_REGISTERED: ${contract.checkoutId}`);
   const status = repositoryGitStatus(checkout);
   if (!status.branch) throw new Error(`WORKTREE_DETACHED: ${contract.checkoutId} has no branch`);
   const at = new Date().toISOString();
-  const managedWorktree = Boolean(contract.worktreeRef)
+  const managedWorktree = registeredCheckout.worktree === true
+    && Boolean(contract.worktreeRef)
     && resolve(contract.worktreeRef!) === resolve(checkout.canonicalRoot)
-    && resolve(checkout.canonicalRoot) !== resolve(input.repository.canonicalRoot);
+    && contract.checkoutId !== registeredRepository.activeCheckoutId
+    && resolve(checkout.canonicalRoot) !== resolve(registeredRepository.canonicalRoot);
   return writeWorkHandle(input.controllerHome, {
     schemaVersion: 1,
     workId: input.workId,
@@ -55,7 +63,7 @@ export function ensureRepositoryWorkHandle(input: {
     checkoutId: contract.checkoutId,
     worktreePath: checkout.canonicalRoot,
     branch: status.branch,
-    sourceCheckoutId: input.repository.activeCheckoutId,
+    sourceCheckoutId: registeredRepository.activeCheckoutId,
     managedWorktree,
     workContractId: contract.workId,
     baseCommit: contract.baseRevision ?? status.head ?? undefined,

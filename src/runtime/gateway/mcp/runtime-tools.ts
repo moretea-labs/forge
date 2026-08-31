@@ -1420,36 +1420,30 @@ async function finalizeFacadeWorkHandle(
   // manufacture an empty commit and recording GIT_NOTHING_STAGED as a delivery
   // failure. The candidate is still adopted/revalidated and merge-fenced below.
   const commit = status.clean && committedDelta ? false : requestedCommit;
-  const workContract = getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, workId);
   if (
     status.clean
     && committedDelta
     && commit === false
-    && (workContract?.allowedPaths.length ?? 0) > 0
     && head
     && handle.expectedHead
     && head !== handle.expectedHead
     && (handle.state === 'prepared' || handle.state === 'editing')
   ) {
-    const contract = getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, workId);
-    if ((contract?.allowedPaths.length ?? 0) > 0 || (contract?.forbiddenPaths.length ?? 0) > 0) {
-      const adopted = await callExecutionTool(ctx, 'work_prepare', {
-        session_id: session.sessionId,
-        repo_id: repository.repoId,
-        checkout_id: handle.checkoutId,
-        work_id: workId,
-        expected_previous_head: handle.expectedHead,
-        adopt_candidate_head: head,
-      });
-      if (!adopted || adopted.isError === true) return adopted;
-      handle = readWorkHandle(ctx.controllerHome, repository.repoId, workId) ?? handle;
-    } else if (handle.state === 'prepared') {
-      // A Work without explicit path allow/deny constraints historically permits
-      // repository-scoped committed progress. Preserve that contract while moving
-      // the handle onto a legal lifecycle edge before the physical finalizer
-      // validates and adopts the exact delivery HEAD.
-      handle = transitionWorkHandle(ctx.controllerHome, handle, 'editing', { failureReason: undefined });
-    }
+    // A clean committed successor must enter through the single audited adoption
+    // authority before finalization, even when allowedPaths/forbiddenPaths are
+    // empty. Empty allowedPaths is repository-scoped authority; work_prepare still
+    // fences ancestry, checkout, branch, ownership, cleanliness, and any declared
+    // path restrictions before advancing expectedHead.
+    const adopted = await callExecutionTool(ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: repository.repoId,
+      checkout_id: handle.checkoutId,
+      work_id: workId,
+      expected_previous_head: handle.expectedHead,
+      adopt_candidate_head: head,
+    });
+    if (!adopted || adopted.isError === true) return adopted;
+    handle = readWorkHandle(ctx.controllerHome, repository.repoId, workId) ?? handle;
   }
   const requestedOutcome = args.completion_outcome === 'completed_no_change' || args.completion_outcome === 'completed_changed'
     ? args.completion_outcome
