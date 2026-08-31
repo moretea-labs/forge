@@ -344,6 +344,36 @@ export interface ControllerCheckResult {
   failureClass?: 'acceptance_failure' | 'infrastructure_failure';
 }
 
+const STRONG_NETWORK_INFRASTRUCTURE_FAILURE_PATTERNS = [
+  /\bjava\.net\.(?:sockettimeoutexception|unknownhostexception|connectexception)\b/i,
+  /\b(?:sockettimeoutexception|unknownhostexception)\b/i,
+  /\bcould not resolve host\b/i,
+  /\btemporary failure in name resolution\b/i,
+  /\bnetwork is unreachable\b/i,
+  /\bconnection (?:reset|refused)(?: by peer)?\b/i,
+  /\b(?:tls|ssl) handshake (?:failed|failure|timed out)\b/i,
+  /\b(?:failed to|unable to) (?:download|fetch) https?:\/\//i,
+] as const;
+
+function controllerCheckOutputIndicatesInfrastructureFailure(stdout: string, stderr: string): boolean {
+  const output = `${stdout}\n${stderr}`;
+  return STRONG_NETWORK_INFRASTRUCTURE_FAILURE_PATTERNS.some((pattern) => pattern.test(output));
+}
+
+function classifyControllerCheckFailure(input: {
+  ok: boolean;
+  timedOut?: boolean;
+  runtimeFailure?: boolean;
+  stdout: string;
+  stderr: string;
+}): ControllerCheckResult['failureClass'] {
+  if (input.ok) return undefined;
+  if (input.timedOut || input.runtimeFailure || controllerCheckOutputIndicatesInfrastructureFailure(input.stdout, input.stderr)) {
+    return 'infrastructure_failure';
+  }
+  return 'acceptance_failure';
+}
+
 export interface ControllerCheckEvidence {
   schemaVersion: 2;
   checkId: string;
@@ -754,9 +784,16 @@ export function runControllerCheck(repoRoot: string, id: string, requestedTimeou
     cacheHit: false,
     validatedRevision: stale ? completedRevision : revision,
     originalExecutedAt: executedAt,
-    failureClass: stale || result.timedOut || Boolean(result.error) || Boolean(result.signal)
-      ? 'infrastructure_failure' as const
-      : result.ok ? undefined : 'acceptance_failure' as const,
+    failureClass: classifyControllerCheckFailure({
+      ok: result.ok && !stale,
+      timedOut: result.timedOut,
+      runtimeFailure: stale || Boolean(result.error) || Boolean(result.signal),
+      stdout: result.stdout,
+      stderr: [
+        result.stderr || result.error,
+        stale ? 'repository revision changed while the check was running; evidence is stale and the check must be rerun' : '',
+      ].filter(Boolean).join('\n'),
+    }),
   };
   return {
     ...withoutPath,
@@ -945,9 +982,17 @@ async function executeControllerCheckAsync(
       timeoutMessage || supervised.error || '',
       processTreeError,
     ].filter(Boolean).join('\n')), maxOutputBytes),
-    failureClass: supervised.failureCode
-      ? 'infrastructure_failure' as const
-      : supervised.status === 0 ? undefined : 'acceptance_failure' as const,
+    failureClass: classifyControllerCheckFailure({
+      ok: supervised.status === 0 && !supervised.failureCode,
+      timedOut: supervised.timedOut,
+      runtimeFailure: Boolean(supervised.failureCode) || Boolean(supervised.signal),
+      stdout: supervised.stdout,
+      stderr: [
+        supervised.stderr,
+        timeoutMessage || supervised.error || '',
+        processTreeError,
+      ].filter(Boolean).join('\n'),
+    }),
   };
 
   const executedAt = new Date().toISOString();

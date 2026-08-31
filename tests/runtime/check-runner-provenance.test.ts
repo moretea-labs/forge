@@ -498,4 +498,31 @@ describe('controller check provenance and failure classification', () => {
     expect(missing.timedOut).toBe(false);
     expect(missing.stderr).toContain('forge-runtime-that-does-not-exist');
   });
+
+  test('classifies dependency-download transport failures as infrastructure without masking deterministic check failures', async () => {
+    const networkFailure = [
+      "console.error(\"Could not GET 'https://dl.google.com/android/repository/example.pom'.\");",
+      "console.error('Caused by: java.net.SocketTimeoutException: Read timed out');",
+      'process.exit(1);',
+    ].join(' ');
+    const repoRoot = fixture({
+      network_sync: { command: [process.execPath, '-e', networkFailure] },
+      network_async: { command: [process.execPath, '-e', networkFailure] },
+      compiler_failure: {
+        command: [process.execPath, '-e', "console.error('src/main.ts(1,1): error TS2322: Type string is not assignable to number'); process.exit(2)"],
+      },
+    });
+
+    const syncNetwork = runControllerCheck(repoRoot, 'network_sync');
+    const asyncNetwork = await runControllerCheckAsync(repoRoot, 'network_async');
+    const compilerFailure = await runControllerCheckAsync(repoRoot, 'compiler_failure');
+
+    expect(syncNetwork.ok).toBe(false);
+    expect(syncNetwork.failureClass).toBe('infrastructure_failure');
+    expect(asyncNetwork.ok).toBe(false);
+    expect(asyncNetwork.failureClass).toBe('infrastructure_failure');
+    expect(compilerFailure.ok).toBe(false);
+    expect(compilerFailure.failureClass).toBe('acceptance_failure');
+  });
+
 });
