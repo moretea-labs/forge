@@ -1,22 +1,25 @@
 # Current Status Snapshot
 
-<!-- updated_at: 2026-08-31T13:55:20+0800 -->
+<!-- updated_at: 2026-08-31T18:05:00+0800 -->
 <!-- stale_after: 24h -->
 
 > **Status**: Active
-> **Updated At**: 2026-08-31T13:55:20+0800
-> **Source Branch**: main
+> **Updated At**: 2026-08-31T18:05:00+0800
+> **Source Branch**: codex/independent-windows-wsl-recovery
 > **Published Baseline Commit**: c873cfeb11a223ced342e7101c016261b4a93b38
 > **Target Branch**: main
-> **Reason**: ChatGPT autonomous continuation is under live acceptance against the Avela Android repository; success requires three consecutive scheduled rounds that make verified development progress
+> **Reason**: Emergency Windows/WSL Forge Cloud authority recovery; success requires GREYSON-DESKTOP WSL to be the one canonical Runtime, Connector, tunnel, and independent-rescue authority
 
 This file is a tracked mainline snapshot for the current Forge Cloud Windows lane. It is not a live lock or a replacement for Forge Work/Plan authority. The tracked handoff note below remains the portable post-release source baseline.
 
 ## Current Focus
 
-- Status: Active on Forge Cloud Windows
-- Active source-optimization lane: Windows Forge Cloud only
-- Active acceptance objective: Forge must use the existing signed-in ChatGPT continuation path to advance `/home/greyson/src/yaozhunshi` in three consecutive autonomous scheduled rounds, with exact Work ownership, explicit round dispositions, repository commits, and focused Android check evidence recorded for every round
+- Status: Active emergency recovery on Forge Cloud Windows
+- Active authority objective: `GREYSON-DESKTOP -> Windows -> WSL UbuntuDev -> /home/greyson/src/forge -> /home/greyson/.forge/controller -> canonical Runtime -> canonical OAuth Connector -> OpenAI Secure Tunnel -> ChatGPT Forge Cloud`
+- Independent rescue source implementation is staged for `/home/greyson/.forge-recovery` and `C:\ProgramData\ForgeRecovery`; it permits only fixed status/start/restart/verification actions and has no arbitrary-shell RPC
+- Read-only audit found a fail-closed conflict: the canonical user-level Controller Home exists but the repo-local legacy Controller Home currently owns the running Runtime and Connector. The direct cutover bootstrap has passed its no-change preflight and must preserve the full legacy home as evidence while moving active service authority to the canonical home.
+- Tunnel identity observed locally: alias `forge`, id `tunnel_6a8a862b52188191b859cf61e7cdb9a3`; its local runtime was stopped at audit time, so an external Forge Cloud success claim is not yet valid.
+- The former autonomous-continuation acceptance remains deferred until the canonical Windows/WSL recovery chain is restored and verified.
 - Current repair: frozen MCP clients may encode `controller_claim`, `continue`, `finalize`, `stop`, and `controller_release` as `controller.round:<operation>:<authorityId>:<relayScopeId>` through `operation=repair`; Runtime maps the call back to the canonical operation and applies the same exact authority/scope fences
 - Windows bridge repair: WSL continuation now opens only an explicitly resolved, installed Google Chrome executable and fails closed when Chrome is unavailable; it no longer delegates to the Windows default-browser handler
 - Self-hosting gate repair: the bundled migration helper now resolves its owning Forge checkout from both package and repo-pinned locations instead of silently exiting from the wrong parent directory

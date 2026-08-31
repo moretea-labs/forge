@@ -1,0 +1,231 @@
+#!/usr/bin/env bash
+# This file is installed outside a Forge checkout by
+# scripts/install-independent-windows-wsl-recovery.ts.  It deliberately has a
+# fixed command surface because it is the last-resort rescue path for Forge.
+set -euo pipefail
+
+RESCUE_ROOT="${FORGE_RESCUE_ROOT:-$HOME/.forge-recovery}"
+CONFIG_PATH="$RESCUE_ROOT/config/rescue.env"
+
+if [[ ! -r "$CONFIG_PATH" ]]; then
+  printf 'FORGE_RESCUE_CONFIG_MISSING path=%s\n' "$CONFIG_PATH" >&2
+  exit 2
+fi
+
+# shellcheck disable=SC1090
+source "$CONFIG_PATH"
+
+readonly ACTIONS=(
+  wsl_status forge_source_status controller_status
+  runtime_status runtime_start runtime_restart
+  connector_status connector_start connector_restart
+  recovery_status recovery_start recovery_restart
+  tunnel_status tunnel_start tunnel_restart
+  forge_cloud_verify full_recover watch
+)
+
+usage() {
+  printf 'Usage: %s {%s}\n' "$0" "$(IFS='|'; printf '%s' "${ACTIONS[*]}")" >&2
+  exit 64
+}
+
+require_config() {
+  local key
+  for key in WSL_DISTRO CONTROLLER_HOME SOURCE_ROOT RUNTIME_UNIT CONNECTOR_UNIT RECOVERY_UNIT TUNNEL_CLIENT TUNNEL_ALIAS TUNNEL_ID TUNNEL_PROFILE TUNNEL_PROFILE_DIR TUNNEL_ADMIN_PROFILE MCP_LOCAL_URL; do
+    if [[ -z "${!key:-}" ]]; then
+      printf 'FORGE_RESCUE_CONFIG_INVALID missing=%s\n' "$key" >&2
+      exit 2
+    fi
+  done
+  case "$CONTROLLER_HOME" in
+    /home/*/.forge/controller) ;;
+    *) printf 'FORGE_RESCUE_CONFIG_INVALID controller_home=%s\n' "$CONTROLLER_HOME" >&2; exit 2 ;;
+  esac
+  case "$MCP_LOCAL_URL" in
+    http://127.0.0.1:*) ;;
+    *) printf 'FORGE_RESCUE_CONFIG_INVALID mcp_local_url=%s\n' "$MCP_LOCAL_URL" >&2; exit 2 ;;
+  esac
+}
+
+with_mutation_lock() {
+  local lock_path="$RESCUE_ROOT/locks/recovery.lock"
+  mkdir -p "$(dirname "$lock_path")"
+  exec 9>"$lock_path"
+  if ! flock -w 30 9; then
+    printf 'FORGE_RESCUE_MUTATION_LOCK_BUSY\n' >&2
+    return 75
+  fi
+  "$@"
+}
+
+unit_state() {
+  local unit="$1"
+  systemctl --user show "$unit" --no-pager \
+    -p Id -p LoadState -p ActiveState -p SubState -p MainPID -p ExecStart -p WorkingDirectory
+}
+
+unit_active() {
+  [[ "$(systemctl --user is-active "$1" 2>/dev/null || true)" == 'active' ]]
+}
+
+start_unit() {
+  systemctl --user start "$1"
+  unit_active "$1"
+}
+
+restart_unit() {
+  systemctl --user restart "$1"
+  unit_active "$1"
+}
+
+mcp_status_code() {
+  curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+    --connect-timeout 3 --max-time 8 "$MCP_LOCAL_URL" 2>/dev/null || true
+}
+
+mcp_is_available() {
+  local status
+  status="$(mcp_status_code)"
+  [[ "$status" == '200' || "$status" == '401' || "$status" == '405' ]]
+}
+
+tunnel_status_json() {
+  "$TUNNEL_CLIENT" runtimes status "$TUNNEL_ALIAS" --json
+}
+
+tunnel_is_ready() {
+  local status
+  status="$(tunnel_status_json 2>/dev/null || true)"
+  [[ "$status" == *'"process_running": true'* && "$status" == *'"healthy": true'* && "$status" == *'"ready": true'* && "$status" == *"\"tunnel_id\": \"$TUNNEL_ID\""* ]]
+}
+
+start_tunnel() {
+  "$TUNNEL_CLIENT" runtimes connect \
+    --alias "$TUNNEL_ALIAS" \
+    --admin-profile "$TUNNEL_ADMIN_PROFILE" \
+    --profile "$TUNNEL_PROFILE" \
+    --profile-dir "$TUNNEL_PROFILE_DIR" \
+    --mcp-server-url "$MCP_LOCAL_URL"
+}
+
+restart_tunnel() {
+  "$TUNNEL_CLIENT" runtimes stop "$TUNNEL_ALIAS" >/dev/null 2>&1 || true
+  start_tunnel
+}
+
+wsl_status() {
+  printf 'WSL_DISTRO=%s\n' "$WSL_DISTRO"
+  hostname
+  uname -a
+  systemctl --user is-system-running --wait 2>/dev/null || true
+  loginctl show-user "$USER" -p Linger -p State -p RuntimePath
+}
+
+forge_source_status() {
+  printf 'SOURCE_ROOT=%s\n' "$SOURCE_ROOT"
+  if [[ ! -d "$SOURCE_ROOT/.git" ]]; then
+    printf 'SOURCE_PRESENT=false\n'
+    return 1
+  fi
+  printf 'SOURCE_PRESENT=true\n'
+  git -C "$SOURCE_ROOT" rev-parse HEAD
+  git -C "$SOURCE_ROOT" status --short --branch
+}
+
+controller_status() {
+  printf 'CONTROLLER_HOME=%s\n' "$CONTROLLER_HOME"
+  [[ -d "$CONTROLLER_HOME" ]] && printf 'CONTROLLER_HOME_PRESENT=true\n' || { printf 'CONTROLLER_HOME_PRESENT=false\n'; return 1; }
+  [[ -f "$CONTROLLER_HOME/control-plane.sqlite" ]] && printf 'CONTROL_PLANE_DB_PRESENT=true\n' || printf 'CONTROL_PLANE_DB_PRESENT=false\n'
+  [[ -f "$CONTROLLER_HOME/runtime/releases/authority.json" ]] && printf 'RUNTIME_AUTHORITY_PRESENT=true\n' || printf 'RUNTIME_AUTHORITY_PRESENT=false\n'
+  [[ -f "$CONTROLLER_HOME/runtime/connector-service/authority.json" ]] && printf 'CONNECTOR_AUTHORITY_PRESENT=true\n' || printf 'CONNECTOR_AUTHORITY_PRESENT=false\n'
+}
+
+runtime_status() { unit_state "$RUNTIME_UNIT"; }
+runtime_start() { with_mutation_lock runtime_start_impl; }
+runtime_start_impl() { start_unit "$RUNTIME_UNIT"; runtime_status; }
+runtime_restart() { with_mutation_lock runtime_restart_impl; }
+runtime_restart_impl() { restart_unit "$RUNTIME_UNIT"; runtime_status; }
+
+connector_status() { unit_state "$CONNECTOR_UNIT"; }
+connector_start() { with_mutation_lock connector_start_impl; }
+connector_start_impl() { start_unit "$CONNECTOR_UNIT"; connector_status; }
+connector_restart() { with_mutation_lock connector_restart_impl; }
+connector_restart_impl() { restart_unit "$CONNECTOR_UNIT"; connector_status; }
+
+recovery_status() { unit_state "$RECOVERY_UNIT"; }
+recovery_start() { with_mutation_lock recovery_start_impl; }
+recovery_start_impl() { start_unit "$RECOVERY_UNIT"; recovery_status; }
+recovery_restart() { with_mutation_lock recovery_restart_impl; }
+recovery_restart_impl() { restart_unit "$RECOVERY_UNIT"; recovery_status; }
+
+tunnel_status() { tunnel_status_json; }
+tunnel_start() { with_mutation_lock tunnel_start_impl; }
+tunnel_start_impl() { start_tunnel; tunnel_status_json; }
+tunnel_restart() { with_mutation_lock tunnel_restart_impl; }
+tunnel_restart_impl() { restart_tunnel; tunnel_status_json; }
+
+forge_cloud_verify() {
+  local status=0
+  printf 'LOCAL_MCP_URL=%s\n' "$MCP_LOCAL_URL"
+  printf 'LOCAL_MCP_HTTP_STATUS=%s\n' "$(mcp_status_code)"
+  mcp_is_available || status=1
+  tunnel_status_json || status=1
+  tunnel_is_ready || status=1
+  return "$status"
+}
+
+full_recover() {
+  with_mutation_lock full_recover_impl
+}
+
+full_recover_impl() {
+  local status=0
+  start_unit "$RECOVERY_UNIT" || status=1
+  start_unit "$RUNTIME_UNIT" || status=1
+  start_unit "$CONNECTOR_UNIT" || status=1
+  if ! mcp_is_available; then
+    sleep 2
+    mcp_is_available || status=1
+  fi
+  if ! tunnel_is_ready; then
+    start_tunnel || status=1
+  fi
+  forge_cloud_verify || status=1
+  return "$status"
+}
+
+watch() {
+  # This is the sole long-lived mutation owner. It only reconciles the exact
+  # unit and tunnel identities recorded in its root-owned configuration.
+  while true; do
+    full_recover >/dev/null 2>&1 || true
+    sleep 30
+  done
+}
+
+main() {
+  require_config
+  case "${1:-}" in
+    wsl_status) wsl_status ;;
+    forge_source_status) forge_source_status ;;
+    controller_status) controller_status ;;
+    runtime_status) runtime_status ;;
+    runtime_start) runtime_start ;;
+    runtime_restart) runtime_restart ;;
+    connector_status) connector_status ;;
+    connector_start) connector_start ;;
+    connector_restart) connector_restart ;;
+    recovery_status) recovery_status ;;
+    recovery_start) recovery_start ;;
+    recovery_restart) recovery_restart ;;
+    tunnel_status) tunnel_status ;;
+    tunnel_start) tunnel_start ;;
+    tunnel_restart) tunnel_restart ;;
+    forge_cloud_verify) forge_cloud_verify ;;
+    full_recover) full_recover ;;
+    watch) watch ;;
+    *) usage ;;
+  esac
+}
+
+main "$@"
