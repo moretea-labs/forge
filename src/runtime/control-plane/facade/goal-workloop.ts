@@ -63,6 +63,8 @@ export interface GoalWorkloopContext {
   availableChecks?: readonly CheckDefinitionLike[];
   planStore?: PlanContractStoreOptions;
   sourceRevision?: string;
+  /** Explicit only when repository observation proves the Work started from a revision or an unborn HEAD. */
+  sourceBaseState?: 'revision' | 'unborn';
   checkoutId?: string;
   principalId?: string;
   controllerInstanceId?: string;
@@ -877,6 +879,7 @@ export function startGoalWorkloop(
     principalId: ctx.principalId,
     controllerInstanceId: ctx.controllerInstanceId,
     baseRevision: ctx.sourceRevision,
+    repositoryBaseState: ctx.sourceBaseState ?? (ctx.sourceRevision ? 'revision' : undefined),
     workspaceFingerprint: needsWorktree ? undefined : ctx.workspaceFingerprint,
     routeDecisionFingerprint: routeDecision.inputFingerprint,
     routeDecision,

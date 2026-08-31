@@ -203,7 +203,7 @@ import {
   type ControllerTerminalizationAuthority,
 } from '../../control-plane/facade';
 import { currentControllerInstanceId, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../control-plane/execution/session-store';
-import { changedPaths as workChangedPaths } from '../../control-plane/execution/work-task-receipt';
+import { changedPaths as workChangedPaths, changedPathsFromUnbornBase as workChangedPathsFromUnbornBase } from '../../control-plane/execution/work-task-receipt';
 import { readRequirement } from '../../control-plane/persistence/requirement-store';
 import { admitRequirement } from '../../control-plane/facade/requirement-authority';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
@@ -2709,7 +2709,9 @@ function reconcileTerminalFacadeWorkVerifications(
     : workContract.baseRevision;
   const committedPaths = deliveryBaseRevision
     ? workChangedPaths(verificationRepository.canonicalRoot, deliveryBaseRevision, sourceRevision)
-    : [];
+    : workContract.repositoryBaseState === 'unborn'
+      ? workChangedPathsFromUnbornBase(verificationRepository.canonicalRoot, sourceRevision)
+      : [];
   const workspaceChangedPaths = [...new Set([
     ...committedPaths,
     ...verificationStatus.staged,
@@ -4338,6 +4340,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         }
 
         const checks = listControllerChecks(repository.canonicalRoot);
+        const workloopSource = gitSnapshot(repository.canonicalRoot);
         const workloopCtx = {
           workStore: store,
           handoffStore: store,
@@ -4347,7 +4350,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           principalId: ctx.principalId,
           controllerInstanceId: ctx.controllerInstanceId,
           availableChecks: checks,
-          sourceRevision: gitSnapshot(repository.canonicalRoot).head ?? undefined,
+          sourceRevision: workloopSource.head ?? undefined,
+          sourceBaseState: workloopSource.head ? 'revision' as const : 'unborn' as const,
           materializeIsolatedWorkspace: ({ workId, title, baseRef, needsDependencies }: { workId: string; title: string; baseRef?: string; needsDependencies?: boolean }) => {
             const workspace = ensureManagedWorkspace(ctx.controllerHome, repository, {
               requestId: workId,

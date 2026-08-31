@@ -39,6 +39,25 @@ export function changedPaths(repoRoot: string, baseRevision: string, targetRevis
   return [...new Set(result.stdout.split('\0').filter(Boolean))].sort();
 }
 
+/**
+ * Net tracked paths for a Work whose authoritative repository baseline was an
+ * unborn HEAD. The baseline is the empty repository, so every tracked path in
+ * the current target tree is a net implementation path. This remains correct
+ * after more than one commit, unlike a single-commit diff-tree comparison.
+ */
+export function changedPathsFromUnbornBase(repoRoot: string, targetRevision: string): string[] {
+  const targetCommit = commitRevision(repoRoot, targetRevision, 'TARGET_REVISION');
+  const result = spawnSync('git', ['ls-tree', '-r', '--name-only', '-z', targetCommit], {
+    cwd: repoRoot,
+    encoding: 'utf-8',
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  if (result.status !== 0 || result.error || typeof result.stdout !== 'string') {
+    throw new Error('CONTROLLER_WORK_RECEIPT_UNBORN_CHANGED_PATHS_UNAVAILABLE');
+  }
+  return [...new Set(result.stdout.split('\0').filter(Boolean))].sort();
+}
+
 
 function completionReceiptChangedPaths(
   contract: NonNullable<ReturnType<typeof getWorkContract>>,

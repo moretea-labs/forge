@@ -364,6 +364,7 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       principalId: input.principalId,
       controllerInstanceId: input.controllerInstanceId,
       baseRevision: input.baseRevision,
+      repositoryBaseState: input.repositoryBaseState,
       workspaceFingerprint: input.workspaceFingerprint,
       routeDecisionFingerprint: input.routeDecisionFingerprint,
       routeDecision: input.routeDecision,

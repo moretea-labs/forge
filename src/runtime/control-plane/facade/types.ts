@@ -495,6 +495,8 @@ export interface WorkContract {
   principalId?: string;
   controllerInstanceId?: string;
   baseRevision?: string;
+  /** Authoritative repository baseline captured at Work admission. Absent means legacy/unknown, never implicitly unborn. */
+  repositoryBaseState?: 'revision' | 'unborn';
   workspaceFingerprint?: string;
   routeDecisionFingerprint?: string;
   routeDecision?: RouteDecision;
