@@ -1,10 +1,10 @@
 # Current Status Snapshot
 
-<!-- updated_at: 2026-08-31T12:55:00+0800 -->
+<!-- updated_at: 2026-08-31T13:55:20+0800 -->
 <!-- stale_after: 24h -->
 
 > **Status**: Active
-> **Updated At**: 2026-08-31T12:55:00+0800
+> **Updated At**: 2026-08-31T13:55:20+0800
 > **Source Branch**: main
 > **Published Baseline Commit**: c873cfeb11a223ced342e7101c016261b4a93b38
 > **Target Branch**: main
@@ -18,6 +18,7 @@ This file is a tracked mainline snapshot for the current Forge Cloud Windows lan
 - Active source-optimization lane: Windows Forge Cloud only
 - Active acceptance objective: Forge must use the existing signed-in ChatGPT continuation path to advance `/home/greyson/src/yaozhunshi` in three consecutive autonomous scheduled rounds, with exact Work ownership, explicit round dispositions, repository commits, and focused Android check evidence recorded for every round
 - Current repair: frozen MCP clients may encode `controller_claim`, `continue`, `finalize`, `stop`, and `controller_release` as `controller.round:<operation>:<authorityId>:<relayScopeId>` through `operation=repair`; Runtime maps the call back to the canonical operation and applies the same exact authority/scope fences
+- Windows bridge repair: WSL continuation now opens only an explicitly resolved, installed Google Chrome executable and fails closed when Chrome is unavailable; it no longer delegates to the Windows default-browser handler
 - Self-hosting gate repair: the bundled migration helper now resolves its owning Forge checkout from both package and repo-pinned locations instead of silently exiting from the wrong parent directory
 - Verification so far: TypeScript no-emit passed; 94 focused tests cover control-plane hardening, `rh_work` authority, autonomous continuation, ChatGPT continuation binding, and helper self-resolution
 - Handoff: `tasks/notes/20260830-forge-cloud-windows-post-1.7.1-handoff.notes.md`
