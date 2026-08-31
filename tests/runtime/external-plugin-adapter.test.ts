@@ -43,6 +43,37 @@ function providerManifest(overrides: Record<string, unknown> = {}): Record<strin
   };
 }
 
+function uuDesktopStatus(): Record<string, unknown> {
+  return {
+    sessions: [{
+      interactionId: 'desk-uu', bundleIdentifier: 'com.netease.uuremote', appName: 'UU远程', pid: 8361,
+    }],
+    applications: [{
+      active: true, terminated: false, bundle_id: 'com.netease.uuremote', name: 'UU远程', pid: 8361,
+    }],
+  };
+}
+
+function uuWindowObservation(focused: 'terminal' | 'main'): Record<string, unknown> {
+  const terminalFrame = { x: 335, y: 117, width: 800, height: 520 };
+  const mainFrame = { x: 485, y: 117, width: 921, height: 680 };
+  return {
+    snapshot: {
+      root: {
+        role: 'AXApplication',
+        children: [
+          { role: 'AXWindow', title: '终端 - GREYSON-DESKTOP', focused: focused === 'terminal', frame: terminalFrame },
+          { role: 'AXWindow', title: '', focused: focused === 'main', frame: mainFrame },
+        ],
+      },
+    },
+    windows: [
+      { windowId: 4190, title: '终端 - GREYSON-DESKTOP', onScreen: true, pid: 8361, frame: terminalFrame },
+      { windowId: 3654, title: '', onScreen: true, pid: 8361, frame: mainFrame },
+    ],
+  };
+}
+
 describe('external plugin adapter', () => {
   test('derives ready Forge manifest policy from registration while provider proves identity and health', () => {
     const adapter = createExternalPluginAdapter(registration(), {
@@ -224,48 +255,164 @@ describe('external plugin adapter', () => {
     ]);
   });
 
-  test('re-establishes exact verified foreground at the desktop_key action boundary before sending the key chord', async () => {
+  test('preserves the exact same-bundle secondary window and canonicalizes ENTER/RETURN without application reactivation', async () => {
     const base = registration();
     const keyAction = {
       ...base.actions[0]!, actionId: 'desktop_key', title: 'Press desktop keys', description: 'Foreground-bound key action.',
       readOnly: false, risk: 'workspace_write' as const, confirmation: 'authorization' as const, scopes: ['desktop.interact'],
     };
-    const calls: ExternalUnixSocketCallOptions[] = [];
-    const proofTargets: Array<{ bundleId?: string; appName?: string }> = [];
+    const providerActions: string[] = [];
+    const keyArguments: Record<string, unknown>[] = [];
     const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, keyAction] }), {
-      activateAndVerifyFrontmostApplication: async (target) => {
-        proofTargets.push(target);
-        return { activated: true, verified: true, bundleId: 'com.liguangming.Shadowrocket', appName: 'Shadowrocket', activationCommand: ['/usr/bin/open'], frontmostQueryCommand: ['/usr/bin/lsappinfo'] };
+      activateAndVerifyFrontmostApplication: async () => {
+        throw new Error('desktop_key must not reactivate the application bundle');
       },
       call: async (options) => {
-        calls.push(options);
-        if (options.method === 'manifest') return providerManifest({ actions: ['desktop_status', 'desktop_session_open', 'desktop_key'] });
+        if (options.method === 'manifest') return providerManifest({ actions: ['desktop_status', 'desktop_observe', 'desktop_key'] });
         const params = options.params as { action?: string; arguments?: Record<string, unknown> } | undefined;
-        if (params?.action === 'desktop_status') {
-          return { sessions: [{ interactionId: 'desk-shadow-source', bundleIdentifier: 'com.liguangming.Shadowrocket', appName: 'Shadowrocket' }] };
-        }
-        if (params?.action === 'desktop_session_open') {
-          expect(params.arguments).toEqual({ bundle_id: 'com.liguangming.Shadowrocket', launch: false, activate: true });
-          return { interactionId: 'desk-shadow-active' };
-        }
+        providerActions.push(String(params?.action));
+        if (params?.action === 'desktop_status') return uuDesktopStatus();
+        if (params?.action === 'desktop_observe') return uuWindowObservation('terminal');
         if (params?.action === 'desktop_key') {
-          expect(params.arguments).toEqual({ interaction_id: 'desk-shadow-active', keys: ['ESC'] });
+          keyArguments.push(params.arguments ?? {});
           return { pressed: true };
         }
         throw new Error(`unexpected provider action: ${String(params?.action)}`);
       },
     });
 
-    const result = await adapter.executeAction({
-      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator', actionId: 'desktop_key', requestId: 'foreground-key-1',
-      args: { interaction_id: 'desk-shadow-source', keys: ['ESC'] }, origin: { surface: 'mcp' },
+    for (const [index, key] of ['ENTER', 'RETURN'].entries()) {
+      expect(await adapter.executeAction({
+        controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator', actionId: 'desktop_key', requestId: `foreground-key-${index}`,
+        args: { interaction_id: 'desk-uu', keys: [key] }, origin: { surface: 'mcp' },
+      })).toEqual({ pressed: true });
+    }
+
+    expect(keyArguments).toEqual([
+      { interaction_id: 'desk-uu', keys: ['return'] },
+      { interaction_id: 'desk-uu', keys: ['return'] },
+    ]);
+    expect(providerActions).not.toContain('desktop_session_open');
+  });
+
+  test('fails closed before key input when the main window steals focus from the bound UU terminal window', async () => {
+    const base = registration();
+    const keyAction = {
+      ...base.actions[0]!, actionId: 'desktop_key', title: 'Press desktop keys', description: 'Foreground-bound key action.',
+      readOnly: false, risk: 'workspace_write' as const, confirmation: 'authorization' as const, scopes: ['desktop.interact'],
+    };
+    let observations = 0;
+    let keyCalls = 0;
+    const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, keyAction] }), {
+      call: async (options) => {
+        if (options.method === 'manifest') return providerManifest({ actions: ['desktop_status', 'desktop_observe', 'desktop_key'] });
+        const params = options.params as { action?: string } | undefined;
+        if (params?.action === 'desktop_status') return uuDesktopStatus();
+        if (params?.action === 'desktop_observe') {
+          observations += 1;
+          return uuWindowObservation(observations === 1 ? 'terminal' : 'main');
+        }
+        if (params?.action === 'desktop_key') {
+          keyCalls += 1;
+          return { pressed: true };
+        }
+        throw new Error(`unexpected provider action: ${String(params?.action)}`);
+      },
     });
 
-    expect(result).toEqual({ pressed: true });
-    expect(proofTargets).toEqual([{ bundleId: 'com.liguangming.Shadowrocket', appName: undefined }]);
-    expect(calls.slice(1).map((entry) => (entry.params as { action?: string } | undefined)?.action)).toEqual([
-      'desktop_status', 'desktop_session_open', 'desktop_key',
+    await expect(adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator', actionId: 'desktop_key', requestId: 'foreground-key-focus-steal',
+      args: { interaction_id: 'desk-uu', keys: ['RETURN'] }, origin: { surface: 'mcp' },
+    })).rejects.toThrow('DESKTOP_EXACT_WINDOW_FOCUS_CHANGED');
+    expect(keyCalls).toBe(0);
+  });
+
+  test('preserves exact-window authority for paste and one-session batch input without bundle activation', async () => {
+    const base = registration();
+    const pasteAction = {
+      ...base.actions[0]!, actionId: 'desktop_paste', title: 'Paste', description: 'Paste.',
+      readOnly: false, risk: 'workspace_write' as const, confirmation: 'authorization' as const, scopes: ['desktop.clipboard'],
+    };
+    const batchAction = {
+      ...base.actions[0]!, actionId: 'desktop_batch', title: 'Batch', description: 'Batch.',
+      readOnly: false, risk: 'workspace_write' as const, confirmation: 'authorization' as const, scopes: ['desktop.batch'],
+    };
+    const executed: Array<{ action: string; arguments: Record<string, unknown> }> = [];
+    const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, pasteAction, batchAction] }), {
+      activateAndVerifyFrontmostApplication: async () => {
+        throw new Error('paste/batch must not reactivate the application bundle');
+      },
+      call: async (options) => {
+        if (options.method === 'manifest') return providerManifest({ actions: ['desktop_status', 'desktop_observe', 'desktop_paste', 'desktop_batch'] });
+        const params = options.params as { action?: string; arguments?: Record<string, unknown> } | undefined;
+        if (params?.action === 'desktop_status') return uuDesktopStatus();
+        if (params?.action === 'desktop_observe') return uuWindowObservation('terminal');
+        if (params?.action === 'desktop_paste' || params?.action === 'desktop_batch') {
+          executed.push({ action: params.action, arguments: params.arguments ?? {} });
+          return params.action === 'desktop_paste' ? { pasted: true } : { completed: true };
+        }
+        throw new Error(`unexpected provider action: ${String(params?.action)}`);
+      },
+    });
+
+    expect(await adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator', actionId: 'desktop_paste', requestId: 'foreground-paste',
+      args: { interaction_id: 'desk-uu' }, origin: { surface: 'mcp' },
+    })).toEqual({ pasted: true });
+    expect(await adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator', actionId: 'desktop_batch', requestId: 'foreground-batch',
+      args: {
+        steps: [
+          { action: 'desktop_paste', arguments: { interaction_id: 'desk-uu' } },
+          { action: 'desktop_key', arguments: { interaction_id: 'desk-uu', keys: ['ENTER'] } },
+        ],
+        on_error: 'stop',
+      },
+      origin: { surface: 'mcp' },
+    })).toEqual({ completed: true });
+
+    expect(executed).toEqual([
+      { action: 'desktop_paste', arguments: { interaction_id: 'desk-uu' } },
+      {
+        action: 'desktop_batch',
+        arguments: {
+          steps: [
+            { action: 'desktop_paste', arguments: { interaction_id: 'desk-uu' } },
+            { action: 'desktop_key', arguments: { interaction_id: 'desk-uu', keys: ['return'] } },
+          ],
+          on_error: 'stop',
+        },
+      },
     ]);
+  });
+
+  test('rejects a focus-moving batch step before exact-window key input', async () => {
+    const base = registration();
+    const batchAction = {
+      ...base.actions[0]!, actionId: 'desktop_batch', title: 'Batch', description: 'Batch.',
+      readOnly: false, risk: 'workspace_write' as const, confirmation: 'authorization' as const, scopes: ['desktop.batch'],
+    };
+    let providerBatchCalls = 0;
+    const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, batchAction] }), {
+      call: async (options) => {
+        if (options.method === 'manifest') return providerManifest({ actions: ['desktop_status', 'desktop_observe', 'desktop_batch'] });
+        const params = options.params as { action?: string } | undefined;
+        if (params?.action === 'desktop_batch') providerBatchCalls += 1;
+        return { completed: true };
+      },
+    });
+
+    await expect(adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator', actionId: 'desktop_batch', requestId: 'foreground-batch-focus-mutation',
+      args: {
+        steps: [
+          { action: 'desktop_press', arguments: { interaction_id: 'desk-uu', selector: { title: 'Other control' } } },
+          { action: 'desktop_key', arguments: { interaction_id: 'desk-uu', keys: ['RETURN'] } },
+        ],
+      },
+      origin: { surface: 'mcp' },
+    })).rejects.toThrow('DESKTOP_BATCH_EXACT_WINDOW_FOCUS_MUTATION_CONFLICT');
+    expect(providerBatchCalls).toBe(0);
   });
 
   test('recovers APP_ACTIVATION_FAILED by rebinding first and then requiring exact independent frontmost proof', async () => {

@@ -77,8 +77,8 @@ describe('Desktop Operator trusted external registration', () => {
     for (const actionId of ['desktop_copy', 'desktop_paste']) {
       const action = input.actions.find((candidate) => candidate.actionId === actionId);
       expect(action?.argumentsSchema?.required).toEqual(['interaction_id']);
-      expect(action?.description).toContain('already foreground');
-      expect(action?.description).toContain('never activates it');
+      expect(action?.description).toMatch(/system-frontmost|already foreground/);
+      expect(action?.description).toMatch(/never (re)?activates/);
     }
     expect(input.permissions.some((permission) => permission.scope === 'desktop.clipboard' && permission.granted)).toBe(true);
     const permissionRequest = input.actions.find((action) => action.actionId === 'desktop_permissions_request');

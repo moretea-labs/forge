@@ -248,6 +248,230 @@ function desktopSession(status: Record<string, unknown>, interactionId: string):
   return recordArray(status.sessions).find((session) => firstString(session, 'interactionId', 'interaction_id') === interactionId);
 }
 
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function exactFocusedDesktopWindowId(observation: Record<string, unknown>): number | undefined {
+  const snapshot = recordValue(observation.snapshot);
+  const root = recordValue(snapshot?.root);
+  const focusedAxWindows = recordArray(root?.children).filter((window) =>
+    firstString(window, 'role') === 'AXWindow' && window.focused === true);
+  if (focusedAxWindows.length !== 1) return undefined;
+
+  const focusedTitle = firstString(focusedAxWindows[0]!, 'title');
+  if (!focusedTitle) return undefined;
+  const matches = recordArray(observation.windows).filter((window) => {
+    const windowId = firstNumber(window, 'windowId', 'window_id');
+    return Boolean(windowId)
+      && Number.isInteger(windowId)
+      && window.onScreen === true
+      && firstString(window, 'title') === focusedTitle;
+  });
+  if (matches.length !== 1) return undefined;
+  return firstNumber(matches[0]!, 'windowId', 'window_id');
+}
+
+function desktopSessionApplicationIsActive(status: Record<string, unknown>, session: Record<string, unknown>): boolean {
+  const pid = firstNumber(session, 'pid');
+  const bundleId = firstString(session, 'bundleIdentifier', 'bundle_id');
+  const appName = firstString(session, 'appName', 'app_name');
+  return recordArray(status.applications).some((application) => {
+    if (application.active !== true || application.terminated === true) return false;
+    if (pid !== undefined) return firstNumber(application, 'pid') === pid;
+    if (bundleId) return firstString(application, 'bundle_id', 'bundleIdentifier') === bundleId;
+    return Boolean(appName) && firstString(application, 'name', 'appName') === appName;
+  });
+}
+
+async function observeExactDesktopWindow(
+  registration: ExternalPluginRegistration,
+  requestId: string,
+  interactionId: string,
+  timeoutMs: number | undefined,
+  signal: AbortSignal | undefined,
+  dependencies: ExternalPluginAdapterDependencies,
+): Promise<number> {
+  const observation = await callProvider(
+    registration,
+    requestId,
+    'desktop_observe',
+    {
+      interaction_id: interactionId,
+      max_depth: 3,
+      max_nodes: 500,
+      include_values: false,
+      include_actions: false,
+      include_windows: true,
+    },
+    timeoutMs,
+    signal,
+    dependencies,
+  );
+  const windowId = exactFocusedDesktopWindowId(observation);
+  if (!windowId) {
+    throw providerError(
+      'DESKTOP_EXACT_WINDOW_UNAVAILABLE',
+      `Desktop session ${interactionId} does not expose one uniquely focused AX window that maps to one on-screen CGWindow.`,
+      true,
+    );
+  }
+  return windowId;
+}
+
+async function verifyExactForegroundDesktopSession(
+  registration: ExternalPluginRegistration,
+  requestId: string,
+  interactionId: string,
+  timeoutMs: number | undefined,
+  signal: AbortSignal | undefined,
+  dependencies: ExternalPluginAdapterDependencies,
+): Promise<number> {
+  const sourceStatus = await callProvider(
+    registration,
+    `${requestId}:source-status`,
+    'desktop_status',
+    { limit: 500 },
+    timeoutMs,
+    signal,
+    dependencies,
+  );
+  const sourceSession = desktopSession(sourceStatus, interactionId);
+  if (!sourceSession) {
+    throw providerError('DESKTOP_EXACT_WINDOW_SESSION_NOT_FOUND', `Desktop session ${interactionId} is no longer available.`, true);
+  }
+  const expectedWindowId = await observeExactDesktopWindow(
+    registration,
+    `${requestId}:source-window`,
+    interactionId,
+    timeoutMs,
+    signal,
+    dependencies,
+  );
+  const foregroundStatus = await callProvider(
+    registration,
+    `${requestId}:foreground-status`,
+    'desktop_status',
+    { limit: 500 },
+    timeoutMs,
+    signal,
+    dependencies,
+  );
+  const foregroundSession = desktopSession(foregroundStatus, interactionId);
+  if (!foregroundSession || !desktopSessionApplicationIsActive(foregroundStatus, foregroundSession)) {
+    throw providerError(
+      'DESKTOP_EXACT_WINDOW_FOREGROUND_REQUIRED',
+      `Desktop session ${interactionId} is not the system-frontmost application; Forge will not reactivate the bundle because that can steal focus from another window.`,
+      true,
+    );
+  }
+  let confirmedWindowId: number;
+  try {
+    confirmedWindowId = await observeExactDesktopWindow(
+      registration,
+      `${requestId}:confirmed-window`,
+      interactionId,
+      timeoutMs,
+      signal,
+      dependencies,
+    );
+  } catch (error) {
+    if (error instanceof AssistantPluginError && error.code === 'DESKTOP_EXACT_WINDOW_UNAVAILABLE') {
+      throw new AssistantPluginError(
+        'DESKTOP_EXACT_WINDOW_FOCUS_CHANGED',
+        `Desktop session ${interactionId} no longer exposes the previously verified exact focused window.`,
+        { retryable: true, details: { expectedWindowId } },
+      );
+    }
+    throw error;
+  }
+  if (confirmedWindowId !== expectedWindowId) {
+    throw new AssistantPluginError(
+      'DESKTOP_EXACT_WINDOW_FOCUS_CHANGED',
+      `Desktop session ${interactionId} changed focused windows while Forge was verifying exact foreground authority.`,
+      { retryable: true, details: { expectedWindowId, observedWindowId: confirmedWindowId } },
+    );
+  }
+  return expectedWindowId;
+}
+
+function normalizeDesktopKeys(keys: unknown[]): unknown[] {
+  return keys.map((key) => typeof key === 'string' && ['enter', 'return'].includes(key.trim().toLowerCase()) ? 'return' : key);
+}
+
+function normalizeDesktopBatchArguments(args: Record<string, unknown>): { args: Record<string, unknown>; foregroundInteractionId?: string } {
+  const rawSteps = Array.isArray(args.steps) ? args.steps : [];
+  const foregroundInteractionIds = new Set<string>();
+  const stepActions: string[] = [];
+  const keyStepIndexes: number[] = [];
+  let hasExplicitActivation = false;
+  const steps = rawSteps.map((value, index) => {
+    const step = recordValue(value);
+    if (!step) return value;
+    const action = firstString(step, 'action');
+    stepActions.push(action);
+    const argumentsValue = recordValue(step.arguments) ?? {};
+    if (action === 'desktop_session_open' && argumentsValue.activate === true) hasExplicitActivation = true;
+    if (['desktop_key', 'desktop_paste', 'desktop_copy'].includes(action)) {
+      const interactionId = firstString(argumentsValue, 'interaction_id');
+      if (interactionId) foregroundInteractionIds.add(interactionId);
+    }
+    if (action === 'desktop_key') {
+      keyStepIndexes.push(index);
+      if (Array.isArray(argumentsValue.keys)) {
+        return { ...step, arguments: { ...argumentsValue, keys: normalizeDesktopKeys(argumentsValue.keys) } };
+      }
+    }
+    return value;
+  });
+  if (foregroundInteractionIds.size > 1) {
+    throw providerError(
+      'DESKTOP_BATCH_EXACT_WINDOW_AMBIGUOUS',
+      'desktop_batch cannot safely target multiple foreground desktop sessions because one exact window can own keyboard focus at a time.',
+    );
+  }
+  if (foregroundInteractionIds.size === 1 && hasExplicitActivation) {
+    throw providerError(
+      'DESKTOP_BATCH_EXACT_WINDOW_ACTIVATION_CONFLICT',
+      'desktop_batch cannot mix explicit application activation with key/copy/paste input because activation can move focus to another window in the same bundle.',
+    );
+  }
+  if (foregroundInteractionIds.size === 1) {
+    const exactWindowSafeActions = new Set([
+      'desktop_clipboard_read', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_key', 'desktop_observe',
+    ]);
+    const unsafeAction = stepActions.find((action) => !exactWindowSafeActions.has(action));
+    if (unsafeAction) {
+      throw providerError(
+        'DESKTOP_BATCH_EXACT_WINDOW_FOCUS_MUTATION_CONFLICT',
+        `desktop_batch cannot mix ${unsafeAction} with exact-window key/copy/paste input because that step can invalidate foreground window authority after verification.`,
+      );
+    }
+    if (keyStepIndexes.length > 1) {
+      throw providerError(
+        'DESKTOP_BATCH_EXACT_WINDOW_MULTIPLE_KEY_STEPS',
+        'desktop_batch allows at most one desktop_key step when exact-window authority is required; a synthetic key can itself change focused windows.',
+      );
+    }
+    const keyIndex = keyStepIndexes[0];
+    if (keyIndex !== undefined) {
+      const laterForegroundInput = rawSteps.slice(keyIndex + 1).some((value) => {
+        const action = firstString(recordValue(value) ?? {}, 'action');
+        return ['desktop_key', 'desktop_paste', 'desktop_copy'].includes(action);
+      });
+      if (laterForegroundInput) {
+        throw providerError(
+          'DESKTOP_BATCH_EXACT_WINDOW_INPUT_AFTER_KEY',
+          'desktop_batch cannot send key/copy/paste input after desktop_key because the key may have changed the focused window.',
+        );
+      }
+    }
+  }
+  return { args: { ...args, steps }, foregroundInteractionId: [...foregroundInteractionIds][0] };
+}
+
 async function independentlyEnsureExactFrontmostDesktopApplication(
   bundleId: string,
   appName: string,
@@ -609,41 +833,66 @@ export function createExternalPluginAdapter(
         if (!sourceInteractionId || keys.length === 0) {
           throw providerError('DESKTOP_FOREGROUND_KEY_ARGUMENT_INVALID', 'desktop_key requires interaction_id and at least one key.');
         }
-        const sourceStatus = await callProvider(
+        await verifyExactForegroundDesktopSession(
           registration,
-          `${input.requestId}:source-status`,
-          'desktop_status',
-          { limit: 500 },
+          input.requestId,
+          sourceInteractionId,
           input.timeoutMs,
           input.signal,
           dependencies,
         );
-        const sourceSession = desktopSession(sourceStatus, sourceInteractionId);
-        if (!sourceSession) {
-          throw providerError('DESKTOP_FOREGROUND_KEY_SESSION_NOT_FOUND', `Desktop session ${sourceInteractionId} is no longer available.`, true);
-        }
-        const bundleId = firstString(sourceSession, 'bundleIdentifier', 'bundle_id');
-        const appName = firstString(sourceSession, 'appName', 'app_name');
-        if (!bundleId && !appName) {
-          throw providerError('DESKTOP_FOREGROUND_KEY_TARGET_UNAVAILABLE', `Desktop session ${sourceInteractionId} has no stable application identity.`);
-        }
-        const activation = await openVerifiedDesktopSession(
-          registration,
-          `${input.requestId}:activate`,
-          { ...(bundleId ? { bundle_id: bundleId } : { app_name: appName }), launch: false, activate: true },
-          input.timeoutMs,
-          input.signal,
-          dependencies,
-        );
-        const activationInteractionId = firstString(activation, 'interactionId', 'interaction_id');
-        if (!activationInteractionId) {
-          throw providerError('DESKTOP_ACTIVATION_SESSION_MISSING', 'Desktop Operator activated the application without returning a bound interaction session.', true);
-        }
         return await callProvider(
           registration,
           `${input.requestId}:key`,
           'desktop_key',
-          { interaction_id: activationInteractionId, keys },
+          { interaction_id: sourceInteractionId, keys: normalizeDesktopKeys(keys) },
+          input.timeoutMs,
+          input.signal,
+          dependencies,
+        );
+      }
+
+      if (registration.pluginId === 'desktop_operator' && input.actionId === 'desktop_paste') {
+        const sourceInteractionId = typeof input.args.interaction_id === 'string' ? input.args.interaction_id.trim() : '';
+        if (!sourceInteractionId) {
+          throw providerError('DESKTOP_FOREGROUND_PASTE_ARGUMENT_INVALID', 'desktop_paste requires interaction_id.');
+        }
+        await verifyExactForegroundDesktopSession(
+          registration,
+          input.requestId,
+          sourceInteractionId,
+          input.timeoutMs,
+          input.signal,
+          dependencies,
+        );
+        return await callProvider(
+          registration,
+          `${input.requestId}:paste`,
+          'desktop_paste',
+          { interaction_id: sourceInteractionId },
+          input.timeoutMs,
+          input.signal,
+          dependencies,
+        );
+      }
+
+      if (registration.pluginId === 'desktop_operator' && input.actionId === 'desktop_batch') {
+        const normalized = normalizeDesktopBatchArguments(input.args);
+        if (normalized.foregroundInteractionId) {
+          await verifyExactForegroundDesktopSession(
+            registration,
+            input.requestId,
+            normalized.foregroundInteractionId,
+            input.timeoutMs,
+            input.signal,
+            dependencies,
+          );
+        }
+        return await callProvider(
+          registration,
+          `${input.requestId}:batch`,
+          'desktop_batch',
+          normalized.args,
           input.timeoutMs,
           input.signal,
           dependencies,

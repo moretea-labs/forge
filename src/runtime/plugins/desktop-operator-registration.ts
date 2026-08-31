@@ -170,7 +170,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'desktop_key',
       title: 'Press desktop keys',
-      description: 'Send one bounded key chord to the exact target session after Forge independently re-establishes and verifies that application as system-frontmost at the action boundary.',
+      description: 'Send one bounded key chord only after Forge verifies that the exact session is already system-frontmost and that its uniquely focused Accessibility window remains the same CGWindow; Forge never reactivates the application bundle at this boundary.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
@@ -244,7 +244,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'desktop_paste',
       title: 'Paste into desktop session',
-      description: 'Send Command+V only when the explicit target session is already foreground; the operator never activates it.',
+      description: 'Send Command+V only after Forge verifies that the explicit target session is already system-frontmost and its exact focused window remains stable; the operator never reactivates the application bundle.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
@@ -305,7 +305,7 @@ function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'desktop_batch',
       title: 'Run desktop batch',
-      description: 'Run at most 50 non-batch Desktop Operator steps under one authorized interaction request.',
+      description: 'Run at most 50 non-batch Desktop Operator steps under one authorized interaction request; nested key/copy/paste input is exact-window verified for one foreground session and rejects conflicting activation or multi-session focus.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
