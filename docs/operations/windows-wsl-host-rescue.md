@@ -97,11 +97,13 @@ bun scripts/migrate-windows-wsl-controller-home.ts \
 Only after its preflight is correct, repeat the exact command with `--execute`.
 The transaction stops the legacy Runtime and Connector, copies the complete
 Controller Home into a staged sibling, preserves the prior canonical directory,
-rewrites only known release/service path references, installs the canonical
-unit pair, and requires both local MCP endpoints before retiring the legacy
-unit files. A failed cutover stops the canonical pair, restores the prior
-canonical directory/unit files, and starts the legacy pair again. It never
-deletes either Controller Home or performs database cleanup.
+rewrites only known service path references, preserves the legacy
+Controller-bound release authority as evidence, stages and publishes one fresh
+whole Runtime release from the clean WSL checkout, installs the canonical unit
+pair, and requires both local MCP endpoints before retiring the legacy unit
+files. A failed cutover stops the canonical pair, restores the prior canonical
+directory/unit files, and starts the legacy pair again. It never deletes either
+Controller Home or performs database cleanup.
 
 ## Operational acceptance
 

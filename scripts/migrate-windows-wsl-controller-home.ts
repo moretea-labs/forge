@@ -10,8 +10,10 @@ import {
   statSync, unlinkSync, writeFileSync,
 } from 'fs';
 import { homedir } from 'os';
-import { basename, dirname, join, relative, resolve } from 'path';
+import { basename, dirname, join, resolve } from 'path';
 import { spawnSync } from 'child_process';
+import { stageRuntimeRelease } from '../src/runtime/root/release-materialize';
+import { publishRuntimeRelease } from '../src/runtime/root/release-store';
 
 const home = homedir();
 const sourceRoot = resolve(process.cwd());
@@ -76,7 +78,6 @@ function mapPaths(value: unknown, source: string, destination: string): unknown 
 
 function rewriteJsonPathPrefixes(root: string, source: string, destination: string): void {
   const relativePaths = [
-    'runtime/releases/authority.json',
     'runtime/connector-service/authority.json',
     'system/runtime-generation.json',
   ];
@@ -86,6 +87,14 @@ function rewriteJsonPathPrefixes(root: string, source: string, destination: stri
     const parsed = JSON.parse(readFileSync(absolute, 'utf8')) as unknown;
     atomicWrite(absolute, `${JSON.stringify(mapPaths(parsed, source, destination), null, 2)}\n`);
   }
+}
+
+function preserveLegacyReleaseAuthority(root: string, timestamp: string): void {
+  const source = join(root, 'runtime', 'releases', 'authority.json');
+  requiredFile(source, 'HOST_RESCUE_MIGRATION_RUNTIME_AUTHORITY_MISSING');
+  const destination = join(root, 'migration', 'legacy-release-authority', `authority.json.${timestamp}`);
+  mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+  renameSync(source, destination);
 }
 
 function moveStaleRuntimeProjection(root: string, timestamp: string): void {
@@ -146,6 +155,20 @@ function renderConnectorUnit(root: string, unit: string, release: { releaseId: s
     `Environment=${quoteSystemd('FORGE_CONTROLLER_LIFECYCLE_OWNER=1')}`,
     'Restart=on-failure', 'RestartSec=5', '', '[Install]', 'WantedBy=default.target', '',
   ].join('\n');
+}
+
+function writeCanonicalConnectorAuthority(root: string, unit: string, release: { releaseId: string; releasePath: string }): void {
+  atomicWrite(join(root, 'runtime', 'connector-service', 'authority.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    endpoint: 'http://127.0.0.1:8767/mcp',
+    releaseId: release.releaseId,
+    releaseRoot: release.releasePath,
+    packageRoot: join(release.releasePath, 'package'),
+    mode: 'systemd-user',
+    persistent: true,
+    servicePath: unitPath(unit),
+    installedAt: new Date().toISOString(),
+  }, null, 2)}\n`);
 }
 
 function localMcpAvailable(url: string): boolean {
@@ -220,9 +243,17 @@ try {
   renameSync(staging, destination);
   rewriteJsonPathPrefixes(destination, source, destination);
   moveStaleRuntimeProjection(destination, timestamp);
+  // A Runtime manifest is intentionally bound to its Controller Home. The
+  // copied legacy release therefore remains migration evidence, not an active
+  // canonical release. Build and publish one fresh whole release directly from
+  // the clean source checkout before any canonical unit starts.
+  preserveLegacyReleaseAuthority(destination, timestamp);
+  const stagedRelease = stageRuntimeRelease({ controllerHome: destination, sourceRoot });
+  publishRuntimeRelease(destination, stagedRelease.manifestPath, `windows-wsl-controller-home-migration-${timestamp}`);
   const release = readActiveRelease(destination);
   atomicWrite(unitPath(units.canonicalRuntime), renderRuntimeUnit(destination, units.canonicalRuntime, release), 0o644);
   atomicWrite(unitPath(units.canonicalConnector), renderConnectorUnit(destination, units.canonicalConnector, release), 0o644);
+  writeCanonicalConnectorAuthority(destination, units.canonicalConnector, release);
   command('systemctl', ['--user', 'daemon-reload']);
   command('systemctl', ['--user', 'enable', units.canonicalRuntime]);
   command('systemctl', ['--user', 'enable', units.canonicalConnector]);
