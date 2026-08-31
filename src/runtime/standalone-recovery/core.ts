@@ -14,6 +14,12 @@ import {
 } from '../root/service';
 import { systemdUserUnitName, systemdUserUnitPath } from '../../cli/controller/systemd-user';
 import {
+  openAiSecureTunnelConnectArgs,
+  openAiSecureTunnelStatusArgs,
+  parseOpenAiSecureTunnelRuntimeStatus,
+  type OpenAiSecureTunnelRuntimeObservation,
+} from '../../cli/mcp/openai-secure-tunnel';
+import {
   renderPackageRuntimeSystemdUserService,
   writePackageRuntimeSystemdUserService,
 } from '../root/package-runtime-service';
@@ -39,15 +45,35 @@ import {
 } from '../../cli/repositories/controller-home';
 
 /** Standalone recovery reads only canonical Runtime observation and whole-release authority. */
-export interface PublicTunnelServiceConfig {
-  platform: 'launchd';
-  label: string;
-  plistPath?: string;
+interface PublicTunnelRecoveryPolicy {
   minimumFailures?: number;
   minimumFailureDurationMs?: number;
   cooldownMs?: number;
   postRestartVerifyTimeoutMs?: number;
 }
+
+export interface LaunchdPublicTunnelServiceConfig extends PublicTunnelRecoveryPolicy {
+  platform: 'launchd';
+  label: string;
+  plistPath?: string;
+}
+
+export interface OpenAiSecureTunnelServiceConfig extends PublicTunnelRecoveryPolicy {
+  platform: 'openai-secure-tunnel';
+  /** Stable tunnel-client runtime identity. Recovery must not repoint another alias. */
+  alias: string;
+  /** Non-secret OpenAI tunnel identity. */
+  tunnelId: string;
+  /** Loopback MCP endpoint owned by the local service behind this tunnel. */
+  mcpServerUrl: string;
+  /** Secret reference only (env:NAME or file:/absolute/path). Recovery never reads the secret. */
+  runtimeApiKeyRef?: string;
+  profile?: string;
+  profileDir?: string;
+  adminProfile?: string;
+}
+
+export type PublicTunnelServiceConfig = LaunchdPublicTunnelServiceConfig | OpenAiSecureTunnelServiceConfig;
 
 export interface PrimaryRuntimeServiceConfig {
   platform: 'launchd' | 'systemd-user';
@@ -61,10 +87,7 @@ export interface PrimaryRuntimeServiceConfig {
   postRestartVerifyTimeoutMs?: number;
 }
 
-export interface PrimaryConnectorServiceConfig {
-  platform: 'launchd';
-  label: string;
-  plistPath?: string;
+interface PrimaryConnectorRecoveryPolicy {
   /** Local OAuth MCP endpoint used to distinguish Connector failure from tunnel failure. */
   localMcpUrl?: string;
   minimumFailures?: number;
@@ -73,6 +96,20 @@ export interface PrimaryConnectorServiceConfig {
   maximumRestartAttempts?: number;
   postRestartVerifyTimeoutMs?: number;
 }
+
+export interface LaunchdPrimaryConnectorServiceConfig extends PrimaryConnectorRecoveryPolicy {
+  platform: 'launchd';
+  label: string;
+  plistPath?: string;
+}
+
+export interface SystemdPrimaryConnectorServiceConfig extends PrimaryConnectorRecoveryPolicy {
+  platform: 'systemd-user';
+  /** Optional assertion. When present it must equal the package Connector label derived from Controller Home. */
+  label?: string;
+}
+
+export type PrimaryConnectorServiceConfig = LaunchdPrimaryConnectorServiceConfig | SystemdPrimaryConnectorServiceConfig;
 
 export interface RecoveryConfig {
   schemaVersion: 1;
@@ -463,7 +500,7 @@ function watchdogProbeComponent(name: string): RecoveryWatchdogDiagnosticEvidenc
   if (name === 'active_gateway') return 'gateway';
   if (name === 'recovery_gateway') return 'recovery_gateway';
   if (name === 'recovery_watchdog') return 'recovery_watchdog';
-  if (name === 'recovery_external_http') return 'recovery_tunnel';
+  if (name === 'recovery_external_http' || name === 'recovery_tunnel_runtime') return 'recovery_tunnel';
   return 'public_mcp';
 }
 
@@ -848,6 +885,84 @@ function runtimeHealthEndpoint(endpoint: string): string {
   return url.toString();
 }
 
+async function observeOpenAiTunnelRuntime(
+  configured: OpenAiSecureTunnelServiceConfig,
+  runCommand: CommandRunner = command,
+): Promise<OpenAiSecureTunnelRuntimeObservation> {
+  let args: string[];
+  try {
+    args = openAiSecureTunnelStatusArgs(configured.alias);
+  } catch (error) {
+    return {
+      ok: false, running: false, healthy: false, ready: false, identityMatches: false, endpointMatches: false,
+      alias: configured.alias, tunnelId: configured.tunnelId,
+      detail: error instanceof Error ? error.message : 'OpenAI tunnel runtime configuration is invalid',
+    };
+  }
+  const status = await runCommand('tunnel-client', args, 15_000);
+  if (!status.stdout.trim()) {
+    return {
+      ok: false, running: false, healthy: false, ready: false, identityMatches: false, endpointMatches: false,
+      alias: configured.alias, tunnelId: configured.tunnelId,
+      detail: status.stderr.trim() || 'OpenAI tunnel runtime status is unavailable',
+    };
+  }
+  return parseOpenAiSecureTunnelRuntimeStatus(status.stdout, {
+    alias: configured.alias, tunnelId: configured.tunnelId, mcpServerUrl: configured.mcpServerUrl,
+  });
+}
+
+async function observeOpenAiRecoveryTunnel(
+  config: RecoveryConfig,
+  runCommand: CommandRunner = command,
+): Promise<OpenAiSecureTunnelRuntimeObservation | undefined> {
+  const configured = configuredRecoveryTunnel(config);
+  if (!configured || configured.platform !== 'openai-secure-tunnel') return undefined;
+  return observeOpenAiTunnelRuntime(configured, runCommand);
+}
+
+async function ensureOpenAiTunnelRuntimeStarted(
+  configured: OpenAiSecureTunnelServiceConfig,
+  runCommand: CommandRunner = command,
+): Promise<{ ok: boolean; attempted: boolean; noOp?: boolean; detail: string; serviceLabel: string; serviceTarget: string }> {
+  const serviceLabel = configured.alias;
+  const serviceTarget = `tunnel-client:${configured.alias}`;
+  const observed = await observeOpenAiTunnelRuntime(configured, runCommand);
+  if (observed.ok) return { ok: true, attempted: false, noOp: true, detail: observed.detail, serviceLabel, serviceTarget };
+  if (observed.observedTunnelId && !observed.identityMatches) {
+    return { ok: false, attempted: false, noOp: true, detail: `OpenAI tunnel alias ${configured.alias} is already bound to a different tunnel id`, serviceLabel, serviceTarget };
+  }
+  if (observed.profilePath && !observed.endpointMatches) {
+    return { ok: false, attempted: false, noOp: true, detail: `OpenAI tunnel alias ${configured.alias} is already bound to a different MCP endpoint`, serviceLabel, serviceTarget };
+  }
+  let args: string[];
+  try {
+    args = openAiSecureTunnelConnectArgs({
+      alias: configured.alias,
+      tunnelId: configured.tunnelId,
+      mcpServerUrl: configured.mcpServerUrl,
+      runtimeApiKeyRef: configured.runtimeApiKeyRef,
+      profile: configured.profile,
+      profileDir: configured.profileDir,
+      adminProfile: configured.adminProfile,
+    });
+  } catch (error) {
+    return { ok: false, attempted: false, noOp: true, detail: error instanceof Error ? error.message : 'OpenAI tunnel runtime configuration is invalid', serviceLabel, serviceTarget };
+  }
+  const connected = await runCommand('tunnel-client', args, Math.max(30_000, configured.postRestartVerifyTimeoutMs ?? 20_000));
+  return connected.ok
+    ? { ok: true, attempted: true, detail: `OpenAI Secure MCP Tunnel runtime ${configured.alias} connect dispatched`, serviceLabel, serviceTarget }
+    : { ok: false, attempted: true, detail: `OpenAI Secure MCP Tunnel runtime connect failed: ${connected.stderr || connected.stdout || connected.status}`, serviceLabel, serviceTarget };
+}
+
+async function probeOpenAiRecoveryTunnel(
+  config: RecoveryConfig,
+  runCommand: CommandRunner = command,
+): Promise<{ ok: boolean; detail: string; value?: unknown } | undefined> {
+  const observed = await observeOpenAiRecoveryTunnel(config, runCommand);
+  return observed ? { ok: observed.ok, detail: observed.detail, value: observed } : undefined;
+}
+
 async function probeMcp(config: RecoveryConfig, transport: RecoveryHttpTransport): Promise<Record<string, { ok: boolean; detail: string; value?: unknown }>> {
   const url = config.publicMcpUrl ?? runtimeEndpoint(config);
   if (!url) return { mcp_initialize: { ok: false, detail: 'canonical Runtime MCP endpoint is unavailable' } };
@@ -926,6 +1041,11 @@ export async function verifyStableRuntime(
     const connectorReadinessEndpoint = config.primaryConnectorService?.localMcpUrl?.trim() || config.publicMcpUrl;
     probes.primary_connector_ready = await probePublicGatewayReadiness(transport, connectorReadinessEndpoint);
   }
+  const primaryTunnel = configuredPrimaryPublicTunnel(config);
+  if (primaryTunnel?.platform === 'openai-secure-tunnel') {
+    const observed = await observeOpenAiTunnelRuntime(primaryTunnel);
+    probes.primary_tunnel_runtime = { ok: observed.ok, detail: observed.detail, value: observed };
+  }
   const primaryConnectorLocal = await probePrimaryConnectorLocal(config, transport);
   if (primaryConnectorLocal) probes.primary_connector_local = primaryConnectorLocal;
   if (config.gateway) probes.recovery_gateway = await probe(transport, `http://${config.gateway.host}:${config.gateway.port}/health`);
@@ -943,6 +1063,8 @@ export async function verifyStableRuntime(
   };
   const recoveryPublicUrl = configuredRecoveryPublicUrl(config);
   if (recoveryPublicUrl) probes.recovery_external_http = await probeExternalMcp(transport, recoveryPublicUrl);
+  const recoveryTunnelRuntime = await probeOpenAiRecoveryTunnel(config);
+  if (recoveryTunnelRuntime) probes.recovery_tunnel_runtime = recoveryTunnelRuntime;
   if (options.probeMcpProtocol !== false) Object.assign(probes, await probeMcp(config, transport));
   const coreChecks = Object.entries(probes)
     .filter(([name]) => !name.startsWith('recovery_'))
@@ -1103,10 +1225,14 @@ export async function reconnectMain(config: RecoveryConfig): Promise<{ ok: boole
   // intentionally a bounded health/reconnect observation, never a rollout.
   const verified = await verifyStableRuntime(config);
   const publicProbe = verified.probes.external_mcp_http;
+  const primaryTunnel = configuredPrimaryPublicTunnel(config);
+  const remoteTransportOk = primaryTunnel?.platform === 'openai-secure-tunnel'
+    ? verified.probes.primary_tunnel_runtime?.ok === true
+    : (publicProbe?.ok === true || publicProbe?.status === 401);
   const ok = verified.probes.active_gateway?.ok === true
     && verified.probes.primary_connector_ready?.ok !== false
-    && (publicProbe?.ok === true || publicProbe?.status === 401);
-  audit(config, 'reconnect_main', { ok, externalStatus: publicProbe?.status });
+    && remoteTransportOk;
+  audit(config, 'reconnect_main', { ok, externalStatus: publicProbe?.status, primaryTunnelPlatform: primaryTunnel?.platform });
   return { ok, detail: ok ? 'canonical Runtime Gateway and primary endpoint are reachable; client session may refresh' : 'primary endpoint remains unavailable; recovery channel remains independent', verify: verified };
 }
 
@@ -1122,14 +1248,19 @@ async function verifyLocalRuntime(
     ...config,
     publicMcpUrl: undefined,
     recoveryPublicUrl: undefined,
+    recoveryTunnelService: undefined,
+    primaryPublicTunnelService: undefined,
     readOnlyTool: { name: STABLE_RECOVERY_READ_ONLY_TOOL.name, arguments: { ...STABLE_RECOVERY_READ_ONLY_TOOL.arguments } },
   }, createRecoveryHttpTransport(config.controllerHome), options);
 }
 
 function isExternalTunnelFailure(config: RecoveryConfig, verified: VerifyResult, localVerify: VerifyResult): boolean {
-  const external = verified.probes.recovery_external_http ?? verified.probes.external_mcp_http;
+  const configured = configuredRecoveryTunnel(config);
   const localRecoveryGatewayHealthy = localVerify.probes.recovery_gateway?.ok ?? true;
-  return Boolean(configuredRecoveryTunnel(config) && configuredRecoveryPublicUrl(config) && localVerify.ok && localRecoveryGatewayHealthy && external?.ok !== true);
+  if (!configured || !localVerify.ok || !localRecoveryGatewayHealthy) return false;
+  if (configured.platform === 'openai-secure-tunnel') return verified.probes.recovery_tunnel_runtime?.ok !== true;
+  const external = verified.probes.recovery_external_http ?? verified.probes.external_mcp_http;
+  return Boolean(configuredRecoveryPublicUrl(config) && external?.ok !== true);
 }
 
 export const WATCHDOG_RUNTIME_STARTUP_GRACE_MS = 60_000;
@@ -1585,14 +1716,55 @@ export interface PrimaryConnectorRecoveryDependencies {
   sleep?: (ms: number) => Promise<void>;
 }
 
-function primaryConnectorLaunchdService(config: RecoveryConfig, uid: number): LaunchdService | undefined {
+interface PrimaryConnectorServiceOwner {
+  platform: 'launchd' | 'systemd-user';
+  label: string;
+  target: string;
+  uid: number;
+  launchd?: LaunchdService;
+  unitName?: string;
+  unitPath?: string;
+}
+
+function primaryConnectorServiceOwner(
+  config: RecoveryConfig,
+  platform: NodeJS.Platform,
+  uid: number | undefined,
+): PrimaryConnectorServiceOwner | undefined {
   const configured = config.primaryConnectorService;
-  if (!configured || configured.platform !== 'launchd' || !configured.label.trim()) return undefined;
-  const label = configured.label.trim();
-  const plistPath = resolve(configured.plistPath ?? join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`));
-  if (!existsSync(plistPath)) return undefined;
-  const domain = `gui/${uid}`;
-  return { uid, domain, target: `${domain}/${label}`, label, plistPath };
+  if (!configured || uid === undefined) return undefined;
+  const paths = packageConnectorServicePaths(config.controllerHome);
+  if (configured.platform === 'launchd') {
+    if (platform !== 'darwin' || !configured.label.trim()) return undefined;
+    const label = configured.label.trim();
+    const plistPath = resolve(configured.plistPath ?? join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`));
+    if (!existsSync(plistPath)) return undefined;
+    const domain = `gui/${uid}`;
+    const launchd = { uid, domain, target: `${domain}/${label}`, label, plistPath };
+    return { platform: 'launchd', label, target: launchd.target, uid, launchd };
+  }
+  if (platform !== 'linux') return undefined;
+  if (configured.label?.trim() && configured.label.trim() !== paths.label) return undefined;
+  const unitName = systemdUserUnitName(paths.label);
+  return {
+    platform: 'systemd-user',
+    label: paths.label,
+    target: `systemd-user:${unitName}`,
+    uid,
+    unitName,
+    unitPath: systemdUserUnitPath(paths.label),
+  };
+}
+
+async function ensurePrimaryConnectorServiceStarted(
+  owner: PrimaryConnectorServiceOwner,
+  runCommand: CommandRunner,
+): Promise<{ ok: boolean; detail: string }> {
+  if (owner.platform === 'launchd') return ensureLaunchdServiceStarted(owner.launchd!, runCommand);
+  const restarted = await runCommand('systemctl', ['--user', 'restart', owner.unitName!], 15_000);
+  return restarted.ok
+    ? { ok: true, detail: owner.target }
+    : { ok: false, detail: `systemd-user restart failed: ${restarted.stderr || restarted.stdout || restarted.status}` };
 }
 
 async function probePrimaryConnectorLocal(
@@ -1606,24 +1778,31 @@ async function probePrimaryConnectorLocal(
 
 function activePackageConnectorReleaseBinding(config: RecoveryConfig): PackageConnectorReleaseBinding | undefined {
   const configured = config.primaryConnectorService;
-  if (!configured || configured.platform !== 'launchd' || !configured.localMcpUrl?.trim()) return undefined;
+  if (!configured || !configured.localMcpUrl?.trim()) return undefined;
   const authority = readRuntimeReleaseAuthority(config.controllerHome);
   if (!authority) return undefined;
   const releaseRoot = dirname(resolve(authority.active.manifestPath));
   const packageRoot = join(releaseRoot, 'package');
   const paths = packageConnectorServicePaths(config.controllerHome);
-  const configuredPlist = resolve(configured.plistPath ?? paths.installedPlistPath);
-  if (configured.label !== paths.label || configuredPlist !== resolve(paths.installedPlistPath)) return undefined;
+  if (configured.platform === 'launchd') {
+    const configuredPlist = resolve(configured.plistPath ?? paths.installedPlistPath);
+    if (configured.label !== paths.label || configuredPlist !== resolve(paths.installedPlistPath)) return undefined;
+  } else if (configured.label?.trim() && configured.label.trim() !== paths.label) {
+    return undefined;
+  }
   if (!existsSync(join(packageRoot, 'src', 'cli', 'index.ts')) || !existsSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'))) return undefined;
   return { releaseId: authority.active.releaseId, releaseRoot, packageRoot };
 }
 
-async function repairPrimaryConnectorBinding(config: RecoveryConfig): Promise<{ ok: boolean; attempted: boolean; noOp?: boolean; detail: string }> {
+async function repairPrimaryConnectorBinding(
+  config: RecoveryConfig,
+  platform: NodeJS.Platform = process.platform,
+): Promise<{ ok: boolean; attempted: boolean; noOp?: boolean; detail: string }> {
   const release = activePackageConnectorReleaseBinding(config);
   const endpoint = config.primaryConnectorService?.localMcpUrl?.trim();
   if (!release || !endpoint) return { ok: true, attempted: false, noOp: true, detail: 'primary Connector does not use the canonical package-release binding contract' };
   try {
-    const result = await ensurePackageConnectorService({ release, controllerHome: config.controllerHome, endpoint, platform: 'darwin' });
+    const result = await ensurePackageConnectorService({ release, controllerHome: config.controllerHome, endpoint, platform });
     const attempted = result.reused !== true;
     return {
       ok: true,
@@ -1640,7 +1819,7 @@ async function repairPrimaryConnectorBinding(config: RecoveryConfig): Promise<{ 
 
 async function probePrimaryConnectorOwnership(
   config: RecoveryConfig,
-  service: LaunchdService,
+  service: PrimaryConnectorServiceOwner,
   runCommand: CommandRunner = command,
 ): Promise<{ ok: boolean; detail: string }> {
   const localMcpUrl = config.primaryConnectorService?.localMcpUrl?.trim();
@@ -1654,11 +1833,18 @@ async function probePrimaryConnectorOwnership(
   } catch {
     return { ok: false, detail: `primary Connector local MCP endpoint has no verifiable TCP port: ${localMcpUrl}` };
   }
-  const printed = await runCommand('launchctl', ['print', service.target], 5_000);
-  const pidMatch = printed.ok ? printed.stdout.match(/\bpid\s*=\s*(\d+)/) : null;
-  const pid = pidMatch ? Number(pidMatch[1]) : undefined;
+  let pid: number | undefined;
+  if (service.platform === 'launchd') {
+    const printed = await runCommand('launchctl', ['print', service.target], 5_000);
+    const pidMatch = printed.ok ? printed.stdout.match(/\bpid\s*=\s*(\d+)/) : null;
+    pid = pidMatch ? Number(pidMatch[1]) : undefined;
+  } else {
+    const shown = await runCommand('systemctl', ['--user', 'show', '--property', 'MainPID', '--value', service.unitName!], 5_000);
+    const parsed = Number(shown.stdout.trim());
+    pid = shown.ok && Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+  }
   if (!pid || !Number.isInteger(pid)) {
-    return { ok: false, detail: `configured primary Connector launchd service has no live pid: ${service.target}` };
+    return { ok: false, detail: `configured primary Connector ${service.platform} service has no live pid: ${service.target}` };
   }
   const listening = await runCommand('lsof', ['-nP', '-a', '-p', String(pid), `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], 5_000);
   const listenerPids = listening.stdout.split(/\s+/).map((value) => Number(value)).filter(Number.isInteger);
@@ -1695,13 +1881,11 @@ export async function restartPrimaryConnector(
       verify: initialLocal,
     };
   }
-  if ((dependencies.platform ?? process.platform) !== 'darwin') {
-    return { ok: false, attempted: false, noOp: true, detail: 'primary Connector restart currently requires the configured macOS launchd service', verify: initialLocal };
-  }
+  const platform = dependencies.platform ?? process.platform;
   const uid = await (dependencies.currentUid ?? currentUid)();
-  const service = uid === undefined ? undefined : primaryConnectorLaunchdService(config, uid);
+  const service = primaryConnectorServiceOwner(config, platform, uid);
   if (!service) {
-    return { ok: false, attempted: false, noOp: true, detail: 'primary Connector launchd service is not configured or installed', verify: initialLocal };
+    return { ok: false, attempted: false, noOp: true, detail: `primary Connector ${config.primaryConnectorService?.platform ?? 'service'} is not configured for ${platform}`, verify: initialLocal };
   }
   const reconnect = dependencies.reconnect ?? reconnectMain;
   const probeConnectorLocal = dependencies.probeConnectorLocal ?? probePrimaryConnectorLocal;
@@ -1713,7 +1897,7 @@ export async function restartPrimaryConnector(
   const timeoutMs = config.primaryConnectorService?.postRestartVerifyTimeoutMs ?? 30_000;
   const locked = await withLock(config, { action: 'restart_primary_connector', requestId: dependencies.requestId }, async () => {
     const tunnelConfigured = Boolean(configuredPrimaryPublicTunnel(config));
-    const repairConnectorBinding = dependencies.repairConnectorBinding ?? repairPrimaryConnectorBinding;
+    const repairConnectorBinding = dependencies.repairConnectorBinding ?? ((candidateConfig: RecoveryConfig) => repairPrimaryConnectorBinding(candidateConfig, platform));
     const bindingRepair = await repairConnectorBinding(config);
     if (bindingRepair.attempted) {
       audit(config, bindingRepair.ok ? 'primary_connector_binding_repaired' : 'primary_connector_binding_repair_failed', { detail: bindingRepair.detail });
@@ -1742,7 +1926,7 @@ export async function restartPrimaryConnector(
     // restart and repair the public hop directly.
     const restartConnector = !localConnector?.ok || !connectorOwnership?.ok || !tunnelConfigured;
     if (restartConnector) {
-      const restarted = await ensureLaunchdServiceStarted(service, runCommand);
+      const restarted = await ensurePrimaryConnectorServiceStarted(service, runCommand);
       if (!restarted.ok) {
         audit(config, 'primary_connector_restart_failed', { serviceTarget: service.target, detail: restarted.detail });
         return { ok: false, attempted: true, detail: restarted.detail, serviceTarget: service.target, verify: initialLocal } satisfies PrimaryConnectorRestartResult;
@@ -1764,7 +1948,7 @@ export async function restartPrimaryConnector(
           ok: false,
           attempted: true,
           detail: localConnector.ok
-            ? 'primary Connector restarted but the configured launchd service does not own its local MCP listener'
+            ? `primary Connector restarted but the configured ${service.platform} service does not own its local MCP listener`
             : 'primary Connector restarted but its local MCP endpoint did not recover before timeout',
           serviceTarget: service.target,
           verify: initialLocal,
@@ -1773,30 +1957,38 @@ export async function restartPrimaryConnector(
     }
 
     observed ??= await reconnect(config);
-    if (!observed.ok && localConnector?.ok && connectorOwnership?.ok && configuredPrimaryPublicTunnel(config)) {
-      const tunnel = primaryPublicTunnelService(config, service.uid);
-      if (tunnel) {
-        const tunnelRestarted = await ensureLaunchdServiceStarted(tunnel, dependencies.runCommand ?? command);
-        if (!tunnelRestarted.ok) {
-          audit(config, 'primary_public_tunnel_restart_failed', { serviceTarget: tunnel.target, detail: tunnelRestarted.detail });
-          return {
-            ok: false,
-            attempted: true,
-            detail: `primary Connector is locally healthy but public tunnel restart failed: ${tunnelRestarted.detail}`,
-            serviceTarget: service.target,
-            verify: observed.verify,
-          } satisfies PrimaryConnectorRestartResult;
+    const primaryTunnel = configuredPrimaryPublicTunnel(config);
+    if (!observed.ok && localConnector?.ok && connectorOwnership?.ok && primaryTunnel) {
+      let tunnelRestarted: { ok: boolean; attempted: boolean; detail: string; serviceTarget: string } | undefined;
+      if (primaryTunnel.platform === 'launchd') {
+        const tunnel = primaryPublicTunnelService(config, service.uid);
+        if (tunnel) {
+          const result = await ensureLaunchdServiceStarted(tunnel, runCommand);
+          tunnelRestarted = { ok: result.ok, attempted: true, detail: result.detail, serviceTarget: tunnel.target };
         }
-        const tunnelDeadline = now() + (configuredPrimaryPublicTunnel(config)?.postRestartVerifyTimeoutMs ?? 20_000);
-        while (!observed.ok && now() < tunnelDeadline) {
-          await wait(1_000);
-          observed = await reconnect(config);
-        }
-        audit(config, observed.ok ? 'primary_public_tunnel_restart_succeeded' : 'primary_public_tunnel_restart_unverified', {
-          serviceTarget: tunnel.target,
-          detail: observed.detail,
-        });
+      } else {
+        tunnelRestarted = await ensureOpenAiTunnelRuntimeStarted(primaryTunnel, runCommand);
       }
+      if (!tunnelRestarted?.ok) {
+        const detail = tunnelRestarted?.detail ?? 'primary public tunnel service configuration is invalid or unavailable';
+        audit(config, 'primary_public_tunnel_restart_failed', { serviceTarget: tunnelRestarted?.serviceTarget, detail });
+        return {
+          ok: false,
+          attempted: tunnelRestarted?.attempted ?? false,
+          detail: `primary Connector is locally healthy but public tunnel restart failed: ${detail}`,
+          serviceTarget: service.target,
+          verify: observed.verify,
+        } satisfies PrimaryConnectorRestartResult;
+      }
+      const tunnelDeadline = now() + (primaryTunnel.postRestartVerifyTimeoutMs ?? 20_000);
+      while (!observed.ok && now() < tunnelDeadline) {
+        await wait(1_000);
+        observed = await reconnect(config);
+      }
+      audit(config, observed.ok ? 'primary_public_tunnel_restart_succeeded' : 'primary_public_tunnel_restart_unverified', {
+        serviceTarget: tunnelRestarted.serviceTarget,
+        detail: observed.detail,
+      });
     } else {
       const deadline = now() + timeoutMs;
       while (!observed.ok && now() < deadline) {
@@ -2726,53 +2918,125 @@ export async function repairPublicTunnel(config: RecoveryConfig, dependencies: P
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
   const now = dependencies.now ?? Date.now;
   const wait = dependencies.sleep ?? sleep;
+  const runCommand = dependencies.runCommand ?? command;
   const initial = await verify(config);
   const configured = configuredRecoveryTunnel(config);
   if (!configured) return { ok: false, attempted: false, noOp: true, detail: 'public tunnel repair is not configured', verify: initial };
   const localVerify = await verifyLocal(config);
+  const tunnelProbe = configured.platform === 'openai-secure-tunnel'
+    ? initial.probes.recovery_tunnel_runtime
+    : (initial.probes.recovery_external_http ?? initial.probes.external_mcp_http);
   if (!isExternalTunnelFailure(config, initial, localVerify)) {
-    return { ok: (initial.probes.recovery_external_http ?? initial.probes.external_mcp_http)?.ok === true, attempted: false, noOp: true, detail: 'Recovery tunnel repair requires a healthy local runtime and failed Recovery external endpoint', verify: initial, localVerify };
+    return { ok: tunnelProbe?.ok === true, attempted: false, noOp: true, detail: 'Recovery tunnel repair requires a healthy local runtime and failed managed Recovery tunnel', verify: initial, localVerify };
   }
-  if ((dependencies.platform ?? process.platform) !== 'darwin') {
-    return { ok: false, attempted: false, noOp: true, detail: 'public tunnel repair is only supported for explicitly configured launchd services', verify: initial, localVerify };
+
+  let serviceLabel: string;
+  let serviceTarget: string;
+  let launchdService: LaunchdService | undefined;
+  if (configured.platform === 'launchd') {
+    if ((dependencies.platform ?? process.platform) !== 'darwin') {
+      return { ok: false, attempted: false, noOp: true, detail: 'configured launchd public tunnel can only be repaired on macOS', verify: initial, localVerify };
+    }
+    const uid = await (dependencies.currentUid ?? currentUid)();
+    launchdService = uid === undefined ? undefined : recoveryTunnelService(config, uid);
+    if (!launchdService) return { ok: false, attempted: false, noOp: true, detail: 'public tunnel launchd configuration is invalid or unavailable', verify: initial, localVerify };
+    serviceLabel = launchdService.label;
+    serviceTarget = launchdService.target;
+  } else {
+    serviceLabel = configured.alias;
+    serviceTarget = `tunnel-client:${configured.alias}`;
+    const observed = await observeOpenAiRecoveryTunnel(config, runCommand);
+    if (observed?.observedTunnelId && !observed.identityMatches) {
+      return { ok: false, attempted: false, noOp: true, detail: `OpenAI tunnel alias ${configured.alias} is already bound to a different tunnel id`, serviceLabel, serviceTarget, verify: initial, localVerify };
+    }
+    if (observed?.profilePath && !observed.endpointMatches) {
+      return { ok: false, attempted: false, noOp: true, detail: `OpenAI tunnel alias ${configured.alias} is already bound to a different MCP endpoint`, serviceLabel, serviceTarget, verify: initial, localVerify };
+    }
   }
-  const uid = await (dependencies.currentUid ?? currentUid)();
-  const service = uid === undefined ? undefined : recoveryTunnelService(config, uid);
-  if (!service) return { ok: false, attempted: false, noOp: true, detail: 'public tunnel launchd configuration is invalid or unavailable', verify: initial, localVerify };
+
   if (!tunnelRepairAllowed(config, now())) {
-    return { ok: false, attempted: false, noOp: true, detail: 'public tunnel repair is in cooldown', serviceLabel: service.label, serviceTarget: service.target, verify: initial, localVerify };
+    return { ok: false, attempted: false, noOp: true, detail: 'public tunnel repair is in cooldown', serviceLabel, serviceTarget, verify: initial, localVerify };
   }
+
   const locked = await withLock(config, { action: 'repair_public_tunnel' }, async () => {
     // Recheck after acquiring ownership so a concurrent watchdog never causes a restart storm.
     const before = await verify(config);
     const localBefore = await verifyLocal(config);
     if (!isExternalTunnelFailure(config, before, localBefore)) {
-      return { ok: (before.probes.recovery_external_http ?? before.probes.external_mcp_http)?.ok === true, attempted: false, noOp: true, detail: 'Recovery tunnel recovered before restart', serviceLabel: service.label, serviceTarget: service.target, verify: before, localVerify: localBefore };
+      const recoveredProbe = configured.platform === 'openai-secure-tunnel'
+        ? before.probes.recovery_tunnel_runtime
+        : (before.probes.recovery_external_http ?? before.probes.external_mcp_http);
+      return { ok: recoveredProbe?.ok === true, attempted: false, noOp: true, detail: 'Recovery tunnel recovered before restart', serviceLabel, serviceTarget, verify: before, localVerify: localBefore };
     }
-    writeJson(publicTunnelRepairStatePath(config), { lastAttemptAt: now(), serviceLabel: service.label });
-    const started = await ensureLaunchdServiceStarted(service, dependencies.runCommand ?? command);
-    if (!started.ok) {
-      audit(config, 'public_tunnel_restart_failed', { serviceLabel: service.label, detail: started.detail });
-      return { ok: false, attempted: true, detail: started.detail, serviceLabel: service.label, serviceTarget: service.target, verify: before, localVerify: localBefore };
+    writeJson(publicTunnelRepairStatePath(config), { lastAttemptAt: now(), serviceLabel, serviceTarget });
+
+    if (configured.platform === 'launchd') {
+      const started = await ensureLaunchdServiceStarted(launchdService!, runCommand);
+      if (!started.ok) {
+        audit(config, 'public_tunnel_restart_failed', { serviceLabel, serviceTarget, detail: started.detail });
+        return { ok: false, attempted: true, detail: started.detail, serviceLabel, serviceTarget, verify: before, localVerify: localBefore };
+      }
+    } else {
+      const observed = await observeOpenAiRecoveryTunnel(config, runCommand);
+      if (observed?.observedTunnelId && !observed.identityMatches) {
+        const detail = `OpenAI tunnel alias ${configured.alias} changed ownership to ${observed.observedTunnelId}; refusing to repoint it`;
+        audit(config, 'public_tunnel_restart_failed', { serviceLabel, serviceTarget, detail });
+        return { ok: false, attempted: false, noOp: true, detail, serviceLabel, serviceTarget, verify: before, localVerify: localBefore };
+      }
+      if (observed?.profilePath && !observed.endpointMatches) {
+        const detail = `OpenAI tunnel alias ${configured.alias} targets a different MCP endpoint; refusing to repoint it`;
+        audit(config, 'public_tunnel_restart_failed', { serviceLabel, serviceTarget, detail });
+        return { ok: false, attempted: false, noOp: true, detail, serviceLabel, serviceTarget, verify: before, localVerify: localBefore };
+      }
+      let args: string[];
+      try {
+        args = openAiSecureTunnelConnectArgs({
+          alias: configured.alias,
+          tunnelId: configured.tunnelId,
+          mcpServerUrl: configured.mcpServerUrl,
+          runtimeApiKeyRef: configured.runtimeApiKeyRef,
+          profile: configured.profile,
+          profileDir: configured.profileDir,
+          adminProfile: configured.adminProfile,
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : 'OpenAI tunnel runtime configuration is invalid';
+        audit(config, 'public_tunnel_restart_failed', { serviceLabel, serviceTarget, detail });
+        return { ok: false, attempted: false, noOp: true, detail, serviceLabel, serviceTarget, verify: before, localVerify: localBefore };
+      }
+      const connected = await runCommand('tunnel-client', args, Math.max(30_000, configured.postRestartVerifyTimeoutMs ?? 20_000));
+      if (!connected.ok) {
+        const detail = `OpenAI Secure MCP Tunnel runtime connect failed: ${connected.stderr || connected.stdout || connected.status}`;
+        audit(config, 'public_tunnel_restart_failed', { serviceLabel, serviceTarget, detail });
+        return { ok: false, attempted: true, detail, serviceLabel, serviceTarget, verify: before, localVerify: localBefore };
+      }
     }
+
     const timeoutMs = configured.postRestartVerifyTimeoutMs ?? 20_000;
     const deadline = now() + timeoutMs;
     let after = before;
     while (now() < deadline) {
       await wait(1_000);
+      if (configured.platform === 'openai-secure-tunnel') {
+        const observed = await observeOpenAiRecoveryTunnel(config, runCommand);
+        if (!observed?.ok) continue;
+      }
       after = await verify(config);
-      if ((after.probes.recovery_external_http ?? after.probes.external_mcp_http)?.ok === true) {
-        audit(config, 'public_tunnel_restart_succeeded', { serviceLabel: service.label, serviceTarget: service.target });
-        return { ok: true, attempted: true, detail: 'public tunnel service restarted and external endpoint verified', serviceLabel: service.label, serviceTarget: service.target, verify: after, localVerify: await verifyLocal(config) };
+      const recovered = configured.platform === 'openai-secure-tunnel'
+        ? after.probes.recovery_tunnel_runtime?.ok === true
+        : (after.probes.recovery_external_http ?? after.probes.external_mcp_http)?.ok === true;
+      if (recovered) {
+        audit(config, 'public_tunnel_restart_succeeded', { serviceLabel, serviceTarget });
+        return { ok: true, attempted: true, detail: 'public tunnel service restarted and external tunnel readiness verified', serviceLabel, serviceTarget, verify: after, localVerify: await verifyLocal(config) };
       }
     }
-    audit(config, 'public_tunnel_restart_unverified', { serviceLabel: service.label, serviceTarget: service.target });
-    return { ok: false, attempted: true, detail: 'public tunnel service restarted but external endpoint did not recover before timeout', serviceLabel: service.label, serviceTarget: service.target, verify: after, localVerify: await verifyLocal(config) };
+    after = await verify(config);
+    audit(config, 'public_tunnel_restart_unverified', { serviceLabel, serviceTarget });
+    return { ok: false, attempted: true, detail: 'public tunnel service restarted but external tunnel readiness did not recover before timeout', serviceLabel, serviceTarget, verify: after, localVerify: await verifyLocal(config) };
   });
-  if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), serviceLabel: service.label, serviceTarget: service.target, verify: initial, localVerify };
+  if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), serviceLabel, serviceTarget, verify: initial, localVerify };
   return locked.value;
 }
-
 
 export interface RecoveryGatewayRestartResult {
   ok: boolean;
@@ -3033,14 +3297,14 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   const primaryConnectorConfigured = Boolean(config.primaryConnectorService);
   const primaryConnectorLocalFailed = verified.probes.primary_connector_local?.ok === false;
   const primaryConnectorCapacityFailed = connectorCapacityRecoveryRecommended(verified);
-  const primaryPublicTransportManaged = Boolean(configuredPrimaryPublicTunnel(config));
+  const primaryPublicTunnel = configuredPrimaryPublicTunnel(config);
+  const primaryPublicTransportManaged = Boolean(primaryPublicTunnel);
   const primaryPublicTransportFailed = Boolean(
-    config.publicMcpUrl
-    && primaryRuntimeHealthy
+    primaryRuntimeHealthy
     && !primaryConnectorCapacityFailed
     && (
-      verified.probes.external_mcp_http?.ok === false
-      || verified.probes.primary_connector_ready?.ok === false
+      (primaryPublicTunnel?.platform === 'openai-secure-tunnel' && verified.probes.primary_tunnel_runtime?.ok === false)
+      || (Boolean(config.publicMcpUrl) && (verified.probes.external_mcp_http?.ok === false || verified.probes.primary_connector_ready?.ok === false))
     ),
   );
   const primaryConnectorFailed = Boolean(

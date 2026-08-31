@@ -5,6 +5,7 @@ import { loadMcpServiceLocalConfig } from '../mcp/auth';
 import { resolveControllerHome } from '../repositories/controller-home';
 import { observeRuntimeStatus } from '../../runtime/root/status';
 import { dirname, join, resolve } from 'path';
+import { openAiSecureTunnelStatusArgs, parseOpenAiSecureTunnelRuntimeStatus, tunnelRuntimeProfileTargetsEndpoint } from '../mcp/openai-secure-tunnel';
 
 export type SetupControllerKind = 'chatgpt' | 'codex' | 'claude' | 'mcp';
 export type SetupTunnelProvider = 'auto' | 'openai' | 'cloudflare' | 'tailscale' | 'existing' | 'none';
@@ -220,11 +221,6 @@ function isLoopbackMcpEndpoint(value: string | undefined): value is string {
   }
 }
 
-function tunnelRuntimeProfileTargetsEndpoint(profilePath: string | undefined, endpoint: string): boolean {
-  if (!profilePath) return false;
-  try { return readFileSync(profilePath, 'utf8').includes(endpoint); } catch { return false; }
-}
-
 export interface ControllerGuidance {
   controller: SetupControllerKind;
   ready: boolean;
@@ -393,13 +389,11 @@ export function resolveTunnelGuidance(
     }
     const aliases = Array.from(new Set([...configuredAliases, preferredAlias]));
     for (const alias of aliases) {
-      const status = spawnSync('tunnel-client', ['runtimes', 'status', alias, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, env: options.env ?? process.env });
+      const status = spawnSync('tunnel-client', openAiSecureTunnelStatusArgs(alias), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, env: options.env ?? process.env });
       if (status.status !== 0) continue;
       try {
-        const value = JSON.parse(status.stdout || '{}') as { process_running?: boolean; healthy?: boolean; ready?: boolean; tunnel_id?: string; profile_path?: string };
-        if (value.process_running === true && value.healthy === true && value.ready === true
-          && value.tunnel_id === profile.tunnel.tunnelId
-          && tunnelRuntimeProfileTargetsEndpoint(value.profile_path, localEndpoint)) {
+        const value = parseOpenAiSecureTunnelRuntimeStatus(status.stdout || '{}', { alias, tunnelId: profile.tunnel.tunnelId, mcpServerUrl: localEndpoint });
+        if (value.ok) {
           return {
             provider, ready: true, title: 'OpenAI Secure MCP Tunnel',
             detail: `Managed runtime ${alias} is running, healthy, and bound to ${profile.tunnel.tunnelId} -> ${localEndpoint}.`,

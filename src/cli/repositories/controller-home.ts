@@ -135,6 +135,112 @@ export function rollbackStoppedRepoLocalControllerHomeStorage(migration: Control
   renameSync(physicalHome, logicalHome);
 }
 
+
+export interface StoppedControllerHomeAuthorityRelocation {
+  migrated: boolean;
+  sourceHome: string;
+  destinationHome: string;
+  archivedDestinationHome?: string;
+}
+
+function directoryEntryExists(path: string): boolean {
+  try { lstatSync(path); return true; } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/**
+ * Atomically relocate one fully stopped Controller Home to a new durable path.
+ * The caller owns liveness fencing and must prove Runtime, Connector, Recovery
+ * Gateway, Recovery Watchdog, and any other writers are stopped before calling.
+ *
+ * Existing destination contents are never merged. A caller that has already
+ * proven the destination is an authority-free shell may request archival; the
+ * entire shell is renamed aside so rollback can restore it byte-for-byte.
+ */
+export function relocateStoppedControllerHomeAuthority(input: {
+  sourceHome: string;
+  destinationHome: string;
+  archiveExistingDestination?: boolean;
+  archiveSuffix?: string;
+}): StoppedControllerHomeAuthorityRelocation {
+  const sourceHome = resolve(input.sourceHome);
+  const destinationHome = resolve(input.destinationHome);
+  if (sourceHome === destinationHome) throw new Error('CONTROLLER_HOME_RELOCATION_SAME_HOME');
+  if (!directoryEntryExists(sourceHome)) throw new Error(`CONTROLLER_HOME_RELOCATION_SOURCE_MISSING: ${sourceHome}`);
+  const sourceStat = lstatSync(sourceHome);
+  if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) {
+    throw new Error(`CONTROLLER_HOME_RELOCATION_SOURCE_UNSUPPORTED: ${sourceHome}`);
+  }
+  mkdirSync(dirname(destinationHome), { recursive: true });
+
+  let archivedDestinationHome: string | undefined;
+  if (directoryEntryExists(destinationHome)) {
+    const destinationStat = lstatSync(destinationHome);
+    if (!destinationStat.isDirectory() || destinationStat.isSymbolicLink()) {
+      throw new Error(`CONTROLLER_HOME_RELOCATION_DESTINATION_UNSUPPORTED: ${destinationHome}`);
+    }
+    if (!input.archiveExistingDestination) {
+      throw new Error(`CONTROLLER_HOME_RELOCATION_DESTINATION_EXISTS: ${destinationHome}`);
+    }
+    const suffix = input.archiveSuffix?.trim() || `${Date.now()}-${process.pid}`;
+    if (!/^[A-Za-z0-9._-]{1,120}$/.test(suffix)) throw new Error('CONTROLLER_HOME_RELOCATION_ARCHIVE_SUFFIX_INVALID');
+    archivedDestinationHome = `${destinationHome}.pre-migration-${suffix}`;
+    if (directoryEntryExists(archivedDestinationHome)) {
+      throw new Error(`CONTROLLER_HOME_RELOCATION_ARCHIVE_EXISTS: ${archivedDestinationHome}`);
+    }
+    renameSync(destinationHome, archivedDestinationHome);
+  }
+
+  try {
+    renameSync(sourceHome, destinationHome);
+    if (directoryEntryExists(sourceHome) || !lstatSync(destinationHome).isDirectory()) {
+      throw new Error('CONTROLLER_HOME_RELOCATION_POSTCHECK_FAILED');
+    }
+    return {
+      migrated: true,
+      sourceHome,
+      destinationHome,
+      ...(archivedDestinationHome ? { archivedDestinationHome } : {}),
+    };
+  } catch (error) {
+    try {
+      if (!directoryEntryExists(sourceHome) && directoryEntryExists(destinationHome)) renameSync(destinationHome, sourceHome);
+      if (archivedDestinationHome && !directoryEntryExists(destinationHome) && directoryEntryExists(archivedDestinationHome)) {
+        renameSync(archivedDestinationHome, destinationHome);
+      }
+    } catch {
+      throw new Error(`CONTROLLER_HOME_RELOCATION_ROLLBACK_FAILED: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    throw error;
+  }
+}
+
+/** Caller must keep all Controller Home writers stopped until rollback completes. */
+export function rollbackStoppedControllerHomeAuthorityRelocation(
+  relocation: StoppedControllerHomeAuthorityRelocation,
+): void {
+  if (!relocation.migrated) return;
+  const sourceHome = resolve(relocation.sourceHome);
+  const destinationHome = resolve(relocation.destinationHome);
+  const archivedDestinationHome = relocation.archivedDestinationHome ? resolve(relocation.archivedDestinationHome) : undefined;
+  if (directoryEntryExists(sourceHome)) throw new Error(`CONTROLLER_HOME_RELOCATION_ROLLBACK_SOURCE_EXISTS: ${sourceHome}`);
+  if (!directoryEntryExists(destinationHome) || !lstatSync(destinationHome).isDirectory()) {
+    throw new Error(`CONTROLLER_HOME_RELOCATION_ROLLBACK_DESTINATION_MISSING: ${destinationHome}`);
+  }
+  if (archivedDestinationHome && !directoryEntryExists(archivedDestinationHome)) {
+    throw new Error(`CONTROLLER_HOME_RELOCATION_ROLLBACK_ARCHIVE_MISSING: ${archivedDestinationHome}`);
+  }
+  renameSync(destinationHome, sourceHome);
+  try {
+    if (archivedDestinationHome) renameSync(archivedDestinationHome, destinationHome);
+  } catch (error) {
+    try { if (!directoryEntryExists(destinationHome) && directoryEntryExists(sourceHome)) renameSync(sourceHome, destinationHome); } catch { /* best effort */ }
+    throw new Error(`CONTROLLER_HOME_RELOCATION_ROLLBACK_RESTORE_FAILED: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 export function ensureControllerHome(explicit?: string): string {
   const home = ensureControllerHomeStorage(resolveControllerHome(explicit));
   for (const child of ['', 'repositories', 'system', 'locks', 'indexes', 'audit', 'mcp', 'sessions', 'work-handles']) {

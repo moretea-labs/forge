@@ -16,6 +16,7 @@ import {
   listReleases,
   recoverPrimaryRuntime,
   recordWatchdogRuntimeHealthy,
+  repairPublicTunnel,
   restartPrimaryConnector,
   restartPrimaryRuntime,
   restartRecoveryGateway,
@@ -499,6 +500,48 @@ test('standalone Recovery restarts only the configured primary Connector service
   expect(commands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
 });
 
+test('standalone Recovery restarts the canonical Linux systemd-user primary Connector without launchd', async () => {
+  const home = controllerHome();
+  const config = createRecoveryConfig(home, {
+    publicMcpUrl: 'https://mcp.example.test/mcp',
+    primaryConnectorService: {
+      platform: 'systemd-user',
+      localMcpUrl: 'http://127.0.0.1:8767/mcp',
+      postRestartVerifyTimeoutMs: 5_000,
+    },
+  });
+  let localProbeCalls = 0;
+  let clock = 0;
+  const commands: string[][] = [];
+  const result = await restartPrimaryConnector(config, {
+    platform: 'linux',
+    currentUid: async () => 1000,
+    verifyLocal: async () => healthyVerify(),
+    repairConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'binding current' }),
+    probeConnectorLocal: async () => {
+      localProbeCalls += 1;
+      return localProbeCalls >= 2
+        ? { ok: true, detail: 'HTTP 401 OAuth challenge', status: 401 }
+        : { ok: false, detail: 'connection refused' };
+    },
+    reconnect: async () => ({ ok: true, detail: 'public MCP reachable', verify: healthyVerify() }),
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    runCommand: async (name, args) => {
+      commands.push([name, ...args]);
+      if (name === 'systemctl' && args.includes('restart')) return { ok: true, status: 0, stdout: '', stderr: '' };
+      if (name === 'systemctl' && args.includes('MainPID')) return { ok: true, status: 0, stdout: '4242\n', stderr: '' };
+      if (name === 'lsof') return { ok: true, status: 0, stdout: '4242\n', stderr: '' };
+      throw new Error(`unexpected command ${name} ${args.join(' ')}`);
+    },
+  });
+  expect(result).toMatchObject({ ok: true, attempted: true });
+  expect(commands.some((entry) => entry[0] === 'systemctl' && entry[1] === '--user' && entry[2] === 'restart')).toBe(true);
+  expect(commands.some((entry) => entry[0] === 'systemctl' && entry.includes('MainPID'))).toBe(true);
+  expect(commands.some((entry) => entry[0] === 'lsof' && entry.includes('4242'))).toBe(true);
+  expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);
+});
+
 test('standalone Recovery repairs a failed Connector when only the Connector loopback probe is unhealthy', async () => {
   const home = controllerHome();
   const plistPath = join(home, 'connector.plist');
@@ -640,6 +683,180 @@ test('standalone Recovery restarts the configured primary public tunnel when the
   expect(commands).not.toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
   expect(commands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.cloudflare.cloudflared']);
   expect(reconnectCalls).toBe(2);
+});
+
+test('standalone Recovery repairs a Linux primary OpenAI Secure MCP Tunnel without restarting a healthy Connector', async () => {
+  const home = controllerHome();
+  const connectorEndpoint = 'http://127.0.0.1:8767/mcp';
+  const tunnelId = 'tunnel_abcdef0123456789abcdef0123456789';
+  const config = createRecoveryConfig(home, {
+    publicMcpUrl: 'https://mcp.example.test/mcp',
+    primaryConnectorService: {
+      platform: 'systemd-user',
+      localMcpUrl: connectorEndpoint,
+      postRestartVerifyTimeoutMs: 5_000,
+    },
+    primaryPublicTunnelService: {
+      platform: 'openai-secure-tunnel',
+      alias: 'forge',
+      tunnelId,
+      mcpServerUrl: connectorEndpoint,
+      runtimeApiKeyRef: 'env:FORGE_TUNNEL_RUNTIME_KEY',
+      postRestartVerifyTimeoutMs: 5_000,
+    },
+  });
+  let reconnectCalls = 0;
+  let tunnelConnected = false;
+  let clock = 0;
+  const commands: string[][] = [];
+  const result = await restartPrimaryConnector(config, {
+    platform: 'linux',
+    currentUid: async () => 1000,
+    verifyLocal: async () => healthyVerify(),
+    repairConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'binding current' }),
+    probeConnectorLocal: async () => ({ ok: true, detail: 'HTTP 401 OAuth challenge', status: 401 }),
+    reconnect: async () => {
+      reconnectCalls += 1;
+      return reconnectCalls >= 2
+        ? { ok: true, detail: 'public MCP reachable', verify: healthyVerify() }
+        : { ok: false, detail: 'public tunnel unavailable', verify: { ...healthyVerify(), ok: false } };
+    },
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    runCommand: async (name, args) => {
+      commands.push([name, ...args]);
+      if (name === 'systemctl' && args.includes('MainPID')) return { ok: true, status: 0, stdout: '4242\n', stderr: '' };
+      if (name === 'lsof') return { ok: true, status: 0, stdout: '4242\n', stderr: '' };
+      if (name === 'tunnel-client' && args[0] === 'runtimes' && args[1] === 'status') {
+        return tunnelConnected
+          ? { ok: true, status: 0, stdout: JSON.stringify({ process_running: true, healthy: true, ready: true, tunnel_id: tunnelId }), stderr: '' }
+          : { ok: false, status: 1, stdout: '', stderr: 'stopped' };
+      }
+      if (name === 'tunnel-client' && args[0] === 'runtimes' && args[1] === 'connect') {
+        tunnelConnected = true;
+        return { ok: true, status: 0, stdout: '', stderr: '' };
+      }
+      throw new Error(`unexpected command ${name} ${args.join(' ')}`);
+    },
+  });
+  expect(result).toMatchObject({ ok: true, attempted: true });
+  expect(commands.some((entry) => entry[0] === 'tunnel-client' && entry[1] === 'runtimes' && entry[2] === 'connect')).toBe(true);
+  expect(commands.some((entry) => entry[0] === 'systemctl' && entry.includes('restart'))).toBe(false);
+  expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);
+  expect(reconnectCalls).toBe(2);
+});
+
+test('standalone Recovery repairs its dedicated OpenAI Secure MCP Tunnel without repointing the primary Forge alias', async () => {
+  const home = controllerHome();
+  const profilePath = join(home, 'forge-recovery-tunnel.yaml');
+  const endpoint = 'http://127.0.0.1:8787/recovery/mcp';
+  writeFileSync(profilePath, `target: ${endpoint}\n`);
+  const tunnelId = 'tunnel_0123456789abcdef0123456789abcdef';
+  const config = createRecoveryConfig(home, {
+    recoveryTunnelService: {
+      platform: 'openai-secure-tunnel',
+      alias: 'forge-recovery',
+      tunnelId,
+      mcpServerUrl: endpoint,
+      runtimeApiKeyRef: 'file:/tmp/forge-recovery-runtime-key',
+      profile: 'forge-recovery',
+      profileDir: home,
+      postRestartVerifyTimeoutMs: 3_000,
+      cooldownMs: 0,
+    },
+  });
+  let connected = false;
+  let clock = 0;
+  const commands: string[][] = [];
+  const verification = (): VerifyResult => ({
+    ...healthyVerify(),
+    probes: {
+      ...healthyVerify().probes,
+      recovery_gateway: { ok: true, detail: 'HTTP 200' },
+      recovery_tunnel_runtime: { ok: connected, detail: connected ? 'ready' : 'stopped' },
+    },
+  });
+  const result = await repairPublicTunnel(config, {
+    platform: 'linux',
+    verify: async () => verification(),
+    verifyLocal: async () => verification(),
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    runCommand: async (name, args) => {
+      commands.push([name, ...args]);
+      if (args[0] === 'runtimes' && args[1] === 'connect') {
+        connected = true;
+        return { ok: true, status: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'runtimes' && args[1] === 'status') {
+        if (!connected) return { ok: false, status: 1, stdout: '', stderr: 'runtime alias not connected' };
+        return {
+          ok: true,
+          status: 0,
+          stdout: JSON.stringify({ process_running: true, healthy: true, ready: true, tunnel_id: tunnelId, profile_path: profilePath }),
+          stderr: '',
+        };
+      }
+      throw new Error(`unexpected command ${name} ${args.join(' ')}`);
+    },
+  });
+  expect(result).toMatchObject({ ok: true, attempted: true, serviceLabel: 'forge-recovery', serviceTarget: 'tunnel-client:forge-recovery' });
+  const connect = commands.find((entry) => entry[1] === 'runtimes' && entry[2] === 'connect');
+  expect(connect).toEqual([
+    'tunnel-client', 'runtimes', 'connect', '--alias', 'forge-recovery', '--tunnel-id', tunnelId,
+    '--runtime-api-key', 'file:/tmp/forge-recovery-runtime-key', '--mcp-server-url', endpoint,
+    '--profile', 'forge-recovery', '--profile-dir', home,
+  ]);
+  expect(commands.some((entry) => entry.includes('forge') && !entry.includes('forge-recovery'))).toBe(false);
+});
+
+test('standalone Recovery refuses to repoint an OpenAI tunnel alias owned by another tunnel', async () => {
+  const home = controllerHome();
+  const endpoint = 'http://127.0.0.1:8787/recovery/mcp';
+  const profilePath = join(home, 'foreign-tunnel.yaml');
+  writeFileSync(profilePath, `target: ${endpoint}\n`);
+  const config = createRecoveryConfig(home, {
+    recoveryTunnelService: {
+      platform: 'openai-secure-tunnel',
+      alias: 'forge-recovery',
+      tunnelId: 'tunnel_0123456789abcdef0123456789abcdef',
+      mcpServerUrl: endpoint,
+      runtimeApiKeyRef: 'env:RECOVERY_TUNNEL_KEY',
+      cooldownMs: 0,
+    },
+  });
+  const commands: string[][] = [];
+  const degraded: VerifyResult = {
+    ...healthyVerify(),
+    probes: {
+      ...healthyVerify().probes,
+      recovery_gateway: { ok: true, detail: 'HTTP 200' },
+      recovery_tunnel_runtime: { ok: false, detail: 'wrong tunnel' },
+    },
+  };
+  const result = await repairPublicTunnel(config, {
+    platform: 'linux',
+    verify: async () => degraded,
+    verifyLocal: async () => degraded,
+    runCommand: async (name, args) => {
+      commands.push([name, ...args]);
+      return {
+        ok: true,
+        status: 0,
+        stdout: JSON.stringify({
+          process_running: true,
+          healthy: true,
+          ready: true,
+          tunnel_id: 'tunnel_ffffffffffffffffffffffffffffffff',
+          profile_path: profilePath,
+        }),
+        stderr: '',
+      };
+    },
+  });
+  expect(result).toMatchObject({ ok: false, attempted: false, noOp: true });
+  expect(result.detail).toContain('already bound to a different tunnel id');
+  expect(commands.filter((entry) => entry[1] === 'runtimes' && entry[2] === 'connect')).toHaveLength(0);
 });
 
 test('standalone Recovery refuses a no-op when another process owns the configured primary Connector port', async () => {
@@ -2753,7 +2970,7 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(descriptor.url).toBe('http://127.0.0.1:8787/recovery/mcp');
     expect(descriptor.public).toBe(false);
     expect(descriptor.readyForChatGPT).toBe(false);
-    expect(descriptor.warnings).toContain('Recovery is loopback-only. Configure --recovery-public-url and a dedicated tunnel service before adding it to ChatGPT.');
+    expect(descriptor.warnings).toContain('Recovery is loopback-only. Configure a dedicated OpenAI Secure MCP Tunnel or an HTTPS tunnel service before adding it to ChatGPT.');
   });
   test('requires RunAtLoad and unconditional KeepAlive for the Recovery tunnel launch agent', () => {
     const home = controllerHome();

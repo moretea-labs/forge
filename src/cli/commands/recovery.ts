@@ -1,10 +1,25 @@
 import { createHash, randomBytes } from 'crypto';
-import { existsSync } from 'fs';
-import { isAbsolute, resolve } from 'path';
+import { spawnSync } from 'child_process';
+import { existsSync, readdirSync, statSync } from 'fs';
+import { isAbsolute, join, relative, resolve } from 'path';
 import { Command } from 'commander';
 import { readMcpServiceOAuthPassphrase } from '../mcp/auth';
-import { resolveControllerHome } from '../repositories/controller-home';
+import {
+  openAiSecureTunnelConnectArgs,
+  openAiSecureTunnelStatusArgs,
+  parseOpenAiSecureTunnelRuntimeStatus,
+  type OpenAiSecureTunnelRuntimeObservation,
+} from '../mcp/openai-secure-tunnel';
+import {
+  relocateStoppedControllerHomeAuthority,
+  resolveControllerHome,
+  rollbackStoppedControllerHomeAuthorityRelocation,
+  type StoppedControllerHomeAuthorityRelocation,
+} from '../repositories/controller-home';
 import { FORGE_VERSION } from '../../version';
+import { forgeRuntimeServicePaths } from '../../runtime/root/service';
+import { packageConnectorServicePaths } from '../../runtime/root/package-connector-service';
+import { inspectControlPlaneDatabaseFile } from '../../runtime/control-plane/persistence/sqlite-store';
 import {
   RECOVERY_GATEWAY_LABEL,
   RECOVERY_WATCHDOG_LABEL,
@@ -29,6 +44,7 @@ import {
   rollbackPrevious,
   runtimeStatus,
   verifyStableRuntime,
+  type OpenAiSecureTunnelServiceConfig,
   type PrimaryConnectorServiceConfig,
   type PublicTunnelServiceConfig,
 } from '../../runtime/standalone-recovery/core';
@@ -57,12 +73,136 @@ function launchdService(label?: string, plistPath?: string, role = 'RECOVERY_TUN
   return { platform: 'launchd', label, ...(plistPath ? { plistPath } : {}) };
 }
 
+function openAiTunnelService(input: {
+  tunnelId?: string;
+  alias?: string;
+  runtimeApiKeyRef?: string;
+  profile?: string;
+  profileDir?: string;
+  adminProfile?: string;
+  mcpServerUrl: string;
+  defaultAlias: string;
+  role: string;
+}): OpenAiSecureTunnelServiceConfig | undefined {
+  const supplied = Boolean(input.tunnelId || input.alias || input.runtimeApiKeyRef || input.profile || input.profileDir || input.adminProfile);
+  if (!supplied) return undefined;
+  if (!input.tunnelId) throw new Error(`${input.role}_OPENAI_TUNNEL_ID_REQUIRED`);
+  if (input.profileDir && !isAbsolute(input.profileDir)) throw new Error(`${input.role}_OPENAI_PROFILE_DIR_ABSOLUTE_REQUIRED`);
+  const service: OpenAiSecureTunnelServiceConfig = {
+    platform: 'openai-secure-tunnel',
+    alias: input.alias?.trim() || input.defaultAlias,
+    tunnelId: input.tunnelId.trim(),
+    mcpServerUrl: input.mcpServerUrl,
+    runtimeApiKeyRef: input.runtimeApiKeyRef?.trim(),
+    profile: input.profile?.trim(),
+    profileDir: input.profileDir ? resolve(input.profileDir) : undefined,
+    adminProfile: input.adminProfile?.trim(),
+  };
+  try { openAiSecureTunnelConnectArgs(service); } catch (error) {
+    throw new Error(`${input.role}_${error instanceof Error ? error.message : 'OPENAI_TUNNEL_CONFIG_INVALID'}`);
+  }
+  return service;
+}
+
+
+export interface RecoveryControllerHomeMigrationPreflight {
+  sourceHome: string;
+  destinationHome: string;
+  liveOwners: Array<{ label: string; pid: number }>;
+  destinationExists: boolean;
+  destinationAuthorityFree: boolean;
+  destinationUnexpectedFiles: string[];
+  destinationRecordCount?: number;
+  destinationAuditEventCount?: number;
+}
+
+function controllerHomeFiles(root: string, current = root): string[] {
+  if (!existsSync(current)) return [];
+  const files: string[] = [];
+  for (const entry of readdirSync(current, { withFileTypes: true })) {
+    const path = join(current, entry.name);
+    if (entry.isDirectory()) files.push(...controllerHomeFiles(root, path));
+    else files.push(relative(root, path));
+  }
+  return files.sort();
+}
+
+export function recoveryControllerHomeMigrationPreflight(
+  sourceHomeInput: string,
+  destinationHomeInput: string,
+  dependencies: {
+    systemdPid?: (label: string) => number | undefined;
+    inspectDatabaseFile?: typeof inspectControlPlaneDatabaseFile;
+  } = {},
+): RecoveryControllerHomeMigrationPreflight {
+  const sourceHome = resolve(sourceHomeInput);
+  const destinationHome = resolve(destinationHomeInput);
+  if (sourceHome === destinationHome) throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SAME_HOME');
+  if (!existsSync(sourceHome) || !statSync(sourceHome).isDirectory()) {
+    throw new Error(`RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_MISSING: ${sourceHome}`);
+  }
+  const pidFor = dependencies.systemdPid ?? systemdUserServicePid;
+  const labels = [
+    forgeRuntimeServicePaths(sourceHome).label,
+    packageConnectorServicePaths(sourceHome).label,
+    RECOVERY_GATEWAY_LABEL,
+    RECOVERY_WATCHDOG_LABEL,
+  ];
+  const liveOwners = labels
+    .map((label) => ({ label, pid: pidFor(label) }))
+    .filter((entry): entry is { label: string; pid: number } => typeof entry.pid === 'number' && entry.pid > 0);
+
+  const destinationExists = existsSync(destinationHome);
+  let destinationRecordCount: number | undefined;
+  let destinationAuditEventCount: number | undefined;
+  let destinationUnexpectedFiles: string[] = [];
+  if (destinationExists) {
+    const databasePath = join(destinationHome, 'control-plane.sqlite');
+    if (existsSync(databasePath)) {
+      const inspection = (dependencies.inspectDatabaseFile ?? inspectControlPlaneDatabaseFile)(databasePath);
+      destinationRecordCount = inspection.recordCount;
+      destinationAuditEventCount = inspection.auditEventCount;
+    }
+    destinationUnexpectedFiles = controllerHomeFiles(destinationHome).filter((path) => !(
+      path === 'control-plane.sqlite'
+      || path === 'control-plane.sqlite-wal'
+      || path === 'control-plane.sqlite-shm'
+      || path.startsWith('source-baseline/')
+    ));
+  }
+  const destinationAuthorityFree = !destinationExists || (
+    (destinationRecordCount ?? 0) === 0
+    && (destinationAuditEventCount ?? 0) === 0
+    && destinationUnexpectedFiles.length === 0
+  );
+  return {
+    sourceHome,
+    destinationHome,
+    liveOwners,
+    destinationExists,
+    destinationAuthorityFree,
+    destinationUnexpectedFiles,
+    ...(destinationRecordCount !== undefined ? { destinationRecordCount } : {}),
+    ...(destinationAuditEventCount !== undefined ? { destinationAuditEventCount } : {}),
+  };
+}
+
+function assertRecoveryControllerHomeMigrationReady(preflight: RecoveryControllerHomeMigrationPreflight): void {
+  if (preflight.liveOwners.length > 0) {
+    throw new Error(`RECOVERY_CONTROLLER_HOME_MIGRATION_OWNERS_LIVE: ${preflight.liveOwners.map((entry) => `${entry.label}:${entry.pid}`).join(',')}`);
+  }
+  if (!preflight.destinationAuthorityFree) {
+    throw new Error(`RECOVERY_CONTROLLER_HOME_MIGRATION_DESTINATION_HAS_AUTHORITY: records=${preflight.destinationRecordCount ?? 0} audit=${preflight.destinationAuditEventCount ?? 0} unexpected=${preflight.destinationUnexpectedFiles.join(',') || 'none'}`);
+  }
+}
+
 export interface RecoveryConnectorDependencies {
   platform?: NodeJS.Platform;
   pathExists?: (path: string) => boolean;
   launchdPid?: (role: 'gateway' | 'watchdog') => number | undefined;
   systemdPid?: (role: 'gateway' | 'watchdog') => number | undefined;
   tunnelLaunchdPid?: (label: string) => number | undefined;
+  openAiTunnelStatus?: (service: OpenAiSecureTunnelServiceConfig) => OpenAiSecureTunnelRuntimeObservation;
   processAlive?: (pid: number) => boolean;
 }
 
@@ -84,7 +224,19 @@ export interface RecoveryConnectorDescriptor {
   services: {
     gateway: { label: string; platform: 'launchd' | 'systemd-user'; serviceInstalled: boolean; plistInstalled: boolean; running: boolean; pid?: number };
     watchdog: { label: string; platform: 'launchd' | 'systemd-user'; serviceInstalled: boolean; plistInstalled: boolean; running: boolean; pid?: number };
-    tunnel: { configured: boolean; label?: string; plistInstalled: boolean; restartSafe: boolean; running: boolean; pid?: number };
+    tunnel: {
+      configured: boolean;
+      platform?: 'launchd' | 'openai-secure-tunnel';
+      label?: string;
+      alias?: string;
+      tunnelId?: string;
+      plistInstalled: boolean;
+      restartSafe: boolean;
+      running: boolean;
+      healthy?: boolean;
+      ready?: boolean;
+      pid?: number;
+    };
   };
   tools: string[];
   warnings: string[];
@@ -111,14 +263,30 @@ export function recoveryConnectorDescriptor(
   const systemdPid = dependencies.systemdPid ?? ((role: 'gateway' | 'watchdog') => systemdUserServicePid(role === 'gateway' ? RECOVERY_GATEWAY_LABEL : RECOVERY_WATCHDOG_LABEL));
   const managedPid = (role: 'gateway' | 'watchdog') => servicePlatform === 'systemd-user' ? systemdPid(role) : launchdPid(role);
   const processAlive = dependencies.processAlive ?? isProcessAlive;
-  const tunnelService = config.recoveryTunnelService?.platform === 'launchd' ? config.recoveryTunnelService : undefined;
+  const configuredTunnel = config.recoveryTunnelService;
+  const tunnelService = configuredTunnel?.platform === 'launchd' ? configuredTunnel : undefined;
+  const openAiTunnelService = configuredTunnel?.platform === 'openai-secure-tunnel' ? configuredTunnel : undefined;
   const tunnelContract = tunnelService ? inspectRecoveryTunnelLaunchdContract(tunnelService) : undefined;
   const tunnelLaunchdPid = tunnelService
     ? (dependencies.tunnelLaunchdPid ?? recoveryLaunchdServicePid)(tunnelService.label)
     : undefined;
   const tunnelPlistInstalled = Boolean(tunnelContract?.plistPath && pathExists(tunnelContract.plistPath));
-  const tunnelRestartSafe = Boolean(tunnelContract?.restartSafe);
-  const tunnelRunning = Boolean(tunnelLaunchdPid && processAlive(tunnelLaunchdPid));
+  const openAiTunnelStatus = openAiTunnelService
+    ? (dependencies.openAiTunnelStatus ?? ((service: OpenAiSecureTunnelServiceConfig) => {
+        const status = spawnSync('tunnel-client', openAiSecureTunnelStatusArgs(service.alias), {
+          encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000,
+        });
+        return parseOpenAiSecureTunnelRuntimeStatus(status.stdout || '{}', { alias: service.alias, tunnelId: service.tunnelId, mcpServerUrl: service.mcpServerUrl });
+      }))(openAiTunnelService)
+    : undefined;
+  let openAiRestartSafe = false;
+  if (openAiTunnelService) {
+    try { openAiSecureTunnelConnectArgs(openAiTunnelService); openAiRestartSafe = true; } catch { openAiRestartSafe = false; }
+  }
+  const tunnelRestartSafe = openAiTunnelService ? openAiRestartSafe : Boolean(tunnelContract?.restartSafe);
+  const tunnelRunning = openAiTunnelService ? openAiTunnelStatus?.running === true : Boolean(tunnelLaunchdPid && processAlive(tunnelLaunchdPid));
+  const tunnelHealthy = openAiTunnelService ? openAiTunnelStatus?.healthy === true : tunnelRunning;
+  const tunnelReady = openAiTunnelService ? openAiTunnelStatus?.ok === true : tunnelRestartSafe && tunnelRunning;
   const gatewayPlistInstalled = pathExists(authority.gatewayLaunchAgent);
   const watchdogPlistInstalled = pathExists(authority.watchdogLaunchAgent);
   const gatewayServiceInstalled = servicePlatform === 'systemd-user'
@@ -153,9 +321,13 @@ export function recoveryConnectorDescriptor(
   if (!authority.current) warnings.push('No current immutable Forge Recovery release is installed. Run forge recovery install.');
   if (!gatewayServiceInstalled || !watchdogServiceInstalled) warnings.push(`Forge Recovery ${servicePlatform} services are not fully installed. Run forge recovery install.`);
   if (!gatewayRunning || !watchdogRunning) warnings.push('Forge Recovery Gateway or Watchdog is not running on the current Recovery release.');
-  if (!configuredUrl) warnings.push('Recovery is loopback-only. Configure --recovery-public-url and a dedicated tunnel service before adding it to ChatGPT.');
-  else if (!publicEndpoint) warnings.push('ChatGPT Recovery Connector requires an HTTPS public endpoint.');
-  else if (!tunnelService) warnings.push('A dedicated Forge Recovery tunnel service is not configured.');
+  if (!configuredTunnel) warnings.push('Recovery is loopback-only. Configure a dedicated OpenAI Secure MCP Tunnel or an HTTPS tunnel service before adding it to ChatGPT.');
+  else if (openAiTunnelService) {
+    if (!tunnelRestartSafe) warnings.push('The dedicated OpenAI Recovery tunnel must use a valid alias, tunnel id, loopback MCP endpoint, and env:/file: runtime API key reference.');
+    else if (!tunnelRunning) warnings.push(`The dedicated OpenAI Recovery tunnel runtime ${openAiTunnelService.alias} is not running.`);
+    else if (!tunnelHealthy || !tunnelReady) warnings.push(`The dedicated OpenAI Recovery tunnel runtime ${openAiTunnelService.alias} is not healthy and ready.`);
+  } else if (!configuredUrl) warnings.push('The configured launchd Recovery tunnel requires --recovery-public-url.');
+  else if (!publicEndpoint) warnings.push('ChatGPT Recovery Connector requires an HTTPS public endpoint for launchd-managed public tunnels.');
   else if (!tunnelPlistInstalled) warnings.push('The dedicated Forge Recovery tunnel plist is not installed.');
   else if (!tunnelRestartSafe) warnings.push('The dedicated Forge Recovery tunnel plist must use RunAtLoad=true and unconditional KeepAlive=true.');
   else if (!tunnelRunning) warnings.push('The dedicated Forge Recovery tunnel service is not running.');
@@ -166,7 +338,7 @@ export function recoveryConnectorDescriptor(
     transport: 'streamable_http',
     url,
     public: publicEndpoint,
-    readyForChatGPT: installed && gatewayRunning && watchdogRunning && tunnelRestartSafe && tunnelRunning && publicEndpoint && passphraseConfigured,
+    readyForChatGPT: installed && gatewayRunning && watchdogRunning && tunnelReady && (openAiTunnelService ? true : publicEndpoint) && passphraseConfigured,
     installed,
     currentRelease: authority.current?.releaseRevision,
     previousRelease: authority.previous?.releaseRevision,
@@ -194,11 +366,14 @@ export function recoveryConnectorDescriptor(
         ...(watchdogIdentity ? { pid: watchdogIdentity.pid } : {}),
       },
       tunnel: {
-        configured: Boolean(tunnelService),
+        configured: Boolean(configuredTunnel),
+        ...(configuredTunnel ? { platform: configuredTunnel.platform } : {}),
         ...(tunnelService ? { label: tunnelService.label } : {}),
+        ...(openAiTunnelService ? { alias: openAiTunnelService.alias, tunnelId: openAiTunnelService.tunnelId } : {}),
         plistInstalled: tunnelPlistInstalled,
         restartSafe: tunnelRestartSafe,
         running: tunnelRunning,
+        ...(openAiTunnelService ? { healthy: tunnelHealthy, ready: tunnelReady } : {}),
         ...(tunnelLaunchdPid ? { pid: tunnelLaunchdPid } : {}),
       },
     },
@@ -638,6 +813,49 @@ export function buildRecoveryCommand(): Command {
       if (!result.ok) process.exitCode = 1;
     });
 
+  command.command('migrate-controller-home')
+    .description('Atomically relocate a fully stopped Forge Controller Home to stable user-level storage')
+    .requiredOption('--from <path>', 'Stopped source Controller Home')
+    .requiredOption('--controller-home <path>', 'Destination user-level Controller Home')
+    .option('--archive-suffix <suffix>', 'Stable suffix for an authority-free destination shell archive')
+    .action(async (opts: { from: string; controllerHome: string; archiveSuffix?: string }) => {
+      if (process.platform !== 'linux') throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_LINUX_ONLY');
+      const sourceHome = resolve(opts.from);
+      const destinationHome = resolveControllerHome(opts.controllerHome);
+      const preflight = recoveryControllerHomeMigrationPreflight(sourceHome, destinationHome);
+      assertRecoveryControllerHomeMigrationReady(preflight);
+      const relocation = relocateStoppedControllerHomeAuthority({
+        sourceHome,
+        destinationHome,
+        archiveExistingDestination: preflight.destinationExists,
+        ...(opts.archiveSuffix ? { archiveSuffix: opts.archiveSuffix } : {}),
+      });
+      output({ status: 'migrated', preflight, relocation });
+    });
+
+  command.command('rollback-controller-home-migration')
+    .description('Rollback a stopped Controller Home relocation before any writer is restarted')
+    .requiredOption('--from <path>', 'Original Controller Home path')
+    .requiredOption('--controller-home <path>', 'Relocated user-level Controller Home path')
+    .option('--archived-destination-home <path>', 'Archived authority-free destination shell returned by migration')
+    .action(async (opts: { from: string; controllerHome: string; archivedDestinationHome?: string }) => {
+      if (process.platform !== 'linux') throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_LINUX_ONLY');
+      const sourceHome = resolve(opts.from);
+      const destinationHome = resolveControllerHome(opts.controllerHome);
+      const preflight = recoveryControllerHomeMigrationPreflight(destinationHome, sourceHome);
+      if (preflight.liveOwners.length > 0) {
+        throw new Error(`RECOVERY_CONTROLLER_HOME_MIGRATION_OWNERS_LIVE: ${preflight.liveOwners.map((entry) => `${entry.label}:${entry.pid}`).join(',')}`);
+      }
+      const relocation: StoppedControllerHomeAuthorityRelocation = {
+        migrated: true,
+        sourceHome,
+        destinationHome,
+        ...(opts.archivedDestinationHome ? { archivedDestinationHome: resolve(opts.archivedDestinationHome) } : {}),
+      };
+      rollbackStoppedControllerHomeAuthorityRelocation(relocation);
+      output({ status: 'rolled_back', relocation });
+    });
+
   command.command('install')
     .description('Build and activate the independent Forge Recovery Gateway and Watchdog release')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
@@ -646,11 +864,24 @@ export function buildRecoveryCommand(): Command {
     .option('--recovery-public-url <url>', 'Dedicated Forge Recovery MCP public URL')
     .option('--recovery-tunnel-service-label <label>', 'Dedicated Recovery tunnel launchd label')
     .option('--recovery-tunnel-service-plist <path>', 'Absolute Recovery tunnel launchd plist path')
+    .option('--recovery-openai-tunnel-id <id>', 'Dedicated Recovery OpenAI Secure MCP Tunnel id')
+    .option('--recovery-openai-tunnel-alias <alias>', 'Dedicated Recovery tunnel-client runtime alias (default: forge-recovery)')
+    .option('--recovery-openai-runtime-api-key-ref <ref>', 'Recovery tunnel runtime API key reference (env:NAME or file:/absolute/path)')
+    .option('--recovery-openai-profile <profile>', 'Optional tunnel-client runtime profile name for Recovery')
+    .option('--recovery-openai-profile-dir <path>', 'Optional absolute tunnel-client profile directory for Recovery')
+    .option('--recovery-openai-admin-profile <profile>', 'Optional tunnel-client admin profile used for Recovery runtime connect')
     .option('--primary-connector-service-label <label>', 'Primary OAuth/Connector launchd label managed by standalone Recovery')
     .option('--primary-connector-service-plist <path>', 'Absolute primary OAuth/Connector launchd plist path')
     .option('--primary-connector-local-url <url>', 'Local primary OAuth/Connector MCP endpoint used to distinguish Connector from tunnel failures')
     .option('--primary-tunnel-service-label <label>', 'Primary public MCP tunnel launchd label managed by standalone Recovery')
     .option('--primary-tunnel-service-plist <path>', 'Absolute primary public MCP tunnel launchd plist path')
+    .option('--primary-openai-tunnel-id <id>', 'Primary OpenAI Secure MCP Tunnel id managed by Recovery')
+    .option('--primary-openai-tunnel-alias <alias>', 'Primary tunnel-client runtime alias (default: forge)')
+    .option('--primary-openai-runtime-api-key-ref <ref>', 'Primary tunnel runtime API key reference (env:NAME or file:/absolute/path)')
+    .option('--primary-openai-profile <profile>', 'Optional tunnel-client runtime profile name for primary Forge')
+    .option('--primary-openai-profile-dir <path>', 'Optional absolute tunnel-client profile directory for primary Forge')
+    .option('--primary-openai-admin-profile <profile>', 'Optional tunnel-client admin profile used for primary runtime connect')
+    .option('--primary-runtime-source-root <path>', 'Stable canonical/package source used by Recovery for future Runtime staging')
     .option('--stage-only', 'Build and canary the Recovery release without activating services')
     .action(async (opts: {
       controllerHome: string;
@@ -659,33 +890,89 @@ export function buildRecoveryCommand(): Command {
       recoveryPublicUrl?: string;
       recoveryTunnelServiceLabel?: string;
       recoveryTunnelServicePlist?: string;
+      recoveryOpenaiTunnelId?: string;
+      recoveryOpenaiTunnelAlias?: string;
+      recoveryOpenaiRuntimeApiKeyRef?: string;
+      recoveryOpenaiProfile?: string;
+      recoveryOpenaiProfileDir?: string;
+      recoveryOpenaiAdminProfile?: string;
       primaryConnectorServiceLabel?: string;
       primaryConnectorServicePlist?: string;
       primaryConnectorLocalUrl?: string;
       primaryTunnelServiceLabel?: string;
       primaryTunnelServicePlist?: string;
+      primaryOpenaiTunnelId?: string;
+      primaryOpenaiTunnelAlias?: string;
+      primaryOpenaiRuntimeApiKeyRef?: string;
+      primaryOpenaiProfile?: string;
+      primaryOpenaiProfileDir?: string;
+      primaryOpenaiAdminProfile?: string;
+      primaryRuntimeSourceRoot?: string;
       stageOnly?: boolean;
     }) => {
       const home = resolveControllerHome(opts.controllerHome);
       const port = Number(opts.port);
       if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('RECOVERY_PORT_INVALID');
-      const recoveryTunnelService = launchdService(opts.recoveryTunnelServiceLabel, opts.recoveryTunnelServicePlist, 'RECOVERY_TUNNEL') as PublicTunnelServiceConfig | undefined;
-      const primaryConnectorBase = launchdService(opts.primaryConnectorServiceLabel, opts.primaryConnectorServicePlist, 'RECOVERY_PRIMARY_CONNECTOR') as PrimaryConnectorServiceConfig | undefined;
+      const recoveryLaunchdTunnel = launchdService(opts.recoveryTunnelServiceLabel, opts.recoveryTunnelServicePlist, 'RECOVERY_TUNNEL') as PublicTunnelServiceConfig | undefined;
+      const recoveryLocalMcpUrl = `http://127.0.0.1:${port}/recovery/mcp`;
+      const recoveryOpenAiTunnel = openAiTunnelService({
+        tunnelId: opts.recoveryOpenaiTunnelId,
+        alias: opts.recoveryOpenaiTunnelAlias,
+        runtimeApiKeyRef: opts.recoveryOpenaiRuntimeApiKeyRef,
+        profile: opts.recoveryOpenaiProfile,
+        profileDir: opts.recoveryOpenaiProfileDir,
+        adminProfile: opts.recoveryOpenaiAdminProfile,
+        mcpServerUrl: recoveryLocalMcpUrl,
+        defaultAlias: 'forge-recovery',
+        role: 'RECOVERY',
+      });
+      if (recoveryLaunchdTunnel && recoveryOpenAiTunnel) throw new Error('RECOVERY_TUNNEL_OWNER_CONFLICT');
+      const recoveryTunnelService = recoveryOpenAiTunnel ?? recoveryLaunchdTunnel;
+
+      const primaryConnectorLaunchd = launchdService(opts.primaryConnectorServiceLabel, opts.primaryConnectorServicePlist, 'RECOVERY_PRIMARY_CONNECTOR') as PrimaryConnectorServiceConfig | undefined;
       const primaryConnectorLocalUrl = endpoint(opts.primaryConnectorLocalUrl, 'RECOVERY_PRIMARY_CONNECTOR_LOCAL_URL');
-      if (primaryConnectorLocalUrl && !primaryConnectorBase) throw new Error('RECOVERY_PRIMARY_CONNECTOR_LABEL_REQUIRED_FOR_LOCAL_URL');
-      const primaryConnectorService = primaryConnectorBase
-        ? { ...primaryConnectorBase, ...(primaryConnectorLocalUrl ? { localMcpUrl: primaryConnectorLocalUrl } : {}) }
-        : undefined;
-      const primaryPublicTunnelService = launchdService(opts.primaryTunnelServiceLabel, opts.primaryTunnelServicePlist, 'RECOVERY_PRIMARY_TUNNEL') as PublicTunnelServiceConfig | undefined;
-      if (primaryPublicTunnelService && !primaryConnectorService) throw new Error('RECOVERY_PRIMARY_CONNECTOR_REQUIRED_FOR_PRIMARY_TUNNEL');
-      const recoveryPublicUrl = endpoint(opts.recoveryPublicUrl, 'RECOVERY_PUBLIC_URL');
-      if (Boolean(recoveryTunnelService) !== Boolean(recoveryPublicUrl)) {
-        throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
+      let primaryConnectorService: PrimaryConnectorServiceConfig | undefined;
+      if (process.platform === 'linux') {
+        if (primaryConnectorLaunchd) throw new Error('RECOVERY_PRIMARY_CONNECTOR_LAUNCHD_UNSUPPORTED_ON_LINUX');
+        primaryConnectorService = primaryConnectorLocalUrl ? { platform: 'systemd-user', localMcpUrl: primaryConnectorLocalUrl } : undefined;
+      } else {
+        if (primaryConnectorLocalUrl && !primaryConnectorLaunchd) throw new Error('RECOVERY_PRIMARY_CONNECTOR_LABEL_REQUIRED_FOR_LOCAL_URL');
+        primaryConnectorService = primaryConnectorLaunchd
+          ? { ...primaryConnectorLaunchd, ...(primaryConnectorLocalUrl ? { localMcpUrl: primaryConnectorLocalUrl } : {}) }
+          : undefined;
       }
+
+      const primaryLaunchdTunnel = launchdService(opts.primaryTunnelServiceLabel, opts.primaryTunnelServicePlist, 'RECOVERY_PRIMARY_TUNNEL') as PublicTunnelServiceConfig | undefined;
+      const primaryOpenAiTunnel = primaryConnectorLocalUrl ? openAiTunnelService({
+        tunnelId: opts.primaryOpenaiTunnelId,
+        alias: opts.primaryOpenaiTunnelAlias,
+        runtimeApiKeyRef: opts.primaryOpenaiRuntimeApiKeyRef,
+        profile: opts.primaryOpenaiProfile,
+        profileDir: opts.primaryOpenaiProfileDir,
+        adminProfile: opts.primaryOpenaiAdminProfile,
+        mcpServerUrl: primaryConnectorLocalUrl,
+        defaultAlias: 'forge',
+        role: 'RECOVERY_PRIMARY',
+      }) : undefined;
+      const primaryOpenAiOptionsSupplied = Boolean(opts.primaryOpenaiTunnelId || opts.primaryOpenaiTunnelAlias || opts.primaryOpenaiRuntimeApiKeyRef || opts.primaryOpenaiProfile || opts.primaryOpenaiProfileDir || opts.primaryOpenaiAdminProfile);
+      if (primaryOpenAiOptionsSupplied && !primaryConnectorLocalUrl) throw new Error('RECOVERY_PRIMARY_CONNECTOR_LOCAL_URL_REQUIRED_FOR_OPENAI_TUNNEL');
+      if (primaryLaunchdTunnel && primaryOpenAiTunnel) throw new Error('RECOVERY_PRIMARY_TUNNEL_OWNER_CONFLICT');
+      const primaryPublicTunnelService = primaryOpenAiTunnel ?? primaryLaunchdTunnel;
+      if (primaryPublicTunnelService && !primaryConnectorService) throw new Error('RECOVERY_PRIMARY_CONNECTOR_REQUIRED_FOR_PRIMARY_TUNNEL');
+
+      const recoveryPublicUrl = endpoint(opts.recoveryPublicUrl, 'RECOVERY_PUBLIC_URL');
+      if (recoveryOpenAiTunnel && recoveryPublicUrl) throw new Error('RECOVERY_OPENAI_TUNNEL_PUBLIC_URL_CONFLICT');
+      if (recoveryLaunchdTunnel && !recoveryPublicUrl) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
+      if (!recoveryLaunchdTunnel && !recoveryOpenAiTunnel && recoveryPublicUrl) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
+
       const packageRoot = resolve(import.meta.dir, '..', '..', '..');
+      const primaryRuntimeSourceRoot = opts.primaryRuntimeSourceRoot ? resolve(opts.primaryRuntimeSourceRoot) : packageRoot;
+      if (!opts.stageOnly && /[\\/]\.forge[\\/]managed-worktrees[\\/]/.test(primaryRuntimeSourceRoot)) {
+        throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_ROOT_DURABLE_REQUIRED');
+      }
       const result = await installStandaloneRecovery({
         controllerHome: home,
-        repoRoot: packageRoot,
+        repoRoot: primaryRuntimeSourceRoot,
         sourceRoot: packageRoot,
         port,
         stageOnly: opts.stageOnly === true,

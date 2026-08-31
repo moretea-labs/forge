@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import {
@@ -8,9 +8,12 @@ import {
   repoLocalControllerHomeStorageNeedsMigration,
   repoLocalNoIndexControllerHome,
   resolveRepoPreferredControllerHome,
+  relocateStoppedControllerHomeAuthority,
+  rollbackStoppedControllerHomeAuthorityRelocation,
   rollbackStoppedRepoLocalControllerHomeStorage,
 } from '../../src/cli/repositories/controller-home';
 import { resolveRuntimeStateControllerHome } from '../../src/cli/commands/runtime';
+import { recoveryControllerHomeMigrationPreflight } from '../../src/cli/commands/recovery';
 
 const roots: string[] = [];
 const originalControllerHome = process.env.FORGE_CONTROLLER_HOME;
@@ -105,5 +108,96 @@ describe('repo-preferred controller home', () => {
     mkdirSync(join(repoRoot, '_ops', 'controller-home'), { recursive: true });
 
     expect(resolveRepoPreferredControllerHome(repoRoot, explicit)).toBe(resolve(explicit));
+  });
+});
+
+
+describe('stopped Controller Home authority relocation', () => {
+  test('atomically moves the whole authority and archives an approved empty destination shell', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-controller-relocate-'));
+    roots.push(root);
+    const source = join(root, 'repo', '_ops', 'controller-home');
+    const destination = join(root, '.forge', 'controller');
+    mkdirSync(join(source, 'runtime'), { recursive: true });
+    mkdirSync(join(destination, 'source-baseline'), { recursive: true });
+    writeFileSync(join(source, 'control-plane.sqlite'), 'source-authority');
+    writeFileSync(join(source, 'runtime', 'owner.json'), 'runtime-owner');
+    writeFileSync(join(destination, 'source-baseline', 'current.json'), 'shell-only');
+
+    const relocation = relocateStoppedControllerHomeAuthority({
+      sourceHome: source,
+      destinationHome: destination,
+      archiveExistingDestination: true,
+      archiveSuffix: 'test-shell',
+    });
+    expect(existsSync(source)).toBe(false);
+    expect(readFileSync(join(destination, 'control-plane.sqlite'), 'utf8')).toBe('source-authority');
+    expect(readFileSync(join(destination, 'runtime', 'owner.json'), 'utf8')).toBe('runtime-owner');
+    expect(relocation.archivedDestinationHome).toBe(`${destination}.pre-migration-test-shell`);
+    expect(readFileSync(join(relocation.archivedDestinationHome!, 'source-baseline', 'current.json'), 'utf8')).toBe('shell-only');
+
+    rollbackStoppedControllerHomeAuthorityRelocation(relocation);
+    expect(readFileSync(join(source, 'control-plane.sqlite'), 'utf8')).toBe('source-authority');
+    expect(readFileSync(join(destination, 'source-baseline', 'current.json'), 'utf8')).toBe('shell-only');
+  });
+
+  test('refuses to overwrite an existing destination unless the caller explicitly approved archival', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-controller-relocate-conflict-'));
+    roots.push(root);
+    const source = join(root, 'old');
+    const destination = join(root, 'new');
+    mkdirSync(source, { recursive: true });
+    mkdirSync(destination, { recursive: true });
+    expect(() => relocateStoppedControllerHomeAuthority({ sourceHome: source, destinationHome: destination }))
+      .toThrow('CONTROLLER_HOME_RELOCATION_DESTINATION_EXISTS');
+    expect(existsSync(source)).toBe(true);
+    expect(existsSync(destination)).toBe(true);
+  });
+});
+
+
+describe('Recovery Controller Home migration preflight', () => {
+  test('accepts an empty user-level shell but refuses any live service owner', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-recovery-controller-preflight-'));
+    roots.push(root);
+    const source = join(root, 'repo-controller-home');
+    const destination = join(root, 'user-controller');
+    mkdirSync(source, { recursive: true });
+    mkdirSync(join(destination, 'source-baseline'), { recursive: true });
+    writeFileSync(join(destination, 'source-baseline', 'current.json'), '{}');
+    const databasePath = join(destination, 'control-plane.sqlite');
+    writeFileSync(databasePath, 'synthetic');
+    const inspected = () => ({ path: databasePath, integrity: 'ok' as const, schemaVersion: 1, recordCount: 0, auditEventCount: 0, orphanRecordCount: 0 });
+    const ready = recoveryControllerHomeMigrationPreflight(source, destination, {
+      systemdPid: () => undefined,
+      inspectDatabaseFile: inspected,
+    });
+    expect(ready.destinationAuthorityFree).toBe(true);
+    expect(ready.liveOwners).toEqual([]);
+
+    const blocked = recoveryControllerHomeMigrationPreflight(source, destination, {
+      systemdPid: (label) => label.includes('runtime') ? 1234 : undefined,
+      inspectDatabaseFile: inspected,
+    });
+    expect(blocked.liveOwners.length).toBeGreaterThan(0);
+  });
+
+  test('rejects a destination with durable records or unexpected files', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-recovery-controller-preflight-conflict-'));
+    roots.push(root);
+    const source = join(root, 'source');
+    const destination = join(root, 'destination');
+    mkdirSync(source, { recursive: true });
+    mkdirSync(join(destination, 'mcp'), { recursive: true });
+    writeFileSync(join(destination, 'mcp', 'runtime-token'), 'must-not-merge');
+    const databasePath = join(destination, 'control-plane.sqlite');
+    writeFileSync(databasePath, 'synthetic');
+    const result = recoveryControllerHomeMigrationPreflight(source, destination, {
+      systemdPid: () => undefined,
+      inspectDatabaseFile: () => ({ path: databasePath, integrity: 'ok', schemaVersion: 1, recordCount: 2, auditEventCount: 3, orphanRecordCount: 0 }),
+    });
+    expect(result.destinationAuthorityFree).toBe(false);
+    expect(result.destinationUnexpectedFiles).toContain('mcp/runtime-token');
+    expect(result.destinationRecordCount).toBe(2);
   });
 });

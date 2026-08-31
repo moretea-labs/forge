@@ -30,7 +30,7 @@ import {
   type SystemdUserUnitInput,
 } from '../../cli/controller/systemd-user';
 import { FORGE_VERSION } from '../../version';
-import { initializeStandaloneRecovery, loadRecoveryConfig, type PrimaryConnectorServiceConfig, type PrimaryRuntimeServiceConfig, type PublicTunnelServiceConfig, type RecoveryConfig } from './core';
+import { initializeStandaloneRecovery, loadRecoveryConfig, type LaunchdPrimaryConnectorServiceConfig, type LaunchdPublicTunnelServiceConfig, type PrimaryConnectorServiceConfig, type PrimaryRuntimeServiceConfig, type PublicTunnelServiceConfig, type RecoveryConfig } from './core';
 import { RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
 export { RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
 import {
@@ -745,7 +745,7 @@ export interface RecoveryTunnelLaunchdContract {
 }
 
 function inspectLaunchdRestartContract(
-  service: Pick<PublicTunnelServiceConfig | PrimaryConnectorServiceConfig, 'platform' | 'label' | 'plistPath'>,
+  service: { platform: 'launchd'; label: string; plistPath?: string },
   allowConditionalKeepAlive: boolean,
 ): RecoveryTunnelLaunchdContract {
   const plistPath = service.plistPath ?? launchAgentPath(service.label);
@@ -768,19 +768,19 @@ function inspectLaunchdRestartContract(
 }
 
 export function inspectRecoveryTunnelLaunchdContract(
-  service: Pick<PublicTunnelServiceConfig | PrimaryConnectorServiceConfig, 'platform' | 'label' | 'plistPath'>,
+  service: LaunchdPublicTunnelServiceConfig,
 ): RecoveryTunnelLaunchdContract {
   return inspectLaunchdRestartContract(service, false);
 }
 
 export function inspectPrimaryConnectorLaunchdContract(
-  service: Pick<PrimaryConnectorServiceConfig, 'platform' | 'label' | 'plistPath'>,
+  service: LaunchdPrimaryConnectorServiceConfig,
 ): RecoveryTunnelLaunchdContract {
   return inspectLaunchdRestartContract(service, true);
 }
 
 export function inspectPrimaryPublicTunnelLaunchdContract(
-  service: Pick<PublicTunnelServiceConfig, 'platform' | 'label' | 'plistPath'>,
+  service: LaunchdPublicTunnelServiceConfig,
 ): RecoveryTunnelLaunchdContract {
   return inspectLaunchdRestartContract(service, true);
 }

@@ -86,13 +86,19 @@ console.log(JSON.stringify({
     publicMcpUrl: config.publicMcpUrl,
     recoveryPublicUrl: config.recoveryPublicUrl,
     recoveryTunnelService: config.recoveryTunnelService
-      ? { platform: config.recoveryTunnelService.platform, label: config.recoveryTunnelService.label, plistPath: config.recoveryTunnelService.plistPath }
+      ? config.recoveryTunnelService.platform === 'launchd'
+        ? { platform: config.recoveryTunnelService.platform, label: config.recoveryTunnelService.label, plistPath: config.recoveryTunnelService.plistPath }
+        : { platform: config.recoveryTunnelService.platform, alias: config.recoveryTunnelService.alias, tunnelId: config.recoveryTunnelService.tunnelId, mcpServerUrl: config.recoveryTunnelService.mcpServerUrl, runtimeApiKeyRef: config.recoveryTunnelService.runtimeApiKeyRef, profile: config.recoveryTunnelService.profile, profileDir: config.recoveryTunnelService.profileDir }
       : undefined,
     primaryConnectorService: config.primaryConnectorService
-      ? { platform: config.primaryConnectorService.platform, label: config.primaryConnectorService.label, plistPath: config.primaryConnectorService.plistPath, localMcpUrl: config.primaryConnectorService.localMcpUrl }
+      ? config.primaryConnectorService.platform === 'launchd'
+        ? { platform: config.primaryConnectorService.platform, label: config.primaryConnectorService.label, plistPath: config.primaryConnectorService.plistPath, localMcpUrl: config.primaryConnectorService.localMcpUrl }
+        : { platform: config.primaryConnectorService.platform, label: config.primaryConnectorService.label, localMcpUrl: config.primaryConnectorService.localMcpUrl }
       : undefined,
     primaryPublicTunnelService: config.primaryPublicTunnelService
-      ? { platform: config.primaryPublicTunnelService.platform, label: config.primaryPublicTunnelService.label, plistPath: config.primaryPublicTunnelService.plistPath }
+      ? config.primaryPublicTunnelService.platform === 'launchd'
+        ? { platform: config.primaryPublicTunnelService.platform, label: config.primaryPublicTunnelService.label, plistPath: config.primaryPublicTunnelService.plistPath }
+        : { platform: config.primaryPublicTunnelService.platform, alias: config.primaryPublicTunnelService.alias, tunnelId: config.primaryPublicTunnelService.tunnelId, mcpServerUrl: config.primaryPublicTunnelService.mcpServerUrl, runtimeApiKeyRef: config.primaryPublicTunnelService.runtimeApiKeyRef, profile: config.primaryPublicTunnelService.profile, profileDir: config.primaryPublicTunnelService.profileDir }
       : undefined,
   },
 }, null, 2));
