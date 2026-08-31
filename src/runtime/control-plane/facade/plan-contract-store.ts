@@ -310,7 +310,10 @@ function replacePlanContractUnlocked(
   if (predecessorIndex < 0) throw new Error(`plan contract not found: ${predecessorKey}`);
   const predecessor = store.contracts[predecessorIndex]!;
   if (isTerminalPlanContractStatus(predecessor.status)) throw new Error(`plan contract ${predecessor.planId} is terminal (${predecessor.status})`);
-  const successor = buildPlanContract(input, at);
+  const successor = {
+    ...buildPlanContract(input, at),
+    supersedes: [predecessor.planId],
+  };
   if (successor.planId === predecessor.planId) throw new Error('PLAN_SUCCESSOR_ID_MUST_CHANGE');
   if (successor.repoId !== predecessor.repoId) throw new Error('PLAN_SUCCESSOR_REPOSITORY_MISMATCH');
   if (store.contracts.some((existing) => existing.planId === successor.planId)) {
@@ -321,7 +324,13 @@ function replacePlanContractUnlocked(
     && existing.scopeKey === successor.scopeKey);
   if (conflictingScope) throw new Error(`PLAN_SCOPE_ALREADY_OWNED: ${successor.scopeKey}:${conflictingScope.planId}`);
   const contracts = [...store.contracts];
-  contracts[predecessorIndex] = { ...predecessor, status: 'superseded', supersededBy: successor.planId, updatedAt: at };
+  contracts[predecessorIndex] = {
+    ...predecessor,
+    status: 'superseded',
+    supersededBy: successor.planId,
+    supersessionReason: 'extend_existing',
+    updatedAt: at,
+  };
   writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts: [successor, ...contracts] });
   return successor;
 }
@@ -430,11 +439,15 @@ export function getPlanContract(options: PlanContractStoreOptions, planId: strin
   return readPlanContractStore(options).contracts.find((contract) => contract.planId === sanitizeFileComponent(planId));
 }
 
+export function isCurrentPlanContract(contract: PlanContract): boolean {
+  return !isTerminalPlanContractStatus(contract.status) && !contract.supersededBy?.trim();
+}
+
 export function listPlanContracts(options: PlanContractStoreOptions & { status?: PlanContractStatus | 'active' | 'all'; limit?: number }): PlanContract[] {
   const status = options.status ?? 'active';
   const limit = Math.max(1, Math.min(Math.trunc(options.limit ?? 50), 100));
   return readPlanContractStore(options).contracts
-    .filter((contract) => status === 'all' || (status === 'active' ? !isTerminalPlanContractStatus(contract.status) : contract.status === status))
+    .filter((contract) => status === 'all' || (status === 'active' ? isCurrentPlanContract(contract) : contract.status === status))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, limit);
 }
@@ -494,7 +507,7 @@ export async function approvePlanContractAsync(options: PlanContractStoreOptions
   return await withPlanAdmissionLockAsync(options, () => approvePlanContractUnlocked(options, planId));
 }
 
-export function supersedePlanContract(options: PlanContractStoreOptions, planId: string, supersededBy: string): PlanContract {
+export function supersedePlanContract(options: PlanContractStoreOptions, planId: string, supersededBy: string, reason = 'explicit_supersession'): PlanContract {
   return withPlanAdmissionLock(options, () => {
     const store = readPlanContractStore(options);
     const index = store.contracts.findIndex((contract) => contract.planId === sanitizeFileComponent(planId));
@@ -507,9 +520,22 @@ export function supersedePlanContract(options: PlanContractStoreOptions, planId:
     const successor = store.contracts.find((contract) => contract.planId === replacement);
     if (!successor) throw new Error(`PLAN_SUCCESSOR_NOT_FOUND: ${replacement}`);
     const at = nowIso(options);
-    const next = { ...current, status: 'superseded' as const, supersededBy: successor.planId, updatedAt: at };
+    const boundedReason = String(reason ?? '').trim().slice(0, 500) || 'explicit_supersession';
+    const next = {
+      ...current,
+      status: 'superseded' as const,
+      supersededBy: successor.planId,
+      supersessionReason: boundedReason,
+      updatedAt: at,
+    };
+    const successorNext = {
+      ...successor,
+      supersedes: [...new Set([...(successor.supersedes ?? []), current.planId])],
+      updatedAt: at,
+    };
     const contracts = [...store.contracts];
     contracts[index] = next;
+    contracts[contracts.findIndex((contract) => contract.planId === successor.planId)] = successorNext;
     writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts });
     return next;
   });

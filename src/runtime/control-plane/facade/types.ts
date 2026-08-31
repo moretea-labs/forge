@@ -516,6 +516,12 @@ export interface WorkContract {
   lifecycleRole?: 'primary' | 'execution_child';
   /** Optional objective-level parent when this Work is only an execution child. */
   parentWorkId?: string;
+  /** Historical predecessors explicitly replaced by this Work. Relationship evidence only; never deletion authority. */
+  supersedes?: string[];
+  /** Current successor that replaced this Work. Presence makes this Work historical even before cleanup terminalizes it. */
+  supersededBy?: string;
+  /** Bounded durable reason for the supersession edge. */
+  supersessionReason?: string;
   dispatchState: DispatchState;
   evidenceState: EvidenceState;
   completionOutcome?: CompletionOutcome;
@@ -684,7 +690,11 @@ export interface PlanContract {
   status: PlanContractStatus;
   steps: PlanStep[];
   evidenceRefs: EvidenceRef[];
+  /** Historical predecessor Plans explicitly replaced by this Plan. */
+  supersedes?: string[];
   supersededBy?: string;
+  /** Bounded durable reason for the supersession edge. */
+  supersessionReason?: string;
   createdAt: string;
   updatedAt: string;
 }
