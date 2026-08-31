@@ -29,6 +29,7 @@ import {
   claimStalledControllerRoundRelays,
   finishControllerRoundRelayDispatch,
   parseControllerDispositionCompatibilityCapability,
+  parseControllerRoundCompatibilityCapability,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
@@ -855,6 +856,7 @@ describe('scheduled external Controller wake', () => {
     expect(opened.status).toBe('dispatching');
     const scheduledPrompt = buildControllerRoundRelayPrompt(store, opened, { exactOriginWork: true });
     expect(scheduledPrompt).toContain(`Claim and advance only origin Work ${workId}.`);
+    expect(scheduledPrompt).toContain(`controller.round:controller_claim:${opened.authorityId}:${opened.relayScopeId}`);
     expect(scheduledPrompt).toContain('Do not select, start, delegate, or resume a sibling Work');
     expect(scheduledPrompt).not.toContain('select, start, or claim the appropriate Work');
     const dispatched = finishControllerRoundRelayDispatch(store, {
@@ -1502,6 +1504,23 @@ describe('scheduled external Controller wake', () => {
     expect(parseControllerDispositionCompatibilityCapability('repair', 'schedule.delete:SCH-1')).toBeUndefined();
     expect(() => parseControllerDispositionCompatibilityCapability('repair', 'controller.disposition:invalid:goal:work-compat')).toThrow(/CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_INVALID/);
     expect(() => parseControllerDispositionCompatibilityCapability('repair', 'controller.disposition:goal_complete:')).toThrow(/CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_INVALID/);
+  });
+
+  test('parses only fenced frozen-schema controller round lifecycle compatibility capabilities', () => {
+    const authorityId = 'cra_0123456789abcdef0123456789abcdef';
+    expect(parseControllerRoundCompatibilityCapability(
+      'repair',
+      `controller.round:controller_claim:${authorityId}:goal:work-compat`,
+    )).toEqual({ operation: 'controller_claim', authorityId, relayScopeId: 'goal:work-compat' });
+    expect(parseControllerRoundCompatibilityCapability(
+      'repair',
+      `controller.round:continue:${authorityId}:goal:work-compat`,
+    )).toEqual({ operation: 'continue', authorityId, relayScopeId: 'goal:work-compat' });
+    expect(parseControllerRoundCompatibilityCapability('continue', `controller.round:continue:${authorityId}:goal:work-compat`)).toBeUndefined();
+    expect(parseControllerRoundCompatibilityCapability('repair', 'controller.disposition:wait:goal:work-compat')).toBeUndefined();
+    expect(() => parseControllerRoundCompatibilityCapability('repair', `controller.round:delegate:${authorityId}:goal:work-compat`)).toThrow(/CONTROLLER_ROUND_COMPATIBILITY_INVALID/);
+    expect(() => parseControllerRoundCompatibilityCapability('repair', 'controller.round:continue:not-authority:goal:work-compat')).toThrow(/CONTROLLER_ROUND_COMPATIBILITY_INVALID/);
+    expect(() => parseControllerRoundCompatibilityCapability('repair', `controller.round:continue:${authorityId}:`)).toThrow(/CONTROLLER_ROUND_COMPATIBILITY_INVALID/);
   });
 
   test('allows only the exact same-principal ChatGPT authority to record goal_complete after release/reclaim runtime rotation', () => {

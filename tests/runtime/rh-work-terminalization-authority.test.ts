@@ -114,6 +114,74 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 }
 
 describe('rh_work terminalization authority', () => {
+  test('frozen rh_work schema can claim, continue, and release only with the exact relay capability', async () => {
+    const fx = fixture();
+    const workId = 'work-frozen-round-compatibility';
+    const runtimeInstanceId = 'runtime-frozen-round';
+    const principalId = 'principal-frozen-round';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    publishCurrentRuntime(fx.controllerHome, runtimeInstanceId);
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const relay = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: 'schedule:frozen-round',
+        principalId: 'forge-scheduler',
+        controllerInstanceId: runtimeInstanceId,
+        sessionId: 'occurrence-frozen-round',
+      },
+    });
+    expect(relay.authorityId).toBeTruthy();
+    finishControllerRoundRelayDispatch(store, {
+      workId,
+      ok: true,
+      browserSessionId: 'browser-frozen-round',
+      conversationUrl: 'https://chatgpt.com/c/frozen-round',
+    });
+    const caller = ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-round', runtimeInstanceId);
+    const wrongAuthority = relay.authorityId === 'cra_00000000000000000000000000000000'
+      ? 'cra_11111111111111111111111111111111'
+      : 'cra_00000000000000000000000000000000';
+
+    const wrong = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'repair',
+      work_id: workId,
+      capability_id: `controller.round:controller_claim:${wrongAuthority}:${relay.relayScopeId}`,
+    }));
+    expect(wrong.status).toBe('blocked');
+    expect(wrong.summary).toContain('WORK_CONTROLLER_ROUND_AUTHORITY_MISMATCH');
+
+    const claimed = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'repair',
+      work_id: workId,
+      capability_id: `controller.round:controller_claim:${relay.authorityId}:${relay.relayScopeId}`,
+    }));
+    expect(claimed.status).toBe('ok');
+    expect(getControllerSession(store, workId)?.sessionId).toBe('transport-frozen-round');
+
+    const continued = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'repair',
+      work_id: workId,
+      capability_id: `controller.round:continue:${relay.authorityId}:${relay.relayScopeId}`,
+    }));
+    expect(continued.status).toBe('blocked');
+    expect(continued.data.ownershipResumed).toBe(true);
+    expect(continued.data.nextStep).toBe('execute');
+    expect(continued.summary).not.toMatch(/AUTHORITY_MISMATCH|RELAY_SCOPE_MISMATCH/);
+
+    const released = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'repair',
+      work_id: workId,
+      capability_id: `controller.round:controller_release:${relay.authorityId}:${relay.relayScopeId}`,
+      reason: 'Frozen-schema controller round completed its bounded attempt.',
+    }));
+    expect(released.status).toBe('ok');
+  }, 15_000);
+
   test('authenticated principal may use explicit opaque session when transport session is absent', async () => {
     const fx = fixture();
     const workA = 'work-explicit-session-a';

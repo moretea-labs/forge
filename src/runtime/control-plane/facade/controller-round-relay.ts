@@ -28,6 +28,15 @@ export type ControllerRoundDisposition = (typeof CONTROLLER_ROUND_DISPOSITIONS)[
 
 export const CONTROLLER_RELAY_ABANDONED_RELEASE_ERROR = 'CONTROLLER_RELAY_CLAIM_RELEASED_WITHOUT_DISPOSITION';
 const CONTROLLER_DISPOSITION_COMPATIBILITY_PREFIX = 'controller.disposition:';
+const CONTROLLER_ROUND_COMPATIBILITY_PREFIX = 'controller.round:';
+export const CONTROLLER_ROUND_COMPATIBILITY_OPERATIONS = [
+  'controller_claim',
+  'continue',
+  'finalize',
+  'stop',
+  'controller_release',
+] as const;
+export type ControllerRoundCompatibilityOperation = (typeof CONTROLLER_ROUND_COMPATIBILITY_OPERATIONS)[number];
 
 export function parseControllerDispositionCompatibilityCapability(
   operation: string,
@@ -45,6 +54,38 @@ export function parseControllerDispositionCompatibilityCapability(
     throw new Error('CONTROLLER_RELAY_DISPOSITION_COMPATIBILITY_INVALID');
   }
   return { disposition, relayScopeId };
+}
+
+/**
+ * Frozen MCP clients cannot add newly introduced rh_work fields until their
+ * tool schema refreshes. Encode the exact canonical operation and per-round
+ * authority in the already-stable capability_id field without weakening the
+ * same scope/authority checks used by the native schema.
+ */
+export function parseControllerRoundCompatibilityCapability(
+  operation: string,
+  capabilityId: unknown,
+): { operation: ControllerRoundCompatibilityOperation; authorityId: string; relayScopeId: string } | undefined {
+  if (operation !== 'repair' || typeof capabilityId !== 'string') return undefined;
+  const normalized = capabilityId.trim();
+  if (!normalized.startsWith(CONTROLLER_ROUND_COMPATIBILITY_PREFIX)) return undefined;
+  const payload = normalized.slice(CONTROLLER_ROUND_COMPATIBILITY_PREFIX.length);
+  const operationSeparator = payload.indexOf(':');
+  const authoritySeparator = operationSeparator < 0 ? -1 : payload.indexOf(':', operationSeparator + 1);
+  if (operationSeparator <= 0 || authoritySeparator <= operationSeparator + 1) {
+    throw new Error('CONTROLLER_ROUND_COMPATIBILITY_INVALID');
+  }
+  const canonicalOperation = payload.slice(0, operationSeparator) as ControllerRoundCompatibilityOperation;
+  const authorityId = payload.slice(operationSeparator + 1, authoritySeparator).trim();
+  const relayScopeId = payload.slice(authoritySeparator + 1).trim();
+  if (
+    !CONTROLLER_ROUND_COMPATIBILITY_OPERATIONS.includes(canonicalOperation)
+    || !/^cra_[0-9a-f]{32}$/i.test(authorityId)
+    || !relayScopeId
+  ) {
+    throw new Error('CONTROLLER_ROUND_COMPATIBILITY_INVALID');
+  }
+  return { operation: canonicalOperation, authorityId, relayScopeId };
 }
 
 export type ControllerRoundRelayStatus =
@@ -1107,7 +1148,7 @@ export function buildControllerRoundRelayPrompt(
       : `Previous relay origin Work: ${record.originWorkId}. Do not assume the next action must continue that Work; select, start, or claim the appropriate Work from the latest semantic state.`,
     `Mechanical relay budget: round=${record.roundCount}/${record.maxRounds}; repeated_state=${record.repeatedStateCount}/${record.maxRepeatedState}; consecutive_failures=${record.consecutiveFailures}/${record.maxFailures}.`,
     record.authorityId
-      ? `This round's durable controller authority is controller_authority_id=${record.authorityId}. Pass this exact controller_authority_id together with relay_scope_id=${record.relayScopeId} on controller_claim, continue, finalize, stop, and controller_release. The opaque authority survives MCP transport/Runtime rotation within this round and rotates before a successor round; never substitute another Work/conversation's authority.`
+      ? `This round's durable controller authority is controller_authority_id=${record.authorityId}. Pass this exact controller_authority_id together with relay_scope_id=${record.relayScopeId} on controller_claim, continue, finalize, stop, and controller_release. If this client schema omits either field, first claim with rh_work operation=repair, work_id=${record.originWorkId}, capability_id=controller.round:controller_claim:${record.authorityId}:${record.relayScopeId}; for later lifecycle calls replace controller_claim with the exact canonical operation. Forge maps that compatibility call to the same fenced operation. The opaque authority survives MCP transport/Runtime rotation within this round and rotates before a successor round; never substitute another Work/conversation's authority.`
       : `This is a legacy relay record without a controller authority capability. Forge permits only the exact already-claimed MCP/controller epoch to finish it; a replacement transport must reopen/recover the round before mutating Work lifecycle.`,
     ...(['CONTROLLER_RELAY_ROUND_UNCLOSED', 'CONTROLLER_RELAY_CLAIMED_ROUND_UNCLOSED'].includes(record.lastError ?? '')
       ? ['The previous ChatGPT round did not submit an explicit disposition before its liveness grace elapsed. Forge is only recovering liveness: reread durable state, make the semantic decision in ChatGPT, and close this round explicitly.']

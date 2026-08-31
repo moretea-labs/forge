@@ -157,7 +157,7 @@ describe('autonomous continuation lifecycle', () => {
     expect(getControllerSession(store, workId)?.controllerId).toBe('chatgpt-principal');
   });
 
-  test('frozen-schema goal_complete closes a completed Work after MCP session rotation without reclaiming the terminal Work', async () => {
+  test('frozen-schema goal_complete closes a completed Work after transport rotation without replacing the opaque conversation session', async () => {
     const root = temp('forge-autonomous-continuation-facade-');
     const controllerHome = join(root, 'controller');
     const repoRoot = join(root, 'repo');
@@ -259,7 +259,7 @@ describe('autonomous continuation lifecycle', () => {
       status: 'goal_complete',
       controllerId: 'chatgpt-principal',
       principalId: 'chatgpt-principal',
-      sessionId: 'mcp-after-finalize',
+      sessionId: owner.sessionId,
     });
     // Terminal semantic closure must not rewrite or reclaim the physical Work lease.
     expect(getControllerSession(store, workId)?.sessionId).toBe('mcp-before-finalize');
