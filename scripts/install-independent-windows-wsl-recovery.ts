@@ -86,16 +86,9 @@ let windowsLogonTask: { name: string; installed: boolean; error?: string } | und
 if (installWindowsLogonTask) {
   const scriptPath = 'C:\\ProgramData\\ForgeRecovery\\ForgeRecovery.ps1';
   const taskName = 'Forge Independent Recovery WSL';
-  const commandText = [
-    "$ErrorActionPreference='Stop'",
-    `$taskName='${taskName}'`,
-    `$scriptPath='${scriptPath}'`,
-    "$action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -File \"' + $scriptPath + '\" full_recover')",
-    '$trigger=New-ScheduledTaskTrigger -AtLogOn',
-    "$null=Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Description 'Forge independent Windows/WSL rescue cold-start trigger.' -Force",
-  ].join('; ');
+  const powershell = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
   try {
-    command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', commandText]);
+    command(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, 'task_install']);
     windowsLogonTask = { name: taskName, installed: true };
   } catch (error) {
     // The external agent and WSL watchdog remain valid without a logon task.

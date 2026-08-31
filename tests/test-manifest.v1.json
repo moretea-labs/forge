@@ -469,6 +469,10 @@
       "module": "process-runtime",
       "resource": "pure"
     },
+    "tests/runtime/windows-host-recovery.test.ts": {
+      "module": "process-runtime",
+      "resource": "pure"
+    },
     "tests/runtime/github-actions-plugin.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"
