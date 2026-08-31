@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { materializePackageRuntimeRelease } from '../../src/runtime/root/package-runtime-release';
+import { assertStorageHeadroom, readStorageCapacity } from '../../src/runtime/shared/storage-capacity';
 
 const roots: string[] = [];
 
@@ -59,4 +60,15 @@ describe('package Runtime release immutability', () => {
       .toThrow('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION');
     expect(readFileSync(snapshotFile, 'utf8')).toBe('export const runtime = 999;\n');
   });
+  test('fails before a storage mutation when required bytes exceed proven filesystem headroom', () => {
+    const { home } = fixture();
+    const capacity = readStorageCapacity(home);
+    expect(capacity.availableBytes).toBeNumber();
+    expect(() => assertStorageHeadroom(home, {
+      operation: 'test_impossible_write',
+      requiredBytes: (capacity.availableBytes ?? 0) + 1,
+      reserveBytes: 0,
+    })).toThrow('FORGE_STORAGE_HEADROOM_LOW');
+  });
+
 });

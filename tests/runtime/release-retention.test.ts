@@ -149,7 +149,7 @@ describe('controller release retention', () => {
     expect(report.removedPaths).toContain('recovery/releases/stale-release');
   });
 
-  test('ignores stale missing recovery known-good history while preserving extant known-good releases', () => {
+  test('keeps recovery known-good as historical evidence without pinning old runtime release artifacts', () => {
     const home = controllerHome();
     const active = runtimeRelease(home, 'active-release');
     const previous = runtimeRelease(home, 'previous-release');
@@ -168,6 +168,7 @@ describe('controller release retention', () => {
         { revision: 'already-pruned-release', path: join(home, 'runtime', 'releases', 'already-pruned-release', 'manifest.json') },
       ],
     }, null, 2)}\n`, 'utf8');
+    age(knownGood);
     age(stale);
 
     const report = cleanupControllerReleaseHistory(home, {
@@ -178,11 +179,12 @@ describe('controller release retention', () => {
 
     expect(existsSync(active)).toBe(true);
     expect(existsSync(previous)).toBe(true);
-    expect(existsSync(knownGood)).toBe(true);
+    expect(existsSync(knownGood)).toBe(false);
     expect(existsSync(stale)).toBe(false);
     expect(report.errors).toEqual([]);
+    expect(report.removedPaths).toContain('runtime/releases/known-good-release');
     expect(report.removedPaths).toContain('runtime/releases/stale-release');
-    expect(report.skippedByReason.release_authority).toBe(3);
+    expect(report.skippedByReason.release_authority).toBe(2);
   });
 
   test('fails closed when runtime release authority is malformed', () => {
@@ -262,6 +264,41 @@ describe('runtime cleanup release integration', () => {
     expect(report.removedReleasePaths).toContain('runtime/releases/stale-release');
     expect(report.cycle.removed).toBeGreaterThanOrEqual(1);
   });
+
+  test('periodic phase rotation prevents release retention starvation under a saturated one-item budget', () => {
+    const home = controllerHome();
+    runtimeRelease(home, 'active-release');
+    runtimeRelease(home, 'previous-release');
+    const stale = runtimeRelease(home, 'stale-release');
+    const backups = join(home, 'runtime', 'releases', 'backups');
+    mkdirSync(backups, { recursive: true });
+    const referencedBackup = join(backups, 'referenced.sqlite');
+    writeFileSync(referencedBackup, 'referenced', 'utf8');
+    writeRuntimeAuthority(home, 'active-release', 'previous-release', referencedBackup);
+    age(stale);
+    const daemon = join(home, 'daemon');
+    mkdirSync(daemon, { recursive: true });
+    const staleTemp = join(daemon, 'always-stale.tmp');
+    writeFileSync(staleTemp, 'temporary\n', 'utf8');
+    age(staleTemp);
+
+    const report = cleanupControllerRuntimeState(home, {
+      reason: 'periodic',
+      periodicSequence: 3,
+      nowMs: NOW,
+      maxEntries: 100,
+      maxRemovals: 1,
+      releaseRetentionGraceMs: 0,
+      inspectProcess: () => ({ alive: false }),
+    });
+
+    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(staleTemp)).toBe(true);
+    expect(report.removedReleasePaths).toContain('runtime/releases/stale-release');
+    expect(report.cycle.removed).toBe(1);
+    expect(report.cycle.budgetExhausted).toBe(true);
+  });
+
 });
 
 

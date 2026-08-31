@@ -7,6 +7,7 @@ import { packageRuntimeSourceRoot } from '../control-plane/runtime-generation';
 import { FORGE_VERSION } from '../../version';
 import { publishRuntimeRelease, type RuntimeReleaseAuthority } from './release-store';
 import type { RuntimeReleaseManifest } from './types';
+import { assertStorageHeadroom } from '../shared/storage-capacity';
 
 export interface PackageRuntimeFileRecord {
   path: string;
@@ -34,6 +35,7 @@ export interface PackageRuntimeRelease {
 // after the installed package moves or disappears.
 const PACKAGE_RUNTIME_ROOTS = ['src', 'bin', 'assets', 'scripts', 'node_modules'] as const;
 const PACKAGE_RUNTIME_FILES = ['package.json'] as const;
+const PACKAGE_RUNTIME_STAGING_RESERVE_BYTES = 256 * 1024 * 1024;
 
 function sha256(value: Buffer | string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -246,6 +248,10 @@ export function materializePackageRuntimeRelease(input: {
     cleanWorkspace: true,
   };
   const manifestPath = join(releaseRoot, 'manifest.json');
+  const stagedBytes = records.reduce((total, record) => total + record.bytes, 0)
+    + Buffer.byteLength(indexJson)
+    + Buffer.byteLength(launcher)
+    + Buffer.byteLength(JSON.stringify({ ...expectedManifest, createdAt: new Date(0).toISOString() }));
   const assertExisting = () => assertImmutablePackageRuntimeRelease({
     releaseRoot, packageRoot, records, indexPath, indexJson, entrypointPath, launcher, manifestPath, expectedManifest,
   });
@@ -253,6 +259,11 @@ export function materializePackageRuntimeRelease(input: {
   if (existsSync(releaseRoot)) {
     assertExisting();
   } else {
+    assertStorageHeadroom(controllerHome, {
+      operation: 'materialize_package_runtime_release',
+      requiredBytes: stagedBytes,
+      reserveBytes: PACKAGE_RUNTIME_STAGING_RESERVE_BYTES,
+    });
     mkdirSync(releasesRoot, { recursive: true, mode: 0o700 });
     const stagingRoot = join(releasesRoot, `.staging-${releaseId}-${process.pid}-${randomUUID().slice(0, 8)}`);
     try {

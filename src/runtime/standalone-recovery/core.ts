@@ -3,6 +3,7 @@ import { spawn, spawnSync } from 'child_process';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { homedir, hostname } from 'os';
 import { basename, dirname, isAbsolute, join, resolve } from 'path';
+import { assertStorageHeadroom } from '../shared/storage-capacity';
 import { observeRuntimeStatus } from '../root/status';
 import {
   activeRuntimeEntrypoint,
@@ -412,9 +413,15 @@ function json<T>(path: string): T | undefined {
 }
 
 function writeJson(path: string, value: unknown): void {
+  const content = `${JSON.stringify(value, null, 2)}\n`;
+  assertStorageHeadroom(path, {
+    operation: 'standalone_recovery_state_write',
+    requiredBytes: Buffer.byteLength(content),
+    reserveBytes: 16 * 1024 * 1024,
+  });
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  writeFileSync(temporary, content, { encoding: 'utf8', mode: 0o600 });
   try { chmodSync(temporary, 0o600); } catch { /* best effort */ }
   renameSync(temporary, path);
 }

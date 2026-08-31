@@ -127,10 +127,9 @@ function loadPackageConnectorReleaseProtection(controllerHome: string, releasesR
   return canonical(releaseRoot);
 }
 
-function loadRecoveryKnownGoodReleaseProtection(controllerHome: string, releasesRoot: string): Set<string> {
+function validateRecoveryKnownGoodHistory(controllerHome: string, releasesRoot: string): void {
   const knownGoodPath = join(controllerHome, 'recovery', 'state', 'known-good.json');
-  const protectedPaths = new Set<string>();
-  if (!existsSync(knownGoodPath)) return protectedPaths;
+  if (!existsSync(knownGoodPath)) return;
   const parsed = JSON.parse(readFileSync(knownGoodPath, 'utf8')) as Record<string, unknown>;
   if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.releases)) {
     throw new Error('standalone recovery known-good authority is invalid');
@@ -150,14 +149,7 @@ function loadRecoveryKnownGoodReleaseProtection(controllerHome: string, releases
     ) {
       throw new Error('standalone recovery known-good release is outside runtime releases');
     }
-    // Known-good history is append-only recovery evidence. A historical record
-    // may legitimately outlive the retained release directory after a bounded
-    // cleanup pass. Missing historical artifacts therefore protect nothing and
-    // must not disable retention for the remaining authoritative releases.
-    if (!existsSync(manifestPath) || !existsSync(releaseRoot)) continue;
-    protectedPaths.add(canonical(releaseRoot));
   }
-  return protectedPaths;
 }
 
 function loadRuntimeProtection(controllerHome: string): RuntimeProtection | undefined {
@@ -180,9 +172,15 @@ function loadRuntimeProtection(controllerHome: string): RuntimeProtection | unde
   }
   const connectorRelease = loadPackageConnectorReleaseProtection(controllerHome, releasesRoot);
   if (connectorRelease) releasePaths.add(connectorRelease);
-  for (const knownGoodRelease of loadRecoveryKnownGoodReleaseProtection(controllerHome, releasesRoot)) {
-    releasePaths.add(knownGoodRelease);
-  }
+  // Recovery known-good is append-only attestation evidence, not a storage
+  // ownership authority. Recovery itself only accepts a known-good entry when
+  // it still matches the current active/previous release authority, both of
+  // which are already protected above. Keeping every extant historical entry
+  // here creates a circular retention leak: the artifact can never disappear
+  // because its historical evidence exists, while the evidence is allowed to
+  // outlive the artifact. Validate the ledger fail-closed, but do not grant old
+  // attestations independent retention authority.
+  validateRecoveryKnownGoodHistory(controllerHome, releasesRoot);
 
   const backupPaths = new Set<string>();
   let backupAuthoritySafe = true;

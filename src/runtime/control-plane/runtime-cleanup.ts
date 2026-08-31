@@ -10,8 +10,13 @@ import {
 } from 'fs';
 import { join, relative, resolve } from 'path';
 import { ensureControllerHome } from '../../cli/repositories/controller-home';
+import { listRepositories } from '../../cli/repositories/registry';
+import { managedPathInside, managedWorktreeStorageRoot } from '../../cli/repositories/worktree-storage';
+import { migrateManagedWorkspacePhysicalDependenciesToCanonical } from '../execution/managed-workspace';
+import { listActiveLeases } from '../resources/leases/store';
 import { appendJsonLine, readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { cleanupControllerReleaseHistory } from './release-retention';
+import { cleanupWorkPreservationArtifacts } from './cleanup-artifact-retention';
 
 function numericSetting(value: string | undefined, fallback: number, minimum: number): number {
   const parsed = Number(value);
@@ -129,10 +134,14 @@ export interface RuntimeCleanupOptions {
   maxEntries?: number;
   /** Global removal budget for one cycle; automatic cleanup defaults to 50. */
   maxRemovals?: number;
+  /** Scheduler cleanup generation used to rotate removal priority without adding durable state. */
+  periodicSequence?: number;
   /** Minimum age before an unreferenced finalized release/backup can be reclaimed. */
   releaseRetentionGraceMs?: number;
   /** Minimum age before an abandoned runtime .staging-* directory can be reclaimed. */
   stagingReleaseRetentionGraceMs?: number;
+  /** Minimum age before a proven-redundant terminal Work preservation bundle can be reclaimed. */
+  cleanupArtifactRetentionGraceMs?: number;
   inspectProcess?: (pid: number) => RuntimeProcessSnapshot;
 }
 
@@ -142,7 +151,9 @@ export interface RuntimeCleanupReport {
   removedPidFiles: string[];
   skippedPidFiles: string[];
   removedWorktrees: string[];
+  migratedDependencyPaths: string[];
   removedTemporaryPaths: string[];
+  removedCleanupArtifactPaths: string[];
   removedReleasePaths: string[];
   skippedActiveWorktrees: string[];
   inspectedPaths: number;
@@ -178,6 +189,15 @@ interface ScanBudget {
 interface RemovalBudget {
   remaining: number;
   exhausted: boolean;
+}
+
+type RemovalPhase = 'worktrees' | 'temporary' | 'artifacts' | 'releases';
+const REMOVAL_PHASES: readonly RemovalPhase[] = ['worktrees', 'temporary', 'artifacts', 'releases'];
+
+export function cleanupRemovalPhaseOrder(reason: RuntimeCleanupReport['reason'], sequence = 0): RemovalPhase[] {
+  if (reason !== 'periodic') return [...REMOVAL_PHASES];
+  const offset = ((Math.trunc(sequence) % REMOVAL_PHASES.length) + REMOVAL_PHASES.length) % REMOVAL_PHASES.length;
+  return [...REMOVAL_PHASES.slice(offset), ...REMOVAL_PHASES.slice(0, offset)];
 }
 
 interface WorktreeReferences {
@@ -543,6 +563,62 @@ function cleanupOrphanWorktrees(
   return { removed, skippedActive, skippedByReason };
 }
 
+function cleanupManagedWorktreeDependencyCopies(
+  controllerHome: string,
+  budget: ScanBudget,
+  errors: string[],
+  removalBudget: RemovalBudget,
+): { migrated: string[]; skippedByReason: Record<string, number> } {
+  const migrated: string[] = [];
+  const skippedByReason: Record<string, number> = {};
+  const skip = (reason: string): void => { skippedByReason[reason] = (skippedByReason[reason] ?? 0) + 1; };
+  let repositories;
+  try {
+    repositories = listRepositories(controllerHome, { includeRemoved: true });
+  } catch (error) {
+    errors.push(errorText('managed dependency repository inventory', error));
+    return { migrated, skippedByReason };
+  }
+  let storageRoot: string;
+  try {
+    storageRoot = managedWorktreeStorageRoot(controllerHome, repositories);
+  } catch (error) {
+    errors.push(errorText('managed dependency storage authority', error));
+    return { migrated, skippedByReason };
+  }
+  for (const repository of repositories) {
+    const activeLeases = listActiveLeases(controllerHome, repository.repoId);
+    for (const checkout of repository.checkouts) {
+      if (budget.remaining <= 0) { budget.exhausted = true; return { migrated, skippedByReason }; }
+      budget.remaining -= 1;
+      budget.inspected += 1;
+      if (!checkout.worktree || checkout.lifecycle === 'removed' || checkout.lifecycle === 'archived') continue;
+      const root = checkout.canonicalRoot;
+      if (!existsSync(root) || !managedPathInside(storageRoot, root)) { skip('dependency_outside_managed_authority'); continue; }
+      const dependencyPath = join(root, 'node_modules');
+      if (!existsSync(dependencyPath)) continue;
+      let dependencyStats;
+      try { dependencyStats = lstatSync(dependencyPath); } catch (error) { errors.push(errorText(`managed dependency stat ${root}`, error)); continue; }
+      if (dependencyStats.isSymbolicLink()) continue;
+      if (!dependencyStats.isDirectory()) { skip('dependency_path_not_directory'); continue; }
+      if (activeLeases.some((lease) => lease.checkoutId === checkout.checkoutId || lease.resourceKey === `workspace:${checkout.checkoutId}`)) {
+        skip('dependency_active_owner');
+        continue;
+      }
+      if (removalBudget.remaining <= 0) { removalBudget.exhausted = true; skip('cleanup_budget_exhausted'); continue; }
+      try {
+        const result = migrateManagedWorkspacePhysicalDependenciesToCanonical(root);
+        if (!result) { skip('dependency_not_reusable'); continue; }
+        removalBudget.remaining -= 1;
+        migrated.push(relativeHomePath(controllerHome, dependencyPath));
+      } catch (error) {
+        errors.push(errorText(`managed dependency migration ${root}`, error));
+      }
+    }
+  }
+  return { migrated, skippedByReason };
+}
+
 function worktreeContentPath(relativePath: string): boolean {
   return /^repositories\/[^/]+\/worktrees(?:\/|$)/.test(relativePath);
 }
@@ -631,7 +707,9 @@ function shouldPersistCleanupAudit(report: RuntimeCleanupReport): boolean {
   const hadMutations = Boolean(
     report.removedPidFiles.length
     || report.removedWorktrees.length
+    || report.migratedDependencyPaths.length
     || report.removedTemporaryPaths.length
+    || report.removedCleanupArtifactPaths.length
     || report.removedReleasePaths.length,
   );
   if (hadMutations || report.errors.length) return true;
@@ -656,29 +734,66 @@ export function cleanupControllerRuntimeState(
   // worktree reference collection or orphan worktree removal.
   const referenceBudget = createScanBudget(maxEntries);
   const worktreeBudget = createScanBudget(maxEntries);
+  const dependencyBudget = createScanBudget(maxEntries);
   const tempBudget = createScanBudget(maxEntries);
   const errors: string[] = [];
   const skippedByReason: Record<string, number> = {};
   const pidFiles = cleanupDaemonPidFile(home, nowIso, options, errors, removalBudget);
   const references = collectReferencedWorktrees(home, referenceBudget, errors, nowMs);
-  const worktrees = cleanupOrphanWorktrees(home, references, worktreeBudget, nowMs, errors, removalBudget);
-  Object.entries(worktrees.skippedByReason).forEach(([key, value]) => { skippedByReason[key] = (skippedByReason[key] ?? 0) + value; });
-  const removedTemporaryPaths = cleanupTemporaryStatePaths(home, tempBudget, nowMs, errors, removalBudget, skippedByReason).sort();
-  const releaseRetention = cleanupControllerReleaseHistory(home, {
-    nowMs,
-    graceMs: options.releaseRetentionGraceMs,
-    stagingGraceMs: options.stagingReleaseRetentionGraceMs,
-    maxRemovals: removalBudget.remaining,
-  });
-  removalBudget.remaining = Math.max(0, removalBudget.remaining - releaseRetention.attempted);
-  if (releaseRetention.budgetExhausted) removalBudget.exhausted = true;
-  Object.entries(releaseRetention.skippedByReason).forEach(([key, value]) => {
-    skippedByReason[key] = (skippedByReason[key] ?? 0) + value;
-  });
-  errors.push(...releaseRetention.errors);
-  const removedReleasePaths = releaseRetention.removedPaths;
-  const inspectedPaths = referenceBudget.inspected + worktreeBudget.inspected + tempBudget.inspected + releaseRetention.inspected;
-  const budgetExhausted = referenceBudget.exhausted || worktreeBudget.exhausted || tempBudget.exhausted || removalBudget.exhausted;
+  let worktrees: ReturnType<typeof cleanupOrphanWorktrees> | undefined;
+  let dependencyCleanup: ReturnType<typeof cleanupManagedWorktreeDependencyCopies> | undefined;
+  let removedTemporaryPaths: string[] | undefined;
+  let artifactRetention: ReturnType<typeof cleanupWorkPreservationArtifacts> | undefined;
+  let releaseRetention: ReturnType<typeof cleanupControllerReleaseHistory> | undefined;
+  const sequence = options.periodicSequence ?? Math.floor(nowMs / 60_000);
+
+  for (const phase of cleanupRemovalPhaseOrder(options.reason ?? 'manual', sequence)) {
+    if (phase === 'worktrees') {
+      dependencyCleanup = cleanupManagedWorktreeDependencyCopies(home, dependencyBudget, errors, removalBudget);
+      Object.entries(dependencyCleanup.skippedByReason).forEach(([key, value]) => { skippedByReason[key] = (skippedByReason[key] ?? 0) + value; });
+      worktrees = cleanupOrphanWorktrees(home, references, worktreeBudget, nowMs, errors, removalBudget);
+      Object.entries(worktrees.skippedByReason).forEach(([key, value]) => { skippedByReason[key] = (skippedByReason[key] ?? 0) + value; });
+      continue;
+    }
+    if (phase === 'temporary') {
+      removedTemporaryPaths = cleanupTemporaryStatePaths(home, tempBudget, nowMs, errors, removalBudget, skippedByReason).sort();
+      continue;
+    }
+    if (phase === 'artifacts') {
+      artifactRetention = cleanupWorkPreservationArtifacts(home, {
+        nowMs,
+        graceMs: options.cleanupArtifactRetentionGraceMs,
+        maxEntries,
+        maxRemovals: removalBudget.remaining,
+      });
+      removalBudget.remaining = Math.max(0, removalBudget.remaining - artifactRetention.attempted);
+      if (artifactRetention.budgetExhausted) removalBudget.exhausted = true;
+      Object.entries(artifactRetention.skippedByReason).forEach(([key, value]) => {
+        skippedByReason[`cleanup_artifact_${key}`] = (skippedByReason[`cleanup_artifact_${key}`] ?? 0) + value;
+      });
+      errors.push(...artifactRetention.errors.map((error) => `cleanup-artifact ${error}`));
+      continue;
+    }
+    releaseRetention = cleanupControllerReleaseHistory(home, {
+      nowMs,
+      graceMs: options.releaseRetentionGraceMs,
+      stagingGraceMs: options.stagingReleaseRetentionGraceMs,
+      maxRemovals: removalBudget.remaining,
+    });
+    removalBudget.remaining = Math.max(0, removalBudget.remaining - releaseRetention.attempted);
+    if (releaseRetention.budgetExhausted) removalBudget.exhausted = true;
+    Object.entries(releaseRetention.skippedByReason).forEach(([key, value]) => {
+      skippedByReason[key] = (skippedByReason[key] ?? 0) + value;
+    });
+    errors.push(...releaseRetention.errors);
+  }
+  if (!worktrees || !dependencyCleanup || !removedTemporaryPaths || !artifactRetention || !releaseRetention) {
+    throw new Error('RUNTIME_CLEANUP_PHASE_INCOMPLETE');
+  }
+  const removedCleanupArtifactPaths = artifactRetention.removedPaths.sort();
+  const removedReleasePaths = releaseRetention.removedPaths.sort();
+  const inspectedPaths = referenceBudget.inspected + worktreeBudget.inspected + dependencyBudget.inspected + tempBudget.inspected + artifactRetention.inspected + releaseRetention.inspected;
+  const budgetExhausted = referenceBudget.exhausted || worktreeBudget.exhausted || dependencyBudget.exhausted || tempBudget.exhausted || removalBudget.exhausted;
   if (pidFiles.skipped.length > 0 && removalBudget.exhausted) skippedByReason.cleanup_budget_exhausted = (skippedByReason.cleanup_budget_exhausted ?? 0) + pidFiles.skipped.length;
   if (pidFiles.skipped.length > 0 && !removalBudget.exhausted) skippedByReason.active_owner = (skippedByReason.active_owner ?? 0) + pidFiles.skipped.length;
   const report: RuntimeCleanupReport = {
@@ -687,7 +802,9 @@ export function cleanupControllerRuntimeState(
     removedPidFiles: pidFiles.removed.sort(),
     skippedPidFiles: pidFiles.skipped.sort(),
     removedWorktrees: worktrees.removed.sort(),
+    migratedDependencyPaths: dependencyCleanup.migrated.sort(),
     removedTemporaryPaths,
+    removedCleanupArtifactPaths,
     removedReleasePaths,
     skippedActiveWorktrees: worktrees.skippedActive.sort(),
     inspectedPaths,
@@ -696,11 +813,11 @@ export function cleanupControllerRuntimeState(
     logPath: runtimeCleanupLogPath(home),
     cycle: {
       scanned: inspectedPaths,
-      eligible: pidFiles.removed.length + worktrees.removed.length + removedTemporaryPaths.length + releaseRetention.eligible,
-      attempted: pidFiles.removed.length + worktrees.removed.length + removedTemporaryPaths.length + releaseRetention.attempted + errors.length,
-      removed: pidFiles.removed.length + worktrees.removed.length + removedTemporaryPaths.length + removedReleasePaths.length,
-      retained: pidFiles.skipped.length + worktrees.skippedActive.length + releaseRetention.retained,
-      skipped: Math.max(0, inspectedPaths - pidFiles.removed.length - worktrees.removed.length - removedTemporaryPaths.length - removedReleasePaths.length - errors.length),
+      eligible: pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + artifactRetention.eligible + releaseRetention.eligible,
+      attempted: pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + artifactRetention.attempted + releaseRetention.attempted + errors.length,
+      removed: pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + removedCleanupArtifactPaths.length + removedReleasePaths.length,
+      retained: pidFiles.skipped.length + worktrees.skippedActive.length + artifactRetention.retained + releaseRetention.retained,
+      skipped: Math.max(0, inspectedPaths - pidFiles.removed.length - worktrees.removed.length - dependencyCleanup.migrated.length - removedTemporaryPaths.length - removedCleanupArtifactPaths.length - removedReleasePaths.length - errors.length),
       failed: errors.length,
       truncated: budgetExhausted,
       budgetExhausted,

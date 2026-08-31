@@ -1,5 +1,5 @@
-import { createHash } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync } from 'fs';
+import { createHash, randomUUID } from 'crypto';
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import type { RepositoryRecord } from '../../cli/repositories/types';
@@ -92,8 +92,8 @@ function assertBranch(root: string, branch: string): string {
   return normalized;
 }
 
-export function managedWorkspaceDependencyBootstrap(repoRoot: string): ManagedWorkspaceDependencyBootstrap | undefined {
-  if (!existsSync(join(repoRoot, 'package.json')) || existsSync(join(repoRoot, 'node_modules'))) return undefined;
+function detectManagedWorkspaceDependencyBootstrap(repoRoot: string): ManagedWorkspaceDependencyBootstrap | undefined {
+  if (!existsSync(join(repoRoot, 'package.json'))) return undefined;
   const lockCandidates = [
     ['bun', 'bun.lock', ['bun', 'install', '--frozen-lockfile']],
     ['bun', 'bun.lockb', ['bun', 'install', '--frozen-lockfile']],
@@ -104,6 +104,11 @@ export function managedWorkspaceDependencyBootstrap(repoRoot: string): ManagedWo
   const detected = lockCandidates.find(([, lockfile]) => existsSync(join(repoRoot, lockfile)));
   if (!detected) return undefined;
   return { packageManager: detected[0], lockfile: detected[1], command: [...detected[2]] };
+}
+
+export function managedWorkspaceDependencyBootstrap(repoRoot: string): ManagedWorkspaceDependencyBootstrap | undefined {
+  if (existsSync(join(repoRoot, 'node_modules'))) return undefined;
+  return detectManagedWorkspaceDependencyBootstrap(repoRoot);
 }
 
 const DEPENDENCY_REUSE_CONFIG_PATHS = [
@@ -151,7 +156,7 @@ export function resolveManagedWorkspaceCanonicalDependencies(repoRoot: string): 
   canonicalRoot: string;
   nodeModulesRoot: string;
 } | undefined {
-  const bootstrap = managedWorkspaceDependencyBootstrap(repoRoot);
+  const bootstrap = detectManagedWorkspaceDependencyBootstrap(repoRoot);
   if (!bootstrap) return undefined;
   const canonicalRoot = linkedWorkspaceCanonicalRoot(repoRoot);
   if (!canonicalRoot) return undefined;
@@ -160,6 +165,51 @@ export function resolveManagedWorkspaceCanonicalDependencies(repoRoot: string): 
   const dependencyInputs = ['package.json', bootstrap.lockfile, ...DEPENDENCY_REUSE_CONFIG_PATHS];
   if (!dependencyInputs.every((path) => dependencyInputMatches(repoRoot, canonicalRoot, path))) return undefined;
   return { canonicalRoot, nodeModulesRoot: realpathSync(nodeModulesRoot) };
+}
+
+/**
+ * Replace a legacy physical dependency copy with the already-authoritative
+ * canonical dependency tree. The caller must hold repository maintenance
+ * ownership and prove there is no active workspace lease before invoking this
+ * filesystem mutation. A temporary rename gives the operation an exact rollback
+ * point; any link/removal failure restores the original physical directory.
+ */
+export function migrateManagedWorkspacePhysicalDependenciesToCanonical(
+  repoRoot: string,
+): ManagedWorkspaceDependencyPreparation | undefined {
+  const nodeModulesRoot = join(repoRoot, 'node_modules');
+  if (!existsSync(nodeModulesRoot)) return undefined;
+  const stats = lstatSync(nodeModulesRoot);
+  if (stats.isSymbolicLink()) return undefined;
+  if (!stats.isDirectory()) throw new Error(`MANAGED_WORKSPACE_DEPENDENCY_PATH_INVALID: ${nodeModulesRoot}`);
+  const reusable = resolveManagedWorkspaceCanonicalDependencies(repoRoot);
+  if (!reusable) return undefined;
+
+  const backupRoot = join(repoRoot, `.forge-node-modules-migration-${process.pid}-${randomUUID().slice(0, 8)}`);
+  renameSync(nodeModulesRoot, backupRoot);
+  try {
+    symlinkSync(reusable.nodeModulesRoot, nodeModulesRoot, process.platform === 'win32' ? 'junction' : 'dir');
+    rmSync(backupRoot, { recursive: true, force: true });
+  } catch (error) {
+    let rollbackError: unknown;
+    try {
+      if (existsSync(nodeModulesRoot)) rmSync(nodeModulesRoot, { recursive: true, force: true });
+      if (existsSync(backupRoot)) renameSync(backupRoot, nodeModulesRoot);
+    } catch (rollback) {
+      rollbackError = rollback;
+    }
+    const detail = error instanceof Error ? error.message : String(error);
+    if (rollbackError) {
+      const rollbackDetail = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+      throw new Error(`MANAGED_WORKSPACE_DEPENDENCY_MIGRATION_ROLLBACK_FAILED: ${detail}; rollback=${rollbackDetail}`);
+    }
+    throw new Error(`MANAGED_WORKSPACE_DEPENDENCY_MIGRATION_FAILED: ${detail}`);
+  }
+  return {
+    mode: 'canonical_reuse',
+    nodeModulesRoot: realpathSync(nodeModulesRoot),
+    canonicalRoot: reusable.canonicalRoot,
+  };
 }
 
 function packageManifestRequiresDependencyMaterialization(repoRoot: string): boolean {

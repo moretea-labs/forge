@@ -59,6 +59,16 @@ export interface WorkCleanupReceipt {
     patchArchiveSha256?: string;
     bundlePath?: string;
     bundleSha256?: string;
+    bundleRetirement?: {
+      status: 'eligible' | 'removed' | 'not_needed';
+      reason: 'no_source_delta' | 'target_and_remote_content_contained';
+      protectedRevision: string;
+      targetRevision?: string;
+      remoteRevision?: string;
+      comparedPaths: string[];
+      provedAt: string;
+      removedAt?: string;
+    };
     recoveryInstructions?: string;
   };
   worktree: {

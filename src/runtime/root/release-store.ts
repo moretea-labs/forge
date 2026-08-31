@@ -1,14 +1,16 @@
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { ensureControllerHome } from '../../cli/repositories/controller-home';
 import {
   backupControlPlaneDatabase,
+  controlPlaneDatabasePath,
   restoreControlPlaneDatabase,
   type ControlPlaneDatabaseInspection,
 } from '../control-plane/persistence/sqlite-store';
 import { loadRuntimeReleaseManifest } from './release-manifest';
 import type { RuntimeReleaseManifest } from './types';
+import { assertStorageHeadroom } from '../shared/storage-capacity';
 
 /**
  * Local Controller Home recovery evidence. This database contains execution
@@ -52,6 +54,21 @@ const DEFAULT_DEPENDENCIES: RuntimeReleaseStoreDependencies = {
   restoreDatabase: restoreControlPlaneDatabase,
 };
 
+const RUNTIME_RELEASE_STATE_RESERVE_BYTES = 64 * 1024 * 1024;
+
+function fileSize(path: string): number {
+  try { return existsSync(path) ? statSync(path).size : 0; } catch { return 0; }
+}
+
+function assertDatabaseBackupHeadroom(controllerHome: string, operation: string, extraBytes = 0): void {
+  const databaseBytes = fileSize(controlPlaneDatabasePath(controllerHome));
+  assertStorageHeadroom(controllerHome, {
+    operation,
+    requiredBytes: databaseBytes + Math.max(0, extraBytes),
+    reserveBytes: RUNTIME_RELEASE_STATE_RESERVE_BYTES,
+  });
+}
+
 export function runtimeReleaseAuthorityPath(controllerHome: string): string {
   return join(ensureControllerHome(controllerHome), 'runtime', 'releases', 'authority.json');
 }
@@ -63,9 +80,15 @@ function backupPath(controllerHome: string, releaseId: string, operationId: stri
 }
 
 function atomicWrite(path: string, value: unknown): void {
+  const content = `${JSON.stringify(value, null, 2)}\n`;
+  assertStorageHeadroom(path, {
+    operation: 'runtime_release_authority_write',
+    requiredBytes: Buffer.byteLength(content),
+    reserveBytes: RUNTIME_RELEASE_STATE_RESERVE_BYTES,
+  });
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  writeFileSync(temporary, content, { encoding: 'utf8', mode: 0o600 });
   renameSync(temporary, path);
 }
 
@@ -200,6 +223,7 @@ export function publishRuntimeRelease(
     });
   }
   if (sameRelease(current.active, candidate)) return current;
+  assertDatabaseBackupHeadroom(controllerHome, 'publish_runtime_release_database_backup');
   const backup = backupPath(controllerHome, current.active.releaseId, operationId);
   const inspection = dependencies.backupDatabase(controllerHome, backup);
   const committedAt = new Date().toISOString();
@@ -236,6 +260,11 @@ export function rollbackRuntimeRelease(
   const current = mutableRuntimeReleaseAuthority(controllerHome);
   const target = current?.previous;
   if (!current || !target?.databaseBackup) throw new Error('RUNTIME_PREVIOUS_RELEASE_UNAVAILABLE');
+  assertDatabaseBackupHeadroom(
+    controllerHome,
+    'rollback_runtime_release_database_transition',
+    fileSize(target.databaseBackup.path),
+  );
   const currentBackup = backupPath(controllerHome, current.active.releaseId, operationId);
   const currentInspection = dependencies.backupDatabase(controllerHome, currentBackup);
   dependencies.restoreDatabase(controllerHome, target.databaseBackup.path);
