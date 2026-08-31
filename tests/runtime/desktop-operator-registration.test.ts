@@ -25,6 +25,7 @@ describe('Desktop Operator trusted external registration', () => {
     ]);
     expect(input.capabilities.find((capability) => capability.capabilityId === 'desktop.interact')?.actions).toEqual([
       'desktop_press',
+      'desktop_pointer_click',
       'desktop_type_text',
       'desktop_key',
       'desktop_open_url',
@@ -35,6 +36,7 @@ describe('Desktop Operator trusted external registration', () => {
       'desktop_session_open',
       'desktop_observe',
       'desktop_press',
+      'desktop_pointer_click',
       'desktop_type_text',
       'desktop_key',
       'desktop_clipboard_read',
@@ -49,7 +51,7 @@ describe('Desktop Operator trusted external registration', () => {
     for (const action of input.actions.filter((action) => action.readOnly)) {
       expect(action.risk).toBe('readonly');
     }
-    for (const action of input.actions.filter((action) => ['desktop_permissions_request', 'desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_open_url', 'desktop_batch'].includes(action.actionId))) {
+    for (const action of input.actions.filter((action) => ['desktop_permissions_request', 'desktop_press', 'desktop_pointer_click', 'desktop_type_text', 'desktop_key', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_open_url', 'desktop_batch'].includes(action.actionId))) {
       expect(action.risk).toBe('workspace_write');
       expect(action.confirmation).toBe('authorization');
     }
@@ -60,7 +62,15 @@ describe('Desktop Operator trusted external registration', () => {
     expect(pressSchema?.properties?.coordinate_fallback).toBeUndefined();
     expect(press?.description).toContain('one-page list scrolling');
     expect(press?.description).toContain('pointer/coordinate and raw input fallback are intentionally unavailable');
-    expect(input.actions.find((action) => action.actionId === 'desktop_pointer_click')).toBeUndefined();
+    const pointerClick = input.actions.find((action) => action.actionId === 'desktop_pointer_click');
+    expect(pointerClick).toMatchObject({ confirmation: 'authorization', scopes: ['desktop.interact', 'desktop.capture'] });
+    expect(pointerClick?.argumentsSchema?.required).toEqual(['interaction_id', 'selector', 'window_id']);
+    const pointerSchema = pointerClick?.argumentsSchema as { properties?: Record<string, unknown> } | undefined;
+    expect(pointerSchema?.properties?.x).toBeUndefined();
+    expect(pointerSchema?.properties?.y).toBeUndefined();
+    expect(pointerSchema?.properties?.visual_revision).toBeUndefined();
+    expect(pointerClick?.description).toContain('fails closed on stale refs/windows');
+    expect(pointerClick?.description).toContain('raw coordinates are never accepted');
     expect(input.actions.find((action) => action.actionId === 'desktop_foreground_pointer_click')).toBeUndefined();
     const observe = input.actions.find((action) => action.actionId === 'desktop_observe');
     const observeSchema = observe?.argumentsSchema as { properties?: {

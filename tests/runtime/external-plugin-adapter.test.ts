@@ -88,12 +88,11 @@ describe('external plugin adapter', () => {
     expect(calls).toHaveLength(1);
   });
 
-  test('tolerates retired Forge-only pointer actions in a legacy Desktop Operator registration', async () => {
+  test('tolerates the retired Forge-only foreground pointer action in a legacy Desktop Operator registration', async () => {
     const base = registration();
     const legacy = registration({
       actions: [
         ...base.actions,
-        { ...base.actions[0]!, actionId: 'desktop_pointer_click', title: 'Legacy pointer click', readOnly: false, risk: 'workspace_write', confirmation: 'authorization' },
         { ...base.actions[0]!, actionId: 'desktop_foreground_pointer_click', title: 'Legacy foreground pointer click', readOnly: false, risk: 'workspace_write', confirmation: 'authorization' },
       ],
     });
@@ -151,6 +150,94 @@ describe('external plugin adapter', () => {
     expect(result).toEqual({ observed: true });
     expect(calls.map((entry) => entry.method)).toEqual(['manifest', 'execute']);
     expect(calls[1]?.params).toEqual({ action: 'desktop_status', arguments: {} });
+  });
+
+  test('derives pointer coordinates from a freshly rebound observed ref and rejects stale geometry input by construction', async () => {
+    const base = registration();
+    const pointerAction = {
+      ...base.actions[0]!,
+      actionId: 'desktop_pointer_click',
+      title: 'Observed pointer click',
+      description: 'Safe ref-bound pointer action owned by Forge.',
+      readOnly: false,
+      risk: 'workspace_write' as const,
+      confirmation: 'authorization' as const,
+      scopes: ['desktop.interact', 'desktop.capture'],
+    };
+    const calls: ExternalUnixSocketCallOptions[] = [];
+    const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, pointerAction] }), {
+      activateAndVerifyFrontmostApplication: async () => ({
+        activated: true, verified: true, bundleId: 'com.netease.uuremote', appName: 'UU远程',
+        activationCommand: ['/usr/bin/open'], frontmostQueryCommand: ['/usr/bin/lsappinfo'],
+      }),
+      call: async (options) => {
+        calls.push(options);
+        if (options.method === 'manifest') return providerManifest({ actions: ['desktop_status', 'desktop_session_open', 'desktop_observe', 'desktop_screenshot', 'desktop_pointer_click'] });
+        const params = options.params as { action?: string; arguments?: Record<string, unknown> } | undefined;
+        switch (params?.action) {
+          case 'desktop_status':
+            return { sessions: [{ interactionId: 'desk-uu-source', bundleIdentifier: 'com.netease.uuremote', appName: 'UU远程' }] };
+          case 'desktop_observe':
+            if (params.arguments?.interaction_id === 'desk-uu-source') {
+              expect(params.arguments).toMatchObject({ root_selector: { ref: 'ax_19_7' }, include_windows: false });
+              return { snapshot: { root: { ref: 'ax_19_7', role: 'AXStaticText', title: '终端', enabled: true, frame: { x: 900, y: 200, width: 80, height: 30 } } } };
+            }
+            expect(params.arguments).toMatchObject({ interaction_id: 'desk-uu-active', root_selector: { role: 'AXStaticText', title: '终端' }, include_windows: true });
+            return {
+              snapshot: { root: { ref: 'ax_21_9', role: 'AXStaticText', title: '终端', enabled: true, frame: { x: 920, y: 220, width: 100, height: 40 } } },
+              windows: [{ windowId: 4190, onScreen: true, frame: { x: 335, y: 117, width: 800, height: 520 } }],
+            };
+          case 'desktop_session_open':
+            return { interactionId: 'desk-uu-active' };
+          case 'desktop_screenshot':
+            expect(params.arguments).toMatchObject({ interaction_id: 'desk-uu-active', scope: 'window', window_id: 4190 });
+            return { visual_revision: 23, windowId: 4190, artifactPath: '/tmp/uu.png' };
+          case 'desktop_pointer_click':
+            expect(params.arguments).toEqual({ interaction_id: 'desk-uu-active', window_id: 4190, visual_revision: 23, x: 970, y: 240 });
+            return { clicked: true };
+          default:
+            throw new Error(`unexpected provider action: ${String(params?.action)}`);
+        }
+      },
+    });
+
+    const result = await adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator',
+      actionId: 'desktop_pointer_click', requestId: 'pointer-click-1',
+      args: { interaction_id: 'desk-uu-source', selector: { ref: 'ax_19_7' }, window_id: 4190 },
+      origin: { surface: 'mcp' },
+    });
+
+    expect(result).toMatchObject({ interactionId: 'desk-uu-active', sourceRef: 'ax_19_7', reboundSelector: { role: 'AXStaticText', title: '终端' }, windowId: 4190, visualRevision: 23, frame: { x: 920, y: 220, width: 100, height: 40 }, click: { clicked: true } });
+    expect(calls.slice(1).map((entry) => (entry.params as { action?: string } | undefined)?.action)).toEqual([
+      'desktop_status', 'desktop_observe', 'desktop_session_open', 'desktop_observe', 'desktop_screenshot', 'desktop_pointer_click',
+    ]);
+  });
+
+  test('fails closed when a previously observed pointer ref is stale before any activation or click', async () => {
+    const base = registration();
+    const pointerAction = {
+      ...base.actions[0]!, actionId: 'desktop_pointer_click', title: 'Observed pointer click', description: 'Safe ref-bound pointer action.',
+      readOnly: false, risk: 'workspace_write' as const, confirmation: 'authorization' as const, scopes: ['desktop.interact', 'desktop.capture'],
+    };
+    const calls: ExternalUnixSocketCallOptions[] = [];
+    const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, pointerAction] }), {
+      call: async (options) => {
+        calls.push(options);
+        if (options.method === 'manifest') return providerManifest({ actions: ['desktop_status', 'desktop_observe', 'desktop_pointer_click'] });
+        const params = options.params as { action?: string } | undefined;
+        if (params?.action === 'desktop_status') return { sessions: [{ interactionId: 'desk-uu-source', bundleIdentifier: 'com.netease.uuremote', appName: 'UU远程' }] };
+        if (params?.action === 'desktop_observe') throw new AssistantPluginError('ELEMENT_NOT_FOUND', 'stale ref', { retryable: true });
+        throw new Error(`unexpected provider action: ${String(params?.action)}`);
+      },
+    });
+
+    await expect(adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator',
+      actionId: 'desktop_pointer_click', requestId: 'pointer-click-stale',
+      args: { interaction_id: 'desk-uu-source', selector: { ref: 'ax_stale' }, window_id: 4190 }, origin: { surface: 'mcp' },
+    })).rejects.toMatchObject({ code: 'ELEMENT_NOT_FOUND' });
+    expect(calls.slice(1).map((entry) => (entry.params as { action?: string } | undefined)?.action)).toEqual(['desktop_status', 'desktop_observe']);
   });
 
   test('executes Forge-composed foreground pointer interaction through the shared verified activation fallback and a fresh visual revision', async () => {
