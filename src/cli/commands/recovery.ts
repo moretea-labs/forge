@@ -19,6 +19,7 @@ import {
 } from '../../runtime/standalone-recovery/entry';
 import {
   activateRuntimeRelease,
+  defaultPrimaryRuntimeServiceConfig,
   loadRecoveryConfig,
   recoverPrimaryRuntime,
   restartPrimaryConnector,
@@ -34,6 +35,7 @@ import {
 import { readRecoveryRuntimeIdentity } from '../../runtime/standalone-recovery/release';
 import { configureCodegraph, ensureCodegraph } from '../tools/codegraph';
 import { isProcessAlive } from '../../runtime/shared/process-tree';
+import { systemdUserServicePid, systemdUserUnitPath } from '../controller/systemd-user';
 
 function output(value: unknown, json = true): void {
   console.log(json ? JSON.stringify(value, null, 2) : String(value));
@@ -56,8 +58,10 @@ function launchdService(label?: string, plistPath?: string, role = 'RECOVERY_TUN
 }
 
 export interface RecoveryConnectorDependencies {
+  platform?: NodeJS.Platform;
   pathExists?: (path: string) => boolean;
   launchdPid?: (role: 'gateway' | 'watchdog') => number | undefined;
+  systemdPid?: (role: 'gateway' | 'watchdog') => number | undefined;
   tunnelLaunchdPid?: (label: string) => number | undefined;
   processAlive?: (pid: number) => boolean;
 }
@@ -78,8 +82,8 @@ export interface RecoveryConnectorDescriptor {
   };
   healthUrl: string;
   services: {
-    gateway: { label: string; plistInstalled: boolean; running: boolean; pid?: number };
-    watchdog: { label: string; plistInstalled: boolean; running: boolean; pid?: number };
+    gateway: { label: string; platform: 'launchd' | 'systemd-user'; serviceInstalled: boolean; plistInstalled: boolean; running: boolean; pid?: number };
+    watchdog: { label: string; platform: 'launchd' | 'systemd-user'; serviceInstalled: boolean; plistInstalled: boolean; running: boolean; pid?: number };
     tunnel: { configured: boolean; label?: string; plistInstalled: boolean; restartSafe: boolean; running: boolean; pid?: number };
   };
   tools: string[];
@@ -100,8 +104,12 @@ export function recoveryConnectorDescriptor(
   const passphraseConfigured = Boolean(readMcpServiceOAuthPassphrase(home));
   const gatewayIdentity = readRecoveryRuntimeIdentity(home, 'gateway');
   const watchdogIdentity = readRecoveryRuntimeIdentity(home, 'watchdog');
+  const platform = dependencies.platform ?? process.platform;
+  const servicePlatform: 'launchd' | 'systemd-user' = platform === 'linux' ? 'systemd-user' : 'launchd';
   const pathExists = dependencies.pathExists ?? existsSync;
   const launchdPid = dependencies.launchdPid ?? recoveryLaunchdPid;
+  const systemdPid = dependencies.systemdPid ?? ((role: 'gateway' | 'watchdog') => systemdUserServicePid(role === 'gateway' ? RECOVERY_GATEWAY_LABEL : RECOVERY_WATCHDOG_LABEL));
+  const managedPid = (role: 'gateway' | 'watchdog') => servicePlatform === 'systemd-user' ? systemdPid(role) : launchdPid(role);
   const processAlive = dependencies.processAlive ?? isProcessAlive;
   const tunnelService = config.recoveryTunnelService?.platform === 'launchd' ? config.recoveryTunnelService : undefined;
   const tunnelContract = tunnelService ? inspectRecoveryTunnelLaunchdContract(tunnelService) : undefined;
@@ -113,12 +121,18 @@ export function recoveryConnectorDescriptor(
   const tunnelRunning = Boolean(tunnelLaunchdPid && processAlive(tunnelLaunchdPid));
   const gatewayPlistInstalled = pathExists(authority.gatewayLaunchAgent);
   const watchdogPlistInstalled = pathExists(authority.watchdogLaunchAgent);
-  const gatewayLaunchdPid = launchdPid('gateway');
-  const watchdogLaunchdPid = launchdPid('watchdog');
+  const gatewayServiceInstalled = servicePlatform === 'systemd-user'
+    ? pathExists(systemdUserUnitPath(RECOVERY_GATEWAY_LABEL))
+    : gatewayPlistInstalled;
+  const watchdogServiceInstalled = servicePlatform === 'systemd-user'
+    ? pathExists(systemdUserUnitPath(RECOVERY_WATCHDOG_LABEL))
+    : watchdogPlistInstalled;
+  const gatewayManagedPid = managedPid('gateway');
+  const watchdogManagedPid = managedPid('watchdog');
   const gatewayRunning = Boolean(
     gatewayIdentity
-    && gatewayLaunchdPid
-    && gatewayIdentity.pid === gatewayLaunchdPid
+    && gatewayManagedPid
+    && gatewayIdentity.pid === gatewayManagedPid
     && processAlive(gatewayIdentity.pid)
     && authority.current
     && gatewayIdentity.releaseRevision === authority.current.releaseRevision
@@ -126,18 +140,18 @@ export function recoveryConnectorDescriptor(
   );
   const watchdogRunning = Boolean(
     watchdogIdentity
-    && watchdogLaunchdPid
-    && watchdogIdentity.pid === watchdogLaunchdPid
+    && watchdogManagedPid
+    && watchdogIdentity.pid === watchdogManagedPid
     && processAlive(watchdogIdentity.pid)
     && authority.current
     && watchdogIdentity.releaseRevision === authority.current.releaseRevision
     && watchdogIdentity.manifestSha256 === authority.current.manifestSha256,
   );
-  const installed = Boolean(authority.current && gatewayPlistInstalled && watchdogPlistInstalled);
+  const installed = Boolean(authority.current && gatewayServiceInstalled && watchdogServiceInstalled);
   const publicEndpoint = Boolean(configuredUrl?.startsWith('https://'));
   const warnings: string[] = [];
   if (!authority.current) warnings.push('No current immutable Forge Recovery release is installed. Run forge recovery install.');
-  if (!gatewayPlistInstalled || !watchdogPlistInstalled) warnings.push('Forge Recovery launchd services are not fully installed. Run forge recovery install.');
+  if (!gatewayServiceInstalled || !watchdogServiceInstalled) warnings.push(`Forge Recovery ${servicePlatform} services are not fully installed. Run forge recovery install.`);
   if (!gatewayRunning || !watchdogRunning) warnings.push('Forge Recovery Gateway or Watchdog is not running on the current Recovery release.');
   if (!configuredUrl) warnings.push('Recovery is loopback-only. Configure --recovery-public-url and a dedicated tunnel service before adding it to ChatGPT.');
   else if (!publicEndpoint) warnings.push('ChatGPT Recovery Connector requires an HTTPS public endpoint.');
@@ -165,12 +179,16 @@ export function recoveryConnectorDescriptor(
     services: {
       gateway: {
         label: RECOVERY_GATEWAY_LABEL,
+        platform: servicePlatform,
+        serviceInstalled: gatewayServiceInstalled,
         plistInstalled: gatewayPlistInstalled,
         running: gatewayRunning,
         ...(gatewayIdentity ? { pid: gatewayIdentity.pid } : {}),
       },
       watchdog: {
         label: RECOVERY_WATCHDOG_LABEL,
+        platform: servicePlatform,
+        serviceInstalled: watchdogServiceInstalled,
         plistInstalled: watchdogPlistInstalled,
         running: watchdogRunning,
         ...(watchdogIdentity ? { pid: watchdogIdentity.pid } : {}),
@@ -534,7 +552,7 @@ export function buildRecoveryCommand(): Command {
         recoveryPublicUrl: current.recoveryPublicUrl,
         recoveryTunnelService: current.recoveryTunnelService,
         primaryPublicTunnelService: current.primaryPublicTunnelService,
-        primaryRuntimeService: current.primaryRuntimeService ?? { platform: 'launchd' },
+        primaryRuntimeService: current.primaryRuntimeService ?? defaultPrimaryRuntimeServiceConfig(),
         primaryConnectorService,
       });
       const refreshed = loadRecoveryConfig(home);
@@ -671,6 +689,7 @@ export function buildRecoveryCommand(): Command {
         sourceRoot: packageRoot,
         port,
         stageOnly: opts.stageOnly === true,
+        primaryRuntimeService: defaultPrimaryRuntimeServiceConfig(),
         publicMcpUrl: endpoint(opts.publicMcpUrl, 'PUBLIC_MCP_URL'),
         recoveryPublicUrl,
         recoveryTunnelService,

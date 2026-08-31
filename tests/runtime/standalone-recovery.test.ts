@@ -9,6 +9,7 @@ import {
   attestKnownGood,
   createRecoveryConfig,
   decideWatchdog,
+  defaultPrimaryRuntimeServiceConfig,
   initializeStandaloneRecovery,
   loadRecoveryConfig,
   recoveryConfigPath,
@@ -53,6 +54,7 @@ import {
 } from '../../src/runtime/root/release-store';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureForgeRuntimeLaunchAgentContract, forgeRuntimeServicePaths } from '../../src/runtime/root/service';
+import { systemdUserUnitPath } from '../../src/cli/controller/systemd-user';
 import { recoveryConnectorDescriptor } from '../../src/cli/commands/recovery';
 import { ensureMcpControllerHomeOAuthPassphrase } from '../../src/cli/mcp/auth';
 import { inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, recoverySystemdUserUnitInput, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
@@ -818,6 +820,11 @@ test('watchdog defers Recovery self-repair while an attributable mutation lock i
 });
 
 describe('standalone recovery systemd user ownership', () => {
+  test('selects the installed primary Runtime owner from the host service manager', () => {
+    expect(defaultPrimaryRuntimeServiceConfig('linux')).toEqual({ platform: 'systemd-user' });
+    expect(defaultPrimaryRuntimeServiceConfig('darwin')).toEqual({ platform: 'launchd' });
+  });
+
   test('pins Gateway and Watchdog units to the current immutable Recovery release', () => {
     const controllerHome = '/tmp/forge-recovery-systemd-fixture';
     const gateway = recoverySystemdUserUnitInput(controllerHome, 'gateway', { PATH: '/usr/bin:/bin' });
@@ -1408,6 +1415,43 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
+  test('restarts an installed Linux systemd-user primary Runtime and requires whole-Runtime verification', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      runtimeServiceConfig(home);
+      const paths = forgeRuntimeServicePaths(home);
+      const unitPath = systemdUserUnitPath(paths.label);
+      mkdirSync(dirname(unitPath), { recursive: true });
+      writeFileSync(unitPath, `[Unit]\nDescription=Forge Runtime\n[Service]\nExecStart=\"${paths.activeEntrypointPath}\"\n`);
+      const config = createRecoveryConfig(home, {
+        primaryRuntimeService: { platform: 'systemd-user', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      let probes = 0;
+      const commands: string[][] = [];
+      const result = await restartPrimaryRuntime(config, {
+        platform: 'linux',
+        currentUid: async () => 1000,
+        runCommand: async (name, args) => {
+          commands.push([name, ...args]);
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        verifyLocal: async () => ++probes >= 3
+          ? healthyVerify()
+          : { ...healthyVerify(), ok: false, runtime: { ok: false, running: false, ready: false, stale: false, reasonCodes: ['RUNTIME_UNAVAILABLE'] } },
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+      expect(result).toMatchObject({ ok: true, attempted: true, serviceTarget: `${paths.label}.service` });
+      expect(commands).toContainEqual(['systemctl', '--user', 'restart', `${paths.label}.service`]);
+      expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
   test('stops, rolls back, restarts, and verifies the previous whole-Runtime release after restart exhaustion', async () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
@@ -1607,6 +1651,62 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
       expect(readFileSync(paths.sourcePlistPath, 'utf8')).not.toBe('<plist/>');
       expect(readFileSync(paths.installedPlistPath, 'utf8')).toBe(readFileSync(paths.sourcePlistPath, 'utf8'));
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('activates a behavior-changing Runtime release through the installed Linux systemd-user owner', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const active = verifiedManifest(home, 'release-a', 'runtime-a');
+      const candidate = verifiedManifest(home, 'release-b', 'runtime-b');
+      ensureActiveRuntimeRelease(home, active.path);
+      runtimeServiceConfig(home);
+      const paths = forgeRuntimeServicePaths(home);
+      const unitName = `${paths.label}.service`;
+      const unitPath = systemdUserUnitPath(paths.label);
+      mkdirSync(dirname(unitPath), { recursive: true });
+      writeFileSync(unitPath, `[Unit]\nDescription=Forge Runtime\n[Service]\nExecStart=\"${paths.activeEntrypointPath}\"\n`);
+      let serviceActive = true;
+      const commands: string[][] = [];
+      const config = createRecoveryConfig(home, { primaryRuntimeService: { platform: 'systemd-user', postRestartVerifyTimeoutMs: 10_000 } });
+      const result = await activateRuntimeRelease(config, candidate.path, {
+        platform: 'linux',
+        currentUid: async () => 1000,
+        runCommand: async (name, args) => {
+          commands.push([name, ...args]);
+          if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
+          if (name === 'systemctl' && args[0] === '--user' && args[1] === 'stop') serviceActive = false;
+          if (name === 'systemctl' && args[0] === '--user' && args[1] === 'start') serviceActive = true;
+          if (name === 'systemctl' && args[0] === '--user' && args[1] === 'show') {
+            return { ok: true, status: 0, stdout: serviceActive ? 'active\n' : 'inactive\n', stderr: '' };
+          }
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => false,
+        verifyLocal: async () => {
+          const authority = readRuntimeReleaseAuthority(home)!;
+          return {
+            ...healthyVerify(),
+            releases: {
+              active: { path: authority.active.manifestPath, revision: authority.active.releaseId, artifactIdentity: authority.active.artifactIdentity, manifestSha256: 'test-sha', workerProtocolVersion: 1 },
+              coherent: true,
+            },
+          };
+        },
+        now: (() => { let value = 0; return () => value += 1_000; })(),
+        sleep: async () => undefined,
+      });
+      expect(result).toMatchObject({ ok: true, attempted: true, serviceTarget: unitName });
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
+      expect(commands).toContainEqual(['systemctl', '--user', 'stop', unitName]);
+      expect(commands).toContainEqual(['systemctl', '--user', 'start', unitName]);
+      expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);
+      expect(existsSync(paths.activeEntrypointPath)).toBe(true);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -2531,6 +2631,7 @@ describe('standalone recovery on canonical Runtime', () => {
       },
     });
     const descriptor = recoveryConnectorDescriptor(home, {
+      platform: 'darwin',
       pathExists: () => false,
       launchdPid: () => undefined,
       tunnelLaunchdPid: () => undefined,
@@ -2580,6 +2681,29 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(serialized).not.toContain('bearerToken');
     expect(serialized).not.toContain('gateway-token');
   });
+  test('reports Linux Recovery Gateway and Watchdog installation through systemd-user ownership', () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      initializeStandaloneRecovery(home, 8787);
+      const gatewayUnit = systemdUserUnitPath('com.moretea.forge-recovery-gateway');
+      const watchdogUnit = systemdUserUnitPath('com.moretea.forge-recovery-watchdog');
+      const descriptor = recoveryConnectorDescriptor(home, {
+        platform: 'linux',
+        pathExists: (path) => path === gatewayUnit || path === watchdogUnit,
+        systemdPid: () => undefined,
+        processAlive: () => false,
+      });
+      expect(descriptor.services.gateway).toMatchObject({ platform: 'systemd-user', serviceInstalled: true, plistInstalled: false, running: false });
+      expect(descriptor.services.watchdog).toMatchObject({ platform: 'systemd-user', serviceInstalled: true, plistInstalled: false, running: false });
+      expect(descriptor.warnings).not.toContain('Forge Recovery systemd-user services are not fully installed. Run forge recovery install.');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
   test('fails closed for ChatGPT readiness when only a loopback Recovery endpoint exists', () => {
     const home = controllerHome();
     initializeStandaloneRecovery(home, 8787);

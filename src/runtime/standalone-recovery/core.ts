@@ -11,7 +11,9 @@ import {
   forgeRuntimeServicePaths,
   inspectForgeRuntimeLaunchAgentContract,
   readForgeRuntimeServiceConfig,
+  syncForgeRuntimeActiveEntrypoint,
 } from '../root/service';
+import { systemdUserUnitName, systemdUserUnitPath } from '../../cli/controller/systemd-user';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
 import { assertRuntimeReleaseFiles, stageRuntimeReleaseFromCandidateSource, type StagedRuntimeRelease } from '../root/release-materialize';
 import {
@@ -45,7 +47,7 @@ export interface PublicTunnelServiceConfig {
 }
 
 export interface PrimaryRuntimeServiceConfig {
-  platform: 'launchd';
+  platform: 'launchd' | 'systemd-user';
   minimumFailures?: number;
   minimumFailureDurationMs?: number;
   restartCooldownMs?: number;
@@ -281,10 +283,14 @@ function normalizeRecoveryReadOnlyTool(
   return input;
 }
 
+export function defaultPrimaryRuntimeServiceConfig(platform: NodeJS.Platform = process.platform): PrimaryRuntimeServiceConfig {
+  return { platform: platform === 'linux' ? 'systemd-user' : 'launchd' };
+}
+
 const DEFAULT_CONFIG: Omit<RecoveryConfig, 'controllerHome'> = {
   schemaVersion: 1,
   readOnlyTool: { name: STABLE_RECOVERY_READ_ONLY_TOOL.name, arguments: { ...STABLE_RECOVERY_READ_ONLY_TOOL.arguments } },
-  primaryRuntimeService: { platform: 'launchd' },
+  primaryRuntimeService: defaultPrimaryRuntimeServiceConfig(),
 };
 
 function json<T>(path: string): T | undefined {
@@ -1445,23 +1451,120 @@ export interface RuntimeReleaseActivationGuard {
   expectedActiveReleaseId?: string | null;
 }
 
-function configuredPrimaryRuntimeService(config: RecoveryConfig): PrimaryRuntimeServiceConfig {
-  return config.primaryRuntimeService ?? { platform: 'launchd' };
+function configuredPrimaryRuntimeService(config: RecoveryConfig, platform: NodeJS.Platform = process.platform): PrimaryRuntimeServiceConfig {
+  return config.primaryRuntimeService ?? defaultPrimaryRuntimeServiceConfig(platform);
 }
 
-function primaryRuntimeLaunchdService(config: RecoveryConfig, uid: number): LaunchdService | undefined {
-  const configured = configuredPrimaryRuntimeService(config);
-  if (configured.platform !== 'launchd') return undefined;
+interface PrimaryRuntimeServiceOwner {
+  platform: 'launchd' | 'systemd-user';
+  target: string;
+  uid: number;
+  launchd?: LaunchdService;
+  unitName?: string;
+  unitPath?: string;
+}
+
+function primaryRuntimeServiceOwner(
+  config: RecoveryConfig,
+  platform: NodeJS.Platform,
+  uid: number | undefined,
+): PrimaryRuntimeServiceOwner | undefined {
+  if (uid === undefined) return undefined;
+  const configured = configuredPrimaryRuntimeService(config, platform);
   const paths = forgeRuntimeServicePaths(config.controllerHome);
-  if (!existsSync(paths.installedPlistPath)) return undefined;
-  const domain = `gui/${uid}`;
-  return {
-    uid,
-    domain,
-    target: `${domain}/${paths.label}`,
-    label: paths.label,
-    plistPath: paths.installedPlistPath,
+  if (platform === 'darwin' && configured.platform === 'launchd') {
+    if (!existsSync(paths.installedPlistPath)) return undefined;
+    const domain = `gui/${uid}`;
+    const launchd: LaunchdService = {
+      uid,
+      domain,
+      target: `${domain}/${paths.label}`,
+      label: paths.label,
+      plistPath: paths.installedPlistPath,
+    };
+    return { platform: 'launchd', target: launchd.target, uid, launchd };
+  }
+  if (platform === 'linux' && configured.platform === 'systemd-user') {
+    const unitName = systemdUserUnitName(paths.label);
+    const unitPath = systemdUserUnitPath(unitName);
+    if (!existsSync(unitPath)) return undefined;
+    return { platform: 'systemd-user', target: unitName, uid, unitName, unitPath };
+  }
+  return undefined;
+}
+
+async function ensurePrimaryRuntimeServiceStarted(
+  owner: PrimaryRuntimeServiceOwner,
+  runCommand: CommandRunner,
+  mode: 'start' | 'restart' = 'start',
+): Promise<{ ok: boolean; detail: string }> {
+  if (owner.platform === 'launchd') return ensureLaunchdServiceStarted(owner.launchd!, runCommand);
+  const action = mode === 'restart' ? 'restart' : 'start';
+  const result = await runCommand('systemctl', ['--user', action, owner.unitName!], 15_000);
+  return result.ok
+    ? { ok: true, detail: owner.target }
+    : { ok: false, detail: `systemd-user ${action} failed: ${result.stderr || result.stdout || result.status}` };
+}
+
+async function stopPrimaryRuntimeServiceOwner(
+  owner: PrimaryRuntimeServiceOwner,
+  runCommand: CommandRunner,
+): Promise<{ ok: boolean; detail: string }> {
+  if (owner.platform === 'launchd') {
+    const stopped = await runCommand('launchctl', ['bootout', owner.launchd!.target], 15_000);
+    const stoppedCleanly = stopped.ok || /not found|no such process|could not find service|service is not loaded/i.test(`${stopped.stderr}\n${stopped.stdout}`);
+    return stoppedCleanly
+      ? { ok: true, detail: owner.target }
+      : { ok: false, detail: `primary Runtime bootout failed: ${stopped.stderr || stopped.stdout || stopped.status}` };
+  }
+  const stopped = await runCommand('systemctl', ['--user', 'stop', owner.unitName!], 15_000);
+  return stopped.ok
+    ? { ok: true, detail: owner.target }
+    : { ok: false, detail: `primary Runtime systemd-user stop failed: ${stopped.stderr || stopped.stdout || stopped.status}` };
+}
+
+async function waitForPrimaryRuntimeServiceStopped(input: {
+  owner: PrimaryRuntimeServiceOwner;
+  timeoutMs: number;
+  now: () => number;
+  wait: (ms: number) => Promise<void>;
+  runCommand: CommandRunner;
+}): Promise<boolean> {
+  if (input.owner.platform === 'launchd') {
+    return waitForLaunchdServiceUnloaded({
+      service: input.owner.launchd!,
+      timeoutMs: input.timeoutMs,
+      now: input.now,
+      wait: input.wait,
+      runCommand: input.runCommand,
+    });
+  }
+  const observe = async () => {
+    const result = await input.runCommand('systemctl', ['--user', 'show', '--property', 'ActiveState', '--value', input.owner.unitName!], 5_000);
+    if (!result.ok) return false;
+    return /^(inactive|failed)$/.test(result.stdout.trim());
   };
+  const deadline = input.now() + input.timeoutMs;
+  while (input.now() < deadline) {
+    if (await observe()) return true;
+    await input.wait(250);
+  }
+  return observe();
+}
+
+function primaryRuntimeServiceContractMatches(config: RecoveryConfig, owner: PrimaryRuntimeServiceOwner): boolean {
+  if (owner.platform === 'launchd') {
+    return inspectForgeRuntimeLaunchAgentContract({
+      controllerHome: config.controllerHome,
+      inspectUserLaunchAgent: true,
+    }).matches;
+  }
+  try {
+    const unit = readFileSync(owner.unitPath!, 'utf8');
+    return unit.includes(resolve(forgeRuntimeServicePaths(config.controllerHome).activeEntrypointPath));
+  } catch {
+    return false;
+  }
 }
 
 export interface PrimaryConnectorRecoveryDependencies {
@@ -1909,17 +2012,14 @@ interface PrimaryRuntimeStoppedTransition {
  */
 async function stopPrimaryRuntimeForReleaseTransition(input: {
   config: RecoveryConfig;
-  service: LaunchdService;
+  service: PrimaryRuntimeServiceOwner;
   now: () => number;
   wait: (ms: number) => Promise<void>;
   runCommand: CommandRunner;
   runtimeRunning: (config: RecoveryConfig) => boolean;
 }): Promise<PrimaryRuntimeStoppedTransition> {
-  const stopped = await input.runCommand('launchctl', ['bootout', input.service.target], 15_000);
-  const stoppedCleanly = stopped.ok || /not found|no such process|could not find service|service is not loaded/i.test(`${stopped.stderr}\n${stopped.stdout}`);
-  if (!stoppedCleanly) {
-    return { ok: false, detail: `primary Runtime bootout failed: ${stopped.stderr || stopped.stdout || stopped.status}` };
-  }
+  const stopped = await stopPrimaryRuntimeServiceOwner(input.service, input.runCommand);
+  if (!stopped.ok) return { ok: false, detail: stopped.detail };
   const runtimeStopped = await waitForPrimaryRuntimeState({
     config: input.config,
     expectedRunning: false,
@@ -1928,15 +2028,24 @@ async function stopPrimaryRuntimeForReleaseTransition(input: {
     wait: input.wait,
     runtimeRunning: input.runtimeRunning,
   });
-  if (!runtimeStopped) return { ok: false, detail: 'primary Runtime owner remained live after bounded launchd bootout' };
-  const serviceUnloaded = await waitForLaunchdServiceUnloaded({
-    service: input.service,
+  if (!runtimeStopped) {
+    return { ok: false, detail: `primary Runtime owner remained live after bounded ${input.service.platform} stop` };
+  }
+  const serviceStopped = await waitForPrimaryRuntimeServiceStopped({
+    owner: input.service,
     timeoutMs: 20_000,
     now: input.now,
     wait: input.wait,
     runCommand: input.runCommand,
   });
-  if (!serviceUnloaded) return { ok: false, detail: 'primary Runtime launchd service remained loaded after bounded bootout' };
+  if (!serviceStopped) {
+    return {
+      ok: false,
+      detail: input.service.platform === 'launchd'
+        ? 'primary Runtime launchd service remained loaded after bounded bootout'
+        : 'primary Runtime systemd-user service remained active after bounded stop',
+    };
+  }
 
   let portReleased = await waitForPrimaryRuntimePortReleased({
     config: input.config,
@@ -1959,11 +2068,11 @@ async function stopPrimaryRuntimeForReleaseTransition(input: {
   if (!portReleased) {
     return {
       ok: false,
-      detail: `primary Runtime TCP port remained occupied after bounded launchd bootout: ${staleListenerCleanup?.detail ?? 'listener did not release'}`,
+      detail: `primary Runtime TCP port remained occupied after bounded ${input.service.platform} stop: ${staleListenerCleanup?.detail ?? 'listener did not release'}`,
       staleListenerCleanup,
     };
   }
-  return { ok: true, detail: 'primary Runtime service, owner, and TCP listener are stopped', staleListenerCleanup };
+  return { ok: true, detail: `primary Runtime ${input.service.platform} service, owner, and TCP listener are stopped`, staleListenerCleanup };
 }
 
 async function verifyPrimaryRuntimeAfterStart(input: {
@@ -1996,7 +2105,7 @@ interface PrimaryRuntimeRebindStartResult {
  */
 async function rebindStartAndVerifyPrimaryRuntime(input: {
   config: RecoveryConfig;
-  service: LaunchdService;
+  service: PrimaryRuntimeServiceOwner;
   runCommand: CommandRunner;
   now: () => number;
   wait: (ms: number) => Promise<void>;
@@ -2008,13 +2117,21 @@ async function rebindStartAndVerifyPrimaryRuntime(input: {
   successDetail: string;
 }): Promise<PrimaryRuntimeRebindStartResult> {
   try {
-    const ensureRuntimeLaunchContract = input.ensureRuntimeLaunchContract
-      ?? ((controllerHome: string) => { ensureForgeRuntimeLaunchAgentContract({ controllerHome, installUserLaunchAgent: true }); });
-    ensureRuntimeLaunchContract(input.config.controllerHome);
+    if (input.service.platform === 'launchd') {
+      const ensureRuntimeLaunchContract = input.ensureRuntimeLaunchContract
+        ?? ((controllerHome: string) => { ensureForgeRuntimeLaunchAgentContract({ controllerHome, installUserLaunchAgent: true }); });
+      ensureRuntimeLaunchContract(input.config.controllerHome);
+    } else {
+      const synced = syncForgeRuntimeActiveEntrypoint(input.config.controllerHome);
+      if (!synced.target || !existsSync(input.service.unitPath!)) {
+        throw new Error('installed systemd-user Runtime service or active immutable wrapper is missing');
+      }
+    }
   } catch (error) {
+    const manager = input.service.platform === 'launchd' ? 'launchd' : 'systemd-user';
     return {
       ok: false,
-      detail: `primary Runtime launchd contract rebuild failed ${input.contractFailureContext ?? 'after release transition'}: ${error instanceof Error ? error.message : String(error)}`,
+      detail: `primary Runtime ${manager} contract rebuild failed ${input.contractFailureContext ?? 'after release transition'}: ${error instanceof Error ? error.message : String(error)}`,
       verify: await input.verifyLocal(input.config),
     };
   }
@@ -2029,7 +2146,7 @@ async function rebindStartAndVerifyPrimaryRuntime(input: {
     };
   }
 
-  const started = await ensureLaunchdServiceStarted(input.service, input.runCommand);
+  const started = await ensurePrimaryRuntimeServiceStarted(input.service, input.runCommand, 'start');
   if (!started.ok) {
     return { ok: false, detail: started.detail, verify: await input.verifyLocal(input.config) };
   }
@@ -2041,7 +2158,7 @@ async function rebindStartAndVerifyPrimaryRuntime(input: {
     verifyLocal: input.verifyLocal,
   });
   if (verify.ok) return { ok: true, detail: input.successDetail, verify };
-  await input.runCommand('launchctl', ['bootout', input.service.target], 15_000);
+  await stopPrimaryRuntimeServiceOwner(input.service, input.runCommand);
   return {
     ok: false,
     detail: 'release transition started a Runtime that failed whole-Runtime verification; service was stopped to prevent a restart loop',
@@ -2056,18 +2173,18 @@ export async function restartPrimaryRuntime(
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
   const initial = await verifyLocal(config);
   if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime is already healthy', verify: initial };
-  if ((dependencies.platform ?? process.platform) !== 'darwin') {
-    return { ok: false, attempted: false, noOp: true, detail: 'primary Runtime automatic restart currently requires the configured macOS launchd service', verify: initial };
-  }
+  const platform = dependencies.platform ?? process.platform;
   const uid = await (dependencies.currentUid ?? currentUid)();
-  const service = uid === undefined ? undefined : primaryRuntimeLaunchdService(config, uid);
-  if (!service) return { ok: false, attempted: false, noOp: true, detail: 'primary Forge Runtime launchd service is not installed', verify: initial };
+  const service = primaryRuntimeServiceOwner(config, platform, uid);
+  if (!service) {
+    return { ok: false, attempted: false, noOp: true, detail: `primary Forge Runtime ${configuredPrimaryRuntimeService(config, platform).platform} service is not installed for ${platform}`, verify: initial };
+  }
   const now = dependencies.now ?? Date.now;
   const wait = dependencies.sleep ?? sleep;
   const locked = await withLock(config, { action: 'restart_primary_runtime' }, async () => {
     const before = await verifyLocal(config);
     if (before.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before restart', serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
-    const started = await ensureLaunchdServiceStarted(service, dependencies.runCommand ?? command);
+    const started = await ensurePrimaryRuntimeServiceStarted(service, dependencies.runCommand ?? command, 'restart');
     if (!started.ok) {
       audit(config, 'primary_runtime_restart_failed', { serviceTarget: service.target, detail: started.detail });
       return { ok: false, attempted: true, detail: started.detail, serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
@@ -2098,12 +2215,12 @@ export async function recoverPrimaryRuntime(
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
   const initial = await verifyLocal(config);
   if (initial.ok) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before rollback', verify: initial };
-  if ((dependencies.platform ?? process.platform) !== 'darwin') {
-    return { ok: false, attempted: false, noOp: true, detail: 'automatic whole-Runtime recovery currently requires the configured macOS launchd service', verify: initial };
-  }
+  const platform = dependencies.platform ?? process.platform;
   const uid = await (dependencies.currentUid ?? currentUid)();
-  const service = uid === undefined ? undefined : primaryRuntimeLaunchdService(config, uid);
-  if (!service) return { ok: false, attempted: false, noOp: true, detail: 'primary Forge Runtime launchd service is not installed', verify: initial };
+  const service = primaryRuntimeServiceOwner(config, platform, uid);
+  if (!service) {
+    return { ok: false, attempted: false, noOp: true, detail: `primary Forge Runtime ${configuredPrimaryRuntimeService(config, platform).platform} service is not installed for ${platform}`, verify: initial };
+  }
   const runCommand = dependencies.runCommand ?? command;
   const now = dependencies.now ?? Date.now;
   const wait = dependencies.sleep ?? sleep;
@@ -2151,8 +2268,8 @@ export async function recoverPrimaryRuntime(
       audit(config, 'primary_runtime_recovery_succeeded', { serviceTarget: service.target, rollbackOperationId: rollback.operationId, restoredRelease: restarted.verify.releases.active?.revision });
       return { ok: true, attempted: true, detail: restarted.detail, serviceTarget: service.target, rollback, verify: restarted.verify } satisfies PrimaryRuntimeRecoveryResult;
     }
-    const contractFailure = restarted.detail.startsWith('primary Runtime launchd contract rebuild failed');
-    audit(config, contractFailure ? 'primary_runtime_recovery_launchd_contract_failed' : 'primary_runtime_recovery_unverified', {
+    const contractFailure = /^primary Runtime (launchd|systemd-user) contract rebuild failed/.test(restarted.detail);
+    audit(config, contractFailure ? 'primary_runtime_recovery_service_contract_failed' : 'primary_runtime_recovery_unverified', {
       serviceTarget: service.target,
       rollbackOperationId: rollback.operationId,
       detail: restarted.detail,
@@ -2234,12 +2351,11 @@ export async function activateRuntimeRelease(
     return { ok: false, attempted: false, noOp: true, detail };
   }
   const platform = dependencies.platform ?? process.platform;
-  if (platform !== 'darwin') {
-    return { ok: false, attempted: false, noOp: true, detail: 'Runtime release activation currently requires the configured macOS launchd service' };
-  }
   const uid = await (dependencies.currentUid ?? currentUid)();
-  const service = uid === undefined ? undefined : primaryRuntimeLaunchdService(config, uid);
-  if (!service) return { ok: false, attempted: false, noOp: true, detail: 'primary Forge Runtime launchd service is not installed', verify: await verifyStableRuntime(config) };
+  const service = primaryRuntimeServiceOwner(config, platform, uid);
+  if (!service) {
+    return { ok: false, attempted: false, noOp: true, detail: `primary Forge Runtime ${configuredPrimaryRuntimeService(config, platform).platform} service is not installed for ${platform}`, verify: await verifyStableRuntime(config) };
+  }
   const runCommand = dependencies.runCommand ?? command;
   const now = dependencies.now ?? Date.now;
   const wait = dependencies.sleep ?? sleep;
@@ -2309,10 +2425,7 @@ export async function activateRuntimeRelease(
       let serviceContractMatches = false;
       if (behaviorEquivalent && !storageMigrationRequired) {
         try {
-          serviceContractMatches = inspectForgeRuntimeLaunchAgentContract({
-            controllerHome: config.controllerHome,
-            inspectUserLaunchAgent: true,
-          }).matches;
+          serviceContractMatches = primaryRuntimeServiceContractMatches(config, service);
         } catch (error) {
           audit(config, 'runtime_release_activation_service_contract_inspection_failed', {
             operationId,
@@ -2337,8 +2450,8 @@ export async function activateRuntimeRelease(
           attempted: false,
           noOp: true,
           detail: verify.ok
-            ? 'candidate Runtime behavior and launchd service contract are identical to the active release; restart skipped'
-            : 'candidate Runtime behavior and launchd service contract are identical to the active release, but the active Runtime is unhealthy',
+            ? 'candidate Runtime behavior and installed service contract are identical to the active release; restart skipped'
+            : 'candidate Runtime behavior and installed service contract are identical to the active release, but the active Runtime is unhealthy',
           operationId,
           verify,
         } satisfies RuntimeReleaseActivationResult;
@@ -2416,8 +2529,8 @@ export async function activateRuntimeRelease(
     }
     if (!activated.ok) {
       activationFailureDetail = activated.detail;
-      const auditAction = activated.detail.startsWith('primary Runtime launchd contract rebuild failed')
-        ? 'runtime_release_activation_launchd_contract_failed'
+      const auditAction = /^primary Runtime (launchd|systemd-user) contract rebuild failed/.test(activated.detail)
+        ? 'runtime_release_activation_service_contract_failed'
         : activated.detail.startsWith('release transition pre-start preparation failed')
           ? 'runtime_controller_home_noindex_migration_failed'
           : activated.detail.includes('start')
