@@ -81,6 +81,7 @@ if (!stageOnly) {
   command('systemctl', ['--user', 'daemon-reload']);
   command('systemctl', ['--user', 'enable', '--now', config.recoveryUnit]);
 }
+let windowsLogonTask: { name: string; installed: boolean; error?: string } | undefined;
 if (installWindowsLogonTask) {
   const scriptPath = 'C:\\ProgramData\\ForgeRecovery\\ForgeRecovery.ps1';
   const taskName = 'Forge Independent Recovery WSL';
@@ -92,7 +93,19 @@ if (installWindowsLogonTask) {
     '$trigger=New-ScheduledTaskTrigger -AtLogOn',
     "$null=Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Description 'Forge independent Windows/WSL rescue cold-start trigger.' -Force",
   ].join('; ');
-  command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', commandText]);
+  try {
+    command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', commandText]);
+    windowsLogonTask = { name: taskName, installed: true };
+  } catch (error) {
+    // The external agent and WSL watchdog remain valid without a logon task.
+    // Task Scheduler permission is a Windows elevation boundary, not a reason
+    // to report a fully staged host-rescue installation as absent.
+    windowsLogonTask = {
+      name: taskName,
+      installed: false,
+      error: error instanceof Error ? error.message.slice(0, 1_000) : String(error).slice(0, 1_000),
+    };
+  }
 }
 
 process.stdout.write(`${JSON.stringify({
@@ -102,5 +115,5 @@ process.stdout.write(`${JSON.stringify({
   controllerHome: config.controllerHome,
   units: { runtime: config.runtimeUnit, connector: config.connectorUnit, recovery: config.recoveryUnit },
   tunnel: { alias: config.tunnelAlias, id: config.tunnelId, localMcpUrl: config.localMcpUrl },
-  ...(installWindowsLogonTask ? { windowsLogonTask: 'Forge Independent Recovery WSL' } : {}),
+  ...(windowsLogonTask ? { windowsLogonTask } : {}),
 }, null, 2)}\n`);

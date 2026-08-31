@@ -76,6 +76,12 @@ the WSL watchdog. The installer fails closed unless the Controller Home is the
 canonical user-level path (`/home/<user>/.forge/controller`) and the rescue
 root is exactly `/home/<user>/.forge-recovery`.
 
+Windows Task Scheduler may require elevation to create the optional logon task.
+When that happens, the installer still reports the installed WSL rescue and
+returns `windowsLogonTask.installed=false` with the exact Scheduler error; the
+fixed-action host script is still available for an elevated administrator to
+register later. Do not replace it with a second background service.
+
 The agent contains no tunnel credential. The existing `tunnel-client` profile
 and its separately permissioned runtime-key reference remain the credential
 owner. Before retiring a legacy Controller Home, move that reference to an
