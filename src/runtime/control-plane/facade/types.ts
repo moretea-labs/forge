@@ -601,6 +601,8 @@ export interface ControllerSession {
   controllerId: string;
   controllerType: ControllerType;
   sessionId: string;
+  /** SHA-256 digest of the non-relay Work-bound controller capability. The plaintext capability is returned only to the claimant. */
+  authorityDigest?: string;
   /** Authenticated authority that owned the claim; legacy records may omit it. */
   principalId?: string;
   /** Controller process/epoch that admitted the transport session. */

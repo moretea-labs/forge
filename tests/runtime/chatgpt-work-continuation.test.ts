@@ -270,6 +270,9 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_MODEL = 'gpt-5.6'");
     expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_REASONING = 'high'");
     expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge'"); expect(source).not.toContain('CHATGPT_WORK_MODE_RADIO_SELECTOR');
+    expect(source).toContain('Capture data.controllerAuthorityId from that successful controller_claim response');
+    expect(source).toContain('pass the same opaque value as session_id compatibility carrier');
+    expect(source).toContain('Never use data.session.sessionId as the durable capability');
     expect(source).toContain('CHATGPT_CAPABILITY_MENUITEM_SELECTOR');
     expect(source).toContain('aria-keyshortcuts~=\"ArrowRight\"');
     expect(source).not.toContain(':has-text(');

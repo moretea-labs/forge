@@ -17,6 +17,7 @@ import { resolveExplicitClaimedRepositoryWork } from '../../src/runtime/control-
 import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
+import { invalidateExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
@@ -493,7 +494,7 @@ describe('rh_work terminalization authority', () => {
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workA)?.status).toBe('cancelled');
   }, 15_000);
 
-  test('explicit controller session capability survives per-call transport rotation without collapsing same-principal conversations', async () => {
+  test('Work-bound controller capability survives execution-session invalidation and transport rotation without collapsing same-principal conversations', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     const principalId = 'principal-direct-connector';
@@ -504,15 +505,16 @@ describe('rh_work terminalization authority', () => {
     const claimed = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, principalId, 'transport-call-1', runtimeInstanceId),
       'rh_work',
-      {
-        repo_id: fx.repository.repoId,
-        operation: 'controller_claim',
-        work_id: workId,
-        session_id: 'conversation-capability-a',
-      },
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId },
     ));
     expect(claimed.status).toBe('ok');
-    expect(getControllerSession(store, workId)?.sessionId).toBe('conversation-capability-a');
+    const authorityId = String(claimed.data?.controllerAuthorityId ?? '');
+    expect(authorityId).toStartWith('ctrl_');
+    expect(getControllerSession(store, workId)?.sessionId).toBe('transport-call-1');
+    expect(getControllerSession(store, workId)?.authorityDigest).toBeTruthy();
+    expect(JSON.stringify(getControllerSession(store, workId))).not.toContain(authorityId);
+
+    invalidateExecutionSession(fx.controllerHome, 'transport-call-1', 'mcp_transport_principal_capacity');
 
     const foreign = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, principalId, 'transport-call-2', runtimeInstanceId),
@@ -521,7 +523,7 @@ describe('rh_work terminalization authority', () => {
         repo_id: fx.repository.repoId,
         operation: 'stop',
         work_id: workId,
-        session_id: 'conversation-capability-b',
+        session_id: 'ctrl_foreign_conversation_capability',
         requested_by: 'chatgpt',
         reason: 'same principal but different conversation capability',
       },
@@ -529,7 +531,6 @@ describe('rh_work terminalization authority', () => {
     expect(foreign.status).toBe('blocked');
     expect(foreign.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
     expect(getWorkContract(store, workId)?.status).toBe('ready');
-    expect(getControllerSession(store, workId)?.sessionId).toBe('conversation-capability-a');
 
     const ownStop = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, principalId, 'transport-call-3', runtimeInstanceId),
@@ -538,9 +539,9 @@ describe('rh_work terminalization authority', () => {
         repo_id: fx.repository.repoId,
         operation: 'stop',
         work_id: workId,
-        session_id: 'conversation-capability-a',
+        session_id: authorityId,
         requested_by: 'chatgpt',
-        reason: 'same conversation after connector transport rotation',
+        reason: 'same conversation after connector transport rotation and prior execution-session invalidation',
       },
     ));
     expect(ownStop.status).toBe('ok');

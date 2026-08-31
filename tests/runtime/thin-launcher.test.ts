@@ -122,6 +122,9 @@ describe('Thin Launcher startup observability', () => {
     expect(launched.pid).toBeGreaterThan(0);
     expect(launched.prompt).toContain('operation=controller_claim');
     expect(launched.prompt).toContain(`work_id=${fx.workId}`);
+    expect(launched.prompt).toContain('capture data.controllerAuthorityId');
+    expect(launched.prompt).toContain('pass the same opaque value as session_id compatibility carrier');
+    expect(launched.prompt).toContain('Never use data.session.sessionId as the durable capability');
     expect(getExternalControllerLaunchReservation(fx.store, fx.workId)).toMatchObject({
       reservationId: launched.reservationId,
       pid: launched.pid,

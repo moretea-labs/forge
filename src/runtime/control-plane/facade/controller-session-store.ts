@@ -1,3 +1,4 @@
+import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import { withControllerLock } from '../../../cli/repositories/locks';
@@ -14,6 +15,8 @@ export interface ControllerSessionClaimInput {
   controllerId: string;
   controllerType: ControllerType;
   sessionId: string;
+  /** Optional digest of the Work-bound controller capability. Plaintext is never persisted in ControllerSession. */
+  authorityDigest?: string;
   principalId?: string;
   controllerInstanceId?: string;
   /** Optional compare-and-swap fence supplied by a recovering caller. */
@@ -131,12 +134,14 @@ function claimedSession(
   const claimGeneration = sameOwner
     ? Math.max(1, previous?.claimGeneration ?? 1)
     : Math.max(0, previous?.claimGeneration ?? 0) + 1;
+  const authorityDigest = input.authorityDigest?.trim() || (sameOwner ? previous?.authorityDigest?.trim() : '') || '';
   return {
     schemaVersion: 1,
     workId: input.workId,
     controllerId: input.controllerId,
     controllerType: input.controllerType,
     sessionId: input.sessionId,
+    ...(authorityDigest ? { authorityDigest } : {}),
     ...(input.principalId?.trim() ? { principalId: input.principalId.trim() } : {}),
     ...(input.controllerInstanceId?.trim() ? { controllerInstanceId: input.controllerInstanceId.trim() } : {}),
     claimGeneration,
@@ -193,6 +198,26 @@ export function controllerSessionPrincipalId(
   owner: Pick<ControllerSession, 'principalId' | 'controllerId'>,
 ): string {
   return owner.principalId?.trim() || owner.controllerId;
+}
+
+function digestControllerAuthority(authorityId: string): string {
+  return createHash('sha256').update(authorityId).digest('hex');
+}
+
+/** Mint a non-relay Work-bound capability. Only the digest belongs in durable ControllerSession state. */
+export function mintControllerSessionAuthority(): { authorityId: string; authorityDigest: string } {
+  const authorityId = `ctrl_${randomUUID().replace(/-/g, '')}`;
+  return { authorityId, authorityDigest: digestControllerAuthority(authorityId) };
+}
+
+/** Verify an opaque capability without exposing or persisting its plaintext value. */
+export function controllerSessionAuthorityMatches(owner: ControllerSession, authorityId: string | undefined): boolean {
+  const expected = owner.authorityDigest?.trim() || '';
+  const candidate = authorityId?.trim() || '';
+  if (!expected || !candidate) return false;
+  const actual = digestControllerAuthority(candidate);
+  if (expected.length !== actual.length) return false;
+  return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(actual, 'hex'));
 }
 
 export function requireControllerOwnershipAuthority(

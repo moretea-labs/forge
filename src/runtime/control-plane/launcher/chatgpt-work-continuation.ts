@@ -75,7 +75,7 @@ export interface StandaloneChatgptPromptInput {
   timeoutMs?: number;
 }
 
-const workflowToolAttributionInstruction = (workId: string): string => `Forge Workflow execution contract: first claim exact Work ${workId}. For every repository_command_execute and repository_safe_patch_apply call in this turn, pass work_id=${workId} explicitly. MCP transport sessions may change between tool calls; never omit this Work id.`;
+const workflowToolAttributionInstruction = (workId: string): string => `Forge Workflow execution contract: first claim exact Work ${workId}. Capture data.controllerAuthorityId from that successful controller_claim response. Pass it unchanged as controller_authority_id on every subsequent rh_work lifecycle call for this Work (continue, verify, finalize, stop, controller_release); if the current frozen client schema does not expose controller_authority_id, pass the same opaque value as session_id compatibility carrier. Never use data.session.sessionId as the durable capability: MCP execution sessions may be replaced or invalidated between tool calls. For every repository_command_execute and repository_safe_patch_apply call in this turn, pass work_id=${workId} explicitly; never omit this Work id.`;
 
 function requestId(workId: string, actionId: string): string {
   return `chatgpt-work:${workId}:${actionId}:${randomUUID()}`;

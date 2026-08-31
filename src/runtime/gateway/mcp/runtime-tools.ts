@@ -192,8 +192,10 @@ import {
   type FacadeTool,
   bindControllerSessionToCurrentRuntime,
   claimControllerSession,
+  controllerSessionAuthorityMatches,
   controllerSessionPrincipalId,
   getControllerSession,
+  mintControllerSessionAuthority,
   releaseControllerSessionWithAuthority,
   releaseObservedControllerSession,
   resumeControllerSession,
@@ -1104,21 +1106,21 @@ function authenticatedFacadeControllerIdentity(
   ctx: MultiRepositoryMcpToolContext,
   args: Record<string, unknown>,
   options: { allowTransportSessionRollover?: boolean } = {},
-): { controllerId: string; principalId: string; sessionId: string; controllerInstanceId: string; controllerType: 'chatgpt' | 'codex' | 'claude' | 'grok' | 'human' } {
+): { controllerId: string; principalId: string; sessionId: string; transportSessionId?: string; controllerAuthorityId?: string; controllerInstanceId: string; controllerType: 'chatgpt' | 'codex' | 'claude' | 'grok' | 'human' } {
   const principalId = ctx.principalId?.trim();
   const transportSessionId = ctx.sessionId?.trim();
   const requestedControllerId = typeof args.controller_id === 'string' ? args.controller_id.trim() : '';
   const requestedSessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
+  const requestedAuthorityId = typeof args.controller_authority_id === 'string' ? args.controller_authority_id.trim() : '';
   if (!principalId || (!transportSessionId && !requestedSessionId)) {
     throw new Error('CONTROLLER_AUTHENTICATED_SESSION_REQUIRED: reconnect or provide session_id through the authenticated MCP transport');
   }
-  // The authenticated principal proves who is calling; session_id is the
-  // Controller-owned opaque lease capability that keeps one conversation/round
-  // stable across replaceable MCP transport sessions. Prefer that explicit
-  // capability whenever supplied. A foreign same-principal conversation still
-  // cannot rebind an existing Work unless it possesses the exact opaque session
-  // (or the stronger relay-round capability checked by the caller).
-  const sessionId = requestedSessionId || transportSessionId!;
+  // Transport session is the replaceable execution binding. When a transport is
+  // present, legacy/frozen clients may carry the durable controller capability in
+  // session_id; never feed that capability to ExecutionSession APIs. Without a
+  // transport, session_id retains its legacy meaning as the explicit session.
+  const sessionId = transportSessionId || requestedSessionId;
+  const controllerAuthorityId = requestedAuthorityId || (transportSessionId && requestedSessionId !== transportSessionId ? requestedSessionId : '');
   if (requestedControllerId && requestedControllerId !== principalId) {
     throw new Error('CONTROLLER_ID_CONTEXT_MISMATCH: controller_id must match the authenticated principal');
   }
@@ -1133,6 +1135,8 @@ function authenticatedFacadeControllerIdentity(
     controllerId: principalId,
     principalId,
     sessionId,
+    ...(transportSessionId ? { transportSessionId } : {}),
+    ...(controllerAuthorityId ? { controllerAuthorityId } : {}),
     controllerType: transportControllerType ?? requestedControllerType ?? 'chatgpt',
     controllerInstanceId: ctx.controllerInstanceId?.trim() || currentControllerInstanceId(),
   };
@@ -1242,17 +1246,17 @@ function currentFacadeTerminalizationAuthority(
   }
   if (ownerInstanceId !== identity.controllerInstanceId || owner.sessionId !== identity.sessionId) {
     const relay = assertFacadeControllerRoundAuthority(ctx, store, workId, args);
-    if (!relay?.authorityId?.trim()) {
-      if (ownerInstanceId !== identity.controllerInstanceId) {
+    const relayAuthorized = Boolean(relay?.authorityId?.trim());
+    const directAuthorityAuthorized = !relayAuthorized && controllerSessionAuthorityMatches(owner, identity.controllerAuthorityId);
+    if (!relayAuthorized && !directAuthorityAuthorized) {
+      if (ownerInstanceId !== identity.controllerInstanceId && !owner.authorityDigest) {
         throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
       }
-      throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; terminalization cannot rebind ownership implicitly. Call controller_claim for this exact Work in the current controller scope, then retry.`);
+      throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; terminalization requires the exact Work-bound controller authority after transport rotation.`);
     }
-    // The opaque per-round relay capability is the durable conversation-round
-    // authority. MCP transport sessions are replaceable execution bindings, so
-    // an exact upgraded relay may reconcile the same authenticated owner onto
-    // the current canonical Runtime/session before the claim-generation fence is
-    // captured for terminalization. Foreign or legacy rounds fail above.
+    // Relay and direct claims both provide Work-bound opaque authority. The
+    // capability authorizes rebinding only the execution transport; ownership
+    // generation remains fenced by ControllerSession.
     owner = bindFacadeControllerOwnership(ctx, store, workId, identity);
   }
   const reboundPrincipal = controllerSessionPrincipalId(owner);
@@ -3925,6 +3929,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             assertFacadeControllerRoundAuthority(ctx, store, workId, args);
             const observedOwner = getControllerSession(store, workId);
             const dispatchedRelay = getControllerRoundRelay(store, workId);
+            if (observedOwner && observedOwner.authorityDigest
+              && (observedOwner.sessionId !== identity.sessionId || (observedOwner.controllerInstanceId?.trim() || '') !== identity.controllerInstanceId)
+              && !dispatchedRelay?.authorityId?.trim()
+              && !controllerSessionAuthorityMatches(observedOwner, identity.controllerAuthorityId)) {
+              throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; controller_claim requires the existing Work-bound controller authority after transport rotation.`);
+            }
+            const directAuthority = dispatchedRelay?.authorityId?.trim() ? undefined : mintControllerSessionAuthority();
             const crossOwnerRecovery = Boolean(observedOwner)
               && (
                 observedOwner!.controllerId !== identity.controllerId
@@ -3936,6 +3947,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               controllerId: identity.controllerId,
               controllerType: identity.controllerType,
               sessionId: identity.sessionId,
+              ...(directAuthority ? { authorityDigest: directAuthority.authorityDigest } : {}),
               principalId: identity.principalId,
               controllerInstanceId: identity.controllerInstanceId,
               ...(crossOwnerRecovery
@@ -3972,7 +3984,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               summary: relay?.status === 'claimed'
                 ? `Controller ${session.controllerId} claimed ${session.workId}; the dispatched ChatGPT round is mechanically acknowledged and still requires an explicit semantic disposition.`
                 : `Controller ${session.controllerId} claimed ${session.workId}.`,
-              data: { session, relay },
+              data: {
+                session,
+                relay,
+                controllerAuthorityId: dispatchedRelay?.authorityId?.trim() || directAuthority?.authorityId,
+                controllerAuthorityCarrier: dispatchedRelay?.authorityId?.trim() ? 'controller_authority_id' : 'controller_authority_id_or_session_id_compat',
+              },
             }) as unknown as Record<string, unknown>);
           } catch (error) {
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller claim failed.', data: {} }) as unknown as Record<string, unknown>, true);
@@ -4943,6 +4960,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             }
             if (work && !['cancelled', 'completed', 'failed'].includes(work.status)) {
               const identity = authenticatedFacadeControllerIdentity(ctx, args);
+              const existingOwner = getControllerSession(store, workId);
+              if (existingOwner && (existingOwner.sessionId !== identity.sessionId || (existingOwner.controllerInstanceId?.trim() || '') !== identity.controllerInstanceId)) {
+                const relay = getControllerRoundRelay(store, workId);
+                if (!relay?.authorityId?.trim() && existingOwner.authorityDigest && !controllerSessionAuthorityMatches(existingOwner, identity.controllerAuthorityId)) {
+                  throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; continue requires the exact Work-bound controller authority after transport rotation.`);
+                }
+              }
               resumedControllerSession = resumeControllerSession(store, {
                 workId,
                 controllerId: identity.controllerId,
