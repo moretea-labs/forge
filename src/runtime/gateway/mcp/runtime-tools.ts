@@ -206,7 +206,7 @@ import { readRequirement } from '../../control-plane/persistence/requirement-sto
 import { admitRequirement } from '../../control-plane/facade/requirement-authority';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { materializeRepositoryWorkPlacement } from '../../control-plane/facade/repository-work-admission';
-import { reauthorizeRetainedCancelledRepositoryWork } from '../../control-plane/execution/retained-work-resume';
+import { ensureRunningRepositoryWorkCheckout, reauthorizeRetainedCancelledRepositoryWork } from '../../control-plane/execution/retained-work-resume';
 import { currentPermissionSnapshotVersion } from '../../control-plane/execution/validation';
 import { observeRuntimeStatus } from '../../root/status';
 import { reconcileWorkValidation } from './work-validation-reconciler';
@@ -4916,6 +4916,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         let resumedControllerSession: ReturnType<typeof resumeControllerSession> | undefined;
         let cancelledWorkReauthorized = false;
         let reconstructedCancelledCheckout = false;
+        let reconstructedRunningCheckout = false;
         let continuationSourceRevision = workloopCtx.sourceRevision;
         let continuationWorkspaceFingerprint: string | undefined;
         let continuationWorkspaceChangedPaths: string[] | undefined;
@@ -4957,6 +4958,18 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 workId,
                 identity: { sessionId: identity.sessionId, principalId: identity.principalId },
               });
+              const recovered = ensureRunningRepositoryWorkCheckout({
+                controllerHome: ctx.controllerHome,
+                repository,
+                workId,
+                identity,
+                prepareDependencies: args.needs_dependencies === true,
+              });
+              reconstructedRunningCheckout = recovered.reconstructedCheckout;
+              if (reconstructedRunningCheckout) {
+                work = getWorkContract(store, workId);
+                if (!work) throw new Error(`WORK_CONTINUE_RECONSTRUCTION_CONTRACT_MISSING: ${workId}`);
+              }
               if (work.worktreePolicy.required === true && !work.worktreeRef) {
                 materializeFacadeWorkPlacement(ctx, repository, workId, args);
               }
@@ -5024,6 +5037,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 ...facadeData,
                 ownershipResumed: true,
                 controllerSession: resumedControllerSession,
+                ...(reconstructedRunningCheckout ? { reconstructedRunningCheckout: true } : {}),
                 ...(cancelledWorkReauthorized ? {
                   cancelledWorkReauthorized: true,
                   reconstructedCancelledCheckout,

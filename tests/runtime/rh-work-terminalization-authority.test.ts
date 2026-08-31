@@ -6,7 +6,7 @@ import { join } from 'path';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
-import { getRepository, registerRepository, selectRepositoryCheckout } from '../../src/cli/repositories/registry';
+import { getRepository, reconcileRepositoryCheckouts, registerRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
 import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
@@ -114,6 +114,223 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 }
 
 describe('rh_work terminalization authority', () => {
+  test('continue reconstructs the same running Work before preserving the repository implementation gate', async () => {
+    const fx = fixture();
+    const workId = 'work-running-checkout-runtime-recovery';
+    const caller = {
+      principalId: 'principal-running-checkout-runtime-recovery',
+      sessionId: 'transport-running-checkout-runtime-recovery',
+      controllerInstanceId: 'runtime-running-checkout-runtime-recovery',
+    };
+    const branch = 'work/running-checkout-runtime-recovery';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'Running checkout runtime recovery',
+      branchName: branch,
+    });
+    expect(workspace.root).toBeTruthy();
+    expect(workspace.checkoutId).toBeTruthy();
+    const baseRevision = workspace.baseRevision!;
+    const now = new Date().toISOString();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Recover the same running Work after a zero-delta checkout disappears.',
+      acceptanceCriteria: [],
+      constraints: { requireWorktree: true, directMainProhibited: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+      phase: 'implementation',
+      worktreeRef: workspace.root,
+      scopeEvidence: {
+        initialLikelyPaths: [],
+        inspectedPaths: [],
+        actualChangedPaths: [],
+        recordedAt: now,
+      },
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      workContractId: workId,
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      repositoryId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      worktreePath: workspace.root!,
+      branch,
+      managedWorktree: true,
+      baseCommit: baseRevision,
+      deliveryBaseCommit: baseRevision,
+      expectedHead: baseRevision,
+      permissionSnapshotVersion: 1,
+      state: 'prepared',
+      createdAt: now,
+      updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: {
+        validation: 'pending',
+        commit: 'pending',
+        merge: 'pending',
+        branchCleanup: 'pending',
+        worktreeCleanup: 'pending',
+      },
+    });
+    claimControllerSession(store, {
+      workId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+
+    const oldCheckoutId = workspace.checkoutId!;
+    const oldWorktree = workspace.root!;
+    execFileSync('git', ['worktree', 'remove', '--force', oldWorktree], { cwd: fx.repoRoot });
+    expect(reconcileRepositoryCheckouts(fx.repository.repoId, fx.controllerHome).archivedCheckoutIds).toContain(oldCheckoutId);
+    expect(existsSync(oldWorktree)).toBe(false);
+
+    const continued = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'continue', work_id: workId },
+    ));
+    expect(continued.status).toBe('blocked');
+    expect(continued.summary).toContain('Continue requires implementation before verification');
+    expect(continued.data?.reconstructedRunningCheckout).toBe(true);
+    expect(continued.data?.ownershipResumed).toBe(true);
+    expect(continued.data?.nextStep).toBe('execute');
+
+    const work = getWorkContract(store, workId)!;
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
+    expect(work.status).toBe('running');
+    expect(work.checkoutId).toBeDefined();
+    expect(work.worktreeRef).toBeDefined();
+    expect(work.checkoutId).not.toBe(oldCheckoutId);
+    expect(work.worktreeRef).not.toBe(oldWorktree);
+    expect(existsSync(work.worktreeRef!)).toBe(true);
+    expect(handle.checkoutId).toBe(work.checkoutId!);
+    expect(handle.worktreePath).toBe(work.worktreeRef!);
+    expect(handle.baseCommit).toBe(baseRevision);
+    expect(handle.expectedHead).toBe(baseRevision);
+  }, 15_000);
+
+  test('continue fails closed and preserves dirty source when the running Work checkout is archived but still present', async () => {
+    const fx = fixture();
+    const workId = 'work-running-dirty-checkout-runtime-recovery';
+    const caller = {
+      principalId: 'principal-running-dirty-checkout-runtime-recovery',
+      sessionId: 'transport-running-dirty-checkout-runtime-recovery',
+      controllerInstanceId: 'runtime-running-dirty-checkout-runtime-recovery',
+    };
+    const branch = 'work/running-dirty-checkout-runtime-recovery';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'Running dirty checkout runtime recovery',
+      branchName: branch,
+    });
+    expect(workspace.root).toBeTruthy();
+    expect(workspace.checkoutId).toBeTruthy();
+    const baseRevision = workspace.baseRevision!;
+    const now = new Date().toISOString();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Preserve dirty source when an active Work checkout is archived.',
+      acceptanceCriteria: [],
+      constraints: { requireWorktree: true, directMainProhibited: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+      phase: 'implementation',
+      worktreeRef: workspace.root,
+      scopeEvidence: {
+        initialLikelyPaths: [],
+        inspectedPaths: [],
+        actualChangedPaths: [],
+        recordedAt: now,
+      },
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      workContractId: workId,
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      repositoryId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      worktreePath: workspace.root!,
+      branch,
+      managedWorktree: true,
+      baseCommit: baseRevision,
+      deliveryBaseCommit: baseRevision,
+      expectedHead: baseRevision,
+      permissionSnapshotVersion: 1,
+      state: 'prepared',
+      createdAt: now,
+      updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: {
+        validation: 'pending',
+        commit: 'pending',
+        merge: 'pending',
+        branchCleanup: 'pending',
+        worktreeCleanup: 'pending',
+      },
+    });
+    claimControllerSession(store, {
+      workId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+
+    const retainedPath = workspace.root!;
+    writeFileSync(join(retainedPath, 'src', 'index.ts'), 'export const ready = false;\n');
+    setRepositoryCheckoutLifecycle({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      lifecycle: 'archived',
+      reason: 'test archived checkout with retained dirty source',
+    });
+
+    const continued = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'continue', work_id: workId },
+    ));
+    expect(continued.status).toBe('blocked');
+    expect(continued.summary).toContain('WORK_CONTINUE_ZERO_DELTA_PHYSICAL_CONFLICT');
+    expect(existsSync(retainedPath)).toBe(true);
+    expect(execFileSync('git', ['status', '--porcelain'], { cwd: retainedPath, encoding: 'utf8' })).toContain('src/index.ts');
+    expect(getWorkContract(store, workId)?.checkoutId).toBe(workspace.checkoutId!);
+  }, 15_000);
+
   test('authenticated principal may use explicit opaque session when transport session is absent', async () => {
     const fx = fixture();
     const workA = 'work-explicit-session-a';

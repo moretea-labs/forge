@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
-import { listRepositories, selectRepositoryCheckout } from '../../../cli/repositories/registry';
+import { listRepositories, repositoryCheckoutLifecycle, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { getControllerSession } from '../facade/controller-session-store';
@@ -23,6 +23,141 @@ export interface ReauthorizeRetainedCancelledWorkInput {
   requestedBy?: string;
   approvalConfirmed?: boolean;
   prepareDependencies?: boolean;
+}
+
+export interface EnsureRunningRepositoryWorkCheckoutInput {
+  controllerHome: string;
+  repository: RepositoryRecord;
+  workId: string;
+  identity: RetainedWorkResumeIdentity;
+  prepareDependencies?: boolean;
+}
+
+/**
+ * Re-establish the checkout binding for a still-running isolated Work only
+ * when durable and Git evidence prove that the missing checkout carried no
+ * repository delta. Any dirty, divergent, committed, or cleaned evidence
+ * fails closed so recovery never becomes permission to discard source.
+ */
+export function ensureRunningRepositoryWorkCheckout(
+  input: EnsureRunningRepositoryWorkCheckoutInput,
+): { reconstructedCheckout: boolean } {
+  const { controllerHome, repository, workId, identity } = input;
+  const store = { controllerHome, repoId: repository.repoId };
+  const work = getWorkContract(store, workId);
+  if (!work || ['cancelled', 'completed', 'failed'].includes(work.status)) return { reconstructedCheckout: false };
+  if (work.workKind !== 'repository_change' || work.worktreePolicy.required !== true) return { reconstructedCheckout: false };
+
+  const recordedCheckoutId = work.checkoutId?.trim();
+  const recordedWorktree = work.worktreeRef?.trim();
+  if (!recordedCheckoutId || !recordedWorktree) return { reconstructedCheckout: false };
+
+  const registryRepository = listRepositories(controllerHome, { includeRemoved: true })
+    .find((candidate) => candidate.repoId === repository.repoId);
+  if (!registryRepository) throw new Error(`WORK_CONTINUE_REPOSITORY_MISSING: ${workId}`);
+  const checkoutRecord = registryRepository.checkouts.find((candidate) => candidate.checkoutId === recordedCheckoutId);
+  const checkoutActive = checkoutRecord ? repositoryCheckoutLifecycle(checkoutRecord) === 'active' : false;
+  const worktreePresent = existsSync(recordedWorktree);
+  if (checkoutActive && worktreePresent) return { reconstructedCheckout: false };
+  if (checkoutActive) throw new Error(`WORK_CONTINUE_CHECKOUT_PRESERVATION_AMBIGUOUS: ${workId}`);
+
+  const handle = readWorkHandle(controllerHome, repository.repoId, workId);
+  if (!handle) throw new Error(`WORK_CONTINUE_HANDLE_REQUIRED: ${workId}`);
+  if (handle.repositoryId !== repository.repoId || (handle.workContractId && handle.workContractId !== workId)) {
+    throw new Error(`WORK_CONTINUE_HANDLE_IDENTITY_MISMATCH: ${workId}`);
+  }
+  if (handle.principalId !== identity.principalId) throw new Error(`WORK_CONTINUE_HANDLE_PRINCIPAL_MISMATCH: ${workId}`);
+  if (handle.checkoutId !== recordedCheckoutId || resolve(handle.worktreePath) !== resolve(recordedWorktree)) {
+    throw new Error(`WORK_CONTINUE_CHECKOUT_OWNERSHIP_MISMATCH: ${workId}`);
+  }
+  if (['committed', 'merged', 'cleaned', 'failed_terminal_cleanup'].includes(handle.state)
+    || handle.finalization.commit === 'done'
+    || handle.finalization.merge === 'done'
+    || handle.cleanupReceipt?.complete === true) {
+    throw new Error(`WORK_CONTINUE_DELIVERY_OR_CLEANUP_CONFLICT: ${workId}`);
+  }
+
+  const actualChangedPaths = work.scopeEvidence?.actualChangedPaths;
+  if (!actualChangedPaths || actualChangedPaths.length !== 0
+    || work.checks.length !== 0
+    || work.checkRefs.length !== 0
+    || work.evidenceState !== 'none') {
+    throw new Error(`WORK_CONTINUE_ZERO_DELTA_PROOF_REQUIRED: ${workId}`);
+  }
+  const recordedBase = work.baseRevision?.trim();
+  if (!recordedBase) throw new Error(`WORK_CONTINUE_BASE_REVISION_REQUIRED: ${workId}`);
+  const baseRevision = gitCommitAtRef(repository.canonicalRoot, recordedBase);
+  if (!baseRevision) throw new Error(`WORK_CONTINUE_BASE_REVISION_MISSING: ${workId}`);
+  const handleBase = handle.baseCommit ? gitCommitAtRef(repository.canonicalRoot, handle.baseCommit) : undefined;
+  const handleHead = handle.expectedHead ? gitCommitAtRef(repository.canonicalRoot, handle.expectedHead) : undefined;
+  if ((handle.baseCommit && handleBase !== baseRevision) || (handle.expectedHead && handleHead !== baseRevision)) {
+    throw new Error(`WORK_CONTINUE_REVISION_AMBIGUOUS: ${workId}`);
+  }
+  if (handle.branch) {
+    const historicalBranchHead = gitCommitAtRef(repository.canonicalRoot, `refs/heads/${handle.branch}`);
+    if (historicalBranchHead && historicalBranchHead !== baseRevision) {
+      throw new Error(`WORK_CONTINUE_UNIQUE_COMMIT_CONFLICT: ${workId}`);
+    }
+  }
+  if (worktreePresent) {
+    const retainedSnapshot = gitWorktreeSnapshot(recordedWorktree);
+    if (!retainedSnapshot || !retainedSnapshot.clean || retainedSnapshot.head !== baseRevision || (handle.branch && retainedSnapshot.branch !== handle.branch)) {
+      throw new Error(`WORK_CONTINUE_ZERO_DELTA_PHYSICAL_CONFLICT: ${workId}`);
+    }
+  }
+
+  const branchName = `work/resume-${workId.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 42)}-${baseRevision.slice(0, 12)}`;
+  const existingResumeBranch = gitCommitAtRef(repository.canonicalRoot, `refs/heads/${branchName}`);
+  if (existingResumeBranch && existingResumeBranch !== baseRevision) {
+    throw new Error(`WORK_CONTINUE_RECONSTRUCTION_BRANCH_CONFLICT: ${workId}`);
+  }
+  const workspace = ensureManagedWorkspace(controllerHome, repository, {
+    requestId: `${workId}:active-checkout-recovery:${baseRevision}`,
+    title: `${work.objective} checkout recovery`,
+    branchName,
+    baseRef: baseRevision,
+    prepareDependencies: input.prepareDependencies === true,
+  });
+  if (!workspace.managed || !workspace.checkoutId || !workspace.root || !workspace.branch) {
+    throw new Error(`WORK_CONTINUE_RECONSTRUCTION_FAILED: ${workId}`);
+  }
+  const refreshedRepository = listRepositories(controllerHome, { includeRemoved: true })
+    .find((candidate) => candidate.repoId === repository.repoId);
+  if (!refreshedRepository) throw new Error(`WORK_CONTINUE_REPOSITORY_MISSING: ${workId}`);
+  const reconstructed = selectRepositoryCheckout(refreshedRepository, workspace.checkoutId);
+  const reconstructedStatus = repositoryGitStatus(reconstructed);
+  if (!reconstructedStatus.clean || reconstructedStatus.head !== baseRevision || reconstructedStatus.branch !== workspace.branch) {
+    throw new Error(`WORK_CONTINUE_RECONSTRUCTION_REVISION_MISMATCH: ${workId}`);
+  }
+
+  updateWorkContract(store, workId, {
+    checkoutId: workspace.checkoutId,
+    worktreeRef: workspace.root,
+    baseRevision,
+    controllerInstanceId: identity.controllerInstanceId,
+    continuationPrompt: `Continue work ${repository.repoId}: ${work.objective.slice(0, 500)}. The prior managed checkout was absent; Forge reconstructed an exact zero-delta checkout at ${baseRevision}.`,
+  });
+  const updatedAt = new Date().toISOString();
+  writeWorkHandle(controllerHome, {
+    ...handle,
+    principalId: identity.principalId,
+    sessionId: identity.sessionId,
+    checkoutId: workspace.checkoutId,
+    worktreePath: workspace.root,
+    branch: workspace.branch,
+    sourceCheckoutId: repository.activeCheckoutId,
+    managedWorktree: true,
+    baseCommit: baseRevision,
+    deliveryBaseCommit: baseRevision,
+    expectedHead: baseRevision,
+    state: 'prepared',
+    validatedInputFingerprint: undefined,
+    failureReason: undefined,
+    cleanupReceipt: undefined,
+    finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+    updatedAt,
+  });
+  return { reconstructedCheckout: true };
 }
 
 /**
