@@ -48,6 +48,20 @@ describe("run command", () => {
     }
   });
 
+  test("bundled migration helper resolves the owning Forge source checkout", () => {
+    const res = runHelper({
+      helper: "migrate-project-template",
+      args: ["--repo", ROOT, "--dry-run"],
+      cwd: ROOT,
+      stdio: "pipe",
+      timeoutMs: 30_000,
+    });
+
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout).toContain("[adopt-plan] repo:");
+    expect(res.stdout).toContain("[adopt-plan] apply: no");
+  });
+
   test("prefers repo helper runtime when helper_source is repo pinned", () => {
     const tmp = mkdtempSync(join(tmpdir(), "forge-run-repo-pin-"));
     try {

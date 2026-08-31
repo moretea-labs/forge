@@ -261,7 +261,9 @@ describe('autonomous continuation lifecycle', () => {
       principalId: 'chatgpt-principal',
       sessionId: 'mcp-after-finalize',
     });
-    // Terminal semantic closure must not rewrite or reclaim the physical Work lease.
+    // The relay records the current replaceable transport, while terminal semantic
+    // closure must not rewrite or reclaim the physical Work lease or its durable authority.
+    expect(completed.data.relay.authorityId).toBe(opened.authorityId);
     expect(getControllerSession(store, workId)?.sessionId).toBe('mcp-before-finalize');
 
     const wrongInstanceRelease = structured(await callRuntimeTool(
@@ -429,7 +431,8 @@ describe('autonomous continuation lifecycle', () => {
     if (launched.pid) launchedPids.push(launched.pid);
     expect(launched.prompt).toContain('operation=controller_claim');
     expect(launched.prompt).toContain(`work_id=${workId}`);
-    expect(launched.prompt).toContain('Only after that exact Work claim succeeds');
+    expect(launched.prompt).toContain('When that exact Work claim succeeds');
+    expect(launched.prompt).toContain('capture data.controllerAuthorityId');
     expect(launched.prompt).not.toContain('First call rh_work continue');
   });
 

@@ -57,6 +57,8 @@ function controllerHome(): string {
 
 function output(value: unknown): void { process.stdout.write(`${JSON.stringify(value, null, 2)}\n`); }
 
+import { runRecoveryControllerHomeMigrationWorker, scheduleRecoveryControllerHomeMigration } from './controller-home-migration';
+
 export const RECOVERY_CLI_COMMANDS = [
   'status',
   'verify',
@@ -69,6 +71,7 @@ export const RECOVERY_CLI_COMMANDS = [
   'recover-primary-runtime',
   'activate-runtime-release',
   'stage-and-activate-runtime-release',
+  'migrate-controller-home-worker',
   'restart-public-tunnel',
   'diagnose',
   'reconnect-main',
@@ -131,6 +134,20 @@ async function cli(): Promise<void> {
       return;
     }
     case 'stage-and-activate-runtime-release': output(await stageAndActivateConfiguredRuntimeRelease(config, {}, `recovery-cli:${process.pid}:${Date.now()}`)); return;
+    case 'migrate-controller-home-worker': {
+      const canonicalSourceRoot = option('--canonical-source-root');
+      const expectedSourceRevision = option('--expected-source-revision');
+      const migrationRequestId = option('--request-id');
+      if (!canonicalSourceRoot) throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_REQUIRED');
+      if (!expectedSourceRevision) throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_REVISION_REQUIRED');
+      if (!migrationRequestId) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
+      output(await runRecoveryControllerHomeMigrationWorker(config, {
+        requestId: migrationRequestId,
+        canonicalSourceRoot,
+        expectedSourceRevision,
+      }));
+      return;
+    }
     case 'restart-public-tunnel': output(await repairPublicTunnel(config)); return;
     case 'diagnose': output(await diagnose(config)); return;
     case 'reconnect-main': output(await reconnectMain(config)); return;
@@ -281,10 +298,11 @@ export const RECOVERY_TOOLS = [
   { name: 'rollback_previous', description: 'While Canonical Runtime is stopped, atomically restore its attested previous whole-Runtime release and SQLite backup.', inputSchema: mutationInputSchema() },
   { name: 'restart_primary_runtime', description: 'Restart the installed canonical Forge Runtime service only after exact Recovery machine identity matches.', inputSchema: mutationInputSchema() },
   { name: 'restart_primary_connector', description: 'Restart the explicitly configured primary OAuth/Connector service only after exact Recovery machine identity and local Canonical Runtime verification succeed.', inputSchema: mutationInputSchema() },
-  { name: 'recover_primary_runtime', description: 'Stop the canonical Runtime, restore the attested previous whole release and SQLite backup, restart it, and require verification.', inputSchema: mutationInputSchema() },
+  { name: 'recover_primary_runtime', description: 'Stop the canonical Runtime, restore the attested previous whole-Runtime release and SQLite backup, restart it, and require verification.', inputSchema: mutationInputSchema() },
   { name: 'activate_runtime_release', description: 'Activate an already staged immutable Runtime release only if machine identity and caller-observed active release/authority revision are still current. Reverse activation of current.previous is rejected; use rollback_previous/recover_primary_runtime instead.', inputSchema: mutationInputSchema({ release_path: { type: 'string', minLength: 8, maxLength: 1024, description: 'Absolute path to the staged immutable Runtime release directory.' }, expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 }, expected_authority_revision: { type: 'integer', minimum: 1 } }, ['release_path', 'expected_active_release_id', 'expected_authority_revision']) },
   { name: 'stage_and_activate_runtime_release', description: 'Build one immutable Runtime release from the fixed Recovery-configured source root, then activate it transactionally with rollback protection. No arbitrary source path is accepted.', inputSchema: mutationInputSchema() },
-  { name: 'restart_public_tunnel', description: 'Restart the explicitly configured public tunnel only after exact Recovery machine identity and local runtime verification succeed and the external endpoint is unavailable.', inputSchema: mutationInputSchema() },
+  { name: 'migrate_controller_home', description: 'Schedule a Linux-only standalone Recovery transaction that relocates this Forge installation to the stable user-level Controller Home, reinstalls immutable Runtime/Connector/Recovery owners, verifies them, and rolls back on failure.', inputSchema: mutationInputSchema({ canonical_source_root: { type: 'string', minLength: 1, maxLength: 1024 }, expected_source_revision: { type: 'string', minLength: 7, maxLength: 80 } }, ['canonical_source_root', 'expected_source_revision']) },
+  { name: 'restart_public_tunnel', description: 'Restart the explicitly configured public tunnel only after exact Recovery machine identity and local runtime verification succeeds and the external endpoint is unavailable.', inputSchema: mutationInputSchema() },
   { name: 'reconnect_primary_connector', description: 'Check canonical Runtime Gateway and primary MCP reconnection readiness without publishing a release.', inputSchema: { type: 'object', additionalProperties: false } },
 ] as const;
 
@@ -570,6 +588,18 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
       assertRecoveryMutationIdentity(config, args);
       return mutationResponse(config, await stageAndActivateConfiguredRuntimeRelease(config, {}, `recovery-gateway:${args.request_id}`));
     }
+    case 'migrate_controller_home': {
+      const migrationRequestId = requestId(args.request_id);
+      if (!migrationRequestId) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
+      assertRecoveryMutationIdentity(config, args);
+      if (typeof args.canonical_source_root !== 'string' || !args.canonical_source_root.trim()) throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_REQUIRED');
+      if (typeof args.expected_source_revision !== 'string' || !args.expected_source_revision.trim()) throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_REVISION_REQUIRED');
+      return scheduleRecoveryControllerHomeMigration(config, {
+        requestId: migrationRequestId,
+        canonicalSourceRoot: args.canonical_source_root.trim(),
+        expectedSourceRevision: args.expected_source_revision.trim(),
+      });
+    }
     case 'restart_public_tunnel': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryMutationIdentity(config, args);
@@ -759,7 +789,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
     if (message.method !== 'tools/call' || typeof message.params?.name !== 'string') { json(response, 200, rpcError(id, -32601, 'Unsupported MCP method.')); return; }
     const name = message.params.name;
     const args = message.params.arguments && typeof message.params.arguments === 'object' && !Array.isArray(message.params.arguments) ? message.params.arguments as Record<string, unknown> : {};
-    if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_primary_runtime' || name === 'restart_primary_connector' || name === 'recover_primary_runtime' || name === 'activate_runtime_release' || name === 'stage_and_activate_runtime_release' || name === 'restart_public_tunnel') {
+    if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_primary_runtime' || name === 'restart_primary_connector' || name === 'recover_primary_runtime' || name === 'activate_runtime_release' || name === 'stage_and_activate_runtime_release' || name === 'migrate_controller_home' || name === 'restart_public_tunnel') {
       const address = request.socket.remoteAddress ?? 'unknown'; const now = Date.now();
       const window = (recentMutations.get(address) ?? []).filter((at) => now - at < 60_000);
       if (window.length >= 3) { json(response, 429, rpcError(id, -32029, 'Recovery mutation rate limit exceeded.')); return; }

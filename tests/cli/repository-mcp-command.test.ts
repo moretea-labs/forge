@@ -11,7 +11,7 @@ import { completionReceiptChangedPaths, inspectDirectTargetDelivery, inspectWork
 import { commandFingerprint, verificationInputFingerprint } from "../../src/runtime/control-plane/execution/verification-evidence";
 import type { ControllerCheck } from "../../src/cli/controller/check-runner";
 import type { VerificationRecord } from "../../src/runtime/control-plane/facade/types";
-import { runtimeToolDefinitions } from "../../src/runtime/gateway/mcp/runtime-tools";
+import { callRuntimeTool, runtimeToolDefinitions } from "../../src/runtime/gateway/mcp/runtime-tools";
 import { createMcpToolContext } from "../../src/cli/mcp/multi-repository";
 import { getLocalBridgeJob, readLocalBridgeJobOutput, readLocalBridgeJobOutputSnapshot } from "../../src/cli/local-bridge/job-store";
 import { routeDurableMcpCall } from "../../src/runtime/gateway/mcp/router";
@@ -138,6 +138,36 @@ describe("structured repository git merge commits", () => {
 });
 
 describe("repository MCP command tools", () => {
+  test("routes Controller Home migration only through rh_work repair and requires an exact Work", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-mcp-recovery-migration-route-"));
+    const controllerHome = join(workspace, "controller-home");
+    const repoRoot = join(workspace, "sample-repo");
+    try {
+      mkdirSync(controllerHome, { recursive: true });
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "README.md"), "hello\n");
+      git(repoRoot, ["add", "README.md"]);
+      git(repoRoot, ["commit", "-m", "init"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      const ctx = createMcpToolContext({ repo: repoRoot, controllerHome, profile: "controller" });
+      const response = await callRuntimeTool(ctx, "rh_work", {
+        repo_id: repository.repoId,
+        operation: "repair",
+        capability_id: "recovery.migrate_controller_home",
+      });
+      const payload = JSON.parse(String(response?.content?.[0]?.text ?? "{}"));
+      expect(payload.status).toBe("blocked");
+      expect(payload.summary).toBe("RECOVERY_CONTROLLER_HOME_MIGRATION_WORK_REQUIRED");
+      expect(payload.data).toMatchObject({ executionStarted: false });
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("documents the facade-first shortest path without widening the tool surface", () => {
     const rhContext = runtimeToolDefinitions.find((tool) => tool.name === "rh_context");
     const rhWork = runtimeToolDefinitions.find((tool) => tool.name === "rh_work");

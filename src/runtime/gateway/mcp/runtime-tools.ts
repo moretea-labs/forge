@@ -225,6 +225,7 @@ import {
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
   parseControllerDispositionCompatibilityCapability,
+  parseControllerRoundCompatibilityCapability,
   recordControllerRoundTabSettlement,
   submitControllerRoundDisposition,
   type ControllerRoundRelayRecord,
@@ -3801,18 +3802,24 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           ? args.capability_id.slice('schedule.delete:'.length).trim()
           : '';
         let frozenControllerDisposition: ReturnType<typeof parseControllerDispositionCompatibilityCapability>;
+        let frozenControllerRoundOperation: ReturnType<typeof parseControllerRoundCompatibilityCapability>;
         try {
           frozenControllerDisposition = parseControllerDispositionCompatibilityCapability(requestedOperation, args.capability_id);
+          frozenControllerRoundOperation = parseControllerRoundCompatibilityCapability(requestedOperation, args.capability_id);
         } catch (error) {
           return result(buildFacadeResult({
             status: 'blocked',
-            summary: error instanceof Error ? error.message : 'Controller disposition compatibility input is invalid.',
+            summary: error instanceof Error ? error.message : 'Controller round compatibility input is invalid.',
             data: {},
           }) as unknown as Record<string, unknown>, true);
         }
-        const operation = frozenControllerDisposition
+        if (frozenControllerRoundOperation) {
+          args.relay_scope_id = frozenControllerRoundOperation.relayScopeId;
+          args.controller_authority_id = frozenControllerRoundOperation.authorityId;
+        }
+        const operation = frozenControllerRoundOperation?.operation ?? (frozenControllerDisposition
           ? 'controller_disposition'
-          : frozenScheduleDeleteId ? 'schedule_delete' : requestedOperation;
+          : frozenScheduleDeleteId ? 'schedule_delete' : requestedOperation);
         if (!allowedFacadeOperations('rh_work').includes(operation)) {
           return invalidFacadeOperation('rh_work', operation);
         }
@@ -4258,15 +4265,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 throw new Error(`CONTROLLER_RELAY_LAUNCH_BLOCKED: ${relay.blockedReason ?? relay.relayScopeId}`);
               }
               const prompt = [
-                `Continue Forge Work ${work.workId} in repo ${work.repoId}.`,
-                `Objective: ${work.objective}`,
-                `Acceptance: ${work.acceptanceCriteria.join('; ') || 'none declared'}`,
-                `Current status: ${work.status}`,
+                buildControllerRoundRelayPrompt(store, relay, { exactOriginWork: true }),
                 `Controller round: ${relay.relayScopeId}. launcher_start opened this durable round; dispatch success is not semantic completion.`,
                 handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
                 continuationPrompt ? `Continuation: ${continuationPrompt}` : '',
-                'Treat Forge Work/Plan/evidence as source of truth. Claim the exact Work before any mutation; if ownership cannot be established, do not mutate.',
-                `Before this ChatGPT round ends, submit exactly one rh_work controller_disposition for Work ${work.workId} and relay_scope_id=${relay.relayScopeId}: continue_immediately, wait, wait_for_user (with an active Handoff), or goal_complete. If this client schema is frozen and omits controller_disposition, use rh_work operation=repair with capability_id=controller.disposition:<disposition>:${relay.relayScopeId}; it is mapped to the same canonical disposition path. Ending the response without a disposition does not close the round and may trigger bounded mechanical recovery.`,
               ].filter(Boolean).join('\n');
               let dispatched: Awaited<ReturnType<typeof runWorkChatgptContinuation>>;
               try {
@@ -4600,6 +4602,47 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             return result(facade as unknown as Record<string, unknown>);
           } catch (error) {
             const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'PlanContract operation failed.', data: { operation, executionStarted: false } });
+            return result(facade as unknown as Record<string, unknown>, true);
+          }
+        }
+
+        if (operation === 'repair' && args.capability_id === 'recovery.migrate_controller_home') {
+          const workId = String(args.work_id ?? '').trim();
+          if (!workId) {
+            const blocked = buildFacadeResult({ status: 'blocked', summary: 'RECOVERY_CONTROLLER_HOME_MIGRATION_WORK_REQUIRED', data: { executionStarted: false } });
+            return result(blocked as unknown as Record<string, unknown>, true);
+          }
+          try {
+            const work = getWorkContract(store, workId);
+            if (!work || ['completed', 'failed', 'cancelled'].includes(work.status)) {
+              throw new Error(`RECOVERY_CONTROLLER_HOME_MIGRATION_ACTIVE_WORK_REQUIRED: ${workId}`);
+            }
+            const identity = authenticatedFacadeControllerIdentity(ctx, args);
+            const owner = getControllerSession(store, workId);
+            if (!owner || controllerSessionPrincipalId(owner) !== identity.principalId || owner.sessionId !== identity.sessionId) {
+              throw new Error(`RECOVERY_CONTROLLER_HOME_MIGRATION_CONTROLLER_CLAIM_REQUIRED: ${workId}`);
+            }
+            const liveGit = gitSnapshot(repository.canonicalRoot);
+            if (!liveGit.head) throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_REVISION_REQUIRED');
+            const migrationRequestId = typeof args.request_id === 'string' && args.request_id.trim()
+              ? args.request_id.trim()
+              : `controller-home-migration:${workId}`;
+            const scheduled = await callStandaloneRecoveryTool(ctx.controllerHome, 'migrate_controller_home', {
+              request_id: migrationRequestId,
+              canonical_source_root: repository.canonicalRoot,
+              expected_source_revision: liveGit.head,
+            });
+            const facade = buildFacadeResult({
+              summary: `Standalone Recovery accepted the Controller Home migration transaction for Work ${workId}.`,
+              data: { workId, migration: scheduled, executionStarted: true },
+            });
+            return result(facade as unknown as Record<string, unknown>);
+          } catch (error) {
+            const facade = buildFacadeResult({
+              status: 'blocked',
+              summary: error instanceof Error ? error.message : 'Controller Home migration scheduling failed.',
+              data: { workId, executionStarted: false },
+            });
             return result(facade as unknown as Record<string, unknown>, true);
           }
         }

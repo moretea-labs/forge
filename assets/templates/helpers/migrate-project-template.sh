@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SELF_SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SELF_SOURCE_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SOURCE_ROOT="${FORGE_SOURCE_ROOT:-${AGENTIC_DEV_ROOT:-${AGENTIC_DEV_SKILL_ROOT:-}}}"
 
 run_source_root() {
