@@ -82,11 +82,11 @@ returns `windowsLogonTask.installed=false` with the exact Scheduler error; the
 fixed-action host script is still available for an elevated administrator to
 register later. Do not replace it with a second background service.
 
-The agent contains no tunnel credential. The existing `tunnel-client` profile
-and its separately permissioned runtime-key reference remain the credential
-owner. Before retiring a legacy Controller Home, move that reference to an
-independent credential path or the canonical Controller Home and confirm the
-profile resolves it there.
+The agent contains no tunnel credential. Its configuration holds only a
+`file:` reference below the independent rescue root; `tunnel-client` reads the
+permissioned value only when reconnecting. Before retiring a legacy Controller
+Home, move that reference to the rescue root or the canonical Controller Home
+and confirm the profile resolves it there.
 
 ## Controller Home cutover
 

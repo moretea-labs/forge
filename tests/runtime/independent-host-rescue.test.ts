@@ -16,6 +16,7 @@ function config() {
     tunnelClient: '/home/greyson/.local/bin/tunnel-client',
     tunnelAlias: 'forge',
     tunnelId: 'tunnel_6a8a862b52188191b859cf61e7cdb9a3',
+    tunnelRuntimeApiKeyRef: 'file:/home/greyson/.forge-recovery/secrets/openai-tunnel-runtime-api-key',
     tunnelProfileDir: '/home/greyson/.config/tunnel-client',
   });
 }
@@ -36,11 +37,12 @@ describe('independent Windows/WSL host rescue', () => {
     const windows = renderWindowsHostRescueConfig(value);
     expect(env).toContain("CONTROLLER_HOME='/home/greyson/.forge/controller'");
     expect(env).toContain("TUNNEL_ID='tunnel_6a8a862b52188191b859cf61e7cdb9a3'");
-    expect(env).not.toMatch(/api.?key|secret|token/i);
+    expect(env).toContain("TUNNEL_RUNTIME_API_KEY_REF='file:/home/greyson/.forge-recovery/secrets/openai-tunnel-runtime-api-key'");
+    expect(env).not.toContain('sk-');
     expect(unit).toContain('ExecStart=/home/greyson/.forge-recovery/bin/forge-wsl-rescue watch');
     expect(unit).toContain('Restart=always');
     expect(windows).toContain('"wslRescuePath": "/home/greyson/.forge-recovery/bin/forge-wsl-rescue"');
-    expect(windows).not.toMatch(/api.?key|secret|token/i);
+    expect(windows).not.toContain('sk-');
   });
 
   test('rejects noncanonical paths and command-injection characters', () => {
@@ -52,6 +54,7 @@ describe('independent Windows/WSL host rescue', () => {
       tunnelClient: '/home/greyson/.local/bin/tunnel-client',
       tunnelAlias: 'forge',
       tunnelId: 'tunnel_6a8a862b52188191b859cf61e7cdb9a3',
+      tunnelRuntimeApiKeyRef: 'file:/home/greyson/.forge-recovery/secrets/openai-tunnel-runtime-api-key',
       tunnelProfileDir: '/home/greyson/.config/tunnel-client',
     })).toThrow('HOST_RESCUE_WSL_DISTRO_INVALID');
     expect(() => createIndependentHostRescueConfig({
@@ -62,6 +65,7 @@ describe('independent Windows/WSL host rescue', () => {
       tunnelClient: '/home/greyson/.local/bin/tunnel-client',
       tunnelAlias: 'forge',
       tunnelId: 'tunnel_6a8a862b52188191b859cf61e7cdb9a3',
+      tunnelRuntimeApiKeyRef: 'file:/home/greyson/.forge-recovery/secrets/openai-tunnel-runtime-api-key',
       tunnelProfileDir: '/home/greyson/.config/tunnel-client',
     })).toThrow('HOST_RESCUE_CONTROLLER_HOME_CANONICAL_REQUIRED');
   });

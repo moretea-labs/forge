@@ -24,6 +24,7 @@ export interface IndependentHostRescueConfig {
   tunnelClient: string;
   tunnelAlias: string;
   tunnelId: string;
+  tunnelRuntimeApiKeyRef: string;
   tunnelProfile: string;
   tunnelProfileDir: string;
   tunnelAdminProfile: string;
@@ -62,6 +63,7 @@ export function createIndependentHostRescueConfig(input: {
   tunnelClient: string;
   tunnelAlias: string;
   tunnelId: string;
+  tunnelRuntimeApiKeyRef: string;
   tunnelProfile?: string;
   tunnelProfileDir: string;
   tunnelAdminProfile?: string;
@@ -79,6 +81,8 @@ export function createIndependentHostRescueConfig(input: {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(tunnelAlias)) throw new Error('HOST_RESCUE_TUNNEL_ALIAS_INVALID');
   const tunnelId = safeToken(required(input.tunnelId, 'HOST_RESCUE_TUNNEL_ID_REQUIRED'), 'HOST_RESCUE_TUNNEL_ID_INVALID');
   if (!/^tunnel_[0-9a-f]{32}$/.test(tunnelId)) throw new Error('HOST_RESCUE_TUNNEL_ID_INVALID');
+  const tunnelRuntimeApiKeyRef = safeToken(required(input.tunnelRuntimeApiKeyRef, 'HOST_RESCUE_TUNNEL_RUNTIME_KEY_REF_REQUIRED'), 'HOST_RESCUE_TUNNEL_RUNTIME_KEY_REF_INVALID');
+  if (!tunnelRuntimeApiKeyRef.startsWith(`file:${rescueRoot}/secrets/`)) throw new Error('HOST_RESCUE_TUNNEL_RUNTIME_KEY_REF_EXTERNAL_REQUIRED');
   const tunnelProfile = safeToken(input.tunnelProfile?.trim() || tunnelAlias, 'HOST_RESCUE_TUNNEL_PROFILE_INVALID');
   const tunnelProfileDir = safeAbsolutePath(input.tunnelProfileDir, 'HOST_RESCUE_TUNNEL_PROFILE_DIR_INVALID');
   const tunnelAdminProfile = safeToken(input.tunnelAdminProfile?.trim() || 'default', 'HOST_RESCUE_TUNNEL_ADMIN_PROFILE_INVALID');
@@ -97,6 +101,7 @@ export function createIndependentHostRescueConfig(input: {
     tunnelClient,
     tunnelAlias,
     tunnelId,
+    tunnelRuntimeApiKeyRef,
     tunnelProfile,
     tunnelProfileDir,
     tunnelAdminProfile,
@@ -120,6 +125,7 @@ export function renderIndependentHostRescueEnv(config: IndependentHostRescueConf
     TUNNEL_CLIENT: config.tunnelClient,
     TUNNEL_ALIAS: config.tunnelAlias,
     TUNNEL_ID: config.tunnelId,
+    TUNNEL_RUNTIME_API_KEY_REF: config.tunnelRuntimeApiKeyRef,
     TUNNEL_PROFILE: config.tunnelProfile,
     TUNNEL_PROFILE_DIR: config.tunnelProfileDir,
     TUNNEL_ADMIN_PROFILE: config.tunnelAdminProfile,
@@ -139,6 +145,10 @@ export function renderIndependentHostRescueSystemdUnit(config: IndependentHostRe
     'Type=simple',
     `Environment="FORGE_RESCUE_ROOT=${config.rescueRoot}"`,
     `ExecStart=${executable} watch`,
+    // tunnel-client deliberately owns its managed tmux process. It must not
+    // keep this observer unit in deactivating state or be killed solely
+    // because the rescue watchdog itself is restarted.
+    'KillMode=process',
     'Restart=always',
     'RestartSec=10',
     '',

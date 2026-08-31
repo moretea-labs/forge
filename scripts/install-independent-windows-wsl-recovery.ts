@@ -63,6 +63,7 @@ const config = createIndependentHostRescueConfig({
   tunnelClient,
   tunnelAlias: option('--tunnel-alias') ?? '',
   tunnelId: option('--tunnel-id') ?? '',
+  tunnelRuntimeApiKeyRef: option('--tunnel-runtime-api-key-ref') ?? `file:${rescueRoot}/secrets/openai-tunnel-runtime-api-key`,
   tunnelProfile: option('--tunnel-profile'),
   tunnelProfileDir: option('--tunnel-profile-dir') ?? join(home, '.config', 'tunnel-client'),
   tunnelAdminProfile: option('--tunnel-admin-profile'),

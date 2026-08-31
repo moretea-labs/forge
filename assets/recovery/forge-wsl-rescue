@@ -31,7 +31,7 @@ usage() {
 
 require_config() {
   local key
-  for key in WSL_DISTRO CONTROLLER_HOME SOURCE_ROOT RUNTIME_UNIT CONNECTOR_UNIT RECOVERY_UNIT TUNNEL_CLIENT TUNNEL_ALIAS TUNNEL_ID TUNNEL_PROFILE TUNNEL_PROFILE_DIR TUNNEL_ADMIN_PROFILE MCP_LOCAL_URL; do
+  for key in WSL_DISTRO CONTROLLER_HOME SOURCE_ROOT RUNTIME_UNIT CONNECTOR_UNIT RECOVERY_UNIT TUNNEL_CLIENT TUNNEL_ALIAS TUNNEL_ID TUNNEL_RUNTIME_API_KEY_REF TUNNEL_PROFILE TUNNEL_PROFILE_DIR TUNNEL_ADMIN_PROFILE MCP_LOCAL_URL; do
     if [[ -z "${!key:-}" ]]; then
       printf 'FORGE_RESCUE_CONFIG_INVALID missing=%s\n' "$key" >&2
       exit 2
@@ -47,7 +47,7 @@ require_config() {
   esac
 }
 
-with_mutation_lock() {
+with_mutation_lock() (
   local lock_path="$RESCUE_ROOT/locks/recovery.lock"
   mkdir -p "$(dirname "$lock_path")"
   exec 9>"$lock_path"
@@ -56,7 +56,7 @@ with_mutation_lock() {
     return 75
   fi
   "$@"
-}
+)
 
 unit_state() {
   local unit="$1"
@@ -89,23 +89,45 @@ mcp_is_available() {
   [[ "$status" == '200' || "$status" == '401' || "$status" == '405' ]]
 }
 
-tunnel_status_json() {
-  "$TUNNEL_CLIENT" runtimes status "$TUNNEL_ALIAS" --json
+wait_for_local_mcp() {
+  local attempt
+  for attempt in $(seq 1 15); do
+    mcp_is_available && return 0
+    sleep 1
+  done
+  return 1
 }
 
-tunnel_is_ready() {
-  local status
-  status="$(tunnel_status_json 2>/dev/null || true)"
-  [[ "$status" == *'"process_running": true'* && "$status" == *'"healthy": true'* && "$status" == *'"ready": true'* && "$status" == *"\"tunnel_id\": \"$TUNNEL_ID\""* ]]
+tunnel_status_json() {
+  # This is an explicit inspection action. The health path below is used by
+  # automatic recovery because remote control-plane inspection can stall.
+  timeout --kill-after=2s 10s "$TUNNEL_CLIENT" runtimes status "$TUNNEL_ALIAS" --json
+}
+
+tunnel_local_ready() {
+  local health_file="$HOME/.local/state/tunnel-client/health/$TUNNEL_ALIAS.url"
+  local health_url
+  [[ -r "$health_file" ]] || return 1
+  health_url="$(<"$health_file")"
+  [[ "$health_url" =~ ^http://127\.0\.0\.1:[0-9]+$ ]] || return 1
+  [[ "$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --connect-timeout 2 --max-time 5 "$health_url/readyz" 2>/dev/null || true)" == '200' ]]
 }
 
 start_tunnel() {
-  "$TUNNEL_CLIENT" runtimes connect \
-    --alias "$TUNNEL_ALIAS" \
-    --admin-profile "$TUNNEL_ADMIN_PROFILE" \
-    --profile "$TUNNEL_PROFILE" \
-    --profile-dir "$TUNNEL_PROFILE_DIR" \
-    --mcp-server-url "$MCP_LOCAL_URL"
+  # tunnel-client starts a long-lived tmux child. Close the rescue lock FD in
+  # that child path so a successful reconnect cannot retain the mutation lock.
+  (
+    exec 9>&-
+    "$TUNNEL_CLIENT" runtimes connect \
+      --alias "$TUNNEL_ALIAS" \
+      --tunnel-id "$TUNNEL_ID" \
+      --runtime-api-key "$TUNNEL_RUNTIME_API_KEY_REF" \
+      --admin-profile "$TUNNEL_ADMIN_PROFILE" \
+      --profile "$TUNNEL_PROFILE" \
+      --profile-dir "$TUNNEL_PROFILE_DIR" \
+      --mcp-server-url "$MCP_LOCAL_URL" \
+      --json
+  )
 }
 
 restart_tunnel() {
@@ -148,9 +170,9 @@ runtime_restart_impl() { restart_unit "$RUNTIME_UNIT"; runtime_status; }
 
 connector_status() { unit_state "$CONNECTOR_UNIT"; }
 connector_start() { with_mutation_lock connector_start_impl; }
-connector_start_impl() { start_unit "$CONNECTOR_UNIT"; connector_status; }
+connector_start_impl() { start_unit "$CONNECTOR_UNIT"; wait_for_local_mcp; connector_status; }
 connector_restart() { with_mutation_lock connector_restart_impl; }
-connector_restart_impl() { restart_unit "$CONNECTOR_UNIT"; connector_status; }
+connector_restart_impl() { restart_unit "$CONNECTOR_UNIT"; wait_for_local_mcp; connector_status; }
 
 recovery_status() { unit_state "$RECOVERY_UNIT"; }
 recovery_start() { with_mutation_lock recovery_start_impl; }
@@ -158,19 +180,33 @@ recovery_start_impl() { start_unit "$RECOVERY_UNIT"; recovery_status; }
 recovery_restart() { with_mutation_lock recovery_restart_impl; }
 recovery_restart_impl() { restart_unit "$RECOVERY_UNIT"; recovery_status; }
 
-tunnel_status() { tunnel_status_json; }
+tunnel_status() {
+  printf 'TUNNEL_ALIAS=%s\n' "$TUNNEL_ALIAS"
+  printf 'TUNNEL_ID=%s\n' "$TUNNEL_ID"
+  tunnel_local_ready && printf 'TUNNEL_LOCAL_READY=true\n' || printf 'TUNNEL_LOCAL_READY=false\n'
+  tunnel_status_json || true
+}
 tunnel_start() { with_mutation_lock tunnel_start_impl; }
-tunnel_start_impl() { start_tunnel; tunnel_status_json; }
+tunnel_start_impl() {
+  start_tunnel
+  tunnel_local_ready
+  printf 'TUNNEL_ALIAS=%s\nTUNNEL_ID=%s\nTUNNEL_LOCAL_READY=true\n' "$TUNNEL_ALIAS" "$TUNNEL_ID"
+}
 tunnel_restart() { with_mutation_lock tunnel_restart_impl; }
-tunnel_restart_impl() { restart_tunnel; tunnel_status_json; }
+tunnel_restart_impl() {
+  restart_tunnel
+  tunnel_local_ready
+  printf 'TUNNEL_ALIAS=%s\nTUNNEL_ID=%s\nTUNNEL_LOCAL_READY=true\n' "$TUNNEL_ALIAS" "$TUNNEL_ID"
+}
 
 forge_cloud_verify() {
   local status=0
   printf 'LOCAL_MCP_URL=%s\n' "$MCP_LOCAL_URL"
   printf 'LOCAL_MCP_HTTP_STATUS=%s\n' "$(mcp_status_code)"
+  printf 'TUNNEL_ALIAS=%s\n' "$TUNNEL_ALIAS"
+  printf 'TUNNEL_ID=%s\n' "$TUNNEL_ID"
   mcp_is_available || status=1
-  tunnel_status_json || status=1
-  tunnel_is_ready || status=1
+  tunnel_local_ready || status=1
   return "$status"
 }
 
@@ -183,11 +219,8 @@ full_recover_impl() {
   start_unit "$RECOVERY_UNIT" || status=1
   start_unit "$RUNTIME_UNIT" || status=1
   start_unit "$CONNECTOR_UNIT" || status=1
-  if ! mcp_is_available; then
-    sleep 2
-    mcp_is_available || status=1
-  fi
-  if ! tunnel_is_ready; then
+  wait_for_local_mcp || status=1
+  if ! tunnel_local_ready; then
     start_tunnel || status=1
   fi
   forge_cloud_verify || status=1
