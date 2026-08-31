@@ -627,6 +627,81 @@ describe('rh_work terminalization authority', () => {
     expect(getWorkContract(store, workId)?.status).toBe('cancelled');
   }, 15_000);
 
+  test('explicit user recovery can rekey only a direct exact-Work authority after capability loss without weakening normal transport fencing', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const principalId = 'principal-direct-authority-recovery';
+    const runtimeInstanceId = 'runtime-direct-authority-recovery';
+    const workId = 'work-direct-authority-recovery';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    publishCurrentRuntime(fx.controllerHome, runtimeInstanceId);
+
+    const initial = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-recovery-1', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId },
+    ));
+    const initialAuthority = String(initial.data?.controllerAuthorityId ?? '');
+    expect(initial.status).toBe('ok');
+    expect(initialAuthority).toStartWith('ctrl_');
+
+    const ordinaryRotatedClaim = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-recovery-2', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId },
+    ));
+    expect(ordinaryRotatedClaim.status).toBe('blocked');
+    expect(ordinaryRotatedClaim.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+
+    const automatedRecovery = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-recovery-2', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'repair',
+        work_id: workId,
+        capability_id: `controller.authority.recover:${workId}`,
+        requested_by: 'chatgpt',
+      },
+    ));
+    expect(automatedRecovery.status).toBe('blocked');
+    expect(automatedRecovery.summary).toContain('WORK_CONTROLLER_AUTHORITY_RECOVERY_USER_REQUIRED');
+
+    const recovered = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-recovery-2', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'repair',
+        work_id: workId,
+        capability_id: `controller.authority.recover:${workId}`,
+        requested_by: 'user',
+      },
+    ));
+    const recoveredAuthority = String(recovered.data?.controllerAuthorityId ?? '');
+    expect(recovered.status).toBe('ok');
+    expect(recovered.data?.authorityRecovered).toBe(true);
+    expect(recoveredAuthority).toStartWith('ctrl_');
+    expect(recoveredAuthority).not.toBe(initialAuthority);
+    expect(getControllerSession(store, workId)?.sessionId).toBe('transport-recovery-2');
+    expect(JSON.stringify(getControllerSession(store, workId))).not.toContain(recoveredAuthority);
+
+    const finalStop = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-recovery-3', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'stop',
+        work_id: workId,
+        controller_authority_id: recoveredAuthority,
+        requested_by: 'chatgpt',
+        reason: 'exact recovered direct authority survives another transport rotation',
+      },
+    ));
+    expect(finalStop.status).toBe('ok');
+    expect(getWorkContract(store, workId)?.status).toBe('cancelled');
+  }, 15_000);
+
   test('same-principal concurrent ChatGPT conversations cannot claim or stop each other while the owning round survives transport rotation', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
