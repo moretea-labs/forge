@@ -833,6 +833,70 @@ test('standalone Recovery repairs its dedicated OpenAI Secure MCP Tunnel without
   expect(commands.some((entry) => entry.includes('forge') && !entry.includes('forge-recovery'))).toBe(false);
 });
 
+test('standalone Recovery repairs its dedicated Linux systemd-user public tunnel by exact unit identity', async () => {
+  const home = controllerHome();
+  const unitName = 'com.moretea.forge-recovery-cloudflare.service';
+  const config = createRecoveryConfig(home, {
+    recoveryPublicUrl: 'https://recovery-wsl.example.test/recovery/mcp',
+    recoveryTunnelService: { platform: 'systemd-user', unitName, cooldownMs: 0, postRestartVerifyTimeoutMs: 3_000 },
+  });
+  let restarted = false;
+  let clock = 0;
+  const commands: string[][] = [];
+  const verification = (): VerifyResult => ({
+    ...healthyVerify(),
+    probes: {
+      ...healthyVerify().probes,
+      recovery_gateway: { ok: true, detail: 'HTTP 200' },
+      recovery_external_http: { ok: restarted, detail: restarted ? 'HTTP 401 OAuth challenge' : 'HTTP 530' },
+    },
+  });
+  const result = await repairPublicTunnel(config, {
+    platform: 'linux',
+    verify: async () => verification(),
+    verifyLocal: async () => healthyVerify(),
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    runCommand: async (name, args) => {
+      commands.push([name, ...args]);
+      if (name !== 'systemctl') throw new Error(`unexpected command ${name}`);
+      if (args[1] === 'show') return { ok: true, status: 0, stdout: 'loaded\n', stderr: '' };
+      if (args[1] === 'restart' && args[2] === unitName) { restarted = true; return { ok: true, status: 0, stdout: '', stderr: '' }; }
+      throw new Error(`unexpected systemctl args ${args.join(' ')}`);
+    },
+  });
+  expect(result).toMatchObject({ ok: true, attempted: true, serviceLabel: unitName, serviceTarget: unitName });
+  expect(commands).toContainEqual(['systemctl', '--user', 'show', '--property=LoadState', '--value', unitName]);
+  expect(commands).toContainEqual(['systemctl', '--user', 'restart', unitName]);
+  expect(commands.some((entry) => entry[0] === 'launchctl' || entry[0] === 'tunnel-client')).toBe(false);
+});
+
+test('standalone Recovery rejects invalid or unavailable systemd-user public tunnel identity', async () => {
+  const home = controllerHome();
+  const degraded: VerifyResult = {
+    ...healthyVerify(),
+    probes: { ...healthyVerify().probes, recovery_gateway: { ok: true, detail: 'HTTP 200' }, recovery_external_http: { ok: false, detail: 'HTTP 530' } },
+  };
+  const invalid = await repairPublicTunnel(createRecoveryConfig(home, {
+    recoveryPublicUrl: 'https://recovery-wsl.example.test/recovery/mcp',
+    recoveryTunnelService: { platform: 'systemd-user', unitName: '../bad.service', cooldownMs: 0 },
+  }), { platform: 'linux', verify: async () => degraded, verifyLocal: async () => healthyVerify() });
+  expect(invalid).toMatchObject({ ok: false, attempted: false, noOp: true, detail: 'public tunnel systemd-user configuration is invalid' });
+
+  const commands: string[][] = [];
+  const unavailable = await repairPublicTunnel(createRecoveryConfig(home, {
+    recoveryPublicUrl: 'https://recovery-wsl.example.test/recovery/mcp',
+    recoveryTunnelService: { platform: 'systemd-user', unitName: 'com.moretea.missing.service', cooldownMs: 0 },
+  }), {
+    platform: 'linux',
+    verify: async () => degraded,
+    verifyLocal: async () => healthyVerify(),
+    runCommand: async (name, args) => { commands.push([name, ...args]); return { ok: true, status: 0, stdout: 'not-found\n', stderr: '' }; },
+  });
+  expect(unavailable).toMatchObject({ ok: false, attempted: false, noOp: true, detail: 'public tunnel systemd-user unit is not loaded: com.moretea.missing.service' });
+  expect(commands).toEqual([['systemctl', '--user', 'show', '--property=LoadState', '--value', 'com.moretea.missing.service']]);
+});
+
 test('standalone Recovery refuses to repoint an OpenAI tunnel alias owned by another tunnel', async () => {
   const home = controllerHome();
   const endpoint = 'http://127.0.0.1:8787/recovery/mcp';

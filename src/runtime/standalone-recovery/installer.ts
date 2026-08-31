@@ -30,7 +30,7 @@ import {
   type SystemdUserUnitInput,
 } from '../../cli/controller/systemd-user';
 import { FORGE_VERSION } from '../../version';
-import { initializeStandaloneRecovery, loadRecoveryConfig, type LaunchdPrimaryConnectorServiceConfig, type LaunchdPublicTunnelServiceConfig, type PrimaryConnectorServiceConfig, type PrimaryRuntimeServiceConfig, type PublicTunnelServiceConfig, type RecoveryConfig } from './core';
+import { initializeStandaloneRecovery, loadRecoveryConfig, type LaunchdPrimaryConnectorServiceConfig, type LaunchdPublicTunnelServiceConfig, type PrimaryConnectorServiceConfig, type PrimaryRuntimeServiceConfig, type PublicTunnelServiceConfig, type RecoveryConfig, type RecoveryTunnelServiceConfig } from './core';
 import { RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
 export { RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
 import {
@@ -795,7 +795,7 @@ export async function installStandaloneRecovery(input: {
   port?: number;
   publicMcpUrl?: string;
   recoveryPublicUrl?: string;
-  recoveryTunnelService?: PublicTunnelServiceConfig;
+  recoveryTunnelService?: RecoveryTunnelServiceConfig;
   primaryPublicTunnelService?: PublicTunnelServiceConfig;
   primaryRuntimeService?: PrimaryRuntimeServiceConfig;
   primaryConnectorService?: PrimaryConnectorServiceConfig;

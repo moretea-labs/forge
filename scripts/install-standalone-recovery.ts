@@ -1,4 +1,5 @@
 import { isAbsolute, join, resolve } from 'path';
+import { systemdUserUnitName } from '../src/cli/controller/systemd-user';
 import { installStandaloneRecovery } from '../src/runtime/standalone-recovery/installer';
 
 function option(name: string): string | undefined {
@@ -38,11 +39,19 @@ const stageOnly = process.argv.includes('--stage-only');
 const publicMcpUrl = endpointOption('--public-mcp-url');
 const recoveryPublicUrl = endpointOption('--recovery-public-url');
 
-const recoveryTunnelService = launchdService(
+const recoveryLaunchdTunnelService = launchdService(
   option('--recovery-tunnel-service-label'),
   option('--recovery-tunnel-service-plist'),
   'RECOVERY_TUNNEL_SERVICE',
 );
+const recoverySystemdUnitRaw = option('--recovery-tunnel-systemd-unit');
+const recoverySystemdTunnelService = recoverySystemdUnitRaw
+  ? { platform: 'systemd-user' as const, unitName: systemdUserUnitName(recoverySystemdUnitRaw) }
+  : undefined;
+if (recoveryLaunchdTunnelService && recoverySystemdTunnelService) throw new Error('RECOVERY_TUNNEL_OWNER_CONFLICT');
+if (recoveryLaunchdTunnelService && process.platform === 'linux') throw new Error('RECOVERY_TUNNEL_LAUNCHD_UNSUPPORTED_ON_LINUX');
+if (recoverySystemdTunnelService && process.platform !== 'linux') throw new Error('RECOVERY_TUNNEL_SYSTEMD_UNSUPPORTED_ON_THIS_PLATFORM');
+const recoveryTunnelService = recoverySystemdTunnelService ?? recoveryLaunchdTunnelService;
 if (Boolean(recoveryTunnelService) !== Boolean(recoveryPublicUrl)) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
 const primaryConnectorLocalUrl = endpointOption('--primary-connector-local-url');
 const primaryConnectorBase = launchdService(
@@ -88,7 +97,9 @@ console.log(JSON.stringify({
     recoveryTunnelService: config.recoveryTunnelService
       ? config.recoveryTunnelService.platform === 'launchd'
         ? { platform: config.recoveryTunnelService.platform, label: config.recoveryTunnelService.label, plistPath: config.recoveryTunnelService.plistPath }
-        : { platform: config.recoveryTunnelService.platform, alias: config.recoveryTunnelService.alias, tunnelId: config.recoveryTunnelService.tunnelId, mcpServerUrl: config.recoveryTunnelService.mcpServerUrl, runtimeApiKeyRef: config.recoveryTunnelService.runtimeApiKeyRef, profile: config.recoveryTunnelService.profile, profileDir: config.recoveryTunnelService.profileDir }
+        : config.recoveryTunnelService.platform === 'systemd-user'
+          ? { platform: config.recoveryTunnelService.platform, unitName: config.recoveryTunnelService.unitName }
+          : { platform: config.recoveryTunnelService.platform, alias: config.recoveryTunnelService.alias, tunnelId: config.recoveryTunnelService.tunnelId, mcpServerUrl: config.recoveryTunnelService.mcpServerUrl, runtimeApiKeyRef: config.recoveryTunnelService.runtimeApiKeyRef, profile: config.recoveryTunnelService.profile, profileDir: config.recoveryTunnelService.profileDir }
       : undefined,
     primaryConnectorService: config.primaryConnectorService
       ? config.primaryConnectorService.platform === 'launchd'

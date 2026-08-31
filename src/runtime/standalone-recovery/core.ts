@@ -77,6 +77,14 @@ export interface OpenAiSecureTunnelServiceConfig extends PublicTunnelRecoveryPol
 
 export type PublicTunnelServiceConfig = LaunchdPublicTunnelServiceConfig | OpenAiSecureTunnelServiceConfig;
 
+export interface SystemdUserRecoveryTunnelServiceConfig extends PublicTunnelRecoveryPolicy {
+  platform: 'systemd-user';
+  /** Exact systemd --user unit owned by the dedicated Recovery public tunnel. */
+  unitName: string;
+}
+
+export type RecoveryTunnelServiceConfig = PublicTunnelServiceConfig | SystemdUserRecoveryTunnelServiceConfig;
+
 export interface PrimaryRuntimeServiceConfig {
   platform: 'launchd' | 'systemd-user';
   minimumFailures?: number;
@@ -118,7 +126,7 @@ export interface RecoveryConfig {
   controllerHome: string;
   publicMcpUrl?: string;
   recoveryPublicUrl?: string;
-  recoveryTunnelService?: PublicTunnelServiceConfig;
+  recoveryTunnelService?: RecoveryTunnelServiceConfig;
   /** Optional public tunnel serving publicMcpUrl; independent from the OAuth Connector process. */
   primaryPublicTunnelService?: PublicTunnelServiceConfig;
   primaryRuntimeService?: PrimaryRuntimeServiceConfig;
@@ -448,7 +456,7 @@ export function saveWatchdogState(config: RecoveryConfig, state: WatchdogState):
   return persisted;
 }
 
-function configuredRecoveryTunnel(config: RecoveryConfig): PublicTunnelServiceConfig | undefined {
+function configuredRecoveryTunnel(config: RecoveryConfig): RecoveryTunnelServiceConfig | undefined {
   return config.recoveryTunnelService;
 }
 
@@ -2968,7 +2976,7 @@ export async function stageAndActivateConfiguredRuntimeRelease(
   };
 }
 
-function tunnelLaunchdService(configured: PublicTunnelServiceConfig | undefined, uid: number): LaunchdService | undefined {
+function tunnelLaunchdService(configured: RecoveryTunnelServiceConfig | undefined, uid: number): LaunchdService | undefined {
   if (!configured || configured.platform !== 'launchd') return undefined;
   if (!/^com\.[A-Za-z0-9._-]{1,180}$/.test(configured.label)) return undefined;
   const plistPath = configured.plistPath;
@@ -2984,6 +2992,14 @@ function tunnelLaunchdService(configured: PublicTunnelServiceConfig | undefined,
 
 function recoveryTunnelService(config: RecoveryConfig, uid: number): LaunchdService | undefined {
   return tunnelLaunchdService(configuredRecoveryTunnel(config), uid);
+}
+
+function recoverySystemdTunnelUnit(config: RecoveryConfig): string | undefined {
+  const configured = configuredRecoveryTunnel(config);
+  if (!configured || configured.platform !== 'systemd-user') return undefined;
+  const unitName = configured.unitName.trim();
+  if (!/^[A-Za-z0-9_.@-]{1,180}\.service$/.test(unitName)) return undefined;
+  return unitName;
 }
 
 function primaryPublicTunnelService(config: RecoveryConfig, uid: number): LaunchdService | undefined {
@@ -3016,6 +3032,7 @@ export async function repairPublicTunnel(config: RecoveryConfig, dependencies: P
   let serviceLabel: string;
   let serviceTarget: string;
   let launchdService: LaunchdService | undefined;
+  let systemdUnitName: string | undefined;
   if (configured.platform === 'launchd') {
     if ((dependencies.platform ?? process.platform) !== 'darwin') {
       return { ok: false, attempted: false, noOp: true, detail: 'configured launchd public tunnel can only be repaired on macOS', verify: initial, localVerify };
@@ -3025,6 +3042,18 @@ export async function repairPublicTunnel(config: RecoveryConfig, dependencies: P
     if (!launchdService) return { ok: false, attempted: false, noOp: true, detail: 'public tunnel launchd configuration is invalid or unavailable', verify: initial, localVerify };
     serviceLabel = launchdService.label;
     serviceTarget = launchdService.target;
+  } else if (configured.platform === 'systemd-user') {
+    if ((dependencies.platform ?? process.platform) !== 'linux') {
+      return { ok: false, attempted: false, noOp: true, detail: 'configured systemd-user public tunnel can only be repaired on Linux', verify: initial, localVerify };
+    }
+    systemdUnitName = recoverySystemdTunnelUnit(config);
+    if (!systemdUnitName) return { ok: false, attempted: false, noOp: true, detail: 'public tunnel systemd-user configuration is invalid', verify: initial, localVerify };
+    const loaded = await runCommand('systemctl', ['--user', 'show', '--property=LoadState', '--value', systemdUnitName], 5_000);
+    if (!loaded.ok || loaded.stdout.trim() !== 'loaded') {
+      return { ok: false, attempted: false, noOp: true, detail: `public tunnel systemd-user unit is not loaded: ${systemdUnitName}`, verify: initial, localVerify };
+    }
+    serviceLabel = systemdUnitName;
+    serviceTarget = systemdUnitName;
   } else {
     serviceLabel = configured.alias;
     serviceTarget = `tunnel-client:${configured.alias}`;
@@ -3058,6 +3087,13 @@ export async function repairPublicTunnel(config: RecoveryConfig, dependencies: P
       if (!started.ok) {
         audit(config, 'public_tunnel_restart_failed', { serviceLabel, serviceTarget, detail: started.detail });
         return { ok: false, attempted: true, detail: started.detail, serviceLabel, serviceTarget, verify: before, localVerify: localBefore };
+      }
+    } else if (configured.platform === 'systemd-user') {
+      const restarted = await runCommand('systemctl', ['--user', 'restart', systemdUnitName!], 15_000);
+      if (!restarted.ok) {
+        const detail = `systemd-user restart failed: ${restarted.stderr || restarted.stdout || restarted.status}`;
+        audit(config, 'public_tunnel_restart_failed', { serviceLabel, serviceTarget, detail });
+        return { ok: false, attempted: true, detail, serviceLabel, serviceTarget, verify: before, localVerify: localBefore };
       }
     } else {
       const observed = await observeOpenAiRecoveryTunnel(config, runCommand);
