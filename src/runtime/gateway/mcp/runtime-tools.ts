@@ -1167,8 +1167,16 @@ function assertFacadeControllerRoundAuthority(
 
   const expectedAuthorityId = relay.authorityId?.trim() || '';
   if (expectedAuthorityId) {
-    const requestedScopeId = typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : '';
-    const requestedAuthorityId = typeof args.controller_authority_id === 'string' ? args.controller_authority_id.trim() : '';
+    const explicitScopeId = typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : '';
+    const explicitAuthorityId = typeof args.controller_authority_id === 'string' ? args.controller_authority_id.trim() : '';
+    const requestedSessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
+    const transportSessionId = ctx.sessionId?.trim() || '';
+    const compatibilityAuthorityId = requestedSessionId && requestedSessionId !== transportSessionId ? requestedSessionId : '';
+    const requestedAuthorityId = explicitAuthorityId || compatibilityAuthorityId;
+    // relay_scope_id is grouping metadata, not the secret authority. Frozen MCP
+    // clients may omit it when they carry the exact opaque per-round capability
+    // through session_id; the exact Work selects the one durable relay record.
+    const requestedScopeId = explicitScopeId || (compatibilityAuthorityId ? relay.relayScopeId : '');
     if (!requestedScopeId || requestedScopeId !== relay.relayScopeId) {
       throw new Error(`WORK_CONTROLLER_RELAY_SCOPE_MISMATCH: ${workId}:expected=${relay.relayScopeId}`);
     }

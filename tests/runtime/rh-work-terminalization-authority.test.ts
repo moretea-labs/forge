@@ -683,6 +683,53 @@ describe('rh_work terminalization authority', () => {
     expect(getControllerSession(store, workA)?.sessionId).toBe('transport-a-terminal');
     expect(getControllerSession(store, workA)?.claimGeneration).toBe(owningGeneration);
     expect(getWorkContract(store, workB)?.status).toBe('ready');
+
+    // Frozen MCP clients may expose only session_id. The exact relay authority
+    // remains the secret fence while relay scope is derived from the exact Work.
+    const frozenClaimB = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-b-frozen-claim', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'controller_claim',
+        work_id: workB,
+        session_id: relayB.authorityId,
+      },
+    ));
+    expect(frozenClaimB.status).toBe('ok');
+    expect(getControllerSession(store, workB)?.sessionId).toBe('transport-b-frozen-claim');
+
+    const wrongFrozenStopB = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-b-frozen-wrong', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'stop',
+        work_id: workB,
+        session_id: relayA.authorityId,
+        requested_by: 'chatgpt',
+        reason: 'wrong frozen relay authority',
+      },
+    ));
+    expect(wrongFrozenStopB.status).toBe('blocked');
+    expect(wrongFrozenStopB.summary).toContain('WORK_CONTROLLER_ROUND_AUTHORITY_MISMATCH');
+    expect(getWorkContract(store, workB)?.status).toBe('ready');
+
+    const frozenStopB = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-b-frozen-stop', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'stop',
+        work_id: workB,
+        session_id: relayB.authorityId,
+        requested_by: 'chatgpt',
+        reason: 'own frozen relay authority after transport rotation',
+      },
+    ));
+    expect(frozenStopB.status).toBe('ok');
+    expect(getWorkContract(store, workB)?.status).toBe('cancelled');
+    expect(getControllerSession(store, workB)?.sessionId).toBe('transport-b-frozen-stop');
   }, 15_000);
 
   test('terminal cleanup resolves legacy exact-id WorkHandles without workContractId', async () => {
