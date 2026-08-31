@@ -1,6 +1,7 @@
 import { existsSync, statSync } from "fs";
 import { delimiter, extname, isAbsolute, join } from "path";
 import { spawnSync } from "child_process";
+import { redactSensitiveText } from "../runtime/evidence/sensitive-output";
 
 export interface ProcessOutputRedaction {
   readonly pattern: RegExp;
@@ -44,26 +45,19 @@ export const DEFAULT_PROCESS_TIMEOUT_MS = 120_000;
 export const DEFAULT_PROCESS_MAX_OUTPUT_BYTES = 64 * 1024;
 export const DEFAULT_PROCESS_MAX_BUFFER_BYTES = 1024 * 1024;
 
-const DEFAULT_REDACTIONS: readonly ProcessOutputRedaction[] = [
-  {
-    pattern: /(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi,
-    replacement: "$1[redacted]",
-  },
-  {
-    pattern: /((?:api[_-]?key|token|secret|password|authorization)\s*[:=]\s*)(?:"[^"\s]+"|'[^'\s]+'|[^\s]+)/gi,
-    replacement: "$1[redacted]",
-  },
-];
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error ?? "");
 }
 
 export function redactProcessOutput(
   value: string,
-  redactions: readonly ProcessOutputRedaction[] = DEFAULT_REDACTIONS,
+  redactions: readonly ProcessOutputRedaction[] = [],
 ): string {
-  return redactions.reduce((current, redaction) => current.replace(redaction.pattern, redaction.replacement), value);
+  const customRedacted = redactions.reduce(
+    (current, redaction) => current.replace(redaction.pattern, redaction.replacement),
+    value,
+  );
+  return redactSensitiveText(customRedacted).text.replace(/\[REDACTED\]/g, '[redacted]');
 }
 
 export function capProcessOutput(value: string, maxBytes = DEFAULT_PROCESS_MAX_OUTPUT_BYTES): string {
@@ -157,7 +151,7 @@ export function prepareProcessInvocation(
 export function runProcess(command: string, args: readonly string[], opts: RunProcessOptions = {}): ProcessRunResult {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_PROCESS_TIMEOUT_MS;
   const maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_PROCESS_MAX_OUTPUT_BYTES;
-  const redactions = opts.redactions ?? DEFAULT_REDACTIONS;
+  const redactions = opts.redactions ?? [];
   const childEnv = opts.replaceEnv ? { ...(opts.env ?? {}) } : { ...process.env, ...(opts.env ?? {}) };
   const invocation = prepareProcessInvocation(command, args, childEnv, opts.platform ?? process.platform);
   const redactedCommand = [invocation.resolvedCommand, ...args].map((part) => redactProcessOutput(part, redactions));

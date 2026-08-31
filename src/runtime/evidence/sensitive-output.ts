@@ -59,13 +59,13 @@ const SENSITIVE_PATTERNS: readonly SensitivePattern[] = [
   },
   {
     type: 'secret_assignment',
-    pattern: /((?:^|[^\w]))([A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|credentials?|auth[_-]?token|token|cookie)[A-Za-z0-9_.-]*)\s*(=>|:=|=|:)\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,}\r\n]+)/gim,
-    replacement: '$1$2$3[REDACTED]',
+    pattern: /((?:^|[^\w]))(["']?)([A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|credentials?|auth[_-]?token|token|cookie)[A-Za-z0-9_.-]*)\2(\s*(?:=>|:=|=|:)\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,}\r\n]+)/gim,
+    replacement: '$1$2$3$2$4[REDACTED]',
   },
   {
     type: 'database_url_assignment',
-    pattern: /((?:^|[^\w])(?:DATABASE_URL|POSTGRES_URL|MONGODB_URI|REDIS_URL)\s*(?:=>|:=|=|:)\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,}\r\n]+)/gim,
-    replacement: '$1[REDACTED]',
+    pattern: /((?:^|[^\w]))(["']?)((?:DATABASE_URL|POSTGRES_URL|MONGODB_URI|REDIS_URL))\2(\s*(?:=>|:=|=|:)\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,}\r\n]+)/gim,
+    replacement: '$1$2$3$2$4[REDACTED]',
   },
   {
     type: 'url_userinfo',

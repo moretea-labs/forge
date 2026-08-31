@@ -1322,6 +1322,80 @@ describe('run_check Process Runtime facade', () => {
     expect(JSON.stringify(getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, started.handle.processId))).not.toContain(expectedBearer);
   });
 
+  test('redacts quoted launchctl credentials across direct, lightweight, and managed output surfaces', async () => {
+    const fx = fixture();
+    const keyName = ['SYNTHETIC', 'API', 'KEY'].join('_');
+    const syntheticCredential = ['synthetic', 'credential', '0123456789'].join('-');
+    const launchctlOutput = `"${keyName}" => "${syntheticCredential}"\nSAFE_LAUNCHCTL => retained\n`;
+    const directScript = `process.stdout.write(${JSON.stringify(launchctlOutput)})`;
+
+    const direct = await runCanonicalCommand({
+      kind: 'argv',
+      value: [process.execPath, '-e', directScript],
+      executable: process.execPath,
+      args: ['-e', directScript],
+    }, fx.repoRoot, 5_000, 32 * 1024);
+    expect(direct.ok).toBe(true);
+    expect(direct.stdout).not.toContain(syntheticCredential);
+    expect(direct.stdout).toContain('[redacted]');
+    expect(direct.stdout).toContain('SAFE_LAUNCHCTL => retained');
+
+    const lightweightScript = `${directScript}; setTimeout(() => process.exit(0), 150);`;
+    const started = await startLightweightInternalProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      executable: process.execPath,
+      args: ['-e', lightweightScript],
+      cwd: fx.repoRoot,
+      timeoutMs: 5_000,
+      interactiveWaitMs: 5,
+    });
+    expect(JSON.stringify(started.handle)).not.toContain(syntheticCredential);
+    let activeLogs = readLightweightProcessLogs(fx.controllerHome, fx.repository.repoId, started.handle.processId, 32 * 1024)!;
+    for (let attempt = 0; attempt < 20 && !activeLogs.stdout.includes('SAFE_LAUNCHCTL => retained'); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      activeLogs = readLightweightProcessLogs(fx.controllerHome, fx.repository.repoId, started.handle.processId, 32 * 1024)!;
+    }
+    expect(JSON.stringify(activeLogs)).not.toContain(syntheticCredential);
+    expect(activeLogs.stdout).toContain('[redacted]');
+    expect(activeLogs.stdout).toContain('SAFE_LAUNCHCTL => retained');
+    const terminal = await waitForLightweightProcess(
+      fx.controllerHome,
+      fx.repository.repoId,
+      started.handle.processId,
+      { timeoutMs: 2_000 },
+    );
+    expect(terminal.completed).toBe(true);
+    expect(JSON.stringify(terminal)).not.toContain(syntheticCredential);
+    clearLightweightProcessMemoryForTest();
+    const recovered = getLightweightProcessHandle(fx.controllerHome, fx.repository.repoId, started.handle.processId)!;
+    expect(JSON.stringify(recovered)).not.toContain(syntheticCredential);
+    expect(recovered.stdout).toContain('[redacted]');
+
+    const managed = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: {
+        kind: 'argv',
+        executable: process.execPath,
+        args: ['-e', directScript],
+        cwd: fx.repoRoot,
+      },
+      interactiveWaitMs: 5_000,
+      timeoutMs: 15_000,
+    });
+    expect(managed.completed).toBe(true);
+    expect(JSON.stringify(managed)).not.toContain(syntheticCredential);
+    expect(managed.stdout).toContain('[REDACTED]');
+    expect(managed.stdout).toContain('SAFE_LAUNCHCTL => retained');
+    const managedRecord = getProcessRecord(fx.controllerHome, fx.repository.repoId, managed.processId)!;
+    expect(JSON.stringify(managedRecord)).not.toContain(syntheticCredential);
+    expect(managedRecord.stdoutPath && readFileSync(managedRecord.stdoutPath, 'utf8')).not.toContain(syntheticCredential);
+    expect(managedRecord.stdoutPath && readFileSync(managedRecord.stdoutPath, 'utf8')).toContain('[REDACTED]');
+  });
+
   test('fails deterministically for identity-missing lightweight recovery without replaying the request', async () => {
     const fx = fixture();
     const marker = join(fx.repoRoot, 'identity-missing-replay-marker.txt');
