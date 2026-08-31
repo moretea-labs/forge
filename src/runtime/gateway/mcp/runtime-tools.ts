@@ -3887,6 +3887,92 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const convergenceExclusiveWorkId = requestedOperation === 'repair' && typeof args.capability_id === 'string' && args.capability_id.startsWith('work.admission:convergence_to_exclusive:')
           ? args.capability_id.slice('work.admission:convergence_to_exclusive:'.length).trim()
           : '';
+        const directAuthorityRecoveryWorkId = requestedOperation === 'repair' && typeof args.capability_id === 'string' && args.capability_id.startsWith('controller.authority.recover:')
+          ? args.capability_id.slice('controller.authority.recover:'.length).trim()
+          : '';
+        if (directAuthorityRecoveryWorkId) {
+          const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+          if (!explicitWorkId || explicitWorkId !== directAuthorityRecoveryWorkId) {
+            return result(buildFacadeResult({
+              status: 'blocked',
+              summary: `WORK_CONTROLLER_AUTHORITY_RECOVERY_SCOPE_MISMATCH: capability targets ${directAuthorityRecoveryWorkId}; exact work_id is required.`,
+              data: { workId: directAuthorityRecoveryWorkId, authorityRecovered: false },
+            }) as unknown as Record<string, unknown>, true);
+          }
+          if (args.requested_by !== 'user') {
+            return result(buildFacadeResult({
+              status: 'blocked',
+              summary: 'WORK_CONTROLLER_AUTHORITY_RECOVERY_USER_REQUIRED: direct authority rekey is an explicit user-directed recovery only.',
+              data: { workId: directAuthorityRecoveryWorkId, authorityRecovered: false },
+            }) as unknown as Record<string, unknown>, true);
+          }
+          try {
+            const work = getWorkContract(store, directAuthorityRecoveryWorkId);
+            if (!work) throw new Error(`WORK_NOT_FOUND: ${directAuthorityRecoveryWorkId}`);
+            if (['completed', 'failed', 'cancelled'].includes(work.status)) {
+              throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_TERMINAL: ${directAuthorityRecoveryWorkId}:${work.status}`);
+            }
+            const relay = getControllerRoundRelay(store, directAuthorityRecoveryWorkId);
+            if (relay) {
+              throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RELAY_CONFLICT: ${directAuthorityRecoveryWorkId}; relay-bound Work must recover through its exact per-round authority.`);
+            }
+            const owner = getControllerSession(store, directAuthorityRecoveryWorkId);
+            if (!owner) throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${directAuthorityRecoveryWorkId}`);
+            const identity = authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true });
+            if (owner.controllerId !== identity.controllerId) throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${directAuthorityRecoveryWorkId} is owned by ${owner.controllerId}`);
+            if (owner.controllerType !== identity.controllerType) throw new Error(`WORK_CONTROLLER_TYPE_MISMATCH: ${directAuthorityRecoveryWorkId} is owned by ${owner.controllerType}`);
+            if (controllerSessionPrincipalId(owner) !== identity.principalId) throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${directAuthorityRecoveryWorkId}`);
+            const runtime = runtimeIdentitySnapshot(ctx);
+            if (!runtime.running || !runtime.runtimeInstanceId || runtime.runtimeInstanceId !== identity.controllerInstanceId) {
+              throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RUNTIME_REQUIRED: ${directAuthorityRecoveryWorkId}; caller must be served by the live canonical Runtime.`);
+            }
+            const directAuthority = mintControllerSessionAuthority();
+            const rebound = bindControllerSessionToCurrentRuntime(store, {
+              workId: directAuthorityRecoveryWorkId,
+              controllerId: identity.controllerId,
+              controllerType: identity.controllerType,
+              sessionId: identity.sessionId,
+              authorityDigest: directAuthority.authorityDigest,
+              principalId: identity.principalId,
+              controllerInstanceId: identity.controllerInstanceId,
+              currentRuntimeInstanceId: runtime.runtimeInstanceId,
+              leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : 3_600_000,
+            });
+            const permissionSnapshotVersion = currentPermissionSnapshotVersion(ctx.controllerHome, repository.repoId);
+            const executionSession = startExecutionSession(ctx.controllerHome, {
+              sessionId: identity.sessionId,
+              principalId: identity.principalId,
+              controllerInstanceId: identity.controllerInstanceId,
+              permissionSnapshotVersion,
+            });
+            updateExecutionSession(ctx.controllerHome, {
+              sessionId: executionSession.sessionId,
+              principalId: executionSession.principalId,
+              controllerInstanceId: executionSession.controllerInstanceId,
+            }, {
+              activeRepositoryId: repository.repoId,
+              activeCheckoutId: work.checkoutId || repository.activeCheckoutId,
+              activeWorkId: work.workId,
+              permissionSnapshotVersion,
+              lastValidatedAt: new Date().toISOString(),
+            });
+            return result(buildFacadeResult({
+              summary: `Direct controller authority for exact Work ${directAuthorityRecoveryWorkId} was rekeyed onto the current authenticated transport without changing semantic Work ownership.`,
+              data: {
+                session: rebound,
+                controllerAuthorityId: directAuthority.authorityId,
+                controllerAuthorityCarrier: 'controller_authority_id_or_session_id_compat',
+                authorityRecovered: true,
+              },
+            }) as unknown as Record<string, unknown>);
+          } catch (error) {
+            return result(buildFacadeResult({
+              status: 'blocked',
+              summary: error instanceof Error ? error.message : 'Direct controller authority recovery failed.',
+              data: { workId: directAuthorityRecoveryWorkId, authorityRecovered: false },
+            }) as unknown as Record<string, unknown>, true);
+          }
+        }
         if (convergenceExclusiveWorkId) {
           if (args.requested_by !== 'user') {
             return result(buildFacadeResult({
