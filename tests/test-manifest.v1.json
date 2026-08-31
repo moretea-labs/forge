@@ -465,6 +465,10 @@
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
+    "tests/runtime/independent-host-rescue.test.ts": {
+      "module": "process-runtime",
+      "resource": "pure"
+    },
     "tests/runtime/github-actions-plugin.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"
