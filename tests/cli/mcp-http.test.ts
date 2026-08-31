@@ -564,7 +564,7 @@ describe('mcp http transport', () => {
     }
   });
 
-  test('returns typed capacity backpressure without evicting active SSE requests', async () => {
+  test('reclaims the oldest stream-only session before returning capacity backpressure', async () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-mcp-active-capacity-'));
     const port = await freePort();
     let proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'> | null = null;
@@ -630,7 +630,7 @@ describe('mcp http transport', () => {
         expect(secondStream.status).toBe(200);
         await Bun.sleep(25);
 
-        const saturated = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        const overflow = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
           headers: {
             authorization: `Bearer ${token}`,
@@ -639,45 +639,35 @@ describe('mcp http transport', () => {
           },
           body: initializeBody('overflow'),
         });
-        expect(saturated.status).toBe(503);
-        expect(saturated.headers.get('retry-after')).toBe('1');
-        expect(await saturated.json()).toMatchObject({
-          error: 'session_capacity',
-          code: 'MCP_SESSION_CAPACITY',
-          recoverable: true,
-          retryable: true,
-          sessionPreserved: true,
-          action: 'retry',
-        });
-        const saturatedHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
-        expect(saturatedHealth.sessions).toMatchObject({
-          active: 2,
-          activeStreams: 2,
-          evictable: 0,
-          protected: 2,
-          acceptingNewSessions: false,
-        });
-        expect(saturatedHealth.sessions.closed.capacityEviction).toBe(0);
+        expect(overflow.status).toBe(200);
+        const overflowSessionId = overflow.headers.get('mcp-session-id');
+        expect(overflowSessionId).toBeTruthy();
+        await overflow.body?.cancel().catch(() => undefined);
 
-        firstController.abort();
-        await firstStream.body?.cancel().catch(() => undefined);
-        await Bun.sleep(50);
-        const recovered = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        const afterOverflow = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
+        expect(afterOverflow.sessions).toMatchObject({
+          active: 2,
+          activeStreams: 1,
+          evictable: 2,
+          protected: 0,
+          acceptingNewSessions: true,
+        });
+        expect(afterOverflow.sessions.closed.capacityEviction).toBe(1);
+
+        const evicted = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
           headers: {
             authorization: `Bearer ${token}`,
+            'mcp-session-id': firstSessionId,
             'content-type': 'application/json',
             accept: 'application/json, text/event-stream',
           },
-          body: initializeBody('recovered'),
+          body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
         });
-        expect(recovered.status).toBe(200);
-        await recovered.body?.cancel().catch(() => undefined);
-        const recoveredHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
-        expect(recoveredHealth.sessions.active).toBe(2);
-        expect(recoveredHealth.sessions.activeStreams).toBe(1);
-        expect(recoveredHealth.sessions.closed.capacityEviction).toBe(1);
+        expect(evicted.status).toBe(404);
 
+        firstController.abort();
+        await firstStream.body?.cancel().catch(() => undefined);
         secondController.abort();
         await secondStream.body?.cancel().catch(() => undefined);
       });

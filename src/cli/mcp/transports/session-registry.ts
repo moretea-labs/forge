@@ -420,7 +420,7 @@ export class McpSessionRegistry<
     const reservations = [...this.initializeReservations.values()];
     const activePosts = sessions.reduce((count, session) => count + session.inFlightPosts, 0) + reservations.length;
     const activeStreams = sessions.reduce((count, session) => count + session.inFlightGets, 0);
-    const evictable = sessions.filter((session) => session.inFlightPosts === 0 && session.inFlightGets === 0).length;
+    const evictable = sessions.filter((session) => session.inFlightPosts === 0).length;
     const reserved = reservations.length;
     const protectedCount = sessions.length - evictable + reserved;
     const capacityAvailable = Math.max(0, this.maximumSessions - sessions.length - reserved);
@@ -475,7 +475,7 @@ export class McpSessionRegistry<
     predicate: (session: ManagedMcpSession<TTransport, TContext>) => boolean = () => true,
   ): ManagedMcpSession<TTransport, TContext>[] {
     return [...this.sessions.values()]
-      .filter((session) => session.inFlightPosts === 0 && session.inFlightGets === 0 && predicate(session))
+      .filter((session) => session.inFlightPosts === 0 && predicate(session))
       .sort((left, right) => {
         const leftAge = left.streamOpenedAt ?? left.lastActivityAt;
         const rightAge = right.streamOpenedAt ?? right.lastActivityAt;
