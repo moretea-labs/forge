@@ -134,3 +134,25 @@ forge recovery activate-runtime --controller-home /absolute/controller-home --re
 ```
 
 `forge runtime status --controller-home /absolute/controller-home` reads the canonical Runtime status projection. `forge runtime service install --stage-only` builds and validates an immutable Runtime release without publishing it; the staged manifest can then be activated through `forge recovery activate-runtime` when the primary Runtime is fenced or unavailable.
+
+## Windows host wake for WSL
+
+A process inside WSL cannot recover the distro after `wsl --shutdown`, so Windows supplies one deliberately narrow cold-start trigger. It is **not** another watchdog or Runtime owner. `forge recovery install-wsl-host-wake` installs one Windows Scheduled Task owned by the Recovery operator surface. At Windows logon (or when the same task is started explicitly), the task starts the configured WSL distro, asks `systemd --user` to start the already-authoritative Forge Package Runtime and MCP Connector units, verifies both units are active, and then runs read-only `forge recovery status`.
+
+The task never selects a Runtime release, edits authority, performs rollback, creates a second daemon, or recreates the OpenAI Secure Tunnel with credentials. Installation fails closed unless the existing Package Connector authority proves a persistent `systemd-user` service. The official `tunnel-client` remains its own supervised transport and keeps its runtime API key outside Forge state.
+
+```sh
+forge recovery install-wsl-host-wake \
+  --controller-home /home/user/.forge/controller \
+  --distro Ubuntu-24.04
+```
+
+For development-network failures inside WSL, use the bounded diagnostic instead of changing proxy settings speculatively:
+
+```sh
+forge recovery diagnose-wsl-network \
+  --endpoint https://github.com \
+  --endpoint https://api.github.com
+```
+
+The diagnostic compares the active `wslinfo --networking-mode` result with `%USERPROFILE%\\.wslconfig`, flags NAT plus loopback proxy assumptions, identifies Windows Git Credential Manager helpers configured inside WSL, and reports endpoint-specific timeouts. It returns only proxy host classes, credential-helper classes, and endpoint origins; proxy credentials, URL paths/query strings, and raw credential-helper paths are not emitted.

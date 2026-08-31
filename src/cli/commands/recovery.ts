@@ -34,6 +34,7 @@ import {
 import { readRecoveryRuntimeIdentity } from '../../runtime/standalone-recovery/release';
 import { configureCodegraph, ensureCodegraph } from '../tools/codegraph';
 import { isProcessAlive } from '../../runtime/shared/process-tree';
+import { diagnoseWslDevelopmentNetwork, installWindowsWslRecoveryWakeTask } from '../../runtime/standalone-recovery/wsl-host';
 
 function output(value: unknown, json = true): void {
   console.log(json ? JSON.stringify(value, null, 2) : String(value));
@@ -683,6 +684,27 @@ export function buildRecoveryCommand(): Command {
         activation: result.activated,
         connector: recoveryConnectorDescriptor(home),
       });
+    });
+
+  command.command('diagnose-wsl-network')
+    .description('Run bounded WSL networking, proxy, Git credential-helper, and endpoint diagnostics without exposing credentials')
+    .option('--endpoint <url...>', 'HTTP(S) endpoint origins to probe with bounded timeouts (maximum 8)')
+    .action((opts: { endpoint?: string[] }) => {
+      const result = diagnoseWslDevelopmentNetwork({ endpoints: opts.endpoint ?? [] });
+      output(result);
+      if (!result.isWsl) process.exitCode = 1;
+    });
+
+  command.command('install-wsl-host-wake')
+    .description('Install the Windows-host Recovery wake task for this WSL distro; the task only starts canonical systemd-owned Forge services')
+    .requiredOption('--controller-home <path>', 'Explicit Controller Home inside WSL')
+    .option('--distro <name>', 'Exact WSL distro name; defaults to WSL_DISTRO_NAME')
+    .action((opts: { controllerHome: string; distro?: string }) => {
+      const distro = opts.distro?.trim() || process.env.WSL_DISTRO_NAME?.trim();
+      if (!distro) throw new Error('RECOVERY_WSL_DISTRO_REQUIRED');
+      const result = installWindowsWslRecoveryWakeTask({ controllerHome: resolveControllerHome(opts.controllerHome), distro });
+      output(result);
+      if (!result.ok) process.exitCode = 1;
     });
 
   return command;
