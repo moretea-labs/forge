@@ -159,7 +159,7 @@ const architectureRootMarkdown = readdirSync(resolve(root, 'docs/architecture'),
   .sort();
 for (const name of architectureRootMarkdown) {
   if (!allowedArchitectureRootMarkdown.has(name)) {
-    failures.push(`docs/architecture/${name} must be archived under docs/architecture/history/ instead of acting as parallel root architecture authority`);
+    failures.push(`docs/architecture/${name} must be merged into CURRENT.md/EVOLUTION.md or deleted instead of acting as parallel root architecture authority; Git history is the archive`);
   }
 }
 
@@ -369,10 +369,10 @@ requireMissing('docs/architecture/transactional-adoption-planner.md');
 requireMissing('docs/architecture/global-hook-runtime.md');
 requireMissing('docs/architecture/ios-semantic-automation-provider-v2.md');
 requireMissing('docs/architecture/chatgpt-handoff-facade.md');
-requireText('docs/architecture/history/global-hook-runtime.md', 'Status: **Historical Evidence — Not Runtime Authority**');
-requireText('docs/architecture/history/ios-semantic-automation-provider-v2.md', 'Status: **Historical Design Evidence — Not Runtime Authority**');
-requireText('docs/architecture/history/chatgpt-handoff-facade.md', 'Status: **Historical Design Rationale — Not Runtime Authority**');
-requireText('docs/architecture/history/README.md', 'Status: **Historical Evidence — Not Runtime Authority**');
+requireMissing('docs/architecture/history/global-hook-runtime.md');
+requireMissing('docs/architecture/history/ios-semantic-automation-provider-v2.md');
+requireMissing('docs/architecture/history/chatgpt-handoff-facade.md');
+requireMissing('docs/architecture/history/README.md');
 requireMissing('docs/operations/20260802-requirement-portfolio-migration.md');
 requireMissing('docs/runbooks/RELIABILITY-SESSION-PROTOCOL.md');
 requireMissing('docs/architecture/decisions/20260718-mcp-session-lifecycle-and-ingress-isolation.md');

@@ -25,7 +25,7 @@ type CapabilityRegistry = {
   capabilities: Capability[];
 };
 
-type Format = "json" | "text" | "prefixes";
+type Format = "json" | "text" | "prefixes" | "ids";
 
 type Args = {
   command: string;
@@ -42,8 +42,8 @@ function usage(): never {
     [
       "Usage:",
       "  scripts/capability-resolver.ts list [--repo <repo>] [--format json|text|prefixes]",
-      "  scripts/capability-resolver.ts match --path <repo-relative-path> [--repo <repo>] [--format json|text]",
-      "  scripts/capability-resolver.ts match --paths-from <file|-> [--repo <repo>] [--format json|text]",
+      "  scripts/capability-resolver.ts match --path <repo-relative-path> [--repo <repo>] [--format json|text|ids]",
+      "  scripts/capability-resolver.ts match --paths-from <file|-> [--repo <repo>] [--format json|text|ids]",
       "  scripts/capability-resolver.ts validate [--repo <repo>] [--format json|text]",
     ].join("\n")
   );
@@ -73,7 +73,7 @@ function parseArgs(argv: string[]): Args {
         break;
       case "--format": {
         const value = argv[++index] as Format;
-        if (!["json", "text", "prefixes"].includes(value)) usage();
+        if (!["json", "text", "prefixes", "ids"].includes(value)) usage();
         args.format = value;
         break;
       }
@@ -91,6 +91,7 @@ function parseArgs(argv: string[]): Args {
   if (args.command === "match" && !args.path && !args.pathsFrom) usage();
   if (args.command === "match" && args.path && args.pathsFrom) usage();
   if (args.command === "match" && args.format === "prefixes") usage();
+  if (args.command !== "match" && args.format === "ids") usage();
   return args;
 }
 
@@ -475,6 +476,9 @@ async function main(): Promise<void> {
     }
     if (args.format === "json") {
       printJson(matches);
+    } else if (args.format === "ids") {
+      const ids = [...new Set(matches.map((match) => match.capability_id))].sort();
+      for (const id of ids) console.log(id);
     } else {
       for (const match of matches) {
         console.log(`${match.file_path}: ${match.capability_id} (${match.matched_prefix})`);
@@ -486,6 +490,8 @@ async function main(): Promise<void> {
   const match = findMatch(registry, repo, args.path);
   if (args.format === "json") {
     printJson(match);
+  } else if (args.format === "ids") {
+    console.log(match.capability_id);
   } else {
     for (const [key, value] of Object.entries(match)) {
       if (Array.isArray(value)) {

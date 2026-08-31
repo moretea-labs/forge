@@ -401,14 +401,14 @@ latest_plan_for_slug() {
   printf '%s' "$latest"
 }
 
-archive_finished_workflow() {
+close_finished_workflow() {
   local plan_file="$1"
 
-  [[ -n "$plan_file" ]] || { echo "contract-worktree: no active plan found to archive" >&2; exit 1; }
-  [[ -f "$plan_file" ]] || { echo "contract-worktree: active plan not found for archive: $plan_file" >&2; exit 1; }
+  [[ -n "$plan_file" ]] || { echo "contract-worktree: no active plan found to close" >&2; exit 1; }
+  [[ -f "$plan_file" ]] || { echo "contract-worktree: active plan not found for closeout: $plan_file" >&2; exit 1; }
   [[ -x "scripts/archive-workflow.sh" ]] || { echo "contract-worktree: scripts/archive-workflow.sh is missing or not executable" >&2; exit 1; }
 
-  echo "[ContractWorktree] Archiving completed workflow before merge: $plan_file"
+  echo "[ContractWorktree] Closing completed repo-local workflow after committed evidence: $plan_file"
   bash "scripts/archive-workflow.sh" --plan "$plan_file" --outcome Completed
 }
 
@@ -488,15 +488,23 @@ finish_worktree() {
   check_architecture_freshness "$target_branch"
   bash "scripts/verify-sprint.sh"
   check_scope_against_contract "$contract_file"
-  archive_finished_workflow "$active_plan"
-  clean_local_runtime_markers
   backfill_sprint_backlog "$active_plan" || true
 
+  # Preserve the exact terminal evidence in Git before deleting repo-local
+  # lifecycle artifacts. This makes Git history a real archive rather than a
+  # slogan and prevents closeout from erasing unique uncommitted evidence.
   if ! git diff --quiet || ! git diff --cached --quiet || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
     git add -A
     git commit -m "$commit_message"
   else
-    echo "[ContractWorktree] No tracked changes to commit."
+    echo "[ContractWorktree] Terminal evidence already represented by HEAD."
+  fi
+
+  close_finished_workflow "$active_plan"
+  clean_local_runtime_markers
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    git add -A
+    git commit -m "chore(workflow): close ${slug}"
   fi
 
   if [[ "$merge_back" -eq 0 ]]; then
@@ -519,28 +527,21 @@ finish_worktree() {
 }
 
 # Warn-only sprint backlog back-fill: plans captured via sprint-backlog
-# start-task carry "> **Source Ref**: sprint:<file>#<task>". After the
-# workflow archives, flip that backlog row so the update merges with the
-# slice. Any failure warns and never blocks finish.
+# start-task carry "> **Source Ref**: sprint:<file>#<task>". Read that source
+# reference before workflow closeout deletes the repo-local plan. Completed
+# rows record the historical plan path explicitly as Git history, not as a
+# broken link to a maintained archive file.
 backfill_sprint_backlog() {
   local plan_file="$1"
-  local archived_plan source_ref sprint_path task_ref
+  local source_ref sprint_path task_ref history_ref
 
   [[ -f "scripts/sprint-backlog.sh" ]] || return 0
-
-  archived_plan="plans/archive/$(basename "$plan_file")"
-  if [[ ! -f "$archived_plan" ]]; then
-    # Archive may have renamed on collision (-vN suffix); fall back to the
-    # newest archived file sharing the stem, then to the original path.
-    archived_plan="$(find plans/archive -maxdepth 1 -type f -name "$(basename "$plan_file" .md)*.md" 2>/dev/null | sort | tail -1)"
-  fi
-  [[ -n "$archived_plan" && -f "$archived_plan" ]] || archived_plan="$plan_file"
-  if [[ ! -f "$archived_plan" ]]; then
-    echo "[ContractWorktree] Warning: cannot resolve archived plan for sprint back-fill: $plan_file" >&2
+  [[ -f "$plan_file" ]] || {
+    echo "[ContractWorktree] Warning: cannot read plan for sprint back-fill: $plan_file" >&2
     return 0
-  fi
+  }
 
-  source_ref="$(awk '/^> \*\*Source Ref\*\*:/ {sub(/^> \*\*Source Ref\*\*:[[:space:]]*/, ""); gsub(/\r/, ""); print; exit}' "$archived_plan" 2>/dev/null | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  source_ref="$(awk '/^> \*\*Source Ref\*\*:/ {sub(/^> \*\*Source Ref\*\*:[[:space:]]*/, ""); gsub(/\r/, ""); print; exit}' "$plan_file" 2>/dev/null | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
   case "$source_ref" in
     sprint:*#*)
       ;;
@@ -555,7 +556,8 @@ backfill_sprint_backlog() {
   task_ref="${sprint_path#*#}"
   sprint_path="${sprint_path%%#*}"
 
-  if bash scripts/sprint-backlog.sh complete-task --sprint "$sprint_path" --task "$task_ref" --plan "$archived_plan"; then
+  history_ref="git-history:${plan_file}"
+  if bash scripts/sprint-backlog.sh complete-task --sprint "$sprint_path" --task "$task_ref" --plan "$history_ref"; then
     echo "[ContractWorktree] Sprint backlog updated: $sprint_path ($task_ref)"
   else
     echo "[ContractWorktree] Warning: sprint backlog back-fill failed for $sprint_path ($task_ref); update the row manually." >&2

@@ -944,9 +944,9 @@ if [ "$done_intent" -eq 1 ]; then
   IFS=$'\t' read -r total_tasks done_tasks next_task <<< "$task_state"
   remaining_tasks=$(( ${total_tasks:-0} - ${done_tasks:-0} ))
   if [ "${remaining_tasks:-0}" -gt 0 ]; then
-    echo "[ArchiveGuard] Done intent detected but active plan still has $remaining_tasks unchecked item(s). Refusing to auto-archive."
+    echo "[WorkflowCloseoutGuard] Done intent detected but active plan still has $remaining_tasks unchecked item(s). Refusing workflow closeout."
     hook_structured_error \
-      "ArchiveGuard" \
+      "WorkflowCloseoutGuard" \
       "Done intent with $remaining_tasks unchecked active-plan task(s)." \
       "Finish the remaining Task Breakdown item: ${next_task:-see $active_plan}." \
       "state_violation"
@@ -968,22 +968,22 @@ if [ "$done_intent" -eq 1 ]; then
   fi
 
   if [ ! -x scripts/archive-workflow.sh ]; then
-    echo "[AutoArchive] scripts/archive-workflow.sh is missing or not executable. Skipping auto-archive."
+    echo "[WorkflowCloseout] scripts/archive-workflow.sh compatibility helper is missing or not executable. Skipping closeout."
     hook_structured_error \
-      "AutoArchive" \
+      "WorkflowCloseout" \
       "scripts/archive-workflow.sh is missing or not executable." \
-      "Install the workflow helper before relying on auto-archive." \
+      "Install the workflow closeout helper before relying on automatic terminal cleanup." \
       "missing_artifact"
     exit 1
   fi
 
   outcome="${PG_DONE_OUTCOME:-Completed}"
-  echo "[AutoArchive] All quality gates passed. Archiving $active_plan as outcome=$outcome"
+  echo "[WorkflowCloseout] All quality gates passed. Closing $active_plan as outcome=$outcome"
   if ! archive_output="$(bash scripts/archive-workflow.sh --plan "$active_plan" --outcome "$outcome" 2>&1)"; then
     printf '%s\n' "$archive_output"
     hook_structured_error \
-      "AutoArchive" \
-      "Automatic archive failed for $active_plan." \
+      "WorkflowCloseout" \
+      "Automatic workflow closeout failed for $active_plan." \
       "Run bash scripts/archive-workflow.sh --plan $active_plan --outcome $outcome and resolve the error." \
       "contract_failure"
     exit 1

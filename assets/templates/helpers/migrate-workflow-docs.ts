@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 
 type Mode = "dry-run" | "apply";
@@ -6,7 +6,7 @@ type Mode = "dry-run" | "apply";
 type MigrationRecord = {
   source: string;
   target: string;
-  action: "archive" | "rewrite" | "append" | "skip";
+  action: "preserve" | "rewrite" | "append" | "skip";
   note: string;
 };
 
@@ -53,17 +53,6 @@ function ensureDir(path: string, mode: Mode) {
   }
 }
 
-function appendIfMissing(target: string, marker: string, block: string, mode: Mode) {
-  const existing = existsSync(target) ? readFileSync(target, "utf-8") : "";
-  if (existing.includes(marker)) return false;
-  if (mode === "apply") {
-    ensureDir(dirname(target), mode);
-    const next = existing ? `${existing.trimEnd()}\n\n${block}\n` : `${block}\n`;
-    writeFileSync(target, next);
-  }
-  return true;
-}
-
 function hasCanonicalTodoHeader(content: string): boolean {
   return /^# Deferred Goal Ledger\s*$/m.test(content) && /^\> \*\*Status\*\*:\s*Backlog\s*$/m.test(content);
 }
@@ -92,77 +81,15 @@ function writeCanonicalTodo(target: string, mode: Mode) {
   }
 }
 
-function normalizeLegacyTodo(target: string, archivePath: string, mode: Mode) {
+function legacyTodoNeedsManualTriage(target: string): boolean {
   if (!existsSync(target)) return false;
-
-  const existing = readFileSync(target, "utf-8");
-  if (hasCanonicalTodoHeader(existing)) return false;
-
-  const content = [
-    "# Deferred Goal Ledger",
-    "",
-    "> **Status**: Backlog",
-    "> **Updated**: (migration)",
-    "> **Scope**: Medium/long-term goals deferred from active plan execution",
-    "",
-    "Current plan tasks live in the active plan's `## Task Breakdown`.",
-    "Do not duplicate that execution checklist here. Record only work intentionally deferred beyond this slice, with the tradeoff and revisit trigger.",
-    "",
-    "## Deferred Goals",
-    "",
-    "| Goal | Why Deferred | Tradeoff | Revisit Trigger |",
-    "|------|--------------|----------|-----------------|",
-    "| Review archived legacy checklist | Legacy tasks/todos.md contained execution checklist content before migration. | Preserve user-authored task text in tasks/archive instead of guessing which items still matter. | Open the archive and promote real follow-up work into a new plan or a deferred-goal row. |",
-  ].join("\n");
-
-  if (mode === "apply") {
-    ensureDir(dirname(target), mode);
-    ensureDir(dirname(archivePath), mode);
-    if (!existsSync(archivePath)) {
-      writeFileSync(archivePath, `${existing.trimEnd()}\n`);
-    }
-    writeFileSync(target, `${content}\n`);
-  }
-
-  return true;
+  return !hasCanonicalTodoHeader(readFileSync(target, "utf-8"));
 }
 
-function migrateLegacySingularTodo(source: string, target: string, archivePath: string, mode: Mode) {
+function legacyResearchNeedsManualTriage(source: string): boolean {
   if (!existsSync(source)) return false;
-
   const existing = readFileSync(source, "utf-8");
-  const content = hasCanonicalTodoHeader(existing)
-    ? existing.trimEnd()
-    : [
-        "# Deferred Goal Ledger",
-        "",
-        "> **Status**: Backlog",
-        "> **Updated**: (migration)",
-        "> **Scope**: Medium/long-term goals deferred from active plan execution",
-        "",
-        "Current plan tasks live in the active plan's `## Task Breakdown`.",
-        "Do not duplicate that execution checklist here. Record only work intentionally deferred beyond this slice, with the tradeoff and revisit trigger.",
-        "",
-        "## Deferred Goals",
-        "",
-        "| Goal | Why Deferred | Tradeoff | Revisit Trigger |",
-        "|------|--------------|----------|-----------------|",
-        "| Review archived legacy checklist | Legacy tasks/todo.md contained execution checklist content before migration. | Preserve user-authored task text in tasks/archive instead of guessing which items still matter. | Open the archive and promote real follow-up work into a new plan or a deferred-goal row. |",
-      ].join("\n");
-
-  if (mode === "apply") {
-    ensureDir(dirname(target), mode);
-    ensureDir(dirname(archivePath), mode);
-    if (!existsSync(archivePath)) {
-      writeFileSync(archivePath, `${existing.trimEnd()}\n`);
-    }
-    if (!existsSync(target)) {
-      writeFileSync(target, `${content}\n`);
-    }
-    renameSync(source, `${source}.migrated.bak`);
-  }
-
-  return true;
+  return !existing.includes("**Canonical Surface**: `docs/researches/`");
 }
 
 function writeResearchReadme(target: string, mode: Mode) {
@@ -182,40 +109,6 @@ function writeResearchReadme(target: string, mode: Mode) {
   }
 }
 
-function migrateLegacyResearch(source: string, archivePath: string, mode: Mode) {
-  if (!existsSync(source)) return false;
-
-  const existing = readFileSync(source, "utf-8");
-  if (existing.includes("**Canonical Surface**: `docs/researches/`")) return false;
-
-  const tombstone = [
-    "# Research Notes Moved",
-    "",
-    "> **Status**: Retired tombstone",
-    "> **Canonical Surface**: `docs/researches/`",
-    "> **Legacy Archive**: `docs/researches/legacy-research-notes.md`",
-    "",
-    "Durable research reports now live under `docs/researches/*.md`. This file is",
-    "kept only as a transition pointer for older tooling and historical links; do",
-    "not add new findings here.",
-  ].join("\n");
-
-  if (mode === "apply") {
-    ensureDir(dirname(archivePath), mode);
-    if (!existsSync(archivePath)) {
-      writeFileSync(archivePath, `${existing.trimEnd()}\n`);
-    }
-    writeFileSync(source, `${tombstone}\n`);
-  }
-
-  return true;
-}
-
-function writeResearchReport(target: string, marker: string, title: string, body: string, mode: Mode) {
-  const block = [`# ${title}`, "", marker, "", body.trimEnd()].join("\n");
-  return appendIfMissing(target, marker, block, mode);
-}
-
 export function migrate(repo: string, mode: Mode): MigrationSummary {
   const summary: MigrationSummary = {
     repo,
@@ -233,153 +126,74 @@ export function migrate(repo: string, mode: Mode): MigrationSummary {
   const tasksResearch = join(repo, "tasks", "research.md");
   const researchDir = join(repo, "docs", "researches");
   const researchReadme = join(researchDir, "README.md");
-  const legacyResearchArchive = join(researchDir, "legacy-research-notes.md");
-  const legacyProgressResearch = join(researchDir, "legacy-progress-import.md");
-  const plansArchive = join(repo, "plans", "archive");
-  const tasksArchive = join(repo, "tasks", "archive");
-  const legacyPlanArchive = join(plansArchive, "legacy-docs-plan.md");
-  const legacyTodoArchive = join(tasksArchive, "legacy-docs-TODO.md");
-  const legacyProgressArchive = join(tasksArchive, "legacy-docs-PROGRESS.md");
-  const legacyTasksTodoArchive = join(tasksArchive, "legacy-tasks-todo.md");
   const legacyContractDoc = join(repo, "docs", "contract.md");
   const legacyReviewDoc = join(repo, "docs", "review.md");
   const legacyHandoffDoc = join(repo, "docs", "handoff.md");
   const rootHandoffDoc = join(repo, "HANDOFF.md");
 
-  ensureDir(plansArchive, mode);
-  ensureDir(tasksArchive, mode);
-  if (migrateLegacySingularTodo(legacySingularTasksTodo, tasksTodo, legacyTasksTodoArchive, mode)) {
+  const preserveLegacy = (relativePath: string, note: string) => {
+    const sourcePath = join(repo, relativePath);
+    if (!existsSync(sourcePath)) return;
     summary.migrated.push({
-      source: "tasks/todo.md",
-      target: "tasks/todos.md",
-      action: "rewrite",
-      note: "Archived legacy singular todo content and normalized tasks/todos.md to the deferred-goal ledger.",
+      source: relativePath,
+      target: relativePath,
+      action: "preserve",
+      note,
     });
-  }
-  writeCanonicalTodo(tasksTodo, mode);
-  if (normalizeLegacyTodo(tasksTodo, legacyTasksTodoArchive, mode)) {
-    summary.migrated.push({
-      source: "tasks/todos.md",
-      target: "tasks/todos.md",
-      action: "rewrite",
-      note: "Archived legacy task checklist content and normalized tasks/todos.md to the deferred-goal ledger.",
-    });
-  }
-  ensureDir(researchDir, mode);
-  writeResearchReadme(researchReadme, mode);
-  if (migrateLegacyResearch(tasksResearch, legacyResearchArchive, mode)) {
-    summary.migrated.push({
-      source: "tasks/research.md",
-      target: "docs/researches/legacy-research-notes.md",
-      action: "archive",
-      note: "Archived legacy singleton research notes and left a tombstone pointer.",
-    });
-  }
+    summary.manual_followups.push(`Review ${relativePath} in place and explicitly promote still-current content before removing the legacy file.`);
+  };
 
-  // NOTE: The "<!-- forge: legacy-docs-import ... -->" markers below are
-  // data markers written into migrated repos and used by appendIfMissing as the
-  // idempotency key, so renaming them would re-import already-migrated legacy docs.
-  // Keep the marker string stable.
-  if (existsSync(planDoc)) {
-    const content = readFileSync(planDoc, "utf-8");
-    const archiveBlock = [
-      "# Legacy Plan Import",
-      "",
-      "<!-- forge: legacy-docs-import docs/plan.md -->",
-      "",
-      "Original `docs/plan.md` content was archived during migration.",
-      "",
-      "## Imported Content",
-      "",
-      content.trimEnd(),
-    ].join("\n");
+  const singularTodoExists = existsSync(legacySingularTasksTodo);
+  const docsTodoExists = existsSync(todoDoc);
 
-    if (mode === "apply" && !existsSync(legacyPlanArchive)) {
-      writeFileSync(legacyPlanArchive, `${archiveBlock}\n`);
-    }
-    if (mode === "apply") {
-      renameSync(planDoc, `${planDoc}.migrated.bak`);
-    }
-    summary.migrated.push({
-      source: "docs/plan.md",
-      target: "plans/archive/legacy-docs-plan.md",
-      action: "archive",
-      note: "Archived uncertain legacy plan content for manual review.",
-    });
-    summary.manual_followups.push("Review plans/archive/legacy-docs-plan.md and create a canonical plan if the content is still active.");
-  }
-
-  if (existsSync(todoDoc)) {
-    const content = readFileSync(todoDoc, "utf-8").trimEnd();
-    const hadCanonicalTodo = existsSync(tasksTodo);
-
-    if (!hadCanonicalTodo) {
-      writeCanonicalTodo(tasksTodo, mode);
-    }
-
-    if (mode === "apply" && !existsSync(legacyTodoArchive)) {
-      writeFileSync(legacyTodoArchive, `${content}\n`);
-      renameSync(todoDoc, `${todoDoc}.migrated.bak`);
-    }
-    summary.migrated.push({
-      source: "docs/TODO.md",
-      target: "tasks/todos.md",
-      action: hadCanonicalTodo ? "skip" : "rewrite",
-      note: hadCanonicalTodo
-        ? "Archived the legacy todo without rewriting the existing deferred-goal ledger."
-        : "Created the deferred-goal ledger and archived the legacy todo for manual plan triage.",
-    });
-    summary.manual_followups.push(
-      "Review tasks/archive/legacy-docs-TODO.md and promote any still-relevant work into a new plan instead of rehydrating it into tasks/todos.md."
+  if (singularTodoExists) {
+    preserveLegacy(
+      "tasks/todo.md",
+      "Preserved the user-authored legacy singular todo in place; migration refuses to guess which checklist items are still current."
     );
   }
 
-  if (existsSync(progressDoc)) {
-    const content = readFileSync(progressDoc, "utf-8").trimEnd();
-    if (!readFileSync(progressDoc, "utf-8").includes("milestone checkpoints only")) {
-      writeResearchReport(
-        legacyProgressResearch,
-        "<!-- forge: legacy-docs-import docs/PROGRESS.md -->",
-        "Legacy Progress Import",
-        ["Imported from a legacy execution log stored in `docs/PROGRESS.md`.", "", content].join("\n"),
-        mode
-      );
-    }
-
-    if (mode === "apply") {
-      if (!existsSync(legacyProgressArchive)) {
-        writeFileSync(legacyProgressArchive, `${content}\n`);
-      }
-      renameSync(progressDoc, `${progressDoc}.migrated.bak`);
-    }
-    summary.migrated.push({
-      source: "docs/PROGRESS.md",
-      target: "tasks/archive/legacy-docs-PROGRESS.md",
-      action: "archive",
-      note: "Archived legacy progress notes; docs/PROGRESS.md is no longer a generated workflow surface.",
-    });
+  if (!singularTodoExists && !docsTodoExists) {
+    writeCanonicalTodo(tasksTodo, mode);
   }
 
-  const archiveDoc = (sourcePath: string, archiveName: string, note: string) => {
-    if (!existsSync(sourcePath)) return;
-    const target = join(tasksArchive, archiveName);
-    if (mode === "apply" && !existsSync(target)) {
-      writeFileSync(target, `${readFileSync(sourcePath, "utf-8").trimEnd()}\n`);
-      renameSync(sourcePath, `${sourcePath}.migrated.bak`);
-    }
+  if (legacyTodoNeedsManualTriage(tasksTodo)) {
     summary.migrated.push({
-      source: sourcePath.replace(`${repo}/`, ""),
-      target: target.replace(`${repo}/`, ""),
-      action: "archive",
-      note,
+      source: "tasks/todos.md",
+      target: "tasks/todos.md",
+      action: "preserve",
+      note: "Preserved non-canonical tasks/todos.md in place; migration refuses to overwrite user-authored checklist state without explicit triage.",
     });
-    summary.manual_followups.push(`Review ${target.replace(`${repo}/`, "")} and re-home any still-relevant content.`);
-  };
+    summary.manual_followups.push(
+      "Review tasks/todos.md in place, promote still-current work into a current Plan/Work or deferred-goal row, then normalize the file explicitly."
+    );
+  }
 
-  archiveDoc(legacyContractDoc, "legacy-docs-contract.md", "Archived legacy contract notes for manual triage.");
-  archiveDoc(legacyReviewDoc, "legacy-docs-review.md", "Archived legacy review notes for manual triage.");
-  archiveDoc(legacyHandoffDoc, "legacy-docs-handoff.md", "Archived legacy handoff notes for manual triage.");
-  archiveDoc(rootHandoffDoc, "legacy-root-HANDOFF.md", "Archived root handoff notes for manual triage.");
+  ensureDir(researchDir, mode);
+  writeResearchReadme(researchReadme, mode);
+  if (legacyResearchNeedsManualTriage(tasksResearch)) {
+    preserveLegacy(
+      "tasks/research.md",
+      "Preserved legacy singleton research notes in place; migration no longer copies them into a second historical report authority."
+    );
+  }
+
+  preserveLegacy(
+    "docs/plan.md",
+    "Preserved uncertain legacy plan content in place; create a canonical plan only after explicit currentness review."
+  );
+  preserveLegacy(
+    "docs/TODO.md",
+    "Preserved uncertain legacy checklist content in place; migration does not manufacture a parallel task archive or empty canonical ledger around it."
+  );
+  preserveLegacy(
+    "docs/PROGRESS.md",
+    "Preserved legacy progress notes in place; distill still-current durable knowledge explicitly instead of auto-copying execution history into research/archive surfaces."
+  );
+  preserveLegacy("docs/contract.md", "Preserved legacy contract notes in place for explicit currentness triage.");
+  preserveLegacy("docs/review.md", "Preserved legacy review notes in place for explicit currentness triage.");
+  preserveLegacy("docs/handoff.md", "Preserved legacy handoff notes in place for explicit currentness triage.");
+  preserveLegacy("HANDOFF.md", "Preserved root handoff notes in place for explicit currentness triage.");
 
   return summary;
 }

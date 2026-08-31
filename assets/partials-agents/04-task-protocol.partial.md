@@ -16,8 +16,7 @@ TASK_SOURCES:
 PHASES: research -> spec -> plan -> contract -> implement -> verify -> check -> review -> handoff
 
 ARCHIVE:
-  PLAN: plans/archive/
-  TODO: tasks/archive/
+  HISTORY: Git history plus durable Control Plane Plan/Work/Verification evidence
 
 RULES:
   - Treat repo-local artifact files as the primary cross-agent workflow contract

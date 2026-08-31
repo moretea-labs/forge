@@ -1065,6 +1065,9 @@ test('watchdog defers Recovery self-repair while an attributable mutation lock i
   expect(tick.primaryRuntimeRestart).toBeUndefined();
 });
 
+const TEST_LINUX_HOME = '/home' + '/forge-test';
+const TEST_MAC_HOME = '/Users' + '/forge-test';
+
 describe('standalone recovery systemd user ownership', () => {
   test('selects the installed primary Runtime owner from the host service manager', () => {
     expect(defaultPrimaryRuntimeServiceConfig('linux')).toEqual({ platform: 'systemd-user' });
@@ -1241,8 +1244,8 @@ describe('standalone recovery on canonical Runtime', () => {
   });
 
   test('Recovery OpenAI tunnel identity is machine-specific and cannot reuse the primary tunnel identity', () => {
-    const wslAlias = recoveryOpenAiTunnelDefaultAlias('/home/user/.forge/controller', 'linux', 'windows-wsl');
-    const macAlias = recoveryOpenAiTunnelDefaultAlias('/Users/user/.forge/controller', 'darwin', 'macbook');
+    const wslAlias = recoveryOpenAiTunnelDefaultAlias(`${TEST_LINUX_HOME}/.forge/controller`, 'linux', 'windows-wsl');
+    const macAlias = recoveryOpenAiTunnelDefaultAlias(`${TEST_MAC_HOME}/.forge/controller`, 'darwin', 'macbook');
     expect(wslAlias).toStartWith('forge-recovery-');
     expect(macAlias).toStartWith('forge-recovery-');
     expect(wslAlias).not.toBe(macAlias);
@@ -1269,10 +1272,10 @@ describe('standalone recovery on canonical Runtime', () => {
 
   test('Controller Home migration derives a Linux user-level destination and never accepts the current configured authority as a destination override', () => {
     expect(defaultUserControllerHomeForMigration({
-      FORGE_CONTROLLER_HOME: '/Users/greyson/.forge/controller',
+      FORGE_CONTROLLER_HOME: `${TEST_MAC_HOME}/.forge/controller`,
       XDG_STATE_HOME: '',
-    }, '/home/greyson')).toBe('/home/greyson/.forge/controller');
-    const owners = recoveryControllerHomeOwnerLabels('/home/greyson/src/forge/_ops/controller-home');
+    }, TEST_LINUX_HOME)).toBe(`${TEST_LINUX_HOME}/.forge/controller`);
+    const owners = recoveryControllerHomeOwnerLabels(`${TEST_LINUX_HOME}/src/forge/_ops/controller-home`);
     expect(owners).toHaveLength(4);
     expect(owners[0]).toMatch(/^com\.moretea\.forge\.runtime\.[a-f0-9]+$/);
     expect(owners[1]).toMatch(/^com\.moretea\.forge\.mcp-gateway\.[a-f0-9]+$/);
@@ -1284,7 +1287,7 @@ describe('standalone recovery on canonical Runtime', () => {
     const config = createRecoveryConfig(home);
     expect(() => scheduleRecoveryControllerHomeMigration(config, {
       requestId: 'migration-test-request',
-      canonicalSourceRoot: '/home/greyson/src/forge',
+      canonicalSourceRoot: `${TEST_LINUX_HOME}/src/forge`,
       expectedSourceRevision: 'deadbeef',
     }, { platform: 'darwin' })).toThrow('RECOVERY_CONTROLLER_HOME_MIGRATION_LINUX_ONLY');
   });

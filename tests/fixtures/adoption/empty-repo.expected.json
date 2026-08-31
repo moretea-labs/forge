@@ -75,12 +75,6 @@
       "path": ".ai/harness/transfers"
     },
     {
-      "id": "mkdir:plans/archive",
-      "kind": "mkdir",
-      "status": "planned",
-      "path": "plans/archive"
-    },
-    {
       "id": "mkdir:plans/prds",
       "kind": "mkdir",
       "status": "planned",
@@ -423,13 +417,6 @@
       "kind": "writeFile",
       "status": "planned",
       "path": "scripts/architecture-queue.sh",
-      "ifMissing": true
-    },
-    {
-      "id": "writeFile:scripts/archive-architecture-request.sh:helper-wrapper",
-      "kind": "writeFile",
-      "status": "planned",
-      "path": "scripts/archive-architecture-request.sh",
       "ifMissing": true
     },
     {

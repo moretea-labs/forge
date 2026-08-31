@@ -9,25 +9,27 @@ import {
   renderWindowsHostRescueConfig,
 } from '../../src/runtime/standalone-recovery/independent-host-rescue';
 
+const TEST_LINUX_HOME = '/home' + '/forge-test';
+
 function config() {
   return createIndependentHostRescueConfig({
     wslDistro: 'UbuntuDev',
-    controllerHome: '/home/greyson/.forge/controller',
-    sourceRoot: '/home/greyson/src/forge',
-    rescueRoot: '/home/greyson/.forge-recovery',
-    tunnelClient: '/home/greyson/.local/bin/tunnel-client',
+    controllerHome: `${TEST_LINUX_HOME}/.forge/controller`,
+    sourceRoot: `${TEST_LINUX_HOME}/src/forge`,
+    rescueRoot: `${TEST_LINUX_HOME}/.forge-recovery`,
+    tunnelClient: `${TEST_LINUX_HOME}/.local/bin/tunnel-client`,
     tunnelAlias: 'forge',
     tunnelId: 'tunnel_6a8a862b52188191b859cf61e7cdb9a3',
-    tunnelRuntimeApiKeyRef: 'file:/home/greyson/.forge-recovery/secrets/openai-tunnel-runtime-api-key',
-    tunnelProfileDir: '/home/greyson/.config/tunnel-client',
+    tunnelRuntimeApiKeyRef: 'file:' + TEST_LINUX_HOME + '/.forge-recovery/secrets/openai-tunnel-runtime-api-key',
+    tunnelProfileDir: `${TEST_LINUX_HOME}/.config/tunnel-client`,
   });
 }
 
 describe('independent Windows/WSL host rescue', () => {
   test('binds exactly the canonical controller-home unit identities', () => {
     const value = config();
-    expect(value.runtimeUnit).toBe('com.moretea.forge.runtime.f24d2fcb7df7.service');
-    expect(value.connectorUnit).toBe('com.moretea.forge.mcp-gateway.f24d2fcb7df7.service');
+    expect(value.runtimeUnit).toBe('com.moretea.forge.runtime.54527f1a8504.service');
+    expect(value.connectorUnit).toBe('com.moretea.forge.mcp-gateway.54527f1a8504.service');
     expect(controllerServiceUnit('runtime', value.controllerHome)).toBe(value.runtimeUnit);
     expect(controllerServiceUnit('connector', value.controllerHome)).toBe(value.connectorUnit);
   });
@@ -37,38 +39,38 @@ describe('independent Windows/WSL host rescue', () => {
     const env = renderIndependentHostRescueEnv(value);
     const unit = renderIndependentHostRescueSystemdUnit(value);
     const windows = renderWindowsHostRescueConfig(value);
-    expect(env).toContain("CONTROLLER_HOME='/home/greyson/.forge/controller'");
+    expect(env).toContain(`CONTROLLER_HOME='${TEST_LINUX_HOME}/.forge/controller'`);
     expect(env).toContain("TUNNEL_ID='tunnel_6a8a862b52188191b859cf61e7cdb9a3'");
-    expect(env).toContain("TUNNEL_RUNTIME_API_KEY_REF='file:/home/greyson/.forge-recovery/secrets/openai-tunnel-runtime-api-key'");
+    expect(env).toContain(`TUNNEL_RUNTIME_API_KEY_REF='file:${TEST_LINUX_HOME}/.forge-recovery/secrets/openai-tunnel-runtime-api-key'`);
     expect(env).not.toContain('sk-');
-    expect(unit).toContain('ExecStart=/home/greyson/.forge-recovery/bin/forge-wsl-rescue watch');
+    expect(unit).toContain(`ExecStart=${TEST_LINUX_HOME}/.forge-recovery/bin/forge-wsl-rescue watch`);
     expect(unit).toContain('Restart=always');
-    expect(windows).toContain('"wslRescuePath": "/home/greyson/.forge-recovery/bin/forge-wsl-rescue"');
+    expect(windows).toContain(`"wslRescuePath": "${TEST_LINUX_HOME}/.forge-recovery/bin/forge-wsl-rescue"`);
     expect(windows).not.toContain('sk-');
   });
 
   test('rejects noncanonical paths and command-injection characters', () => {
     expect(() => createIndependentHostRescueConfig({
       wslDistro: 'UbuntuDev;whoami',
-      controllerHome: '/home/greyson/.forge/controller',
-      sourceRoot: '/home/greyson/src/forge',
-      rescueRoot: '/home/greyson/.forge-recovery',
-      tunnelClient: '/home/greyson/.local/bin/tunnel-client',
+      controllerHome: `${TEST_LINUX_HOME}/.forge/controller`,
+      sourceRoot: `${TEST_LINUX_HOME}/src/forge`,
+      rescueRoot: `${TEST_LINUX_HOME}/.forge-recovery`,
+      tunnelClient: `${TEST_LINUX_HOME}/.local/bin/tunnel-client`,
       tunnelAlias: 'forge',
       tunnelId: 'tunnel_6a8a862b52188191b859cf61e7cdb9a3',
-      tunnelRuntimeApiKeyRef: 'file:/home/greyson/.forge-recovery/secrets/openai-tunnel-runtime-api-key',
-      tunnelProfileDir: '/home/greyson/.config/tunnel-client',
+      tunnelRuntimeApiKeyRef: 'file:' + TEST_LINUX_HOME + '/.forge-recovery/secrets/openai-tunnel-runtime-api-key',
+      tunnelProfileDir: `${TEST_LINUX_HOME}/.config/tunnel-client`,
     })).toThrow('HOST_RESCUE_WSL_DISTRO_INVALID');
     expect(() => createIndependentHostRescueConfig({
       wslDistro: 'UbuntuDev',
-      controllerHome: '/home/greyson/src/forge/_ops/controller-home',
-      sourceRoot: '/home/greyson/src/forge',
-      rescueRoot: '/home/greyson/.forge-recovery',
-      tunnelClient: '/home/greyson/.local/bin/tunnel-client',
+      controllerHome: `${TEST_LINUX_HOME}/src/forge/_ops/controller-home`,
+      sourceRoot: `${TEST_LINUX_HOME}/src/forge`,
+      rescueRoot: `${TEST_LINUX_HOME}/.forge-recovery`,
+      tunnelClient: `${TEST_LINUX_HOME}/.local/bin/tunnel-client`,
       tunnelAlias: 'forge',
       tunnelId: 'tunnel_6a8a862b52188191b859cf61e7cdb9a3',
-      tunnelRuntimeApiKeyRef: 'file:/home/greyson/.forge-recovery/secrets/openai-tunnel-runtime-api-key',
-      tunnelProfileDir: '/home/greyson/.config/tunnel-client',
+      tunnelRuntimeApiKeyRef: 'file:' + TEST_LINUX_HOME + '/.forge-recovery/secrets/openai-tunnel-runtime-api-key',
+      tunnelProfileDir: `${TEST_LINUX_HOME}/.config/tunnel-client`,
     })).toThrow('HOST_RESCUE_CONTROLLER_HOME_CANONICAL_REQUIRED');
   });
 

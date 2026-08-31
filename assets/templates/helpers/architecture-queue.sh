@@ -5,6 +5,7 @@ usage() {
   cat <<'USAGE_EOF'
 Usage:
   scripts/architecture-queue.sh record --file <path>
+  scripts/architecture-queue.sh resolve --file <docs/architecture/requests/file.md>
   scripts/architecture-queue.sh status [--format text|json|summary] [--gate]
   scripts/architecture-queue.sh reindex [--check] [--quiet]
   scripts/architecture-queue.sh triage --before <YYYY-MM-DD>
@@ -185,6 +186,48 @@ repo_relative_path() {
   esac
 
   printf '%s' "$value"
+}
+
+clear_contract_pending_request() {
+  local rel_request="$1"
+  local short_request="${rel_request#docs/architecture/}"
+  local context_file tmp
+
+  while IFS= read -r context_file; do
+    if ! grep -Fq "Pending architecture request: \`${rel_request}\`" "$context_file" &&
+       ! grep -Fq "Pending architecture request: \`${short_request}\`" "$context_file"; then
+      continue
+    fi
+    tmp="$(mktemp)"
+    awk -v rel="$rel_request" -v short="$short_request" '
+      index($0, "Pending architecture request: `" rel "`") > 0 ||
+      index($0, "Pending architecture request: `" short "`") > 0 {
+        print "- Pending architecture request: `(none)`"
+        next
+      }
+      { print }
+    ' "$context_file" > "$tmp"
+    mv "$tmp" "$context_file"
+    echo "[ArchitectureQueue] Cleared pending architecture request in ${context_file#./}"
+  done < <(find . \
+    \( -path './.git' -o -path './node_modules' -o -path './_ref' -o -path './_ops' \) -prune -o \
+    \( -name 'AGENTS.md' -o -name 'CLAUDE.md' \) -type f -print 2>/dev/null)
+}
+
+delete_request_file() {
+  local candidate="$1"
+  local rel_request
+  rel_request="$(repo_relative_path "$candidate" || true)"
+  if [[ -z "$rel_request" || "$(dirname "$rel_request")" != "$requests_dir" || "$rel_request" != "$requests_dir/"*.md ]]; then
+    echo "architecture-queue: resolve target must be a direct Markdown child of $requests_dir" >&2
+    return 2
+  fi
+  if [[ ! -f "$rel_request" ]]; then
+    echo "architecture-queue: request not found: $rel_request" >&2
+    return 2
+  fi
+  rm -- "$rel_request"
+  clear_contract_pending_request "$rel_request"
 }
 
 metadata_value() {
@@ -563,6 +606,20 @@ record_command() {
   echo "[ArchitectureDrift] severity=$severity capability_id=$capability_id functional_block=$functional_block spawn_recommended=$spawn_recommended contract_sync_required=$contract_sync_required"
 }
 
+resolve_command() {
+  if [[ -z "$file_path" ]]; then
+    echo "architecture-queue: resolve requires --file <docs/architecture/requests/file.md>" >&2
+    exit 2
+  fi
+  local rel_request
+  rel_request="$(repo_relative_path "$file_path" || true)"
+  delete_request_file "$rel_request"
+  quiet="true"
+  check_mode="false"
+  reindex_requests
+  echo "[ArchitectureQueue] Resolved $rel_request (deleted; Git history is the archive)"
+}
+
 triage_command() {
   if [[ -z "$before_date" ]]; then
     echo "architecture-queue: triage requires --before <YYYY-MM-DD>" >&2
@@ -597,16 +654,7 @@ triage_command() {
     capability_id="${capability_id:-root}"
     card="$(request_card_path "$capability_id")"
     architecture_event upsert-from-request --source-request "$request" --request-file "$card"
-    if [[ -x "scripts/archive-architecture-request.sh" ]]; then
-      bash scripts/archive-architecture-request.sh \
-        --request "$request" \
-        --status superseded \
-        --artifact "$card" \
-        --note "Merged into architecture queue card by triage --before $before_date." >/dev/null
-    else
-      mkdir -p "docs/architecture/requests/archive/$(date '+%Y')"
-      mv "$request" "docs/architecture/requests/archive/$(date '+%Y')/$(basename "$request")"
-    fi
+    delete_request_file "$request"
     count=$((count + 1))
   done < <(find "$requests_dir" -maxdepth 1 -type f -name '*.md' | sort)
 
@@ -626,6 +674,9 @@ check_command() {
 case "$command_name" in
   record)
     record_command
+    ;;
+  resolve)
+    resolve_command
     ;;
   status)
     status_command

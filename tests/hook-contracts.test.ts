@@ -197,7 +197,7 @@ describe("Hook contracts", () => {
     expect(script).toContain("architecture-queue.sh");
     expect(script).toContain("context-contract-sync.sh");
     expect(script).toContain("sync-brain-docs.sh");
-    expect(read("assets/templates/helpers/archive-architecture-request.sh")).toContain("[ArchitectureArchive]");
+    expect(read("assets/templates/helpers/architecture-queue.sh")).toContain("resolve --file");
     expect(read("assets/templates/helpers/workstream-sync.sh")).toContain("tasks/workstreams");
     expect(script).toContain("tasks/todos.md");
     expect(script).toContain("--quiet");

@@ -206,7 +206,7 @@ if [[ -z "$(printf '%s' "$body" | tr -d '[:space:]')" ]]; then
 fi
 
 timestamp="$(date +%Y%m%d-%H%M)"
-mkdir -p plans plans/archive .claude
+mkdir -p plans .claude
 
 plan_file="plans/plan-${timestamp}-${slug}.md"
 counter=2
@@ -291,7 +291,7 @@ See captured planning output.
 - Implementation notes file: \`tasks/notes/${artifact_stem}.notes.md\`
 - Template: \`.claude/templates/contract.template.md\`
 - Verification command: \`bash scripts/verify-contract.sh --contract tasks/contracts/${artifact_stem}.contract.md --strict\`
-- Active plan rule: this captured plan is written to \`.ai/harness/active-plan\`, the owning worktree is written to \`.ai/harness/active-worktree\`, and the plan is mirrored to \`.claude/.active-plan\` unless --no-active is used. Do not infer active execution from the latest non-archived plan.
+- Active plan rule: this captured plan is written to \`.ai/harness/active-plan\`, the owning worktree is written to \`.ai/harness/active-worktree\`, and the plan is mirrored to \`.claude/.active-plan\` unless --no-active is used. Do not infer active execution from plan filename order, recency, or mere presence.
 
 ## Handoff
 

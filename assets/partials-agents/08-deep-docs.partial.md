@@ -15,8 +15,7 @@
 - `.ai/harness/checks/latest.json`: structured verification evidence
 - `.ai/harness/runs/`: immutable run snapshots for verification audit
 - `.ai/context/context-map.json`: progressive context index for primary functional-block `CLAUDE.md` and `AGENTS.md` files
-- `plans/archive/`: archived plans and outcomes
-- `tasks/archive/`: archived todo snapshots
+- Terminal plan/task history: Git history plus durable Control Plane evidence; do not create repository archive directories.
 - `docs/reference-configs/agentic-development-flow.md`: gstack/Waza routing, P1/P2/P3 reporting triggers, and daily flow
 - `docs/reference-configs/harness-overview.md`: orchestration playbook
 - `docs/reference-configs/external-tooling.md`: gstack/Waza/gbrain routing, Codex-first Waza sync, and required CodeGraph readiness commands

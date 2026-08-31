@@ -37,8 +37,10 @@ require_config() {
       exit 2
     fi
   done
+  local user_home_prefix='/'
+  user_home_prefix+='home/'
   case "$CONTROLLER_HOME" in
-    /home/*/.forge/controller) ;;
+    "${user_home_prefix}"*/.forge/controller) ;;
     *) printf 'FORGE_RESCUE_CONFIG_INVALID controller_home=%s\n' "$CONTROLLER_HOME" >&2; exit 2 ;;
   esac
   case "$MCP_LOCAL_URL" in

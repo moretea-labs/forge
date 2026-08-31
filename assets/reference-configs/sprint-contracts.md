@@ -74,13 +74,13 @@ Existing contracts without this block remain valid. `.ai/harness/scripts/verify-
 - `Active`: approved for implementation
 - `Blocked`: waiting on a missing dependency or decision
 - `Verified`: all machine checks passed; awaiting or holding review
-- `Archived`: sprint is complete or superseded
+- `Closed`: sprint is complete or superseded; terminal repo-local lifecycle artifacts are removed after exact final evidence is committed
 
 ## Review Coupling
 
 - After direct verification, use Forge `/review` for a fresh semantic impact review: user intent, affected domains, downstream consumers, missing state transitions, scenario evidence, and residual risks. The review is controller context, not a parser-owned completion gate.
 - `tasks/reviews/<plan-stem>.review.md` may cite the contract, implementation notes, checks file, run snapshot, and manual observations when they clarify the impact review.
-- `tasks/notes/<plan-stem>.notes.md` captures task-local decisions and should be archived or promoted deliberately, not left as hidden long-term memory.
+- `tasks/notes/<plan-stem>.notes.md` captures task-local decisions. Promote durable truth to canonical docs/source before closeout; terminal task-local notes are then deleted with their plan lifecycle artifacts after exact final evidence is committed.
 
 ## Worktree Lifecycle
 

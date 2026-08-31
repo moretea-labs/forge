@@ -120,7 +120,6 @@
       "architecture-event.ts",
       "capability-config.ts",
       "architecture-queue.sh",
-      "archive-architecture-request.sh",
       "context-contract-sync.sh",
       "workstream-sync.sh",
       "prepare-codex-handoff.sh",
@@ -133,12 +132,10 @@
     "runtimeManifest": ".ai/harness/workflow-contract.json",
     "requiredDirectories": [
       "plans",
-      "plans/archive",
       "plans/prds",
       "plans/sprints",
       "tasks",
       "tasks/issues",
-      "tasks/archive",
       "tasks/contracts",
       "tasks/reviews",
       "tasks/notes",
@@ -220,7 +217,6 @@
       "scripts/architecture-event.ts",
       "scripts/capability-config.ts",
       "scripts/architecture-queue.sh",
-      "scripts/archive-architecture-request.sh",
       "scripts/context-contract-sync.sh",
       "scripts/workstream-sync.sh",
       "scripts/prepare-codex-handoff.sh",
@@ -365,13 +361,12 @@
       ],
       "actionClasses": [
         "preserve",
-        "archive",
         "reconfigure",
         "remove"
       ],
       "safety": {
         "removeOnlyOwnership": "known_generated",
-        "unknownFiles": "preserve-or-archive",
+        "unknownFiles": "preserve",
         "customHooks": "preserve",
         "ignoredReferenceMaterial": "preserve",
         "localSecrets": "preserve"
@@ -380,74 +375,57 @@
         {
           "id": "legacy-docs-plan",
           "signal": "legacy-docs-plan",
-          "action": "archive",
+          "action": "preserve",
           "risk": "low",
           "ownership": "user_authored",
           "paths": [
             "docs/plan.md"
           ],
-          "targetPaths": [
-            "plans/archive/legacy-docs-plan.md"
-          ],
-          "summary": "Archive the legacy plan document before refreshing the tasks-first workflow."
+          "summary": "Preserve the legacy plan in place and require explicit currentness triage before promotion or removal."
         },
         {
           "id": "legacy-docs-todo",
           "signal": "legacy-docs-todo",
-          "action": "archive",
+          "action": "preserve",
           "risk": "low",
           "ownership": "user_authored",
           "paths": [
             "docs/TODO.md"
           ],
-          "targetPaths": [
-            "tasks/archive/legacy-docs-TODO.md"
-          ],
-          "summary": "Archive the legacy checklist before writing the active task projection."
+          "summary": "Preserve the legacy checklist in place and require explicit triage instead of manufacturing a parallel archive."
         },
         {
           "id": "legacy-docs-progress",
           "signal": "legacy-docs-progress",
-          "action": "archive",
+          "action": "preserve",
           "risk": "medium",
           "ownership": "user_authored",
           "paths": [
             "docs/PROGRESS.md"
           ],
-          "targetPaths": [
-            "docs/researches/legacy-progress-import.md",
-            "tasks/archive/legacy-docs-PROGRESS.md"
-          ],
-          "summary": "Move execution-log style progress content into research reports and archive surfaces."
+          "summary": "Preserve legacy progress content in place; explicitly distill current knowledge instead of auto-copying execution history."
         },
         {
           "id": "legacy-singular-todo-file",
           "signal": "legacy-singular-todo-file",
-          "action": "archive",
+          "action": "preserve",
           "risk": "low",
           "ownership": "user_authored",
           "paths": [
             "tasks/todo.md"
           ],
-          "targetPaths": [
-            "tasks/todos.md",
-            "tasks/archive/legacy-tasks-todo.md"
-          ],
-          "summary": "Archive the legacy singular todo ledger and normalize the canonical deferred-goal ledger to tasks/todos.md."
+          "summary": "Preserve the legacy singular todo ledger in place until a maintainer explicitly classifies each still-current item."
         },
         {
           "id": "legacy-task-checklist-format",
           "signal": "legacy-task-checklist-format",
-          "action": "archive",
+          "action": "preserve",
           "risk": "medium",
           "ownership": "user_authored",
           "paths": [
             "tasks/todos.md"
           ],
-          "targetPaths": [
-            "tasks/archive/legacy-tasks-todo.md"
-          ],
-          "summary": "Archive old task checklists before rewriting tasks/todos.md as the active execution projection."
+          "summary": "Preserve a non-canonical tasks/todos.md in place and fail closed until its user-authored checklist is explicitly triaged."
         },
         {
           "id": "legacy-task-sprint-prds",
@@ -498,8 +476,7 @@
             "scripts/architecture-drift.sh",
             "scripts/architecture-event.ts",
             "scripts/architecture-queue.sh",
-            "scripts/archive-architecture-request.sh",
-            "scripts/archive-workflow.sh",
+                  "scripts/archive-workflow.sh",
             "scripts/capability-config.ts",
             "scripts/capability-resolver.ts",
             "scripts/capture-plan.sh",
@@ -648,16 +625,13 @@
         {
           "id": "legacy-tasks-research-notes",
           "signal": "legacy-tasks-research-notes",
-          "action": "archive",
+          "action": "preserve",
           "risk": "medium",
           "ownership": "user_authored",
           "paths": [
             "tasks/research.md"
           ],
-          "targetPaths": [
-            "docs/researches/legacy-research-notes.md"
-          ],
-          "summary": "Archive legacy singleton research notes into the docs/researches report surface and leave a tombstone pointer."
+          "summary": "Preserve legacy singleton research notes in place until still-current findings are explicitly promoted; do not create a duplicate report authority."
         }
       ]
     }

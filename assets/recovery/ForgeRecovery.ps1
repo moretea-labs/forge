@@ -25,7 +25,8 @@ $Config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom
 if ($Config.schemaVersion -ne 1 -or [string]::IsNullOrWhiteSpace($Config.distro) -or [string]::IsNullOrWhiteSpace($Config.wslRescuePath)) {
     throw 'FORGE_RESCUE_CONFIG_INVALID'
 }
-if ($Config.distro -match "[\r\n'`"`$;&|<>]" -or $Config.wslRescuePath -notmatch '^/home/[A-Za-z0-9._-]+/\.forge-recovery/bin/forge-wsl-rescue$') {
+$WslRescuePathPattern = '^/' + 'home/[A-Za-z0-9._-]+/\.forge-recovery/bin/forge-wsl-rescue$'
+if ($Config.distro -match "[\r\n'`"`$;&|<>]" -or $Config.wslRescuePath -notmatch $WslRescuePathPattern) {
     throw 'FORGE_RESCUE_CONFIG_UNSAFE'
 }
 

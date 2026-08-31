@@ -61,12 +61,12 @@ script, not a Forge Runtime command:
 ```sh
 bun scripts/install-independent-windows-wsl-recovery.ts \
   --distro UbuntuDev \
-  --controller-home /home/greyson/.forge/controller \
-  --tunnel-client /home/greyson/.local/bin/tunnel-client \
+  --controller-home $HOME/.forge/controller \
+  --tunnel-client $HOME/.local/bin/tunnel-client \
   --tunnel-alias forge \
   --tunnel-id tunnel_0123456789abcdef0123456789abcdef \
   --tunnel-profile forge \
-  --tunnel-profile-dir /home/greyson/.config/tunnel-client \
+  --tunnel-profile-dir $HOME/.config/tunnel-client \
   --tunnel-admin-profile default \
   --install-windows-logon-task
 ```
@@ -96,8 +96,8 @@ canonical Runtime/Connector units are active:
 
 ```sh
 bun scripts/migrate-windows-wsl-controller-home.ts \
-  --source-home /home/greyson/src/forge/_ops/controller-home \
-  --destination-home /home/greyson/.forge/controller
+  --source-home $HOME/src/forge/_ops/controller-home \
+  --destination-home $HOME/.forge/controller
 ```
 
 Only after its preflight is correct, repeat the exact command with `--execute`.

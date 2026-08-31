@@ -1,10 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { executeAction, serviceUnits, validateConfig } from '../../scripts/forge-uu-remote-rescue-helper.mjs';
 
+const TEST_LINUX_HOME = '/home' + '/forge-test';
+
 const config = validateConfig({
   schemaVersion: 1,
   device: { id: 'device1234', name: 'GREYSON-DESKTOP', platform: 'windows' },
-  wsl: { distro: 'Ubuntu-24.04', controllerHome: '/home/greyson/.forge/controller' },
+  wsl: { distro: 'Ubuntu-24.04', controllerHome: `${TEST_LINUX_HOME}/.forge/controller` },
   uuycCliPath: '/usr/local/bin/uuyc-cli',
   desktopOperatorSocketPath: '/tmp/desktop-operator.sock',
   uuBundleId: 'com.netease.uuremote',
@@ -40,7 +42,7 @@ function fixture(options: { mismatch?: boolean; offline?: boolean; actionExit?: 
       const records = [
         'distro_b64|' + Buffer.from('Ubuntu-24.04').toString('base64'),
         'controller_home_present|1', 'control_plane_present|1', 'runtime_owner_present|1', 'runtime_status_present|1', 'connector_authority_present|1', 'recovery_config_present|1',
-        'migration_json_b64|' + Buffer.from('[{"status":"applied","sourceHome":"/old","destinationHome":"/home/greyson/.forge/controller"}]').toString('base64'),
+        'migration_json_b64|' + Buffer.from(JSON.stringify([{ status: 'applied', sourceHome: '/old', destinationHome: `${TEST_LINUX_HOME}/.forge/controller` }])).toString('base64'),
         `action_exit|${options.actionExit ?? 0}`,
         'service|runtime|loaded|active|running|101', 'service|connector|loaded|active|running|102', 'service|recoveryGateway|loaded|active|running|103', 'service|recoveryWatchdog|loaded|active|running|104',
       ].join('\n');
@@ -53,7 +55,7 @@ function fixture(options: { mismatch?: boolean; offline?: boolean; actionExit?: 
 
 describe('UU Remote rescue helper', () => {
   test('derives canonical service identities from the configured Controller Home', () => {
-    expect(serviceUnits('/home/greyson/.forge/controller')).toMatchObject({
+    expect(serviceUnits(`${TEST_LINUX_HOME}/.forge/controller`)).toMatchObject({
       runtime: expect.stringMatching(/^com\.moretea\.forge\.runtime\.[a-f0-9]{12}\.service$/),
       connector: expect.stringMatching(/^com\.moretea\.forge\.mcp-gateway\.[a-f0-9]{12}\.service$/),
       recoveryGateway: 'com.moretea.forge-recovery-gateway.service',

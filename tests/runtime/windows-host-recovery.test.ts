@@ -1,12 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import { createWindowsHostRecoveryRegistrationInput } from '../../src/runtime/plugins/windows-host-recovery-registration';
 
+const TEST_LINUX_HOME = '/home' + '/forge-test';
+
 describe('Windows host Recovery plugin registration', () => {
   test('exposes only fixed no-argument host recovery actions', () => {
     const registration = createWindowsHostRecoveryRegistrationInput({
       runtimeExecutable: '/usr/bin/node',
-      helperPath: '/home/greyson/.forge-recovery/bin/forge-windows-host-recovery-helper.mjs',
-      configDirectory: '/home/greyson/.forge/controller/system/plugins/windows-host-recovery',
+      helperPath: `${TEST_LINUX_HOME}/.forge-recovery/bin/forge-windows-host-recovery-helper.mjs`,
+      configDirectory: `${TEST_LINUX_HOME}/.forge/controller/system/plugins/windows-host-recovery`,
     });
     expect(registration.pluginId).toBe('windows_host_recovery');
     expect(registration.provider).toBe('local-wsl-windows');

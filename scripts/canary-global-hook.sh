@@ -10,8 +10,8 @@
 # auto-reload (Claude); confirm trust hash registration in ~/.codex/config.toml
 # under user-level [hooks.state] keys.
 #
-# See: plans/plan-20260528-1436-hook-global-runtime.md (Phase 0)
-#      tasks/notes/hook-global-runtime.notes.md (verification rounds 1+2)
+# Phase 0 rationale and verification rounds are preserved in Git history; this
+# script is the current executable canary contract.
 
 set -euo pipefail
 

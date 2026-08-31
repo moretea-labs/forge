@@ -68,7 +68,7 @@ if [[ -z "$title" ]]; then
 fi
 
 timestamp="$(date +%Y%m%d-%H%M)"
-mkdir -p plans plans/archive .claude/templates
+mkdir -p plans .claude/templates
 
 template_file=".claude/templates/plan.template.md"
 if [[ ! -f "$template_file" ]]; then
@@ -130,7 +130,7 @@ Complete this inventory before implementation. If any line is unknown, keep the 
 - Implementation notes file: `tasks/notes/{{ARTIFACT_STEM}}.notes.md`
 - Template: `.claude/templates/contract.template.md`
 - Verification command: `bash scripts/verify-contract.sh --contract tasks/contracts/{{ARTIFACT_STEM}}.contract.md --strict`
-- Active plan rule: `.ai/harness/active-plan` is authoritative for this worktree when present; `.ai/harness/active-worktree` records the owning worktree; `.claude/.active-plan` is a legacy fallback during transition. Do not infer active execution from the latest non-archived plan.
+- Active plan rule: `.ai/harness/active-plan` is authoritative for this worktree when present; `.ai/harness/active-worktree` records the owning worktree; `.claude/.active-plan` is a legacy fallback during transition. Do not infer active execution from plan filename order, recency, or mere presence.
 
 ## Handoff
 

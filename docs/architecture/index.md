@@ -8,7 +8,7 @@ The canonical documentation model is intentionally small:
 - [`../ROADMAP.md`](../ROADMAP.md) — current and next architecture/product priorities.
 - [`EVOLUTION.md`](EVOLUTION.md) — append-only historical architecture change log.
 - [`versions/`](versions/) — per-version architecture snapshots.
-- [`history/`](history/) and [`history.md`](history.md) — archived historical evidence, never runtime authority.
+- [`history.md`](history.md) — compatibility pointer to the evolution log and Git history; never runtime authority.
 - [`../../CHANGELOG.md`](../../CHANGELOG.md) — release history.
 - `decisions/` — accepted ADR rationale; accepted invariants are folded into `CURRENT.md` when they become ordinary current architecture.
 - `requests/` — pending architecture drift/change requests only.
@@ -28,4 +28,4 @@ Existing accepted ADRs remain under [`decisions/`](decisions/). Once a decision 
 
 ## Change discipline
 
-Do not create another current-architecture page for each refactor. Architecture-root Markdown is limited to `CURRENT.md`, `EVOLUTION.md`, `history.md`, and this index; historical pages belong under `history/`. Update `CURRENT.md` only when the architecture contract changes, update `ROADMAP.md` when priorities change, append `EVOLUTION.md` for material architecture transitions, and create/update a version snapshot only at a release/version boundary. Implementation phases, pending manual work, operator-local paths, and other execution status belong in durable Work/Plan evidence rather than maintained current architecture.
+Do not create another current-architecture page for each refactor. Architecture-root Markdown is limited to `CURRENT.md`, `EVOLUTION.md`, `history.md`, and this index. Obsolete architecture evidence belongs in Git history rather than a maintained history tree. Update `CURRENT.md` only when the architecture contract changes, update `ROADMAP.md` when priorities change, append `EVOLUTION.md` for material architecture transitions, and create/update a version snapshot only at a release/version boundary. Implementation phases, pending manual work, operator-local paths, and other execution status belong in durable Work/Plan evidence rather than maintained current architecture.

@@ -6,11 +6,9 @@
  * names are an internal implementation detail — Phase 2 sealed hooks will
  * replace them with bundled implementations without changing the tuple.
  *
- * Derived from `.codex/hooks.json` reality verified Phase 0 canary
- * 2026-05-28 (see docs/architecture/global-hook-runtime.md and Codex consult
- * session 019e6df7-e7c9-70e2-8872-db9869420bd0). The matcher dimension was
- * the missing piece in the X (event-only) design — see
- * tasks/notes/hook-global-runtime.notes.md § Phase 1B Design Pivot.
+ * Derived from `.codex/hooks.json` reality verified by the Phase 0 canary on
+ * 2026-05-28. Historical rationale and verification evidence are preserved in
+ * Git history; the matcher-aware registry and its tests are the current contract.
  *
  * Order matters: it is the stable adapter entry order. Codex hashes adapter
  * entries by `(absolute-path, event-snake, i, j)`, so any reordering re-prompts

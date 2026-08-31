@@ -405,12 +405,12 @@ describe("sprint-backlog helper", () => {
 
       const complete = run(
         "bash",
-        ["scripts/sprint-backlog.sh", "complete-task", "--sprint", sprintPath, "--task", "task-a", "--plan", "plans/archive/plan-x.md"],
+        ["scripts/sprint-backlog.sh", "complete-task", "--sprint", sprintPath, "--task", "task-a", "--plan", "git-history:plans/plan-x.md"],
         cwd
       );
       expect(complete.status).toBe(0);
       expect(readFileSync(join(cwd, sprintPath), "utf-8")).toContain(
-        "| 1 | [x] | task-a | contract | unit tests pass | `plans/archive/plan-x.md` |"
+        "| 1 | [x] | task-a | contract | unit tests pass | `git-history:plans/plan-x.md` |"
       );
 
       const outside = run(

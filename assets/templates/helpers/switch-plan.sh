@@ -20,7 +20,7 @@ Usage: scripts/switch-plan.sh --plan <plan-file>
 
 Options:
   --plan <path>   Switch to the specified plan (saves current state, restores target)
-  --list          List all non-archived plans with active marker
+  --list          List top-level plans and show the explicit active marker
 USAGE_EOF
 }
 

@@ -347,7 +347,7 @@ cmd_init() {
         ;;
       *)
         echo "sprint-backlog: active sprint already exists with status ${existing_status:-unknown}: $existing" >&2
-        echo "sprint-backlog: complete or archive it before starting a new sprint" >&2
+        echo "sprint-backlog: close the existing sprint before starting a new sprint" >&2
         exit 1
         ;;
     esac
