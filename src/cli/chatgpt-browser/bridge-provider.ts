@@ -124,13 +124,28 @@ function bridgePort(): number {
   return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535 ? parsed : CHATGPT_BRIDGE_DEFAULT_PORT;
 }
 
+const WSL_WINDOWS_CHROME_EXECUTABLES = [
+  '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe',
+  '/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+] as const;
+
+interface WslWindowsBridgeLaunchOptions {
+  platform?: NodeJS.Platform;
+  wslDistroName?: string;
+  osRelease?: string;
+  chromeExecutables?: readonly string[];
+  fileExists?: typeof existsSync;
+  launch?: typeof spawnSync;
+}
+
 export function isWslWindowsRuntime(
   platform: NodeJS.Platform = process.platform,
-  wslDistroName: string | undefined = process.env.WSL_DISTRO_NAME,
+  wslDistroName?: string,
   osRelease?: string,
 ): boolean {
   if (platform !== 'linux') return false;
-  if (wslDistroName?.trim()) return true;
+  const observedDistroName = wslDistroName ?? (osRelease === undefined ? process.env.WSL_DISTRO_NAME : undefined);
+  if (observedDistroName?.trim()) return true;
   let observedRelease = osRelease;
   if (observedRelease === undefined) {
     try { observedRelease = readFileSync('/proc/sys/kernel/osrelease', 'utf8'); } catch { observedRelease = ''; }
@@ -138,21 +153,28 @@ export function isWslWindowsRuntime(
   return /microsoft|wsl/i.test(observedRelease);
 }
 
-function openWslWindowsBridgeTarget(targetUrl: string): void {
-  if (!isWslWindowsRuntime()) return;
+export function openWslWindowsBridgeTarget(
+  targetUrl: string,
+  options: WslWindowsBridgeLaunchOptions = {},
+): void {
+  if (!isWslWindowsRuntime(options.platform, options.wslDistroName, options.osRelease)) return;
   const parsed = new URL(targetUrl);
   if (parsed.protocol !== 'https:' || !['chatgpt.com', 'www.chatgpt.com', 'chat.openai.com'].includes(parsed.hostname)) {
     throw new Error(`CHATGPT_BRIDGE_TARGET_INVALID: ${targetUrl}`);
   }
-  const opener = '/mnt/c/Windows/System32/rundll32.exe';
-  if (!existsSync(opener)) throw new Error('CHATGPT_BRIDGE_WINDOWS_INTEROP_UNAVAILABLE');
-  const launched = spawnSync(opener, ['url.dll,FileProtocolHandler', parsed.toString()], {
+  const fileExists = options.fileExists ?? existsSync;
+  const chrome = (options.chromeExecutables ?? WSL_WINDOWS_CHROME_EXECUTABLES).find((candidate) => fileExists(candidate));
+  if (!chrome) {
+    throw new Error('CHATGPT_BRIDGE_CHROME_UNAVAILABLE: install Google Chrome for Windows before using the WSL ChatGPT bridge');
+  }
+  const launch = options.launch ?? spawnSync;
+  const launched = launch(chrome, ['--new-tab', parsed.toString()], {
     windowsHide: true,
     stdio: 'ignore',
     timeout: 10_000,
   });
   if (launched.error) throw launched.error;
-  if (launched.status !== 0) throw new Error(`CHATGPT_BRIDGE_WINDOWS_OPEN_FAILED:${launched.status ?? 'unknown'}`);
+  if (launched.status !== 0) throw new Error(`CHATGPT_BRIDGE_CHROME_OPEN_FAILED:${launched.status ?? 'unknown'}`);
 }
 
 export async function runBridgeProvider(input: BrowserConsultInput, bundle: PromptBundle): Promise<BridgeProviderResult> {

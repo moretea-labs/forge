@@ -14,7 +14,7 @@ import {
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { createWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { chatgptBridgeTargetMatchesPage, isWslWindowsRuntime } from '../../src/cli/chatgpt-browser/bridge-provider';
+import { chatgptBridgeTargetMatchesPage, isWslWindowsRuntime, openWslWindowsBridgeTarget } from '../../src/cli/chatgpt-browser/bridge-provider';
 import { ensureBridgeToken, readBrowserBinding } from '../../src/cli/chatgpt-browser/binding';
 import {
   bindChatgptWorkConversation,
@@ -160,6 +160,38 @@ describe('ChatGPT Work conversation binding', () => {
     expect(bridgeSession).toStartWith('forge-chatgpt-bridge-');
     expect(await settleWorkChatgptAutomationTab({ controllerHome: '/unused', workId: 'WORK-1', browserSessionId: bridgeSession }))
       .toEqual({ status: 'session_closed' });
+  });
+
+  test('opens WSL bridge targets with an explicit Google Chrome executable and fails closed otherwise', () => {
+    const launches: Array<{ executable: string; args: readonly string[] }> = [];
+    const launch = ((executable: string, args: readonly string[]) => {
+      launches.push({ executable, args });
+      return { status: 0, error: undefined };
+    }) as typeof import('child_process').spawnSync;
+    openWslWindowsBridgeTarget('https://chatgpt.com/c/round-1', {
+      platform: 'linux',
+      wslDistroName: 'UbuntuDev',
+      chromeExecutables: ['/missing/chrome.exe', '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe'],
+      fileExists: (path) => path === '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe',
+      launch,
+    });
+    expect(launches).toEqual([{
+      executable: '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe',
+      args: ['--new-tab', 'https://chatgpt.com/c/round-1'],
+    }]);
+    expect(() => openWslWindowsBridgeTarget('https://chatgpt.com/', {
+      platform: 'linux',
+      wslDistroName: 'UbuntuDev',
+      chromeExecutables: ['/missing/chrome.exe'],
+      fileExists: () => false,
+      launch,
+    })).toThrow('CHATGPT_BRIDGE_CHROME_UNAVAILABLE');
+    expect(() => openWslWindowsBridgeTarget('https://example.com/', {
+      platform: 'linux',
+      wslDistroName: 'UbuntuDev',
+      fileExists: () => true,
+      launch,
+    })).toThrow('CHATGPT_BRIDGE_TARGET_INVALID');
   });
 
   test('uses a stable per-Work browser session and migrates away from the legacy global tab', () => {
