@@ -508,9 +508,11 @@ export class GlobalScheduler {
         .map((repository) => [repository.repoId, repository] as const),
     ).values());
     this.sourceScansAvoided += sourceSampling.avoidedRepositoryCount;
-    // Phase 0 reuses one durable Work admission policy. Cleanup, stale-state
-    // reconciliation, read-only source sampling, and projection maintenance remain
-    // available, but ordinary schedule/workflow advancement and Worker dispatch stop here.
+    // Phase 0 reuses one durable Work admission policy. Exclusive-Work mode stops
+    // ordinary schedule/workflow advancement and Worker dispatch while preserving
+    // cleanup and projections. Convergence mode remains dispatchable because new
+    // Work creation is independently fenced at the Work contract authority, so
+    // existing Work continuations can keep draining the backlog.
     if (!schedulerDispatchAllowed(this.controllerHome)) {
       refreshSchedulerRepositoryProjections({
         controllerHome: this.controllerHome,

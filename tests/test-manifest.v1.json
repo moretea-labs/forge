@@ -653,6 +653,10 @@
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
+    "tests/runtime/unborn-repository-change.test.ts": {
+      "module": "workflow",
+      "resource": "git-worktree"
+    },
     "tests/runtime/work-task-receipt.test.ts": {
       "module": "workflow",
       "resource": "temp-isolated"

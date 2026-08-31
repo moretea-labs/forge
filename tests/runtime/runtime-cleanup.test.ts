@@ -13,7 +13,10 @@ import {
   type RuntimeCleanupReport,
 } from '../../src/runtime/control-plane/runtime-cleanup';
 import { previewRuntimeCleanup } from '../../src/runtime/maintenance/cleanup';
-import { activateExclusiveWorkAdmission } from '../../src/runtime/control-plane/facade/work-admission-policy';
+import {
+  activateConvergenceWorkAdmission,
+  activateExclusiveWorkAdmission,
+} from '../../src/runtime/control-plane/facade/work-admission-policy';
 import { markRepositoryProjectionDirty, repositoryProjectionIsDirty } from '../../src/runtime/projections/invalidation';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
 
@@ -515,6 +518,17 @@ describe('runtime cleanup', () => {
     await expect(scheduler.tick()).resolves.toEqual({ activeJobs: 0 });
 
     expect(repositoryProjectionIsDirty(home, repository.repoId)).toBe(false);
+  });
+
+  test('convergence admission keeps scheduler advancement active for existing Work', async () => {
+    const home = controllerHome();
+    const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 });
+    const internal = scheduler as unknown as { lastScheduleTick: number };
+    activateConvergenceWorkAdmission(home, { reason: 'Drain existing Work without admitting new Work.' });
+
+    expect(internal.lastScheduleTick).toBe(0);
+    await expect(scheduler.tick()).resolves.toEqual({ activeJobs: 0 });
+    expect(internal.lastScheduleTick).toBeGreaterThan(0);
   });
 
   test('refreshes a dirty projection before its idle round-robin source-scan slot', async () => {

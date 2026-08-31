@@ -10,8 +10,10 @@ import { inspectControlPlaneDatabase } from '../../src/runtime/control-plane/per
 import { loadRuntimeReleaseManifest } from '../../src/runtime/root/release-manifest';
 import { readRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
 import {
+  activateConvergenceWorkAdmission,
   activateExclusiveWorkAdmission,
   readWorkAdmissionPolicy,
+  schedulerDispatchAllowed,
 } from '../../src/runtime/control-plane/facade/work-admission-policy';
 import {
   acceptSubmittedWorkContract,
@@ -709,6 +711,38 @@ describe('canonical single Runtime', () => {
       p0.workId,
       { continuationPrompt: 'Continue the P0 migration.' },
     ).continuationPrompt).toContain('P0');
+  });
+
+  test('convergence Work admission blocks new Work while existing Work and scheduler continuation remain available', () => {
+    const fixture = createFixture();
+    const historical = createWorkContract(
+      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
+      workInput('WORK-CONVERGENCE-HISTORICAL'),
+    );
+
+    activateConvergenceWorkAdmission(fixture.controllerHome, {
+      reason: 'Converge the existing Work backlog without admitting new Work.',
+    });
+
+    expect(readWorkAdmissionPolicy(fixture.controllerHome)).toMatchObject({
+      mode: 'convergence',
+      allowReadOnlyDiagnostics: true,
+    });
+    expect(schedulerDispatchAllowed(fixture.controllerHome)).toBe(true);
+    expect(() => createWorkContract(
+      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
+      workInput('WORK-CONVERGENCE-NEW'),
+    )).toThrow('WORK_ADMISSION_BLOCKED:CONVERGENCE:operation=create');
+    expect(updateWorkContract(
+      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
+      historical.workId,
+      { continuationPrompt: 'Continue converging this existing Work.' },
+    ).continuationPrompt).toContain('Continue converging');
+    expect(updateWorkContract(
+      { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
+      historical.workId,
+      { status: 'cancelled' },
+    ).status).toBe('cancelled');
   });
 
   test('release manifest accepts a logical Controller Home symlink to the same physical directory', () => {

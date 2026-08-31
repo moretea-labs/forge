@@ -5,7 +5,7 @@ import {
 
 export interface WorkAdmissionPolicy {
   schemaVersion: 1;
-  mode: 'normal' | 'exclusive_work';
+  mode: 'normal' | 'exclusive_work' | 'convergence';
   allowedWorkId?: string;
   allowReadOnlyDiagnostics: true;
   reason?: string;
@@ -62,6 +62,33 @@ export function activateExclusiveWorkAdmission(
   }).value;
 }
 
+export function activateConvergenceWorkAdmission(
+  controllerHome: string,
+  input: { reason: string; now?: string },
+): WorkAdmissionPolicy {
+  const at = input.now ?? new Date().toISOString();
+  const current = readControlPlaneRecord<WorkAdmissionPolicy>(controllerHome, NAMESPACE, SCOPE, KEY);
+  const value: WorkAdmissionPolicy = {
+    schemaVersion: 1,
+    mode: 'convergence',
+    allowReadOnlyDiagnostics: true,
+    reason: input.reason.slice(0, 500),
+    activatedAt: current?.value.mode === 'convergence'
+      ? current.value.activatedAt ?? at
+      : at,
+    updatedAt: at,
+  };
+  return writeControlPlaneRecord(controllerHome, {
+    namespace: NAMESPACE,
+    scope: SCOPE,
+    key: KEY,
+    schemaVersion: 1,
+    value,
+    action: 'work_admission_convergence',
+    expectedRevision: current?.revision ?? null,
+  }).value;
+}
+
 export function restoreNormalWorkAdmission(controllerHome: string, now = new Date().toISOString()): WorkAdmissionPolicy {
   const current = readControlPlaneRecord<WorkAdmissionPolicy>(controllerHome, NAMESPACE, SCOPE, KEY);
   const value = normalPolicy(now);
@@ -82,6 +109,10 @@ export function assertWorkAdmissionAllowed(
 ): WorkAdmissionPolicy {
   const policy = readWorkAdmissionPolicy(controllerHome);
   if (policy.mode === 'normal' || input.operation === 'maintenance') return policy;
+  if (policy.mode === 'convergence') {
+    if (input.operation !== 'create') return policy;
+    throw new Error('WORK_ADMISSION_BLOCKED:CONVERGENCE:operation=create');
+  }
   if (input.workId?.trim() === policy.allowedWorkId) return policy;
   throw new Error(
     `WORK_ADMISSION_BLOCKED:P0_EXCLUSIVE_WORK:operation=${input.operation}:allowed=${policy.allowedWorkId ?? 'none'}`,
@@ -89,5 +120,5 @@ export function assertWorkAdmissionAllowed(
 }
 
 export function schedulerDispatchAllowed(controllerHome: string): boolean {
-  return readWorkAdmissionPolicy(controllerHome).mode === 'normal';
+  return readWorkAdmissionPolicy(controllerHome).mode !== 'exclusive_work';
 }
