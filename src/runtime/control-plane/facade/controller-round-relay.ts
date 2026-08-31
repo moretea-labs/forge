@@ -32,6 +32,7 @@ const CONTROLLER_ROUND_COMPATIBILITY_PREFIX = 'controller.round:';
 export const CONTROLLER_ROUND_COMPATIBILITY_OPERATIONS = [
   'controller_claim',
   'continue',
+  'verify',
   'finalize',
   'stop',
   'controller_release',

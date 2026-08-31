@@ -4656,6 +4656,17 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         }
 
         if (operation === 'verify') {
+          const workId = String(args.work_id ?? '').trim();
+          try {
+            if (workId) assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+          } catch (error) {
+            const blocked = buildFacadeResult({
+              status: 'blocked',
+              summary: error instanceof Error ? error.message : `Work ${workId} controller-round authority check failed.`,
+              data: { workId, verificationStarted: false },
+            });
+            return result(blocked as unknown as Record<string, unknown>, true);
+          }
           return await runFacadeVerify(ctx, repository, args);
         }
 

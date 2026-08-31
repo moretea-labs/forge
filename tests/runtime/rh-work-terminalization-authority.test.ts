@@ -332,7 +332,7 @@ describe('rh_work terminalization authority', () => {
     expect(getWorkContract(store, workId)?.checkoutId).toBe(workspace.checkoutId!);
   }, 15_000);
 
-  test('frozen rh_work schema can claim, continue, and release only with the exact relay capability', async () => {
+  test('frozen rh_work schema can claim, verify, continue, and release only with the exact relay capability', async () => {
     const fx = fixture();
     const workId = 'work-frozen-round-compatibility';
     const runtimeInstanceId = 'runtime-frozen-round';
@@ -378,6 +378,17 @@ describe('rh_work terminalization authority', () => {
     }));
     expect(claimed.status).toBe('ok');
     expect(getControllerSession(store, workId)?.sessionId).toBe('transport-frozen-round');
+
+    const wrongVerify = structured(await callRuntimeTool(caller, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'repair',
+      work_id: workId,
+      capability_id: `controller.round:verify:${wrongAuthority}:${relay.relayScopeId}`,
+      check_id: 'missing-check',
+      simulate_check: true,
+    }));
+    expect(wrongVerify.status).toBe('blocked');
+    expect(wrongVerify.summary).toContain('WORK_CONTROLLER_ROUND_AUTHORITY_MISMATCH');
 
     const continued = structured(await callRuntimeTool(caller, 'rh_work', {
       repo_id: fx.repository.repoId,
