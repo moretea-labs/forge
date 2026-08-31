@@ -853,7 +853,7 @@ describe('scheduled external Controller wake', () => {
       workId,
       identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
     });
-    expect(opened.status).toBe('dispatching');
+    expect(opened).toMatchObject({ status: 'dispatching', lifecycleStage: 'dispatching' });
     const scheduledPrompt = buildControllerRoundRelayPrompt(store, opened, { exactOriginWork: true });
     expect(scheduledPrompt).toContain(`Claim and advance only origin Work ${workId}.`);
     expect(scheduledPrompt).toContain(`controller.round:controller_claim:${opened.authorityId}:${opened.relayScopeId}`);
@@ -865,7 +865,7 @@ describe('scheduled external Controller wake', () => {
       browserSessionId: 'browser-test',
       conversationUrl: 'https://chatgpt.com/c/relay-test',
     });
-    expect(dispatched?.status).toBe('dispatched');
+    expect(dispatched).toMatchObject({ status: 'dispatched', lifecycleStage: 'dispatch_confirmed' });
 
     startExecutionSession(controllerHome, {
       sessionId: 'chatgpt-session',
@@ -884,6 +884,7 @@ describe('scheduled external Controller wake', () => {
     const claimed = acknowledgeControllerRoundClaim(store, { workId, session });
     expect(claimed).toMatchObject({
       status: 'claimed',
+      lifecycleStage: 'controller_claimed',
       controllerId: 'chatgpt-controller',
       sessionId: 'chatgpt-session',
       claimGeneration: session.claimGeneration,
@@ -1492,7 +1493,7 @@ describe('scheduled external Controller wake', () => {
       relayScopeId: opened.relayScopeId,
       reason: 'Same principal continued on the new canonical Runtime.',
     });
-    expect(waiting).toMatchObject({ status: 'waiting', disposition: 'wait', controllerInstanceId: 'runtime-b', sessionId: 'chatgpt-session-b' });
+    expect(waiting).toMatchObject({ status: 'waiting', disposition: 'wait', lifecycleStage: 'semantic_round_closed', controllerInstanceId: 'runtime-b', sessionId: 'chatgpt-session-b' });
   });
 
   test('parses only the fenced frozen-schema controller disposition compatibility capability', () => {
@@ -1516,6 +1517,10 @@ describe('scheduled external Controller wake', () => {
       'repair',
       `controller.round:continue:${authorityId}:goal:work-compat`,
     )).toEqual({ operation: 'continue', authorityId, relayScopeId: 'goal:work-compat' });
+    expect(parseControllerRoundCompatibilityCapability(
+      'repair',
+      `controller.round:verify:${authorityId}:goal:work-compat`,
+    )).toEqual({ operation: 'verify', authorityId, relayScopeId: 'goal:work-compat' });
     expect(parseControllerRoundCompatibilityCapability('continue', `controller.round:continue:${authorityId}:goal:work-compat`)).toBeUndefined();
     expect(parseControllerRoundCompatibilityCapability('repair', 'controller.disposition:wait:goal:work-compat')).toBeUndefined();
     expect(() => parseControllerRoundCompatibilityCapability('repair', `controller.round:delegate:${authorityId}:goal:work-compat`)).toThrow(/CONTROLLER_ROUND_COMPATIBILITY_INVALID/);

@@ -9,7 +9,7 @@ import {
   type ScheduleOccurrenceHandoffInput,
 } from './store';
 
-const TERMINAL_OCCURRENCE_STATUSES = new Set<ScheduleOccurrence['status']>(['succeeded', 'failed', 'shadowed', 'skipped']);
+const TERMINAL_OCCURRENCE_STATUSES = new Set<ScheduleOccurrence['status']>(['dispatched', 'succeeded', 'failed', 'shadowed', 'skipped']);
 
 function computeScheduleBackoff(schedule: ReturnType<typeof getSchedule>, nextFailures: number): string {
   const backoffBase = Math.max(1, schedule.policy.backoffBaseMinutes ?? schedule.policy.cooldownMinutes ?? 1);

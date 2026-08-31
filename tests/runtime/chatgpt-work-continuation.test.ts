@@ -15,6 +15,7 @@ import {
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { createWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { chatgptBridgeTargetMatchesPage, isWslWindowsRuntime, openWslWindowsBridgeTarget } from '../../src/cli/chatgpt-browser/bridge-provider';
+import { writeChatgptBridgeExtension } from '../../src/cli/chatgpt-browser/bridge-extension';
 import { ensureBridgeToken, readBrowserBinding } from '../../src/cli/chatgpt-browser/binding';
 import {
   bindChatgptWorkConversation,
@@ -264,17 +265,33 @@ describe('ChatGPT Work conversation binding', () => {
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/', 'https://chatgpt.com/')).toBe(true);
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/', 'https://chatgpt.com/c/other-id')).toBe(false);
   });
-  test('scheduled WSL continuation uses dispatch-confirmed bridge semantics instead of Browser replay', () => {
+  test('scheduled WSL continuation uses semantic outbound dispatch confirmation instead of Browser replay', () => {
     const launcher = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
     const provider = readFileSync(join(process.cwd(), 'src/cli/chatgpt-browser/bridge-provider.ts'), 'utf8');
     const extension = readFileSync(join(process.cwd(), 'src/cli/chatgpt-browser/bridge-extension.ts'), 'utf8');
+    const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8');
+    const generatedRoot = mkdtempSync(join(tmpdir(), 'forge-chatgpt-bridge-generated-'));
+    roots.push(generatedRoot);
+    const generated = writeChatgptBridgeExtension(generatedRoot, 'http://127.0.0.1:17651', 'test-token');
+    const generatedScript = readFileSync(generated.contentScriptPath, 'utf8');
     expect(launcher).toContain('if (isWslWindowsRuntime())');
     expect(launcher).toContain('dispatchOnly: true');
     expect(launcher).toContain("provider: 'chatgpt-bridge'");
     expect(provider).toContain("url.pathname === '/api/extension/dispatched'");
     expect(provider).toContain('state.dispatched');
+    expect(provider).toContain("typeof body.outboundFingerprint === 'string'");
     expect(extension).toContain('forgeLastDispatch');
+    expect(extension).toContain('FORGE_CHATGPT_USER');
+    expect(extension).toContain('forgeOutboundMessageMatchesPrompt');
     expect(extension).toContain("forgePost('/api/extension/dispatched'");
+    expect(generatedScript).toContain('forgeHasConversationIdentity');
+    expect(generatedScript).toContain('outboundFingerprint: forgeOutboundFingerprint(prompt)');
+    expect(generatedScript).toContain('.split(String.fromCharCode(10)).join');
+    expect(generatedScript).not.toContain("replace(/s+/g");
+    expect(generatedScript).not.toContain('initialHasConversation = //c/');
+    expect(engine).toContain("status: 'dispatched'");
+    expect(engine).toContain('semantic round closure is still pending');
+    expect(engine).not.toContain('ChatGPT dispatch action succeeded via');
   });
 
 

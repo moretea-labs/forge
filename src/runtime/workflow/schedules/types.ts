@@ -115,7 +115,7 @@ export interface ScheduleOccurrence {
   scheduleId: string;
   repoId: string;
   windowKey: string;
-  status: 'created' | 'shadowed' | 'queued' | 'running' | 'succeeded' | 'failed' | 'skipped';
+  status: 'created' | 'shadowed' | 'queued' | 'running' | 'dispatched' | 'succeeded' | 'failed' | 'skipped';
   decision: ScheduleDecisionType;
   decisionId?: string;
   triggerContext?: ScheduleTriggerContext;

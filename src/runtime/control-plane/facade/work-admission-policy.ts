@@ -89,6 +89,40 @@ export function activateConvergenceWorkAdmission(
   }).value;
 }
 
+export function transitionConvergenceToExclusiveWorkAdmission(
+  controllerHome: string,
+  input: { allowedWorkId: string; reason: string; now?: string },
+): WorkAdmissionPolicy {
+  const allowedWorkId = input.allowedWorkId.trim();
+  if (!allowedWorkId) throw new Error('WORK_ADMISSION_POLICY_INVALID: allowedWorkId is required');
+  const current = readControlPlaneRecord<WorkAdmissionPolicy>(controllerHome, NAMESPACE, SCOPE, KEY);
+  if (current?.value.mode === 'exclusive_work' && current.value.allowedWorkId === allowedWorkId) {
+    return current.value;
+  }
+  if (current?.value.mode !== 'convergence') {
+    throw new Error(`WORK_ADMISSION_TRANSITION_REQUIRES_CONVERGENCE:current=${current?.value.mode ?? 'normal'}`);
+  }
+  const at = input.now ?? new Date().toISOString();
+  const value: WorkAdmissionPolicy = {
+    schemaVersion: 1,
+    mode: 'exclusive_work',
+    allowedWorkId,
+    allowReadOnlyDiagnostics: true,
+    reason: input.reason.slice(0, 500),
+    activatedAt: at,
+    updatedAt: at,
+  };
+  return writeControlPlaneRecord(controllerHome, {
+    namespace: NAMESPACE,
+    scope: SCOPE,
+    key: KEY,
+    schemaVersion: 1,
+    value,
+    action: 'work_admission_convergence_to_exclusive',
+    expectedRevision: current.revision,
+  }).value;
+}
+
 export function restoreNormalWorkAdmission(controllerHome: string, now = new Date().toISOString()): WorkAdmissionPolicy {
   const current = readControlPlaneRecord<WorkAdmissionPolicy>(controllerHome, NAMESPACE, SCOPE, KEY);
   const value = normalPolicy(now);
