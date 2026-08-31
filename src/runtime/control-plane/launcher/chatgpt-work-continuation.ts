@@ -19,6 +19,7 @@ export const DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY = 'auto';
 export const DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge';
 const CHATGPT_PROMPT_SELECTOR = 'div#prompt-textarea[contenteditable="true"]';
 const CHATGPT_SEND_SELECTOR = '[data-testid="send-button"], button[aria-label*="Send"], button[data-testid*="send"]';
+const CHATGPT_USER_MESSAGE_SELECTOR = '[data-message-author-role="user"]';
 const CHATGPT_INTELLIGENCE_CONTROL_SELECTORS = [
   'main button, main [role="button"]',
   'button, [role="button"]',
@@ -220,6 +221,54 @@ function matchText(value: BrowserQueryMatch): string {
 
 function matchSelector(value: BrowserQueryMatch | undefined): string | undefined {
   return typeof value?.selectorHint === 'string' && value.selectorHint.trim() ? value.selectorHint.trim() : undefined;
+}
+
+function normalizeChatgptOutboundText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+export function chatgptOutboundMessageMatchesPrompt(messageText: string, prompt: string): boolean {
+  const message = normalizeChatgptOutboundText(messageText);
+  const normalizedPrompt = normalizeChatgptOutboundText(prompt);
+  return Boolean(message && normalizedPrompt && message === normalizedPrompt);
+}
+
+async function latestChatgptUserMessage(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  timeoutMs?: number,
+): Promise<{ selector?: string; preview: string; url?: string }> {
+  const result = await controllerBrowserAction(controllerHome, workId, 'query_all', {
+    session_id: browserSessionId,
+    selector: CHATGPT_USER_MESSAGE_SELECTOR,
+    limit: 1,
+    from_end: true,
+    timeout_ms: Math.min(timeoutMs ?? 3_000, 3_000),
+  }, timeoutMs);
+  const latest = queryMatches(result).at(-1);
+  return { selector: matchSelector(latest), preview: latest ? matchText(latest) : '', url: resultUrl(result) };
+}
+
+async function fullChatgptMessageText(
+  controllerHome: string,
+  workId: string,
+  browserSessionId: string,
+  message: { selector?: string; preview: string },
+  timeoutMs?: number,
+): Promise<string> {
+  if (!message.selector) return message.preview;
+  const result = await controllerBrowserAction(controllerHome, workId, 'get_text', {
+    session_id: browserSessionId,
+    selector: message.selector,
+    max_chars: 20_000,
+    timeout_ms: Math.min(timeoutMs ?? 3_000, 3_000),
+  }, timeoutMs).catch(() => undefined);
+  return stringField(result?.text) ?? message.preview;
+}
+
+function chatgptSendControlUnavailable(error: unknown): boolean {
+  return error instanceof Error && (error.message.includes('Selector') && error.message.includes('not found'));
 }
 
 function normalizeExecutionControlLabel(label: string | undefined): string {
@@ -659,32 +708,62 @@ async function submitChatgptPrompt(
   targetUrl: string,
   timeoutMs?: number,
 ): Promise<string> {
+  const renderedPrompt = withForgePluginMention(prompt);
+  const before = await latestChatgptUserMessage(controllerHome, workId, browserSessionId, timeoutMs)
+    .catch((): { selector?: string; preview: string; url?: string } => ({ selector: undefined, preview: '', url: targetUrl }));
   await controllerBrowserAction(controllerHome, workId, 'fill', {
     session_id: browserSessionId,
     selector: CHATGPT_PROMPT_SELECTOR,
-    text: withForgePluginMention(prompt),
+    text: renderedPrompt,
     timeout_ms: timeoutMs ?? 60_000,
     post_action_wait_ms: 100,
   }, timeoutMs);
-  const sent = await controllerBrowserAction(controllerHome, workId, 'click', {
-    session_id: browserSessionId,
-    selector: CHATGPT_SEND_SELECTOR,
-    timeout_ms: timeoutMs ?? 60_000,
-    post_action_wait_ms: 1_000,
-  }, timeoutMs);
-  let observedUrl = resultUrl(sent) ?? targetUrl;
-  if (/\/c\/[^/?#]+/.test(observedUrl)) return observedUrl;
-  const deadline = Date.now() + Math.min(Math.max(timeoutMs ?? 8_000, 2_000), 8_000);
-  do {
-    const observed = await controllerBrowserAction(controllerHome, workId, 'query_all', {
+
+  let observedUrl = targetUrl;
+  try {
+    const sent = await controllerBrowserAction(controllerHome, workId, 'click', {
       session_id: browserSessionId,
-      selector: 'main',
-      limit: 1,
-      timeout_ms: Math.min(timeoutMs ?? 3_000, 3_000),
-    }, timeoutMs).catch(() => undefined);
-    observedUrl = observed ? resultUrl(observed) ?? observedUrl : observedUrl;
-    if (/\/c\/[^/?#]+/.test(observedUrl)) return observedUrl;
-    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+      selector: CHATGPT_SEND_SELECTOR,
+      timeout_ms: timeoutMs ?? 60_000,
+      post_action_wait_ms: 250,
+    }, timeoutMs);
+    observedUrl = resultUrl(sent) ?? observedUrl;
+  } catch (error) {
+    if (browserMutationOutcomeUnknown(error, 'click')) {
+      // Never replay an outcome-unknown submit: semantic observation below decides
+      // whether the original click committed, preventing duplicate user messages.
+    } else if (chatgptSendControlUnavailable(error)) {
+      const pressed = await controllerBrowserAction(controllerHome, workId, 'press', {
+        session_id: browserSessionId,
+        selector: CHATGPT_PROMPT_SELECTOR,
+        key: 'Enter',
+        timeout_ms: timeoutMs ?? 60_000,
+        post_action_wait_ms: 250,
+      }, timeoutMs);
+      observedUrl = resultUrl(pressed) ?? observedUrl;
+    } else {
+      throw error;
+    }
+  }
+
+  const deadline = Date.now() + Math.min(Math.max(timeoutMs ?? 10_000, 3_000), 10_000);
+  do {
+    const latest = await latestChatgptUserMessage(controllerHome, workId, browserSessionId, timeoutMs).catch(() => undefined);
+    if (latest) {
+      observedUrl = latest.url ?? observedUrl;
+      const isNewOutbound = Boolean(
+        (latest.selector && latest.selector !== before.selector)
+        || (!before.preview && latest.preview)
+        || latest.preview !== before.preview,
+      );
+      if (isNewOutbound) {
+        const fullText = await fullChatgptMessageText(controllerHome, workId, browserSessionId, latest, timeoutMs);
+        if (chatgptOutboundMessageMatchesPrompt(fullText, renderedPrompt) && /\/c\/[^/?#]+/.test(observedUrl)) {
+          return observedUrl;
+        }
+      }
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   } while (Date.now() < deadline);
   throw new Error(`CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED:${observedUrl}`);
 }

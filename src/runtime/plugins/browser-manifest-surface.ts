@@ -318,7 +318,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       description: 'Return matching element summaries (bounded).',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
       scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
-      argumentsSchema: sessionTargetSchema({ selector: { type: 'string' }, limit: { type: 'number' }, ...frameScopeProperties }, ['selector']),
+      argumentsSchema: sessionTargetSchema({ selector: { type: 'string' }, limit: { type: 'number' }, from_end: { type: 'boolean' }, ...frameScopeProperties }, ['selector']),
     },
     {
       actionId: 'get_attribute',

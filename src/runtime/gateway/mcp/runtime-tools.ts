@@ -865,6 +865,79 @@ export function runtimeIdentitySnapshot(ctx: MultiRepositoryMcpToolContext): Run
   };
 }
 
+function repositoryCleanContinuationEventName(targetBranch: string): string {
+  return `repository-clean:${targetBranch.trim() || 'main'}`;
+}
+
+function handoffResolvedContinuationEventName(handoffId: string): string {
+  return `handoff-resolved:${handoffId.trim()}`;
+}
+
+function dirtyTargetBranchFromWorkHandle(handle: WorkHandleState | undefined): string | undefined {
+  const reason = handle?.finalization.lastError ?? handle?.failureReason ?? '';
+  const match = /WORK_TARGET_DIRTY_OWNERSHIP_REQUIRED: target ([^\s]+) has dirty path/.exec(reason);
+  return match?.[1]?.trim() || undefined;
+}
+
+async function triggerWorkContinuationRepositoryEvent(
+  controllerHome: string,
+  repoId: string,
+  eventName: string,
+  eventId: string,
+  input: { workId?: string; data?: Record<string, unknown> } = {},
+): Promise<Array<{ scheduleId: string; occurrenceId?: string; status?: string }>> {
+  const schedules = listWorkContinuationSchedules(controllerHome, repoId, { workId: input.workId }).schedules
+    .filter((schedule) => schedule.enabled)
+    .filter((schedule) => schedule.action.operation === 'external_controller_wake')
+    .filter((schedule) => schedule.trigger.type === 'repository-event' && schedule.trigger.eventName === eventName);
+  const triggered: Array<{ scheduleId: string; occurrenceId?: string; status?: string }> = [];
+  for (const schedule of schedules) {
+    const occurrence = await triggerWorkContinuationSchedule(controllerHome, repoId, schedule.scheduleId, {
+      source: 'repository-event',
+      eventName,
+      eventId: `${eventId}:${schedule.scheduleId}`,
+      data: input.data,
+    });
+    triggered.push({ scheduleId: schedule.scheduleId, occurrenceId: occurrence?.occurrenceId, status: occurrence?.status });
+  }
+  return triggered;
+}
+
+function eventDrivenContinuationSchedule(
+  controllerHome: string,
+  repoId: string,
+  input: {
+    workId: string;
+    eventName: string;
+    reason: string;
+    browserSessionId?: string;
+    conversationUrl?: string;
+  },
+) {
+  const existing = listWorkContinuationSchedules(controllerHome, repoId, { workId: input.workId }).schedules
+    .filter((schedule) => schedule.action.operation === 'external_controller_wake')
+    .reverse()
+    .find((schedule) => schedule.enabled)
+    ?? listWorkContinuationSchedules(controllerHome, repoId, { workId: input.workId }).schedules.at(-1);
+  return createWorkContinuationSchedule(controllerHome, repoId, {
+    workId: input.workId,
+    controllerType: 'chatgpt',
+    browserSessionId: input.browserSessionId,
+    conversationUrl: input.conversationUrl,
+    continuationPrompt: `Resume exact Work ${input.workId}. Mechanical blocker changed: ${input.reason}`,
+    scheduleName: `Event continuation for ${input.workId}`,
+    triggerType: 'repository-event',
+    eventName: input.eventName,
+    maxFailures: existing?.policy.maxFailures,
+    cooldownMinutes: existing?.policy.cooldownMinutes,
+    dailyBudgetMinutes: existing?.policy.dailyBudgetMinutes,
+    shadowMode: false,
+    backoffBaseMinutes: existing?.policy.backoffBaseMinutes,
+    backoffMaxMinutes: existing?.policy.backoffMaxMinutes,
+    stopConditions: existing?.stopConditions,
+  }).schedule;
+}
+
 function controllerContextAssessment(args: Record<string, unknown>) {
   const description = typeof args.description === 'string' && args.description.trim()
     ? args.description
@@ -3231,9 +3304,18 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             decision: String(args.decision ?? 'resolved'),
             resolver: String(args.resolver ?? 'chatgpt'),
           });
+          const continuationOccurrences = item.workId
+            ? await triggerWorkContinuationRepositoryEvent(
+                ctx.controllerHome,
+                repository.repoId,
+                handoffResolvedContinuationEventName(item.id),
+                `handoff:${item.id}:${item.updatedAt}`,
+                { workId: item.workId, data: { handoffId: item.id, status: item.status, decision: item.decision } },
+              )
+            : [];
           return result(buildFacadeResult({
             summary: `Resolved handoff ${item.id}.`,
-            data: { item: { id: item.id, status: item.status, decision: item.decision, resolver: item.resolver } },
+            data: { item: { id: item.id, status: item.status, decision: item.decision, resolver: item.resolver }, continuationOccurrences },
           }) as unknown as Record<string, unknown>);
         }
         if (operation === 'dismiss') {
@@ -4100,12 +4182,35 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               maxRepeatedState: typeof args.max_repeated_state === 'number' ? args.max_repeated_state : undefined,
               maxFailures: typeof args.max_failures === 'number' ? args.max_failures : undefined,
             });
+            let continuationSchedule;
+            if (relay.status === 'waiting') {
+              const targetBranch = dirtyTargetBranchFromWorkHandle(readWorkHandle(ctx.controllerHome, repository.repoId, workId));
+              if (targetBranch) {
+                continuationSchedule = eventDrivenContinuationSchedule(ctx.controllerHome, repository.repoId, {
+                  workId,
+                  eventName: repositoryCleanContinuationEventName(targetBranch),
+                  reason: `target ${targetBranch} is clean after WORK_TARGET_DIRTY_OWNERSHIP_REQUIRED`,
+                  browserSessionId: relay.browserSessionId,
+                  conversationUrl: relay.conversationUrl,
+                });
+              }
+            } else if (relay.status === 'waiting_for_user' && relay.handoffId) {
+              continuationSchedule = eventDrivenContinuationSchedule(ctx.controllerHome, repository.repoId, {
+                workId,
+                eventName: handoffResolvedContinuationEventName(relay.handoffId),
+                reason: `handoff ${relay.handoffId} was resolved`,
+                browserSessionId: relay.browserSessionId,
+                conversationUrl: relay.conversationUrl,
+              });
+            }
             return result(buildFacadeResult({
               status: relay.status === 'blocked' ? 'blocked' : 'ok',
               summary: relay.status === 'pending_release'
                 ? `Controller disposition ${relay.disposition} recorded; relay will dispatch only after the current lease is released.`
-                : `Controller disposition ${relay.disposition} recorded with status ${relay.status}.`,
-              data: { relay },
+                : continuationSchedule
+                  ? `Controller disposition ${relay.disposition} recorded with status ${relay.status}; exact-Work continuation is now event-driven by ${continuationSchedule.trigger.eventName}.`
+                  : `Controller disposition ${relay.disposition} recorded with status ${relay.status}.`,
+              data: { relay, ...(continuationSchedule ? { continuationSchedule } : {}) },
             }) as unknown as Record<string, unknown>, relay.status === 'blocked');
           } catch (error) {
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller disposition failed.', data: {} }) as unknown as Record<string, unknown>, true);
@@ -5038,11 +5143,28 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           const lifecycleClosed = Boolean(completed?.completionReceipt)
             && (!readWorkHandle(ctx.controllerHome, repository.repoId, workId)
               || readWorkHandle(ctx.controllerHome, repository.repoId, workId)?.finalization.worktreeCleanup !== 'pending');
+          let blockerResolutionOccurrences: Array<{ scheduleId: string; occurrenceId?: string; status?: string }> = [];
+          if (lifecycleClosed && facade.status === 'ok') {
+            const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
+              ? args.target_branch.trim()
+              : repository.defaultBranch || 'main';
+            const targetStatus = repositoryGitStatus(repository);
+            if (targetStatus.clean && targetStatus.branch === targetBranch && targetStatus.head) {
+              blockerResolutionOccurrences = await triggerWorkContinuationRepositoryEvent(
+                ctx.controllerHome,
+                repository.repoId,
+                repositoryCleanContinuationEventName(targetBranch),
+                `repository-clean:${targetBranch}:${targetStatus.head}`,
+                { data: { targetBranch, targetRevision: targetStatus.head, sourceWorkId: workId } },
+              );
+            }
+          }
           const response = {
             ...facade,
             data: {
               ...(facade.data && typeof facade.data === 'object' ? facade.data : {}),
               lifecycleClosed,
+              ...(blockerResolutionOccurrences.length > 0 ? { blockerResolutionOccurrences } : {}),
             },
           };
           return result(response as unknown as Record<string, unknown>, response.status === 'blocked' || response.status === 'failed' || response.status === 'not_found');

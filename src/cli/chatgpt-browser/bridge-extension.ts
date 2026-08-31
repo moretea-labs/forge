@@ -153,10 +153,7 @@ function forgeOutboundFingerprint(prompt) {
 function forgeOutboundMessageMatchesPrompt(messageText, prompt) {
   const message = forgeNormalizeOutboundText(messageText);
   const normalizedPrompt = forgeNormalizeOutboundText(prompt);
-  if (!message || !normalizedPrompt) return false;
-  const prefix = normalizedPrompt.slice(0, Math.min(160, normalizedPrompt.length));
-  const suffix = normalizedPrompt.length > 240 ? normalizedPrompt.slice(-80) : '';
-  return message.includes(prefix) && (!suffix || message.includes(suffix));
+  return Boolean(message && normalizedPrompt && message === normalizedPrompt);
 }
 
 function forgeHasConversationIdentity(urlValue) {

@@ -19,6 +19,7 @@ import { executeWork, validateWork } from '../../control-plane/execution/work-op
 // Compatibility exports: implementation authority lives in control-plane execution.
 export {
   inspectWorkTargetAdvance,
+  inspectFailedNonLinearTargetAdvanceRepair,
   targetAdvanceLinearMergeCommits,
   planTargetAdvanceValidationAuthority,
   targetAdvanceWorkScopeViolation,
@@ -37,6 +38,7 @@ export type {
   TargetAdvanceValidationTransferPlan,
   TargetDirtyWorkOwnershipInspection,
   WorkTargetAdvanceInspection,
+  FailedNonLinearTargetAdvanceRepairInspection,
 } from '../../control-plane/execution/work-finalization-service';
 
 function definition(name: string, description: string, properties: Record<string, unknown>, required: string[] = [], readOnlyHint = false, destructiveHint = false): McpToolDefinition {
