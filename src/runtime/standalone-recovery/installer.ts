@@ -364,7 +364,10 @@ export function recoverySystemdUserUnitInput(
     environment: {
       PATH: env.PATH?.trim() || '/usr/bin:/bin:/usr/sbin:/sbin',
       FORGE_BUILD_VERSION: FORGE_VERSION,
-      FORGE_CONNECTOR_EXECUTABLE: process.execPath,
+      // Recovery can be running from its own compiled binary. Never let that
+      // binary become the interpreter for the primary OAuth Connector after a
+      // Controller Home cutover; preserve the explicit package executable.
+      FORGE_CONNECTOR_EXECUTABLE: env.FORGE_CONNECTOR_EXECUTABLE?.trim() || process.execPath,
     },
     restart: 'always',
     restartSec: 5,

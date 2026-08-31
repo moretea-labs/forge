@@ -1073,20 +1073,22 @@ describe('standalone recovery systemd user ownership', () => {
 
   test('pins Gateway and Watchdog units to the current immutable Recovery release', () => {
     const controllerHome = '/tmp/forge-recovery-systemd-fixture';
-    const gateway = recoverySystemdUserUnitInput(controllerHome, 'gateway', { PATH: '/usr/bin:/bin' });
-    const watchdog = recoverySystemdUserUnitInput(controllerHome, 'watchdog', { PATH: '/usr/bin:/bin' });
+    const serviceEnv = { PATH: '/usr/bin:/bin', FORGE_CONNECTOR_EXECUTABLE: '/opt/forge/bin/bun' };
+    const gateway = recoverySystemdUserUnitInput(controllerHome, 'gateway', serviceEnv);
+    const watchdog = recoverySystemdUserUnitInput(controllerHome, 'watchdog', serviceEnv);
     expect(gateway).toMatchObject({
       executable: expect.stringContaining('/recovery/current/forge-recovery-gateway'),
       args: ['gateway', '--controller-home', controllerHome],
       restart: 'always',
       restartSec: 5,
-      environment: { PATH: '/usr/bin:/bin' },
+      environment: { PATH: '/usr/bin:/bin', FORGE_CONNECTOR_EXECUTABLE: '/opt/forge/bin/bun' },
     });
     expect(watchdog).toMatchObject({
       executable: expect.stringContaining('/recovery/current/forge-recovery-watchdog'),
       args: ['watchdog', '--controller-home', controllerHome],
       restart: 'always',
       restartSec: 5,
+      environment: { FORGE_CONNECTOR_EXECUTABLE: '/opt/forge/bin/bun' },
     });
   });
 });

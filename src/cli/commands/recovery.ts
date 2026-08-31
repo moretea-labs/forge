@@ -12,7 +12,6 @@ import {
   type OpenAiSecureTunnelRuntimeObservation,
 } from '../mcp/openai-secure-tunnel';
 import {
-  relocateStoppedControllerHomeAuthority,
   resolveControllerHome,
   rollbackStoppedControllerHomeAuthorityRelocation,
   type StoppedControllerHomeAuthorityRelocation,
@@ -52,6 +51,8 @@ import { readRecoveryRuntimeIdentity } from '../../runtime/standalone-recovery/r
 import {
   assertRecoveryControllerHomeMigrationReady,
   recoveryControllerHomeMigrationPreflight,
+  runLinuxControllerHomeMigrationRequest,
+  scheduleLinuxControllerHomeMigration,
   type RecoveryControllerHomeMigrationPreflight,
 } from '../../runtime/standalone-recovery/controller-home-migration';
 import { configureCodegraph, ensureCodegraph } from '../tools/codegraph';
@@ -759,23 +760,44 @@ export function buildRecoveryCommand(): Command {
     });
 
   command.command('migrate-controller-home')
-    .description('Atomically relocate a fully stopped Forge Controller Home to stable user-level storage')
-    .requiredOption('--from <path>', 'Stopped source Controller Home')
+    .description('Transactionally relocate Forge Controller Home on Linux/WSL through an independent transient systemd worker')
+    .requiredOption('--from <path>', 'Current Controller Home authority')
     .requiredOption('--controller-home <path>', 'Destination user-level Controller Home')
     .option('--archive-suffix <suffix>', 'Stable suffix for an authority-free destination shell archive')
-    .action(async (opts: { from: string; controllerHome: string; archiveSuffix?: string }) => {
+    .option('--timeout-ms <ms>', 'Overall migration transaction timeout in milliseconds', '240000')
+    .action(async (opts: { from: string; controllerHome: string; archiveSuffix?: string; timeoutMs: string }) => {
       if (process.platform !== 'linux') throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_LINUX_ONLY');
-      const sourceHome = resolve(opts.from);
-      const destinationHome = resolveControllerHome(opts.controllerHome);
-      const preflight = recoveryControllerHomeMigrationPreflight(sourceHome, destinationHome);
-      assertRecoveryControllerHomeMigrationReady(preflight);
-      const relocation = relocateStoppedControllerHomeAuthority({
-        sourceHome,
-        destinationHome,
-        archiveExistingDestination: preflight.destinationExists,
+      const timeoutMs = Number(opts.timeoutMs);
+      if (!Number.isInteger(timeoutMs) || timeoutMs < 30_000 || timeoutMs > 900_000) {
+        throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_TIMEOUT_INVALID');
+      }
+      const scheduled = scheduleLinuxControllerHomeMigration({
+        sourceHome: resolve(opts.from),
+        destinationHome: resolveControllerHome(opts.controllerHome),
         ...(opts.archiveSuffix ? { archiveSuffix: opts.archiveSuffix } : {}),
+        timeoutMs,
       });
-      output({ status: 'migrated', preflight, relocation });
+      output({
+        status: 'migration_scheduled',
+        operationId: scheduled.request.operationId,
+        sourceHome: scheduled.request.sourceHome,
+        destinationHome: scheduled.request.destinationHome,
+        workerUnit: scheduled.request.workerUnit,
+        receiptPath: scheduled.request.receiptPath,
+        logPath: scheduled.request.logPath,
+        preflight: scheduled.preflight,
+      });
+    });
+
+  command.command('migrate-controller-home-worker')
+    .description('Internal Linux/WSL transient worker for a durable Controller Home migration request')
+    .requiredOption('--request <path>', 'Durable migration request written before service cutover')
+    .action(async (opts: { request: string }) => {
+      if (process.platform !== 'linux') throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_LINUX_ONLY');
+      const receipt = await runLinuxControllerHomeMigrationRequest(resolve(opts.request));
+      // A durable terminal receipt, including failed-after-rollback, is a completed worker transaction.
+      // Only an unhandled process failure before a terminal receipt should trigger systemd Restart=on-failure.
+      output(receipt);
     });
 
   command.command('rollback-controller-home-migration')
