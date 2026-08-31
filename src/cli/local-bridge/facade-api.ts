@@ -36,7 +36,6 @@ import {
   listHandoffItems,
   listWorkContracts,
   normalizeCheckIds,
-  resolveHandoffItem,
   routeWorkStart,
   runSelfHealingLoop,
   selectExecutionMode,
@@ -49,6 +48,7 @@ import {
   type SuggestedNextAction,
   type WorkContract,
 } from '../../runtime/control-plane/facade';
+import { resolveHandoffAndTriggerContinuation } from '../../runtime/workflow/schedules/work-continuation';
 import { buildRuntimeMaintenanceStatus } from '../../runtime/recovery';
 import { applySafePatch } from '../repositories/safe-patch';
 import { withControllerLock } from '../repositories/locks';
@@ -1229,11 +1229,12 @@ export function ackConsoleHandoff(ctx: ConsoleFacadeContext, handoffId: string) 
   return mapHandoffCard(acknowledgeHandoffItem(store(ctx), handoffId));
 }
 
-export function resolveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId: string, decision: string, resolver = 'user') {
-  return mapHandoffCard(resolveHandoffItem(store(ctx), handoffId, { decision, resolver }));
+export async function resolveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId: string, decision: string, resolver = 'user') {
+  const { item } = await resolveHandoffAndTriggerContinuation(ctx.controllerHome, ctx.repository.repoId, handoffId, { decision, resolver });
+  return mapHandoffCard(item);
 }
 
-export function approveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId: string, resolver = 'user') {
+export async function approveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId: string, resolver = 'user') {
   const item = getHandoffItem(store(ctx), handoffId);
   if (!item) throw new Error(`handoff not found: ${handoffId}`);
   const decision = describeHandoffDecision(item);
@@ -1279,7 +1280,7 @@ export function approveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId: stri
       summary: `批准已收到，但后续动作未成功：${actionResult.summary}`,
     };
   }
-  const resolved = resolveHandoffItem(store(ctx), handoffId, {
+  const { item: resolved } = await resolveHandoffAndTriggerContinuation(ctx.controllerHome, ctx.repository.repoId, handoffId, {
     decision: `approved: ${item.approvalAction.label}`,
     resolver,
   });

@@ -1,5 +1,7 @@
 import { createHash } from 'crypto';
-import { getWorkContract, isTerminalWorkContractStatus, type WorkContract } from '../../control-plane/facade';
+import { resolveHandoffItem } from '../../control-plane/facade/handoff-inbox-store';
+import { getWorkContract } from '../../control-plane/facade/work-contract-store';
+import { isTerminalWorkContractStatus, type HandoffItem, type WorkContract } from '../../control-plane/facade/types';
 import { assertAutomatedOperationAllowed } from '../../control-plane/governance/external-effects';
 import { evaluateSchedule } from './engine';
 import {
@@ -301,4 +303,51 @@ export async function triggerWorkContinuationSchedule(
 ): Promise<ScheduleOccurrence | undefined> {
   const schedule = continuationSchedule(getSchedule(controllerHome, repoId, scheduleId));
   return evaluateSchedule(controllerHome, schedule, true, context);
+}
+
+export function handoffResolvedContinuationEventName(handoffId: string): string {
+  return `handoff-resolved:${handoffId.trim()}`;
+}
+
+export async function triggerWorkContinuationRepositoryEvent(
+  controllerHome: string,
+  repoId: string,
+  eventName: string,
+  eventId: string,
+  input: { workId?: string; data?: Record<string, unknown> } = {},
+): Promise<Array<{ scheduleId: string; occurrenceId?: string; status?: string }>> {
+  const schedules = listWorkContinuationSchedules(controllerHome, repoId, { workId: input.workId }).schedules
+    .filter((schedule) => schedule.enabled)
+    .filter((schedule) => schedule.action.operation === 'external_controller_wake')
+    .filter((schedule) => schedule.trigger.type === 'repository-event' && schedule.trigger.eventName === eventName);
+  const triggered: Array<{ scheduleId: string; occurrenceId?: string; status?: string }> = [];
+  for (const schedule of schedules) {
+    const occurrence = await triggerWorkContinuationSchedule(controllerHome, repoId, schedule.scheduleId, {
+      source: 'repository-event',
+      eventName,
+      eventId: `${eventId}:${schedule.scheduleId}`,
+      data: input.data,
+    });
+    triggered.push({ scheduleId: schedule.scheduleId, occurrenceId: occurrence?.occurrenceId, status: occurrence?.status });
+  }
+  return triggered;
+}
+
+export async function resolveHandoffAndTriggerContinuation(
+  controllerHome: string,
+  repoId: string,
+  handoffId: string,
+  input: { decision: string; resolver: string },
+): Promise<{ item: HandoffItem; continuationOccurrences: Array<{ scheduleId: string; occurrenceId?: string; status?: string }> }> {
+  const item = resolveHandoffItem({ controllerHome, repoId }, handoffId, input);
+  const continuationOccurrences = item.workId
+    ? await triggerWorkContinuationRepositoryEvent(
+        controllerHome,
+        repoId,
+        handoffResolvedContinuationEventName(item.id),
+        `handoff:${item.id}:${item.updatedAt}`,
+        { workId: item.workId, data: { handoffId: item.id, status: item.status, decision: item.decision } },
+      )
+    : [];
+  return { item, continuationOccurrences };
 }

@@ -9,6 +9,7 @@ import {
   nativeReplacementPostAssignmentUrlMatchesTarget,
   nativeReplacementUrlMatchesTarget,
   browserActionCanReplayAfterDispatch,
+  browserExplicitSessionRequiresExistingResource,
   settleNativeCreatedPageIdentity,
 } from '../../src/runtime/plugins/browser-adapter';
 import {
@@ -163,6 +164,16 @@ describe('Browser Runtime V3 native create-tab provenance', () => {
       ref: { windowId: 'window-1', tabId: 'tab-2' },
       navigation: { provenanceVersion: 1, requestedUrl: 'https://chatgpt.com/', assignmentAccepted: false },
     })).toThrow('incomplete create-tab navigation provenance');
+  });
+});
+
+describe('Browser explicit session resource classification', () => {
+  test('lets open_page allocate a fresh explicit session identity while preserving existing-resource fencing', () => {
+    expect(browserExplicitSessionRequiresExistingResource('open_page', 'fresh-session', false)).toBe(false);
+    expect(browserExplicitSessionRequiresExistingResource('open_page', 'saved-session', true)).toBe(true);
+    expect(browserExplicitSessionRequiresExistingResource('create_session', 'fresh-session', false)).toBe(false);
+    expect(browserExplicitSessionRequiresExistingResource('navigate', 'missing-session', false)).toBe(true);
+    expect(browserExplicitSessionRequiresExistingResource('open_page', undefined, false)).toBe(false);
   });
 });
 

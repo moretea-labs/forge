@@ -13,6 +13,7 @@ import {
   finishControllerRoundRelayDispatch,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
+import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { createWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { chatgptBridgeTargetMatchesPage, isWslWindowsRuntime, openWslWindowsBridgeTarget } from '../../src/cli/chatgpt-browser/bridge-provider';
 import { writeChatgptBridgeExtension } from '../../src/cli/chatgpt-browser/bridge-extension';
@@ -43,6 +44,12 @@ import {
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
 import { migrateChatgptAutomationSchedule } from '../../src/runtime/workflow/schedules/chatgpt-automation-migration';
 import { classifyChatgptWakeFailure } from '../../src/runtime/workflow/schedules/engine';
+import {
+  createWorkContinuationSchedule,
+  handoffResolvedContinuationEventName,
+  resolveHandoffAndTriggerContinuation,
+} from '../../src/runtime/workflow/schedules/work-continuation';
+import { createSchedule, listOccurrences } from '../../src/runtime/workflow/schedules/store';
 import type { RepositorySchedule } from '../../src/runtime/workflow/schedules/types';
 
 const roots: string[] = [];
@@ -284,6 +291,7 @@ describe('ChatGPT Work conversation binding', () => {
     roots.push(generatedRoot);
     const generated = writeChatgptBridgeExtension(generatedRoot, 'http://127.0.0.1:17651', 'test-token');
     const generatedScript = readFileSync(generated.contentScriptPath, 'utf8');
+    expect(() => new Function(generatedScript)).not.toThrow();
     expect(launcher).toContain('if (isWslWindowsRuntime())');
     expect(launcher).toContain('dispatchOnly: true');
     expect(launcher).toContain("provider: 'chatgpt-bridge'");
@@ -411,6 +419,88 @@ describe('ChatGPT Work conversation binding', () => {
     expect(controllerRelease).toContain('settleWorkChatgptAutomationTab({');
     expect(controllerRelease).toContain("status: 'retained_for_immediate_continuation'");
     expect(controllerRelease).toContain("['waiting', 'waiting_for_user', 'goal_complete', 'blocked', 'failed']");
+  });
+
+  test('resolving a Handoff triggers only the exact Work repository-event continuation schedule', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-handoff-event-continuation-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    ensureControllerHome(controllerHome);
+    const repoRoot = join(root, 'repo');
+    mkdirSync(repoRoot, { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'fixture\n', 'utf8');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'handoff-event-continuation' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workId = 'WORK-HANDOFF-EVENT';
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Resume when the bounded Handoff is resolved.',
+      acceptanceCriteria: ['Only the exact Work continuation schedule may wake.'],
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const handoffId = 'HND-HANDOFF-EVENT';
+    const eventName = handoffResolvedContinuationEventName(handoffId);
+    const schedule = createWorkContinuationSchedule(controllerHome, repository.repoId, {
+      workId,
+      controllerType: 'chatgpt',
+      triggerType: 'repository-event',
+      eventName,
+      shadowMode: true,
+      cooldownMinutes: 0,
+    }).schedule;
+    const decoy = createSchedule(controllerHome, {
+      requestId: 'decoy-handoff-event',
+      repoId: repository.repoId,
+      name: 'decoy other Work event continuation',
+      enabled: true,
+      trigger: { type: 'repository-event', eventName },
+      policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: true },
+      action: { operation: 'external_controller_wake', target: 'runtime', arguments: { work_id: 'WORK-DECOY', controller_type: 'chatgpt' } },
+      stopConditions: [],
+    });
+    createHandoffItem(store, {
+      id: handoffId,
+      repoId: repository.repoId,
+      workId,
+      title: 'Bounded continuation blocker',
+      severity: 'needs_review',
+      creationReason: 'ambiguous_outcome',
+      reason: 'A bounded decision blocks continuation.',
+      summary: 'Resume the exact Work after this Handoff resolves.',
+      currentState: { repoId: repository.repoId, workId, statusSummary: 'waiting for bounded resolution' },
+      attemptedActions: [],
+      evidenceRefs: [],
+      recommendedDecision: 'Resolve the bounded blocker.',
+      recommendedPrompt: 'Resolve the bounded blocker and resume the exact Work.',
+      suggestedNextActions: [],
+    });
+
+    const resolved = await resolveHandoffAndTriggerContinuation(controllerHome, repository.repoId, handoffId, {
+      decision: 'resolved for regression coverage',
+      resolver: 'test-controller',
+    });
+
+    expect(resolved.item.status).toBe('resolved');
+    expect(resolved.continuationOccurrences).toEqual([
+      expect.objectContaining({ scheduleId: schedule.scheduleId, status: 'shadowed' }),
+    ]);
+    const occurrences = listOccurrences(controllerHome, repository.repoId, schedule.scheduleId);
+    expect(occurrences).toHaveLength(1);
+    expect(occurrences[0]?.triggerContext).toMatchObject({ source: 'repository-event', eventName });
+    expect(listOccurrences(controllerHome, repository.repoId, decoy.scheduleId)).toHaveLength(0);
   });
 
   test('migrates legacy ChatGPT schedules idempotently without changing task state', () => {

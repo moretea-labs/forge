@@ -149,6 +149,15 @@ interface BrowserActionTarget {
   existingSession?: BrowserSessionState;
 }
 
+export function browserExplicitSessionRequiresExistingResource(
+  actionId: string,
+  explicitSessionId: string | undefined,
+  existingSessionPresent: boolean,
+): boolean {
+  if (!explicitSessionId) return false;
+  return actionId === 'navigate' || existingSessionPresent;
+}
+
 interface BrowserActionScreenshot {
   path: string;
   relativePath: string;
@@ -3808,7 +3817,13 @@ async function executeBrowserPluginActionInternal(
               ? { text: await extractText(page, undefined, positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS)) }
               : {}),
           };
-        }, { requireExistingResource: Boolean(existingSessionId) });
+        }, {
+          requireExistingResource: browserExplicitSessionRequiresExistingResource(
+            input.actionId,
+            existingSessionId,
+            Boolean(target.existingSession),
+          ),
+        });
       }
       case 'reload':
       case 'go_back':

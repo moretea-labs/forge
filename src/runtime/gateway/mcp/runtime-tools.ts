@@ -59,9 +59,12 @@ import { applyScheduleDedupe, buildScheduleDedupeReport, deleteSchedule } from '
 import {
   createWorkContinuationSchedule,
   getWorkContinuationSchedule,
+  handoffResolvedContinuationEventName,
   listWorkContinuationSchedules,
   pauseWorkContinuationSchedule,
+  resolveHandoffAndTriggerContinuation,
   resumeWorkContinuationSchedule,
+  triggerWorkContinuationRepositoryEvent,
   triggerWorkContinuationSchedule,
   type ContinuationControllerType,
 } from '../../workflow/schedules/work-continuation';
@@ -869,38 +872,10 @@ function repositoryCleanContinuationEventName(targetBranch: string): string {
   return `repository-clean:${targetBranch.trim() || 'main'}`;
 }
 
-function handoffResolvedContinuationEventName(handoffId: string): string {
-  return `handoff-resolved:${handoffId.trim()}`;
-}
-
 function dirtyTargetBranchFromWorkHandle(handle: WorkHandleState | undefined): string | undefined {
   const reason = handle?.finalization.lastError ?? handle?.failureReason ?? '';
   const match = /WORK_TARGET_DIRTY_OWNERSHIP_REQUIRED: target ([^\s]+) has dirty path/.exec(reason);
   return match?.[1]?.trim() || undefined;
-}
-
-async function triggerWorkContinuationRepositoryEvent(
-  controllerHome: string,
-  repoId: string,
-  eventName: string,
-  eventId: string,
-  input: { workId?: string; data?: Record<string, unknown> } = {},
-): Promise<Array<{ scheduleId: string; occurrenceId?: string; status?: string }>> {
-  const schedules = listWorkContinuationSchedules(controllerHome, repoId, { workId: input.workId }).schedules
-    .filter((schedule) => schedule.enabled)
-    .filter((schedule) => schedule.action.operation === 'external_controller_wake')
-    .filter((schedule) => schedule.trigger.type === 'repository-event' && schedule.trigger.eventName === eventName);
-  const triggered: Array<{ scheduleId: string; occurrenceId?: string; status?: string }> = [];
-  for (const schedule of schedules) {
-    const occurrence = await triggerWorkContinuationSchedule(controllerHome, repoId, schedule.scheduleId, {
-      source: 'repository-event',
-      eventName,
-      eventId: `${eventId}:${schedule.scheduleId}`,
-      data: input.data,
-    });
-    triggered.push({ scheduleId: schedule.scheduleId, occurrenceId: occurrence?.occurrenceId, status: occurrence?.status });
-  }
-  return triggered;
 }
 
 function eventDrivenContinuationSchedule(
@@ -3300,19 +3275,15 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           }) as unknown as Record<string, unknown>);
         }
         if (operation === 'resolve') {
-          const item = resolveHandoffItem(store, String(args.handoff_id ?? '').trim(), {
-            decision: String(args.decision ?? 'resolved'),
-            resolver: String(args.resolver ?? 'chatgpt'),
-          });
-          const continuationOccurrences = item.workId
-            ? await triggerWorkContinuationRepositoryEvent(
-                ctx.controllerHome,
-                repository.repoId,
-                handoffResolvedContinuationEventName(item.id),
-                `handoff:${item.id}:${item.updatedAt}`,
-                { workId: item.workId, data: { handoffId: item.id, status: item.status, decision: item.decision } },
-              )
-            : [];
+          const { item, continuationOccurrences } = await resolveHandoffAndTriggerContinuation(
+            ctx.controllerHome,
+            repository.repoId,
+            String(args.handoff_id ?? '').trim(),
+            {
+              decision: String(args.decision ?? 'resolved'),
+              resolver: String(args.resolver ?? 'chatgpt'),
+            },
+          );
           return result(buildFacadeResult({
             summary: `Resolved handoff ${item.id}.`,
             data: { item: { id: item.id, status: item.status, decision: item.decision, resolver: item.resolver }, continuationOccurrences },
