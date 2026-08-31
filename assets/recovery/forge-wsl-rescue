@@ -80,13 +80,18 @@ restart_unit() {
 
 mcp_status_code() {
   curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-    --connect-timeout 3 --max-time 8 "$MCP_LOCAL_URL" 2>/dev/null || true
+    --connect-timeout 3 --max-time 8 \
+    --request POST \
+    --header 'content-type: application/json' \
+    --header 'accept: application/json, text/event-stream' \
+    --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"forge-host-rescue","version":"1"}}}' \
+    "$MCP_LOCAL_URL" 2>/dev/null || true
 }
 
 mcp_is_available() {
   local status
   status="$(mcp_status_code)"
-  [[ "$status" == '200' || "$status" == '401' || "$status" == '405' ]]
+  [[ "$status" == '200' || "$status" == '401' ]]
 }
 
 wait_for_local_mcp() {

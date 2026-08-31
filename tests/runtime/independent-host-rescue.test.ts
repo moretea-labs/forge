@@ -74,8 +74,10 @@ describe('independent Windows/WSL host rescue', () => {
 
   test('binds the loopback Connector to Secure Tunnel authorization', () => {
     const migration = readFileSync(resolve(import.meta.dir, '../../scripts/migrate-windows-wsl-controller-home.ts'), 'utf8');
+    const rescue = readFileSync(resolve(import.meta.dir, '../../assets/recovery/forge-wsl-rescue'), 'utf8');
     expect(migration).toContain("'--auth', 'none'");
     expect(migration).toContain("externalAuthorization: 'openai-secure-tunnel'");
     expect(migration).toContain('Description=Forge ChatGPT Secure Tunnel Gateway');
+    expect(rescue).toContain('"method":"initialize"');
   });
 });
