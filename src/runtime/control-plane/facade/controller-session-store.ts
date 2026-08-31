@@ -129,6 +129,7 @@ function claimedSession(
   const previousPrincipal = previous?.principalId?.trim() || previous?.controllerId;
   const inputPrincipal = input.principalId?.trim() || input.controllerId;
   const sameOwner = previous?.controllerId === input.controllerId
+    && previous?.controllerType === input.controllerType
     && previousPrincipal === inputPrincipal
     && (previous.controllerInstanceId ?? '') === (input.controllerInstanceId?.trim() ?? '');
   const claimGeneration = sameOwner
@@ -445,6 +446,9 @@ export function resumeControllerSession(
       }
       if (current.controllerId !== input.controllerId && !staleRecoveryAllowed) {
         throw new Error(`WORK_ALREADY_CLAIMED: ${input.workId} is owned by ${current.controllerId}`);
+      }
+      if (current.controllerType !== input.controllerType && !staleRecoveryAllowed) {
+        throw new Error(`WORK_CONTROLLER_TYPE_MISMATCH: ${input.workId} is owned by ${current.controllerType}`);
       }
       return persistClaim(options, store, input, current);
     },

@@ -854,6 +854,43 @@ describe('rh_work terminalization authority', () => {
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('cancelled');
   }, 15_000);
 
+  test('scheduler continuation cannot steal a same-principal Codex Work through a ChatGPT transport', async () => {
+    const fx = fixture();
+    const workId = 'work-scheduler-preserves-codex-owner';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: 'principal-shared',
+      controllerType: 'codex',
+      sessionId: 'codex-session',
+      principalId: 'principal-shared',
+      controllerInstanceId: 'runtime-shared',
+      leaseMs: 60_000,
+    });
+
+    const continued = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-shared', 'chatgpt-session', 'runtime-shared'),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'continue',
+        work_id: workId,
+        requested_by: 'scheduler',
+      },
+    ));
+
+    expect(continued.status).toBe('blocked');
+    expect(continued.summary).toContain('WORK_CONTROLLER_TYPE_MISMATCH');
+    expect(continued.data?.ownershipResumed).toBe(false);
+    expect(getControllerSession(store, workId)).toMatchObject({
+      controllerId: owner.controllerId,
+      controllerType: 'codex',
+      sessionId: 'codex-session',
+      claimGeneration: owner.claimGeneration,
+    });
+  }, 15_000);
+
   test('controller release survives transport session rollover for the same authenticated controller authority', async () => {
     const fx = fixture();
     const workId = 'work-release-transport-rollover';

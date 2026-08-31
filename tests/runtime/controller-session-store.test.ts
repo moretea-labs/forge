@@ -67,6 +67,27 @@ describe('controller Work ownership fencing', () => {
     expect(resumed.claimGeneration).toBe(first.claimGeneration);
   });
 
+  test('does not cross controller-type ownership boundaries during same-principal resume', () => {
+    const home = controllerHome();
+    const store = { controllerHome: home, repoId: 'repo-a' };
+    startExecutionSession(home, { sessionId: 'session-codex', principalId: 'principal-a', controllerInstanceId: 'instance-a' });
+    startExecutionSession(home, { sessionId: 'session-chatgpt', principalId: 'principal-a', controllerInstanceId: 'instance-a' });
+    const first = claimControllerSession(store, {
+      ...claimInput('session-codex', 'principal-a', 'instance-a'),
+      controllerType: 'codex',
+    });
+
+    expect(() => resumeControllerSession(store, {
+      ...claimInput('session-chatgpt', 'principal-a', 'instance-a'),
+      expectedClaimGeneration: first.claimGeneration,
+    })).toThrow(/WORK_CONTROLLER_TYPE_MISMATCH: work-owner is owned by codex/);
+    expect(getControllerSession(store, 'work-owner')).toMatchObject({
+      controllerType: 'codex',
+      sessionId: 'session-codex',
+      claimGeneration: first.claimGeneration,
+    });
+  });
+
   test('preserves principal ownership after MCP invalidation while allowing recovery only after the invalidation grace', () => {
     const home = controllerHome();
     startExecutionSession(home, { sessionId: 'session-a', principalId: 'principal-a', controllerInstanceId: 'instance-a' });
