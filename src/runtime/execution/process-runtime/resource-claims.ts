@@ -7,7 +7,12 @@ import type { ResourceClaimSpec } from '../jobs/types';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import type { ControllerCheckEffects } from '../../../cli/controller/check-runner';
-import { classifyRepositoryCommand, fixedShellWrapperCommand } from '../../../cli/repositories/command-classifier';
+import {
+  classifyRepositoryCommand,
+  fixedShellWrapperCommand,
+  shellSegments,
+  shellWordsPreservingQuotes,
+} from '../../../cli/repositories/command-classifier';
 import { normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
 import { isFocusedCheckCommand } from '../thin-harness/execution-router';
 import type { ProcessResourceClaim } from './types';
@@ -235,6 +240,52 @@ function viteServiceClaims(
   ]);
 }
 
+const HOMEBREW_HOST_MUTATION_SUBCOMMANDS = new Set([
+  'install',
+  'uninstall',
+  'reinstall',
+  'upgrade',
+  'update',
+  'cleanup',
+  'autoremove',
+  'tap',
+  'untap',
+]);
+
+function homebrewHostMutationClaims(command: string | readonly string[]): ResourceClaimSpec[] | undefined {
+  const canonical = normalizeRepositoryCommand(command);
+  let words: string[];
+
+  if (canonical.kind === 'argv') {
+    const argv = [canonical.executable ?? '', ...(canonical.args ?? [])];
+    const wrapped = fixedShellWrapperCommand(argv);
+    if (wrapped) {
+      const segments = shellSegments(wrapped);
+      if (segments.length !== 1) return undefined;
+      words = shellWordsPreservingQuotes(segments[0]!);
+    } else {
+      words = argv;
+    }
+  } else {
+    const segments = shellSegments(canonical.shellCommand ?? '');
+    if (segments.length !== 1) return undefined;
+    words = shellWordsPreservingQuotes(segments[0]!);
+  }
+
+  const program = words[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
+  if (program !== 'brew') return undefined;
+  const subcommand = words[1]?.toLowerCase();
+  if (!subcommand || !HOMEBREW_HOST_MUTATION_SUBCOMMANDS.has(subcommand)) return undefined;
+
+  // Keep local formula files, Brewfiles, and other path-shaped operands under
+  // conservative repository workspace coordination. Formula/cask identifiers
+  // are deliberately narrow so an ambiguous command still fails closed.
+  const positional = words.slice(2).filter((arg) => arg && !arg.startsWith('-'));
+  if (positional.some((arg) => !/^[A-Za-z0-9@+_.-]+$/.test(arg))) return undefined;
+
+  return [claimHostService('package-manager:homebrew', 'write')];
+}
+
 function hostOnlyCommandClaims(command: string | readonly string[], repoId: string, checkoutId?: string, repoRoot?: string): ResourceClaimSpec[] | undefined {
   const localServer = localHttpServerClaims(command);
   if (localServer) return localServer;
@@ -242,6 +293,8 @@ function hostOnlyCommandClaims(command: string | readonly string[], repoId: stri
   if (loopbackCurl) return loopbackCurl;
   const vite = viteServiceClaims(command, repoId, checkoutId, repoRoot);
   if (vite) return vite;
+  const homebrew = homebrewHostMutationClaims(command);
+  if (homebrew) return homebrew;
   const canonical = normalizeRepositoryCommand(command);
   if (canonical.kind === 'shell') {
     return browserAppleScriptHeredocClaims(canonical.shellCommand ?? '');

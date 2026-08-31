@@ -1859,6 +1859,68 @@ describe('Process Runtime real lease contention', () => {
     clearRuntimeWriteClaimForTests();
   });
 
+  test('Homebrew host-only Work can overlap an independent repository write', async () => {
+    const fx = fixture();
+    const hostClaims = claimsForRepositoryCommand(
+      ['brew', 'install', 'jmeter'],
+      fx.repository.repoId,
+      fx.repository.activeCheckoutId,
+    );
+    expect(hostClaims).toEqual([{ resourceKey: 'host-service:package-manager:homebrew', mode: 'write' }]);
+
+    const hostWork = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      workId: 'work-host-package',
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'setTimeout(() => process.exit(0), 700)'],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims: hostClaims,
+      interactiveWaitMs: 0,
+      timeoutMs: 10_000,
+      returnHandleImmediately: true,
+    });
+    expect(hostWork.completed).toBe(false);
+    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toContainEqual(expect.objectContaining({
+      ownerJobId: `process:${hostWork.processId}`,
+      resourceKey: 'host-service:package-manager:homebrew',
+      workId: 'work-host-package',
+    }));
+
+    const repositoryWriteClaims = claimsForRepositoryCommand(
+      ['touch', 'independent.txt'],
+      fx.repository.repoId,
+      fx.repository.activeCheckoutId,
+    );
+    const repositoryWrite = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      workId: 'work-independent-repository-write',
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', "require('fs').writeFileSync('independent.txt', 'ok')"],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims: repositoryWriteClaims,
+      leaseWaitMs: 100,
+      interactiveWaitMs: 2_000,
+      timeoutMs: 10_000,
+    });
+    expect(repositoryWrite).toMatchObject({ completed: true, ok: true, status: 'succeeded' });
+    expect(readFileSync(join(fx.repoRoot, 'independent.txt'), 'utf8')).toBe('ok');
+
+    expect(await waitForProcess(fx.controllerHome, fx.repository.repoId, hostWork.processId, { timeoutMs: 5_000 }))
+      .toMatchObject({ completed: true, ok: true, status: 'succeeded' });
+  });
+
   test('cross-Work build-cache checks serialize within the bounded verification budget and still expose true admission timeout', async () => {
     expect(DEFAULT_WORK_CHECK_LEASE_WAIT_MS).toBe(30_000);
     const fx = fixture();

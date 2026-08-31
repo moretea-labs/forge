@@ -19,6 +19,24 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claims).toEqual([{ resourceKey: 'workspace:co1', mode: 'read' }]);
   });
 
+  test('Homebrew host mutations do not monopolize repository write resources', () => {
+    for (const command of [
+      ['brew', 'install', 'jmeter'],
+      'brew install jmeter',
+      ['bash', '-lc', 'brew install jmeter'],
+    ] as const) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims).toEqual([{ resourceKey: 'host-service:package-manager:homebrew', mode: 'write' }]);
+      expect(claims.some((claim) => claimsConflict(claim, lease('workspace:co1', 'write')))).toBe(false);
+      expect(claims.some((claim) => claimsConflict(claim, lease('git-index:co1', 'exclusive')))).toBe(false);
+      expect(claims.some((claim) => claimsConflict(claim, lease('git-refs:repo1', 'exclusive')))).toBe(false);
+    }
+
+    expect(claimsForRepositoryCommand(['brew', 'install', './Formula/local.rb'], 'repo1', 'co1')).toContainEqual({
+      resourceKey: 'workspace:co1', mode: 'write',
+    });
+  });
+
   test('Work-bound claims retain conflict keys and carry exact repository, checkout and Work scope', () => {
     const claims = scopeResourceClaims(
       claimsForRepositoryCommand(['git', 'status'], 'repo1', 'co1'),
