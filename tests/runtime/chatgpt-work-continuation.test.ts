@@ -296,6 +296,35 @@ describe('ChatGPT Work conversation binding', () => {
     expect(result.error?.message).toContain('CHATGPT_WORK_CONTRACT_NOT_FOUND: repo-chatgpt-work:WORK-missing');
   });
 
+  test('fails closed before browser mutation when relay authority inputs are incomplete', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-work-incomplete-authority-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    ensureControllerHome(controllerHome);
+
+    const missingScope = await runWorkChatgptContinuation({
+      controllerHome,
+      repoId: 'repo-chatgpt-work',
+      repoRoot: root,
+      workId: 'WORK-incomplete-authority',
+      prompt: 'continue',
+      controllerAuthorityId: 'cra_11111111111111111111111111111111',
+    });
+    expect(missingScope.status).toBe('failed');
+    expect(missingScope.error?.code).toBe('CHATGPT_CONTROLLER_ROUND_AUTHORITY_INCOMPLETE');
+
+    const missingAuthority = await runWorkChatgptContinuation({
+      controllerHome,
+      repoId: 'repo-chatgpt-work',
+      repoRoot: root,
+      workId: 'WORK-incomplete-authority',
+      prompt: 'continue',
+      relayScopeId: 'goal:WORK-incomplete-authority',
+    });
+    expect(missingAuthority.status).toBe('failed');
+    expect(missingAuthority.error?.code).toBe('CHATGPT_CONTROLLER_ROUND_AUTHORITY_INCOMPLETE');
+  });
+
   test('keeps automation in Chat mode, prefixes @forge, and submits from the stable prompt editor', () => {
     const source = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
     expect(source).toContain("CHATGPT_PROMPT_SELECTOR = 'div#prompt-textarea[contenteditable=\"true\"]'"); expect(source).toContain("CHATGPT_SEND_SELECTOR = '[data-testid=\"send-button\"], button[aria-label*=\"Send\"], button[data-testid*=\"send\"]'");
@@ -303,6 +332,10 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_REASONING = 'high'");
     expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge'"); expect(source).not.toContain('CHATGPT_WORK_MODE_RADIO_SELECTOR');
     expect(source).toContain('Capture data.controllerAuthorityId from that successful controller_claim response');
+    expect(source).toContain('This launched round already has durable controller authority controller_authority_id=');
+    expect(source).toContain('Use that exact authority on the FIRST controller_claim');
+    expect(source).toContain('do not call an unscoped controller_claim');
+    expect(source).toContain('capability_id=controller.round:controller_claim:');
     expect(source).toContain('pass the same opaque value as session_id compatibility carrier');
     expect(source).toContain('Never use data.session.sessionId as the durable capability');
     expect(source).toContain('CHATGPT_CAPABILITY_MENUITEM_SELECTOR');
@@ -329,17 +362,23 @@ describe('ChatGPT Work conversation binding', () => {
     expect(standaloneSource).not.toContain('getWorkContract(');
     expect(standaloneSource).not.toContain('bindChatgptWorkConversation(');
     expect(engine).toContain('runStandaloneChatgptPrompt');
+    expect(engine).toContain('controllerAuthorityId: relay.authorityId');
+    expect(engine).toContain('relayScopeId: relay.relayScopeId');
     expect(engine).toContain('Standalone browser keepalive auth-required prompt dispatched to ChatGPT.');
     const runtimeTools = readFileSync(join(process.cwd(), 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
     const launcherStart = runtimeTools.slice(runtimeTools.indexOf("if (operation === 'launcher_start')"), runtimeTools.indexOf('const checks = listControllerChecks', runtimeTools.indexOf("if (operation === 'launcher_start')")));
     expect(launcherStart).toContain("if (controllerType === 'chatgpt')");
     expect(launcherStart).toContain('await runWorkChatgptContinuation({');
+    expect(launcherStart).toContain('controllerAuthorityId: relay.authorityId');
+    expect(launcherStart).toContain('relayScopeId: relay.relayScopeId');
     expect(launcherStart).toContain("summary: 'ChatGPT continuation dispatched;");
     expect(launcherStart).toContain("semantic closure still requires an explicit disposition.'");
     expect(launcherStart.indexOf('await runWorkChatgptContinuation({')).toBeLessThan(launcherStart.indexOf('const launched = await launchSuperController'));
     expect(launcherStart).toContain("controllerType: controllerType as 'codex' | 'grok' | 'claude'");
     const controllerRelease = runtimeTools.slice(runtimeTools.indexOf("if (operation === 'controller_release')"), runtimeTools.indexOf("if (operation === 'launcher_start')"));
     expect(controllerRelease).toContain('await runWorkChatgptContinuation({');
+    expect(controllerRelease).toContain('controllerAuthorityId: relay.authorityId');
+    expect(controllerRelease).toContain('relayScopeId: relay.relayScopeId');
     expect(controllerRelease).not.toContain('await runStandaloneChatgptPrompt({');
     expect(controllerRelease).toContain('settleWorkChatgptAutomationTab({');
     expect(controllerRelease).toContain("status: 'retained_for_immediate_continuation'");

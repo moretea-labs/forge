@@ -36,6 +36,10 @@ export interface WorkChatgptContinuationInput {
   repoRoot: string;
   workId: string;
   prompt: string;
+  /** Durable per-round capability minted before ChatGPT dispatch. */
+  controllerAuthorityId?: string;
+  /** Durable semantic relay scope paired with controllerAuthorityId. */
+  relayScopeId?: string;
   title?: string;
   browserSessionId?: string;
   conversationUrl?: string;
@@ -75,7 +79,22 @@ export interface StandaloneChatgptPromptInput {
   timeoutMs?: number;
 }
 
-const workflowToolAttributionInstruction = (workId: string): string => `Forge Workflow execution contract: first claim exact Work ${workId}. Capture data.controllerAuthorityId from that successful controller_claim response. Pass it unchanged as controller_authority_id on every subsequent rh_work lifecycle call for this Work (continue, verify, finalize, stop, controller_release); if the current frozen client schema does not expose controller_authority_id, pass the same opaque value as session_id compatibility carrier. Never use data.session.sessionId as the durable capability: MCP execution sessions may be replaced or invalidated between tool calls. For every repository_command_execute and repository_safe_patch_apply call in this turn, pass work_id=${workId} explicitly; never omit this Work id.`;
+function workflowToolAttributionInstruction(input: WorkChatgptContinuationInput): string {
+  const workId = input.workId;
+  const authorityId = input.controllerAuthorityId?.trim();
+  const relayScopeId = input.relayScopeId?.trim();
+  if (authorityId && relayScopeId) {
+    return `Forge Workflow execution contract: exact Work ${workId}. This launched round already has durable controller authority controller_authority_id=${authorityId} with relay_scope_id=${relayScopeId}. Use that exact authority on the FIRST controller_claim; do not call an unscoped controller_claim and do not wait for a claim response to mint another authority. If this client exposes controller_authority_id and relay_scope_id, pass both on controller_claim. If the current frozen client schema omits either field, call rh_work operation=repair, work_id=${workId}, capability_id=controller.round:controller_claim:${authorityId}:${relayScopeId}; Forge maps it to the same fenced claim. After claim, data.controllerAuthorityId must equal ${authorityId}; pass the same durable authority unchanged on continue, verify, finalize, stop, and controller_release, using the corresponding compatibility capability when necessary. Never use data.session.sessionId as the durable capability: MCP execution sessions may rotate. For every repository_command_execute and repository_safe_patch_apply call in this turn, pass work_id=${workId} explicitly; never omit this Work id.`;
+  }
+  return `Forge Workflow execution contract: first claim exact Work ${workId}. Capture data.controllerAuthorityId from that successful controller_claim response. Pass it unchanged as controller_authority_id on every subsequent rh_work lifecycle call for this Work (continue, verify, finalize, stop, controller_release); if the current frozen client schema does not expose controller_authority_id, pass the same opaque value as session_id compatibility carrier. Never use data.session.sessionId as the durable capability: MCP execution sessions may be replaced or invalidated between tool calls. For every repository_command_execute and repository_safe_patch_apply call in this turn, pass work_id=${workId} explicitly; never omit this Work id.`;
+}
+
+function controllerRoundAuthorityInputError(input: WorkChatgptContinuationInput): Error | undefined {
+  const hasAuthority = Boolean(input.controllerAuthorityId?.trim());
+  const hasRelayScope = Boolean(input.relayScopeId?.trim());
+  if (hasAuthority === hasRelayScope) return undefined;
+  return new Error('CHATGPT_CONTROLLER_ROUND_AUTHORITY_INCOMPLETE: controllerAuthorityId and relayScopeId must be supplied together');
+}
 
 function requestId(workId: string, actionId: string): string {
   return `chatgpt-work:${workId}:${actionId}:${randomUUID()}`;
@@ -765,6 +784,36 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
   const model = normalizeModel(input.model);
   const reasoning = normalizeReasoning(input.reasoning);
   const tabPolicy = normalizeTabPolicy(input.tabPolicy);
+  const authorityInputError = controllerRoundAuthorityInputError(input);
+  if (authorityInputError) {
+    const bridgeRuntime = isWslWindowsRuntime();
+    const browserSessionId = bridgeRuntime
+      ? stableChatgptWorkBridgeSessionId(input.repoId, input.workId)
+      : resolveChatgptWorkBrowserSessionId({
+          repoId: input.repoId,
+          workId: input.workId,
+          tabPolicy,
+          explicitSessionId: input.browserSessionId,
+          boundSessionId: existing?.latestBrowserSessionId,
+        });
+    return {
+      status: 'failed',
+      provider: bridgeRuntime ? 'chatgpt-bridge' : 'controller-browser',
+      browserSessionId,
+      conversationUrl: seedUrl,
+      conversationId: existing?.conversationId,
+      localAlias: existing?.localAlias,
+      resumedFromBinding: Boolean(existing),
+      model,
+      reasoning,
+      tabPolicy,
+      executionPreferenceVerified: false,
+      error: {
+        code: 'CHATGPT_CONTROLLER_ROUND_AUTHORITY_INCOMPLETE',
+        message: authorityInputError.message,
+      },
+    };
+  }
   if (isWslWindowsRuntime()) {
     const bridgeSessionId = stableChatgptWorkBridgeSessionId(input.repoId, input.workId);
     let binding = existing;
@@ -775,7 +824,7 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
       const bridgeRoot = repository.canonicalRoot ?? repository.localRoot;
       if (!bridgeRoot) throw new Error('CHATGPT_CONTROLLER_BROWSER_ROOT_UNAVAILABLE');
       const targetUrl = binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/';
-      const renderedPrompt = `${workflowToolAttributionInstruction(input.workId)}\n\n${input.prompt}`;
+      const renderedPrompt = `${workflowToolAttributionInstruction(input)}\n\n${input.prompt}`;
       const bridged = await runBridgeProvider({
         repoRoot: bridgeRoot,
         prompt: renderedPrompt,
@@ -883,7 +932,7 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
       reasoning,
       input.timeoutMs,
     );
-    const observedUrl = await submitChatgptPrompt(input.controllerHome, input.workId, navigation.browserSessionId, `${workflowToolAttributionInstruction(input.workId)}\n\n${input.prompt}`, navigation.submissionTargetUrl, input.timeoutMs);
+    const observedUrl = await submitChatgptPrompt(input.controllerHome, input.workId, navigation.browserSessionId, `${workflowToolAttributionInstruction(input)}\n\n${input.prompt}`, navigation.submissionTargetUrl, input.timeoutMs);
     if (/\/c\/[^/?#]+/.test(observedUrl)) {
       const observedIdentity = parseChatgptConversationIdentity(observedUrl);
       binding = binding && binding.conversationId !== observedIdentity.conversationId

@@ -537,6 +537,8 @@ async function executeExternalControllerWake(
           repoRoot: repository.canonicalRoot,
           workId,
           prompt: relayPrompt,
+          controllerAuthorityId: relay.authorityId,
+          relayScopeId: relay.relayScopeId,
           title: schedule.name,
           browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
           conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
