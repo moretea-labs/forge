@@ -7,6 +7,8 @@ import { resolveControllerHome } from '../../cli/repositories/controller-home';
 import {
   installSystemdUserUnit,
   renderSystemdUserUnit,
+  writeSystemdUserUnit,
+  type SystemdUserUnitInput,
   systemdUserAvailable as sharedSystemdUserAvailable,
   systemdUserInstallCommands,
 } from '../../cli/controller/systemd-user';
@@ -157,13 +159,32 @@ export function systemdRuntimeInstallCommands(unitName: string): string[][] {
   return systemdUserInstallCommands(unitName);
 }
 
-function installSystemdUserService(controllerHome: string, env: NodeJS.ProcessEnv): string {
+export function packageRuntimeSystemdUserUnitInput(controllerHome: string): SystemdUserUnitInput {
   const entrypoint = activeRuntimeEntrypoint(controllerHome);
   const launch = activeRuntimeLaunchSpec(controllerHome);
   if (!entrypoint || !launch) throw new Error('FORGE_PACKAGE_RUNTIME_LAUNCH_SPEC_MISSING');
+  return { description: 'Forge Runtime', executable: entrypoint, args: launch.args, environment: launch.environment };
+}
+
+export function renderPackageRuntimeSystemdUserService(controllerHome: string): string {
+  return renderSystemdUserUnit(packageRuntimeSystemdUserUnitInput(controllerHome));
+}
+
+export function writePackageRuntimeSystemdUserService(
+  controllerHome: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return writeSystemdUserUnit(
+    forgeRuntimeServicePaths(controllerHome).label,
+    packageRuntimeSystemdUserUnitInput(controllerHome),
+    env,
+  );
+}
+
+function installSystemdUserService(controllerHome: string, env: NodeJS.ProcessEnv): string {
   return installSystemdUserUnit({
     unitName: forgeRuntimeServicePaths(controllerHome).label,
-    unit: { description: 'Forge Runtime', executable: entrypoint, args: launch.args, environment: launch.environment },
+    unit: packageRuntimeSystemdUserUnitInput(controllerHome),
     env,
     errorPrefix: 'FORGE_RUNTIME_SYSTEMD_INSTALL_FAILED',
   });

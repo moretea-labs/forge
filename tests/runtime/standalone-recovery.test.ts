@@ -55,6 +55,10 @@ import {
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureForgeRuntimeLaunchAgentContract, forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { systemdUserUnitPath } from '../../src/cli/controller/systemd-user';
+import {
+  renderPackageRuntimeSystemdUserService,
+  writePackageRuntimeSystemdUserService,
+} from '../../src/runtime/root/package-runtime-service';
 import { recoveryConnectorDescriptor } from '../../src/cli/commands/recovery';
 import { ensureMcpControllerHomeOAuthPassphrase } from '../../src/cli/mcp/auth';
 import { inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, recoverySystemdUserUnitInput, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
@@ -1657,6 +1661,33 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
+  test('skips behavior-equivalent Linux activation only when the installed systemd unit matches the active release', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const active = verifiedManifest(home, 'release-a', 'same-runtime');
+      const candidate = verifiedManifest(home, 'release-b', 'same-runtime');
+      ensureActiveRuntimeRelease(home, active.path);
+      runtimeServiceConfig(home);
+      writePackageRuntimeSystemdUserService(home);
+      const commands: string[][] = [];
+      const result = await activateRuntimeRelease(createRecoveryConfig(home, { primaryRuntimeService: { platform: 'systemd-user' } }), candidate.path, {
+        platform: 'linux',
+        currentUid: async () => 1000,
+        runCommand: async (name, args) => { commands.push([name, ...args]); return { ok: true, status: 0, stdout: '', stderr: '' }; },
+        verifyLocal: async () => healthyVerify(),
+      });
+      expect(result).toMatchObject({ ok: true, attempted: false, noOp: true });
+      expect(result.detail).toContain('restart skipped');
+      expect(commands).toEqual([]);
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
   test('activates a behavior-changing Runtime release through the installed Linux systemd-user owner', async () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
@@ -1668,9 +1699,10 @@ describe('standalone recovery on canonical Runtime', () => {
       runtimeServiceConfig(home);
       const paths = forgeRuntimeServicePaths(home);
       const unitName = `${paths.label}.service`;
-      const unitPath = systemdUserUnitPath(paths.label);
-      mkdirSync(dirname(unitPath), { recursive: true });
-      writeFileSync(unitPath, `[Unit]\nDescription=Forge Runtime\n[Service]\nExecStart=\"${paths.activeEntrypointPath}\"\n`);
+      const unitPath = writePackageRuntimeSystemdUserService(home);
+      const beforeUnit = readFileSync(unitPath, 'utf8');
+      expect(beforeUnit).toContain(join(home, 'runtime', 'releases', 'release-a', 'forge-runtime'));
+      expect(beforeUnit).not.toContain(join(home, 'runtime', 'releases', 'release-b', 'forge-runtime'));
       let serviceActive = true;
       const commands: string[][] = [];
       const config = createRecoveryConfig(home, { primaryRuntimeService: { platform: 'systemd-user', postRestartVerifyTimeoutMs: 10_000 } });
@@ -1704,9 +1736,14 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(result).toMatchObject({ ok: true, attempted: true, serviceTarget: unitName });
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
       expect(commands).toContainEqual(['systemctl', '--user', 'stop', unitName]);
+      expect(commands).toContainEqual(['systemctl', '--user', 'daemon-reload']);
+      expect(commands).toContainEqual(['systemctl', '--user', 'enable', unitName]);
       expect(commands).toContainEqual(['systemctl', '--user', 'start', unitName]);
       expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);
-      expect(existsSync(paths.activeEntrypointPath)).toBe(true);
+      const reboundUnit = readFileSync(unitPath, 'utf8');
+      expect(reboundUnit).toBe(renderPackageRuntimeSystemdUserService(home));
+      expect(reboundUnit).toContain(join(home, 'runtime', 'releases', 'release-b', 'forge-runtime'));
+      expect(reboundUnit).not.toContain(join(home, 'runtime', 'releases', 'release-a', 'forge-runtime'));
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

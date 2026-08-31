@@ -19,6 +19,8 @@ import {
   readPackageRuntimeActivationReceipt,
   renderPackageRuntimeActivationLaunchAgent,
   renderForgeRuntimeSystemdUserUnit,
+  renderPackageRuntimeSystemdUserService,
+  writePackageRuntimeSystemdUserService,
   systemdRuntimeInstallCommands,
   type PackageRuntimeActivationRequest,
 } from '../../src/runtime/root/package-runtime-service';
@@ -761,6 +763,28 @@ describe('Forge Runtime service', () => {
   test('renders a systemd user owner with restart and release environment', () => {
     const unit = renderForgeRuntimeSystemdUserUnit({ executable: '/var/tmp/forge-user/.forge/runtime/service/active-forge-runtime', args: ['--port', '8765'], environment: { FORGE_RELEASE_ID: 'package-test', FORGE_CONTROLLER_HOME: '/var/tmp/forge-user/.forge' } });
     for (const expected of ['WantedBy=default.target', 'Restart=on-failure', 'ExecStart="/var/tmp/forge-user/.forge/runtime/service/active-forge-runtime" "--port" "8765"', 'Environment="FORGE_RELEASE_ID=package-test"']) expect(unit).toContain(expected);
+  });
+
+  test('uses one canonical release-specific systemd unit writer for package Runtime lifecycle', () => {
+    const fx = fixture(), packageRoot = join(fx.root, 'package-systemd-unit');
+    const previousHome = process.env.HOME;
+    process.env.HOME = fx.root;
+    try {
+      for (const dir of ['src/runtime/root', 'src/runtime/shared', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+      writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
+      writeFileSync(join(packageRoot, 'src', 'runtime', 'root', 'entry.ts'), 'process.exit(0);\n');
+      writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), 'export async function load(url, context, nextLoad) { return nextLoad(url, context); }\n');
+      writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(99);\n');
+      const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'package-systemd-unit' });
+      writeForgeRuntimeServiceConfig({ schemaVersion: 1, controllerHome: fx.home, repositoryRoot: release.packageRoot, host: '127.0.0.1', port: 8765, authTokenFile: fx.token });
+      const path = writePackageRuntimeSystemdUserService(fx.home);
+      expect(readFileSync(path, 'utf8')).toBe(renderPackageRuntimeSystemdUserService(fx.home));
+      expect(readFileSync(path, 'utf8')).toContain(release.releaseId);
+      expect(readFileSync(path, 'utf8')).toContain(release.entrypointPath);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
   });
 
   test('restarts an already-active systemd runtime after replacing its unit', () => {

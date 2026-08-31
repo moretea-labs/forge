@@ -11,9 +11,12 @@ import {
   forgeRuntimeServicePaths,
   inspectForgeRuntimeLaunchAgentContract,
   readForgeRuntimeServiceConfig,
-  syncForgeRuntimeActiveEntrypoint,
 } from '../root/service';
 import { systemdUserUnitName, systemdUserUnitPath } from '../../cli/controller/systemd-user';
+import {
+  renderPackageRuntimeSystemdUserService,
+  writePackageRuntimeSystemdUserService,
+} from '../root/package-runtime-service';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
 import { assertRuntimeReleaseFiles, stageRuntimeReleaseFromCandidateSource, type StagedRuntimeRelease } from '../root/release-materialize';
 import {
@@ -1561,7 +1564,7 @@ function primaryRuntimeServiceContractMatches(config: RecoveryConfig, owner: Pri
   }
   try {
     const unit = readFileSync(owner.unitPath!, 'utf8');
-    return unit.includes(resolve(forgeRuntimeServicePaths(config.controllerHome).activeEntrypointPath));
+    return unit === renderPackageRuntimeSystemdUserService(config.controllerHome);
   } catch {
     return false;
   }
@@ -2122,9 +2125,16 @@ async function rebindStartAndVerifyPrimaryRuntime(input: {
         ?? ((controllerHome: string) => { ensureForgeRuntimeLaunchAgentContract({ controllerHome, installUserLaunchAgent: true }); });
       ensureRuntimeLaunchContract(input.config.controllerHome);
     } else {
-      const synced = syncForgeRuntimeActiveEntrypoint(input.config.controllerHome);
-      if (!synced.target || !existsSync(input.service.unitPath!)) {
-        throw new Error('installed systemd-user Runtime service or active immutable wrapper is missing');
+      const unitPath = writePackageRuntimeSystemdUserService(input.config.controllerHome);
+      if (resolve(unitPath) !== resolve(input.service.unitPath!)) {
+        throw new Error('canonical package Runtime systemd-user unit path changed during Recovery rebind');
+      }
+      for (const args of [
+        ['--user', 'daemon-reload'],
+        ['--user', 'enable', input.service.unitName!],
+      ]) {
+        const result = await input.runCommand('systemctl', args, 15_000);
+        if (!result.ok) throw new Error(`systemctl ${args.join(' ')} failed: ${result.stderr || result.stdout || result.status}`);
       }
     }
   } catch (error) {
