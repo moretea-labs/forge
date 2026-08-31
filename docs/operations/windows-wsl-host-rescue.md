@@ -15,7 +15,7 @@ WSL /home/<user>/.forge-recovery/
   forge-wsl-rescue + root-owned config + one systemd --user watchdog
        |
        +-- canonical Runtime systemd unit
-       +-- canonical OAuth Connector systemd unit
+       +-- canonical Secure-Tunnel Connector systemd unit
        +-- exact OpenAI Secure Tunnel runtime alias
 ```
 
@@ -48,7 +48,7 @@ logon task is only a cold-start trigger; it delegates the actual mutation to
 that WSL lock owner and holds no release, database, tunnel, or lifecycle state.
 
 `full_recover` starts the one configured independent Recovery service, then the
-exact canonical Runtime and Connector units, waits for the local OAuth MCP
+exact canonical Runtime and Connector units, waits for the local MCP
 endpoint, reconnects the exact tunnel alias when needed, and verifies both
 local MCP reachability and tunnel readiness. It never selects a release,
 changes Controller Home, edits source, or falls back to another host.
@@ -110,6 +110,11 @@ pair, and requires both local MCP endpoints before retiring the legacy unit
 files. A failed cutover stops the canonical pair, restores the prior canonical
 directory/unit files, and starts the legacy pair again. It never deletes either
 Controller Home or performs database cleanup.
+
+For this Secure Tunnel path, the Connector remains bound to `127.0.0.1` and is
+started with `--auth none`: the authenticated OpenAI Secure Tunnel is the only
+external ingress and authorization boundary. Do not reuse this unit for an
+HTTPS/public connector; that separate topology requires its own OAuth setup.
 
 ## Operational acceptance
 

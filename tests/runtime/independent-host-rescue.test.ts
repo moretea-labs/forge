@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 import {
   controllerServiceUnit,
   createIndependentHostRescueConfig,
@@ -68,5 +70,12 @@ describe('independent Windows/WSL host rescue', () => {
       tunnelRuntimeApiKeyRef: 'file:/home/greyson/.forge-recovery/secrets/openai-tunnel-runtime-api-key',
       tunnelProfileDir: '/home/greyson/.config/tunnel-client',
     })).toThrow('HOST_RESCUE_CONTROLLER_HOME_CANONICAL_REQUIRED');
+  });
+
+  test('binds the loopback Connector to Secure Tunnel authorization', () => {
+    const migration = readFileSync(resolve(import.meta.dir, '../../scripts/migrate-windows-wsl-controller-home.ts'), 'utf8');
+    expect(migration).toContain("'--auth', 'none'");
+    expect(migration).toContain("externalAuthorization: 'openai-secure-tunnel'");
+    expect(migration).toContain('Description=Forge ChatGPT Secure Tunnel Gateway');
   });
 });

@@ -147,9 +147,12 @@ function renderRuntimeUnit(root: string, unit: string, release: { releaseId: str
 
 function renderConnectorUnit(root: string, unit: string, release: { releaseId: string; releasePath: string }): string {
   const executable = process.execPath;
-  const args = [executable, join(release.releasePath, 'package', 'src', 'cli', 'index.ts'), 'mcp', 'serve', '--controller-home', root, '--transport', 'http', '--host', '127.0.0.1', '--port', '8767', '--profile', 'controller', '--auth', 'oauth'];
+  // OpenAI Secure Tunnel is the external authentication boundary. This
+  // listener is loopback-only, so its upstream connection must be
+  // unauthenticated; tunnel-client cannot complete the local PKCE flow.
+  const args = [executable, join(release.releasePath, 'package', 'src', 'cli', 'index.ts'), 'mcp', 'serve', '--controller-home', root, '--transport', 'http', '--host', '127.0.0.1', '--port', '8767', '--profile', 'controller', '--auth', 'none'];
   return [
-    '[Unit]', 'Description=Forge ChatGPT OAuth Gateway', 'After=network-online.target', '',
+    '[Unit]', 'Description=Forge ChatGPT Secure Tunnel Gateway', 'After=network-online.target', '',
     '[Service]', 'Type=simple', `ExecStart=${args.map(quoteSystemd).join(' ')}`,
     `Environment=${quoteSystemd(`FORGE_CONTROLLER_HOME=${root}`)}`,
     `Environment=${quoteSystemd('FORGE_CONTROLLER_LIFECYCLE_OWNER=1')}`,
@@ -164,6 +167,8 @@ function writeCanonicalConnectorAuthority(root: string, unit: string, release: {
     releaseId: release.releaseId,
     releaseRoot: release.releasePath,
     packageRoot: join(release.releasePath, 'package'),
+    authMode: 'none',
+    externalAuthorization: 'openai-secure-tunnel',
     mode: 'systemd-user',
     persistent: true,
     servicePath: unitPath(unit),

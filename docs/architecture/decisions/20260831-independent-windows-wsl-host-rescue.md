@@ -30,6 +30,9 @@ but it creates no second watchdog and does not own Runtime state.
 - `tunnel-client` remains the credential owner. Its runtime-key reference must
   resolve outside any retired repo-local Controller Home before that home is
   retired.
+- The Secure Tunnel Connector is loopback-only and runs with `--auth none`.
+  OpenAI Secure Tunnel is the external authorization boundary; an OAuth gateway
+  is required only for a separately configured HTTPS/public connector.
 - The rescue agent may start/restart only the configured canonical Runtime and
   Connector units, its own unit, and its configured tunnel alias. It cannot
   accept a command string or select an alternate host/release/controller.

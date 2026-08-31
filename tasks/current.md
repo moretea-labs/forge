@@ -8,17 +8,17 @@
 > **Source Branch**: codex/independent-windows-wsl-recovery
 > **Published Baseline Commit**: c873cfeb11a223ced342e7101c016261b4a93b38
 > **Target Branch**: main
-> **Reason**: Emergency Windows/WSL Forge Cloud authority recovery; success requires GREYSON-DESKTOP WSL to be the one canonical Runtime, Connector, tunnel, and independent-rescue authority
+> **Reason**: Emergency Windows/WSL Forge Cloud authority recovery; success requires GREYSON-DESKTOP WSL to be the one canonical Runtime, loopback Secure-Tunnel Connector, tunnel, and independent-rescue authority
 
 This file is a tracked mainline snapshot for the current Forge Cloud Windows lane. It is not a live lock or a replacement for Forge Work/Plan authority. The tracked handoff note below remains the portable post-release source baseline.
 
 ## Current Focus
 
 - Status: Active emergency recovery on Forge Cloud Windows
-- Active authority objective: `GREYSON-DESKTOP -> Windows -> WSL UbuntuDev -> /home/greyson/src/forge -> /home/greyson/.forge/controller -> canonical Runtime -> canonical OAuth Connector -> OpenAI Secure Tunnel -> ChatGPT Forge Cloud`
+- Active authority objective: `GREYSON-DESKTOP -> Windows -> WSL UbuntuDev -> /home/greyson/src/forge -> /home/greyson/.forge/controller -> canonical Runtime -> loopback Secure-Tunnel Connector -> OpenAI Secure Tunnel -> ChatGPT Forge Cloud`
 - Independent rescue is installed outside the checkout at `/home/greyson/.forge-recovery` and `C:\ProgramData\ForgeRecovery`; it permits only fixed status/start/restart/verification actions, has no arbitrary-shell RPC, and keeps its tunnel-key file reference under the independent rescue root.
 - The direct cutover bootstrap has preserved the legacy Controller Home as evidence and transferred active Runtime and Connector authority to `/home/greyson/.forge/controller`; both canonical user units are active.
-- Tunnel identity: alias `forge`, id `tunnel_6a8a862b52188191b859cf61e7cdb9a3`. It is ready against the canonical OAuth Connector. The authenticated Runtime MCP `initialize` and `tools/list` requests passed locally; restart drills for Runtime, Connector, tunnel, WSL rescue service, and watchdog recovery after a forced Runtime stop passed.
+- Tunnel identity: alias `forge`, id `tunnel_6a8a862b52188191b859cf61e7cdb9a3`. It is ready against the loopback Secure-Tunnel Connector, whose external authorization boundary is the named OpenAI Secure Tunnel. The authenticated Runtime MCP `initialize` and `tools/list` requests passed locally; restart drills for Runtime, Connector, tunnel, WSL rescue service, and watchdog recovery after a forced Runtime stop passed.
 - The former autonomous-continuation acceptance remains deferred until the canonical Windows/WSL recovery chain is restored and verified.
 - Current repair: frozen MCP clients may encode `controller_claim`, `continue`, `finalize`, `stop`, and `controller_release` as `controller.round:<operation>:<authorityId>:<relayScopeId>` through `operation=repair`; Runtime maps the call back to the canonical operation and applies the same exact authority/scope fences
 - Windows bridge repair: WSL continuation now opens only an explicitly resolved, installed Google Chrome executable and fails closed when Chrome is unavailable; it no longer delegates to the Windows default-browser handler
