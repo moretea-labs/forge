@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'crypto';
 import { spawnSync } from 'child_process';
-import { existsSync, readdirSync, statSync } from 'fs';
-import { isAbsolute, join, relative, resolve } from 'path';
+import { existsSync } from 'fs';
+import { isAbsolute, join, resolve } from 'path';
 import { Command } from 'commander';
 import { readMcpServiceOAuthPassphrase } from '../mcp/auth';
 import {
@@ -17,9 +17,6 @@ import {
   type StoppedControllerHomeAuthorityRelocation,
 } from '../repositories/controller-home';
 import { FORGE_VERSION } from '../../version';
-import { forgeRuntimeServicePaths } from '../../runtime/root/service';
-import { packageConnectorServicePaths } from '../../runtime/root/package-connector-service';
-import { inspectControlPlaneDatabaseFile } from '../../runtime/control-plane/persistence/sqlite-store';
 import {
   RECOVERY_GATEWAY_LABEL,
   RECOVERY_WATCHDOG_LABEL,
@@ -49,6 +46,11 @@ import {
   type PublicTunnelServiceConfig,
 } from '../../runtime/standalone-recovery/core';
 import { readRecoveryRuntimeIdentity } from '../../runtime/standalone-recovery/release';
+import {
+  assertRecoveryControllerHomeMigrationReady,
+  recoveryControllerHomeMigrationPreflight,
+  type RecoveryControllerHomeMigrationPreflight,
+} from '../../runtime/standalone-recovery/controller-home-migration';
 import { configureCodegraph, ensureCodegraph } from '../tools/codegraph';
 import { isProcessAlive } from '../../runtime/shared/process-tree';
 import { systemdUserServicePid, systemdUserUnitPath } from '../controller/systemd-user';
@@ -105,96 +107,8 @@ function openAiTunnelService(input: {
 }
 
 
-export interface RecoveryControllerHomeMigrationPreflight {
-  sourceHome: string;
-  destinationHome: string;
-  liveOwners: Array<{ label: string; pid: number }>;
-  destinationExists: boolean;
-  destinationAuthorityFree: boolean;
-  destinationUnexpectedFiles: string[];
-  destinationRecordCount?: number;
-  destinationAuditEventCount?: number;
-}
-
-function controllerHomeFiles(root: string, current = root): string[] {
-  if (!existsSync(current)) return [];
-  const files: string[] = [];
-  for (const entry of readdirSync(current, { withFileTypes: true })) {
-    const path = join(current, entry.name);
-    if (entry.isDirectory()) files.push(...controllerHomeFiles(root, path));
-    else files.push(relative(root, path));
-  }
-  return files.sort();
-}
-
-export function recoveryControllerHomeMigrationPreflight(
-  sourceHomeInput: string,
-  destinationHomeInput: string,
-  dependencies: {
-    systemdPid?: (label: string) => number | undefined;
-    inspectDatabaseFile?: typeof inspectControlPlaneDatabaseFile;
-  } = {},
-): RecoveryControllerHomeMigrationPreflight {
-  const sourceHome = resolve(sourceHomeInput);
-  const destinationHome = resolve(destinationHomeInput);
-  if (sourceHome === destinationHome) throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SAME_HOME');
-  if (!existsSync(sourceHome) || !statSync(sourceHome).isDirectory()) {
-    throw new Error(`RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_MISSING: ${sourceHome}`);
-  }
-  const pidFor = dependencies.systemdPid ?? systemdUserServicePid;
-  const labels = [
-    forgeRuntimeServicePaths(sourceHome).label,
-    packageConnectorServicePaths(sourceHome).label,
-    RECOVERY_GATEWAY_LABEL,
-    RECOVERY_WATCHDOG_LABEL,
-  ];
-  const liveOwners = labels
-    .map((label) => ({ label, pid: pidFor(label) }))
-    .filter((entry): entry is { label: string; pid: number } => typeof entry.pid === 'number' && entry.pid > 0);
-
-  const destinationExists = existsSync(destinationHome);
-  let destinationRecordCount: number | undefined;
-  let destinationAuditEventCount: number | undefined;
-  let destinationUnexpectedFiles: string[] = [];
-  if (destinationExists) {
-    const databasePath = join(destinationHome, 'control-plane.sqlite');
-    if (existsSync(databasePath)) {
-      const inspection = (dependencies.inspectDatabaseFile ?? inspectControlPlaneDatabaseFile)(databasePath);
-      destinationRecordCount = inspection.recordCount;
-      destinationAuditEventCount = inspection.auditEventCount;
-    }
-    destinationUnexpectedFiles = controllerHomeFiles(destinationHome).filter((path) => !(
-      path === 'control-plane.sqlite'
-      || path === 'control-plane.sqlite-wal'
-      || path === 'control-plane.sqlite-shm'
-      || path.startsWith('source-baseline/')
-    ));
-  }
-  const destinationAuthorityFree = !destinationExists || (
-    (destinationRecordCount ?? 0) === 0
-    && (destinationAuditEventCount ?? 0) === 0
-    && destinationUnexpectedFiles.length === 0
-  );
-  return {
-    sourceHome,
-    destinationHome,
-    liveOwners,
-    destinationExists,
-    destinationAuthorityFree,
-    destinationUnexpectedFiles,
-    ...(destinationRecordCount !== undefined ? { destinationRecordCount } : {}),
-    ...(destinationAuditEventCount !== undefined ? { destinationAuditEventCount } : {}),
-  };
-}
-
-function assertRecoveryControllerHomeMigrationReady(preflight: RecoveryControllerHomeMigrationPreflight): void {
-  if (preflight.liveOwners.length > 0) {
-    throw new Error(`RECOVERY_CONTROLLER_HOME_MIGRATION_OWNERS_LIVE: ${preflight.liveOwners.map((entry) => `${entry.label}:${entry.pid}`).join(',')}`);
-  }
-  if (!preflight.destinationAuthorityFree) {
-    throw new Error(`RECOVERY_CONTROLLER_HOME_MIGRATION_DESTINATION_HAS_AUTHORITY: records=${preflight.destinationRecordCount ?? 0} audit=${preflight.destinationAuditEventCount ?? 0} unexpected=${preflight.destinationUnexpectedFiles.join(',') || 'none'}`);
-  }
-}
+export { recoveryControllerHomeMigrationPreflight };
+export type { RecoveryControllerHomeMigrationPreflight };
 
 export interface RecoveryConnectorDependencies {
   platform?: NodeJS.Platform;

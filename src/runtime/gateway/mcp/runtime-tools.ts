@@ -4575,6 +4575,47 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           }
         }
 
+        if (operation === 'repair' && args.capability_id === 'recovery.migrate_controller_home') {
+          const workId = String(args.work_id ?? '').trim();
+          if (!workId) {
+            const blocked = buildFacadeResult({ status: 'blocked', summary: 'RECOVERY_CONTROLLER_HOME_MIGRATION_WORK_REQUIRED', data: { executionStarted: false } });
+            return result(blocked as unknown as Record<string, unknown>, true);
+          }
+          try {
+            const work = getWorkContract(store, workId);
+            if (!work || ['completed', 'failed', 'cancelled'].includes(work.status)) {
+              throw new Error(`RECOVERY_CONTROLLER_HOME_MIGRATION_ACTIVE_WORK_REQUIRED: ${workId}`);
+            }
+            const identity = authenticatedFacadeControllerIdentity(ctx, args);
+            const owner = getControllerSession(store, workId);
+            if (!owner || controllerSessionPrincipalId(owner) !== identity.principalId || owner.sessionId !== identity.sessionId) {
+              throw new Error(`RECOVERY_CONTROLLER_HOME_MIGRATION_CONTROLLER_CLAIM_REQUIRED: ${workId}`);
+            }
+            const liveGit = gitSnapshot(repository.canonicalRoot);
+            if (!liveGit.head) throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_REVISION_REQUIRED');
+            const migrationRequestId = typeof args.request_id === 'string' && args.request_id.trim()
+              ? args.request_id.trim()
+              : `controller-home-migration:${workId}`;
+            const scheduled = await callStandaloneRecoveryTool(ctx.controllerHome, 'migrate_controller_home', {
+              request_id: migrationRequestId,
+              canonical_source_root: repository.canonicalRoot,
+              expected_source_revision: liveGit.head,
+            });
+            const facade = buildFacadeResult({
+              summary: `Standalone Recovery accepted the Controller Home migration transaction for Work ${workId}.`,
+              data: { workId, migration: scheduled, executionStarted: true },
+            });
+            return result(facade as unknown as Record<string, unknown>);
+          } catch (error) {
+            const facade = buildFacadeResult({
+              status: 'blocked',
+              summary: error instanceof Error ? error.message : 'Controller Home migration scheduling failed.',
+              data: { workId, executionStarted: false },
+            });
+            return result(facade as unknown as Record<string, unknown>, true);
+          }
+        }
+
         if (operation === 'repair') {
           return await runFacadeRepair(ctx, repository, args);
         }

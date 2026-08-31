@@ -61,6 +61,11 @@ import {
   writePackageRuntimeSystemdUserService,
 } from '../../src/runtime/root/package-runtime-service';
 import { recoveryConnectorDescriptor } from '../../src/cli/commands/recovery';
+import {
+  defaultUserControllerHomeForMigration,
+  recoveryControllerHomeOwnerLabels,
+  scheduleRecoveryControllerHomeMigration,
+} from '../../src/runtime/standalone-recovery/controller-home-migration';
 import { ensureMcpControllerHomeOAuthPassphrase } from '../../src/cli/mcp/auth';
 import { inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, recoverySystemdUserUnitInput, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 
@@ -1156,6 +1161,14 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('restart_primary_runtime');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('recover_primary_runtime');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('activate_runtime_release');
+    expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('migrate_controller_home');
+    const migrateTool = RECOVERY_TOOLS.find((tool) => tool.name === 'migrate_controller_home');
+    expect(migrateTool?.inputSchema.required).toEqual(expect.arrayContaining([
+      'request_id',
+      'canonical_source_root',
+      'expected_source_revision',
+    ]));
+    expect(migrateTool?.inputSchema.properties).not.toHaveProperty('destination_home');
     const activateTool = RECOVERY_TOOLS.find((tool) => tool.name === 'activate_runtime_release');
     expect(activateTool?.inputSchema.required).toEqual(expect.arrayContaining([
       'request_id',
@@ -1171,7 +1184,31 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_CLI_COMMANDS).toContain('restart-primary-runtime');
     expect(RECOVERY_CLI_COMMANDS).toContain('recover-primary-runtime');
     expect(RECOVERY_CLI_COMMANDS).toContain('activate-runtime-release');
+    expect(RECOVERY_CLI_COMMANDS).toContain('migrate-controller-home-worker');
   });
+
+  test('Controller Home migration derives a Linux user-level destination and never accepts the current configured authority as a destination override', () => {
+    expect(defaultUserControllerHomeForMigration({
+      FORGE_CONTROLLER_HOME: '/Users/greyson/.forge/controller',
+      XDG_STATE_HOME: '',
+    }, '/home/greyson')).toBe('/home/greyson/.forge/controller');
+    const owners = recoveryControllerHomeOwnerLabels('/home/greyson/src/forge/_ops/controller-home');
+    expect(owners).toHaveLength(4);
+    expect(owners[0]).toMatch(/^com\.moretea\.forge\.runtime\.[a-f0-9]+$/);
+    expect(owners[1]).toMatch(/^com\.moretea\.forge\.mcp-gateway\.[a-f0-9]+$/);
+    expect(owners.slice(2)).toEqual([
+      'com.moretea.forge-recovery-gateway',
+      'com.moretea.forge-recovery-watchdog',
+    ]);
+    const home = repoLocalControllerHome();
+    const config = createRecoveryConfig(home);
+    expect(() => scheduleRecoveryControllerHomeMigration(config, {
+      requestId: 'migration-test-request',
+      canonicalSourceRoot: '/home/greyson/src/forge',
+      expectedSourceRevision: 'deadbeef',
+    }, { platform: 'darwin' })).toThrow('RECOVERY_CONTROLLER_HOME_MIGRATION_LINUX_ONLY');
+  });
+
   test('Watchdog full verification automatically attests a healthy active Runtime release', async () => {
     const home = controllerHome();
     const activeManifest = manifest(home, 'release-watchdog-known-good', 'artifact-watchdog-known-good');
