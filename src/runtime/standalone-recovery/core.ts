@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
-import { homedir } from 'os';
+import { homedir, hostname } from 'os';
 import { basename, dirname, isAbsolute, join, resolve } from 'path';
 import { observeRuntimeStatus } from '../root/status';
 import {
@@ -43,6 +43,7 @@ import {
   rollbackStoppedRepoLocalControllerHomeStorage,
   type ControllerHomeStorageMigration,
 } from '../../cli/repositories/controller-home';
+import { readCurrentRecoveryRelease } from './release';
 
 /** Standalone recovery reads only canonical Runtime observation and whole-release authority. */
 interface PublicTunnelRecoveryPolicy {
@@ -126,6 +127,79 @@ export interface RecoveryConfig {
   expectedToolFingerprint?: string;
   readOnlyTool?: { name: string; arguments?: Record<string, unknown> };
   gateway?: { host: string; port: number; bearerTokenFile: string };
+}
+
+export interface RecoveryMachineIdentity {
+  schemaVersion: 1;
+  host: string;
+  platform: NodeJS.Platform;
+  controllerHome: string;
+  recovery: {
+    releaseRevision?: string;
+    manifestSha256?: string;
+  };
+  targetRuntime: {
+    id: string;
+    servicePlatform: 'launchd' | 'systemd-user';
+    serviceLabel: string;
+    activeReleaseId?: string;
+    authorityRevision?: number;
+  };
+}
+
+export const RECOVERY_MUTATION_IDENTITY_FIELDS = [
+  'expected_host',
+  'expected_platform',
+  'expected_controller_home',
+  'expected_recovery_release',
+  'expected_target_runtime',
+] as const;
+
+export function recoveryMachineIdentity(
+  config: RecoveryConfig,
+  dependencies: { host?: string; platform?: NodeJS.Platform } = {},
+): RecoveryMachineIdentity {
+  const controllerHome = resolve(config.controllerHome);
+  const platform = dependencies.platform ?? process.platform;
+  const host = dependencies.host?.trim() || hostname();
+  const recoveryRelease = readCurrentRecoveryRelease(controllerHome);
+  const runtimeAuthority = readRuntimeReleaseAuthority(controllerHome);
+  const servicePlatform = (config.primaryRuntimeService ?? defaultPrimaryRuntimeServiceConfig(platform)).platform;
+  const serviceLabel = forgeRuntimeServicePaths(controllerHome).label;
+  const activeReleaseId = runtimeAuthority?.active.releaseId;
+  return {
+    schemaVersion: 1,
+    host,
+    platform,
+    controllerHome,
+    recovery: {
+      ...(recoveryRelease ? { releaseRevision: recoveryRelease.releaseRevision, manifestSha256: recoveryRelease.manifestSha256 } : {}),
+    },
+    targetRuntime: {
+      id: `${servicePlatform}:${serviceLabel}:${activeReleaseId ?? 'none'}`,
+      servicePlatform,
+      serviceLabel,
+      ...(activeReleaseId ? { activeReleaseId } : {}),
+      ...(runtimeAuthority ? { authorityRevision: runtimeAuthority.revision } : {}),
+    },
+  };
+}
+
+export function assertRecoveryMutationIdentity(config: RecoveryConfig, args: Record<string, unknown>): RecoveryMachineIdentity {
+  const identity = recoveryMachineIdentity(config);
+  const expected: Record<(typeof RECOVERY_MUTATION_IDENTITY_FIELDS)[number], string> = {
+    expected_host: identity.host,
+    expected_platform: identity.platform,
+    expected_controller_home: identity.controllerHome,
+    expected_recovery_release: identity.recovery.releaseRevision ?? 'none',
+    expected_target_runtime: identity.targetRuntime.id,
+  };
+  for (const field of RECOVERY_MUTATION_IDENTITY_FIELDS) {
+    const supplied = typeof args[field] === 'string' ? args[field].trim() : '';
+    if (!supplied) throw new Error(`RECOVERY_TARGET_IDENTITY_REQUIRED:${field}`);
+    if (supplied !== expected[field]) throw new Error(`RECOVERY_TARGET_IDENTITY_MISMATCH:${field}`);
+  }
+  return identity;
 }
 
 interface ReleaseEvidence {
@@ -664,9 +738,11 @@ async function withLock<T>(
 }
 
 export async function runtimeStatus(config: RecoveryConfig) {
+  const identity = recoveryMachineIdentity(config);
   const observation = observeRuntimeStatus(config.controllerHome);
   const watchdog = loadWatchdogState(config);
   return {
+    identity,
     ...observation,
     recoveryWatchdog: {
       lastDecision: watchdog.lastDecision,

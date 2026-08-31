@@ -12,6 +12,8 @@ import {
   defaultPrimaryRuntimeServiceConfig,
   initializeStandaloneRecovery,
   loadRecoveryConfig,
+  recoveryMachineIdentity,
+  RECOVERY_MUTATION_IDENTITY_FIELDS,
   recoveryConfigPath,
   listReleases,
   recoverPrimaryRuntime,
@@ -60,13 +62,29 @@ import {
   renderPackageRuntimeSystemdUserService,
   writePackageRuntimeSystemdUserService,
 } from '../../src/runtime/root/package-runtime-service';
-import { recoveryConnectorDescriptor } from '../../src/cli/commands/recovery';
+import {
+  assertDistinctRecoveryOpenAiTunnelIdentity,
+  recoveryConnectorDescriptor,
+  recoveryConnectorHasExternalTransport,
+  recoveryOpenAiTunnelDefaultAlias,
+} from '../../src/cli/commands/recovery';
 import { ensureMcpControllerHomeOAuthPassphrase } from '../../src/cli/mcp/auth';
 import { inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, recoverySystemdUserUnitInput, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 
 const roots: string[] = [];
 const servers: Server[] = [];
 const ownerships: RuntimeOwnershipHandle[] = [];
+
+function recoveryMutationIdentityArgs(config: ReturnType<typeof createRecoveryConfig>): Record<string, string> {
+  const identity = recoveryMachineIdentity(config);
+  return {
+    expected_host: identity.host,
+    expected_platform: identity.platform,
+    expected_controller_home: identity.controllerHome,
+    expected_recovery_release: identity.recovery.releaseRevision ?? 'none',
+    expected_target_runtime: identity.targetRuntime.id,
+  };
+}
 
 interface RuntimeRequestRecord {
   method?: string;
@@ -911,8 +929,10 @@ test('Recovery activate_runtime_release resolves release_path as an immutable re
     ['activate-directory-contract', dirname(candidate.path)],
     ['activate-manifest-compat', candidate.path],
   ] as const) {
-    const result = await dispatchRecoveryTool(createRecoveryConfig(home), 'activate_runtime_release', {
+    const config = createRecoveryConfig(home);
+    const result = await dispatchRecoveryTool(config, 'activate_runtime_release', {
       request_id: requestId,
+      ...recoveryMutationIdentityArgs(config),
       release_path: releasePath,
       expected_active_release_id: 'release-baseline',
       expected_authority_revision: 1,
@@ -1148,6 +1168,11 @@ describe('standalone recovery on canonical Runtime', () => {
       },
     });
     expect(await dispatchRecoveryTool(config, 'runtime_status', {})).toMatchObject({
+      identity: {
+        controllerHome: resolve(home),
+        platform: process.platform,
+        targetRuntime: { serviceLabel: forgeRuntimeServicePaths(home).label },
+      },
       running: true,
       ready: true,
       recoveryWatchdog: { failures: 0, rollbackUsed: false },
@@ -1157,21 +1182,73 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('recover_primary_runtime');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('activate_runtime_release');
     const activateTool = RECOVERY_TOOLS.find((tool) => tool.name === 'activate_runtime_release');
-    expect(activateTool?.inputSchema.required).toEqual(expect.arrayContaining([
+    const activateSchema = activateTool?.inputSchema as { required?: readonly string[]; properties?: Record<string, unknown> } | undefined;
+    expect(activateSchema?.required).toEqual(expect.arrayContaining([
       'request_id',
+      ...RECOVERY_MUTATION_IDENTITY_FIELDS,
       'release_path',
       'expected_active_release_id',
       'expected_authority_revision',
     ]));
-    expect(activateTool?.inputSchema.properties.release_path).toMatchObject({
+    expect(activateSchema?.properties?.release_path).toMatchObject({
       description: 'Absolute path to the staged immutable Runtime release directory.',
     });
+    for (const toolName of [
+      'attest_known_good',
+      'rollback_previous',
+      'restart_primary_runtime',
+      'restart_primary_connector',
+      'recover_primary_runtime',
+      'activate_runtime_release',
+      'stage_and_activate_runtime_release',
+      'restart_public_tunnel',
+    ]) {
+      const tool = RECOVERY_TOOLS.find((candidate) => candidate.name === toolName);
+      const schema = tool?.inputSchema as { required?: readonly string[] } | undefined;
+      expect(schema?.required).toEqual(expect.arrayContaining(['request_id', ...RECOVERY_MUTATION_IDENTITY_FIELDS]));
+    }
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).not.toContain('supervisor_status');
     expect(RECOVERY_CLI_COMMANDS).toContain('list-releases');
     expect(RECOVERY_CLI_COMMANDS).toContain('restart-primary-runtime');
     expect(RECOVERY_CLI_COMMANDS).toContain('recover-primary-runtime');
     expect(RECOVERY_CLI_COMMANDS).toContain('activate-runtime-release');
   });
+  test('external Recovery mutations fail closed when the caller targets a different machine', async () => {
+    const home = controllerHome();
+    const config = createRecoveryConfig(home);
+    await expect(dispatchRecoveryTool(config, 'restart_primary_runtime', {
+      request_id: 'wrong-machine-test',
+      ...recoveryMutationIdentityArgs(config),
+      expected_host: 'different-machine.example',
+    })).rejects.toThrow('RECOVERY_TARGET_IDENTITY_MISMATCH:expected_host');
+  });
+
+  test('Recovery OpenAI tunnel identity is machine-specific and cannot reuse the primary tunnel identity', () => {
+    const wslAlias = recoveryOpenAiTunnelDefaultAlias('/home/user/.forge/controller', 'linux', 'windows-wsl');
+    const macAlias = recoveryOpenAiTunnelDefaultAlias('/Users/user/.forge/controller', 'darwin', 'macbook');
+    expect(wslAlias).toStartWith('forge-recovery-');
+    expect(macAlias).toStartWith('forge-recovery-');
+    expect(wslAlias).not.toBe(macAlias);
+    expect(recoveryConnectorHasExternalTransport({
+      public: false,
+      services: {
+        gateway: { label: 'gateway', platform: 'systemd-user', serviceInstalled: true, plistInstalled: false, running: true },
+        watchdog: { label: 'watchdog', platform: 'systemd-user', serviceInstalled: true, plistInstalled: false, running: true },
+        tunnel: { configured: true, platform: 'openai-secure-tunnel', alias: wslAlias, tunnelId: 'recovery-wsl-1', plistInstalled: false, restartSafe: true, running: true, healthy: true, ready: true },
+      },
+    })).toBe(true);
+    const recovery = { platform: 'openai-secure-tunnel' as const, alias: wslAlias, tunnelId: 'recovery-wsl-1', mcpServerUrl: 'http://127.0.0.1:8787/recovery/mcp' };
+    expect(() => assertDistinctRecoveryOpenAiTunnelIdentity(recovery, {
+      platform: 'openai-secure-tunnel', alias: wslAlias, tunnelId: 'primary-1', mcpServerUrl: 'http://127.0.0.1:8765/mcp',
+    })).toThrow('RECOVERY_OPENAI_TUNNEL_ALIAS_CONFLICT');
+    expect(() => assertDistinctRecoveryOpenAiTunnelIdentity(recovery, {
+      platform: 'openai-secure-tunnel', alias: 'forge-primary', tunnelId: 'recovery-wsl-1', mcpServerUrl: 'http://127.0.0.1:8765/mcp',
+    })).toThrow('RECOVERY_OPENAI_TUNNEL_ID_CONFLICT');
+    expect(() => assertDistinctRecoveryOpenAiTunnelIdentity(recovery, {
+      platform: 'openai-secure-tunnel', alias: 'forge-primary', tunnelId: 'primary-1', mcpServerUrl: 'http://127.0.0.1:8765/mcp',
+    })).not.toThrow();
+  });
+
   test('Watchdog full verification automatically attests a healthy active Runtime release', async () => {
     const home = controllerHome();
     const activeManifest = manifest(home, 'release-watchdog-known-good', 'artifact-watchdog-known-good');
@@ -2893,6 +2970,11 @@ describe('standalone recovery on canonical Runtime', () => {
     });
     expect(descriptor).toMatchObject({
       name: 'Forge Recovery',
+      identity: {
+        platform: 'darwin',
+        controllerHome: resolve(home),
+        targetRuntime: { servicePlatform: 'launchd', serviceLabel: forgeRuntimeServicePaths(home).label },
+      },
       transport: 'streamable_http',
       url: 'https://recovery.example.test/recovery/mcp',
       public: true,

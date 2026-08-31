@@ -106,11 +106,28 @@ forge recovery install \
 
 Use `--stage-only` to build and canary without activating Gateway or Watchdog services. The source-level `bun scripts/install-standalone-recovery.ts` entry remains an internal packaging primitive, not a second operator surface.
 
-A public Recovery endpoint is optional for local-only operations. A ChatGPT Recovery Connector requires an explicit HTTPS Recovery URL and its dedicated tunnel service owner. Print the exact non-secret connector descriptor with:
+A public Recovery endpoint is optional for local-only operations. A ChatGPT Recovery Connector requires one independently owned external transport: either an explicit HTTPS Recovery URL plus its dedicated tunnel service owner, or a dedicated OpenAI Secure MCP Tunnel. The OpenAI transport keeps the Recovery Gateway on loopback; `tunnel-client` is the outbound transport and is supervised separately from the primary Forge Runtime/Connector.
+
+For a Windows/WSL Recovery installation, create a new OpenAI tunnel identity that is not the primary Forge tunnel and is not the macOS Recovery tunnel. Supply only that dedicated tunnel id and an approved runtime-key reference; omit the alias unless an explicit stable alias is required. Forge derives a machine-specific Recovery alias from host, platform, and Controller Home and rejects alias/tunnel-id reuse with the primary tunnel configured on the same machine:
+
+```sh
+forge recovery install \
+  --controller-home /home/<user>/.forge/controller \
+  --recovery-openai-tunnel-id <dedicated-wsl-recovery-tunnel-id> \
+  --recovery-openai-runtime-api-key-ref env:FORGE_RECOVERY_TUNNEL_KEY
+```
+
+The runtime key value is never copied into Recovery configuration or status; only the `env:`/`file:` reference is stored. The local Recovery Gateway remains bound to `127.0.0.1`.
+
+Print the exact non-secret connector descriptor with:
 
 ```sh
 forge recovery connector --controller-home /absolute/controller-home
 ```
+
+The descriptor and `runtime_status` expose a `RecoveryMachineIdentity` containing host, platform, resolved Controller Home, current Recovery release identity, and the exact target Runtime service/release identity. Every external Recovery mutation requires the caller to echo the current `expected_host`, `expected_platform`, `expected_controller_home`, `expected_recovery_release`, and `expected_target_runtime` values from that observation. Missing, stale, or cross-machine values are rejected before any mutation. Successful mutation responses include the post-operation machine identity as well. This makes accidentally selecting the macOS Recovery connector while intending to repair WSL fail closed rather than repairing the wrong machine.
+
+Because Gateway, Watchdog, immutable Recovery release, and the dedicated Recovery tunnel are installed independently of the primary Runtime/Connector, a primary Runtime outage does not remove this external Recovery control path.
 
 The installer owns publication and activation. Before registering `com.moretea.forge-recovery-gateway` and `com.moretea.forge-recovery-watchdog`, it exits and removes stale Recovery services discovered under the Recovery-owned launchd directory. Configuration is rewritten from the current schema and does not preserve retired ingress, agent-repair, or legacy tunnel fields. Direct reload scripts are not a second mutation path.
 

@@ -6,6 +6,7 @@ import { readMcpServiceOAuthPassphrase } from '../../cli/mcp/auth';
 import { FORGE_VERSION } from '../../version';
 import {
   activateRuntimeRelease,
+  assertRecoveryMutationIdentity,
   attestKnownGood,
   diagnose,
   gatewayToken,
@@ -15,6 +16,7 @@ import {
   saveWatchdogState,
   reconnectMain,
   recoverPrimaryRuntime,
+  recoveryMachineIdentity,
   repairPublicTunnel,
   restartPrimaryConnector,
   restartPrimaryRuntime,
@@ -25,6 +27,7 @@ import {
   runtimeStatus,
   verifyStableRuntime,
   watchdogTick,
+  RECOVERY_MUTATION_IDENTITY_FIELDS,
   type WatchdogState,
   type RecoveryConfig,
 } from './core';
@@ -245,19 +248,43 @@ function matchesAnyPath(url: string | undefined, paths: string[]): boolean {
   return paths.some((path) => matchesPath(url, path));
 }
 
+const RECOVERY_MUTATION_IDENTITY_PROPERTIES = {
+  expected_host: { type: 'string', minLength: 1, maxLength: 255 },
+  expected_platform: { type: 'string', minLength: 1, maxLength: 64 },
+  expected_controller_home: { type: 'string', minLength: 1, maxLength: 2048 },
+  expected_recovery_release: { type: 'string', minLength: 1, maxLength: 256 },
+  expected_target_runtime: { type: 'string', minLength: 1, maxLength: 1024 },
+} as const;
+
+function mutationInputSchema(
+  extraProperties: Record<string, unknown> = {},
+  extraRequired: string[] = [],
+): Record<string, unknown> {
+  return {
+    type: 'object',
+    properties: {
+      request_id: { type: 'string', minLength: 8, maxLength: 120 },
+      ...RECOVERY_MUTATION_IDENTITY_PROPERTIES,
+      ...extraProperties,
+    },
+    required: ['request_id', ...RECOVERY_MUTATION_IDENTITY_FIELDS, ...extraRequired],
+    additionalProperties: false,
+  };
+}
+
 export const RECOVERY_TOOLS = [
-  { name: 'runtime_status', description: 'Read canonical Runtime ownership, readiness, endpoint, and release observation.', inputSchema: { type: 'object', additionalProperties: false } },
+  { name: 'runtime_status', description: 'Read canonical Runtime ownership, readiness, endpoint, release observation, and exact Recovery machine identity.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'list_releases', description: 'Read active, previous, and known-good whole-Runtime release evidence.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'verify_stable_runtime', description: 'Run independent stable runtime verification.', inputSchema: { type: 'object', additionalProperties: false } },
   { name: 'verify_external_runtime', description: 'Verify the external primary MCP endpoint.', inputSchema: { type: 'object', additionalProperties: false } },
-  { name: 'attest_known_good', description: 'Record the active release as known-good only after full independent verification succeeds.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
-  { name: 'rollback_previous', description: 'While Canonical Runtime is stopped, atomically restore its attested previous whole-Runtime release and SQLite backup.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
-  { name: 'restart_primary_runtime', description: 'Restart the installed canonical Forge Runtime service and require whole-Runtime verification.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
-  { name: 'restart_primary_connector', description: 'Restart the explicitly configured primary OAuth/Connector launchd service only after local Canonical Runtime verification succeeds.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
-  { name: 'recover_primary_runtime', description: 'Stop the canonical Runtime, restore the attested previous whole release and SQLite backup, restart it, and require verification.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
-  { name: 'activate_runtime_release', description: 'Activate an already staged immutable Runtime release only if the caller-observed active release/authority revision are still current. Reverse activation of current.previous is rejected; use rollback_previous/recover_primary_runtime instead.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 }, release_path: { type: 'string', minLength: 8, maxLength: 1024, description: 'Absolute path to the staged immutable Runtime release directory.' }, expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 }, expected_authority_revision: { type: 'integer', minimum: 1 } }, required: ['request_id', 'release_path', 'expected_active_release_id', 'expected_authority_revision'], additionalProperties: false } },
-  { name: 'stage_and_activate_runtime_release', description: 'Build one immutable Runtime release from the fixed Recovery-configured source root, then activate it transactionally with rollback protection. No arbitrary source path is accepted.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
-  { name: 'restart_public_tunnel', description: 'Restart the explicitly configured public tunnel only after local runtime verification succeeds and the external endpoint is unavailable.', inputSchema: { type: 'object', properties: { request_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['request_id'], additionalProperties: false } },
+  { name: 'attest_known_good', description: 'Record the active release as known-good only after full independent verification succeeds.', inputSchema: mutationInputSchema() },
+  { name: 'rollback_previous', description: 'While Canonical Runtime is stopped, atomically restore its attested previous whole-Runtime release and SQLite backup.', inputSchema: mutationInputSchema() },
+  { name: 'restart_primary_runtime', description: 'Restart the installed canonical Forge Runtime service only after exact Recovery machine identity matches.', inputSchema: mutationInputSchema() },
+  { name: 'restart_primary_connector', description: 'Restart the explicitly configured primary OAuth/Connector service only after exact Recovery machine identity and local Canonical Runtime verification succeed.', inputSchema: mutationInputSchema() },
+  { name: 'recover_primary_runtime', description: 'Stop the canonical Runtime, restore the attested previous whole release and SQLite backup, restart it, and require verification.', inputSchema: mutationInputSchema() },
+  { name: 'activate_runtime_release', description: 'Activate an already staged immutable Runtime release only if machine identity and caller-observed active release/authority revision are still current. Reverse activation of current.previous is rejected; use rollback_previous/recover_primary_runtime instead.', inputSchema: mutationInputSchema({ release_path: { type: 'string', minLength: 8, maxLength: 1024, description: 'Absolute path to the staged immutable Runtime release directory.' }, expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 }, expected_authority_revision: { type: 'integer', minimum: 1 } }, ['release_path', 'expected_active_release_id', 'expected_authority_revision']) },
+  { name: 'stage_and_activate_runtime_release', description: 'Build one immutable Runtime release from the fixed Recovery-configured source root, then activate it transactionally with rollback protection. No arbitrary source path is accepted.', inputSchema: mutationInputSchema() },
+  { name: 'restart_public_tunnel', description: 'Restart the explicitly configured public tunnel only after exact Recovery machine identity and local runtime verification succeed and the external endpoint is unavailable.', inputSchema: mutationInputSchema() },
   { name: 'reconnect_primary_connector', description: 'Check canonical Runtime Gateway and primary MCP reconnection readiness without publishing a release.', inputSchema: { type: 'object', additionalProperties: false } },
 ] as const;
 
@@ -485,6 +512,11 @@ function requestId(value: unknown): string | undefined {
   return typeof value === 'string' && /^[A-Za-z0-9._:-]{8,120}$/.test(value) ? value : undefined;
 }
 
+function mutationResponse(config: RecoveryConfig, payload: unknown): Record<string, unknown> {
+  const result = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload as Record<string, unknown> : { result: payload };
+  return { ...result, identity: recoveryMachineIdentity(config) };
+}
+
 export async function dispatchRecoveryTool(config: RecoveryConfig, name: string, args: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case 'runtime_status': return runtimeStatus(config);
@@ -496,44 +528,52 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
     }
     case 'attest_known_good': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      return attestKnownGood(config);
+      assertRecoveryMutationIdentity(config, args);
+      return mutationResponse(config, await attestKnownGood(config));
     }
     case 'rollback_previous': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      return rollbackPrevious(config, `recovery-gateway:${args.request_id}`);
+      assertRecoveryMutationIdentity(config, args);
+      return mutationResponse(config, await rollbackPrevious(config, `recovery-gateway:${args.request_id}`));
     }
     case 'restart_primary_runtime': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      return restartPrimaryRuntime(config);
+      assertRecoveryMutationIdentity(config, args);
+      return mutationResponse(config, await restartPrimaryRuntime(config));
     }
     case 'restart_primary_connector': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      return restartPrimaryConnector(config, { requestId: `recovery-gateway:${args.request_id}` });
+      assertRecoveryMutationIdentity(config, args);
+      return mutationResponse(config, await restartPrimaryConnector(config, { requestId: `recovery-gateway:${args.request_id}` }));
     }
     case 'recover_primary_runtime': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      return recoverPrimaryRuntime(config, `recovery-gateway:${args.request_id}`);
+      assertRecoveryMutationIdentity(config, args);
+      return mutationResponse(config, await recoverPrimaryRuntime(config, `recovery-gateway:${args.request_id}`));
     }
     case 'activate_runtime_release': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
+      assertRecoveryMutationIdentity(config, args);
       if (typeof args.release_path !== 'string' || !args.release_path.trim()) throw new Error('RECOVERY_RELEASE_PATH_REQUIRED');
       if (typeof args.expected_active_release_id !== 'string' || !args.expected_active_release_id.trim()) throw new Error('RECOVERY_EXPECTED_ACTIVE_RELEASE_REQUIRED');
       if (!Number.isInteger(args.expected_authority_revision) || Number(args.expected_authority_revision) < 1) throw new Error('RECOVERY_EXPECTED_AUTHORITY_REVISION_REQUIRED');
       const releasePath = args.release_path.trim();
       const manifestPath = basename(releasePath) === 'manifest.json' ? releasePath : join(releasePath, 'manifest.json');
-      return activateRuntimeRelease(config, manifestPath, {}, {
+      return mutationResponse(config, await activateRuntimeRelease(config, manifestPath, {}, {
         requestId: `recovery-gateway:${args.request_id}`,
         expectedActiveReleaseId: args.expected_active_release_id.trim(),
         expectedAuthorityRevision: Number(args.expected_authority_revision),
-      });
+      }));
     }
     case 'stage_and_activate_runtime_release': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      return stageAndActivateConfiguredRuntimeRelease(config, {}, `recovery-gateway:${args.request_id}`);
+      assertRecoveryMutationIdentity(config, args);
+      return mutationResponse(config, await stageAndActivateConfiguredRuntimeRelease(config, {}, `recovery-gateway:${args.request_id}`));
     }
     case 'restart_public_tunnel': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      return repairPublicTunnel(config);
+      assertRecoveryMutationIdentity(config, args);
+      return mutationResponse(config, await repairPublicTunnel(config));
     }
     case 'reconnect_primary_connector': return reconnectMain(config);
     default: throw new Error('RECOVERY_TOOL_NOT_FOUND');

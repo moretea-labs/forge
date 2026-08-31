@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'crypto';
 import { spawnSync } from 'child_process';
 import { existsSync, readdirSync, statSync } from 'fs';
 import { isAbsolute, join, relative, resolve } from 'path';
+import { hostname } from 'os';
 import { Command } from 'commander';
 import { readMcpServiceOAuthPassphrase } from '../mcp/auth';
 import {
@@ -37,6 +38,7 @@ import {
   defaultPrimaryRuntimeServiceConfig,
   loadRecoveryConfig,
   recoverPrimaryRuntime,
+  recoveryMachineIdentity,
   restartPrimaryConnector,
   restartPrimaryRuntime,
   restartRecoveryGateway,
@@ -46,6 +48,7 @@ import {
   verifyStableRuntime,
   type OpenAiSecureTunnelServiceConfig,
   type PrimaryConnectorServiceConfig,
+  type RecoveryMachineIdentity,
   type PublicTunnelServiceConfig,
 } from '../../runtime/standalone-recovery/core';
 import { readRecoveryRuntimeIdentity } from '../../runtime/standalone-recovery/release';
@@ -71,6 +74,24 @@ function launchdService(label?: string, plistPath?: string, role = 'RECOVERY_TUN
   if (!/^com\.[A-Za-z0-9._-]{1,180}$/.test(label)) throw new Error(`${role}_SERVICE_LABEL_INVALID`);
   if (plistPath && !isAbsolute(plistPath)) throw new Error(`${role}_SERVICE_PLIST_ABSOLUTE_REQUIRED`);
   return { platform: 'launchd', label, ...(plistPath ? { plistPath } : {}) };
+}
+
+export function recoveryOpenAiTunnelDefaultAlias(
+  controllerHome: string,
+  platform: NodeJS.Platform = process.platform,
+  host = hostname(),
+): string {
+  const suffix = createHash('sha256').update(`${host}\0${platform}\0${resolve(controllerHome)}`).digest('hex').slice(0, 12);
+  return `forge-recovery-${suffix}`;
+}
+
+export function assertDistinctRecoveryOpenAiTunnelIdentity(
+  recovery: PublicTunnelServiceConfig | undefined,
+  primary: PublicTunnelServiceConfig | undefined,
+): void {
+  if (recovery?.platform !== 'openai-secure-tunnel' || primary?.platform !== 'openai-secure-tunnel') return;
+  if (recovery.alias === primary.alias) throw new Error('RECOVERY_OPENAI_TUNNEL_ALIAS_CONFLICT');
+  if (recovery.tunnelId === primary.tunnelId) throw new Error('RECOVERY_OPENAI_TUNNEL_ID_CONFLICT');
 }
 
 function openAiTunnelService(input: {
@@ -208,6 +229,7 @@ export interface RecoveryConnectorDependencies {
 
 export interface RecoveryConnectorDescriptor {
   name: 'Forge Recovery';
+  identity: RecoveryMachineIdentity;
   transport: 'streamable_http';
   url: string;
   public: boolean;
@@ -335,6 +357,7 @@ export function recoveryConnectorDescriptor(
 
   return {
     name: 'Forge Recovery',
+    identity: recoveryMachineIdentity(config, { platform }),
     transport: 'streamable_http',
     url,
     public: publicEndpoint,
@@ -380,6 +403,12 @@ export function recoveryConnectorDescriptor(
     tools: RECOVERY_TOOLS.map((tool) => tool.name),
     warnings,
   };
+}
+
+export function recoveryConnectorHasExternalTransport(
+  connector: Pick<RecoveryConnectorDescriptor, 'public' | 'services'>,
+): boolean {
+  return connector.public || connector.services.tunnel.platform === 'openai-secure-tunnel';
 }
 
 export interface RecoveryConnectorVerificationDependencies {
@@ -443,7 +472,9 @@ export async function verifyRecoveryConnector(
   });
 
   if (!connector.readyForChatGPT) failures.push(...connector.warnings.map((warning) => `readiness: ${warning}`));
-  if (!connector.public) failures.push('readiness: Recovery Connector does not have an HTTPS public endpoint.');
+  if (!recoveryConnectorHasExternalTransport(connector)) {
+    failures.push('readiness: Recovery Connector has neither an HTTPS public endpoint nor a dedicated OpenAI Secure MCP Tunnel.');
+  }
 
   const origin = new URL(connector.url).origin;
   try {
@@ -865,7 +896,7 @@ export function buildRecoveryCommand(): Command {
     .option('--recovery-tunnel-service-label <label>', 'Dedicated Recovery tunnel launchd label')
     .option('--recovery-tunnel-service-plist <path>', 'Absolute Recovery tunnel launchd plist path')
     .option('--recovery-openai-tunnel-id <id>', 'Dedicated Recovery OpenAI Secure MCP Tunnel id')
-    .option('--recovery-openai-tunnel-alias <alias>', 'Dedicated Recovery tunnel-client runtime alias (default: forge-recovery)')
+    .option('--recovery-openai-tunnel-alias <alias>', 'Dedicated Recovery tunnel-client runtime alias (default: machine-specific forge-recovery-<id>)')
     .option('--recovery-openai-runtime-api-key-ref <ref>', 'Recovery tunnel runtime API key reference (env:NAME or file:/absolute/path)')
     .option('--recovery-openai-profile <profile>', 'Optional tunnel-client runtime profile name for Recovery')
     .option('--recovery-openai-profile-dir <path>', 'Optional absolute tunnel-client profile directory for Recovery')
@@ -923,7 +954,7 @@ export function buildRecoveryCommand(): Command {
         profileDir: opts.recoveryOpenaiProfileDir,
         adminProfile: opts.recoveryOpenaiAdminProfile,
         mcpServerUrl: recoveryLocalMcpUrl,
-        defaultAlias: 'forge-recovery',
+        defaultAlias: recoveryOpenAiTunnelDefaultAlias(home),
         role: 'RECOVERY',
       });
       if (recoveryLaunchdTunnel && recoveryOpenAiTunnel) throw new Error('RECOVERY_TUNNEL_OWNER_CONFLICT');
@@ -959,6 +990,7 @@ export function buildRecoveryCommand(): Command {
       if (primaryLaunchdTunnel && primaryOpenAiTunnel) throw new Error('RECOVERY_PRIMARY_TUNNEL_OWNER_CONFLICT');
       const primaryPublicTunnelService = primaryOpenAiTunnel ?? primaryLaunchdTunnel;
       if (primaryPublicTunnelService && !primaryConnectorService) throw new Error('RECOVERY_PRIMARY_CONNECTOR_REQUIRED_FOR_PRIMARY_TUNNEL');
+      assertDistinctRecoveryOpenAiTunnelIdentity(recoveryTunnelService, primaryPublicTunnelService);
 
       const recoveryPublicUrl = endpoint(opts.recoveryPublicUrl, 'RECOVERY_PUBLIC_URL');
       if (recoveryOpenAiTunnel && recoveryPublicUrl) throw new Error('RECOVERY_OPENAI_TUNNEL_PUBLIC_URL_CONFLICT');
