@@ -582,6 +582,21 @@ describe('Forge Runtime service', () => {
     expect(unit).toContain('8767');
   });
 
+  test('uses no local MCP auth only when an instance explicitly selects Secure Tunnel auth', () => {
+    const fx = fixture(), packageRoot = join(fx.root, 'package');
+    for (const dir of ['src/cli', 'src/runtime/shared', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
+    writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
+    writeFileSync(join(packageRoot, 'src', 'cli', 'index.ts'), '');
+    writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), '');
+    writeMcpServiceLocalConfig(fx.home, { auth: { mode: 'none' }, chatgpt: { instanceId: 'forge-wsl' } });
+    const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'connector-secure-tunnel-auth-test' });
+    const launch = packageConnectorLaunchSpec({ release, controllerHome: fx.home, endpoint: 'http://127.0.0.1:8767/mcp' });
+    expect(launch.authMode).toBe('none');
+    expect(launch.args.join(' ')).toContain('--auth none');
+    expect(renderPackageConnectorSystemdUserUnit({ launch })).toContain('Description=Forge ChatGPT Secure Tunnel Connector');
+  });
+
   test('binds a persisted Forge instance identity into the durable OAuth Connector', () => {
     const fx = fixture(), packageRoot = join(fx.root, 'package');
     for (const dir of ['src/cli', 'src/runtime/shared', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
