@@ -12,6 +12,7 @@ import {
   defaultPrimaryRuntimeServiceConfig,
   initializeStandaloneRecovery,
   loadRecoveryConfig,
+  observeOpenAiTunnelLocalHealthFallback,
   recoveryMachineIdentity,
   RECOVERY_MUTATION_IDENTITY_FIELDS,
   recoveryConfigPath,
@@ -713,6 +714,37 @@ test('standalone Recovery restarts the configured primary public tunnel when the
   expect(commands).not.toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
   expect(commands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.cloudflare.cloudflared']);
   expect(reconnectCalls).toBe(2);
+});
+
+test('standalone Recovery uses its client-owned loopback health only when a primary OpenAI tunnel status command is unavailable', async () => {
+  const home = controllerHome();
+  const profileDir = join(home, 'tunnel-client');
+  const healthUrlFile = join(home, 'tunnel-health.url');
+  const tunnelId = 'tunnel_abcdef0123456789abcdef0123456789';
+  const endpoint = 'http://127.0.0.1:8767/mcp';
+  mkdirSync(profileDir, { recursive: true });
+  writeFileSync(healthUrlFile, 'http://127.0.0.1:45613\n');
+  writeFileSync(join(profileDir, 'forge.yaml'), JSON.stringify({
+    control_plane: { tunnel_id: tunnelId },
+    health: { url_file: healthUrlFile },
+    mcp: { server_urls: [{ url: endpoint }] },
+  }));
+  const requests: string[] = [];
+  const observed = await observeOpenAiTunnelLocalHealthFallback({
+    platform: 'openai-secure-tunnel',
+    alias: 'forge',
+    tunnelId,
+    mcpServerUrl: endpoint,
+    profile: 'forge',
+    profileDir,
+  }, {
+    request: async (url) => {
+      requests.push(url);
+      return { ok: true, status: 200 };
+    },
+  });
+  expect(observed).toMatchObject({ ok: true, running: true, healthy: true, ready: true, identityMatches: true, endpointMatches: true, observedTunnelId: tunnelId });
+  expect(requests).toEqual(['http://127.0.0.1:45613/healthz', 'http://127.0.0.1:45613/readyz']);
 });
 
 test('standalone Recovery repairs a Linux primary OpenAI Secure MCP Tunnel without restarting a healthy Connector', async () => {

@@ -992,6 +992,8 @@ async function observeOpenAiTunnelRuntime(
   }
   const status = await runCommand('tunnel-client', args, 15_000);
   if (!status.stdout.trim()) {
+    const local = await observeOpenAiTunnelLocalHealthFallback(configured);
+    if (local) return local;
     return {
       ok: false, running: false, healthy: false, ready: false, identityMatches: false, endpointMatches: false,
       alias: configured.alias, tunnelId: configured.tunnelId,
@@ -1001,6 +1003,66 @@ async function observeOpenAiTunnelRuntime(
   return parseOpenAiSecureTunnelRuntimeStatus(status.stdout, {
     alias: configured.alias, tunnelId: configured.tunnelId, mcpServerUrl: configured.mcpServerUrl,
   });
+}
+
+/**
+ * tunnel-client's structured status command can itself be delayed by a
+ * control-plane query. When that happens, retain a bounded observation of the
+ * locally supervised runtime instead of treating a live, identity-matched
+ * alias as failed. This reads only the client-owned profile and loopback
+ * health URL; it never creates, repoints, or restarts a tunnel.
+ */
+export async function observeOpenAiTunnelLocalHealthFallback(
+  configured: OpenAiSecureTunnelServiceConfig,
+  options: {
+    request?: (url: string, init: { signal: AbortSignal }) => Promise<{ ok: boolean; status: number }>;
+  } = {},
+): Promise<OpenAiSecureTunnelRuntimeObservation | undefined> {
+  if (!configured.profile?.trim() || !configured.profileDir?.trim()) return undefined;
+  const profilePath = join(configured.profileDir, `${configured.profile}.yaml`);
+  let profile: string;
+  try { profile = readFileSync(profilePath, 'utf8'); } catch { return undefined; }
+  const identityMatches = profile.includes(configured.tunnelId);
+  const endpointMatches = profile.includes(configured.mcpServerUrl);
+  const urlFileMatch = profile.match(/["']?url_file["']?\s*:\s*["']([^"']+)["']/i);
+  if (!urlFileMatch) return undefined;
+  let base: URL;
+  try {
+    base = new URL(readFileSync(urlFileMatch[1].trim(), 'utf8').trim());
+    if (base.protocol !== 'http:' || !['127.0.0.1', 'localhost', '::1'].includes(base.hostname)) return undefined;
+  } catch { return undefined; }
+  const request = options.request ?? ((url: string, init: { signal: AbortSignal }) => fetch(url, init));
+  const probe = async (pathname: '/healthz' | '/readyz'): Promise<boolean> => {
+    const url = new URL(base);
+    url.pathname = pathname;
+    url.search = '';
+    url.hash = '';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort('RECOVERY_TUNNEL_HEALTH_TIMEOUT'), 4_000);
+    try { return (await request(url.toString(), { signal: controller.signal })).ok; } catch { return false; } finally { clearTimeout(timer); }
+  };
+  const [healthy, ready] = await Promise.all([probe('/healthz'), probe('/readyz')]);
+  const ok = healthy && ready && identityMatches && endpointMatches;
+  const failures: string[] = [];
+  if (!identityMatches) failures.push('profile tunnel id does not match');
+  if (!endpointMatches) failures.push('profile MCP endpoint does not match');
+  if (!healthy) failures.push('local healthz failed');
+  if (!ready) failures.push('local readyz failed');
+  return {
+    ok,
+    running: healthy,
+    healthy,
+    ready,
+    identityMatches,
+    endpointMatches,
+    alias: configured.alias,
+    tunnelId: configured.tunnelId,
+    ...(identityMatches ? { observedTunnelId: configured.tunnelId } : {}),
+    detail: ok
+      ? `managed runtime ${configured.alias} is locally healthy and ready for ${configured.tunnelId} (status command unavailable)`
+      : failures.join('; ') || 'OpenAI tunnel local health fallback failed',
+    profilePath,
+  };
 }
 
 async function observeOpenAiRecoveryTunnel(
