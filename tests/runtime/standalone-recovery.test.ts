@@ -15,6 +15,7 @@ import {
   recoveryMachineIdentity,
   RECOVERY_MUTATION_IDENTITY_FIELDS,
   recoveryConfigPath,
+  recoveryCommandPath,
   listReleases,
   recoverPrimaryRuntime,
   recordWatchdogRuntimeHealthy,
@@ -104,6 +105,12 @@ afterEach(async () => {
   while (ownerships.length > 0) ownerships.pop()!.release();
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((done) => server.close(() => done()))));
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
+});
+
+test('Recovery command PATH includes the standard user binary directory outside interactive shells', () => {
+  expect(recoveryCommandPath('/usr/bin:/bin', 'linux', '/home/forge-user')).toBe('/home/forge-user/.local/bin:/usr/bin:/bin');
+  expect(recoveryCommandPath('/home/forge-user/.local/bin:/usr/bin', 'linux', '/home/forge-user')).toBe('/home/forge-user/.local/bin:/usr/bin');
+  expect(recoveryCommandPath('C:\\Windows\\System32', 'win32', 'C:\\Users\\forge')).toBe('C:\\Windows\\System32');
 });
 
 function controllerHome(): string {

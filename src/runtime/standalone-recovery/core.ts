@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { homedir, hostname } from 'os';
-import { basename, dirname, isAbsolute, join, resolve } from 'path';
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'path';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
 import { observeRuntimeStatus } from '../root/status';
 import {
@@ -1578,6 +1578,23 @@ interface CommandResult { ok: boolean; status: number | null; stdout: string; st
 type CommandRunner = (commandName: string, args: string[], timeoutMs?: number) => Promise<CommandResult>;
 interface LaunchdService { uid: number; domain: string; target: string; label: string; plistPath: string; }
 
+/**
+ * systemd --user does not necessarily inherit the interactive shell PATH.
+ * Recovery owns tunnel repair, so its non-interactive command environment must
+ * still find user-installed runtime tools without adding a second service
+ * owner or accepting an executable path through RPC.
+ */
+export function recoveryCommandPath(
+  inheritedPath = process.env.PATH ?? '',
+  platform: NodeJS.Platform = process.platform,
+  accountHome = homedir(),
+): string {
+  if (platform === 'win32') return inheritedPath;
+  const userBin = join(accountHome, '.local', 'bin');
+  const entries = inheritedPath.split(delimiter).filter(Boolean);
+  return entries.includes(userBin) ? inheritedPath : [userBin, ...entries].join(delimiter);
+}
+
 export interface PublicTunnelRepairDependencies {
   platform?: NodeJS.Platform;
   currentUid?: () => Promise<number | undefined>;
@@ -1590,7 +1607,13 @@ export interface PublicTunnelRepairDependencies {
 
 function command(commandName: string, args: string[], timeoutMs = 10_000, options: { cwd?: string; maxOutputBytes?: number } = {}): Promise<CommandResult> {
   return new Promise((resolveCommand) => {
-    const child = spawn(commandName, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, cwd: options.cwd });
+    const child = spawn(commandName, args, {
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      cwd: options.cwd,
+      env: { ...process.env, PATH: recoveryCommandPath() },
+    });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let size = 0;
