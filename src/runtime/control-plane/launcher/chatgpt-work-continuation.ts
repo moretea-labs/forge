@@ -10,7 +10,7 @@ import {
   parseChatgptConversationIdentity,
   rebindChatgptWorkConversation,
   type ChatgptWorkConversationBinding,
-} from './chatgpt-work-binding-store';
+} from '../../../../adapters/chatgpt/work-conversation-binding-store';
 
 const LEGACY_CONTROLLER_CHATGPT_SESSION_ID = 'forge-chatgpt-supercontroller';
 export const DEFAULT_CHATGPT_AUTOMATION_MODEL = 'gpt-5.6';

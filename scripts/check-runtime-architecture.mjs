@@ -303,7 +303,7 @@ requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'recor
 requireText('src/runtime/control-plane/facade/work-contract-store.ts', '@deprecated Kernel V2 compatibility shim');
 requireText('src/runtime/control-plane/facade/work-state-machine.ts', '@deprecated Kernel V2 compatibility shim');
 requireText('src/runtime/control-plane/facade/work-implementation-review.ts', '@deprecated Kernel V2 compatibility shim');
-requireText('src/runtime/control-plane/facade/types.ts', "['implementation', 'verification', 'review', 'delivery', 'cleanup']");
+requireText('packages/kernel/work/domain/types.ts', "['implementation', 'verification', 'review', 'delivery', 'cleanup']");
 requireText('src/cli/repositories/selected-path-actions.ts', 'beforeCommitGuard');
 requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'prepareReviewedDirectEditWorkCommit');
 requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'completeReviewedDirectEditWorkAfterCommit');
@@ -317,7 +317,12 @@ requireText('src/runtime/gateway/mcp/runtime-tool-definitions.ts', 'review_decis
 requireText('src/runtime/gateway/mcp/runtime-tool-definitions.ts', 'implementation_review_findings');
 requireText('src/runtime/gateway/mcp/runtime-tools.ts', "operation === 'review'");
 requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'implementationReviewContentFingerprint');
-requireText('src/runtime/control-plane/facade/controller-round-relay.ts', "'review'");
+requireText('adapters/mcp/controller-round-compatibility.ts', "'review'");
+requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', 'readControllerRoundContextSnapshot');
+requireText('adapters/chatgpt/controller-round-host.ts', 'buildChatgptControllerRoundPrompt');
+requireText('adapters/chatgpt/controller-round-settlement-store.ts', 'recordChatgptControllerRoundSettlement');
+forbid('packages/kernel/controller/infrastructure/controller-round-store.ts', /browserSessionId|conversationUrl|recordControllerRoundTabSettlement|buildControllerRoundRelayPrompt|capability_id=/, 'Kernel ControllerRound must remain provider/transport neutral; ChatGPT/MCP rendering and settlement belong to adapters');
+requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', "controllerTypes: ['chatgpt']");
 requireText('src/runtime/control-plane/facade/suggested-actions.ts', "case 'review'");
 forbid(
   'src/runtime/gateway/mcp/runtime-tools.ts',

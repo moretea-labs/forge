@@ -12,13 +12,14 @@ import {
 } from '../../recovery/maintenance-executor';
 import { appendWorkEvidence, controllerSessionBlocksRecovery, getControllerSession, getWorkContract, isTerminalWorkContractStatus, listHandoffItems } from '../../control-plane/facade';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
+import { getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/work-conversation-binding-store';
+import { buildChatgptControllerRoundPrompt } from '../../../../adapters/chatgpt/controller-round-host';
 import { getExternalControllerLaunchReservation } from '../../control-plane/launcher/launch-reservation-store';
 import { runStandaloneChatgptPrompt, runWorkChatgptContinuation } from '../../control-plane/launcher/chatgpt-work-continuation';
 import {
   beginInitialControllerRoundDispatch,
-  buildControllerRoundRelayPrompt,
   finishControllerRoundRelayDispatch,
-} from '../../control-plane/facade/controller-round-relay';
+} from '../../../../packages/kernel/controller/api/index';
 import {
   getOccurrence,
   getSchedule,
@@ -517,20 +518,21 @@ async function executeExternalControllerWake(
       const timeoutMs = externalControllerWakeTimeoutMs(args.timeout_ms);
       let relay;
       try {
+        const existingBinding = getChatgptWorkConversationBinding(workStore, workId);
         relay = beginInitialControllerRoundDispatch(workStore, {
           workId,
           identity: {
             controllerId: `schedule:${schedule.scheduleId}`,
+            controllerType: 'chatgpt',
             principalId: 'forge-scheduler',
             controllerInstanceId: 'forge-runtime-scheduler',
             sessionId: occurrence.occurrenceId,
           },
           requirementId: work.requirementId,
-          browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
-          conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
+          bindingId: existingBinding?.bindingId,
         });
         if (relay.status === 'blocked') throw new Error(`CONTROLLER_RELAY_LAUNCH_BLOCKED: ${relay.blockedReason ?? relay.relayScopeId}`);
-        const relayPrompt = `${buildControllerRoundRelayPrompt(workStore, relay, { exactOriginWork: true })}\n\nScheduled continuation hint: ${continuationPrompt}`;
+        const relayPrompt = `${buildChatgptControllerRoundPrompt(workStore, relay, { exactOriginWork: true })}\n\nScheduled continuation hint: ${continuationPrompt}`;
         const dispatched = await awaitExternalControllerWake(runWorkChatgptContinuation({
           controllerHome,
           repoId: schedule.repoId,
@@ -548,11 +550,11 @@ async function executeExternalControllerWake(
           timeoutMs,
         }), timeoutMs);
         if (dispatched.status === 'failed') throw new Error(dispatched.error?.message ?? 'CHATGPT_WORK_CONTINUATION_FAILED');
+        const updatedBinding = getChatgptWorkConversationBinding(workStore, workId);
         const completedRelay = finishControllerRoundRelayDispatch(workStore, {
           workId,
           ok: true,
-          browserSessionId: dispatched.browserSessionId,
-          conversationUrl: dispatched.conversationUrl,
+          bindingId: updatedBinding?.bindingId,
         });
         updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
           lastTriggeredAt: timestamp,

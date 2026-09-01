@@ -216,22 +216,21 @@ import { reconcileWorkValidation } from './work-validation-reconciler';
 import { callExecutionTool } from './execution-tools';
 import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
 import { runStandaloneChatgptPrompt, runWorkChatgptContinuation, settleWorkChatgptAutomationTab } from '../../control-plane/launcher/chatgpt-work-continuation';
-import { getChatgptWorkConversationBinding, hasChatgptConversationIdentity } from '../../control-plane/launcher/chatgpt-work-binding-store';
+import { getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/work-conversation-binding-store';
+import { buildChatgptControllerRoundPrompt, chatgptControllerRoundBindingAuthorizesRecovery } from '../../../../adapters/chatgpt/controller-round-host';
+import { recordChatgptControllerRoundSettlement } from '../../../../adapters/chatgpt/controller-round-settlement-store';
 import {
   acknowledgeControllerRoundClaim,
   beginControllerRoundRelayAfterRelease,
   beginInitialControllerRoundDispatch,
   reconcileControllerRoundAfterAbandonedRelease,
-  buildControllerRoundRelayPrompt,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
-  parseControllerDispositionCompatibilityCapability,
-  parseControllerRoundCompatibilityCapability,
-  recordControllerRoundTabSettlement,
   submitControllerRoundDisposition,
   type ControllerRoundRelayRecord,
   type ControllerRoundDisposition,
-} from '../../control-plane/facade/controller-round-relay';
+} from '../../../../packages/kernel/controller/api/index';
+import { parseControllerDispositionCompatibilityCapability, parseControllerRoundCompatibilityCapability } from '../../../../adapters/mcp/controller-round-compatibility';
 
 export {
   connectorExposedTools,
@@ -1147,15 +1146,9 @@ function authenticatedFacadeControllerIdentity(
 export function dispatchedChatgptRelayAuthorizesStaleControllerRecovery(
   relay: ControllerRoundRelayRecord | undefined,
   controllerType: 'chatgpt' | 'codex' | 'claude' | 'grok' | 'human',
+  binding?: ReturnType<typeof getChatgptWorkConversationBinding>,
 ): boolean {
-  if (controllerType !== 'chatgpt' || relay?.status !== 'dispatched' || !relay.browserSessionId || !relay.conversationUrl) {
-    return false;
-  }
-  try {
-    return hasChatgptConversationIdentity(relay.conversationUrl);
-  } catch {
-    return false;
-  }
+  return controllerType === 'chatgpt' && chatgptControllerRoundBindingAuthorizesRecovery(relay, binding);
 }
 
 function assertFacadeControllerRoundAuthority(
@@ -3938,7 +3931,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 observedOwner!.controllerId !== identity.controllerId
                 || controllerSessionPrincipalId(observedOwner!) !== identity.principalId
               )
-              && dispatchedChatgptRelayAuthorizesStaleControllerRecovery(dispatchedRelay, identity.controllerType);
+              && dispatchedChatgptRelayAuthorizesStaleControllerRecovery(dispatchedRelay, identity.controllerType, getChatgptWorkConversationBinding(store, workId));
             const session = resumeControllerSession(store, {
               workId,
               controllerId: identity.controllerId,
@@ -4035,8 +4028,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
               stateFingerprint: typeof args.state_fingerprint === 'string' ? args.state_fingerprint : undefined,
               reason: typeof args.reason === 'string' ? args.reason : undefined,
-              browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : chatgptBinding?.latestBrowserSessionId,
-              conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : chatgptBinding?.conversationUrl,
+              bindingId: chatgptBinding?.bindingId,
               maxRounds: typeof args.max_rounds === 'number' ? args.max_rounds : undefined,
               maxRepeatedState: typeof args.max_repeated_state === 'number' ? args.max_repeated_state : undefined,
               maxFailures: typeof args.max_failures === 'number' ? args.max_failures : undefined,
@@ -4128,7 +4120,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   relay_scope_id: relay.relayScopeId,
                   requirement_id: relay.requirementId,
                 });
-                const prompt = buildControllerRoundRelayPrompt(relayStore, relay);
+                const prompt = buildChatgptControllerRoundPrompt(relayStore, relay);
                 const dispatched = await runWorkChatgptContinuation({
                   controllerHome: ctx.controllerHome,
                   repoId: repository.repoId,
@@ -4137,21 +4129,23 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   prompt,
                   controllerAuthorityId: relay.authorityId,
                   relayScopeId: relay.relayScopeId,
-                  browserSessionId: relay.browserSessionId,
-                  conversationUrl: relay.conversationUrl,
+                  browserSessionId: getChatgptWorkConversationBinding(relayStore, workId)?.latestBrowserSessionId,
+                  conversationUrl: getChatgptWorkConversationBinding(relayStore, workId)?.conversationUrl,
                   tabPolicy: 'reuse',
                 });
                 if (dispatched.status === 'failed') throw new Error(dispatched.error?.message ?? 'CONTROLLER_RELAY_DISPATCH_FAILED');
                 // The next prompt is externally committed before this transition is
                 // recorded. Contiguous immediate rounds intentionally retain one
                 // Forge-owned tab, avoiding a close/reopen race and duplicate prompt.
-                recordControllerRoundTabSettlement(relayStore, {
+                recordChatgptControllerRoundSettlement(relayStore, {
                   workId,
+                  relayScopeId: relay.relayScopeId,
                   status: 'retained_for_immediate_continuation',
                 });
+                const updatedBinding = getChatgptWorkConversationBinding(relayStore, workId);
                 const completed = finishControllerRoundRelayDispatch(
                   relayStore,
-                  { workId, ok: true, browserSessionId: dispatched.browserSessionId, conversationUrl: dispatched.conversationUrl },
+                  { workId, ok: true, bindingId: updatedBinding?.bindingId },
                 );
                 return result(buildFacadeResult({
                   summary: `Controller lease released and immediate relay ${relay.relayScopeId} dispatched through the canonical ChatGPT launcher.`,
@@ -4177,15 +4171,16 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               && ['waiting', 'waiting_for_user', 'goal_complete', 'blocked', 'failed'].includes(settledRelay.status)
             ) {
               const binding = getChatgptWorkConversationBinding(store, workId);
-              const browserSessionId = settledRelay.browserSessionId ?? binding?.latestBrowserSessionId;
+              const browserSessionId = binding?.latestBrowserSessionId;
               if (browserSessionId) {
                 tabSettlement = await settleWorkChatgptAutomationTab({
                   controllerHome: ctx.controllerHome,
                   workId,
                   browserSessionId,
                 });
-                recordControllerRoundTabSettlement(relayStore, {
+                recordChatgptControllerRoundSettlement(relayStore, {
                   workId,
+                  relayScopeId: settledRelay.relayScopeId,
                   status: tabSettlement.status,
                   error: tabSettlement.error?.message,
                 });
@@ -4233,21 +4228,22 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               const timeoutMs = timeoutValue === undefined ? undefined : Number(timeoutValue);
               if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) throw new Error(`CHATGPT_LAUNCH_TIMEOUT_INVALID: ${timeoutValue}`);
               const continuationPrompt = typeof args.continuation_prompt === 'string' ? args.continuation_prompt.trim() : '';
+              const relayStore = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
+              const existingBinding = getChatgptWorkConversationBinding(relayStore, workId);
               const relay = beginInitialControllerRoundDispatch(
-                { controllerHome: ctx.controllerHome, repoId: repository.repoId },
+                relayStore,
                 {
                   workId,
                   identity: authenticatedFacadeControllerIdentity(ctx, args),
                   requirementId: work.requirementId,
-                  browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
-                  conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
+                  bindingId: existingBinding?.bindingId,
                 },
               );
               if (relay.status === 'blocked') {
                 throw new Error(`CONTROLLER_RELAY_LAUNCH_BLOCKED: ${relay.blockedReason ?? relay.relayScopeId}`);
               }
               const prompt = [
-                buildControllerRoundRelayPrompt(store, relay, { exactOriginWork: true }),
+                buildChatgptControllerRoundPrompt(store, relay, { exactOriginWork: true }),
                 `Controller round: ${relay.relayScopeId}. launcher_start opened this durable round; dispatch success is not semantic completion.`,
                 handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
                 continuationPrompt ? `Continuation: ${continuationPrompt}` : '',
@@ -4277,9 +4273,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 );
                 throw launchError;
               }
+              const updatedBinding = getChatgptWorkConversationBinding(relayStore, workId);
               const completedRelay = finishControllerRoundRelayDispatch(
-                { controllerHome: ctx.controllerHome, repoId: repository.repoId },
-                { workId, ok: true, browserSessionId: dispatched.browserSessionId, conversationUrl: dispatched.conversationUrl },
+                relayStore,
+                { workId, ok: true, bindingId: updatedBinding?.bindingId },
               );
               return result(buildFacadeResult({
                 summary: 'ChatGPT continuation dispatched; wake completion remains pending until the new ChatGPT Controller claims the Work, and semantic closure still requires an explicit disposition.',

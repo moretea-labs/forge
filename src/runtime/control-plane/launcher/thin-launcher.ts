@@ -15,7 +15,7 @@ import {
 import type { ControllerType } from '../facade/types';
 import { getControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { codexMcpConfigArgs, resolveProviderMcpBootstrap, type ProviderMcpBootstrap } from './provider-mcp-bootstrap';
-import { getChatgptWorkConversationBinding } from './chatgpt-work-binding-store';
+import { getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/work-conversation-binding-store';
 import { repositoryChildProcessEnvironment } from '../../shared/process-environment';
 import { redactProcessOutput } from '../../../effects/process-runner';
 
