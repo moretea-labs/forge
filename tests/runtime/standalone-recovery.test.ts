@@ -732,6 +732,7 @@ test('standalone Recovery repairs a Linux primary OpenAI Secure MCP Tunnel witho
       tunnelId,
       mcpServerUrl: connectorEndpoint,
       runtimeApiKeyRef: 'env:FORGE_TUNNEL_RUNTIME_KEY',
+      adminProfile: 'forge-admin',
       postRestartVerifyTimeoutMs: 5_000,
     },
   });
@@ -770,6 +771,7 @@ test('standalone Recovery repairs a Linux primary OpenAI Secure MCP Tunnel witho
     },
   });
   expect(result).toMatchObject({ ok: true, attempted: true });
+  expect(commands).toContainEqual(['tunnel-client', 'runtimes', 'status', 'forge', '--json', '--admin-profile', 'forge-admin']);
   expect(commands.some((entry) => entry[0] === 'tunnel-client' && entry[1] === 'runtimes' && entry[2] === 'connect')).toBe(true);
   expect(commands.some((entry) => entry[0] === 'systemctl' && entry.includes('restart'))).toBe(false);
   expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);

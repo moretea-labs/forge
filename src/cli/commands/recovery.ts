@@ -229,7 +229,7 @@ export function recoveryConnectorDescriptor(
     : undefined;
   const openAiTunnelStatus = openAiTunnelService
     ? (dependencies.openAiTunnelStatus ?? ((service: OpenAiSecureTunnelServiceConfig) => {
-        const status = spawnSync('tunnel-client', openAiSecureTunnelStatusArgs(service.alias), {
+        const status = spawnSync('tunnel-client', openAiSecureTunnelStatusArgs(service.alias, service), {
           encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000,
         });
         return parseOpenAiSecureTunnelRuntimeStatus(status.stdout || '{}', { alias: service.alias, tunnelId: service.tunnelId, mcpServerUrl: service.mcpServerUrl });

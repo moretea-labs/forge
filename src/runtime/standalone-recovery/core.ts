@@ -982,7 +982,7 @@ async function observeOpenAiTunnelRuntime(
 ): Promise<OpenAiSecureTunnelRuntimeObservation> {
   let args: string[];
   try {
-    args = openAiSecureTunnelStatusArgs(configured.alias);
+    args = openAiSecureTunnelStatusArgs(configured.alias, configured);
   } catch (error) {
     return {
       ok: false, running: false, healthy: false, ready: false, identityMatches: false, endpointMatches: false,
