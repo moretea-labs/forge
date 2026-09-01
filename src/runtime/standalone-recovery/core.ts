@@ -1619,6 +1619,7 @@ function command(commandName: string, args: string[], timeoutMs = 10_000, option
     let size = 0;
     const maxOutputBytes = options.maxOutputBytes ?? 256 * 1024;
     let settled = false;
+    let stopping = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = (result: CommandResult) => {
       if (settled) return;
@@ -1631,19 +1632,28 @@ function command(commandName: string, args: string[], timeoutMs = 10_000, option
       if (!child.pid || child.exitCode != null) return;
       try { process.kill(child.pid, signalName); } catch { /* Process already exited. */ }
     };
-    const stop = () => {
-      if (child.exitCode != null) return;
+    const stop = (detail: string) => {
+      if (child.exitCode != null || stopping) return;
+      stopping = true;
       signalChild('SIGTERM');
-      killTimer = setTimeout(() => signalChild('SIGKILL'), 1_000);
+      killTimer = setTimeout(() => {
+        signalChild('SIGKILL');
+        finish({
+          ok: false,
+          status: null,
+          stdout: Buffer.concat(stdout).toString('utf8'),
+          stderr: [Buffer.concat(stderr).toString('utf8').trim(), detail].filter(Boolean).join('\n'),
+        });
+      }, 1_000);
     };
-    const timeout = setTimeout(stop, timeoutMs);
+    const timeout = setTimeout(() => stop(`command timed out after ${timeoutMs}ms`), timeoutMs);
     child.stdout.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (size <= maxOutputBytes) stdout.push(Buffer.from(chunk)); else stop();
+      if (size <= maxOutputBytes) stdout.push(Buffer.from(chunk)); else stop(`command output exceeded ${maxOutputBytes} bytes`);
     });
     child.stderr.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (size <= maxOutputBytes) stderr.push(Buffer.from(chunk)); else stop();
+      if (size <= maxOutputBytes) stderr.push(Buffer.from(chunk)); else stop(`command output exceeded ${maxOutputBytes} bytes`);
     });
     child.once('error', () => finish({ ok: false, status: null, stdout: '', stderr: 'command spawn failed' }));
     child.once('close', (status) => finish({ ok: status === 0, status, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') }));
