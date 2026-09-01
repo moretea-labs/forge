@@ -1,4 +1,6 @@
+import { assertImplementationReviewHistoryAppendOnly, validateImplementationReviewRecord } from './work-implementation-review';
 import {
+  WORK_PHASES,
   isDirectEditWorkCompletionReceipt,
   isReadOnlyReviewCompletionReceipt,
   isRemoteEffectCompletionReceipt,
@@ -15,7 +17,7 @@ import {
 } from './types';
 
 export function phaseIndex(phase: WorkPhase): number {
-  return ['implementation', 'verification', 'delivery', 'cleanup'].indexOf(phase);
+  return WORK_PHASES.indexOf(phase);
 }
 
 export function transitionPhaseEvidence(
@@ -33,7 +35,7 @@ export function transitionPhaseEvidence(
   const evidenceRefs = (input.evidenceRefs ?? current.evidenceRefs).slice(0, 20);
   const source = input.source ?? 'recorded';
   const phaseEvidence = { ...current.phaseEvidence };
-  for (const phase of ['implementation', 'verification', 'delivery', 'cleanup'] as WorkPhase[]) {
+  for (const phase of WORK_PHASES) {
     const index = phaseIndex(phase);
     if (index < targetIndex) {
       phaseEvidence[phase] = {
@@ -75,7 +77,7 @@ export function validateWorkSemantics(contract: WorkContract): WorkContract {
     throw new Error('WORK_COMPLETION_RECEIPT_REQUIRED');
   }
   const currentPhaseIndex = phaseIndex(contract.phase);
-  for (const phase of ['implementation', 'verification', 'delivery', 'cleanup'] as WorkPhase[]) {
+  for (const phase of WORK_PHASES) {
     const checkpoint = contract.phaseEvidence?.[phase];
     if (!checkpoint) throw new Error(`WORK_PHASE_EVIDENCE_REQUIRED: ${phase}`);
     const index = phaseIndex(phase);
@@ -89,6 +91,7 @@ export function validateWorkSemantics(contract: WorkContract): WorkContract {
       throw new Error(`WORK_PHASE_EVIDENCE_FUTURE_NOT_PENDING: ${phase}`);
     }
   }
+  for (const review of contract.implementationReviews ?? []) validateImplementationReviewRecord(review);
   if (contract.completionReceipt) {
     const receipt = contract.completionReceipt;
     if (receipt.workId !== contract.workId) throw new Error('WORK_COMPLETION_RECEIPT_IDENTITY_MISMATCH');
@@ -141,7 +144,7 @@ export function validateWorkSemantics(contract: WorkContract): WorkContract {
       if (!receipt.operation.trim() || !receipt.target.id.trim()) throw new Error('WORK_COMPLETION_RECEIPT_LOCAL_EFFECT_TARGET_REQUIRED');
     }
     if (contract.status !== 'completed') throw new Error('WORK_COMPLETION_RECEIPT_REQUIRES_COMPLETED_WORK');
-    for (const phase of ['implementation', 'verification', 'delivery', 'cleanup'] as WorkPhase[]) {
+    for (const phase of WORK_PHASES) {
       if (!['satisfied', 'skipped'].includes(contract.phaseEvidence[phase].state)) {
         throw new Error(`WORK_COMPLETION_PHASE_NOT_SATISFIED: ${phase}`);
       }
@@ -241,6 +244,7 @@ export function validateWorkSemanticTransition(
   if (current.parentWorkId !== next.parentWorkId) {
     throw new Error('WORK_SEMANTICS_TRANSITION_INVALID: parentWorkId is immutable');
   }
+  assertImplementationReviewHistoryAppendOnly(current.implementationReviews ?? [], next.implementationReviews ?? []);
   return next;
 }
 

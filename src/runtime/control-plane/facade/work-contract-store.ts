@@ -12,6 +12,14 @@ import {
   writeControlPlaneRecordWithinTransaction,
 } from '../persistence/sqlite-store';
 import { assertWorkAdmissionAllowed } from './work-admission-policy';
+import {
+  MAX_IMPLEMENTATION_REVIEW_HISTORY,
+  implementationReviewDecisionTarget,
+  latestImplementationReview,
+  validateImplementationReviewRecord,
+  workRequiresImplementationReview,
+  type WorkImplementationReviewRecord,
+} from './work-implementation-review';
 import { phaseIndex, suggestedActionsForStatus, transitionPhaseEvidence, validateWorkSemanticTransition, validateWorkSemantics } from './work-state-machine';
 import {
   type EvidenceRef,
@@ -49,7 +57,7 @@ export interface WorkContractStoreOptions extends WorkContractStoreLocation {
 
 export type CreateWorkContractInput = Omit<
   WorkContract,
-  'schemaVersion' | 'status' | 'createdAt' | 'updatedAt' | 'risk' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome' | 'phase' | 'phaseEvidence' | 'completionReceipt' | 'evidenceRefs' | 'handoffRefs' | 'suggestedNextActions' | 'policyDecisions' | 'checkRefs' | 'reconciliations' | 'driver' | 'worktreePolicy' | 'evidencePolicy' | 'approvalPolicy' | 'recoveryPolicy'
+  'schemaVersion' | 'status' | 'createdAt' | 'updatedAt' | 'risk' | 'workKind' | 'dispatchState' | 'evidenceState' | 'completionOutcome' | 'phase' | 'phaseEvidence' | 'completionReceipt' | 'evidenceRefs' | 'handoffRefs' | 'suggestedNextActions' | 'policyDecisions' | 'checkRefs' | 'implementationReviews' | 'reconciliations' | 'driver' | 'worktreePolicy' | 'evidencePolicy' | 'approvalPolicy' | 'recoveryPolicy'
 > & {
   risk?: WorkRisk;
   status?: WorkContractStatus;
@@ -179,10 +187,10 @@ function legacyPhaseEvidence(
 ): WorkPhaseEvidenceMap {
   const currentIndex = phaseIndex(contract.phase);
   const completedByReceipt = Boolean(contract.completionReceipt);
-  return Object.fromEntries((['implementation', 'verification', 'delivery', 'cleanup'] as WorkPhase[]).map((phase) => {
+  return Object.fromEntries((['implementation', 'verification', 'review', 'delivery', 'cleanup'] as WorkPhase[]).map((phase) => {
     const index = phaseIndex(phase);
     let state: WorkPhaseEvidenceState = index < currentIndex ? 'satisfied' : index === currentIndex ? 'active' : 'pending';
-    if (completedByReceipt) state = 'satisfied';
+    if (completedByReceipt) state = phase === 'review' ? 'skipped' : 'satisfied';
     else if (contract.status === 'failed' && phase === contract.phase) state = 'failed';
     else if (contract.status === 'cancelled' && phase === contract.phase) state = 'skipped';
     const receiptId = contract.completionReceipt && (phase === 'delivery' || phase === 'cleanup')
@@ -192,7 +200,9 @@ function legacyPhaseEvidence(
       state,
       source: completedByReceipt ? 'recorded' : source,
       summary: completedByReceipt
-        ? `Phase ${phase} satisfied by Work completion receipt ${contract.completionReceipt!.receiptId}.`
+        ? phase === 'review'
+          ? `Legacy completed Work predates first-class implementation review; review phase is compatibility-skipped without synthesizing approval.`
+          : `Phase ${phase} satisfied by Work completion receipt ${contract.completionReceipt!.receiptId}.`
         : index < currentIndex
           ? `Legacy Work advanced beyond ${phase}.`
           : `Legacy Work phase ${phase} is ${state}.`,
@@ -241,6 +251,7 @@ function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore
         dispatchState: legacy.dispatchState ?? inferredDispatchState(status),
         evidenceState: legacy.evidenceState ?? inferredEvidenceState(status),
         suggestedNextActions: suggestedActionsForStatus(status, legacy.suggestedNextActions ?? []),
+        implementationReviews: legacy.implementationReviews ?? [],
         reconciliations: legacy.reconciliations ?? [],
         driver: (legacy.driver as unknown as { preferred?: string } | undefined)?.preferred === 'codex_worker'
           ? { ...legacy.driver, preferred: 'external_controller', allowWorker: false }
@@ -432,6 +443,7 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       suggestedNextActions: (input.suggestedNextActions ?? []).slice(0, 8),
       policyDecisions: (input.policyDecisions ?? []).slice(0, 20),
       checkRefs: (input.checkRefs ?? []).slice(0, 50),
+      implementationReviews: [],
       reconciliations: (input.reconciliations ?? []).slice(0, 20),
       continuationPrompt: input.continuationPrompt?.slice(0, 2_000),
       worktreeRef: input.worktreeRef,
@@ -842,6 +854,7 @@ function updateWorkContractInternal(
   allowCompletionWrite: boolean,
   allowPhaseWrite = false,
   allowRetainedCancelledResume = false,
+  allowImplementationReviewWrite = false,
 ): WorkContract {
   return withWorkContractStoreWrite(options, () => {
     const sanitizedId = sanitizeFileComponent(workId);
@@ -861,7 +874,9 @@ function updateWorkContractInternal(
     const writesCompletionReceipt = Object.prototype.hasOwnProperty.call(patch, 'completionReceipt');
     const changesCompletionOutcome = patch.completionOutcome !== undefined && patch.completionOutcome !== current.completionOutcome;
     const writesPhase = Object.prototype.hasOwnProperty.call(patch, 'phase') || Object.prototype.hasOwnProperty.call(patch, 'phaseEvidence');
+    const writesImplementationReviews = Object.prototype.hasOwnProperty.call(patch, 'implementationReviews');
     if (!allowPhaseWrite && writesPhase) throw new Error('WORK_PHASE_REQUIRES_TRANSITION_API');
+    if (!allowImplementationReviewWrite && writesImplementationReviews) throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRES_RECORD_API');
     const projectedPhase = patch.phase ?? phaseForStatusUpdate(current.phase, patch.status);
     const projectedPhaseEvidence = patch.phaseEvidence ?? (
       patch.status !== undefined && projectedPhase !== current.phase
@@ -902,6 +917,7 @@ function updateWorkContractInternal(
     suggestedNextActions: suggestedActionsForStatus(patch.status ?? current.status, patch.suggestedNextActions ?? current.suggestedNextActions),
     policyDecisions: (patch.policyDecisions ?? current.policyDecisions).slice(0, 20),
     checkRefs: (patch.checkRefs ?? current.checkRefs).slice(0, 50),
+    implementationReviews: (patch.implementationReviews ?? current.implementationReviews ?? []).slice(-MAX_IMPLEMENTATION_REVIEW_HISTORY),
     reconciliations: (patch.reconciliations ?? current.reconciliations ?? []).slice(0, 20),
     objective: (patch.objective ?? current.objective).slice(0, 2_000),
     continuationPrompt: (patch.continuationPrompt ?? current.continuationPrompt)?.slice(0, 2_000),
@@ -1012,6 +1028,14 @@ export function transitionWorkContractPhase(
   const current = getWorkContract(options, workId);
   if (!current) throw new Error(`work contract not found: ${workId}`);
   const at = nowIso(options);
+  if (input.phase === 'review') {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRES_REQUEST_API');
+  }
+  if (input.phase === 'delivery'
+    && current.phase !== 'delivery'
+    && workRequiresImplementationReview(current.workKind, current.scopeEvidence?.actualChangedPaths ?? [])) {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRES_RECORD_API');
+  }
   const phaseEvidence = transitionPhaseEvidence(current, input.phase, {
     status: input.status,
     summary: input.summary,
@@ -1024,6 +1048,81 @@ export function transitionWorkContractPhase(
     phaseEvidence,
     status: input.status,
   }, false, true);
+}
+
+/** Enter the first-class implementation-review phase without recording a decision. */
+export function requestWorkImplementationReview(
+  options: WorkContractStoreOptions,
+  workId: string,
+  summary: string,
+): WorkContract {
+  const current = getWorkContract(options, workId);
+  if (!current) throw new Error(`work contract not found: ${workId}`);
+  if (isTerminalWorkContractStatus(current.status)) throw new Error(`WORK_IMPLEMENTATION_REVIEW_TERMINAL: ${workId}`);
+  if (current.phase !== 'verification' || current.phaseEvidence.verification.state !== 'satisfied') {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_VERIFIED_CANDIDATE_REQUIRED');
+  }
+  const at = nowIso(options);
+  const phaseEvidence = transitionPhaseEvidence(current, 'review', {
+    status: 'running',
+    summary,
+    recordedAt: at,
+  });
+  return updateWorkContractInternal(options, workId, {
+    phase: 'review',
+    phaseEvidence,
+    status: 'running',
+  }, false, true);
+}
+
+/** The only writer for durable Controller implementation-review authority. */
+export function recordWorkImplementationReview(
+  options: WorkContractStoreOptions,
+  workId: string,
+  review: WorkImplementationReviewRecord,
+): WorkContract {
+  const current = getWorkContract(options, workId);
+  if (!current) throw new Error(`work contract not found: ${workId}`);
+  if (isTerminalWorkContractStatus(current.status)) throw new Error(`WORK_IMPLEMENTATION_REVIEW_TERMINAL: ${workId}`);
+  if (review.workId !== current.workId) throw new Error('WORK_IMPLEMENTATION_REVIEW_WORK_ID_MISMATCH');
+  validateImplementationReviewRecord(review);
+  if (review.derivation === 'content_equivalent_commit') {
+    const parent = latestImplementationReview(current.implementationReviews);
+    if (current.phase !== 'delivery'
+      || !review.derivedFromReviewId
+      || parent?.reviewId !== review.derivedFromReviewId
+      || parent.decision !== 'approved') {
+      throw new Error('WORK_IMPLEMENTATION_REVIEW_DERIVATION_PHASE_REQUIRED');
+    }
+  } else if (current.phase !== 'review') {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_PHASE_REQUIRED');
+  }
+  const target = implementationReviewDecisionTarget(review.decision);
+  const at = nowIso(options);
+  const history = [...(current.implementationReviews ?? []), review];
+  if (history.length > MAX_IMPLEMENTATION_REVIEW_HISTORY) throw new Error('WORK_IMPLEMENTATION_REVIEW_HISTORY_LIMIT');
+  const phaseEvidence = transitionPhaseEvidence(current, target.phase, {
+    status: target.status,
+    summary: `Implementation review ${review.reviewId}: ${review.decision}. ${review.rationale}`,
+    recordedAt: at,
+  });
+  if (review.decision === 'approved') {
+    phaseEvidence.review = {
+      state: 'satisfied',
+      source: 'recorded',
+      summary: `Controller approved exact implementation candidate in ${review.reviewId}.`,
+      evidenceRefs: current.evidenceRefs.slice(0, 20),
+      recordedAt: review.recordedAt,
+    };
+  } else if (review.decision === 'blocked') {
+    phaseEvidence.review = { ...phaseEvidence.review, state: 'blocked', recordedAt: review.recordedAt };
+  }
+  return updateWorkContractInternal(options, workId, {
+    phase: target.phase,
+    phaseEvidence,
+    status: target.status,
+    implementationReviews: history,
+  }, false, true, false, true);
 }
 
 export function appendWorkEvidence(
@@ -1083,14 +1182,25 @@ export function recordWorkCompletionReceipt(
   const receiptChangedPaths = isRepositoryCompletionReceipt(receipt) || isDirectEditWorkCompletionReceipt(receipt)
     ? receipt.changedPaths
     : [];
-  const phaseEvidence = Object.fromEntries((['implementation', 'verification', 'delivery', 'cleanup'] as WorkPhase[]).map((phase) => [phase, {
-    state: 'satisfied',
-    source: 'recorded',
-    summary: `Phase ${phase} accepted by Work completion receipt ${receipt.receiptId}.`,
-    evidenceRefs: current.evidenceRefs.slice(0, 20),
-    recordedAt,
-    ...(phase === 'delivery' || phase === 'cleanup' ? { receiptId: receipt.receiptId } : {}),
-  } satisfies WorkPhaseEvidence])) as WorkPhaseEvidenceMap;
+  const historicalReconciliationException = isDirectEditWorkCompletionReceipt(receipt)
+    && Boolean(receipt.reconciliationId?.trim())
+    && current.reconciliations.some((entry) => entry.reconciliationId === receipt.reconciliationId && entry.outcome === 'accepted_equivalence');
+  const reviewRequired = workRequiresImplementationReview(completionWorkKind ?? current.workKind, receiptChangedPaths);
+  if (reviewRequired && !historicalReconciliationException && !['satisfied', 'skipped'].includes(current.phaseEvidence.review.state)) {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
+  }
+  const phaseEvidence: WorkPhaseEvidenceMap = {
+    ...current.phaseEvidence,
+    implementation: { ...current.phaseEvidence.implementation, state: 'satisfied' },
+    verification: { ...current.phaseEvidence.verification, state: 'satisfied' },
+    review: reviewRequired
+      ? historicalReconciliationException
+        ? { state: 'skipped', source: 'recorded', summary: `Historical reviewed reconciliation ${receipt.reconciliationId} is the narrow compatibility authority for this already-delivered Direct Edit Work.`, evidenceRefs: current.evidenceRefs.slice(0, 20), recordedAt }
+        : { ...current.phaseEvidence.review, state: 'satisfied' }
+      : { state: 'skipped', source: 'recorded', summary: 'Implementation review is not required for this source-free Work completion.', evidenceRefs: [], recordedAt },
+    delivery: { state: 'satisfied', source: 'recorded', summary: `Phase delivery accepted by Work completion receipt ${receipt.receiptId}.`, evidenceRefs: current.evidenceRefs.slice(0, 20), recordedAt, receiptId: receipt.receiptId },
+    cleanup: { state: 'satisfied', source: 'recorded', summary: `Phase cleanup accepted by Work completion receipt ${receipt.receiptId}.`, evidenceRefs: current.evidenceRefs.slice(0, 20), recordedAt, receiptId: receipt.receiptId },
+  };
   return updateWorkContractInternal(options, current.workId, {
     phase: 'cleanup',
     phaseEvidence,

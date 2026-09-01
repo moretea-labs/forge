@@ -5,11 +5,16 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { applyEditOperations, beginEditSession, finalizeEditSession } from '../../src/cli/editing/edit-session';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
-import { acceptReviewedDirectEditWorkReconciliation, hasReviewedDirectEditReconciliationOwnership, isFailedReviewedDirectEditWorkRecovery, reconcileFinalizedDirectEditWorksAfterCommit } from '../../src/runtime/control-plane/execution/direct-edit-work-completion';
-import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { registerRepository } from '../../src/cli/repositories/registry';
+import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-actions';
+import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
+import { acceptReviewedDirectEditWorkReconciliation, completeReviewedDirectEditWorkAfterCommit, hasReviewedDirectEditReconciliationOwnership, isFailedReviewedDirectEditWorkRecovery, prepareReviewedDirectEditWorkCommit, reconcileFinalizedDirectEditWorksAfterCommit, type ReviewedDirectEditWorkCommitPlan } from '../../src/runtime/control-plane/execution/direct-edit-work-completion';
+import { implementationReviewContentFingerprint } from '../../src/runtime/control-plane/execution/implementation-review-content';
+import { createWorkContract, getWorkContract, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
 import type { WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
-import { commandFingerprint, verificationInputFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
+import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -28,8 +33,9 @@ function fixture(requirementId?: string) {
   execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
   mkdirSync(join(repoRoot, 'src'), { recursive: true });
 
-  const repoId = 'repo-direct-edit-work';
-  const checkoutId = 'checkout-direct-edit-work';
+  const repository = registerRepository({ path: repoRoot, controllerHome });
+  const repoId = repository.repoId;
+  const checkoutId = repository.activeCheckoutId;
   const workId = 'work-direct-edit-work';
   createWorkContract({ controllerHome, repoId }, {
     workId,
@@ -61,7 +67,7 @@ function fixture(requirementId?: string) {
     reviewer: 'test',
     binding: { workId, repoId, checkoutId, principalId: 'principal-test' },
   });
-  return { repoRoot, controllerHome, repoId, checkoutId, workId, sessionId: session.sessionId };
+  return { repoRoot, controllerHome, repository, repoId, checkoutId, workId, sessionId: session.sessionId };
 }
 
 function commitExample(repoRoot: string, content?: string) {
@@ -143,6 +149,43 @@ function reconciliationInput(fx: ReturnType<typeof fixture>, targetRevision: str
   };
 }
 
+function approveCurrentDirectEditCandidate(fx: ReturnType<typeof fixture>): void {
+  const status = repositoryGitStatus(fx.repository);
+  const sourceRevision = status.head!;
+  const changedPaths = ['src/example.ts'];
+  const reviewContentFingerprint = implementationReviewContentFingerprint(fx.repoRoot, changedPaths);
+  const verificationWorkspaceFingerprint = workspaceValidationFingerprint(fx.repoRoot, status);
+  transitionWorkContractPhase({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+    phase: 'verification',
+    status: 'running',
+    state: 'satisfied',
+    summary: 'No registered checks are required; exact candidate verification is satisfied.',
+  });
+  requestWorkImplementationReview(
+    { controllerHome: fx.controllerHome, repoId: fx.repoId },
+    fx.workId,
+    'Exact Direct Edit candidate is ready for Controller review.',
+  );
+  recordWorkImplementationReview({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
+    schemaVersion: 1,
+    reviewId: 'REV-direct-edit-approved',
+    workId: fx.workId,
+    reviewerPrincipalId: 'principal-reviewer',
+    decision: 'approved',
+    rationale: 'Exact Direct Edit implementation and source-bound candidate reviewed.',
+    findings: [],
+    sourceRevision,
+    workspaceFingerprint: reviewContentFingerprint,
+    verificationWorkspaceFingerprint,
+    changedPaths,
+    changedPathDigest: implementationReviewChangedPathDigest(changedPaths),
+    acceptanceCriteriaSummary: 'Standalone Direct Edit acceptance reviewed.',
+    verificationEvidence: [],
+    architectureEvidence: [],
+    recordedAt: new Date().toISOString(),
+  });
+}
+
 describe('standalone Direct Edit Work completion', () => {
   test('authorizes ownerless failed reviewed recovery only for the exact historical WorkHandle principal', () => {
     const fx = fixture();
@@ -195,7 +238,97 @@ describe('standalone Direct Edit Work completion', () => {
     expect(isFailedReviewedDirectEditWorkRecovery(failedWork, { ...handle, managedWorktree: true })).toBe(false);
   });
 
-  test('records an exact Work completion receipt after the finalized edit is committed', () => {
+  test('commits an exact approved Direct Edit candidate, derives review authority across the commit, and completes the Work', () => {
+    const fx = fixture();
+    const changedPaths = ['src/example.ts'];
+    approveCurrentDirectEditCandidate(fx);
+
+    let plan: ReviewedDirectEditWorkCommitPlan | undefined;
+    const committed = commitSelectedPaths(fx.controllerHome, fx.repository, {
+      paths: changedPaths,
+      message: 'reviewed direct edit',
+      beforeCommitGuard: ({ stagedPaths, currentHead }) => {
+        plan = prepareReviewedDirectEditWorkCommit({
+          controllerHome: fx.controllerHome,
+          repository: fx.repository,
+          stagedPaths,
+          currentHead,
+        });
+      },
+    });
+    expect(committed.error).toBeUndefined();
+    expect(committed.commit?.ok).toBe(true);
+    expect(plan).toBeDefined();
+
+    const completion = completeReviewedDirectEditWorkAfterCommit({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      plan: plan!,
+      fallbackBranch: 'main',
+    });
+    expect(completion.completedWorkIds).toEqual([fx.workId]);
+    const work = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
+    expect(work.status).toBe('completed');
+    expect(work.completionReceipt).toMatchObject({
+      source: 'direct_edit_work',
+      workId: fx.workId,
+      editSessionId: fx.sessionId,
+      changedPaths,
+      delivery: { status: 'integrated', reachable: true },
+    });
+    expect(work.implementationReviews).toHaveLength(2);
+    expect(work.implementationReviews[1]).toMatchObject({
+      decision: 'approved',
+      derivedFromReviewId: 'REV-direct-edit-approved',
+      derivation: 'content_equivalent_commit',
+      sourceRevision: committed.commit?.after?.head,
+    });
+  });
+
+  test('blocks a Work-bound selected-path commit before Git mutation when implementation review is missing', () => {
+    const fx = fixture();
+    const headBefore = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    expect(() => commitSelectedPaths(fx.controllerHome, fx.repository, {
+      paths: ['src/example.ts'],
+      message: 'must not commit without review',
+      beforeCommitGuard: ({ stagedPaths, currentHead }) => {
+        prepareReviewedDirectEditWorkCommit({ controllerHome: fx.controllerHome, repository: fx.repository, stagedPaths, currentHead });
+      },
+    })).toThrow(/WORK_IMPLEMENTATION_REVIEW_REQUIRED/);
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(headBefore);
+  });
+
+  test('blocks a reviewed Direct Edit before Git mutation when filesystem content becomes stale', () => {
+    const fx = fixture();
+    approveCurrentDirectEditCandidate(fx);
+    const headBefore = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    writeFileSync(join(fx.repoRoot, 'src/example.ts'), 'export const value = 2;\n');
+    expect(() => commitSelectedPaths(fx.controllerHome, fx.repository, {
+      paths: ['src/example.ts'],
+      message: 'must not commit stale review',
+      beforeCommitGuard: ({ stagedPaths, currentHead }) => {
+        prepareReviewedDirectEditWorkCommit({ controllerHome: fx.controllerHome, repository: fx.repository, stagedPaths, currentHead });
+      },
+    })).toThrow(/WORK_IMPLEMENTATION_REVIEW_STALE/);
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(headBefore);
+  });
+
+  test('blocks a mixed selected-path commit before Git mutation when it contains paths outside the reviewed Work candidate', () => {
+    const fx = fixture();
+    approveCurrentDirectEditCandidate(fx);
+    const headBefore = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    writeFileSync(join(fx.repoRoot, 'README.md'), '# unrelated mixed change\n');
+    expect(() => commitSelectedPaths(fx.controllerHome, fx.repository, {
+      paths: ['src/example.ts', 'README.md'],
+      message: 'must not mix reviewed Work with unrelated path',
+      beforeCommitGuard: ({ stagedPaths, currentHead }) => {
+        prepareReviewedDirectEditWorkCommit({ controllerHome: fx.controllerHome, repository: fx.repository, stagedPaths, currentHead });
+      },
+    })).toThrow('DIRECT_EDIT_WORK_COMMIT_SCOPE_MISMATCH: commit must materialize the complete reviewed Work path set with no mixed paths');
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(headBefore);
+  });
+
+  test('retires postcommit completion authority so new Direct Edit delivery cannot bypass precommit implementation review', () => {
     const fx = fixture();
     commitExample(fx.repoRoot);
 
@@ -208,22 +341,15 @@ describe('standalone Direct Edit Work completion', () => {
       fallbackBranch: 'main',
     });
 
-    expect(reconciliation.completedWorkIds).toEqual([fx.workId]);
-    const work = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId);
-    expect(work).toMatchObject({
-      status: 'completed',
-      workKind: 'repository_change',
-      completionOutcome: 'completed_changed',
-      completionReceipt: {
-        source: 'direct_edit_work',
-        workId: fx.workId,
-        editSessionId: fx.sessionId,
-        targetBranch: 'main',
-        changedPaths: ['src/example.ts'],
-        delivery: { status: 'integrated', reachable: true },
-        cleanup: { status: 'complete', blockers: [] },
-      },
+    expect(reconciliation.completedWorkIds).toEqual([]);
+    expect(reconciliation.skipped).toContainEqual({
+      sessionId: fx.sessionId,
+      workId: fx.workId,
+      reason: 'postcommit_completion_authority_retired_use_precommit_review_gate_or_explicit_historical_reconciliation',
     });
+    const work = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId);
+    expect(work?.status).toBe('running');
+    expect(work?.completionReceipt).toBeUndefined();
   });
 
   test('closes historically delivered Work even when Requirement completion projection is unavailable', () => {
@@ -457,7 +583,7 @@ describe('standalone Direct Edit Work completion', () => {
     expect(reconciliation.skipped).toContainEqual({
       sessionId: fx.sessionId,
       workId: fx.workId,
-      reason: 'work_scope_out_of_scope:src/example.ts',
+      reason: 'postcommit_completion_authority_retired_use_precommit_review_gate_or_explicit_historical_reconciliation',
     });
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.status).toBe('running');
   });
@@ -476,7 +602,7 @@ describe('standalone Direct Edit Work completion', () => {
     });
 
     expect(reconciliation.completedWorkIds).toEqual([]);
-    expect(reconciliation.skipped[0]?.reason).toContain('revision_mismatch');
+    expect(reconciliation.skipped[0]?.reason).toBe('postcommit_completion_authority_retired_use_precommit_review_gate_or_explicit_historical_reconciliation');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.status).toBe('running');
   });
 });

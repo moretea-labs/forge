@@ -118,7 +118,7 @@ function fixture(options: { changed?: boolean; equivalentHistoricalWork?: boolea
 
 describe('controller Work Task completion receipt', () => {
   test('uses four bounded technical Work phases with one Work-owned checkpoint map', () => {
-    expect(WORK_PHASES).toEqual(['implementation', 'verification', 'delivery', 'cleanup']);
+    expect(WORK_PHASES).toEqual(['implementation', 'verification', 'review', 'delivery', 'cleanup']);
     const fx = fixture();
     const options = { controllerHome: fx.controllerHome, repoId: fx.repoId };
     const initial = getWorkContract(options, fx.workId)!;

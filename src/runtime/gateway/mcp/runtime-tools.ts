@@ -33,7 +33,8 @@ import { recoverTerminalWorkHandle } from '../../control-plane/execution/work-te
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from '../../control-plane/execution/verification-evidence';
 import { resolveWorkVerificationContext } from '../../control-plane/execution/work-verification-context';
 import { executeWorkVerification } from '../../control-plane/execution/work-verification-service';
-import { acceptReviewedDirectEditWorkReconciliation, hasReviewedDirectEditReconciliationOwnership, reconcileFinalizedDirectEditWorksAfterCommit } from '../../control-plane/execution/direct-edit-work-completion';
+import { implementationReviewContentFingerprint } from '../../control-plane/execution/implementation-review-content';
+import { acceptReviewedDirectEditWorkReconciliation, completeReviewedDirectEditWorkAfterCommit, hasReviewedDirectEditReconciliationOwnership, prepareReviewedDirectEditWorkCommit, type ReviewedDirectEditWorkCommitPlan } from '../../control-plane/execution/direct-edit-work-completion';
 import { readJobEvents } from '../../evidence/event-ledger';
 import { readExecutionArtifact } from '../../evidence/artifact-store';
 import { readExecutionEvidence } from '../../evidence/evidence-store';
@@ -2745,7 +2746,7 @@ function reconcileTerminalFacadeWorkVerifications(
   ctx: MultiRepositoryMcpToolContext,
   repository: ReturnType<typeof selected>,
   workId: string,
-): { sourceRevision?: string; workspaceFingerprint?: string; workspaceChangedPaths?: string[]; reconciledProcessIds: string[]; workBoundProcessEvidenceIds: string[] } {
+): { sourceRevision?: string; workspaceFingerprint?: string; implementationReviewWorkspaceFingerprint?: string; workspaceChangedPaths?: string[]; reconciledProcessIds: string[]; workBoundProcessEvidenceIds: string[] } {
   const resolvedVerification = resolveWorkVerificationContext({ controllerHome: ctx.controllerHome, repository, workId });
   if (!resolvedVerification.ok) return { reconciledProcessIds: [], workBoundProcessEvidenceIds: [] };
   const { store, workContract, repository: verificationRepository, checks: availableChecks } = resolvedVerification.context;
@@ -2769,6 +2770,10 @@ function reconcileTerminalFacadeWorkVerifications(
     ...verificationStatus.untracked,
   ])].sort();
   const workspaceFingerprint = workspaceValidationFingerprint(verificationRepository.canonicalRoot, verificationStatus);
+  const implementationReviewWorkspaceFingerprint = implementationReviewContentFingerprint(
+    verificationRepository.canonicalRoot,
+    workspaceChangedPaths,
+  );
   // Work-bound repository Process evidence remains semantic/result evidence,
   // never a typed check receipt. repository_change may use it only when no
   // checks are declared. local_effect may bind the same exact durable Process
@@ -2867,7 +2872,7 @@ function reconcileTerminalFacadeWorkVerifications(
     }
   }
 
-  return { sourceRevision, workspaceFingerprint, workspaceChangedPaths, reconciledProcessIds, workBoundProcessEvidenceIds };
+  return { sourceRevision, workspaceFingerprint, implementationReviewWorkspaceFingerprint, workspaceChangedPaths, reconciledProcessIds, workBoundProcessEvidenceIds };
 }
 
 async function runFacadeVerify(
@@ -4880,6 +4885,36 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           return await runFacadeVerify(ctx, repository, args);
         }
 
+        if (operation === 'review') {
+          const workId = String(args.work_id ?? '').trim();
+          try {
+            if (workId) assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+            const identity = authenticatedFacadeControllerIdentity(ctx, args);
+            const reconciled = workId ? reconcileTerminalFacadeWorkVerifications(ctx, repository, workId) : undefined;
+            if (!workId || !reconciled?.sourceRevision || !reconciled.workspaceFingerprint || !reconciled.implementationReviewWorkspaceFingerprint) {
+              throw new Error(`WORK_IMPLEMENTATION_REVIEW_SOURCE_IDENTITY_REQUIRED: ${workId || 'work_id_missing'}`);
+            }
+            const facade = runGoalWorkloop({
+              ...workloopCtx,
+              principalId: identity.principalId,
+              controllerInstanceId: identity.controllerInstanceId,
+              sourceRevision: reconciled.sourceRevision,
+              workspaceFingerprint: reconciled.workspaceFingerprint,
+              implementationReviewWorkspaceFingerprint: reconciled.implementationReviewWorkspaceFingerprint,
+              workspaceChangedPaths: reconciled.workspaceChangedPaths,
+              workBoundProcessEvidenceIds: reconciled.workBoundProcessEvidenceIds,
+            }, 'review', args);
+            return result(facade as unknown as Record<string, unknown>, facade.status === 'blocked' || facade.status === 'failed' || facade.status === 'not_found');
+          } catch (error) {
+            const blocked = buildFacadeResult({
+              status: 'blocked',
+              summary: error instanceof Error ? error.message : `Work ${workId} implementation review failed.`,
+              data: { workId, implementationReviewRecorded: false },
+            });
+            return result(blocked as unknown as Record<string, unknown>, true);
+          }
+        }
+
         if (operation === 'delegate') {
           const facade = delegateToCodexCerebellum(
             { repoId: repository.repoId },
@@ -5003,6 +5038,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             ...workloopCtx,
             sourceRevision: finalizeReconciliation?.sourceRevision ?? workloopCtx.sourceRevision ?? undefined,
             workspaceFingerprint: finalizeReconciliation?.workspaceFingerprint,
+            implementationReviewWorkspaceFingerprint: finalizeReconciliation?.implementationReviewWorkspaceFingerprint,
             workspaceChangedPaths: finalizeReconciliation?.workspaceChangedPaths,
             workBoundProcessEvidenceIds: finalizeReconciliation?.workBoundProcessEvidenceIds,
           };
@@ -5240,6 +5276,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         let reconstructedRunningCheckout = false;
         let continuationSourceRevision = workloopCtx.sourceRevision;
         let continuationWorkspaceFingerprint: string | undefined;
+        let continuationImplementationReviewWorkspaceFingerprint: string | undefined;
         let continuationWorkspaceChangedPaths: string[] | undefined;
         let continuationWorkBoundProcessEvidenceIds: string[] | undefined;
         if (operation === 'continue') {
@@ -5311,6 +5348,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               const reconciled = reconcileTerminalFacadeWorkVerifications(ctx, repository, workId);
               continuationSourceRevision = reconciled.sourceRevision ?? continuationSourceRevision;
               continuationWorkspaceFingerprint = reconciled.workspaceFingerprint ?? continuationWorkspaceFingerprint;
+              continuationImplementationReviewWorkspaceFingerprint = reconciled.implementationReviewWorkspaceFingerprint ?? continuationImplementationReviewWorkspaceFingerprint;
               continuationWorkspaceChangedPaths = reconciled.workspaceChangedPaths ?? continuationWorkspaceChangedPaths;
               continuationWorkBoundProcessEvidenceIds = reconciled.workBoundProcessEvidenceIds;
             }
@@ -5331,6 +5369,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           ...workloopCtx,
           sourceRevision: continuationSourceRevision ?? undefined,
           workspaceFingerprint: continuationWorkspaceFingerprint,
+          implementationReviewWorkspaceFingerprint: continuationImplementationReviewWorkspaceFingerprint,
           workspaceChangedPaths: continuationWorkspaceChangedPaths,
           workBoundProcessEvidenceIds: continuationWorkBoundProcessEvidenceIds,
           semanticAdmissionLocked: semanticAdmissionRequired,
@@ -5586,17 +5625,36 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
       }
       case 'git_commit_paths': {
         const repository = selected(ctx, args);
-        const committed = commitSelectedPaths(ctx.controllerHome, repository, {
-          paths: args.paths,
-          message: args.message,
-        });
-        const directEditWorkCompletion = !committed.error && committed.commit?.ok === true
-          ? reconcileFinalizedDirectEditWorksAfterCommit({
+        let reviewedCommitPlan: ReviewedDirectEditWorkCommitPlan | undefined;
+        let committed;
+        try {
+          committed = commitSelectedPaths(ctx.controllerHome, repository, {
+            paths: args.paths,
+            message: args.message,
+            beforeCommitGuard: ({ stagedPaths, currentHead }) => {
+              reviewedCommitPlan = prepareReviewedDirectEditWorkCommit({
+                controllerHome: ctx.controllerHome,
+                repository,
+                stagedPaths,
+                currentHead,
+              });
+            },
+          });
+        } catch (error) {
+          return result({
+            repoId: repository.repoId,
+            checkoutId: repository.activeCheckoutId,
+            error: {
+              code: 'SELECTED_PATH_PRECOMMIT_GUARD_FAILED',
+              message: error instanceof Error ? error.message : String(error),
+            },
+          }, true);
+        }
+        const directEditWorkCompletion = !committed.error && committed.commit?.ok === true && reviewedCommitPlan
+          ? completeReviewedDirectEditWorkAfterCommit({
               controllerHome: ctx.controllerHome,
-              repoId: repository.repoId,
-              checkoutId: repository.activeCheckoutId,
-              repoRoot: repository.canonicalRoot,
-              committedPaths: committed.paths,
+              repository,
+              plan: reviewedCommitPlan,
               fallbackBranch: repository.defaultBranch || 'main',
             })
           : undefined;

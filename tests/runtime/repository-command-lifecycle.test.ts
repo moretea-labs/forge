@@ -337,6 +337,20 @@ describe('repository command execution lifecycle', () => {
       releaseControllerLock(controllerHome, { scope: 'worktree', repoId: repository.repoId, worktreeId: repository.activeCheckoutId }, held.lockId);
     }
 
+    const headBeforeReviewGuard = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
+    expect(() => commitSelectedPaths(controllerHome, repository, {
+      paths: ['README.md'],
+      message: 'review gate must stop this commit',
+      beforeCommitGuard: ({ requestedPaths, stagedPaths, currentHead }) => {
+        expect(requestedPaths).toEqual(['README.md']);
+        expect(stagedPaths).toEqual(['README.md']);
+        expect(currentHead).toBe(headBeforeReviewGuard);
+        throw new Error('TEST_IMPLEMENTATION_REVIEW_BLOCKED');
+      },
+    })).toThrow('TEST_IMPLEMENTATION_REVIEW_BLOCKED');
+    expect(gitOutput(repoRoot, ['rev-parse', 'HEAD'])).toBe(headBeforeReviewGuard);
+    expect(gitOutput(repoRoot, ['diff', '--cached', '--name-only']).split(/\r?\n/).filter(Boolean).sort()).toEqual(['README.md', 'other.txt']);
+
     const committed = commitSelectedPaths(controllerHome, repository, { paths: ['README.md'], message: 'selected only' });
     expect(committed.error).toBeUndefined();
     expect(committed.commit?.ok).toBe(true);

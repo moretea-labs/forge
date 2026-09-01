@@ -1,6 +1,7 @@
 import type { ProcessCheckReceiptEvidence } from '../../evidence/process-check-receipt';
 import type { CompletionReceipt as RepositoryCompletionReceipt } from '../../../cli/controller/types';
 import type { AccessMode } from '../governance/access-policy';
+import type { WorkImplementationReviewRecord } from './work-implementation-review';
 import { decideRoute, type ExplicitTaskMode, type RouteDecision, type RoutePolicyInput } from '../routing/route-policy';
 
 export const EXECUTION_MODES = ['direct_control', 'goal_workloop', 'handoff_only'] as const;
@@ -88,7 +89,7 @@ export type WorkContractStatus = (typeof WORK_CONTRACT_STATUSES)[number];
  * Work execution phases are intentionally small and technical. User-facing
  * Requirement lifecycle belongs to Requirement, not this projection.
  */
-export const WORK_PHASES = ['implementation', 'verification', 'delivery', 'cleanup'] as const;
+export const WORK_PHASES = ['implementation', 'verification', 'review', 'delivery', 'cleanup'] as const;
 export type WorkPhase = (typeof WORK_PHASES)[number];
 
 export const WORK_PHASE_EVIDENCE_STATES = ['pending', 'active', 'satisfied', 'blocked', 'failed', 'skipped'] as const;
@@ -570,6 +571,8 @@ export interface WorkContract {
   suggestedNextActions: SuggestedNextAction[];
   policyDecisions: PolicyDecision[];
   checkRefs: VerificationRecord[];
+  /** Append-only Controller implementation-review authority. Generic mutation APIs cannot write this history. */
+  implementationReviews: WorkImplementationReviewRecord[];
   /** Reviewed historical/manual integration exceptions, retained for audit. */
   reconciliations: WorkReconciliationRecord[];
   continuationPrompt?: string;

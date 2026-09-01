@@ -16,7 +16,8 @@ import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
-import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { stopGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { createHandoffItem, getHandoffItem, listHandoffItems } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
@@ -1585,6 +1586,32 @@ describe('scheduled external Controller wake', () => {
     });
 
     const recordedAt = '2026-08-24T09:00:00.000Z';
+    transitionWorkContractPhase(store, workId, {
+      status: 'running',
+      phase: 'verification',
+      state: 'satisfied',
+      summary: 'No-change verification is complete for the exact candidate.',
+    });
+    requestWorkImplementationReview(store, workId, 'No-change verification completed; Controller review is required before terminal goal disposition.');
+    recordWorkImplementationReview(store, workId, {
+      schemaVersion: 1,
+      reviewId: 'REV-relay-terminal-disposition',
+      workId,
+      reviewerPrincipalId: 'chatgpt-principal',
+      reviewerControllerSessionId: 'chatgpt-session-rotated',
+      decision: 'approved',
+      rationale: 'The Controller explicitly reviewed the exact no-change terminal candidate after ownership rotation.',
+      findings: [],
+      sourceRevision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim(),
+      workspaceFingerprint: 'no-change-content-fingerprint',
+      verificationWorkspaceFingerprint: 'no-change-verification-fingerprint',
+      changedPaths: [],
+      changedPathDigest: implementationReviewChangedPathDigest([]),
+      acceptanceCriteriaSummary: 'Explicit no-change terminal completion for the same-principal controller authority test.',
+      verificationEvidence: [],
+      architectureEvidence: [],
+      recordedAt,
+    });
     recordWorkCompletionReceipt(store, workId, {
       schemaVersion: 1,
       receiptId: 'receipt-relay-terminal-disposition',

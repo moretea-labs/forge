@@ -100,7 +100,7 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'workspace_write',
     exposedVia: 'rh_work',
     schemaExposure: 'stable_static',
-    summary: 'Persist and advance WorkContract records for goal workloop start, continue, verify, finalize, and stop.',
+    summary: 'Persist and advance WorkContract records for goal workloop start, continue, verify, explicit implementation review, finalize, and stop.',
   },
   {
     capabilityId: 'controller.plan_contract',
