@@ -1,10 +1,10 @@
 # Current Status Snapshot
 
-<!-- updated_at: 2026-09-01T10:15:00+0800 -->
+<!-- updated_at: 2026-09-01T14:14:50+0800 -->
 <!-- stale_after: 24h -->
 
 > **Status**: Active
-> **Updated At**: 2026-09-01T10:15:00+0800
+> **Updated At**: 2026-09-01T14:14:50+0800
 > **Source Branch**: main
 > **Published Baseline Commit**: 1bc7e5a6348ab807c9cc9d7b1b5dd0f87904e020
 > **Target Branch**: main
@@ -18,7 +18,9 @@ This file is a tracked mainline snapshot for the current Forge Cloud Windows lan
 - Mac evidence: its Primary Connector resolves `/Users/greyson/DevProjects/forge`; its Recovery is an independent local service. It is not a source-development target.
 - WSL authority: `greyson-desktop`, Controller Home `/home/greyson/.forge/controller`, canonical repository `repo_f37fe508f6e8dabb8fe607e4`, checkout `checkout_d61bdffca8e9b7cc2e2b8d64`.
 - WSL Runtime and loopback OAuth Connector are healthy. Primary OpenAI Secure Tunnel `tunnel_6a8a862b52188191b859cf61e7cdb9a3` is healthy but was unmanaged by Recovery; `restart_public_tunnel` is correctly scoped only to Recovery's dedicated public tunnel and therefore cannot repair Primary.
-- Source repair: persist an explicit Connector instance identity (WSL target `forge-wsl`) through the Controller Home and service environment; bring the standalone Recovery installer into parity with the CLI for Linux/OpenAI Primary tunnel ownership and distinct tunnel identities. Recovery's non-interactive command PATH includes the standard user tool directory, and timed-out child commands release their bounded recovery lock rather than blocking subsequent lifecycle actions.
+- Source repair: persist an explicit Connector instance identity (WSL target `forge-wsl`) through the Controller Home and service environment; bring the standalone Recovery installer into parity with the CLI for Linux/OpenAI Primary tunnel ownership and distinct tunnel identities. Recovery's non-interactive command PATH includes the standard user tool directory, timed-out child commands release their bounded recovery lock, and a client-owned loopback tunnel health check is used only when the tunnel-client control-plane status command times out.
+- Release binding: every Runtime activation now rebinds the durable OAuth Connector to the active immutable package release and restores that binding on rollback. Linux rewrites reload, enable, and explicitly restart the Connector unit so its running process receives the active release plus `FORGE_MCP_INSTANCE_ID=forge-wsl`.
+- Live WSL evidence: Recovery release `1788243155309-c6940cb7841b5a79ef2a94300f13f2ede95757dc` and Runtime release `1788243207984-c6940cb7841b5a79ef2a94300f13f2ede95757dc` are active; the Runtime, local OAuth challenge, OpenAI tunnel alias `forge`, Recovery Gateway/Watchdog, and MCP initialize/list/read-only verification pass. The running Connector is bound to that Runtime release and exports `FORGE_MCP_INSTANCE_ID=forge-wsl`.
 - Blocking external boundary: the WSL OAuth issuer still resolves to loopback and no dedicated WSL public OAuth hostname/tunnel is provisioned. A new primary-only Cloudflare tunnel + DNS hostname and a separately named ChatGPT `Forge WSL` tunnel connector are required; neither may reuse Recovery WSL or the Mac endpoint.
 - Work dedupe: `work-repair-forge-linux-wsl2-package--60323050` and `work-successor-continuation-repair-fo-a753657e` are completed; no active overlapping Work contract was found. Do not start destructive Worktree cleanup while the P0 public OAuth path remains incomplete.
 
