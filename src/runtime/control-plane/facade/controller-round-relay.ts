@@ -33,6 +33,7 @@ export const CONTROLLER_ROUND_COMPATIBILITY_OPERATIONS = [
   'controller_claim',
   'continue',
   'verify',
+  'review',
   'finalize',
   'stop',
   'controller_release',

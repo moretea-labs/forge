@@ -2,13 +2,25 @@ import { createHash } from 'crypto';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
 import { getEditSession, listEditSessions, type EditSession } from '../../../cli/editing/edit-session';
+import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
+import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { runProcess } from '../../../effects/process-runner';
-import { getWorkContract, updateWorkContract } from '../facade/work-contract-store';
+import { getWorkContract, recordWorkImplementationReview, updateWorkContract } from '../facade/work-contract-store';
 import { completeWorkWithReceipt } from './work-completion-authority';
 import { isDirectEditWorkCompletionReceipt, isTerminalWorkContractStatus, type DirectEditWorkCompletionReceipt, type WorkReconciliationRecord } from '../facade/types';
-import { historicalVerificationEvidenceAtRevision } from './verification-evidence';
+import { historicalVerificationEvidenceAtRevision, workspaceValidationFingerprint } from './verification-evidence';
 import { readWorkHandle } from './work-handle-store';
 import { assertWorkPathsWithinScope, findWorkPathScopeViolation } from './work-path-scope';
+import { implementationReviewContentFingerprint, implementationReviewIndexFingerprint } from './implementation-review-content';
+import { transferWorkVerificationAcrossContentEquivalentCommit } from './work-verification-service';
+import {
+  assertImplementationReviewPreDeliveryBoundary,
+  authoritativeImplementationReviewVerificationEvidence,
+  deriveImplementationReviewAcrossCommit,
+  latestImplementationReview,
+  normalizeImplementationReviewChangedPaths,
+  type ImplementationReviewCandidateIdentity,
+} from '../facade/work-implementation-review';
 
 export interface DirectEditWorkCompletionReconciliation {
   completedWorkIds: string[];
@@ -54,6 +66,210 @@ function requestedChecksPassed(session: EditSession): boolean {
   return session.requestedChecks.every((checkId) => session.checkResults.some((result) => result.checkId === checkId && result.ok));
 }
 
+
+function samePaths(left: readonly string[], right: readonly string[]): boolean {
+  const a = normalizeImplementationReviewChangedPaths(left);
+  const b = normalizeImplementationReviewChangedPaths(right);
+  return a.length === b.length && a.every((path, index) => path === b[index]);
+}
+
+export interface ReviewedDirectEditWorkCommitPlan {
+  workId: string;
+  editSessionId: string;
+  changedPaths: string[];
+  preCommitCandidate: ImplementationReviewCandidateIdentity;
+  preCommitContentFingerprint: string;
+}
+
+/**
+ * Resolve and gate the only Work-bound Direct Edit candidate whose complete
+ * reviewed path set is staged. This runs from selected-paths' beforeCommitGuard,
+ * after exact index discovery and before the first physical commit side effect.
+ */
+export function prepareReviewedDirectEditWorkCommit(input: {
+  controllerHome: string;
+  repository: RepositoryRecord;
+  stagedPaths: string[];
+  currentHead: string | null;
+}): ReviewedDirectEditWorkCommitPlan | undefined {
+  const stagedPaths = normalizeImplementationReviewChangedPaths(input.stagedPaths);
+  const overlapping = listEditSessions(input.repository.canonicalRoot, 200)
+    .map((summary) => getEditSession(input.repository.canonicalRoot, summary.sessionId))
+    .filter((session) => session.status === 'finalized' && Boolean(session.workId))
+    .filter((session) => changedPaths(session).some((path) => stagedPaths.includes(path)));
+  if (overlapping.length === 0) return undefined;
+  if (overlapping.length !== 1) {
+    throw new Error(`DIRECT_EDIT_WORK_COMMIT_AMBIGUOUS: staged paths overlap ${overlapping.length} finalized Work-bound Edit Sessions`);
+  }
+  const session = overlapping[0]!;
+  const paths = changedPaths(session);
+  if (!samePaths(paths, stagedPaths)) {
+    throw new Error('DIRECT_EDIT_WORK_COMMIT_SCOPE_MISMATCH: commit must materialize the complete reviewed Work path set with no mixed paths');
+  }
+  if (session.repoId && session.repoId !== input.repository.repoId) throw new Error('DIRECT_EDIT_WORK_COMMIT_REPOSITORY_MISMATCH');
+  if (session.checkoutId && session.checkoutId !== input.repository.activeCheckoutId) throw new Error('DIRECT_EDIT_WORK_COMMIT_CHECKOUT_MISMATCH');
+  const workId = session.workId!;
+  const work = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repository.repoId }, workId);
+  if (!work || work.completionReceipt || isTerminalWorkContractStatus(work.status)) throw new Error(`DIRECT_EDIT_WORK_COMMIT_WORK_NOT_ACTIVE: ${workId}`);
+  if (work.checkoutId && work.checkoutId !== input.repository.activeCheckoutId) throw new Error('DIRECT_EDIT_WORK_COMMIT_WORK_CHECKOUT_MISMATCH');
+  assertWorkPathsWithinScope(work, paths, {
+    forbidden: 'DIRECT_EDIT_WORK_COMMIT_FORBIDDEN_PATH',
+    outOfScope: 'DIRECT_EDIT_WORK_COMMIT_PATH_OUT_OF_SCOPE',
+  });
+  const status = repositoryGitStatus(input.repository);
+  const sourceRevision = status.head?.trim();
+  if (!sourceRevision) throw new Error('DIRECT_EDIT_WORK_COMMIT_SOURCE_REVISION_REQUIRED');
+  if (!input.currentHead?.trim() || sourceRevision !== input.currentHead.trim()) {
+    throw new Error('DIRECT_EDIT_WORK_COMMIT_SOURCE_REVISION_CHANGED');
+  }
+  const latestReview = latestImplementationReview(work.implementationReviews);
+  if (!latestReview) throw new Error(`WORK_IMPLEMENTATION_REVIEW_REQUIRED: ${workId}`);
+  const contentFingerprint = implementationReviewContentFingerprint(input.repository.canonicalRoot, paths);
+  const indexFingerprint = implementationReviewIndexFingerprint(input.repository.canonicalRoot, paths);
+  if (contentFingerprint !== indexFingerprint) {
+    throw new Error('DIRECT_EDIT_WORK_COMMIT_INDEX_CONTENT_MISMATCH: staged index must equal the exact approved review content');
+  }
+  const verification = authoritativeImplementationReviewVerificationEvidence({
+    repoId: input.repository.repoId,
+    workId,
+    requiredCheckIds: work.checks,
+    records: work.checkRefs,
+    sourceRevision,
+    workspaceFingerprint: latestReview.verificationWorkspaceFingerprint,
+  });
+  if (verification.missingCheckIds.length > 0) {
+    throw new Error(`WORK_IMPLEMENTATION_REVIEW_VERIFICATION_REQUIRED: ${verification.missingCheckIds.join(', ')}`);
+  }
+  const candidate: ImplementationReviewCandidateIdentity = {
+    sourceRevision,
+    workspaceFingerprint: contentFingerprint,
+    verificationWorkspaceFingerprint: latestReview.verificationWorkspaceFingerprint,
+    changedPaths: paths,
+    verificationEvidence: verification.evidence,
+    architectureEvidence: latestReview.architectureEvidence,
+  };
+  assertImplementationReviewPreDeliveryBoundary({
+    repoId: input.repository.repoId,
+    workId,
+    workKind: work.workKind,
+    reviews: work.implementationReviews,
+    candidate,
+    requiredCheckIds: work.checks,
+    verificationRecords: work.checkRefs,
+  });
+  return { workId, editSessionId: session.sessionId, changedPaths: paths, preCommitCandidate: candidate, preCommitContentFingerprint: contentFingerprint };
+}
+
+/** Complete the exact pre-gated Direct Edit Work after the physical commit. */
+export function completeReviewedDirectEditWorkAfterCommit(input: {
+  controllerHome: string;
+  repository: RepositoryRecord;
+  plan: ReviewedDirectEditWorkCommitPlan;
+  fallbackBranch?: string;
+}): DirectEditWorkCompletionReconciliation {
+  const work = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repository.repoId }, input.plan.workId);
+  if (!work || work.completionReceipt || isTerminalWorkContractStatus(work.status)) {
+    throw new Error(`DIRECT_EDIT_WORK_COMMIT_WORK_NOT_ACTIVE: ${input.plan.workId}`);
+  }
+  const postStatus = repositoryGitStatus(input.repository);
+  const targetRevision = postStatus.head?.trim();
+  if (!targetRevision || targetRevision === input.plan.preCommitCandidate.sourceRevision) {
+    throw new Error('DIRECT_EDIT_WORK_COMMIT_TARGET_REVISION_REQUIRED');
+  }
+  const actualCommittedPaths = comparedRevisionPaths(input.repository.canonicalRoot, input.plan.preCommitCandidate.sourceRevision, targetRevision);
+  if (!samePaths(actualCommittedPaths, input.plan.changedPaths)) {
+    throw new Error('DIRECT_EDIT_WORK_COMMIT_RESULT_SCOPE_MISMATCH');
+  }
+  const targetBranch = postStatus.branch?.trim() || input.fallbackBranch?.trim();
+  if (!targetBranch) throw new Error('DIRECT_EDIT_WORK_COMMIT_TARGET_BRANCH_REQUIRED');
+  const postVerificationWorkspaceFingerprint = workspaceValidationFingerprint(input.repository.canonicalRoot, postStatus);
+  const transfer = transferWorkVerificationAcrossContentEquivalentCommit({
+    controllerHome: input.controllerHome,
+    repository: input.repository,
+    workId: input.plan.workId,
+    preCommitSourceRevision: input.plan.preCommitCandidate.sourceRevision,
+    preCommitWorkspaceFingerprint: input.plan.preCommitCandidate.verificationWorkspaceFingerprint,
+    postCommitSourceRevision: targetRevision,
+    postCommitWorkspaceFingerprint: postVerificationWorkspaceFingerprint,
+  });
+  if (transfer.invalidatedCheckIds.length > 0) {
+    throw new Error(`DIRECT_EDIT_WORK_COMMIT_REVALIDATION_REQUIRED: ${transfer.invalidatedCheckIds.join(', ')}`);
+  }
+  const afterTransfer = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repository.repoId }, input.plan.workId)!;
+  const postVerification = authoritativeImplementationReviewVerificationEvidence({
+    repoId: input.repository.repoId,
+    workId: input.plan.workId,
+    requiredCheckIds: afterTransfer.checks,
+    records: afterTransfer.checkRefs,
+    sourceRevision: targetRevision,
+    workspaceFingerprint: postVerificationWorkspaceFingerprint,
+  });
+  if (postVerification.missingCheckIds.length > 0) {
+    throw new Error(`DIRECT_EDIT_WORK_COMMIT_REVALIDATION_REQUIRED: ${postVerification.missingCheckIds.join(', ')}`);
+  }
+  const postContentFingerprint = implementationReviewContentFingerprint(input.repository.canonicalRoot, input.plan.changedPaths);
+  const postCandidate: ImplementationReviewCandidateIdentity = {
+    sourceRevision: targetRevision,
+    workspaceFingerprint: postContentFingerprint,
+    verificationWorkspaceFingerprint: postVerificationWorkspaceFingerprint,
+    changedPaths: input.plan.changedPaths,
+    verificationEvidence: postVerification.evidence,
+    architectureEvidence: input.plan.preCommitCandidate.architectureEvidence ?? [],
+  };
+  const recordedAt = new Date().toISOString();
+  const derivedReview = deriveImplementationReviewAcrossCommit({
+    workId: input.plan.workId,
+    reviews: afterTransfer.implementationReviews,
+    proof: {
+      preCommitCandidate: input.plan.preCommitCandidate,
+      postCommitCandidate: postCandidate,
+      preCommitDirtyPaths: input.plan.changedPaths,
+      committedPaths: actualCommittedPaths,
+      preCommitContentDigest: input.plan.preCommitContentFingerprint,
+      postCommitContentDigest: postContentFingerprint,
+      postCommitVerificationAuthority: {
+        repoId: input.repository.repoId,
+        workId: input.plan.workId,
+        requiredCheckIds: afterTransfer.checks,
+        records: afterTransfer.checkRefs,
+      },
+    },
+    derivedReviewId: `REV-commit-${createHash('sha256').update(`${input.plan.workId}\0${targetRevision}\0${input.plan.preCommitContentFingerprint}`).digest('hex').slice(0, 20)}`,
+    recordedAt,
+  });
+  recordWorkImplementationReview({ controllerHome: input.controllerHome, repoId: input.repository.repoId }, input.plan.workId, derivedReview);
+  const receipt: DirectEditWorkCompletionReceipt = {
+    schemaVersion: 1,
+    receiptId: `REC-direct-edit-work-${createHash('sha256').update(`${input.repository.repoId}\0${input.plan.workId}\0${input.plan.editSessionId}\0${targetRevision}`).digest('hex').slice(0, 20)}`,
+    source: 'direct_edit_work',
+    workId: input.plan.workId,
+    editSessionId: input.plan.editSessionId,
+    targetBranch,
+    targetRevision,
+    sourceRevision: targetRevision,
+    baseRevision: input.plan.preCommitCandidate.sourceRevision,
+    changedPaths: input.plan.changedPaths,
+    delivery: { kind: 'commit', status: 'integrated', strategy: 'edit_session_commit', reachable: true, recordedAt },
+    cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
+    verifiedAt: recordedAt,
+    recordedAt,
+  };
+  completeWorkWithReceipt(
+    { controllerHome: input.controllerHome, repoId: input.repository.repoId },
+    input.plan.workId,
+    receipt,
+    'completed_changed',
+    'repository_change',
+  );
+  return {
+    completedWorkIds: [input.plan.workId],
+    examinedSessionIds: [input.plan.editSessionId],
+    skipped: [],
+    targetBranch,
+    targetRevision,
+  };
+}
+
 export function reconcileFinalizedDirectEditWorksAfterCommit(input: {
   controllerHome: string;
   repoId: string;
@@ -63,106 +279,35 @@ export function reconcileFinalizedDirectEditWorksAfterCommit(input: {
   fallbackBranch?: string;
   limit?: number;
 }): DirectEditWorkCompletionReconciliation {
-  const committedPathSet = new Set(input.committedPaths);
   const targetRevisionResult = git(input.repoRoot, ['rev-parse', '--verify', 'HEAD']);
-  if (!targetRevisionResult.ok) {
-    return { completedWorkIds: [], examinedSessionIds: [], skipped: [], targetRevision: undefined, targetBranch: undefined };
-  }
-  const targetRevision = targetRevisionResult.stdout.trim();
+  const targetRevision = targetRevisionResult.ok ? targetRevisionResult.stdout.trim() : undefined;
   const branchResult = git(input.repoRoot, ['branch', '--show-current']);
   const targetBranch = branchResult.ok && branchResult.stdout.trim()
     ? branchResult.stdout.trim()
     : input.fallbackBranch?.trim();
-  if (!targetBranch) {
-    return { completedWorkIds: [], examinedSessionIds: [], skipped: [], targetRevision, targetBranch: undefined };
-  }
-  const reachable = git(input.repoRoot, ['merge-base', '--is-ancestor', targetRevision, targetBranch]).ok;
-  if (!reachable) {
-    return { completedWorkIds: [], examinedSessionIds: [], skipped: [], targetRevision, targetBranch };
-  }
-
-  const completedWorkIds: string[] = [];
+  const committedPathSet = new Set(input.committedPaths);
   const examinedSessionIds: string[] = [];
   const skipped: DirectEditWorkCompletionReconciliation['skipped'] = [];
-  const summaries = listEditSessions(input.repoRoot, input.limit ?? 200);
-  for (const summary of summaries) {
+  for (const summary of listEditSessions(input.repoRoot, input.limit ?? 200)) {
     const session = getEditSession(input.repoRoot, summary.sessionId);
     if (session.status !== 'finalized' || !session.workId) continue;
     if (session.repoId && session.repoId !== input.repoId) continue;
     if (session.checkoutId && session.checkoutId !== input.checkoutId) continue;
     const paths = changedPaths(session);
-    if (paths.length === 0 || !paths.every((path) => committedPathSet.has(path))) continue;
+    if (paths.length === 0 || !paths.some((path) => committedPathSet.has(path))) continue;
     examinedSessionIds.push(session.sessionId);
-
-    const work = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repoId }, session.workId);
-    if (!work) {
-      skipped.push({ sessionId: session.sessionId, workId: session.workId, reason: 'work_not_found' });
-      continue;
-    }
-    if (isTerminalWorkContractStatus(work.status)) continue;
-    if (!requestedChecksPassed(session)) {
-      skipped.push({ sessionId: session.sessionId, workId: session.workId, reason: 'configured_checks_not_passed' });
-      continue;
-    }
-    const scopeViolation = findWorkPathScopeViolation(work, paths);
-    if (scopeViolation) {
-      skipped.push({
-        sessionId: session.sessionId,
-        workId: session.workId,
-        reason: `${scopeViolation.kind === 'forbidden' ? 'work_scope_forbidden' : 'work_scope_out_of_scope'}:${scopeViolation.path}`,
-      });
-      continue;
-    }
-    const status = git(input.repoRoot, ['status', '--porcelain=v1', '--', ...paths]);
-    if (!status.ok || status.stdout.trim()) {
-      skipped.push({ sessionId: session.sessionId, workId: session.workId, reason: 'owned_paths_not_clean' });
-      continue;
-    }
-    const mismatches = revisionMismatches(input.repoRoot, targetRevision, session);
-    if (mismatches.length > 0) {
-      skipped.push({ sessionId: session.sessionId, workId: session.workId, reason: `revision_mismatch:${mismatches.join(',')}` });
-      continue;
-    }
-
-    const recordedAt = new Date().toISOString();
-    const receipt: DirectEditWorkCompletionReceipt = {
-      schemaVersion: 1,
-      receiptId: `REC-direct-edit-work-${createHash('sha256').update(`${input.repoId}\0${session.workId}\0${session.sessionId}\0${targetRevision}`).digest('hex').slice(0, 20)}`,
-      source: 'direct_edit_work',
+    skipped.push({
+      sessionId: session.sessionId,
       workId: session.workId,
-      editSessionId: session.sessionId,
-      targetBranch,
-      targetRevision,
-      sourceRevision: targetRevision,
-      baseRevision: session.baseRevision,
-      changedPaths: paths,
-      delivery: {
-        kind: 'commit',
-        status: 'integrated',
-        strategy: 'edit_session_commit',
-        reachable: true,
-        recordedAt,
-      },
-      cleanup: {
-        status: 'complete',
-        warnings: [],
-        blockers: [],
-        recordedAt,
-      },
-      verifiedAt: session.verifiedAt ?? session.finalizedAt ?? recordedAt,
-      recordedAt,
-    };
-    completeWorkWithReceipt(
-      { controllerHome: input.controllerHome, repoId: input.repoId },
-      session.workId,
-      receipt,
-      'completed_changed',
-      'repository_change',
-    );
-    completedWorkIds.push(session.workId);
+      reason: 'postcommit_completion_authority_retired_use_precommit_review_gate_or_explicit_historical_reconciliation',
+    });
   }
-
-  return { completedWorkIds, examinedSessionIds, skipped, targetBranch, targetRevision };
+  // Historical helper intentionally never completes new Work. New delivery must
+  // pass prepareReviewedDirectEditWorkCommit() before commit and
+  // completeReviewedDirectEditWorkAfterCommit() afterward. Already-delivered
+  // recovery remains explicit through acceptReviewedDirectEditWorkReconciliation,
+  // whose completion receipt is cross-bound to a durable reconciliationId.
+  return { completedWorkIds: [], examinedSessionIds, skipped, targetBranch, targetRevision };
 }
 
 export interface ReviewedDirectEditWorkReconciliationInput {

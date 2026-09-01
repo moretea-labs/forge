@@ -48,6 +48,9 @@ import {
 import {
   createWorkContract,
   recordWorkCompletionReceipt,
+  recordWorkImplementationReview,
+  requestWorkImplementationReview,
+  transitionWorkContractPhase,
 } from '../../src/runtime/control-plane/facade/work-contract-store';
 
 describe('MCP canonical Runtime proxy routing', () => {
@@ -709,7 +712,36 @@ function postFinalizeAttributionFixture() {
     workKind: 'completed_no_change',
     status: 'running',
   });
+  transitionWorkContractPhase({ controllerHome, repoId: repository.repoId }, workId, {
+    phase: 'verification',
+    status: 'running',
+    state: 'satisfied',
+    summary: 'No-change fixture verification is complete before implementation review.',
+  });
+  requestWorkImplementationReview(
+    { controllerHome, repoId: repository.repoId },
+    workId,
+    'No-change fixture requires explicit Controller implementation review before completion.',
+  );
   const recordedAt = '2026-08-28T00:18:00.000Z';
+  recordWorkImplementationReview({ controllerHome, repoId: repository.repoId }, workId, {
+    schemaVersion: 1,
+    reviewId: 'REV-post-finalize-readonly',
+    workId,
+    reviewerPrincipalId: principalId,
+    decision: 'approved',
+    rationale: 'The exact no-change completion candidate was reviewed before closing the Work lifecycle.',
+    findings: [],
+    sourceRevision: targetRevision,
+    workspaceFingerprint: 'post-finalize-no-change-content',
+    verificationWorkspaceFingerprint: 'post-finalize-no-change-verification',
+    changedPaths: [],
+    changedPathDigest: '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e852f6a27d1e6d5f7b3768e',
+    acceptanceCriteriaSummary: 'readonly observation remains attributable after lifecycle close',
+    verificationEvidence: [],
+    architectureEvidence: [],
+    recordedAt,
+  });
   recordWorkCompletionReceipt({ controllerHome, repoId: repository.repoId }, workId, {
     schemaVersion: 1,
     receiptId: 'receipt-post-finalize-readonly',

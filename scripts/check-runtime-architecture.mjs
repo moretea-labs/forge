@@ -203,6 +203,8 @@ const required = [
   'src/runtime/control-plane/execution/work-handle-authority.ts',
   'src/runtime/control-plane/execution/work-verification-context.ts',
   'src/runtime/control-plane/execution/work-verification-service.ts',
+  'src/runtime/control-plane/execution/implementation-review-content.ts',
+  'src/runtime/control-plane/facade/work-implementation-review.ts',
   'src/runtime/control-plane/execution/repository-work-attribution.ts',
   'src/runtime/control-plane/execution/work-completion-authority.ts',
   'src/runtime/control-plane/execution/work-evidence-policy.ts',
@@ -271,6 +273,44 @@ forbid(
   'src/runtime/control-plane/execution/work-verification-service.ts',
   /runControllerCheck\s*\(/,
   'route Work verification through persisted Process Runtime instead of synchronous check execution',
+);
+
+
+// Kernel V2 B1: implementation review is one Work lifecycle authority, not a
+// Gateway/finalizer convention. Keep pure policy in facade, Git content identity
+// in execution, repository staging Work-agnostic, and adapters limited to trusted
+// identity materialization + calls into those canonical owners.
+requireText('src/runtime/control-plane/facade/work-implementation-review.ts', 'assertImplementationReviewPreDeliveryBoundary');
+requireText('src/runtime/control-plane/facade/work-implementation-review.ts', 'deriveImplementationReviewAcrossCommit');
+requireText('src/runtime/control-plane/execution/implementation-review-content.ts', 'implementationReviewContentFingerprint');
+requireText('src/runtime/control-plane/execution/implementation-review-content.ts', 'implementationReviewIndexFingerprint');
+requireText('src/runtime/control-plane/facade/work-contract-store.ts', 'requestWorkImplementationReview');
+requireText('src/runtime/control-plane/facade/work-contract-store.ts', 'recordWorkImplementationReview');
+requireText('src/runtime/control-plane/facade/types.ts', "['implementation', 'verification', 'review', 'delivery', 'cleanup']");
+requireText('src/cli/repositories/selected-path-actions.ts', 'beforeCommitGuard');
+requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'prepareReviewedDirectEditWorkCommit');
+requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'completeReviewedDirectEditWorkAfterCommit');
+requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'transferWorkVerificationAcrossContentEquivalentCommit');
+requireText('src/runtime/control-plane/execution/edit-validation-coordinator.ts', 'workId: session.workId');
+requireText('src/runtime/control-plane/execution/edit-validation-coordinator.ts', 'verificationSnapshot: work ?');
+requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'assertPhysicalImplementationReviewGate');
+requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'assertPhysicalBranchCleanupImplementationReviewGate');
+requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'transferWorkVerificationAcrossContentEquivalentCommit');
+requireText('src/runtime/gateway/mcp/runtime-tool-definitions.ts', 'review_decision');
+requireText('src/runtime/gateway/mcp/runtime-tool-definitions.ts', 'implementation_review_findings');
+requireText('src/runtime/gateway/mcp/runtime-tools.ts', "operation === 'review'");
+requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'implementationReviewContentFingerprint');
+requireText('src/runtime/control-plane/facade/controller-round-relay.ts', "'review'");
+requireText('src/runtime/control-plane/facade/suggested-actions.ts', "case 'review'");
+forbid(
+  'src/runtime/gateway/mcp/runtime-tools.ts',
+  /function\s+(?:assert|evaluate|derive)[A-Za-z0-9_]*ImplementationReview/,
+  'Gateway transport must not implement implementation-review policy authority',
+);
+forbid(
+  'src/runtime/control-plane/execution/work-finalization-service.ts',
+  /function\s+deriveImplementationReviewAcrossCommit/,
+  'Finalizer must consume the canonical facade review derivation instead of owning a second review authority',
 );
 for (const adapter of [
   'src/cli/controller/work-mode.ts',
