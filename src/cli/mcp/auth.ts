@@ -19,6 +19,8 @@ export interface McpLocalConfig {
     oauthFile?: string;
   };
   chatgpt?: {
+    /** Stable installation identity exposed by the persistent OAuth Connector. */
+    instanceId?: string;
     serverName?: string;
     endpoint?: string;
     /** Loopback OAuth MCP endpoint used by ChatGPT tunnels/connectors. */
@@ -44,6 +46,20 @@ export interface McpLocalConfig {
     port?: number;
     autoOpen?: boolean;
   };
+}
+
+/**
+ * This value identifies an installation, not a mutable tunnel URL or a
+ * user-facing display name. It is persisted in Controller Home and may be
+ * exposed from the Connector health endpoint.
+ */
+export function normalizeForgeMcpInstanceId(value: string | undefined, label = 'Forge MCP instance id'): string | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (!/^[a-z][a-z0-9-]{1,62}$/.test(normalized)) {
+    throw new Error(`${label} must match ^[a-z][a-z0-9-]{1,62}$`);
+  }
+  return normalized;
 }
 
 export type McpRuntimeStatus = 'starting' | 'running' | 'degraded' | 'stopped';

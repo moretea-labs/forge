@@ -15,6 +15,7 @@ import {
   mcpOAuthPath,
   mcpRuntimeStatePath,
   mcpTokenPath,
+  normalizeForgeMcpInstanceId,
 } from "./auth";
 import { resolveMcpRepoRoot } from "./repo";
 import {
@@ -302,6 +303,7 @@ export function runMcpSetupChatgpt(opts: {
   port?: string;
   endpoint?: string;
   serverName?: string;
+  instanceId?: string;
   localControllerPort?: string;
   connectorPort?: string;
 }): McpSetupResult {
@@ -333,6 +335,9 @@ export function runMcpSetupChatgpt(opts: {
   const serverName = normalizeChatgptMcpServerName(
     opts.serverName ?? migratedServerName,
   );
+  const instanceId = normalizeForgeMcpInstanceId(
+    opts.instanceId ?? existingConfig?.chatgpt?.instanceId,
+  );
   const endpoint = normalizePublicMcpEndpoint(
     opts.endpoint ?? existingConfig?.chatgpt?.endpoint,
   );
@@ -360,6 +365,7 @@ export function runMcpSetupChatgpt(opts: {
     },
     chatgpt: {
       ...existingConfig?.chatgpt,
+      ...(instanceId ? { instanceId } : {}),
       serverName,
       ...(endpoint ? { endpoint } : {}),
       localEndpoint: `http://127.0.0.1:${connectorPort}/mcp`,
@@ -428,6 +434,9 @@ export function runMcpSetupChatgpt(opts: {
       "[forge mcp] Profile: controller",
       `[forge mcp] Toolset: ${config.toolset}`,
       `[forge mcp] ChatGPT MCP server name: ${serverName}`,
+      ...(instanceId
+        ? [`[forge mcp] Forge instance id: ${instanceId}`]
+        : ['[forge mcp] Forge instance id: configure --instance-id before publishing this Connector']),
       `[forge mcp] Internal Runtime endpoint: http://${host}:${port}/mcp`,
       `[forge mcp] ChatGPT local OAuth endpoint: http://127.0.0.1:${connectorPort}/mcp`,
       `[forge mcp] Local Controller: http://${config.localController.host}:${config.localController.port}/`,

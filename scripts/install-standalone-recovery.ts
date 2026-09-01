@@ -1,5 +1,9 @@
+import { createHash } from 'crypto';
 import { isAbsolute, join, resolve } from 'path';
+import { hostname } from 'os';
 import { systemdUserUnitName } from '../src/cli/controller/systemd-user';
+import { openAiSecureTunnelConnectArgs } from '../src/cli/mcp/openai-secure-tunnel';
+import type { OpenAiSecureTunnelServiceConfig, PrimaryConnectorServiceConfig, PublicTunnelServiceConfig, RecoveryTunnelServiceConfig } from '../src/runtime/standalone-recovery/core';
 import { installStandaloneRecovery } from '../src/runtime/standalone-recovery/installer';
 
 function option(name: string): string | undefined {
@@ -31,6 +35,54 @@ function launchdService(label: string | undefined, plistPath: string | undefined
   return { platform: 'launchd' as const, label, ...(plistPath ? { plistPath } : {}) };
 }
 
+function openAiTunnelService(input: {
+  tunnelId?: string;
+  alias?: string;
+  runtimeApiKeyRef?: string;
+  profile?: string;
+  profileDir?: string;
+  adminProfile?: string;
+  mcpServerUrl: string;
+  defaultAlias: string;
+  role: string;
+}): OpenAiSecureTunnelServiceConfig | undefined {
+  const supplied = Boolean(input.tunnelId || input.alias || input.runtimeApiKeyRef || input.profile || input.profileDir || input.adminProfile);
+  if (!supplied) return undefined;
+  if (!input.tunnelId) throw new Error(`${input.role}_OPENAI_TUNNEL_ID_REQUIRED`);
+  if (input.profileDir && !isAbsolute(input.profileDir)) throw new Error(`${input.role}_OPENAI_PROFILE_DIR_ABSOLUTE_REQUIRED`);
+  const service: OpenAiSecureTunnelServiceConfig = {
+    platform: 'openai-secure-tunnel',
+    alias: input.alias?.trim() || input.defaultAlias,
+    tunnelId: input.tunnelId.trim(),
+    mcpServerUrl: input.mcpServerUrl,
+    ...(input.runtimeApiKeyRef?.trim() ? { runtimeApiKeyRef: input.runtimeApiKeyRef.trim() } : {}),
+    ...(input.profile?.trim() ? { profile: input.profile.trim() } : {}),
+    ...(input.profileDir ? { profileDir: resolve(input.profileDir) } : {}),
+    ...(input.adminProfile?.trim() ? { adminProfile: input.adminProfile.trim() } : {}),
+  };
+  try { openAiSecureTunnelConnectArgs(service); } catch (error) {
+    throw new Error(`${input.role}_${error instanceof Error ? error.message : 'OPENAI_TUNNEL_CONFIG_INVALID'}`);
+  }
+  return service;
+}
+
+function assertDistinctOpenAiTunnelIdentity(
+  recovery: RecoveryTunnelServiceConfig | undefined,
+  primary: PublicTunnelServiceConfig | undefined,
+): void {
+  if (recovery?.platform !== 'openai-secure-tunnel' || primary?.platform !== 'openai-secure-tunnel') return;
+  if (recovery.alias === primary.alias) throw new Error('RECOVERY_OPENAI_TUNNEL_ALIAS_CONFLICT');
+  if (recovery.tunnelId === primary.tunnelId) throw new Error('RECOVERY_OPENAI_TUNNEL_ID_CONFLICT');
+}
+
+function recoveryOpenAiTunnelDefaultAlias(controllerHome: string): string {
+  const suffix = createHash('sha256')
+    .update(`${hostname()}\0${process.platform}\0${resolve(controllerHome)}`)
+    .digest('hex')
+    .slice(0, 12);
+  return `forge-recovery-${suffix}`;
+}
+
 const controllerHomeRaw = option('--controller-home') ?? process.env.FORGE_CONTROLLER_HOME ?? '';
 const controllerHome = resolve(controllerHomeRaw);
 if (!controllerHomeRaw || controllerHome === resolve('.')) throw new Error('RECOVERY_CONTROLLER_HOME_REQUIRED');
@@ -51,24 +103,67 @@ const recoverySystemdTunnelService = recoverySystemdUnitRaw
 if (recoveryLaunchdTunnelService && recoverySystemdTunnelService) throw new Error('RECOVERY_TUNNEL_OWNER_CONFLICT');
 if (recoveryLaunchdTunnelService && process.platform === 'linux') throw new Error('RECOVERY_TUNNEL_LAUNCHD_UNSUPPORTED_ON_LINUX');
 if (recoverySystemdTunnelService && process.platform !== 'linux') throw new Error('RECOVERY_TUNNEL_SYSTEMD_UNSUPPORTED_ON_THIS_PLATFORM');
-const recoveryTunnelService = recoverySystemdTunnelService ?? recoveryLaunchdTunnelService;
-if (Boolean(recoveryTunnelService) !== Boolean(recoveryPublicUrl)) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
+const recoveryLocalMcpUrl = `http://127.0.0.1:${port}/recovery/mcp`;
+const recoveryOpenAiTunnelService = openAiTunnelService({
+  tunnelId: option('--recovery-openai-tunnel-id'),
+  alias: option('--recovery-openai-tunnel-alias'),
+  runtimeApiKeyRef: option('--recovery-openai-runtime-api-key-ref'),
+  profile: option('--recovery-openai-profile'),
+  profileDir: option('--recovery-openai-profile-dir'),
+  adminProfile: option('--recovery-openai-admin-profile'),
+  mcpServerUrl: recoveryLocalMcpUrl,
+  defaultAlias: recoveryOpenAiTunnelDefaultAlias(controllerHome),
+  role: 'RECOVERY',
+});
+const recoveryTunnelOwners = [recoverySystemdTunnelService, recoveryLaunchdTunnelService, recoveryOpenAiTunnelService].filter(Boolean);
+if (recoveryTunnelOwners.length > 1) throw new Error('RECOVERY_TUNNEL_OWNER_CONFLICT');
+const recoveryTunnelService = recoveryOpenAiTunnelService ?? recoverySystemdTunnelService ?? recoveryLaunchdTunnelService;
+if (recoveryOpenAiTunnelService && recoveryPublicUrl) throw new Error('RECOVERY_OPENAI_TUNNEL_PUBLIC_URL_CONFLICT');
+if ((recoverySystemdTunnelService || recoveryLaunchdTunnelService) && !recoveryPublicUrl) {
+  throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
+}
+if (!recoveryTunnelService && recoveryPublicUrl) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
 const primaryConnectorLocalUrl = endpointOption('--primary-connector-local-url');
 const primaryConnectorBase = launchdService(
   option('--primary-connector-service-label'),
   option('--primary-connector-service-plist'),
   'RECOVERY_PRIMARY_CONNECTOR',
 );
-if (primaryConnectorLocalUrl && !primaryConnectorBase) throw new Error('RECOVERY_PRIMARY_CONNECTOR_LABEL_REQUIRED_FOR_LOCAL_URL');
-const primaryConnectorService = primaryConnectorBase
-  ? { ...primaryConnectorBase, ...(primaryConnectorLocalUrl ? { localMcpUrl: primaryConnectorLocalUrl } : {}) }
-  : undefined;
-const primaryPublicTunnelService = launchdService(
+let primaryConnectorService: PrimaryConnectorServiceConfig | undefined;
+if (process.platform === 'linux') {
+  if (primaryConnectorBase) throw new Error('RECOVERY_PRIMARY_CONNECTOR_LAUNCHD_UNSUPPORTED_ON_LINUX');
+  primaryConnectorService = primaryConnectorLocalUrl ? { platform: 'systemd-user', localMcpUrl: primaryConnectorLocalUrl } : undefined;
+} else {
+  if (primaryConnectorLocalUrl && !primaryConnectorBase) throw new Error('RECOVERY_PRIMARY_CONNECTOR_LABEL_REQUIRED_FOR_LOCAL_URL');
+  primaryConnectorService = primaryConnectorBase
+    ? { ...primaryConnectorBase, ...(primaryConnectorLocalUrl ? { localMcpUrl: primaryConnectorLocalUrl } : {}) }
+    : undefined;
+}
+const primaryLaunchdTunnelService = launchdService(
   option('--primary-tunnel-service-label'),
   option('--primary-tunnel-service-plist'),
   'RECOVERY_PRIMARY_TUNNEL',
+ ) as PublicTunnelServiceConfig | undefined;
+const primaryOpenAiTunnelService = primaryConnectorLocalUrl ? openAiTunnelService({
+  tunnelId: option('--primary-openai-tunnel-id'),
+  alias: option('--primary-openai-tunnel-alias'),
+  runtimeApiKeyRef: option('--primary-openai-runtime-api-key-ref'),
+  profile: option('--primary-openai-profile'),
+  profileDir: option('--primary-openai-profile-dir'),
+  adminProfile: option('--primary-openai-admin-profile'),
+  mcpServerUrl: primaryConnectorLocalUrl,
+  defaultAlias: 'forge',
+  role: 'RECOVERY_PRIMARY',
+}) : undefined;
+const primaryOpenAiOptionsSupplied = Boolean(
+  option('--primary-openai-tunnel-id') || option('--primary-openai-tunnel-alias') || option('--primary-openai-runtime-api-key-ref')
+  || option('--primary-openai-profile') || option('--primary-openai-profile-dir') || option('--primary-openai-admin-profile'),
 );
+if (primaryOpenAiOptionsSupplied && !primaryConnectorLocalUrl) throw new Error('RECOVERY_PRIMARY_CONNECTOR_LOCAL_URL_REQUIRED_FOR_OPENAI_TUNNEL');
+if (primaryLaunchdTunnelService && primaryOpenAiTunnelService) throw new Error('RECOVERY_PRIMARY_TUNNEL_OWNER_CONFLICT');
+const primaryPublicTunnelService = primaryOpenAiTunnelService ?? primaryLaunchdTunnelService;
 if (primaryPublicTunnelService && !primaryConnectorService) throw new Error('RECOVERY_PRIMARY_CONNECTOR_REQUIRED_FOR_PRIMARY_TUNNEL');
+assertDistinctOpenAiTunnelIdentity(recoveryTunnelService, primaryPublicTunnelService);
 
 const result = await installStandaloneRecovery({
   controllerHome,

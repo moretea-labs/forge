@@ -4,6 +4,7 @@ import { homedir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
 import { spawn, spawnSync } from 'child_process';
 import { bootstrapLaunchAgentWithRetryV2, installLaunchAgent, launchAgentPath, retireConflictingForgeLaunchAgents } from '../../cli/controller/launch-agents';
+import { loadMcpServiceLocalConfig, normalizeForgeMcpInstanceId } from '../../cli/mcp/auth';
 import type { PackageRuntimeRelease } from './package-runtime-release';
 
 export interface PackageConnectorServicePaths {
@@ -160,6 +161,7 @@ export function packageConnectorLaunchSpec(input: { release: PackageConnectorRel
   const cliEntry = join(packageRoot, 'src', 'cli', 'index.ts');
   const nodeLoader = join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs');
   const isBun = Boolean(process.versions.bun) || /(?:^|[/\\-])bun(?:$|[/\\]|\.exe$)/i.test(basename(executable));
+  const instanceId = normalizeForgeMcpInstanceId(loadMcpServiceLocalConfig(input.controllerHome)?.chatgpt?.instanceId);
   const cliArgs = [
     // The package snapshot is executable code, never an adopted repository.
     // Supplying it as --repo makes the Gateway try to register a non-Git
@@ -170,7 +172,11 @@ export function packageConnectorLaunchSpec(input: { release: PackageConnectorRel
   return {
     executable,
     args: isBun ? [cliEntry, ...cliArgs] : ['--loader', nodeLoader, cliEntry, ...cliArgs],
-    environment: { FORGE_CONTROLLER_HOME: resolve(input.controllerHome), FORGE_CONTROLLER_LIFECYCLE_OWNER: '1' },
+    environment: {
+      FORGE_CONTROLLER_HOME: resolve(input.controllerHome),
+      FORGE_CONTROLLER_LIFECYCLE_OWNER: '1',
+      ...(instanceId ? { FORGE_MCP_INSTANCE_ID: instanceId } : {}),
+    },
     port,
   };
 }
