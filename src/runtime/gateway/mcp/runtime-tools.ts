@@ -24,7 +24,7 @@ import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS, getProcessHandle, getProcessRecord, i
 import { classifyPersistedCheckTerminalEvidence } from '../../execution/process-runtime/check-result';
 export { classifyTerminalCheckEvidence } from '../../execution/process-runtime/check-result';
 import { listWorkBoundRepositoryProcessEvidence, listWorkBoundRepositoryRemoteEffectProcessEvidence } from '../../control-plane/execution/work-process-evidence';
-import { appendWorkEvidence, recordWorkCompletionReceipt } from '../../../../packages/kernel/work/api/index';
+import { completeRemoteEffectWorkFromProcessReceipt } from '../../../../packages/kernel/work/api/index';
 import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../../execution/process-runtime/command-facade';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
@@ -2651,12 +2651,6 @@ function finalizeRemoteEffectWorkFromRepositoryProcessReceipt(
   checkoutId: string,
 ) {
   const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
-  const work = getWorkContract(store, workId);
-  if (!work) throw new Error(`WORK_REMOTE_EFFECT_PROCESS_BINDING_NOT_FOUND: ${workId}`);
-  if (work.workKind !== 'remote_effect') {
-    throw new Error(`WORK_REMOTE_EFFECT_PROCESS_KIND_MISMATCH: ${workId} is ${work.workKind}, expected remote_effect`);
-  }
-  if (work.status === 'completed' && work.completionReceipt?.source === 'remote_effect') return work;
   const evidence = listWorkBoundRepositoryRemoteEffectProcessEvidence({
     controllerHome: ctx.controllerHome,
     repoId: repository.repoId,
@@ -2664,33 +2658,14 @@ function finalizeRemoteEffectWorkFromRepositoryProcessReceipt(
     workId,
   })[0];
   if (!evidence) return undefined;
-  if (!work.evidenceRefs.some((candidate) => candidate.evidenceId === evidence.processId)) {
-    appendWorkEvidence(store, workId, {
-      evidenceId: evidence.processId,
-      title: 'trusted repository remote effect completed',
-      summary: `Trusted Work-attributed git push completed with durable Process ${evidence.processId}.`,
-      detailLevel: 'summary',
-    });
-  }
-  return recordWorkCompletionReceipt(
-    store,
-    workId,
-    {
-      schemaVersion: 1,
-      receiptId: evidence.processId,
-      source: 'remote_effect',
-      workId,
-      authority: 'repository_process',
-      actionId: evidence.actionId,
-      requestId: evidence.requestId,
-      semanticKey: evidence.semanticKey,
-      resultDigest: evidence.resultDigest,
-      processId: evidence.processId,
-      recordedAt: evidence.finishedAt ?? new Date().toISOString(),
-    },
-    'completed_remote',
-    'remote_effect',
-  );
+  return completeRemoteEffectWorkFromProcessReceipt(store, workId, {
+    processId: evidence.processId,
+    actionId: evidence.actionId,
+    requestId: evidence.requestId,
+    semanticKey: evidence.semanticKey,
+    resultDigest: evidence.resultDigest,
+    recordedAt: evidence.finishedAt ?? new Date().toISOString(),
+  });
 }
 
 function reconcileTerminalFacadeWorkVerifications(

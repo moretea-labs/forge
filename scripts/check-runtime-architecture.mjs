@@ -363,6 +363,12 @@ forbid(
   /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/,
   'MCP Gateway must not mutate Work through facade/persistence authority',
 );
+forbid(
+  'src/runtime/gateway/mcp/runtime-tools.ts',
+  /\b(?:appendWorkEvidence|recordWorkCompletionReceipt)\s*\(/,
+  'MCP Gateway must submit Work application commands instead of writing lifecycle/evidence records directly',
+);
+requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'completeRemoteEffectWorkFromProcessReceipt');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'packages/kernel/work/api/index');
 requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'packages/kernel/work/api/index');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'completeWorkWithReceipt(');
