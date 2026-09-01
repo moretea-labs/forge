@@ -25,7 +25,7 @@ import {
   type PackageRuntimeActivationRequest,
 } from '../../src/runtime/root/package-runtime-service';
 import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
-import { ensurePackageConnectorService, packageConnectorEndpointStatusHealthy, packageConnectorLaunchSpec, packageConnectorServiceMatchesRelease, packageConnectorServicePaths, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit, waitForPackageConnectorEndpointReady } from '../../src/runtime/root/package-connector-service';
+import { ensurePackageConnectorService, packageConnectorEndpointStatusHealthy, packageConnectorLaunchSpec, packageConnectorServiceMatchesRelease, packageConnectorServicePaths, packageConnectorSystemdInstallCommands, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit, waitForPackageConnectorEndpointReady } from '../../src/runtime/root/package-connector-service';
 import { retireConflictingForgeLaunchAgents } from '../../src/cli/controller/launch-agents';
 import { writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 
@@ -594,6 +594,14 @@ describe('Forge Runtime service', () => {
     const launch = packageConnectorLaunchSpec({ release, controllerHome: fx.home, endpoint: 'http://127.0.0.1:8767/mcp' });
     expect(launch.environment.FORGE_MCP_INSTANCE_ID).toBe('forge-wsl');
     expect(renderPackageConnectorSystemdUserUnit({ launch })).toContain('FORGE_MCP_INSTANCE_ID=forge-wsl');
+  });
+
+  test('restarts a rewritten systemd Connector unit so its active process receives the new release environment', () => {
+    expect(packageConnectorSystemdInstallCommands('com.moretea.forge.mcp-gateway.test.service')).toEqual([
+      ['--user', 'daemon-reload'],
+      ['--user', 'enable', 'com.moretea.forge.mcp-gateway.test.service'],
+      ['--user', 'restart', 'com.moretea.forge.mcp-gateway.test.service'],
+    ]);
   });
 
   test('classifies only expected MCP/OAuth connector responses as healthy', () => {

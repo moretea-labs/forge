@@ -194,6 +194,11 @@ export function renderPackageConnectorSystemdUserUnit(input: { launch: ReturnTyp
   return ['[Unit]', 'Description=Forge ChatGPT OAuth Gateway', 'After=network-online.target', '', '[Service]', 'Type=simple', `ExecStart=${[input.launch.executable, ...input.launch.args].map(quote).join(' ')}`, ...env, 'Restart=on-failure', 'RestartSec=5', '', '[Install]', 'WantedBy=default.target', ''].join('\n');
 }
 
+/** A rewritten user unit needs an explicit restart; enable --now preserves an already-running old process. */
+export function packageConnectorSystemdInstallCommands(unitName: string): string[][] {
+  return [['--user', 'daemon-reload'], ['--user', 'enable', unitName], ['--user', 'restart', unitName]];
+}
+
 export function packageConnectorServiceMatchesRelease(input: {
   authority: PackageConnectorServiceAuthority;
   release: PackageConnectorReleaseBinding;
@@ -238,7 +243,7 @@ function installSystemd(paths: PackageConnectorServicePaths, launch: ReturnType<
   const unitName = `${paths.label}.service`;
   const unitPath = join(env.HOME ?? homedir(), '.config', 'systemd', 'user', unitName);
   atomicWrite(unitPath, renderPackageConnectorSystemdUserUnit({ launch }), 0o644);
-  for (const args of [['--user', 'daemon-reload'], ['--user', 'enable', '--now', unitName]]) {
+  for (const args of packageConnectorSystemdInstallCommands(unitName)) {
     const result = spawnSync('systemctl', args, { encoding: 'utf8', env, timeout: 30_000 });
     if (result.status !== 0) throw new Error(`FORGE_PACKAGE_CONNECTOR_SYSTEMD_INSTALL_FAILED: ${(result.stderr || result.stdout || '').trim()}`);
   }
