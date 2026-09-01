@@ -1694,6 +1694,8 @@ export interface PrimaryRuntimeRecoveryDependencies {
   currentUid?: () => Promise<number | undefined>;
   runCommand?: CommandRunner;
   verifyLocal?: (config: RecoveryConfig) => Promise<VerifyResult>;
+  /** Rebind the independently supervised OAuth Connector after a whole-Runtime release switch. */
+  repairPrimaryConnectorBinding?: (config: RecoveryConfig) => Promise<{ ok: boolean; attempted: boolean; noOp?: boolean; detail: string }>;
   runtimeRunning?: (config: RecoveryConfig) => boolean;
   ensureRuntimeLaunchContract?: (controllerHome: string) => void;
   now?: () => number;
@@ -2687,6 +2689,8 @@ export async function activateRuntimeRelease(
   const wait = dependencies.sleep ?? sleep;
   const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
+  const repairConnectorBinding = dependencies.repairPrimaryConnectorBinding
+    ?? ((value: RecoveryConfig) => repairPrimaryConnectorBinding(value, platform));
   const operationId = `recovery-activate-runtime-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const lockRequestId = guard.requestId?.trim() || operationId;
   const locked = await withLock(config, { action: 'activate_runtime_release', requestId: lockRequestId }, async () => {
@@ -2738,10 +2742,10 @@ export async function activateRuntimeRelease(
         return { ok: false, attempted: false, noOp: true, detail, operationId } satisfies RuntimeReleaseActivationResult;
       }
       return {
-        ok: true,
+        ok: (await repairConnectorBinding(config)).ok,
         attempted: false,
         noOp: true,
-        detail: 'requested Runtime release is already the active whole-Runtime release',
+        detail: 'requested Runtime release is already the active whole-Runtime release; its persistent Connector binding was reconciled',
         operationId,
         verify: await verifyLocal(config),
       } satisfies RuntimeReleaseActivationResult;
@@ -2850,8 +2854,36 @@ export async function activateRuntimeRelease(
     let after = activated.verify;
     let activationFailureDetail: string | undefined;
     if (activated.ok && after.releases.active?.revision === candidate.manifest.releaseId) {
-      audit(config, 'runtime_release_activation_succeeded', { serviceTarget: service.target, operationId, requestId: lockRequestId, activeRevision: after.releases.active?.revision, expectedAuthorityRevision: guard.expectedAuthorityRevision, expectedActiveReleaseId: guard.expectedActiveReleaseId, controllerHomeStorageMigrated: storageMigration?.migrated === true });
-      return { ok: true, attempted: true, detail: storageMigration?.migrated ? 'requested Runtime release activated, Controller Home migrated to .noindex storage, and whole-Runtime verification passed' : 'requested Runtime release activated and passed whole-Runtime verification', serviceTarget: service.target, operationId, verify: after } satisfies RuntimeReleaseActivationResult;
+      const connectorBinding = await repairConnectorBinding(config);
+      if (connectorBinding.ok) {
+        audit(config, 'runtime_release_activation_succeeded', {
+          serviceTarget: service.target,
+          operationId,
+          requestId: lockRequestId,
+          activeRevision: after.releases.active?.revision,
+          expectedAuthorityRevision: guard.expectedAuthorityRevision,
+          expectedActiveReleaseId: guard.expectedActiveReleaseId,
+          controllerHomeStorageMigrated: storageMigration?.migrated === true,
+          connectorBindingRepaired: connectorBinding.attempted,
+        });
+        return {
+          ok: true,
+          attempted: true,
+          detail: storageMigration?.migrated
+            ? 'requested Runtime release activated, Controller Home migrated to .noindex storage, persistent Connector rebound, and whole-Runtime verification passed'
+            : 'requested Runtime release activated, persistent Connector rebound, and whole-Runtime verification passed',
+          serviceTarget: service.target,
+          operationId,
+          verify: after,
+        } satisfies RuntimeReleaseActivationResult;
+      }
+      activationFailureDetail = `persistent Connector binding failed after Runtime activation: ${connectorBinding.detail}`;
+      audit(config, 'runtime_release_activation_connector_binding_failed', {
+        serviceTarget: service.target,
+        operationId,
+        requestId: lockRequestId,
+        detail: connectorBinding.detail,
+      });
     }
     if (!activated.ok) {
       activationFailureDetail = activated.detail;
@@ -2863,7 +2895,7 @@ export async function activateRuntimeRelease(
             ? 'runtime_release_activation_start_failed'
             : 'runtime_release_activation_unverified';
       audit(config, auditAction, { serviceTarget: service.target, operationId, detail: activated.detail });
-    } else {
+    } else if (!activationFailureDetail) {
       activationFailureDetail = `activated Runtime release identity mismatch: expected ${candidate.manifest.releaseId}, observed ${after.releases.active?.revision ?? 'none'}`;
       audit(config, 'runtime_release_activation_commit_mismatch', { serviceTarget: service.target, operationId, detail: activationFailureDetail });
     }
@@ -2912,7 +2944,23 @@ export async function activateRuntimeRelease(
           timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
           successDetail: 'previous whole-Runtime release and SQLite backup restored, restarted, and verified',
         });
-        rollback = { ok: restarted.ok, operationId: rollbackOperationId, detail: restarted.detail, verify: restarted.verify };
+        const connectorBinding = restarted.ok ? await repairConnectorBinding(config) : undefined;
+        if (connectorBinding && !connectorBinding.ok) {
+          audit(config, 'runtime_release_activation_rollback_connector_binding_failed', {
+            serviceTarget: service.target,
+            operationId,
+            rollbackOperationId,
+            detail: connectorBinding.detail,
+          });
+        }
+        rollback = {
+          ok: restarted.ok && (connectorBinding?.ok ?? true),
+          operationId: rollbackOperationId,
+          detail: connectorBinding && !connectorBinding.ok
+            ? `${restarted.detail}; previous persistent Connector binding failed: ${connectorBinding.detail}`
+            : restarted.detail,
+          verify: restarted.verify,
+        };
       } catch (error) {
         rollback = { ok: false, detail: error instanceof Error ? error.message : 'previous whole-Runtime release rollback failed' };
       }

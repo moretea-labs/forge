@@ -2112,6 +2112,7 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(beforeUnit).toContain(join(home, 'runtime', 'releases', 'release-a', 'forge-runtime'));
       expect(beforeUnit).not.toContain(join(home, 'runtime', 'releases', 'release-b', 'forge-runtime'));
       let serviceActive = true;
+      let connectorBindings = 0;
       const commands: string[][] = [];
       const config = createRecoveryConfig(home, { primaryRuntimeService: { platform: 'systemd-user', postRestartVerifyTimeoutMs: 10_000 } });
       const result = await activateRuntimeRelease(config, candidate.path, {
@@ -2128,6 +2129,10 @@ describe('standalone recovery on canonical Runtime', () => {
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
         runtimeRunning: () => false,
+        repairPrimaryConnectorBinding: async () => {
+          connectorBindings += 1;
+          return { ok: true, attempted: true, detail: 'candidate Connector binding refreshed' };
+        },
         verifyLocal: async () => {
           const authority = readRuntimeReleaseAuthority(home)!;
           return {
@@ -2148,6 +2153,7 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(commands).toContainEqual(['systemctl', '--user', 'enable', unitName]);
       expect(commands).toContainEqual(['systemctl', '--user', 'start', unitName]);
       expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);
+      expect(connectorBindings).toBe(1);
       const reboundUnit = readFileSync(unitPath, 'utf8');
       expect(reboundUnit).toBe(renderPackageRuntimeSystemdUserService(home));
       expect(reboundUnit).toContain(join(home, 'runtime', 'releases', 'release-b', 'forge-runtime'));
