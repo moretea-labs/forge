@@ -3,7 +3,7 @@ import { spawnSync } from 'child_process';
 import { getRepository, selectRepositoryCheckout, validateRepository } from '../../../cli/repositories/registry';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
-import { getWorkContract } from '../facade/work-contract-store';
+import { getWorkContract } from '../../../../packages/kernel/work/api/index';
 import type { WorkContract } from '../facade/types';
 import { requireExecutionSession, type ExecutionSessionContext, type SessionIdentity } from './session-store';
 import type { WorkHandleState } from './work-handle-store';

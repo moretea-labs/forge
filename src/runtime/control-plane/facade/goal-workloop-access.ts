@@ -12,7 +12,7 @@ import {
   type GoalWorkloopOperation,
   type GoalWorkloopStartInput,
 } from './goal-workloop';
-import { getWorkContract } from './work-contract-store';
+import { getWorkContract } from '../../../../packages/kernel/work/api/index';
 import type { CapabilityRisk, FacadeResult, WorkContractConstraints, WorkKind } from './types';
 
 export {

@@ -1,6 +1,6 @@
 import type { AccessMode } from '../governance/access-policy';
 import type { RouteDecision } from '../routing/route-policy';
-import { createWorkContract, getWorkContract, updateWorkContract, type WorkContractStoreOptions } from './work-contract-store';
+import { createWorkContract, getWorkContract, updateWorkContract, type WorkContractStoreOptions } from '../../../../packages/kernel/work/api/index';
 import type { WorkContract } from './types';
 
 export interface PreparedRepositoryWorkAdmissionInput {

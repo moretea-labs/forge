@@ -1,6 +1,6 @@
 import { spawnSync } from 'child_process';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
-import { getWorkContract } from '../facade/work-contract-store';
+import { getWorkContract } from '../../../../packages/kernel/work/api/index';
 import { isTerminalWorkContractStatus } from '../facade/types';
 import { executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../execution/process-runtime/command-facade';
 import { executionIdentityForRepository } from './execution-identity';

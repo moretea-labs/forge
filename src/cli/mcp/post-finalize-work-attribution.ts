@@ -1,7 +1,7 @@
 import { classifyRepositoryCommand } from '../repositories/command-classifier';
 import { resolveRepositorySelection } from '../repositories/registry';
 import { executionIdentityForRepository } from '../../runtime/control-plane/execution/execution-identity';
-import { getWorkContract } from '../../runtime/control-plane/facade/work-contract-store';
+import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import { isTerminalWorkContractStatus } from '../../runtime/control-plane/facade/types';
 import {
   classifyRepositoryCommandRoute,

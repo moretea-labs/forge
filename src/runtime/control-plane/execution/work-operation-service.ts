@@ -5,7 +5,7 @@ import { repositoryGitStatus, repositoryGitDiff } from '../../../cli/repositorie
 import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
 import { listControllerChecks } from '../../../cli/controller/check-runner';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
-import { appendVerificationRecord } from '../facade/work-contract-store';
+import { appendVerificationRecord } from '../../../../packages/kernel/work/api/index';
 import { validateWorkHandle } from './validation';
 import { commandFingerprint, effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from './verification-evidence';
 import { executionIdentityForWork } from './execution-identity';

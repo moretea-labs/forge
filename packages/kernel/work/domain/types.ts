@@ -1,0 +1,62 @@
+/**
+ * Canonical Kernel Work domain contract surface.
+ *
+ * Work contracts currently share transport/evidence DTOs with the historical
+ * control-plane facade contract module. Re-exporting them here gives Kernel
+ * modules one inward-facing domain boundary without copying contract shapes.
+ */
+export {
+  WORK_CONTRACT_STATUSES,
+  WORK_PHASES,
+  WORK_PHASE_EVIDENCE_STATES,
+  WORK_RISKS,
+  TERMINAL_WORK_CONTRACT_STATUSES,
+  WORK_KINDS,
+  DISPATCH_STATES,
+  EVIDENCE_STATES,
+  COMPLETION_OUTCOMES,
+  WORK_RECONCILIATION_METHODS,
+  WORK_RECONCILIATION_OUTCOMES,
+  VERIFICATION_OUTCOMES,
+  isRepositoryCompletionReceipt,
+  isReadOnlyReviewCompletionReceipt,
+  isRemoteEffectCompletionReceipt,
+  isDirectEditWorkCompletionReceipt,
+  isTerminalWorkContractStatus,
+} from '../../../../src/runtime/control-plane/facade/types';
+export type {
+  WorkContractStatus,
+  WorkPhase,
+  WorkPhaseEvidenceState,
+  WorkPhaseEvidence,
+  WorkPhaseEvidenceMap,
+  WorkRisk,
+  WorkKind,
+  DispatchState,
+  EvidenceState,
+  CompletionOutcome,
+  ReadOnlyReviewEvidence,
+  WorkSemanticAcceptanceEvidence,
+  ReadOnlyReviewCompletionReceipt,
+  LocalEffectCompletionReceipt,
+  RemoteEffectCompletionReceipt,
+  DirectEditWorkCompletionReceipt,
+  WorkCompletionReceipt,
+  WorkReconciliationMethod,
+  WorkReconciliationOutcome,
+  VerificationOutcome,
+  EvidenceRef,
+  SuggestedNextAction,
+  PolicyDecision,
+  VerificationRecord,
+  WorkReconciliationRecord,
+  WorkContractConstraints,
+  WorkContractDriverPolicy,
+  WorktreePolicy,
+  EvidencePolicy,
+  ApprovalPolicy,
+  RecoveryPolicy,
+  WorkContract,
+  SubmittedWorkOperation,
+  WorkContractStore,
+} from '../../../../src/runtime/control-plane/facade/types';

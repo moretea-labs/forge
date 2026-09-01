@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { runBridgeProvider, isWslWindowsRuntime } from '../../../cli/chatgpt-browser/bridge-provider';
 import { buildBrowserPluginManifest, executeBrowserPluginAction } from '../../plugins/browser-adapter';
 import { controllerPluginRepository } from '../../plugins/store';
-import { getWorkContract } from '../facade/work-contract-store';
+import { getWorkContract } from '../../../../packages/kernel/work/api/index';
 import {
   bindChatgptWorkConversation,
   getChatgptWorkConversationBinding,

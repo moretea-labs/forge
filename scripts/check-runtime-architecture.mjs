@@ -204,6 +204,13 @@ const required = [
   'src/runtime/control-plane/execution/work-verification-context.ts',
   'src/runtime/control-plane/execution/work-verification-service.ts',
   'src/runtime/control-plane/execution/implementation-review-content.ts',
+  'packages/kernel/work/domain/implementation-review.ts',
+  'packages/kernel/work/domain/state-machine.ts',
+  'packages/kernel/work/domain/types.ts',
+  'packages/kernel/work/application/work-service.ts',
+  'packages/kernel/work/ports/work-contract-store.ts',
+  'packages/kernel/work/infrastructure/work-contract-store.ts',
+  'packages/kernel/work/api/index.ts',
   'src/runtime/control-plane/facade/work-implementation-review.ts',
   'src/runtime/control-plane/execution/repository-work-attribution.ts',
   'src/runtime/control-plane/execution/work-completion-authority.ts',
@@ -276,16 +283,21 @@ forbid(
 );
 
 
-// Kernel V2 B1: implementation review is one Work lifecycle authority, not a
-// Gateway/finalizer convention. Keep pure policy in facade, Git content identity
-// in execution, repository staging Work-agnostic, and adapters limited to trusted
-// identity materialization + calls into those canonical owners.
-requireText('src/runtime/control-plane/facade/work-implementation-review.ts', 'assertImplementationReviewPreDeliveryBoundary');
-requireText('src/runtime/control-plane/facade/work-implementation-review.ts', 'deriveImplementationReviewAcrossCommit');
+// Kernel V2 B1/B2: Work lifecycle/review authority lives in packages/kernel/work.
+// Historical facade modules are compatibility-only re-exports. Gateway/finalizer
+// consume the Kernel API/domain instead of owning a parallel policy/store.
+requireText('packages/kernel/work/domain/implementation-review.ts', 'assertImplementationReviewPreDeliveryBoundary');
+requireText('packages/kernel/work/domain/implementation-review.ts', 'deriveImplementationReviewAcrossCommit');
+requireText('packages/kernel/work/domain/state-machine.ts', 'validateWorkSemanticTransition');
+requireText('packages/kernel/work/application/work-service.ts', 'transitionWorkContractPhase');
+requireText('packages/kernel/work/api/index.ts', "export * from '../application/work-service'");
 requireText('src/runtime/control-plane/execution/implementation-review-content.ts', 'implementationReviewContentFingerprint');
 requireText('src/runtime/control-plane/execution/implementation-review-content.ts', 'implementationReviewIndexFingerprint');
-requireText('src/runtime/control-plane/facade/work-contract-store.ts', 'requestWorkImplementationReview');
-requireText('src/runtime/control-plane/facade/work-contract-store.ts', 'recordWorkImplementationReview');
+requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'requestWorkImplementationReview');
+requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'recordWorkImplementationReview');
+requireText('src/runtime/control-plane/facade/work-contract-store.ts', '@deprecated Kernel V2 compatibility shim');
+requireText('src/runtime/control-plane/facade/work-state-machine.ts', '@deprecated Kernel V2 compatibility shim');
+requireText('src/runtime/control-plane/facade/work-implementation-review.ts', '@deprecated Kernel V2 compatibility shim');
 requireText('src/runtime/control-plane/facade/types.ts', "['implementation', 'verification', 'review', 'delivery', 'cleanup']");
 requireText('src/cli/repositories/selected-path-actions.ts', 'beforeCommitGuard');
 requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'prepareReviewedDirectEditWorkCommit');
@@ -310,7 +322,7 @@ forbid(
 forbid(
   'src/runtime/control-plane/execution/work-finalization-service.ts',
   /function\s+deriveImplementationReviewAcrossCommit/,
-  'Finalizer must consume the canonical facade review derivation instead of owning a second review authority',
+  'Finalizer must consume the canonical Kernel Work review derivation instead of owning a second review authority',
 );
 for (const adapter of [
   'src/cli/controller/work-mode.ts',
@@ -333,13 +345,26 @@ forbid(
 );
 requireText('src/runtime/control-plane/facade/goal-workloop.ts', "from '../execution/work-evidence-policy'");
 for (const path of sourceFiles('src/runtime/control-plane')) {
-  if (path === 'src/runtime/control-plane/facade/work-contract-store.ts' || path === 'src/runtime/control-plane/execution/work-completion-authority.ts') continue;
+  if (path === 'src/runtime/control-plane/execution/work-completion-authority.ts') continue;
   forbid(
     path,
     /\brecordWorkCompletionReceipt\s*\(/,
     'route Work completion through the canonical work-completion-authority instead of writing terminal receipts directly',
   );
 }
+// B2 ownership fence: production code may consume only the Kernel Work API/domain,
+// never the retired facade store/state-machine or Kernel persistence implementation.
+for (const path of sourceFiles('src')) {
+  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*(?:work-contract-store|work-state-machine|work-implementation-review)['"]/, 'production source must consume packages/kernel/work instead of retired Work facade authority');
+  forbid(path, /packages\/kernel\/work\/infrastructure\/work-contract-store/, 'production source must consume the Work application/API boundary, not persistence infrastructure');
+}
+forbid(
+  'src/runtime/gateway/mcp/runtime-tools.ts',
+  /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/,
+  'MCP Gateway must not mutate Work through facade/persistence authority',
+);
+requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'packages/kernel/work/api/index');
+requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'packages/kernel/work/api/index');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'completeWorkWithReceipt(');
 requireText('src/runtime/gateway/mcp/execution-tools.ts', 'resetFinalizationStagesForRequest');
 forbid(

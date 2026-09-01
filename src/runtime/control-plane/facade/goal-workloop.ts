@@ -19,7 +19,7 @@ import {
   transitionWorkContractPhase,
   updateWorkContract,
   type WorkContractStoreOptions,
-} from './work-contract-store';
+} from '../../../../packages/kernel/work/api/index';
 import {
   claimPlanStepForWork,
   completePlanStepForWork,
@@ -47,7 +47,7 @@ import {
   type ImplementationReviewCandidateIdentity,
   type WorkImplementationReviewFinding,
   type WorkImplementationReviewRecord,
-} from './work-implementation-review';
+} from '../../../../packages/kernel/work/domain/implementation-review';
 import { buildFacadeResult } from './facade-result';
 import { validateSuggestedNextActions } from './suggested-actions';
 import { buildWorkContinuationSnapshot } from './work-continuation';

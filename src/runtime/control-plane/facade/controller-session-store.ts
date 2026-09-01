@@ -5,7 +5,7 @@ import { withControllerLock } from '../../../cli/repositories/locks';
 import { peekExecutionSession } from '../execution/session-store';
 import { readJsonFile } from '../../shared/json-files';
 import { readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../persistence/sqlite-store';
-import { getWorkContract } from './work-contract-store';
+import { getWorkContract } from '../../../../packages/kernel/work/api/index';
 import { isTerminalWorkContractStatus, type ControllerSession, type ControllerSessionStore, type ControllerType } from './types';
 
 export interface ControllerSessionStoreOptions { controllerHome: string; repoId: string; now?: () => string; }

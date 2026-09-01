@@ -23,7 +23,7 @@ import {
   getWorkContract,
   recordWorkCompletionReceipt,
   updateWorkContract,
-} from '../control-plane/facade/work-contract-store';
+} from '../../../packages/kernel/work/api/index';
 import { isTerminalWorkContractStatus, type LocalEffectCompletionReceipt, type RemoteEffectCompletionReceipt, type WorkContract, type WorkRisk } from '../control-plane/facade/types';
 import type {
   AssistantPluginAdapter,

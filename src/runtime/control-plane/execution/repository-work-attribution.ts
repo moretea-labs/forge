@@ -1,6 +1,6 @@
 import { readExecutionSession } from './session-store';
 import { controllerSessionPrincipalId, getControllerSession, listControllerSessions } from '../facade/controller-session-store';
-import { getWorkContract } from '../facade/work-contract-store';
+import { getWorkContract } from '../../../../packages/kernel/work/api/index';
 import { isTerminalWorkContractStatus } from '../facade/types';
 
 export interface RepositoryWorkAttributionCaller {

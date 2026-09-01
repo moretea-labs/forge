@@ -12,7 +12,7 @@ import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { executionIdentityForRepository } from './execution-identity';
-import { getWorkContract } from '../facade/work-contract-store';
+import { getWorkContract } from '../../../../packages/kernel/work/api/index';
 import { verifyGoalWorkloop } from '../facade/goal-workloop';
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from './verification-evidence';
 import {

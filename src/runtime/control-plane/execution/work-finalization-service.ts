@@ -11,7 +11,7 @@ import { hasCurrentWorkValidationAuthority, markWorkValidationPending, projectWo
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { withControllerSessionTerminalizationFence } from '../facade/controller-session-store';
 import type { VerificationRecord } from '../facade/types';
-import { appendVerificationRecord, appendWorkEvidence, listWorkContracts, recordWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../facade/work-contract-store';
+import { appendVerificationRecord, appendWorkEvidence, listWorkContracts, recordWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
 import { assertResolvedAuthorization, decideAuthorization } from '../governance/authorization';
 import { updateExecutionSession } from './session-store';
@@ -25,7 +25,7 @@ import {
   latestImplementationReview,
   normalizeImplementationReviewChangedPaths,
   type ImplementationReviewCandidateIdentity,
-} from '../facade/work-implementation-review';
+} from '../../../../packages/kernel/work/domain/implementation-review';
 import { effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from './verification-evidence';
 import { completeWorkWithReceipt } from './work-completion-authority';
 import { markWorkHandleFailed, readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle } from './work-handle-store';

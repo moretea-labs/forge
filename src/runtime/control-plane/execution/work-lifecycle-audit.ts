@@ -2,7 +2,7 @@ import { spawnSync } from 'child_process';
 import { existsSync, realpathSync } from 'fs';
 import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
-import { listWorkContracts } from '../facade/work-contract-store';
+import { listWorkContracts } from '../../../../packages/kernel/work/api/index';
 import { isTerminalWorkContractStatus } from '../facade/types';
 import { listWorkHandles } from './work-handle-store';
 

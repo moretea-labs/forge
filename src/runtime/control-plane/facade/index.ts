@@ -1,6 +1,6 @@
 export * from './types';
 export * from './handoff-inbox-store';
-export * from './work-contract-store';
+export * from '../../../../packages/kernel/work/api/index';
 export * from './work-task-projection';
 export * from './work-continuation';
 export * from './controller-session-store';

@@ -5,7 +5,7 @@ import { listRepositories, repositoryCheckoutLifecycle, selectRepositoryCheckout
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { getControllerSession } from '../facade/controller-session-store';
-import { getWorkContract, resumeRetainedCancelledWorkContract, updateWorkContract } from '../facade/work-contract-store';
+import { getWorkContract, resumeRetainedCancelledWorkContract, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { gitCommitAtRef, gitWorktreeSnapshot } from './work-lifecycle-audit';
 import { readWorkHandle, writeWorkHandle } from './work-handle-store';
 

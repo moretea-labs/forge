@@ -17,7 +17,7 @@ import type { FacadeResult, VerificationRecord, WorkContract } from '../facade/t
 import { executionIdentityForRepository } from './execution-identity';
 import { commandFingerprint, effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint } from './verification-evidence';
 import { resolveWorkVerificationContext } from './work-verification-context';
-import { appendVerificationRecord } from '../facade/work-contract-store';
+import { appendVerificationRecord } from '../../../../packages/kernel/work/api/index';
 
 export interface ExecuteWorkVerificationInput {
   controllerHome: string;

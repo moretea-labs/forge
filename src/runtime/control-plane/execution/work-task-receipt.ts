@@ -3,7 +3,7 @@ import { spawnSync } from 'child_process';
 import { getIssue, listIssues, recordTaskVerification, acceptVerifiedTask, projectTaskFromWork } from '../../../cli/controller/issue-store';
 import { resolveCompletionTargetBranch } from '../../../cli/controller/completion-target';
 import type { CompletionReceipt, ControllerIssue } from '../../../cli/controller/types';
-import { getWorkContract, updateWorkContract } from '../facade/work-contract-store';
+import { getWorkContract, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { completeWorkWithReceipt } from './work-completion-authority';
 import { isRepositoryCompletionReceipt, WORK_RECONCILIATION_METHODS, WORK_RECONCILIATION_OUTCOMES } from '../facade/types';
 import type {

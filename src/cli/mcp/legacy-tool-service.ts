@@ -72,7 +72,7 @@ import {
 import { normalizeCheckIds } from '../../runtime/control-plane/facade/check-normalization';
 import { buildExecutionDiagnostics, buildRequirementBoard } from '../../runtime/control-plane/facade/requirement-board';
 import { acceptVerifiedTaskFromControllerWork } from '../../runtime/control-plane/execution/work-task-receipt';
-import { getWorkContract } from '../../runtime/control-plane/facade/work-contract-store';
+import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import { admitDirectEditWorkContract } from '../../runtime/control-plane/facade/repository-work-admission';
 import { decideRoute } from '../../runtime/control-plane/routing/route-policy';
 import { listCapabilityDescriptors, summarizeCapabilityGroups } from '../../runtime/control-plane/facade/capability-registry';

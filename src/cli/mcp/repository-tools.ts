@@ -3,7 +3,7 @@ import { bootstrapLocalProject, diagnoseLatestLocalProjectSource } from '../repo
 import { resolveEphemeralWorkspaceTarget } from '../repositories/ephemeral-workspace';
 import type { ResolvedExecutionIdentity } from '../../runtime/control-plane/execution/execution-identity';
 import { assertNoBoundExecutionSessionMutation, resolveClaimedRepositoryWorkId, resolveExplicitClaimedRepositoryWork, type RepositoryWorkAttributionCaller } from '../../runtime/control-plane/execution/repository-work-attribution';
-import { getWorkContract } from '../../runtime/control-plane/facade/work-contract-store';
+import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import { assertWorkPathsWithinScope } from '../../runtime/control-plane/execution/work-path-scope';
 import { ensureRepositoryMutationWorkHandle } from '../../runtime/control-plane/execution/work-handle-authority';
 import { isTerminalWorkContractStatus } from '../../runtime/control-plane/facade/types';

@@ -61,6 +61,7 @@
     "install.ps1",
     "bin/",
     "scripts/",
+    "packages/",
     "src/",
     "AGENTS.md",
     "CLAUDE.md",

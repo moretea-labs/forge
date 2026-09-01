@@ -6,7 +6,7 @@ import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } f
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
-import { appendWorkEvidence, getWorkContract, updateWorkContract } from '../facade/work-contract-store';
+import { appendWorkEvidence, getWorkContract, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { admitPreparedRepositoryWorkContract } from '../facade/repository-work-admission';
 import { isTerminalWorkContractStatus, type WorkReconciliationRecord } from '../facade/types';
 import { claimControllerSession, getControllerSession, resumeControllerSession } from '../facade/controller-session-store';

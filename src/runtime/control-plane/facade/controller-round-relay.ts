@@ -10,7 +10,7 @@ import {
 import { workHasActiveExecution } from '../../execution/work-activity';
 import { controllerSessionBlocksRecovery, getControllerSession } from './controller-session-store';
 import { getHandoffItem, listHandoffItems } from './handoff-inbox-store';
-import { getWorkContract, readWorkContractStore } from './work-contract-store';
+import { getWorkContract, readWorkContractStore } from '../../../../packages/kernel/work/api/index';
 import {
   isTerminalHandoffStatus,
   isTerminalWorkContractStatus,

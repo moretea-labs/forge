@@ -1,7 +1,7 @@
 import type { ProcessCheckReceiptEvidence } from '../../evidence/process-check-receipt';
 import type { CompletionReceipt as RepositoryCompletionReceipt } from '../../../cli/controller/types';
 import type { AccessMode } from '../governance/access-policy';
-import type { WorkImplementationReviewRecord } from './work-implementation-review';
+import type { WorkImplementationReviewRecord } from '../../../../packages/kernel/work/domain/implementation-review';
 import { decideRoute, type ExplicitTaskMode, type RouteDecision, type RoutePolicyInput } from '../routing/route-policy';
 
 export const EXECUTION_MODES = ['direct_control', 'goal_workloop', 'handoff_only'] as const;

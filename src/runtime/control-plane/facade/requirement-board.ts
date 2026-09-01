@@ -6,7 +6,7 @@ import {
 } from '../persistence/requirement-store';
 import { isRepositoryCompletionReceipt } from './types';
 import { listPlanContracts, summarizePlanContract } from './plan-contract-store';
-import { listWorkContracts, summarizeWorkContract } from './work-contract-store';
+import { listWorkContracts, summarizeWorkContract } from '../../../../packages/kernel/work/api/index';
 import type { PlanContract, WorkContract } from './types';
 
 const DEFAULT_REQUIREMENT_LIMIT = 12;

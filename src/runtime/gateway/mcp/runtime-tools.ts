@@ -24,7 +24,7 @@ import { DEFAULT_WORK_CHECK_LEASE_WAIT_MS, getProcessHandle, getProcessRecord, i
 import { classifyPersistedCheckTerminalEvidence } from '../../execution/process-runtime/check-result';
 export { classifyTerminalCheckEvidence } from '../../execution/process-runtime/check-result';
 import { listWorkBoundRepositoryProcessEvidence, listWorkBoundRepositoryRemoteEffectProcessEvidence } from '../../control-plane/execution/work-process-evidence';
-import { appendWorkEvidence, recordWorkCompletionReceipt } from '../../control-plane/facade/work-contract-store';
+import { appendWorkEvidence, recordWorkCompletionReceipt } from '../../../../packages/kernel/work/api/index';
 import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../../execution/process-runtime/command-facade';
 import { buildJobOperationDigest } from '../../control-plane/facade/operation-digest';
 import { readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, type WorkHandleState } from '../../control-plane/execution/work-handle-store';

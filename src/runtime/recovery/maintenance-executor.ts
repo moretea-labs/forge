@@ -6,7 +6,7 @@ import { cleanupEditSession, getEditSession, listEditSessions, reconcileEditSess
 import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../cli/repositories/runtime-storage';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
-import { getWorkContract, readWorkContractStore, transitionWorkContractPhase } from '../control-plane/facade/work-contract-store';
+import { getWorkContract, readWorkContractStore, transitionWorkContractPhase } from '../../../packages/kernel/work/api/index';
 import { getControllerSession, withControllerSessionTerminalizationFence } from '../control-plane/facade/controller-session-store';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';

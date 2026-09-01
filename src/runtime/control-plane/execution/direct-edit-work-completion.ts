@@ -5,7 +5,7 @@ import { getEditSession, listEditSessions, type EditSession } from '../../../cli
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { runProcess } from '../../../effects/process-runner';
-import { getWorkContract, recordWorkImplementationReview, updateWorkContract } from '../facade/work-contract-store';
+import { getWorkContract, recordWorkImplementationReview, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { completeWorkWithReceipt } from './work-completion-authority';
 import { isDirectEditWorkCompletionReceipt, isTerminalWorkContractStatus, type DirectEditWorkCompletionReceipt, type WorkReconciliationRecord } from '../facade/types';
 import { historicalVerificationEvidenceAtRevision, workspaceValidationFingerprint } from './verification-evidence';
@@ -20,7 +20,7 @@ import {
   latestImplementationReview,
   normalizeImplementationReviewChangedPaths,
   type ImplementationReviewCandidateIdentity,
-} from '../facade/work-implementation-review';
+} from '../../../../packages/kernel/work/domain/implementation-review';
 
 export interface DirectEditWorkCompletionReconciliation {
   completedWorkIds: string[];
