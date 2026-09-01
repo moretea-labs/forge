@@ -9,7 +9,7 @@ import { readRepositoryAccessPolicy } from '../governance/access-policy';
 import { appendWorkEvidence, getWorkContract, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { admitPreparedRepositoryWorkContract } from '../facade/repository-work-admission';
 import { isTerminalWorkContractStatus, type WorkReconciliationRecord } from '../facade/types';
-import { claimControllerSession, getControllerSession, resumeControllerSession } from '../facade/controller-session-store';
+import { claimControllerSession, getControllerSession, resumeControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { updateExecutionSession, type ExecutionSessionContext } from './session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from './validation';
 import { assertExecutionIdentity, executionIdentityFromCoordinates } from './execution-identity';

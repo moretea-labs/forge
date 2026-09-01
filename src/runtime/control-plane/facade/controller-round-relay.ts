@@ -8,7 +8,7 @@ import {
   type ControlPlaneRecord,
 } from '../persistence/sqlite-store';
 import { workHasActiveExecution } from '../../execution/work-activity';
-import { controllerSessionBlocksRecovery, getControllerSession } from './controller-session-store';
+import { controllerSessionBlocksRecovery, getControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { getHandoffItem, listHandoffItems } from './handoff-inbox-store';
 import { getWorkContract, readWorkContractStore } from '../../../../packages/kernel/work/api/index';
 import {

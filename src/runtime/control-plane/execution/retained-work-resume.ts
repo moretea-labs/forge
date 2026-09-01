@@ -4,7 +4,7 @@ import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { listRepositories, repositoryCheckoutLifecycle, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
-import { getControllerSession } from '../facade/controller-session-store';
+import { getControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { getWorkContract, resumeRetainedCancelledWorkContract, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { gitCommitAtRef, gitWorktreeSnapshot } from './work-lifecycle-audit';
 import { readWorkHandle, writeWorkHandle } from './work-handle-store';

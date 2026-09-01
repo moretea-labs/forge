@@ -13,7 +13,7 @@ import {
   reserveExternalControllerLaunch,
 } from './launch-reservation-store';
 import type { ControllerType } from '../facade/types';
-import { getControllerSession } from '../facade/controller-session-store';
+import { getControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { codexMcpConfigArgs, resolveProviderMcpBootstrap, type ProviderMcpBootstrap } from './provider-mcp-bootstrap';
 import { getChatgptWorkConversationBinding } from './chatgpt-work-binding-store';
 import { repositoryChildProcessEnvironment } from '../../shared/process-environment';

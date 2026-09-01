@@ -3,7 +3,7 @@ export * from './handoff-inbox-store';
 export * from '../../../../packages/kernel/work/api/index';
 export * from './work-task-projection';
 export * from './work-continuation';
-export * from './controller-session-store';
+export * from '../../../../packages/kernel/controller/api/index';
 export * from './plan-contract-store';
 export * from './semantic-admission';
 export * from './facade-result';

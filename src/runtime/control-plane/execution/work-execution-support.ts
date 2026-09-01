@@ -1,7 +1,7 @@
 import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
 import { getRepository, listRepositories, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { reconcileWorkValidation } from './work-validation-reconciler';
-import { assertControllerOwnershipAuthority, claimControllerSession, controllerSessionPrincipalId, getControllerSession, releaseControllerSessionWithAuthority, resumeControllerSession } from '../facade/controller-session-store';
+import { assertControllerOwnershipAuthority, claimControllerSession, controllerSessionPrincipalId, getControllerSession, releaseControllerSessionWithAuthority, resumeControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { appendWorkEvidence, getWorkContract } from '../../../../packages/kernel/work/api/index';
 import { resolveLegacyWorkContractIdentity } from './execution-identity';
 import type { ExecutionSessionContext, SessionIdentity } from './session-store';

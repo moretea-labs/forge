@@ -9,7 +9,7 @@ import { repositoryGitCommit, repositoryGitDeleteBranch, repositoryGitFinishWork
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { hasCurrentWorkValidationAuthority, markWorkValidationPending, projectWorkValidationOutcome } from './work-validation-reconciler';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
-import { withControllerSessionTerminalizationFence } from '../facade/controller-session-store';
+import { withControllerSessionTerminalizationFence } from '../../../../packages/kernel/controller/api/index';
 import type { VerificationRecord } from '../facade/types';
 import { appendVerificationRecord, appendWorkEvidence, listWorkContracts, recordWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';

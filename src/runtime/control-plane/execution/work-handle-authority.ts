@@ -3,7 +3,7 @@ import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { getWorkContract, updateWorkContract } from '../../../../packages/kernel/work/api/index';
-import { controllerSessionPrincipalId, getControllerSession } from '../facade/controller-session-store';
+import { controllerSessionPrincipalId, getControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { isTerminalWorkContractStatus } from '../facade/types';
 import { currentPermissionSnapshotVersion } from './validation';
 import { readWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';

@@ -4,7 +4,7 @@ import {
   listHandoffItems,
   type HandoffInboxStoreOptions,
 } from './handoff-inbox-store';
-import { getControllerSession } from './controller-session-store';
+import { getControllerSession } from '../../../../packages/kernel/controller/api/index';
 import {
   appendVerificationRecord,
   appendWorkEvidence,

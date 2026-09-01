@@ -19,7 +19,7 @@ import { managedPathInside, managedWorktreeStorageRoot } from '../../../cli/repo
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { listControlPlaneRecords } from '../persistence/sqlite-store';
 import { getWorkContract } from '../../../../packages/kernel/work/api/index';
-import { getControllerSession, releaseObservedControllerSession } from '../facade/controller-session-store';
+import { getControllerSession, releaseObservedControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { isRepositoryCompletionReceipt, isTerminalWorkContractStatus, type WorkContract } from '../facade/types';
 import {
   cancelProcess,

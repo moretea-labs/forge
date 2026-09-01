@@ -211,6 +211,11 @@ const required = [
   'packages/kernel/work/ports/work-contract-store.ts',
   'packages/kernel/work/infrastructure/work-contract-store.ts',
   'packages/kernel/work/api/index.ts',
+  'packages/kernel/controller/domain/types.ts',
+  'packages/kernel/controller/ports/controller-host.ts',
+  'packages/kernel/controller/infrastructure/controller-session-store.ts',
+  'packages/kernel/controller/application/controller-service.ts',
+  'packages/kernel/controller/api/index.ts',
   'src/runtime/control-plane/facade/work-implementation-review.ts',
   'src/runtime/control-plane/execution/repository-work-attribution.ts',
   'src/runtime/control-plane/execution/work-completion-authority.ts',
@@ -371,6 +376,17 @@ forbid(
 requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'completeRemoteEffectWorkFromProcessReceipt');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'packages/kernel/work/api/index');
 requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'packages/kernel/work/api/index');
+// B3 ControllerSession authority and provider-neutral host boundary.
+requireText('packages/kernel/controller/domain/types.ts', 'export interface ControllerBinding');
+requireText('packages/kernel/controller/domain/types.ts', 'export interface ControllerLease');
+requireText('packages/kernel/controller/ports/controller-host.ts', 'export interface ControllerHost');
+requireText('packages/kernel/controller/ports/controller-host.ts', 'resume(binding: ControllerBinding, roundContext: ControllerRoundContext)');
+requireText('packages/kernel/controller/infrastructure/controller-session-store.ts', 'claimControllerSession');
+requireText('packages/kernel/controller/infrastructure/controller-session-store.ts', 'releaseControllerSessionWithAuthority');
+requireText('src/runtime/control-plane/facade/controller-session-store.ts', '@deprecated Kernel V2 compatibility shim');
+for (const path of sourceFiles('src')) {
+  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*controller-session-store['"]/, 'production source must consume packages/kernel/controller instead of retired ControllerSession facade authority');
+}
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'completeWorkWithReceipt(');
 requireText('src/runtime/gateway/mcp/execution-tools.ts', 'resetFinalizationStagesForRequest');
 forbid(

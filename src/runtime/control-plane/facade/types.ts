@@ -225,32 +225,15 @@ export interface HandoffInboxStore {
   items: HandoffItem[];
 }
 
-export type ControllerType = 'chatgpt' | 'codex' | 'grok' | 'claude' | 'human';
-
-export interface ControllerSession {
-  schemaVersion: 1;
-  workId: string;
-  controllerId: string;
-  controllerType: ControllerType;
-  sessionId: string;
-  /** SHA-256 digest of the non-relay Work-bound controller capability. The plaintext capability is returned only to the claimant. */
-  authorityDigest?: string;
-  /** Authenticated authority that owned the claim; legacy records may omit it. */
-  principalId?: string;
-  /** Controller process/epoch that admitted the transport session. */
-  controllerInstanceId?: string;
-  /** Monotonic ownership fence. It changes only when ownership moves. */
-  claimGeneration?: number;
-  claimedAt: string;
-  leaseExpiresAt: string;
-}
-
-export interface ControllerSessionStore {
-  schemaVersion: 1;
-  updatedAt: string;
-  sessions: ControllerSession[];
-}
-
+// Kernel V2: Controller session contracts are owned by packages/kernel/controller/domain.
+export type {
+  ControllerType,
+  ControllerSession,
+  ControllerSessionStore,
+  ControllerBinding,
+  ControllerLease,
+  ControllerRoundContext,
+} from '../../../../packages/kernel/controller/domain/types';
 export const PLAN_CONTRACT_STATUSES = [
   'draft',
   'inspecting',
