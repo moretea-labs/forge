@@ -67,23 +67,8 @@ export type PolicyDecisionKind = (typeof POLICY_DECISIONS)[number];
 export const HANDOFF_SEVERITIES = ['info', 'needs_review', 'blocked', 'failed', 'ready_to_continue'] as const;
 export type HandoffSeverity = (typeof HANDOFF_SEVERITIES)[number];
 
-export const HANDOFF_STATUSES = [
-  'pending',
-  'acknowledged',
-  'in_progress',
-  'resolved',
-  'dismissed',
-  'superseded',
-  'expired',
-] as const;
-export type HandoffStatus = (typeof HANDOFF_STATUSES)[number];
-
-export const TERMINAL_HANDOFF_STATUSES: readonly HandoffStatus[] = [
-  'resolved',
-  'dismissed',
-  'superseded',
-  'expired',
-] as const;
+export { HANDOFF_STATUSES, TERMINAL_HANDOFF_STATUSES, isTerminalHandoffStatus, type HandoffStatus } from '../../../../packages/protocols/handoff/index';
+import type { HandoffStatus } from '../../../../packages/protocols/handoff/index';
 
 // Kernel V2: Work domain contracts are owned by packages/kernel/work/domain.
 export {
@@ -378,12 +363,6 @@ export interface ExecutionModeSelection {
   requiresWork: boolean;
   routeDecision: RouteDecision;
 }
-
-export function isTerminalHandoffStatus(status: HandoffStatus): boolean {
-  return TERMINAL_HANDOFF_STATUSES.includes(status);
-}
-
-
 
 /** @deprecated Compatibility adapter. Route Policy is the sole routing authority. */
 export function selectExecutionMode(input: ExecutionModeSelectionInput): ExecutionModeSelection {

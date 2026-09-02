@@ -1,10 +1,18 @@
+import type { ExecutionPlacement, ScopeRef } from '../../identity/api/index';
+
 export type ScheduleExecutionPriority = 'P0' | 'P1' | 'P2' | 'P3' | 'P4';
 
 export interface ScheduleResourceClaim {
   resourceKey: string;
   mode: 'read' | 'write' | 'exclusive';
   quantity?: number;
+  /** Portable semantic claim scope when one exists. */
+  scopeRef?: ScopeRef;
+  /** Replaceable node-local execution placement. */
+  executionPlacement?: ExecutionPlacement;
+  /** @deprecated Node-local placement compatibility field. */
   repoId?: string;
+  /** @deprecated Node-local placement compatibility field. */
   checkoutId?: string;
   workId?: string;
 }
@@ -65,6 +73,11 @@ export interface RepositorySchedule {
   revision: number;
   scheduleId: string;
   requestId: string;
+  /** Portable semantic scope for V2 records. Legacy repository schedules may omit it. */
+  scopeRef?: ScopeRef;
+  /** Node-local placement for execution. Legacy records are projected from repoId. */
+  executionPlacement?: ExecutionPlacement;
+  /** @deprecated Repository registration is placement, not portable schedule identity. */
   repoId: string;
   name: string;
   enabled: boolean;

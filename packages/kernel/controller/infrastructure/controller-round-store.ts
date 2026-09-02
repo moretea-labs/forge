@@ -11,7 +11,7 @@ import { workHasActiveExecution } from '../../../../src/runtime/execution/work-a
 import { controllerSessionBlocksRecovery, getControllerSession } from './controller-session-store';
 import { getHandoffItem, listHandoffItems } from '../../../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { getWorkContract, readWorkContractStore, isTerminalWorkContractStatus, type WorkContract } from '../../work/api/index';
-import { isTerminalHandoffStatus } from '../../../../src/runtime/control-plane/facade/types';
+import { isTerminalHandoffStatus } from '../../../protocols/handoff/index';
 import type { ControllerSession, ControllerType } from '../domain/types';
 import {
   CONTROLLER_ROUND_DISPOSITIONS,

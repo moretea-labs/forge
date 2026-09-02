@@ -11,7 +11,6 @@ import {
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
 } from '../../../../src/runtime/control-plane/persistence/sqlite-store';
-import { assertWorkAdmissionAllowed } from '../../../../src/runtime/control-plane/facade/work-admission-policy';
 import {
   MAX_IMPLEMENTATION_REVIEW_HISTORY,
   implementationReviewDecisionTarget,
@@ -21,6 +20,14 @@ import {
   type WorkImplementationReviewRecord,
 } from '../domain/implementation-review';
 import { phaseIndex, suggestedActionsForStatus, transitionPhaseEvidence, validateWorkSemanticTransition, validateWorkSemantics } from '../domain/state-machine';
+import {
+  WORK_ADMISSION_POLICY_KEY,
+  WORK_ADMISSION_POLICY_NAMESPACE,
+  WORK_ADMISSION_POLICY_SCOPE,
+  assertWorkAdmissionPolicyAllows,
+  normalWorkAdmissionPolicy,
+  type WorkAdmissionPolicy,
+} from '../domain/admission-policy';
 import {
   type EvidenceRef,
   type CompletionOutcome,
@@ -40,9 +47,11 @@ import {
   type WorkPhaseEvidenceMap,
   type WorkPhaseEvidenceState,
   type WorkContractStore,
+  executionPlacementForWork,
   isDirectEditWorkCompletionReceipt,
   isRepositoryCompletionReceipt,
   isTerminalWorkContractStatus,
+  semanticScopeRefForWork,
 } from '../domain/types';
 
 import type { WorkContractStoreLocation, WorkContractStoreOptions } from '../ports/work-contract-store';
@@ -230,6 +239,8 @@ function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore
       return validateWorkSemantics({
         ...legacy,
         schemaVersion: legacy.schemaVersion ?? 1,
+        scopeRef: semanticScopeRefForWork(legacy),
+        executionPlacement: executionPlacementForWork(legacy),
         status,
         phase,
         phaseEvidence: legacy.phaseEvidence ?? legacyPhaseEvidence({
@@ -340,6 +351,21 @@ function withWorkContractStoreWrite<T>(options: WorkContractStoreOptions, operat
   );
 }
 
+
+function assertCanonicalWorkAdmissionAllowed(
+  options: WorkContractStoreOptions,
+  input: { operation: 'create' | 'continue' | 'maintenance'; workId?: string },
+): WorkAdmissionPolicy {
+  if (!options.controllerHome) return normalWorkAdmissionPolicy(nowIso(options));
+  const policy = readControlPlaneRecord<WorkAdmissionPolicy>(
+    options.controllerHome,
+    WORK_ADMISSION_POLICY_NAMESPACE,
+    WORK_ADMISSION_POLICY_SCOPE,
+    WORK_ADMISSION_POLICY_KEY,
+  )?.value ?? normalWorkAdmissionPolicy(nowIso(options));
+  return assertWorkAdmissionPolicyAllows(policy, input);
+}
+
 function defaultDriver(mode: WorkContract['mode']): WorkContract['driver'] {
   if (mode === 'direct_control') {
     return { preferred: 'direct_edit', allowWorker: false, allowDirectEdit: true };
@@ -352,7 +378,7 @@ function defaultDriver(mode: WorkContract['mode']): WorkContract['driver'] {
 
 export function createWorkContract(options: WorkContractStoreOptions, input: CreateWorkContractInput): WorkContract {
   if (options.controllerHome) {
-    assertWorkAdmissionAllowed(options.controllerHome, { operation: 'create', workId: input.workId });
+    assertCanonicalWorkAdmissionAllowed(options, { operation: 'create', workId: input.workId });
   }
   if (input.status === 'completed' || input.completionReceipt || input.completionOutcome) {
     throw new Error('WORK_COMPLETION_REQUIRES_RECORD_API');
@@ -363,6 +389,14 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
     const contract: WorkContract = validateWorkSemantics({
       schemaVersion: 2,
       workId,
+      scopeRef: semanticScopeRefForWork({
+        workId,
+        scopeRef: input.scopeRef,
+        requirementId: input.requirementId,
+        planId: input.planId,
+        planStepId: input.planStepId,
+      }),
+      executionPlacement: input.executionPlacement ?? executionPlacementForWork({ repoId: input.repoId, checkoutId: input.checkoutId }),
       repoId: input.repoId,
       checkoutId: input.checkoutId,
       principalId: input.principalId,
@@ -843,7 +877,7 @@ function updateWorkContractInternal(
     const at = nowIso(options);
     const current = store.contracts[index];
     if (options.controllerHome) {
-      assertWorkAdmissionAllowed(options.controllerHome, {
+      assertCanonicalWorkAdmissionAllowed(options, {
         operation: patch.status !== undefined && isTerminalWorkContractStatus(patch.status)
           ? 'maintenance'
           : 'continue',

@@ -5,6 +5,7 @@ import { backupControlPlaneDatabase, restoreControlPlaneDatabase } from '../../s
 import { completeRequirementFromWork, createRequirement, readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { createWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, supersedeWorkContract, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';
+import { executionPlacement, scopeRef, semanticRecordMetadata } from '../../packages/kernel/identity/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { buildRequirementBoard } from '../../src/runtime/control-plane/facade/requirement-board';
 
@@ -196,6 +197,11 @@ test('requires a Work-owned receipt before completing an active Requirement', ()
     workKind: 'completed_no_change',
     status: 'running',
   });
+  expect(work.scopeRef).toEqual({ schemaVersion: 1, kind: 'requirement', id: 'req-work-completion' });
+  expect(work.executionPlacement).toEqual({ schemaVersion: 1, repositoryId: 'repo-req' });
+  const persistedPortableWork = listWorkContracts({ controllerHome: home, repoId: 'repo-req' }).find((entry) => entry.workId === work.workId);
+  expect(persistedPortableWork?.scopeRef).toEqual(work.scopeRef);
+  expect(persistedPortableWork?.executionPlacement).toEqual(work.executionPlacement);
   transitionWorkContractPhase({ controllerHome: home, repoId: 'repo-req' }, work.workId, {
     phase: 'verification',
     status: 'running',
@@ -280,4 +286,23 @@ test('requires a Work-owned receipt before completing an active Requirement', ()
   });
   expect(historicalCancelled.state).toBe('done');
   expect(historicalCancelled.revision).toBe(done.revision);
+});
+
+
+test('keeps portable semantic scope separate from local execution placement', () => {
+  const scope = scopeRef('requirement', 'REQ-portable');
+  const placement = executionPlacement({ forgeInstanceId: 'forge-mac', repositoryId: 'repo-local', checkoutId: 'checkout-local' });
+  const metadata = semanticRecordMetadata({
+    scope,
+    revision: 7,
+    updatedAt: '2026-09-02T00:00:00.000Z',
+    origin: 'local',
+    forgeInstanceId: 'forge-mac',
+    sourceRevision: 'abc123',
+  });
+  expect(scope).toEqual({ schemaVersion: 1, kind: 'requirement', id: 'REQ-portable' });
+  expect(placement).toEqual({ schemaVersion: 1, forgeInstanceId: 'forge-mac', repositoryId: 'repo-local', checkoutId: 'checkout-local' });
+  expect(metadata.scope).toEqual(scope);
+  expect(metadata.revision).toBe(7);
+  expect(() => semanticRecordMetadata({ ...metadata, revision: -1 })).toThrow(/SEMANTIC_RECORD_REVISION_INVALID/);
 });
