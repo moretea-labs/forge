@@ -30,6 +30,10 @@ function main() {
     fail('EXTERNAL_PLUGIN_PROBE_REQUEST_INVALID');
     return;
   }
+  if (!/^[a-z][a-z0-9_]{0,127}$/.test(input.method)) {
+    fail('EXTERNAL_PLUGIN_METHOD_INVALID');
+    return;
+  }
   const timeoutMs = bounded(input.timeoutMs, 2000, 100, 10000);
   const maxRequestBytes = bounded(input.maxRequestBytes, 1048576, 1024, 4194304);
   const maxResponseBytes = bounded(input.maxResponseBytes, 1048576, 1024, 4194304);

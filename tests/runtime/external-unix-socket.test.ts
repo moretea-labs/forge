@@ -110,6 +110,26 @@ describe('external Unix socket provider transport', () => {
     })).rejects.toThrow('ELEMENT_NOT_FOUND');
   });
 
+  test('accepts bounded provider-specific RPC methods without transport allowlisting', async () => {
+    if (process.platform === 'win32') return;
+    const { socketPath } = socketFixture();
+    await startServer(socketPath);
+    const result = await callExternalUnixSocket({
+      socketPath,
+      requestId: 'provider-method-1',
+      method: 'provider_capability_v2',
+      params: { value: 1 },
+      timeoutMs: 2_000,
+    });
+    expect(result).toMatchObject({ method: 'provider_capability_v2', echoed: { value: 1 } });
+  });
+
+  test('rejects invalid RPC method names before either transport lane connects', async () => {
+    const { socketPath } = socketFixture();
+    await expect(callExternalUnixSocket({ socketPath, requestId: 'bad-method-1', method: 'Bad Method' })).rejects.toThrow('EXTERNAL_PLUGIN_METHOD_INVALID');
+    expect(() => probeExternalUnixSocketSync({ socketPath, requestId: 'bad-method-2', method: 'a'.repeat(129) })).toThrow('EXTERNAL_PLUGIN_METHOD_INVALID');
+  });
+
   test('compiled Runtime resolves the probe beside its executable and launches it with Bun', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-external-probe-release-'));
     roots.push(root);

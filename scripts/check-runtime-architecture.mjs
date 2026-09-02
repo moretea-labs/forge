@@ -1262,8 +1262,8 @@ forbid('adapters/mcp/tunnels/openai-secure-tunnel.ts', /\bidentityMatches\b/, 't
 requireText('packages/protocols/computer/contract.ts', 'COMPUTER_BROWSER_AUTOMATION_CAPABILITY');
 requireText('packages/protocols/computer/contract.ts', 'COMPUTER_CAPABILITY_PROTOCOL_VERSION');
 requireText('packages/protocols/computer/contract.ts', 'COMPUTER_CAPABILITY_EXECUTION_METHOD');
-requireText('src/runtime/plugins/external-unix-socket.ts', 'typeof COMPUTER_CAPABILITY_EXECUTION_METHOD');
-forbid('src/runtime/plugins/external-unix-socket.ts', /\|\s*['"]computer_execute['"]/, 'Shared Unix-socket transport must reference the Computer protocol method authority instead of duplicating its literal');
+requireText('packages/protocols/computer/contract.ts', 'export interface ComputerCapabilityAdvertisement');
+forbid('adapters/computer/desktop-operator-negotiation.ts', /interface\s+ComputerCapabilityAdvertisement/, 'Desktop Operator negotiation must consume the provider-neutral Computer capability advertisement contract instead of redefining it');
 requireText('packages/plugin-runtime/computer/provider.ts', 'export interface ComputerProvider');
 requireText('packages/plugin-runtime/computer/provider-registry.ts', 'export class ComputerProviderRegistry');
 requireText('adapters/computer/desktop-operator-contract.ts', 'DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID');
@@ -1299,6 +1299,8 @@ requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_IN
 requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_CAPTURE_CAPABILITY');
 requireText('src/runtime/plugins/desktop-operator-registration.ts', 'pluginVersion: options.pluginVersion');
 forbid('src/runtime/plugins/desktop-operator-registration.ts', /pluginVersion:\s*options\.pluginVersion\s*\?\?|pluginVersion:\s*['"]0\./, 'Forge must not invent the Desktop Operator provider release version');
+requireText('src/runtime/plugins/external-unix-socket.ts', 'EXTERNAL_RPC_METHOD_PATTERN');
+forbid('src/runtime/plugins/external-unix-socket.ts', /packages\/protocols\/computer|computer_execute|macos_browser_automation/, 'Generic external Unix socket transport must not own Computer or Desktop provider method identities');
 
 // C0 Browser runtime authority: contracts and provider selection belong to plugin-runtime/protocols.
 requireText('packages/plugin-runtime/browser/runtime-contract.ts', 'export interface BrowserTransaction');

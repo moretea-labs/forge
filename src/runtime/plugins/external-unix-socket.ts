@@ -3,7 +3,6 @@ import { existsSync } from 'fs';
 import { createConnection, type Socket } from 'net';
 import { dirname, isAbsolute, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import { COMPUTER_CAPABILITY_EXECUTION_METHOD } from '../../../packages/protocols/computer/index';
 import { resolveBunExecutable } from '../shared/process-environment';
 import { AssistantPluginError } from './errors';
 
@@ -13,14 +12,10 @@ const DEFAULT_MAX_REQUEST_BYTES = 1_048_576;
 const DEFAULT_MAX_RESPONSE_BYTES = 1_048_576;
 const MAX_TIMEOUT_MS = 120_000;
 const MAX_DIAGNOSTIC_CHARS = 4_000;
+const EXTERNAL_RPC_METHOD_PATTERN = /^[a-z][a-z0-9_]{0,127}$/;
 
-export type ExternalUnixSocketMethod =
-  | 'handshake'
-  | 'manifest'
-  | 'health'
-  | 'execute'
-  | typeof COMPUTER_CAPABILITY_EXECUTION_METHOD
-  | 'macos_browser_automation';
+/** Transport-level method identity. Provider-specific method ownership belongs to protocol/adapters. */
+export type ExternalUnixSocketMethod = string;
 
 export interface ExternalUnixSocketCallOptions {
   socketPath: string;
@@ -68,8 +63,19 @@ function validateSocketPath(socketPath: string): string {
   return normalized;
 }
 
+function validateRpcMethod(method: string): string {
+  if (!EXTERNAL_RPC_METHOD_PATTERN.test(method)) {
+    throw transportError(
+      'EXTERNAL_PLUGIN_METHOD_INVALID',
+      'External provider RPC method must be 1-128 lowercase ASCII letters, digits, or underscores and start with a letter.',
+      { retryable: false },
+    );
+  }
+  return method;
+}
+
 function requestEnvelope(options: ExternalUnixSocketCallOptions): string {
-  const envelope = JSON.stringify({ id: options.requestId, method: options.method, params: options.params ?? {} });
+  const envelope = JSON.stringify({ id: options.requestId, method: validateRpcMethod(options.method), params: options.params ?? {} });
   const maxRequestBytes = boundedInteger(options.maxRequestBytes, DEFAULT_MAX_REQUEST_BYTES, 1_024, 4 * DEFAULT_MAX_REQUEST_BYTES);
   if (Buffer.byteLength(envelope, 'utf8') > maxRequestBytes) {
     throw transportError('EXTERNAL_PLUGIN_REQUEST_TOO_LARGE', 'External provider request exceeded the bounded input limit.', { retryable: false });
@@ -211,6 +217,7 @@ export function probeExternalUnixSocketSync(
   options: ExternalUnixSocketCallOptions,
 ): Record<string, unknown> {
   validateSocketPath(options.socketPath);
+  validateRpcMethod(options.method);
   const sidecarPath = resolveExternalPluginProbeSidecarPath();
   const probeRuntime = resolveExternalPluginProbeRuntime();
   const timeoutMs = timeoutFor(options, true);

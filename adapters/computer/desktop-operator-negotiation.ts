@@ -3,6 +3,7 @@ import {
   COMPUTER_CAPABILITY_EXECUTION_METHOD,
   COMPUTER_CAPABILITY_PROTOCOL_VERSION,
   type ComputerBrowserAutomationRequest,
+  type ComputerCapabilityAdvertisement,
 } from '../../packages/protocols/computer/index';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 import {
@@ -12,13 +13,6 @@ import {
   DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID,
   DESKTOP_OPERATOR_PROVIDER_PROTOCOL_VERSION,
 } from './desktop-operator-contract';
-
-interface ComputerCapabilityAdvertisement {
-  capabilityId: string;
-  protocolVersion: number;
-  method: string;
-  actions: string[];
-}
 
 export type DesktopOperatorComputerTransportPlan =
   | {

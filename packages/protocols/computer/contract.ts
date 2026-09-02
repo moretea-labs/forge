@@ -12,6 +12,14 @@ export type ComputerCapabilityId =
   | typeof COMPUTER_INPUT_CAPABILITY
   | typeof COMPUTER_CAPTURE_CAPABILITY;
 
+/** Runtime advertisement used to negotiate one provider-neutral Computer capability. */
+export interface ComputerCapabilityAdvertisement {
+  capabilityId: string;
+  protocolVersion: number;
+  method: string;
+  actions: string[];
+}
+
 export type ComputerBrowserProduct = 'chrome' | 'vivaldi';
 
 export interface ComputerBrowserTabRef {
