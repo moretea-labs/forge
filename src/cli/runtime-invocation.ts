@@ -36,6 +36,8 @@ export interface CliChildInvocationOptions {
   env?: NodeJS.ProcessEnv;
   /** Explicit package/global shim entry. Never inferred from a file extension. */
   launcherEntry?: string;
+  /** Explicit Node ESM loader for TypeScript source children. Never inferred from the entry extension. */
+  nodeSourceLoaderEntry?: string;
 }
 
 export interface CurrentCliRuntimeOptions extends CliChildInvocationOptions {
@@ -151,7 +153,12 @@ export function resolveCliChildInvocation(
   } else {
     const entry = cliEntry.trim();
     if (!entry) throw new CliRuntimeResolutionError([`${kind} requires a source entry`]);
-    childArgs = [entry, ...args];
+    if (kind === 'node_source' && options.nodeSourceLoaderEntry?.trim()) {
+      childArgs = ['--loader', options.nodeSourceLoaderEntry.trim(), entry, ...args];
+      diagnostics.push('explicit Node source loader supplied');
+    } else {
+      childArgs = [entry, ...args];
+    }
   }
 
   const diagnostic = [
