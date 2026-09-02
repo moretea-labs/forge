@@ -56,6 +56,8 @@ export interface ControllerRoundRelayRecord {
   reason?: string;
   /** Opaque provider binding owned by a ControllerHost adapter. */
   bindingId?: string;
+  /** Canonical provider-dispatch receipt for this semantic round. Scheduler occurrence copies it only as a replay projection. */
+  providerDispatchReceiptId?: string;
   blockedReason?: string;
   lastError?: string;
   nextRecoveryAt?: string;

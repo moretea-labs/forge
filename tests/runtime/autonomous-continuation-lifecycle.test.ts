@@ -9,15 +9,17 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import { registerRepository } from '../../src/cli/repositories/registry';
 import {
   acknowledgeControllerRoundClaim,
+  beginControllerRoundRelayAfterRelease,
   beginInitialControllerRoundDispatch,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
+  submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { runSchedulerControllerRoundRecovery } from '../../src/runtime/control-plane/global-scheduler/maintenance';
-import { claimControllerSession, getControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { claimControllerSession, getControllerSession, releaseControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { createWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
-import { bindChatgptWorkConversation } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
+import { bindChatgptWorkConversation, getChatgptWorkConversationBinding, rebindChatgptWorkConversation } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
 import { launchSuperController } from '../../src/runtime/control-plane/launcher/thin-launcher';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 
@@ -413,6 +415,7 @@ describe('autonomous continuation lifecycle', () => {
     expect(reopened.authorityId).not.toBe(opened.authorityId);
   });
 
+
   test('a continued ChatGPT conversation is still instructed to claim the exact Work before continue', async () => {
     const root = temp('forge-autonomous-continuation-launcher-');
     const controllerHome = join(root, 'controller');
@@ -456,6 +459,137 @@ describe('autonomous continuation lifecycle', () => {
     expect(launched.prompt).toContain('When that exact Work claim succeeds');
     expect(launched.prompt).toContain('capture data.controllerAuthorityId');
     expect(launched.prompt).not.toContain('First call rh_work continue');
+  });
+
+  test('three semantic rounds survive provider conversation and session turnover before goal_complete', () => {
+    const root = temp('forge-stage3b-three-round-turnover-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'stage3b-three-round-turnover' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workId = 'WORK-STAGE3B-THREE-ROUND-TURNOVER';
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Prove durable Work/ControllerRound authority survives provider conversation and transport replacement.',
+      acceptanceCriteria: ['three rounds complete across provider turnover and finish with goal_complete'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+
+    const binding1 = bindChatgptWorkConversation(store, {
+      workId,
+      conversationUrl: 'https://chatgpt.com/c/stage3b-round-1',
+      latestBrowserSessionId: 'browser-stage3b-round-1',
+      localAlias: 'Stage3B round 1',
+    });
+    const round1 = beginInitialControllerRoundDispatch(store, {
+      workId,
+      bindingId: binding1.bindingId,
+      maxRounds: 4,
+      maxRepeatedState: 4,
+      identity: {
+        controllerId: 'schedule:stage3b-round-1', controllerType: 'chatgpt',
+        principalId: 'forge-scheduler', controllerInstanceId: 'scheduler-runtime', sessionId: 'occ-stage3b-round-1',
+      },
+    });
+    finishControllerRoundRelayDispatch(store, {
+      workId, ok: true, bindingId: binding1.bindingId, providerDispatchReceiptId: 'provider-receipt-stage3b-1',
+    });
+    const owner1 = claimControllerSession(store, {
+      workId, controllerId: 'chatgpt-stage3b', controllerType: 'chatgpt', principalId: 'chatgpt-stage3b',
+      controllerInstanceId: 'provider-runtime-1', sessionId: 'provider-session-1', leaseMs: 60_000,
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: owner1 })).toMatchObject({
+      status: 'claimed', sessionId: 'provider-session-1', bindingId: binding1.bindingId,
+      providerDispatchReceiptId: 'provider-receipt-stage3b-1',
+    });
+    expect(submitControllerRoundDisposition(store, {
+      workId, disposition: 'continue_immediately', relayScopeId: round1.relayScopeId, bindingId: binding1.bindingId,
+      maxRounds: 4, maxRepeatedState: 4,
+      identity: {
+        controllerId: owner1.controllerId, controllerType: owner1.controllerType,
+        principalId: owner1.principalId ?? owner1.controllerId,
+        controllerInstanceId: owner1.controllerInstanceId ?? '', sessionId: owner1.sessionId,
+      },
+    })).toMatchObject({ status: 'pending_release', lifecycleStage: 'semantic_round_closed', roundCount: 2 });
+    releaseControllerSession(store, workId, owner1.controllerId);
+
+    const round2 = beginControllerRoundRelayAfterRelease(store, { workId, releasedSession: owner1 })!;
+    expect(round2).toMatchObject({ status: 'dispatching', relayScopeId: round1.relayScopeId, bindingId: binding1.bindingId, roundCount: 2 });
+    expect(round2.authorityId).not.toBe(round1.authorityId);
+    const binding2 = rebindChatgptWorkConversation(store, {
+      workId, previousConversationId: binding1.conversationId,
+      conversationUrl: 'https://chatgpt.com/c/stage3b-round-2', latestBrowserSessionId: 'browser-stage3b-round-2',
+    });
+    expect(binding2.bindingId).toBe(binding1.bindingId);
+    expect(binding2.conversationId).not.toBe(binding1.conversationId);
+    finishControllerRoundRelayDispatch(store, {
+      workId, ok: true, bindingId: binding2.bindingId, providerDispatchReceiptId: 'provider-receipt-stage3b-2',
+    });
+    const owner2 = claimControllerSession(store, {
+      workId, controllerId: 'chatgpt-stage3b', controllerType: 'chatgpt', principalId: 'chatgpt-stage3b',
+      controllerInstanceId: 'provider-runtime-2', sessionId: 'provider-session-2', leaseMs: 60_000,
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: owner2 })).toMatchObject({
+      status: 'claimed', sessionId: 'provider-session-2', controllerInstanceId: 'provider-runtime-2', bindingId: binding1.bindingId,
+      providerDispatchReceiptId: 'provider-receipt-stage3b-2',
+    });
+    expect(submitControllerRoundDisposition(store, {
+      workId, disposition: 'continue_immediately', relayScopeId: round1.relayScopeId, bindingId: binding1.bindingId,
+      maxRounds: 4, maxRepeatedState: 4,
+      identity: {
+        controllerId: owner2.controllerId, controllerType: owner2.controllerType,
+        principalId: owner2.principalId ?? owner2.controllerId,
+        controllerInstanceId: owner2.controllerInstanceId ?? '', sessionId: owner2.sessionId,
+      },
+    })).toMatchObject({ status: 'pending_release', lifecycleStage: 'semantic_round_closed', roundCount: 3 });
+    releaseControllerSession(store, workId, owner2.controllerId);
+
+    const round3 = beginControllerRoundRelayAfterRelease(store, { workId, releasedSession: owner2 })!;
+    expect(round3).toMatchObject({ status: 'dispatching', relayScopeId: round1.relayScopeId, bindingId: binding1.bindingId, roundCount: 3 });
+    expect(round3.authorityId).not.toBe(round2.authorityId);
+    const binding3 = rebindChatgptWorkConversation(store, {
+      workId, previousConversationId: binding2.conversationId,
+      conversationUrl: 'https://chatgpt.com/c/stage3b-round-3', latestBrowserSessionId: 'browser-stage3b-round-3',
+    });
+    expect(binding3.bindingId).toBe(binding1.bindingId);
+    finishControllerRoundRelayDispatch(store, {
+      workId, ok: true, bindingId: binding3.bindingId, providerDispatchReceiptId: 'provider-receipt-stage3b-3',
+    });
+    const owner3 = claimControllerSession(store, {
+      workId, controllerId: 'chatgpt-stage3b', controllerType: 'chatgpt', principalId: 'chatgpt-stage3b',
+      controllerInstanceId: 'provider-runtime-3', sessionId: 'provider-session-3', leaseMs: 60_000,
+    });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: owner3 })).toMatchObject({
+      status: 'claimed', sessionId: 'provider-session-3', controllerInstanceId: 'provider-runtime-3', bindingId: binding1.bindingId,
+      providerDispatchReceiptId: 'provider-receipt-stage3b-3',
+    });
+    const terminal = submitControllerRoundDisposition(store, {
+      workId, disposition: 'goal_complete', relayScopeId: round1.relayScopeId, bindingId: binding1.bindingId,
+      reason: 'Stage3B three-round canary completed after provider conversation/session turnover.',
+      identity: {
+        controllerId: owner3.controllerId, controllerType: owner3.controllerType,
+        principalId: owner3.principalId ?? owner3.controllerId,
+        controllerInstanceId: owner3.controllerInstanceId ?? '', sessionId: owner3.sessionId,
+      },
+    });
+    expect(terminal).toMatchObject({
+      status: 'goal_complete', disposition: 'goal_complete', lifecycleStage: 'semantic_round_closed',
+      relayScopeId: round1.relayScopeId, bindingId: binding1.bindingId, roundCount: 3,
+      providerDispatchReceiptId: 'provider-receipt-stage3b-3',
+    });
+    expect(getChatgptWorkConversationBinding(store, workId)).toMatchObject({
+      bindingId: binding1.bindingId, conversationId: 'stage3b-round-3', latestBrowserSessionId: 'browser-stage3b-round-3',
+    });
   });
 
   test('stalled ChatGPT Work recovery uses the exact Work continuation with durable bounded backoff', async () => {

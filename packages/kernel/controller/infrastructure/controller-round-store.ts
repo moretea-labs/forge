@@ -424,6 +424,7 @@ export function submitControllerRoundDisposition(
       ...(handoffId ? { handoffId } : {}),
       ...(bounded(input.reason, 1_000) ? { reason: bounded(input.reason, 1_000) } : {}),
       ...(bindingId ? { bindingId } : {}),
+      ...(existing.value.providerDispatchReceiptId ? { providerDispatchReceiptId: existing.value.providerDispatchReceiptId } : {}),
       ...(blockedReason ? { blockedReason } : {}),
       submittedAt: at,
       updatedAt: at,
@@ -632,7 +633,7 @@ export function reconcileControllerRoundAfterAbandonedRelease(
 
 export function finishControllerRoundRelayDispatch(
   options: ControllerRoundRelayStoreOptions,
-  input: { workId: string; ok: boolean; bindingId?: string; error?: string; recovery?: boolean; outcomeUnknown?: boolean; nowMs?: number },
+  input: { workId: string; ok: boolean; bindingId?: string; providerDispatchReceiptId?: string; error?: string; recovery?: boolean; outcomeUnknown?: boolean; waitForUser?: boolean; handoffId?: string; nowMs?: number },
 ): ControllerRoundRelayRecord | undefined {
   const initial = readRelayRecord(options, input.workId);
   if (!initial || initial.value.status !== 'dispatching') return initial?.value;
@@ -642,6 +643,14 @@ export function finishControllerRoundRelayDispatch(
     const at = typeof input.nowMs === 'number' ? new Date(input.nowMs).toISOString() : nowIso(options);
     const nextFailureCount = current.value.consecutiveFailures + 1;
     const recoveryBlocked = input.recovery === true && nextFailureCount >= current.value.maxFailures;
+    const handoffId = bounded(input.handoffId, 200);
+    if (input.waitForUser) {
+      if (!handoffId) throw new Error('CONTROLLER_RELAY_WAIT_FOR_USER_HANDOFF_REQUIRED');
+      const handoff = getHandoffItem(options, handoffId);
+      if (!handoff) throw new Error(`HANDOFF_NOT_FOUND: ${handoffId}`);
+      if (isTerminalHandoffStatus(handoff.status)) throw new Error(`CONTROLLER_RELAY_HANDOFF_TERMINAL: ${handoff.status}`);
+      if (handoff.workId && handoff.workId !== input.workId) throw new Error(`CONTROLLER_RELAY_HANDOFF_WORK_MISMATCH: ${handoffId}`);
+    }
     const recoveryDelayMs = Math.min(
       MAX_STALLED_RECOVERY_BACKOFF_MS,
       DEFAULT_STALLED_RECOVERY_BACKOFF_MS * 2 ** Math.max(0, nextFailureCount - 1),
@@ -656,6 +665,7 @@ export function finishControllerRoundRelayDispatch(
           nextRecoveryAt: undefined,
           blockedReason: undefined,
           ...(bounded(input.bindingId, 500) ? { bindingId: bounded(input.bindingId, 500) } : {}),
+          ...(bounded(input.providerDispatchReceiptId, 500) ? { providerDispatchReceiptId: bounded(input.providerDispatchReceiptId, 500) } : {}),
           dispatchedAt: at,
           updatedAt: at,
         }
@@ -669,6 +679,16 @@ export function finishControllerRoundRelayDispatch(
             blockedReason: 'provider_dispatch_outcome_unknown',
             updatedAt: at,
           }
+        : input.waitForUser
+          ? {
+              ...current.value,
+              status: 'waiting_for_user',
+              nextRecoveryAt: undefined,
+              lastError: bounded(input.error, 2_000) ?? 'CONTROLLER_RELAY_WAIT_FOR_USER',
+              blockedReason: 'provider_user_action_required',
+              handoffId,
+              updatedAt: at,
+            }
         : input.recovery
         ? {
             ...current.value,
@@ -701,6 +721,8 @@ export function finishControllerRoundRelayDispatch(
         ? 'controller_round_relay_dispatched'
         : input.outcomeUnknown
           ? 'controller_round_relay_dispatch_outcome_unknown'
+          : input.waitForUser
+            ? 'controller_round_relay_waiting_for_user'
           : input.recovery
             ? recoveryBlocked ? 'controller_round_relay_recovery_blocked' : 'controller_round_relay_recovery_retry_scheduled'
             : 'controller_round_relay_failed',

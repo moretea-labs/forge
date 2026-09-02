@@ -513,12 +513,17 @@ function createOwnedTabScript(browser: MacOsBrowserDefinition): string {
   return `on run argv
 set targetUrl to item 1 of argv
 ${browserTellScript(browser, `
-if (count of windows) is 0 then error "FORGE_NO_BROWSER_WINDOW"
-set targetWindow to front window
-set originalActiveIndex to active tab index of targetWindow
-set targetTab to make new tab at end of tabs of targetWindow with properties {URL:targetUrl}
+if (count of windows) is 0 then
+  set targetWindow to make new window
+  set targetTab to active tab of targetWindow
+  set URL of targetTab to targetUrl
+else
+  set targetWindow to front window
+  set originalActiveIndex to active tab index of targetWindow
+  set targetTab to make new tab at end of tabs of targetWindow with properties {URL:targetUrl}
+  set active tab index of targetWindow to originalActiveIndex
+end if
 set targetTabId to id of targetTab
-set active tab index of targetWindow to originalActiveIndex
 set separator to ASCII character 30
 return ((id of targetWindow) as text) & separator & (targetTabId as text)
 `)}
@@ -1462,6 +1467,40 @@ export async function createMacOsBrowserOwnedPage(
   }, timeoutMs, ref, creationEvidence);
   rememberMacOsBrowserPageHandle(attachment.metadata.product, ref, page);
   return page;
+}
+
+export async function createMacOsBrowserOwnedPageForProduct(
+  product: MacOsBrowserProduct,
+  url: string,
+  attempts: MacOsBrowserAttachAttempt[],
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
+): Promise<{ page: MacOsAppleEventsPage; attachment: MacOsBrowserAttachment }> {
+  const browser = browserDefinition(product);
+  const creationEvidence = await runCreateTabAutomation(
+    { action: 'create_tab', product, url },
+    createOwnedTabScript(browser),
+    [url],
+    timeoutMs,
+  );
+  const ref = creationEvidence.ref;
+  const attachment: MacOsBrowserAttachment = {
+    attempts: attempts.map((attempt) => ({ ...attempt })),
+    metadata: {
+      product,
+      appName: browser.appName,
+      bundleId: browser.bundleId,
+      frontmost: false,
+      url,
+      title: '',
+      bounds: { x: 0, y: 0, width: 0, height: 0 },
+      windowId: ref.windowId,
+      tabId: ref.tabId,
+      active: false,
+    },
+  };
+  const page = new MacOsAppleEventsPage(attachment, timeoutMs, ref, creationEvidence);
+  rememberMacOsBrowserPageHandle(product, ref, page);
+  return { page, attachment };
 }
 
 export async function reattachMacOsBrowserOwnedPage(

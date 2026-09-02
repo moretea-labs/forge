@@ -11,7 +11,7 @@ import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recor
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
-import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch } from '../../src/runtime/control-plane/facade/controller-round-relay';
+import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch, getControllerRoundRelay } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { ensureRepositoryWorkHandle, reconcileRepositoryWorkHandlePlacement } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { ensureRunningRepositoryWorkCheckout } from '../../src/runtime/control-plane/execution/retained-work-resume';
 import { cleanupTerminalWork } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
@@ -31,6 +31,7 @@ import { bindControllerSessionBinding, getControllerSessionBinding, getControlle
 import { resumeScheduledControllerContinuation } from '../../packages/kernel/scheduler/api/index';
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { createWorkContinuationSchedule } from '../../src/runtime/workflow/schedules/work-continuation';
+import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
 
 const roots: string[] = [];
@@ -925,6 +926,76 @@ describe('rh_work terminalization authority', () => {
       controllerBindingId: adapterA.binding.bindingId,
       hostDispatchId: 'provider-dispatch-after-session-rollover',
     });
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      lifecycleStage: 'dispatch_confirmed',
+      providerDispatchReceiptId: 'provider-dispatch-after-session-rollover',
+    });
+  }, 15_000);
+
+  test('scheduled provider user blocker becomes durable wait_for_user and same occurrence never re-dispatches', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-scheduled-provider-wait-for-user';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: 'principal-provider-wait',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-provider-wait',
+      principalId: 'principal-provider-wait',
+      controllerInstanceId: 'runtime-provider-wait',
+      leaseMs: 60_000,
+    });
+    const adapter = upsertChatgptControllerBinding(store, {
+      workId,
+      sessionId: owner.sessionId,
+      title: 'provider wait-for-user target',
+      model: 'gpt-5.6',
+      reasoning: 'high',
+      tabPolicy: 'auto',
+    });
+    bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: adapter.binding });
+    const { schedule } = createWorkContinuationSchedule(fx.controllerHome, fx.repository.repoId, {
+      workId, scheduleMode: 'continuation', controllerType: 'chatgpt', triggerType: 'manual', shadowMode: false,
+    });
+    let resumeCalls = 0;
+    const host = {
+      resume: async () => {
+        resumeCalls += 1;
+        const handoffId = 'hnd-provider-login-required';
+        createHandoffItem(store, {
+          id: handoffId,
+          repoId: fx.repository.repoId,
+          workId,
+          title: 'provider login required',
+          severity: 'needs_review',
+          reason: 'CHATGPT_AUTOMATION_LOGIN_REQUIRED',
+          creationReason: 'missing_authorization',
+          summary: 'login required',
+          currentState: { repoId: fx.repository.repoId, workId, statusSummary: 'waiting for login' },
+          evidenceRefs: [],
+          recommendedDecision: 'login',
+          recommendedPrompt: 'login then resume',
+          suggestedNextActions: [],
+        });
+        return { accepted: false, waitForUser: true, handoffId, reason: 'CHATGPT_AUTOMATION_LOGIN_REQUIRED' };
+      },
+    };
+    const input = {
+      scheduleId: schedule.scheduleId, occurrenceId: 'occ-provider-wait-for-user', workId, controllerBindingId: adapter.binding.bindingId,
+    };
+    const first = await resumeScheduledControllerContinuation(store, input, host);
+    expect(first.dispatch).toMatchObject({ status: 'wait_for_user', handoffId: 'hnd-provider-login-required', reason: 'CHATGPT_AUTOMATION_LOGIN_REQUIRED' });
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      status: 'waiting_for_user',
+      blockedReason: 'provider_user_action_required',
+      handoffId: 'hnd-provider-login-required',
+      lastError: 'CHATGPT_AUTOMATION_LOGIN_REQUIRED',
+    });
+    const replay = await resumeScheduledControllerContinuation(store, input, host);
+    expect(replay.reused).toBe(true);
+    expect(replay.dispatch.status).toBe('wait_for_user');
+    expect(resumeCalls).toBe(1);
   }, 15_000);
 
   test('Work-bound controller capability survives execution-session invalidation and transport rotation without collapsing same-principal conversations', async () => {

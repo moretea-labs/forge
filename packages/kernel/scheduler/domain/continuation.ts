@@ -2,6 +2,7 @@ export type ScheduledContinuationDispatchStatus =
   | 'prepared'
   | 'dispatching'
   | 'dispatched'
+  | 'wait_for_user'
   | 'rejected'
   | 'outcome_unknown';
 
@@ -17,7 +18,9 @@ export interface ScheduledContinuationDispatch {
   relayScopeId: string;
   controllerAuthorityId?: string;
   status: ScheduledContinuationDispatchStatus;
+  /** Projection of ControllerRound.providerDispatchReceiptId for occurrence replay diagnostics. */
   hostDispatchId?: string;
+  handoffId?: string;
   reason?: string;
   createdAt: string;
   updatedAt: string;

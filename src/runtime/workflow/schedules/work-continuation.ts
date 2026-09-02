@@ -450,6 +450,13 @@ export async function resolveHandoffAndTriggerContinuation(
   input: { decision: string; resolver: string },
 ): Promise<{ item: HandoffItem; continuationOccurrences: Array<{ scheduleId: string; occurrenceId?: string; status?: string }> }> {
   const item = resolveHandoffItem({ controllerHome, repoId }, handoffId, input);
+  if (item.workId) {
+    eventDrivenContinuationSchedule(controllerHome, repoId, {
+      workId: item.workId,
+      eventName: handoffResolvedContinuationEventName(item.id),
+      reason: `handoff ${item.id} was resolved`,
+    });
+  }
   const continuationOccurrences = item.workId
     ? await triggerWorkContinuationRepositoryEvent(
         controllerHome,

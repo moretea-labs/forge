@@ -37,7 +37,7 @@ export async function resumeScheduledControllerContinuation(
       || previous.workId !== input.workId
       || previous.controllerBindingId !== input.controllerBindingId
     ) throw new Error(`SCHEDULE_CONTINUATION_OCCURRENCE_IDENTITY_CONFLICT: ${input.occurrenceId}`);
-    if (previous.status === 'dispatched' || previous.status === 'rejected') return { dispatch: previous, reused: true };
+    if (previous.status === 'dispatched' || previous.status === 'wait_for_user' || previous.status === 'rejected') return { dispatch: previous, reused: true };
     if (previous.status === 'outcome_unknown') throw new Error(`SCHEDULE_CONTINUATION_OUTCOME_UNKNOWN: ${input.occurrenceId}`);
     if (previous.status === 'dispatching') throw new Error(`SCHEDULE_CONTINUATION_ALREADY_DISPATCHING: ${input.occurrenceId}`);
   }
@@ -70,7 +70,7 @@ export async function resumeScheduledControllerContinuation(
     workId: work.workId, controllerSessionId: session.sessionId, controllerBindingId: bindingRecord.binding.bindingId,
     relayScopeId: canonicalRelayScopeId, status: 'prepared', createdAt: at, updatedAt: at,
   }));
-  if (prepared.status === 'dispatched' || prepared.status === 'rejected') return { dispatch: prepared, reused: true };
+  if (prepared.status === 'dispatched' || prepared.status === 'wait_for_user' || prepared.status === 'rejected') return { dispatch: prepared, reused: true };
   if (prepared.status === 'outcome_unknown') throw new Error(`SCHEDULE_CONTINUATION_OUTCOME_UNKNOWN: ${input.occurrenceId}`);
   if (prepared.status === 'dispatching') throw new Error(`SCHEDULE_CONTINUATION_ALREADY_DISPATCHING: ${input.occurrenceId}`);
 
@@ -135,13 +135,21 @@ export async function resumeScheduledControllerContinuation(
       continuationHint: input.continuationHint?.trim() || undefined,
     });
     if (!result.accepted) {
-      finishControllerRoundRelayDispatch(options, { workId: work.workId, ok: false, error: result.reason ?? 'CONTROLLER_HOST_RESUME_REJECTED' });
+      const reason = result.reason ?? 'CONTROLLER_HOST_RESUME_REJECTED';
+      if (result.waitForUser) {
+        finishControllerRoundRelayDispatch(options, { workId: work.workId, ok: false, waitForUser: true, handoffId: result.handoffId, error: reason });
+        const waiting = updateScheduledContinuationDispatch(options, input.occurrenceId, 'scheduler_continuation_wait_for_user', (current, at) => ({
+          ...(current ?? prepared), status: 'wait_for_user', reason, ...(result.handoffId ? { handoffId: result.handoffId } : {}), updatedAt: at,
+        }));
+        return { dispatch: waiting, reused: false };
+      }
+      finishControllerRoundRelayDispatch(options, { workId: work.workId, ok: false, error: reason });
       const rejected = updateScheduledContinuationDispatch(options, input.occurrenceId, 'scheduler_continuation_rejected', (current, at) => ({
-        ...(current ?? prepared), status: 'rejected', reason: result.reason ?? 'CONTROLLER_HOST_RESUME_REJECTED', updatedAt: at,
+        ...(current ?? prepared), status: 'rejected', reason, updatedAt: at,
       }));
       return { dispatch: rejected, reused: false };
     }
-    finishControllerRoundRelayDispatch(options, { workId: work.workId, ok: true, bindingId: bindingRecord.binding.bindingId });
+    finishControllerRoundRelayDispatch(options, { workId: work.workId, ok: true, bindingId: bindingRecord.binding.bindingId, providerDispatchReceiptId: result.dispatchId });
     const dispatched = updateScheduledContinuationDispatch(options, input.occurrenceId, 'scheduler_continuation_dispatched', (current, at) => ({
       ...(current ?? prepared), status: 'dispatched', ...(result.dispatchId ? { hostDispatchId: result.dispatchId } : {}), updatedAt: at,
     }));

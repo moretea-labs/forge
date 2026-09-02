@@ -1,6 +1,7 @@
 import { withControllerLock } from '../../src/cli/repositories/locks';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 
+// Resource-cleanup evidence only. Provider dispatch authority is ControllerRoundRelayRecord.lifecycleStage/providerDispatchReceiptId.
 const NAMESPACE = 'chatgpt_controller_round_settlement';
 
 export type ChatgptControllerRoundSettlementStatus =
@@ -11,6 +12,7 @@ export type ChatgptControllerRoundSettlementStatus =
   | 'session_closed'
   | 'failed';
 
+/** Browser/tab resource settlement evidence after a semantic ControllerRound; never proof that a provider prompt was dispatched. */
 export interface ChatgptControllerRoundSettlement {
   schemaVersion: 1;
   repoId: string;

@@ -35,6 +35,7 @@ import {
 import {
   closeMacOsBrowserOwnedTab,
   createMacOsBrowserOwnedPage,
+  createMacOsBrowserOwnedPageForProduct,
   reattachMacOsBrowserOwnedPage,
   discoverMacOsBrowserAttachment,
   invalidateMacOsBrowserPageHandle,
@@ -2105,14 +2106,36 @@ async function openNativeAttachedContext(
       : { sessionId: target.sessionId, status: 'no_saved_tab', reason: 'Created one plugin-owned tab while preserving the user active tab.' };
   }
 
+  let createdThisCallRef: MacOsBrowserTabRef | undefined;
   if (!discovered?.attachment) {
     const candidates = savedProduct ? [savedProduct] : (config.nativeBrowserCandidates ?? [...DEFAULT_USER_NATIVE_BROWSER_CANDIDATES]);
     discovered = await discoverMacOsBrowserAttachment(candidates, Math.min(timeout, MAX_CDP_DISCOVERY_TIMEOUT_MS));
+    const zeroWindowAttempt = args.__forge_require_existing_resource !== true
+      ? discovered.attempts.find((attempt) => attempt.status === 'unavailable' && attempt.error?.includes('FORGE_NO_BROWSER_WINDOW'))
+      : undefined;
+    if (!discovered.attachment && zeroWindowAttempt) {
+      const created = await createMacOsBrowserOwnedPageForProduct(
+        zeroWindowAttempt.product,
+        target.url,
+        discovered.attempts,
+        timeout,
+      );
+      page = created.page as unknown as PageLike;
+      discovered = { attachment: created.attachment, attempts: created.attachment.attempts };
+      createdThisCallRef = created.page.tabRef();
+      matchedBy = 'owned_token';
+      effectiveOwnership = 'plugin_owned';
+      sessionResume = {
+        sessionId: target.sessionId,
+        status: 'stale_tab',
+        reason: 'Browser process had no window; created the first Forge-owned tab through the existing create_tab Computer capability.',
+        savedTab,
+      };
+    }
   }
   if (!discovered.attachment) return { attempts: discovered.attempts };
   let activeAttachment = discovered.attachment;
 
-  let createdThisCallRef: MacOsBrowserTabRef | undefined;
   let navigationUsedReplacement = false;
   const navigateNativePageWithReplacement = async (candidate: PageLike): Promise<PageLike> => {
     const obsoleteRef = (candidate as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
@@ -2464,11 +2487,13 @@ async function withPage<T>(
   let lastError: unknown;
   for (let attempt = 1; attempt <= retries; attempt += 1) {
     let handle: BrowserOpenHandle | undefined;
-    // Opening a browser resource may itself create or navigate a tab before a
-    // handle is returned. Replay is safe only for an observation action that is
-    // fenced to an already-existing resource. Anything else is potentially
-    // externally mutating from the outset.
-    let actionDispatched = !postDispatchReplaySafe;
+    // A provider/readiness failure before openBrowser returns a handle has not
+    // crossed the action dispatch boundary. Native open-page creation is itself
+    // transactional: its bridge either returns an exact created-tab receipt or
+    // cleans up the created tab before propagating failure. Mark dispatch only
+    // after a usable handle exists; subsequent goto/click/fill failures retain
+    // outcome-unknown fencing for non-replay-safe actions.
+    let actionDispatched = false;
     try {
       if (target.existingSession) assertBrowserSessionAvailable(repoRoot, target.sessionId);
       const browserArgs = requireExistingResource
