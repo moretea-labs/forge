@@ -2,11 +2,8 @@ import { randomUUID } from 'crypto';
 import {
   COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
   type ComputerBrowserAutomationRequest,
-  type ComputerBrowserProduct,
 } from '../../packages/protocols/computer/index';
 import type { ComputerProvider } from '../../packages/plugin-runtime/computer/index';
-import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
-import { getExternalPluginAdapter } from '../../src/runtime/plugins/external-adapter';
 import { callExternalUnixSocket } from '../../src/runtime/plugins/external-unix-socket';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 import { DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID } from './desktop-operator-contract';
@@ -84,39 +81,6 @@ export async function callDesktopOperatorComputerBrowserAutomation(
     if (error instanceof AssistantPluginError) throw unavailable(error, endpoint);
     throw error;
   }
-}
-
-const NATIVE_BROWSER_BUNDLE_IDS: Record<ComputerBrowserProduct, string> = {
-  chrome: 'com.google.Chrome',
-  vivaldi: 'com.vivaldi.Vivaldi',
-};
-
-export async function activateDesktopOperatorBrowserApplication(
-  input: AssistantPluginActionExecutionInput,
-  product: ComputerBrowserProduct,
-): Promise<void> {
-  const desktopOperator = getExternalPluginAdapter(input.controllerHome, DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID);
-  if (!desktopOperator) {
-    throw new AssistantPluginError(
-      'PLUGIN_BROWSER_NATIVE_FOREGROUND_ACTIVATOR_UNAVAILABLE',
-      'Native browser foreground activation requires an available Computer application provider.',
-      { retryable: true, details: { browserProduct: product, providerId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID } },
-    );
-  }
-  await desktopOperator.executeAction({
-    controllerHome: input.controllerHome,
-    repoId: input.repoId,
-    repoRoot: input.repoRoot,
-    pluginId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID,
-    actionId: 'desktop_session_open',
-    requestId: `${input.requestId}:native-browser-foreground:${product}`,
-    args: { bundle_id: NATIVE_BROWSER_BUNDLE_IDS[product], launch: false, activate: true },
-    origin: input.origin,
-    jobId: input.jobId,
-    timeoutMs: input.timeoutMs,
-    signal: input.signal,
-    deadlineAtMs: input.deadlineAtMs,
-  });
 }
 
 export function createDesktopOperatorComputerProvider(
