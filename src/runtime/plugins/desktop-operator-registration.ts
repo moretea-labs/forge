@@ -369,7 +369,7 @@ export interface DesktopOperatorRegistrationOptions {
   socketPath: string;
   launchAgentLabel?: string;
   expectedProgramContains?: string;
-  pluginVersion?: string;
+  pluginVersion: string;
   protocolVersion?: string;
   enabled?: boolean;
 }
@@ -393,7 +393,7 @@ export function createDesktopOperatorRegistrationInput(
     providerPluginId: 'desktop_operator',
     displayName: 'Forge Desktop Operator',
     provider: 'local-macos',
-    pluginVersion: options.pluginVersion ?? '0.2.1',
+    pluginVersion: options.pluginVersion,
     protocolVersion: options.protocolVersion ?? '1.0',
     scope: 'controller',
     enabled: options.enabled !== false,
@@ -403,7 +403,7 @@ export function createDesktopOperatorRegistrationInput(
       healthTimeoutMs: 2_000,
       actionTimeoutMs: 30_000,
       maxRequestBytes: 1_048_576,
-      maxResponseBytes: 1_048_576,
+      maxResponseBytes: 4 * 1_048_576,
     },
     lifecycle: options.launchAgentLabel && options.expectedProgramContains ? {
       kind: 'verified_user_launch_agent',

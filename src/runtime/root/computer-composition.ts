@@ -1,5 +1,6 @@
 import { ComputerProviderRegistry } from '../../../packages/plugin-runtime/computer/index';
 import type { ComputerBrowserAutomationRequest, ComputerBrowserProduct } from '../../../packages/protocols/computer/index';
+import { resolveControllerHome } from '../../cli/repositories/controller-home';
 import type { AssistantPluginActionExecutionInput } from '../plugins/types';
 import {
   activateDesktopOperatorBrowserApplication,
@@ -11,7 +12,7 @@ let composed = false;
 
 function ensureComputerComposition(): void {
   if (composed) return;
-  computerProviders.register(createDesktopOperatorComputerProvider());
+  computerProviders.register(createDesktopOperatorComputerProvider({ resolveControllerHome }));
   composed = true;
 }
 

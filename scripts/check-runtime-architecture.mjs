@@ -1263,7 +1263,12 @@ requireText('packages/protocols/computer/contract.ts', 'COMPUTER_BROWSER_AUTOMAT
 requireText('packages/plugin-runtime/computer/provider.ts', 'export interface ComputerProvider');
 requireText('packages/plugin-runtime/computer/provider-registry.ts', 'export class ComputerProviderRegistry');
 requireText('adapters/computer/desktop-operator-provider.ts', 'createDesktopOperatorComputerProvider');
-requireText('src/runtime/root/computer-composition.ts', 'createDesktopOperatorComputerProvider');
+requireText('adapters/computer/desktop-operator-discovery.ts', 'getExternalPluginRegistration');
+requireText('adapters/computer/desktop-operator-discovery.ts', "source: 'registration'");
+requireText('adapters/computer/desktop-operator-discovery.ts', "source: 'legacy_fallback'");
+forbid('adapters/computer/desktop-operator-provider.ts', /getExternalPluginRegistration|controller-home/, 'Desktop Operator provider transport must consume discovery results rather than own Controller registration lookup');
+if (text('adapters/computer/desktop-operator-provider.ts').split(/\r?\n/).length > 210) failures.push('adapters/computer/desktop-operator-provider.ts must remain a focused Computer provider transport adapter');
+requireText('src/runtime/root/computer-composition.ts', 'createDesktopOperatorComputerProvider({ resolveControllerHome })');
 requireText('src/runtime/plugins/browser-automation-service.ts', 'executeRuntimeComputerBrowserAutomation');
 requireText('src/runtime/plugins/browser-adapter.ts', 'activateRuntimeComputerBrowserApplication');
 forbid('src/runtime/plugins/browser-automation-service.ts', /desktop_operator|macos-capability-broker|desktop-operator\.sock|macos_browser_automation/, 'Browser automation must depend on the provider-neutral Computer boundary, not Desktop Operator transport details');
@@ -1276,9 +1281,14 @@ if (text('src/runtime/plugins/macos-capability-broker.ts').split(/\r?\n/).length
 for (const path of sourceFiles('packages/plugin-runtime')) {
   forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*(?:adapters\/|src\/runtime\/)/, 'Plugin Runtime provider dispatch must not depend on concrete adapters or Runtime implementations');
 }
+for (const path of sourceFiles('packages/plugin-runtime/computer')) {
+  forbid(path, /controller-home|external-registration|node:fs|from\s+['"]fs['"]|from\s+['"]path['"]/, 'Computer provider runtime must remain independent of Forge Controller Home and filesystem-backed provider discovery');
+}
 requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_OBSERVE_CAPABILITY');
 requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_INPUT_CAPABILITY');
 requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_CAPTURE_CAPABILITY');
+requireText('src/runtime/plugins/desktop-operator-registration.ts', 'pluginVersion: options.pluginVersion');
+forbid('src/runtime/plugins/desktop-operator-registration.ts', /pluginVersion:\s*options\.pluginVersion\s*\?\?|pluginVersion:\s*['"]0\./, 'Forge must not invent the Desktop Operator provider release version');
 
 // C0 Browser runtime authority: contracts and provider selection belong to plugin-runtime/protocols.
 requireText('packages/plugin-runtime/browser/runtime-contract.ts', 'export interface BrowserTransaction');

@@ -8,6 +8,9 @@ import {
   resetMacOsCapabilityBrokerSocketPathForTest,
   setMacOsCapabilityBrokerSocketPathForTest,
 } from '../../src/runtime/plugins/macos-capability-broker';
+import { createDesktopOperatorComputerProvider } from '../../adapters/computer/desktop-operator-provider';
+import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
+import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -83,5 +86,42 @@ describe('macOS capability broker handshake', () => {
     await expect(callMacOsCapabilityBroker({ action: 'trusted_input', product: 'chrome', protocolVersion: 1 }, 2_000))
       .rejects.toThrow('PLUGIN_MACOS_CAPABILITY_BROKER_CAPABILITY_UNSUPPORTED');
     expect(calls).toEqual(['handshake']);
+  });
+
+  test('uses trusted registration as the Computer provider endpoint authority', async () => {
+    if (process.platform === 'win32') return;
+    const root = mkdtempSync(join(tmpdir(), 'forge-computer-registration-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const socketPath = join(root, 'registered-desktop-operator.sock');
+    const calls: string[] = [];
+    await startProvider(socketPath, { actions: ['metadata', 'list_tabs'], calls });
+    installExternalPluginRegistration(controllerHome, createDesktopOperatorRegistrationInput({
+      socketPath,
+      pluginVersion: '0.2.3',
+      protocolVersion: '1.0',
+    }));
+
+    const provider = createDesktopOperatorComputerProvider({ resolveControllerHome: () => controllerHome });
+    const result = await provider.executeBrowserAutomation({ action: 'list_tabs', product: 'chrome' }, 2_000);
+    expect(result).toMatchObject({ acceptedAction: 'list_tabs', value: 'ok' });
+    expect(calls).toEqual(['handshake', 'macos_browser_automation']);
+  });
+
+  test('fails closed when the trusted Computer provider registration is disabled', async () => {
+    if (process.platform === 'win32') return;
+    const root = mkdtempSync(join(tmpdir(), 'forge-computer-disabled-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    installExternalPluginRegistration(controllerHome, createDesktopOperatorRegistrationInput({
+      socketPath: join(root, 'disabled-desktop-operator.sock'),
+      pluginVersion: '0.2.3',
+      protocolVersion: '1.0',
+      enabled: false,
+    }));
+
+    const provider = createDesktopOperatorComputerProvider({ resolveControllerHome: () => controllerHome });
+    await expect(provider.executeBrowserAutomation({ action: 'list_tabs', product: 'chrome' }, 2_000))
+      .rejects.toThrow('PLUGIN_COMPUTER_PROVIDER_DISABLED');
   });
 });
