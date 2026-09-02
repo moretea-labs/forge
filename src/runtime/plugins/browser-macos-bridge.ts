@@ -267,7 +267,7 @@ async function sendBrowserTrustedInput(
       || /\bBROWSER_AUTOMATION_ACTION_UNSUPPORTED\b/.test(message)) {
       throw new AssistantPluginError(
         'PLUGIN_BROWSER_TRUSTED_INPUT_UNAVAILABLE',
-        'Installed Forge Desktop Operator does not support native browser trusted input. Keep the exact tab explicitly foregrounded and use a separately grounded Desktop Operator interaction, or upgrade the stable Desktop Operator provider.',
+        'The configured Computer input provider does not support native browser trusted input. Keep the exact tab explicitly foregrounded and use a separately grounded Computer interaction, or upgrade the configured provider.',
         { retryable: false, details: { browserProduct: request.product, requiredProviderAction: 'trusted_input' } },
       );
     }
@@ -1341,7 +1341,7 @@ async function resolveCurrentMacOsBrowserTabRef(
 ): Promise<MacOsBrowserTabRef> {
   // Existing unit-level AppleScript hooks historically model one exact script at a time.
   // Preserve that narrow test seam unless a live inventory hook is explicitly supplied;
-  // production always resolves through the stable Desktop Operator broker inventory.
+  // production always resolves through the configured Computer provider inventory.
   const inventory = runtimeHooks.tabInventory
     ? await runtimeHooks.tabInventory(product, timeoutMs)
     : runtimeHooks.runAppleScript
