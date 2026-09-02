@@ -9,15 +9,18 @@ import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plug
 import { getExternalPluginAdapter } from '../../src/runtime/plugins/external-adapter';
 import { callExternalUnixSocket } from '../../src/runtime/plugins/external-unix-socket';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
+import { DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID } from './desktop-operator-contract';
 import {
-  DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_CAPABILITY,
-  DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_PROTOCOL_VERSION,
-  DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID,
-  DESKTOP_OPERATOR_PROVIDER_PROTOCOL_VERSION,
   resolveDesktopOperatorComputerEndpoint,
   type DesktopOperatorComputerEndpoint,
   type DesktopOperatorComputerProviderOptions,
 } from './desktop-operator-discovery';
+import {
+  buildDesktopOperatorComputerInvocation,
+  negotiateDesktopOperatorComputerHandshake,
+  validateDesktopOperatorComputerHandshake,
+  type DesktopOperatorComputerTransportPlan,
+} from './desktop-operator-negotiation';
 
 export {
   desktopOperatorComputerSocketPath,
@@ -43,60 +46,13 @@ function unavailable(error: AssistantPluginError, endpoint: DesktopOperatorCompu
   );
 }
 
-export function validateDesktopOperatorComputerHandshake(
-  handshake: Record<string, unknown>,
-  requestedAction?: string,
-): void {
-  if (handshake.pluginId !== DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID
-    || handshake.protocolVersion !== DESKTOP_OPERATOR_PROVIDER_PROTOCOL_VERSION) {
-    throw new AssistantPluginError(
-      'PLUGIN_MACOS_CAPABILITY_BROKER_IDENTITY_MISMATCH',
-      'Computer provider returned an unexpected Desktop Operator identity.',
-      {
-        retryable: false,
-        details: {
-          expectedPluginId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID,
-          expectedProtocolVersion: DESKTOP_OPERATOR_PROVIDER_PROTOCOL_VERSION,
-        },
-      },
-    );
-  }
-  const capabilities = Array.isArray(handshake.internalCapabilities)
-    ? handshake.internalCapabilities.filter((entry): entry is string => typeof entry === 'string')
-    : [];
-  const actions = Array.isArray(handshake.browserAutomationActions)
-    ? handshake.browserAutomationActions.filter((entry): entry is string => typeof entry === 'string')
-    : [];
-  const browserProtocolVersion = handshake.browserAutomationProtocolVersion;
-  if (!capabilities.includes(DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_CAPABILITY)
-    || browserProtocolVersion !== DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_PROTOCOL_VERSION
-    || (requestedAction && !actions.includes(requestedAction))) {
-    throw new AssistantPluginError(
-      'PLUGIN_MACOS_CAPABILITY_BROKER_CAPABILITY_UNSUPPORTED',
-      requestedAction
-        ? `Installed Forge Desktop Operator does not declare required Computer browser automation action ${requestedAction}.`
-        : 'Installed Forge Desktop Operator does not declare the required Computer browser automation capability.',
-      {
-        retryable: false,
-        details: {
-          requiredCapability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
-          providerCompatibilityCapability: DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_CAPABILITY,
-          requiredBrowserAutomationProtocolVersion: DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_PROTOCOL_VERSION,
-          ...(requestedAction ? { requiredAction: requestedAction } : {}),
-          declaredCapability: capabilities.includes(DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_CAPABILITY),
-          declaredBrowserAutomationProtocolVersion: typeof browserProtocolVersion === 'number' ? browserProtocolVersion : null,
-          declaredActionCount: actions.length,
-        },
-      },
-    );
-  }
-}
+export { validateDesktopOperatorComputerHandshake } from './desktop-operator-negotiation';
 
 async function verifyProvider(
   endpoint: DesktopOperatorComputerEndpoint,
   timeoutMs: number,
   requestedAction?: string,
-): Promise<void> {
+): Promise<DesktopOperatorComputerTransportPlan> {
   const handshake = await callExternalUnixSocket({
     socketPath: endpoint.socketPath,
     requestId: `computer-provider-handshake:${randomUUID()}`,
@@ -104,7 +60,7 @@ async function verifyProvider(
     timeoutMs: Math.min(timeoutMs, endpoint.healthTimeoutMs),
     maxResponseBytes: 64 * 1024,
   });
-  validateDesktopOperatorComputerHandshake(handshake, requestedAction);
+  return negotiateDesktopOperatorComputerHandshake(handshake, requestedAction);
 }
 
 export async function callDesktopOperatorComputerBrowserAutomation(
@@ -114,12 +70,13 @@ export async function callDesktopOperatorComputerBrowserAutomation(
 ): Promise<Record<string, unknown>> {
   const endpoint = resolveDesktopOperatorComputerEndpoint(options);
   try {
-    await verifyProvider(endpoint, timeoutMs, request.action);
+    const plan = await verifyProvider(endpoint, timeoutMs, request.action);
+    const invocation = buildDesktopOperatorComputerInvocation(plan, request, timeoutMs);
     return await callExternalUnixSocket({
       socketPath: endpoint.socketPath,
       requestId: `computer-provider:${randomUUID()}`,
-      method: 'macos_browser_automation',
-      params: { ...request, timeoutMs, protocolVersion: DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_PROTOCOL_VERSION },
+      method: invocation.method,
+      params: invocation.params,
       timeoutMs: Math.min(timeoutMs, endpoint.actionTimeoutMs),
       maxResponseBytes: endpoint.maxResponseBytes,
     });

@@ -1260,14 +1260,24 @@ forbid('adapters/mcp/tunnels/openai-secure-tunnel.ts', /\bidentityMatches\b/, 't
 
 // C0 Computer capability boundary: Browser and Desktop remain separate providers.
 requireText('packages/protocols/computer/contract.ts', 'COMPUTER_BROWSER_AUTOMATION_CAPABILITY');
+requireText('packages/protocols/computer/contract.ts', 'COMPUTER_CAPABILITY_PROTOCOL_VERSION');
+requireText('packages/protocols/computer/contract.ts', 'COMPUTER_CAPABILITY_EXECUTION_METHOD');
+requireText('src/runtime/plugins/external-unix-socket.ts', 'typeof COMPUTER_CAPABILITY_EXECUTION_METHOD');
+forbid('src/runtime/plugins/external-unix-socket.ts', /\|\s*['"]computer_execute['"]/, 'Shared Unix-socket transport must reference the Computer protocol method authority instead of duplicating its literal');
 requireText('packages/plugin-runtime/computer/provider.ts', 'export interface ComputerProvider');
 requireText('packages/plugin-runtime/computer/provider-registry.ts', 'export class ComputerProviderRegistry');
+requireText('adapters/computer/desktop-operator-contract.ts', 'DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID');
+requireText('adapters/computer/desktop-operator-negotiation.ts', 'negotiateDesktopOperatorComputerHandshake');
+requireText('adapters/computer/desktop-operator-negotiation.ts', 'buildDesktopOperatorComputerInvocation');
 requireText('adapters/computer/desktop-operator-provider.ts', 'createDesktopOperatorComputerProvider');
 requireText('adapters/computer/desktop-operator-discovery.ts', 'getExternalPluginRegistration');
 requireText('adapters/computer/desktop-operator-discovery.ts', "source: 'registration'");
 requireText('adapters/computer/desktop-operator-discovery.ts', "source: 'legacy_fallback'");
-forbid('adapters/computer/desktop-operator-provider.ts', /getExternalPluginRegistration|controller-home/, 'Desktop Operator provider transport must consume discovery results rather than own Controller registration lookup');
-if (text('adapters/computer/desktop-operator-provider.ts').split(/\r?\n/).length > 210) failures.push('adapters/computer/desktop-operator-provider.ts must remain a focused Computer provider transport adapter');
+forbid('adapters/computer/desktop-operator-provider.ts', /getExternalPluginRegistration|controller-home|computerCapabilities|internalCapabilities|browserAutomationProtocolVersion|browserAutomationActions|macos_browser_automation|computer_execute/, 'Desktop Operator provider transport must consume discovery and negotiation results rather than own Controller lookup or wire negotiation');
+forbid('adapters/computer/desktop-operator-negotiation.ts', /getExternalPluginRegistration|controller-home|desktop-operator-discovery/, 'Desktop Operator negotiation must depend on protocol/contract facts, not endpoint discovery');
+forbid('adapters/computer/desktop-operator-discovery.ts', /macos_browser_automation|LEGACY_BROWSER_AUTOMATION/, 'Desktop Operator discovery must own endpoint resolution only, not compatibility protocol negotiation');
+if (text('adapters/computer/desktop-operator-provider.ts').split(/\r?\n/).length > 180) failures.push('adapters/computer/desktop-operator-provider.ts must remain a focused Computer provider transport adapter');
+if (text('adapters/computer/desktop-operator-negotiation.ts').split(/\r?\n/).length > 230) failures.push('adapters/computer/desktop-operator-negotiation.ts must remain a focused handshake-to-transport-plan owner');
 requireText('src/runtime/root/computer-composition.ts', 'createDesktopOperatorComputerProvider({ resolveControllerHome })');
 requireText('src/runtime/plugins/browser-automation-service.ts', 'executeRuntimeComputerBrowserAutomation');
 requireText('src/runtime/plugins/browser-adapter.ts', 'activateRuntimeComputerBrowserApplication');

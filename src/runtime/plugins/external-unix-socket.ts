@@ -3,6 +3,7 @@ import { existsSync } from 'fs';
 import { createConnection, type Socket } from 'net';
 import { dirname, isAbsolute, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
+import { COMPUTER_CAPABILITY_EXECUTION_METHOD } from '../../../packages/protocols/computer/index';
 import { resolveBunExecutable } from '../shared/process-environment';
 import { AssistantPluginError } from './errors';
 
@@ -13,7 +14,13 @@ const DEFAULT_MAX_RESPONSE_BYTES = 1_048_576;
 const MAX_TIMEOUT_MS = 120_000;
 const MAX_DIAGNOSTIC_CHARS = 4_000;
 
-export type ExternalUnixSocketMethod = 'handshake' | 'manifest' | 'health' | 'execute' | 'macos_browser_automation';
+export type ExternalUnixSocketMethod =
+  | 'handshake'
+  | 'manifest'
+  | 'health'
+  | 'execute'
+  | typeof COMPUTER_CAPABILITY_EXECUTION_METHOD
+  | 'macos_browser_automation';
 
 export interface ExternalUnixSocketCallOptions {
   socketPath: string;

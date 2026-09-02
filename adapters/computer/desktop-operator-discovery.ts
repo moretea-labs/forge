@@ -3,11 +3,11 @@ import { join, resolve } from 'path';
 import { COMPUTER_BROWSER_AUTOMATION_CAPABILITY } from '../../packages/protocols/computer/index';
 import { getExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
+import {
+  DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID,
+  DESKTOP_OPERATOR_PROVIDER_PROTOCOL_VERSION,
+} from './desktop-operator-contract';
 
-export const DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID = 'desktop_operator';
-export const DESKTOP_OPERATOR_PROVIDER_PROTOCOL_VERSION = '1.0';
-export const DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_CAPABILITY = 'macos_browser_automation.v1';
-export const DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_PROTOCOL_VERSION = 1;
 export const DESKTOP_OPERATOR_MAX_RESPONSE_BYTES = 4 * 1_048_576;
 const LEGACY_REGISTRATION_CAPABILITIES = ['desktop.observe', 'desktop.interact', 'desktop.capture'] as const;
 let testSocketPath: string | undefined;

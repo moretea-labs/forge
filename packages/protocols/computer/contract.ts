@@ -1,3 +1,6 @@
+export const COMPUTER_CAPABILITY_PROTOCOL_VERSION = 1 as const;
+export const COMPUTER_CAPABILITY_EXECUTION_METHOD = 'computer_execute' as const;
+
 export const COMPUTER_BROWSER_AUTOMATION_CAPABILITY = 'computer.browser_automation.v1' as const;
 export const COMPUTER_OBSERVE_CAPABILITY = 'computer.observe.v1' as const;
 export const COMPUTER_INPUT_CAPABILITY = 'computer.input.v1' as const;
