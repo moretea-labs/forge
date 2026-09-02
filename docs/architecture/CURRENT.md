@@ -170,6 +170,14 @@ Host hook files are integration surfaces, not lifecycle or architecture authorit
 
 Typed provider/plugin actions should use Forge capability/resource semantics directly instead of hiding host/browser/device operations inside arbitrary repository shell commands. Built-in providers may remain inside Forge when they are tightly coupled to Controller policy and lifecycle; independent products/providers retain independent release boundaries and integrate through the Plugin Protocol.
 
+### Computer and macOS provider boundary
+
+`Browser` and `Computer` are distinct semantic product surfaces over one provider-neutral Computer capability boundary. Browser owns DOM/tab/navigation/session/transaction semantics; Computer owns generic application observation, input, capture, and native-platform capability management. Browser may consume provider-native browser support through `computer.browser_automation.v1`, but concrete `desktop_operator` identity must not leak back into Browser as routing or session authority.
+
+On macOS, Forge Desktop Operator is the independently released native Computer provider. Its Git repository, app bundle identity, user LaunchAgent, socket endpoint, native interaction sessions, and TCC permissions remain provider-owned and release-independent. Forge owns trusted catalog selection, registration, capability/action policy, authorization, provider selection, and the `forge computer setup|status|doctor|update|uninstall` product facade. The stable Desktop Operator bundle/LaunchAgent identity must not be renamed merely to match product wording because TCC identity and provider lifecycle are intentionally independent from Forge Runtime releases.
+
+Trusted `ExternalPluginRegistration` is the endpoint/lifecycle authority for an installed Computer provider. A bounded explicit compatibility fallback may support an old unregistered provider during migration, but it is never the primary endpoint authority and must not survive as a second discovery path after its compatibility window. Provider protocol negotiation prefers provider-neutral `computer_execute`; legacy `macos_browser_automation` is compatibility-only and cannot become Browser authority. Forge uninstall must complete the provider-owned native uninstall lifecycle before forgetting a registered provider, so package/registration cleanup cannot orphan a running native service.
+
 ### iOS physical-device boundary
 
 - `ios-device` is the single physical-device resource domain. Backend/engine details may vary, but they must not create independent mutation authority or concurrent ownership for the same phone.

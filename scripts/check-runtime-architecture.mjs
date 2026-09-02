@@ -1338,6 +1338,12 @@ requireText('adapters/computer/desktop-operator-discovery.ts', "source: 'legacy_
 requireText('adapters/computer/desktop-operator-discovery.ts', "DesktopOperatorLegacyFallbackMode");
 requireText('adapters/computer/desktop-operator-discovery.ts', "PLUGIN_COMPUTER_PROVIDER_REGISTRATION_REQUIRED");
 requireText('src/runtime/root/computer-composition.ts', "legacyFallback: 'unregistered_v0_2'");
+requireText('src/cli/commands/computer.ts', "new Command('computer')");
+requireText('src/cli/commands/computer.ts', 'installOfficialPlugin(COMPUTER_PROVIDER_PLUGIN_ID');
+requireText('src/cli/commands/computer.ts', 'provider release: independent');
+requireText('src/cli/commands/computer.ts', 'COMPUTER_PROVIDER_UNINSTALLER_MISSING');
+requireText('src/cli/index.ts', 'buildComputerCommand');
+requireText('src/cli/index.ts', "'computer'");
 
 forbid('adapters/computer/desktop-operator-provider.ts', /getExternalPluginRegistration|controller-home|computerCapabilities|internalCapabilities|browserAutomationProtocolVersion|browserAutomationActions|macos_browser_automation|computer_execute/, 'Desktop Operator provider transport must consume discovery and negotiation results rather than own Controller lookup or wire negotiation');
 forbid('adapters/computer/desktop-operator-negotiation.ts', /getExternalPluginRegistration|controller-home|desktop-operator-discovery/, 'Desktop Operator negotiation must depend on protocol/contract facts, not endpoint discovery');

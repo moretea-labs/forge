@@ -52,7 +52,7 @@ For a reviewed source checkout: `git clone https://github.com/moretea-labs/forge
 
 ## Built in, and extensible
 
-Forge ships typed local/browser/desktop/iOS/GitHub/Gmail/Calendar/Tasks/App Store Connect/Resend capabilities. The public provider catalog currently includes **Forge Desktop Operator**, **Forge Design**, and **Personal Knowledge Assistant**; install with `forge plugin catalog` / `forge plugin install <id>`. See [Features](docs/operations/features.md) and [Plugin Management](docs/forge-plugin-management.md).
+Forge ships typed local/browser/desktop/iOS/GitHub/Gmail/Calendar/Tasks/App Store Connect/Resend capabilities. On macOS, manage the native **Computer** capability with `forge computer setup|status|doctor|update|uninstall`; Forge Desktop Operator remains the independently released native provider behind that product surface. The generic provider catalog also includes **Forge Design** and **Personal Knowledge Assistant** and remains available through `forge plugin catalog` / `forge plugin install <id>`. See [Features](docs/operations/features.md) and [Plugin Management](docs/forge-plugin-management.md).
 
 ## Controlled by design
 
@@ -105,7 +105,7 @@ forge setup next     # 按每次显示的 Next 动作继续
 
 继续阅读[安装与启动](docs/tutorials/01-install-and-start.zh-CN.md)和[连接 ChatGPT](docs/tutorials/02-connect-chatgpt.zh-CN.md)。仓库不是首次 setup 的前置条件，需要开发能力时再运行 `forge adopt --repo /path/to/your-project`。已安装用户升级：`npm install -g @moretea-labs/forge@latest`，确认 `forge --version` 后运行 `forge setup next` 让新版 setup 自动补齐 Runtime/connector 配置。源码安装：`git clone https://github.com/moretea-labs/forge.git && cd forge && bun install --frozen-lockfile && npm install -g . --omit=optional --no-audit --no-fund`。
 
-Forge 内置本机、Browser、Desktop、iOS、GitHub、Gmail、Calendar、Tasks、App Store Connect、Resend 等类型化能力；公开 Provider 目录还有 **Forge Desktop Operator / Forge Design / Personal Knowledge Assistant**。详见[功能清单](docs/operations/features.zh-CN.md)与[插件管理](docs/forge-plugin-management.md)。
+Forge 内置本机、Browser、Desktop、iOS、GitHub、Gmail、Calendar、Tasks、App Store Connect、Resend 等类型化能力。macOS 原生 **Computer** 能力统一通过 `forge computer setup|status|doctor|update|uninstall` 管理；Forge Desktop Operator 仍作为其独立发布的原生 Provider 保持稳定身份。通用 Provider 目录还包含 **Forge Design / Personal Knowledge Assistant**，继续使用 `forge plugin catalog` / `forge plugin install <id>` 管理。详见[功能清单](docs/operations/features.zh-CN.md)与[插件管理](docs/forge-plugin-management.md)。
 
 安全上，普通本地修改、远程影响、破坏性操作、密钥和工作区外访问是不同边界；Full Access 不会取消高风险确认。详见[安全说明](SECURITY.md)和[安全模型](docs/wiki/Security-Model.md)。
 
