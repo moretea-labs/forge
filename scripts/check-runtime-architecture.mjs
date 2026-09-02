@@ -1305,6 +1305,11 @@ for (const path of sourceFiles('src/runtime/plugins')) {
   if (path === 'src/runtime/plugins/browser-session-authority.ts') continue;
   forbid(path, /from\s+['"]\.\/browser-session-authority['"]/, 'active Browser runtime code must consume the composed BrowserSessionAuthorityPort, not the retired authority owner');
 }
+requireText('src/runtime/plugins/browser-registration.ts', 'export const browserPluginAdapter');
+requireText('src/runtime/plugins/first-party-registry.ts', "from './browser-registration'");
+forbid('src/runtime/plugins/first-party-registry.ts', /from\s+['"]\.\/browser-adapter['"]/, 'first-party registry must depend on the thin Browser registration entrypoint, not the action implementation');
+forbid('src/runtime/plugins/browser-adapter.ts', /export\s+const\s+browserPluginAdapter/, 'Browser action implementation must not also own first-party plugin registration');
+if (text('src/runtime/plugins/browser-registration.ts').split(/\r?\n/).length > 20) failures.push('src/runtime/plugins/browser-registration.ts must remain a thin registration adapter');
 
 if (failures.length) {
   console.error('[runtime-architecture] FAILED');

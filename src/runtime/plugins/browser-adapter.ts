@@ -4557,10 +4557,3 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
     () => executeBrowserPluginActionInternal(input),
   );
 }
-
-export const browserPluginAdapter = {
-  pluginId: BROWSER_PLUGIN_ID,
-  buildManifest: buildBrowserPluginManifest,
-  executeAction: executeBrowserPluginAction,
-  resolveAuthorizationContext: resolveBrowserPluginAuthorizationContext,
-};
