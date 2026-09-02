@@ -11,15 +11,15 @@ export interface ProcessControllerBindingPayload {
   createdAt: string; updatedAt: string;
 }
 
-function bindingId(repoId: string, workId: string, sessionId: string, controllerType: ProcessControllerType): string {
-  return `process-controller:${controllerType}:${repoId}:${workId}:${sessionId}`;
+function bindingId(repoId: string, workId: string, controllerType: ProcessControllerType): string {
+  return `process-controller:${controllerType}:${repoId}:${workId}`;
 }
 
 export function upsertProcessControllerBinding(
   options: { controllerHome: string; repoId: string; now?: () => string },
   input: Omit<ProcessControllerBindingPayload, 'schemaVersion' | 'bindingId' | 'repoId' | 'createdAt' | 'updatedAt'>,
 ): { binding: ControllerBinding; payload: ProcessControllerBindingPayload } {
-  const id = bindingId(options.repoId, input.workId, input.sessionId, input.controllerType);
+  const id = bindingId(options.repoId, input.workId, input.controllerType);
   return withControllerLock(options.controllerHome, { scope: 'task', repoId: options.repoId, taskId: `process-controller-binding-${input.workId}` }, `process-controller-binding:${id}`, () => {
     const current = readControlPlaneRecord<ProcessControllerBindingPayload>(options.controllerHome, NAMESPACE, options.repoId, id);
     const at = options.now?.() ?? new Date().toISOString();

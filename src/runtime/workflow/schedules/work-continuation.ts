@@ -128,14 +128,12 @@ function providerSeedArguments(input: WorkContinuationScheduleInput, controllerT
 function exactContinuationArguments(input: {
   workId: string;
   controllerType: ContinuationControllerType;
-  controllerSessionId: string;
   controllerBindingId: string;
   continuationHint?: string;
 }): Record<string, unknown> {
   return {
     work_id: input.workId,
     controller_type: input.controllerType,
-    controller_session_id: input.controllerSessionId,
     controller_binding_id: input.controllerBindingId,
     ...(input.continuationHint?.trim() ? { continuation_hint: input.continuationHint.trim() } : {}),
   };
@@ -208,7 +206,6 @@ export function createWorkContinuationSchedule(
     ? exactContinuationArguments({
         workId: work!.workId,
         controllerType,
-        controllerSessionId: retainedSession!.sessionId,
         controllerBindingId: controllerBinding!.bindingId,
         continuationHint: input.continuationPrompt,
       })

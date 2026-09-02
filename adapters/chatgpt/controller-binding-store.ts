@@ -21,15 +21,15 @@ export interface ChatgptControllerBindingPayload {
   updatedAt: string;
 }
 
-function bindingId(repoId: string, workId: string, sessionId: string): string {
-  return `chatgpt-controller:${repoId}:${workId}:${sessionId}`;
+function bindingId(repoId: string, workId: string): string {
+  return `chatgpt-controller:${repoId}:${workId}`;
 }
 
 export function upsertChatgptControllerBinding(
   options: { controllerHome: string; repoId: string; now?: () => string },
   input: Omit<ChatgptControllerBindingPayload, 'schemaVersion' | 'bindingId' | 'repoId' | 'createdAt' | 'updatedAt'>,
 ): { binding: ControllerBinding; payload: ChatgptControllerBindingPayload } {
-  const id = bindingId(options.repoId, input.workId, input.sessionId);
+  const id = bindingId(options.repoId, input.workId);
   return withControllerLock(options.controllerHome, { scope: 'task', repoId: options.repoId, taskId: `chatgpt-controller-binding-${input.workId}` }, `chatgpt-controller-binding:${id}`, () => {
     const current = readControlPlaneRecord<ChatgptControllerBindingPayload>(options.controllerHome, NAMESPACE, options.repoId, id);
     const at = options.now?.() ?? new Date().toISOString();

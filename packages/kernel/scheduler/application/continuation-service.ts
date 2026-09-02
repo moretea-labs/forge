@@ -3,7 +3,7 @@ import {
   controllerSessionPrincipalId,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
-  getControllerSessionBinding,
+  getControllerWorkBinding,
   getRetainedControllerSession,
   type ControllerHost,
 } from '../../controller/api/index';
@@ -22,8 +22,8 @@ export interface ScheduledControllerContinuationResult {
 
 /**
  * Canonical Scheduler continuation path:
- * Schedule occurrence -> exact Work -> exact durable ControllerSession -> exact opaque ControllerBinding -> ControllerHost.resume.
- * The occurrence record fences external replay independently of transport/provider behavior.
+ * Schedule occurrence -> exact Work -> Work-scoped durable ControllerBinding -> current Controller delivery session -> ControllerHost.resume.
+ * The occurrence record fences external replay independently of transport/provider behavior; ControllerSession ids are observation, not semantic continuation identity.
  */
 export async function resumeScheduledControllerContinuation(
   options: SchedulerContinuationStoreOptions,
@@ -35,7 +35,6 @@ export async function resumeScheduledControllerContinuation(
     if (
       previous.scheduleId !== input.scheduleId
       || previous.workId !== input.workId
-      || previous.controllerSessionId !== input.controllerSessionId
       || previous.controllerBindingId !== input.controllerBindingId
     ) throw new Error(`SCHEDULE_CONTINUATION_OCCURRENCE_IDENTITY_CONFLICT: ${input.occurrenceId}`);
     if (previous.status === 'dispatched' || previous.status === 'rejected') return { dispatch: previous, reused: true };
@@ -49,11 +48,8 @@ export async function resumeScheduledControllerContinuation(
 
   const session = getRetainedControllerSession(options, work.workId);
   if (!session) throw new Error(`CONTROLLER_SESSION_NOT_RETAINED: ${work.workId}`);
-  if (session.sessionId !== input.controllerSessionId) {
-    throw new Error(`SCHEDULE_CONTINUATION_SESSION_DRIFT: ${work.workId}:expected=${input.controllerSessionId}:actual=${session.sessionId}`);
-  }
-  const bindingRecord = getControllerSessionBinding(options, work.workId, session.sessionId);
-  if (!bindingRecord) throw new Error(`CONTROLLER_SESSION_BINDING_NOT_FOUND: ${work.workId}:${session.sessionId}`);
+  const bindingRecord = getControllerWorkBinding(options, work.workId);
+  if (!bindingRecord) throw new Error(`CONTROLLER_WORK_BINDING_NOT_FOUND: ${work.workId}`);
   if (bindingRecord.binding.bindingId !== input.controllerBindingId) {
     throw new Error(`SCHEDULE_CONTINUATION_BINDING_DRIFT: ${work.workId}:expected=${input.controllerBindingId}:actual=${bindingRecord.binding.bindingId}`);
   }
@@ -84,7 +80,6 @@ export async function resumeScheduledControllerContinuation(
     && candidate.relayScopeId === prepared.relayScopeId
     && candidate.controllerId === session.controllerId
     && candidate.controllerType === session.controllerType
-    && candidate.sessionId === session.sessionId
     && candidate.bindingId === bindingRecord.binding.bindingId
     && candidate.authorityId,
   );

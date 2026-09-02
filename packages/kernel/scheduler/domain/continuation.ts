@@ -11,6 +11,7 @@ export interface ScheduledContinuationDispatch {
   scheduleId: string;
   occurrenceId: string;
   workId: string;
+  /** Observed transport/session at initial dispatch; never part of semantic occurrence identity. */
   controllerSessionId: string;
   controllerBindingId: string;
   relayScopeId: string;
@@ -26,7 +27,7 @@ export interface ScheduledControllerContinuationInput {
   scheduleId: string;
   occurrenceId: string;
   workId: string;
-  controllerSessionId: string;
+  /** Observed transport/session at initial dispatch; never part of semantic occurrence identity. */
   controllerBindingId: string;
   relayScopeId?: string;
   continuationHint?: string;

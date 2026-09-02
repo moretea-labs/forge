@@ -507,8 +507,9 @@ requireText('src/runtime/workflow/schedules/settlement.ts', '@deprecated Kernel 
 requireText('packages/kernel/scheduler/domain/continuation.ts', 'export interface ScheduledContinuationDispatch');
 requireText('packages/kernel/scheduler/application/continuation-service.ts', 'resumeScheduledControllerContinuation');
 requireText('packages/kernel/scheduler/application/continuation-service.ts', 'getRetainedControllerSession');
-requireText('packages/kernel/scheduler/application/continuation-service.ts', 'getControllerSessionBinding');
+requireText('packages/kernel/scheduler/application/continuation-service.ts', 'getControllerWorkBinding');
 requireText('packages/kernel/scheduler/application/continuation-service.ts', 'host.resume(bindingRecord.binding');
+forbid('packages/kernel/scheduler/application/continuation-service.ts', /SCHEDULE_CONTINUATION_SESSION_DRIFT/, 'Scheduler continuation must not treat replaceable ControllerSession transport ids as durable continuation identity');
 requireText('packages/kernel/scheduler/application/continuation-service.ts', 'SCHEDULE_CONTINUATION_OUTCOME_UNKNOWN');
 requireText('packages/kernel/scheduler/application/continuation-service.ts', 'scheduler_continuation_prepare');
 requireText('packages/kernel/scheduler/application/continuation-service.ts', 'scheduler_continuation_bind_round');

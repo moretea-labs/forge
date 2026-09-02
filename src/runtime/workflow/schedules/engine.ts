@@ -14,7 +14,7 @@ import { appendWorkEvidence, getWorkContract, isTerminalWorkContractStatus } fro
 import {
   controllerSessionBlocksRecovery,
   getControllerSession,
-  getControllerSessionBinding,
+  getControllerWorkBinding,
   getRetainedControllerSession,
 } from '../../../../packages/kernel/controller/api/index';
 import {
@@ -297,18 +297,6 @@ async function executeExternalControllerWake(
       `SCHEDULE_CONTINUATION_CONTROLLER_TYPE_MISMATCH:${workId}:expected=${retainedSession.controllerType}:requested=${requestedControllerType}`,
     );
   }
-  const expectedSessionId = typeof args.controller_session_id === 'string' ? args.controller_session_id.trim() : '';
-  if (expectedSessionId && expectedSessionId !== retainedSession.sessionId) {
-    return decideOccurrence(
-      controllerHome,
-      schedule,
-      occurrence,
-      'operation_blocked',
-      'skipped',
-      `SCHEDULE_CONTINUATION_SESSION_DRIFT:${workId}:expected=${expectedSessionId}:actual=${retainedSession.sessionId}`,
-    );
-  }
-
   const occurrenceNowMs = Date.parse(timestamp);
   const nowMs = Number.isFinite(occurrenceNowMs) ? occurrenceNowMs : Date.now();
   if (workHasActiveExecution(controllerHome, schedule.repoId, workId)) {
@@ -323,7 +311,7 @@ async function executeExternalControllerWake(
 
   const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
   let bindingId = typeof args.controller_binding_id === 'string' ? args.controller_binding_id.trim() : '';
-  let bindingRecord = bindingId ? getControllerSessionBinding(workStore, workId, retainedSession.sessionId) : undefined;
+  let bindingRecord = getControllerWorkBinding(workStore, workId);
   if (bindingRecord && bindingRecord.binding.bindingId !== bindingId) {
     return decideOccurrence(
       controllerHome,
@@ -335,6 +323,8 @@ async function executeExternalControllerWake(
     );
   }
 
+  const hadLegacySessionIdentity = typeof args.controller_session_id === 'string' && args.controller_session_id.trim().length > 0;
+
   // Explicit compatibility migration for schedules written before Kernel V2 B4.
   // Provider metadata is copied once into the adapter-owned binding and the
   // Schedule is rewritten to exact Work/ControllerSession/ControllerBinding ids.
@@ -344,26 +334,29 @@ async function executeExternalControllerWake(
       { workId, session: retainedSession, scheduleName: schedule.name, args },
     );
     bindingId = binding.bindingId;
-    bindingRecord = getControllerSessionBinding(workStore, workId, retainedSession.sessionId);
+    bindingRecord = getControllerWorkBinding(workStore, workId);
     if (!bindingRecord || bindingRecord.binding.bindingId !== bindingId) {
       throw new Error(`SCHEDULE_CONTINUATION_BINDING_MIGRATION_FAILED:${workId}`);
     }
-    const continuationHint = typeof args.continuation_hint === 'string'
-      ? args.continuation_hint
-      : typeof args.continuation_prompt === 'string'
-        ? args.continuation_prompt
-        : undefined;
-    const relayScopeId = typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : undefined;
+  }
+
+  const continuationHintForMigration = typeof args.continuation_hint === 'string'
+    ? args.continuation_hint
+    : typeof args.continuation_prompt === 'string'
+      ? args.continuation_prompt
+      : undefined;
+  const relayScopeIdForMigration = typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : undefined;
+  if (hadLegacySessionIdentity || bindingId !== bindingRecord.binding.bindingId) {
+    bindingId = bindingRecord.binding.bindingId;
     schedule = updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
       action: {
         ...current.action,
         arguments: {
           work_id: workId,
           controller_type: retainedSession.controllerType,
-          controller_session_id: retainedSession.sessionId,
           controller_binding_id: bindingId,
-          ...(relayScopeId ? { relay_scope_id: relayScopeId } : {}),
-          ...(continuationHint?.trim() ? { continuation_hint: continuationHint.trim() } : {}),
+          ...(relayScopeIdForMigration ? { relay_scope_id: relayScopeIdForMigration } : {}),
+          ...(continuationHintForMigration?.trim() ? { continuation_hint: continuationHintForMigration.trim() } : {}),
         },
       },
     }));
@@ -404,7 +397,6 @@ async function executeExternalControllerWake(
         scheduleId: schedule.scheduleId,
         occurrenceId: occurrence.occurrenceId,
         workId,
-        controllerSessionId: retainedSession.sessionId,
         controllerBindingId: bindingRecord.binding.bindingId,
         relayScopeId,
         continuationHint,
@@ -427,7 +419,7 @@ async function executeExternalControllerWake(
       status: 'dispatched',
       reason: resumed.reused
         ? `Controller continuation occurrence ${occurrence.occurrenceId} was already durably dispatched; external replay suppressed and semantic round closure is still pending.`
-        : `ControllerHost accepted exact session ${retainedSession.sessionId} for Work ${workId}; dispatch ${resumed.dispatch.hostDispatchId ?? resumed.dispatch.relayScopeId}; semantic round closure is still pending.`,
+        : `ControllerHost accepted durable binding ${bindingRecord.binding.bindingId} for Work ${workId}; dispatch ${resumed.dispatch.hostDispatchId ?? resumed.dispatch.relayScopeId}; semantic round closure is still pending.`,
     });
     appendWorkEvidence(workStore, workId, {
       evidenceId: dispatchedOccurrence.occurrenceId,

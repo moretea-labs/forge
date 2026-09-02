@@ -27,6 +27,10 @@ import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-work
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import { executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { executionIdentityForWork } from '../../src/runtime/control-plane/execution/execution-identity';
+import { bindControllerSessionBinding, getControllerSessionBinding, getControllerWorkBinding } from '../../packages/kernel/controller/api/index';
+import { resumeScheduledControllerContinuation } from '../../packages/kernel/scheduler/api/index';
+import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
+import { createWorkContinuationSchedule } from '../../src/runtime/workflow/schedules/work-continuation';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
 
 const roots: string[] = [];
@@ -834,6 +838,93 @@ describe('rh_work terminalization authority', () => {
     expect(stopAFromReplacementTransport.status).toBe('ok');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workA)?.status).toBe('cancelled');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workB)?.status).toBe('cancelled');
+  }, 15_000);
+
+  test('ControllerBinding and scheduled continuation remain Work-scoped across ControllerSession rollover', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-durable-controller-binding';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+
+    const ownerA = claimControllerSession(store, {
+      workId,
+      controllerId: 'principal-binding',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-binding-a',
+      principalId: 'principal-binding',
+      controllerInstanceId: 'runtime-binding',
+      leaseMs: 60_000,
+    });
+    const adapterA = upsertChatgptControllerBinding(store, {
+      workId,
+      sessionId: ownerA.sessionId,
+      title: 'durable interaction target',
+      model: 'gpt-5.6',
+      reasoning: 'high',
+      tabPolicy: 'auto',
+    });
+    bindControllerSessionBinding(store, { workId, sessionId: ownerA.sessionId, binding: adapterA.binding });
+
+    const { schedule } = createWorkContinuationSchedule(fx.controllerHome, fx.repository.repoId, {
+      workId,
+      scheduleMode: 'continuation',
+      controllerType: 'chatgpt',
+      triggerType: 'manual',
+      shadowMode: false,
+    });
+    expect(schedule.action.arguments).toMatchObject({
+      work_id: workId,
+      controller_type: 'chatgpt',
+      controller_binding_id: adapterA.binding.bindingId,
+    });
+    expect(schedule.action.arguments).not.toHaveProperty('controller_session_id');
+
+    const ownerB = resumeControllerSession(store, {
+      workId,
+      controllerId: ownerA.controllerId,
+      controllerType: ownerA.controllerType,
+      sessionId: 'transport-binding-b',
+      principalId: ownerA.principalId!,
+      controllerInstanceId: ownerA.controllerInstanceId!,
+      leaseMs: 60_000,
+    });
+    expect(ownerB.claimGeneration).toBe(ownerA.claimGeneration);
+
+    const adapterB = upsertChatgptControllerBinding(store, {
+      workId,
+      sessionId: ownerB.sessionId,
+      title: 'durable interaction target',
+      model: 'gpt-5.6',
+      reasoning: 'high',
+      tabPolicy: 'auto',
+    });
+    expect(adapterB.binding.bindingId).toBe(adapterA.binding.bindingId);
+    bindControllerSessionBinding(store, { workId, sessionId: ownerB.sessionId, binding: adapterB.binding });
+
+    expect(getControllerSessionBinding(store, workId, ownerA.sessionId)?.binding.bindingId).toBe(adapterA.binding.bindingId);
+    expect(getControllerWorkBinding(store, workId)).toMatchObject({
+      latestSessionId: ownerB.sessionId,
+      binding: { bindingId: adapterA.binding.bindingId, hostKind: 'chatgpt' },
+    });
+
+    const dispatched = await resumeScheduledControllerContinuation(store, {
+      scheduleId: schedule.scheduleId,
+      occurrenceId: 'occ-binding-rollover',
+      workId,
+      controllerBindingId: adapterA.binding.bindingId,
+    }, {
+      resume: async (binding, context) => ({
+        accepted: binding.bindingId === adapterA.binding.bindingId && context.workId === workId,
+        dispatchId: 'provider-dispatch-after-session-rollover',
+      }),
+    });
+    expect(dispatched.dispatch).toMatchObject({
+      status: 'dispatched',
+      workId,
+      controllerSessionId: ownerB.sessionId,
+      controllerBindingId: adapterA.binding.bindingId,
+      hostDispatchId: 'provider-dispatch-after-session-rollover',
+    });
   }, 15_000);
 
   test('Work-bound controller capability survives execution-session invalidation and transport rotation without collapsing same-principal conversations', async () => {
