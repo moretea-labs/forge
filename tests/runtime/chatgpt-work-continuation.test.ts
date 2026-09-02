@@ -10,7 +10,9 @@ import {
   acknowledgeControllerRoundClaim,
   beginControllerRoundRelayAfterRelease,
   beginInitialControllerRoundDispatch,
+  claimStalledControllerRoundRelays,
   finishControllerRoundRelayDispatch,
+  getControllerRoundRelay,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
@@ -705,5 +707,103 @@ describe('controller relay repeated-state rearm', () => {
       disposition: 'continue_immediately',
     });
     expect(continued).toMatchObject({ status: 'pending_release', repeatedStateCount: 1 });
+  });
+});
+
+
+describe('provider dispatch outcome-unknown fence', () => {
+  function outcomeUnknownFixture() {
+    const root = mkdtempSync(join(tmpdir(), 'forge-controller-relay-provider-unknown-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) {
+      execFileSync('git', args, { cwd: repoRoot });
+    }
+    writeFileSync(join(repoRoot, 'README.md'), 'provider outcome unknown\n');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'provider-outcome-unknown' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workId = 'WORK-PROVIDER-OUTCOME-UNKNOWN';
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Fence ambiguous provider dispatch.',
+      acceptanceCriteria: ['Never replay a possibly committed provider prompt automatically.'],
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    return { store, workId };
+  }
+
+  test('persists provider dispatch outcome_unknown as a non-replayable ControllerRound fence', () => {
+    const { store, workId } = outcomeUnknownFixture();
+    const relayScopeId = `goal:${workId}`;
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      relayScopeId,
+      identity: { controllerId: 'launcher', controllerType: 'chatgpt', principalId: 'launcher', controllerInstanceId: 'runtime-test', sessionId: 'launch-1' },
+    });
+    const fenced = finishControllerRoundRelayDispatch(store, {
+      workId,
+      ok: false,
+      outcomeUnknown: true,
+      error: 'CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN:https://chatgpt.com/c/target',
+    });
+    expect(fenced).toMatchObject({
+      status: 'blocked',
+      blockedReason: 'provider_dispatch_outcome_unknown',
+      lastError: 'CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN:https://chatgpt.com/c/target',
+    });
+    expect(() => beginInitialControllerRoundDispatch(store, {
+      workId,
+      relayScopeId,
+      identity: { controllerId: 'launcher', controllerType: 'chatgpt', principalId: 'launcher', controllerInstanceId: 'runtime-test', sessionId: 'launch-2' },
+    })).toThrow('CONTROLLER_RELAY_PROVIDER_DISPATCH_OUTCOME_UNKNOWN');
+    expect(claimStalledControllerRoundRelays(store, { nowMs: Date.now() + 60 * 60_000, graceMs: 60_000 })).toEqual([]);
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'blocked', blockedReason: 'provider_dispatch_outcome_unknown' });
+  });
+
+  test('does not turn a known provider failure into the permanent outcome_unknown no-replay fence', () => {
+    const { store, workId } = outcomeUnknownFixture();
+    const relayScopeId = `goal:${workId}`;
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      relayScopeId,
+      identity: { controllerId: 'launcher', controllerType: 'chatgpt', principalId: 'launcher', controllerInstanceId: 'runtime-test', sessionId: 'launch-known-failure' },
+    });
+    expect(finishControllerRoundRelayDispatch(store, {
+      workId,
+      ok: false,
+      error: 'CHATGPT_LOGIN_REQUIRED',
+    })).toMatchObject({ status: 'failed', lastError: 'CHATGPT_LOGIN_REQUIRED' });
+    const retry = beginInitialControllerRoundDispatch(store, {
+      workId,
+      relayScopeId,
+      identity: { controllerId: 'launcher', controllerType: 'chatgpt', principalId: 'launcher', controllerInstanceId: 'runtime-test', sessionId: 'launch-after-known-failure' },
+    });
+    expect(retry).toMatchObject({ status: 'dispatching' });
+    expect(retry).not.toHaveProperty('blockedReason');
+  });
+
+  test('keeps native prompt mutation ambiguity distinct from ordinary submission-not-confirmed failure', () => {
+    const launcher = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
+    const host = readFileSync(join(process.cwd(), 'adapters/chatgpt/controller-host.ts'), 'utf8');
+    const scheduler = readFileSync(join(process.cwd(), 'packages/kernel/scheduler/application/continuation-service.ts'), 'utf8');
+    expect(launcher).toContain("CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN");
+    expect(launcher).toContain('submitOutcomeUnknown = true');
+    expect(launcher).toContain("'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'");
+    expect(host).toContain('CONTROLLER_HOST_PROVIDER_DISPATCH_OUTCOME_UNKNOWN');
+    expect(scheduler).toContain('providerDispatchOutcomeUnknown');
+    expect(scheduler).toContain('outcomeUnknown: providerDispatchOutcomeUnknown');
   });
 });

@@ -4210,7 +4210,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   conversationUrl: relayBinding?.conversationUrl,
                   tabPolicy: 'reuse',
                 });
-                if (dispatched.status === 'failed') throw new Error(dispatched.error?.message ?? 'CONTROLLER_RELAY_DISPATCH_FAILED');
+                if (dispatched.status === 'failed') throw new Error(`${dispatched.error?.code ?? 'CONTROLLER_RELAY_DISPATCH_FAILED'}:${dispatched.error?.message ?? 'Controller relay dispatch failed'}`);
                 // The next prompt is externally committed before this transition is
                 // recorded. Contiguous immediate rounds intentionally retain one
                 // Forge-owned tab, avoiding a close/reopen race and duplicate prompt.
@@ -4229,9 +4229,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   data: { relay: completed, dispatch: dispatched },
                 }) as unknown as Record<string, unknown>);
               } catch (relayError) {
+                const relayFailure = relayError instanceof Error ? relayError.message : String(relayError);
                 const failed = finishControllerRoundRelayDispatch(
                   relayStore,
-                  { workId, ok: false, error: relayError instanceof Error ? relayError.message : String(relayError) },
+                  { workId, ok: false, error: relayFailure, outcomeUnknown: /OUTCOME_UNKNOWN/i.test(relayFailure) },
                 );
                 return result(buildFacadeResult({
                   status: 'blocked',
@@ -4342,11 +4343,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   tabPolicy: tabPolicy as 'auto' | 'reuse' | 'new',
                   timeoutMs,
                 });
-                if (dispatched.status === 'failed') throw new Error(dispatched.error?.message ?? 'CHATGPT_WORK_CONTINUATION_FAILED');
+                if (dispatched.status === 'failed') throw new Error(`${dispatched.error?.code ?? 'CHATGPT_WORK_CONTINUATION_FAILED'}:${dispatched.error?.message ?? 'ChatGPT Work continuation failed'}`);
               } catch (launchError) {
+                const launchFailure = launchError instanceof Error ? launchError.message : String(launchError);
                 finishControllerRoundRelayDispatch(
                   { controllerHome: ctx.controllerHome, repoId: repository.repoId },
-                  { workId, ok: false, error: launchError instanceof Error ? launchError.message : String(launchError) },
+                  { workId, ok: false, error: launchFailure, outcomeUnknown: /OUTCOME_UNKNOWN/i.test(launchFailure) },
                 );
                 throw launchError;
               }

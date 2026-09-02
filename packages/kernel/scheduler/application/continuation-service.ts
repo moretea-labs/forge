@@ -148,7 +148,8 @@ export async function resumeScheduledControllerContinuation(
     return { dispatch: dispatched, reused: false };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    try { finishControllerRoundRelayDispatch(options, { workId: work.workId, ok: false, error: reason }); } catch {}
+    const providerDispatchOutcomeUnknown = /CONTROLLER_HOST_PROVIDER_DISPATCH_OUTCOME_UNKNOWN|CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN/i.test(reason);
+    try { finishControllerRoundRelayDispatch(options, { workId: work.workId, ok: false, error: reason, outcomeUnknown: providerDispatchOutcomeUnknown }); } catch {}
     updateScheduledContinuationDispatch(options, input.occurrenceId, 'scheduler_continuation_outcome_unknown', (current, at) => ({
       ...(current ?? prepared), status: 'outcome_unknown', reason, updatedAt: at,
     }));

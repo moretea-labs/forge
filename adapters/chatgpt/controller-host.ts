@@ -47,7 +47,14 @@ export function createChatgptControllerHost(options: {
         tabPolicy: payload.tabPolicy ?? 'auto',
         timeoutMs: payload.timeoutMs,
       });
-      if (result.status === 'failed') return { accepted: false, reason: result.error?.message ?? 'CHATGPT_WORK_CONTINUATION_FAILED' };
+      if (result.status === 'failed') {
+        const code = result.error?.code ?? 'CHATGPT_WORK_CONTINUATION_FAILED';
+        const message = result.error?.message ?? code;
+        if (/OUTCOME_UNKNOWN/i.test(code) || /OUTCOME_UNKNOWN/i.test(message)) {
+          throw new Error(`CONTROLLER_HOST_PROVIDER_DISPATCH_OUTCOME_UNKNOWN:${code}:${message}`);
+        }
+        return { accepted: false, reason: message };
+      }
       return { accepted: true, dispatchId: result.browserSessionId };
     },
   };

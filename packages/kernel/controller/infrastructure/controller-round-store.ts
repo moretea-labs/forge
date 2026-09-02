@@ -464,6 +464,9 @@ export function beginInitialControllerRoundDispatch(
     if (previous && ['pending_release', 'dispatching', 'dispatched', 'claimed'].includes(previous.status)) {
       throw new Error(`CONTROLLER_RELAY_ROUND_ALREADY_OPEN: ${relayScopeId}`);
     }
+    if (previous?.status === 'blocked' && previous.blockedReason === 'provider_dispatch_outcome_unknown') {
+      throw new Error(`CONTROLLER_RELAY_PROVIDER_DISPATCH_OUTCOME_UNKNOWN: ${relayScopeId}`);
+    }
     const abandonedReleasedRound = previous?.status === 'failed'
       && previous.lastError === CONTROLLER_RELAY_ABANDONED_RELEASE_ERROR;
     const requestedMaxRounds = boundedInteger(input.maxRounds, DEFAULT_MAX_ROUNDS, 1, 32);
@@ -629,7 +632,7 @@ export function reconcileControllerRoundAfterAbandonedRelease(
 
 export function finishControllerRoundRelayDispatch(
   options: ControllerRoundRelayStoreOptions,
-  input: { workId: string; ok: boolean; bindingId?: string; error?: string; recovery?: boolean; nowMs?: number },
+  input: { workId: string; ok: boolean; bindingId?: string; error?: string; recovery?: boolean; outcomeUnknown?: boolean; nowMs?: number },
 ): ControllerRoundRelayRecord | undefined {
   const initial = readRelayRecord(options, input.workId);
   if (!initial || initial.value.status !== 'dispatching') return initial?.value;
@@ -656,7 +659,17 @@ export function finishControllerRoundRelayDispatch(
           dispatchedAt: at,
           updatedAt: at,
         }
-      : input.recovery
+      : input.outcomeUnknown
+        ? {
+            ...current.value,
+            status: 'blocked',
+            consecutiveFailures: nextFailureCount,
+            nextRecoveryAt: undefined,
+            lastError: bounded(input.error, 2_000) ?? 'CONTROLLER_RELAY_PROVIDER_DISPATCH_OUTCOME_UNKNOWN',
+            blockedReason: 'provider_dispatch_outcome_unknown',
+            updatedAt: at,
+          }
+        : input.recovery
         ? {
             ...current.value,
             status: recoveryBlocked ? 'blocked' : 'dispatching',
@@ -686,9 +699,11 @@ export function finishControllerRoundRelayDispatch(
       value: next,
       action: input.ok
         ? 'controller_round_relay_dispatched'
-        : input.recovery
-          ? recoveryBlocked ? 'controller_round_relay_recovery_blocked' : 'controller_round_relay_recovery_retry_scheduled'
-          : 'controller_round_relay_failed',
+        : input.outcomeUnknown
+          ? 'controller_round_relay_dispatch_outcome_unknown'
+          : input.recovery
+            ? recoveryBlocked ? 'controller_round_relay_recovery_blocked' : 'controller_round_relay_recovery_retry_scheduled'
+            : 'controller_round_relay_failed',
       expectedRevision: current.revision,
     });
     return next;

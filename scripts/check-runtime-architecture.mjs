@@ -415,6 +415,11 @@ requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "operation === 'rev
 requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'implementationReviewContentFingerprint');
 requireText('adapters/mcp/controller-round-compatibility.ts', "'review'");
 requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', 'readControllerRoundContextSnapshot');
+requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', "blockedReason === 'provider_dispatch_outcome_unknown'");
+requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', "blockedReason: 'provider_dispatch_outcome_unknown'");
+requireText('src/runtime/control-plane/launcher/chatgpt-work-continuation.ts', 'CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN');
+requireText('adapters/chatgpt/controller-host.ts', 'CONTROLLER_HOST_PROVIDER_DISPATCH_OUTCOME_UNKNOWN');
+requireText('packages/kernel/scheduler/application/continuation-service.ts', 'outcomeUnknown: providerDispatchOutcomeUnknown');
 requireText('adapters/chatgpt/controller-round-host.ts', 'buildChatgptControllerRoundPrompt');
 requireText('adapters/chatgpt/controller-round-settlement-store.ts', 'recordChatgptControllerRoundSettlement');
 forbid('packages/kernel/controller/infrastructure/controller-round-store.ts', /browserSessionId|conversationUrl|recordControllerRoundTabSettlement|buildControllerRoundRelayPrompt|capability_id=/, 'Kernel ControllerRound must remain provider/transport neutral; ChatGPT/MCP rendering and settlement belong to adapters');

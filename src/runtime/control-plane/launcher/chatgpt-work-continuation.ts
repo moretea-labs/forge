@@ -19,6 +19,7 @@ export const DEFAULT_CHATGPT_AUTOMATION_TAB_POLICY = 'auto';
 export const DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge';
 const CHATGPT_PROMPT_SELECTOR = 'div#prompt-textarea[contenteditable="true"]';
 const CHATGPT_SEND_SELECTOR = '[data-testid="send-button"], button[aria-label*="Send"], button[data-testid*="send"]';
+export const CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN = 'CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN';
 const CHATGPT_USER_MESSAGE_SELECTOR = '[data-message-author-role="user"]';
 const CHATGPT_INTELLIGENCE_CONTROL_SELECTORS = [
   'main button, main [role="button"]',
@@ -720,6 +721,7 @@ async function submitChatgptPrompt(
   }, timeoutMs);
 
   let observedUrl = targetUrl;
+  let submitOutcomeUnknown = false;
   try {
     const sent = await controllerBrowserAction(controllerHome, workId, 'click', {
       session_id: browserSessionId,
@@ -732,6 +734,7 @@ async function submitChatgptPrompt(
     if (browserMutationOutcomeUnknown(error, 'click')) {
       // Never replay an outcome-unknown submit: semantic observation below decides
       // whether the original click committed, preventing duplicate user messages.
+      submitOutcomeUnknown = true;
     } else if (chatgptSendControlUnavailable(error)) {
       const pressed = await controllerBrowserAction(controllerHome, workId, 'press', {
         session_id: browserSessionId,
@@ -765,7 +768,7 @@ async function submitChatgptPrompt(
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   } while (Date.now() < deadline);
-  throw new Error(`CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED:${observedUrl}`);
+  throw new Error(`${submitOutcomeUnknown ? CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN : 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'}:${observedUrl}`);
 }
 
 export function withForgePluginMention(prompt: string): string {
