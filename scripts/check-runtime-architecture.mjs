@@ -1082,6 +1082,8 @@ for (const compositionPath of [
   'src/runtime/root/controller-round-composition.ts',
 ]) requireText(compositionPath, 'Kernel V2 composition root');
 
+// Exact legacy edges are frozen below after a read-only graph inventory; new debt is never accepted.
+// The V2 baseline lineage is immutable; this gate must not require rebasing onto unrelated main work.
 const b7KernelLegacyEdges = edgeSet(b7ProductionGraph, (edge) => {
   const { from, to } = edgeParts(edge);
   return from.startsWith('packages/kernel/') && to.startsWith('src/');
@@ -1090,6 +1092,64 @@ const b7AdapterLegacyEdges = edgeSet(b7ProductionGraph, (edge) => {
   const { from, to } = edgeParts(edge);
   return from.startsWith('adapters/') && to.startsWith('src/');
 });
+
+const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
+  'packages/kernel/work/domain/types.ts -> src/runtime/evidence/process-check-receipt.ts',
+  'packages/kernel/work/domain/types.ts -> src/cli/controller/types.ts',
+  'packages/kernel/work/domain/types.ts -> src/runtime/control-plane/governance/access-policy.ts',
+  'packages/kernel/work/domain/types.ts -> src/runtime/control-plane/routing/route-policy.ts',
+  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/cli/repositories/controller-home.ts',
+  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/cli/repositories/locks.ts',
+  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/shared/json-files.ts',
+  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
+  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/control-plane/facade/work-admission-policy.ts',
+  'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/cli/repositories/controller-home.ts',
+  'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/cli/repositories/locks.ts',
+  'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/runtime/control-plane/execution/session-store.ts',
+  'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/runtime/shared/json-files.ts',
+  'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
+  'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/cli/repositories/locks.ts',
+  'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/runtime/control-plane/persistence/requirement-store.ts',
+  'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
+  'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/runtime/execution/work-activity.ts',
+  'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/runtime/control-plane/facade/handoff-inbox-store.ts',
+  'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/runtime/control-plane/facade/types.ts',
+  'packages/kernel/controller/infrastructure/controller-binding-store.ts -> src/cli/repositories/locks.ts',
+  'packages/kernel/controller/infrastructure/controller-binding-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
+  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/cli/repositories/controller-home.ts',
+  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/cli/repositories/locks.ts',
+  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/control-plane/facade/handoff-inbox-store.ts',
+  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/shared/json-files.ts',
+  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/evidence/event-ledger.ts',
+  'packages/kernel/scheduler/infrastructure/continuation-dispatch-store.ts -> src/cli/repositories/locks.ts',
+  'packages/kernel/scheduler/infrastructure/continuation-dispatch-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
+]);
+requireExactShrinkingDebt('Kernel -> legacy src dependency debt', b7KernelLegacyEdges, B7_ALLOWED_KERNEL_LEGACY_EDGES);
+
+const b7LifecycleOwnerMarkers = new Map([
+  ['WorkContract transition authority', ['packages/kernel/work/domain/state-machine.ts']],
+  ['ControllerSession claim authority', ['packages/kernel/controller/infrastructure/controller-session-store.ts']],
+  ['ControllerRound relay authority', ['packages/kernel/controller/infrastructure/controller-round-store.ts']],
+  ['Schedule occurrence authority', ['packages/kernel/scheduler/infrastructure/schedule-store.ts']],
+  ['Forge instance identity authority', ['packages/kernel/identity/infrastructure/identity-store.ts']],
+]);
+for (const [label, owners] of b7LifecycleOwnerMarkers) {
+  for (const owner of owners) text(owner);
+  if (new Set(owners).size !== 1) failures.push(`${label} must have exactly one declared durable owner`);
+}
+const b7UniqueMutationSymbols = new Map([
+  ['transitionWorkContractPhase', 'Work lifecycle mutation'],
+  ['claimControllerSession', 'ControllerSession claim mutation'],
+  ['beginInitialControllerRoundDispatch', 'ControllerRound dispatch mutation'],
+  ['ensureForgeInstanceIdentity', 'Forge instance identity creation'],
+]);
+for (const [symbol, label] of b7UniqueMutationSymbols) {
+  let count = 0;
+  for (const path of productionTypeScriptFiles()) {
+    count += (text(path).match(new RegExp(`export\\s+(?:async\\s+)?function\\s+${symbol}\\s*\\(`, 'g')) ?? []).length;
+  }
+  if (count !== 1) failures.push(`${label} must have exactly one exported production owner; found ${count} for ${symbol}`);
+}
 for (const path of [
   'src/runtime/gateway/mcp/execution-tools.ts',
   'src/runtime/gateway/mcp/legacy-ios-tool-adapter.ts',
