@@ -3,12 +3,11 @@ import {
   COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
   type ComputerBrowserAutomationRequest,
 } from '../../packages/protocols/computer/index';
-import type { ComputerProvider } from '../../packages/plugin-runtime/computer/index';
+import { ComputerProviderError, type ComputerProvider } from '../../packages/plugin-runtime/computer/index';
 import {
   callExternalUnixJsonl,
   ExternalUnixJsonlTransportError,
 } from '../../packages/plugin-runtime/external/index';
-import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 import { DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID } from './desktop-operator-contract';
 import {
   resolveDesktopOperatorComputerEndpoint,
@@ -28,16 +27,16 @@ export {
   setDesktopOperatorComputerSocketPathForTest,
 } from './desktop-operator-discovery';
 
-function toAssistantPluginError(error: ExternalUnixJsonlTransportError): AssistantPluginError {
-  return new AssistantPluginError(error.code, error.detailMessage, {
+function toComputerProviderError(error: ExternalUnixJsonlTransportError): ComputerProviderError {
+  return new ComputerProviderError(error.code, error.detailMessage, {
     retryable: error.retryable,
     details: error.details,
   });
 }
 
-function unavailable(error: AssistantPluginError, endpoint: DesktopOperatorComputerEndpoint): AssistantPluginError {
+function unavailable(error: ComputerProviderError, endpoint: DesktopOperatorComputerEndpoint): ComputerProviderError {
   if (!/^EXTERNAL_PLUGIN_(SOCKET_UNAVAILABLE|TIMEOUT|TRANSPORT_FAILED|PROTOCOL_ERROR)$/.test(error.code)) return error;
-  return new AssistantPluginError(
+  return new ComputerProviderError(
     'PLUGIN_MACOS_CAPABILITY_BROKER_UNAVAILABLE',
     `Stable Forge Computer provider is unavailable at ${endpoint.socketPath}. Install or restore Forge Desktop Operator instead of granting macOS permissions to Runtime or release-specific helpers.`,
     {
@@ -88,8 +87,8 @@ export async function callDesktopOperatorComputerBrowserAutomation(
       maxResponseBytes: endpoint.maxResponseBytes,
     });
   } catch (error) {
-    if (error instanceof AssistantPluginError) throw unavailable(error, endpoint);
-    if (error instanceof ExternalUnixJsonlTransportError) throw unavailable(toAssistantPluginError(error), endpoint);
+    if (error instanceof ComputerProviderError) throw unavailable(error, endpoint);
+    if (error instanceof ExternalUnixJsonlTransportError) throw unavailable(toComputerProviderError(error), endpoint);
     throw error;
   }
 }

@@ -1278,6 +1278,9 @@ forbid('adapters/computer/desktop-operator-negotiation.ts', /getExternalPluginRe
 forbid('adapters/computer/desktop-operator-discovery.ts', /macos_browser_automation|LEGACY_BROWSER_AUTOMATION/, 'Desktop Operator discovery must own endpoint resolution only, not compatibility protocol negotiation');
 if (text('adapters/computer/desktop-operator-provider.ts').split(/\r?\n/).length > 120) failures.push('adapters/computer/desktop-operator-provider.ts must remain a focused Computer provider transport adapter');
 forbid('adapters/computer/desktop-operator-provider.ts', /getExternalPluginAdapter|AssistantPluginActionExecutionInput|desktop_session_open|NATIVE_BROWSER_BUNDLE_IDS|activateDesktopOperatorBrowserApplication/, 'Desktop Operator Computer transport adapter must not own Runtime plugin-action application activation glue');
+for (const path of sourceFiles('adapters/computer')) {
+  forbid(path, /src\/runtime\/plugins\/errors|AssistantPluginError/, 'Computer adapters must expose provider errors through plugin-runtime rather than depend on Runtime plugin error types');
+}
 if (text('adapters/computer/desktop-operator-negotiation.ts').split(/\r?\n/).length > 230) failures.push('adapters/computer/desktop-operator-negotiation.ts must remain a focused handshake-to-transport-plan owner');
 requireText('src/runtime/root/computer-composition.ts', 'createDesktopOperatorComputerProvider({ resolveControllerHome })');
 requireText('src/runtime/root/computer-composition.ts', 'getExternalPluginAdapter(input.controllerHome, DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID)');
@@ -1289,6 +1292,8 @@ for (const path of sourceFiles('src/runtime/plugins').filter((entry) => /\/brows
   forbid(path, /desktop_operator|Desktop Operator|desktop-operator\.sock|macos_browser_automation/, 'Browser modules must depend on Computer capabilities rather than concrete Desktop Operator transport identity');
 }
 requireText('src/runtime/plugins/macos-capability-broker.ts', '@deprecated C0 compatibility shim');
+requireText('src/runtime/plugins/macos-capability-broker.ts', 'executeRuntimeComputerBrowserAutomation');
+forbid('src/runtime/plugins/macos-capability-broker.ts', /callDesktopOperatorComputerBrowserAutomation/, 'Deprecated macOS broker execution must delegate to Runtime Computer composition rather than call the concrete provider directly');
 if (text('src/runtime/plugins/macos-capability-broker.ts').split(/\r?\n/).length > 24) failures.push('src/runtime/plugins/macos-capability-broker.ts must remain a thin C0 compatibility facade');
 for (const path of sourceFiles('src').filter((entry) => entry !== 'src/runtime/plugins/macos-capability-broker.ts')) {
   forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*macos-capability-broker['"]/, 'Deprecated macOS capability broker is compatibility/test-only and must have no production consumers');

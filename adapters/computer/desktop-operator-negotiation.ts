@@ -5,7 +5,7 @@ import {
   type ComputerBrowserAutomationRequest,
   type ComputerCapabilityAdvertisement,
 } from '../../packages/protocols/computer/index';
-import { AssistantPluginError } from '../../src/runtime/plugins/errors';
+import { ComputerProviderError } from '../../packages/plugin-runtime/computer/index';
 import {
   DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_CAPABILITY,
   DESKTOP_OPERATOR_LEGACY_BROWSER_AUTOMATION_METHOD,
@@ -36,7 +36,7 @@ function unsupported(
   message: string,
   details: Record<string, unknown>,
 ): never {
-  throw new AssistantPluginError(
+  throw new ComputerProviderError(
     'PLUGIN_MACOS_CAPABILITY_BROKER_CAPABILITY_UNSUPPORTED',
     message,
     { retryable: false, details },
@@ -46,7 +46,7 @@ function unsupported(
 function validateIdentity(handshake: Record<string, unknown>): void {
   if (handshake.pluginId === DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID
     && handshake.protocolVersion === DESKTOP_OPERATOR_PROVIDER_PROTOCOL_VERSION) return;
-  throw new AssistantPluginError(
+  throw new ComputerProviderError(
     'PLUGIN_MACOS_CAPABILITY_BROKER_IDENTITY_MISMATCH',
     'Computer provider returned an unexpected Desktop Operator identity.',
     {

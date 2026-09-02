@@ -1,8 +1,8 @@
 import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { COMPUTER_BROWSER_AUTOMATION_CAPABILITY } from '../../packages/protocols/computer/index';
+import { ComputerProviderError } from '../../packages/plugin-runtime/computer/index';
 import { getExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
-import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 import {
   DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID,
   DESKTOP_OPERATOR_PROVIDER_PROTOCOL_VERSION,
@@ -42,7 +42,7 @@ function registeredEndpoint(controllerHome: string): DesktopOperatorComputerEndp
   try {
     registration = getExternalPluginRegistration(controllerHome, DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID);
   } catch (error) {
-    throw new AssistantPluginError(
+    throw new ComputerProviderError(
       'PLUGIN_COMPUTER_PROVIDER_REGISTRATION_INVALID',
       'Forge Desktop Operator registration could not be validated.',
       { retryable: false, details: { providerPluginId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID, cause: error instanceof Error ? error.message : String(error) } },
@@ -50,7 +50,7 @@ function registeredEndpoint(controllerHome: string): DesktopOperatorComputerEndp
   }
   if (!registration) return undefined;
   if (!registration.enabled) {
-    throw new AssistantPluginError(
+    throw new ComputerProviderError(
       'PLUGIN_COMPUTER_PROVIDER_DISABLED',
       'Forge Desktop Operator is registered but disabled. Enable or reinstall the Computer provider instead of bypassing its registration.',
       { retryable: false, details: { providerPluginId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID, registrationRevision: registration.revision } },
@@ -58,7 +58,7 @@ function registeredEndpoint(controllerHome: string): DesktopOperatorComputerEndp
   }
   if (registration.providerPluginId !== DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID
     || registration.protocolVersion !== DESKTOP_OPERATOR_PROVIDER_PROTOCOL_VERSION) {
-    throw new AssistantPluginError(
+    throw new ComputerProviderError(
       'PLUGIN_COMPUTER_PROVIDER_REGISTRATION_IDENTITY_MISMATCH',
       'Forge Desktop Operator registration does not match the required Computer provider identity.',
       {
@@ -74,7 +74,7 @@ function registeredEndpoint(controllerHome: string): DesktopOperatorComputerEndp
     );
   }
   if (registration.transport.kind !== 'unix_socket_jsonl') {
-    throw new AssistantPluginError(
+    throw new ComputerProviderError(
       'PLUGIN_COMPUTER_PROVIDER_TRANSPORT_UNSUPPORTED',
       'Forge Desktop Operator registration must use the trusted Unix-socket transport.',
       { retryable: false, details: { transportKind: registration.transport.kind, registrationRevision: registration.revision } },
@@ -84,7 +84,7 @@ function registeredEndpoint(controllerHome: string): DesktopOperatorComputerEndp
   const declaresComputerCapability = capabilityIds.has(COMPUTER_BROWSER_AUTOMATION_CAPABILITY);
   const legacyRegistrationCompatible = LEGACY_REGISTRATION_CAPABILITIES.every((capability) => capabilityIds.has(capability));
   if (!declaresComputerCapability && !legacyRegistrationCompatible) {
-    throw new AssistantPluginError(
+    throw new ComputerProviderError(
       'PLUGIN_COMPUTER_PROVIDER_CAPABILITY_UNDECLARED',
       'Forge Desktop Operator registration does not declare the Computer browser capability or the bounded legacy Desktop capability set required for compatibility.',
       {

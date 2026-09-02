@@ -1,4 +1,4 @@
-import { ComputerProviderRegistry } from '../../../packages/plugin-runtime/computer/index';
+import { ComputerProviderError, ComputerProviderRegistry } from '../../../packages/plugin-runtime/computer/index';
 import type { ComputerBrowserAutomationRequest, ComputerBrowserProduct } from '../../../packages/protocols/computer/index';
 import { DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID } from '../../../adapters/computer/desktop-operator-contract';
 import { createDesktopOperatorComputerProvider } from '../../../adapters/computer/index';
@@ -25,7 +25,17 @@ export async function executeRuntimeComputerBrowserAutomation(
   timeoutMs: number,
 ): Promise<Record<string, unknown>> {
   ensureComputerComposition();
-  return await computerProviders.executeBrowserAutomation(request, timeoutMs);
+  try {
+    return await computerProviders.executeBrowserAutomation(request, timeoutMs);
+  } catch (error) {
+    if (error instanceof ComputerProviderError) {
+      throw new AssistantPluginError(error.code, error.detailMessage, {
+        retryable: error.retryable,
+        details: error.details,
+      });
+    }
+    throw error;
+  }
 }
 
 export async function activateRuntimeComputerBrowserApplication(
