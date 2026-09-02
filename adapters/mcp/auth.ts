@@ -77,7 +77,6 @@ export interface McpRuntimeState {
   server: {
     endpoint: string;
     pid?: number;
-    instanceId?: string;
     generation?: string;
     running: boolean;
     healthy: boolean;

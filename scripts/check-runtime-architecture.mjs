@@ -1217,6 +1217,7 @@ for (const path of [
   if (text(path).split(/\r?\n/).length > 6) failures.push(`${path} must remain a thin B6 compatibility facade`);
 }
 requireText('adapters/mcp/auth.ts', 'forgeInstanceId?: string');
+forbid('adapters/mcp/auth.ts', /server:\s*\{[\s\S]{0,512}?instanceId\??:\s*string/, 'MCP server process identity must not share semantic Forge instanceId naming');
 requireText('adapters/mcp/setup.ts', 'ensureForgeInstanceIdentity');
 requireText('adapters/mcp/setup.ts', 'MCP_FORGE_INSTANCE_ID_MISMATCH');
 requireText('src/runtime/root/types.ts', 'forgeInstanceId: string');
