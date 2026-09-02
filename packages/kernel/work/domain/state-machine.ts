@@ -244,6 +244,9 @@ export function validateWorkSemanticTransition(
   if (current.parentWorkId !== next.parentWorkId) {
     throw new Error('WORK_SEMANTICS_TRANSITION_INVALID: parentWorkId is immutable');
   }
+  if (current.predecessorWorkId !== next.predecessorWorkId) {
+    throw new Error('WORK_SEMANTICS_TRANSITION_INVALID: predecessorWorkId is immutable');
+  }
   assertImplementationReviewHistoryAppendOnly(current.implementationReviews ?? [], next.implementationReviews ?? []);
   return next;
 }

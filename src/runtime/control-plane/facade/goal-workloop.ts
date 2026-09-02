@@ -11,6 +11,7 @@ import {
   appendWorkHandoffRef,
   createWorkContract,
   getWorkContract,
+  isTerminalWorkContractStatus,
   listWorkContracts,
   recordWorkScopeEvidence,
   recordWorkImplementationReview,
@@ -675,12 +676,117 @@ export function startGoalWorkloop(
       && candidate.worktreePolicy.required !== true
       && !candidate.worktreeRef)
     : undefined;
+  const relatedLifecycleSource = input.relatedWorkId
+    ? getWorkContract(ctx.workStore, input.relatedWorkId)
+    : undefined;
+  const terminalContinuationSource = input.workRelation === 'continue'
+    && relatedLifecycleSource
+    && isTerminalWorkContractStatus(relatedLifecycleSource.status)
+    ? relatedLifecycleSource
+    : undefined;
+  if (terminalContinuationSource && !terminalContinuationSource.requirementId && !terminalContinuationSource.planId) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `WORK_SUCCESSOR_SEMANTIC_SCOPE_REQUIRED: ${terminalContinuationSource.workId} is terminal but has no Requirement/Plan lineage. Use new_goal or bind an explicit durable semantic authority instead of guessing continuity.`,
+      data: { executionStarted: false, workContractCreated: false, relatedWorkId: terminalContinuationSource.workId },
+    });
+  }
   const explicitRelatedWork = input.relatedWorkId
     ? activeWorks.find((candidate) => candidate.workId === input.relatedWorkId)
     : undefined;
-  const plan = input.planId && ctx.planStore ? getPlanContract(ctx.planStore, input.planId) : undefined;
-  const planStep = plan && input.planStepId ? plan.steps.find((step) => step.id === input.planStepId) : undefined;
+
+  let resolvedPlanId = input.planId?.trim() || undefined;
+  let resolvedPlanStepId = input.planStepId?.trim() || undefined;
+  if (terminalContinuationSource?.planId) {
+    if (resolvedPlanId && resolvedPlanId !== terminalContinuationSource.planId) {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `WORK_SUCCESSOR_PLAN_MISMATCH: predecessor ${terminalContinuationSource.workId} belongs to ${terminalContinuationSource.planId}, not ${resolvedPlanId}. Supersede/replan explicitly instead of silently moving continuation authority.`,
+        data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource.workId, predecessorPlanId: terminalContinuationSource.planId, requestedPlanId: resolvedPlanId },
+      });
+    }
+    resolvedPlanId = terminalContinuationSource.planId;
+  }
+  const plan = resolvedPlanId && ctx.planStore ? getPlanContract(ctx.planStore, resolvedPlanId) : undefined;
+  if (terminalContinuationSource?.planId && !plan) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `WORK_SUCCESSOR_PLAN_NOT_FOUND: ${terminalContinuationSource.planId}. Recover the durable Plan authority before creating a successor Work.`,
+      data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource.workId, planId: terminalContinuationSource.planId },
+    });
+  }
+  if (terminalContinuationSource?.planStepId && plan && !resolvedPlanStepId) {
+    const predecessorStep = plan.steps.find((step) => step.id === terminalContinuationSource.planStepId);
+    if (!predecessorStep) {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `WORK_SUCCESSOR_PLAN_STEP_NOT_FOUND: predecessor ${terminalContinuationSource.workId} references ${terminalContinuationSource.planStepId}.`,
+        data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource.workId, planId: plan.planId, predecessorPlanStepId: terminalContinuationSource.planStepId },
+      });
+    }
+    if (predecessorStep.status === 'validating') {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `PLAN_STEP_SEMANTIC_ACCEPTANCE_REQUIRED: ${plan.planId}/${predecessorStep.id} is validating. Accept the delivered step before advancing the same semantic goal to a successor Work.`,
+        data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource.workId, planId: plan.planId, planStepId: predecessorStep.id, semanticAcceptanceRequired: true },
+      });
+    }
+    if (predecessorStep.status === 'executing') {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `PLAN_STEP_TERMINAL_WORK_RECONCILIATION_REQUIRED: ${plan.planId}/${predecessorStep.id} still executes terminal Work ${terminalContinuationSource.workId}. Reconcile its terminal result before admitting a successor.`,
+        data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource.workId, planId: plan.planId, planStepId: predecessorStep.id, repairRequired: true },
+      });
+    }
+    if (predecessorStep.status === 'ready') {
+      // Failed/cancelled predecessor returned the exact same Plan slice to ready.
+      resolvedPlanStepId = predecessorStep.id;
+    } else if (predecessorStep.status === 'completed') {
+      const eligibleSuccessors = plan.steps.filter((candidate) =>
+        (candidate.status === 'pending' || candidate.status === 'ready')
+        && candidate.dependencies.every((dependency) => plan.steps.find((step) => step.id === dependency)?.status === 'completed'));
+      if (eligibleSuccessors.length === 1) {
+        resolvedPlanStepId = eligibleSuccessors[0]!.id;
+      } else if (eligibleSuccessors.length === 0) {
+        if (plan.status === 'finalized') {
+          return buildFacadeResult({
+            status: 'ok',
+            summary: `CONTINUATION_GOAL_COMPLETE: ${plan.planId} has no remaining executable Plan step; no successor Work was created.`,
+            data: { executionStarted: false, workContractCreated: false, admissionDecision: 'goal_complete', goalComplete: true, predecessorWorkId: terminalContinuationSource.workId, planId: plan.planId, requirementId: plan.requirementId },
+          });
+        }
+        return buildFacadeResult({
+          status: 'blocked',
+          summary: `PLAN_SUCCESSOR_STEP_NOT_EXECUTABLE: ${plan.planId} has no dependency-satisfied pending/ready step after ${predecessorStep.id}.`,
+          data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource.workId, planId: plan.planId },
+        });
+      } else {
+        return buildFacadeResult({
+          status: 'ok',
+          summary: `PLAN_SUCCESSOR_STEP_RESOLUTION_REQUIRED: ${plan.planId} has ${eligibleSuccessors.length} executable successor steps. The semantic Controller must select one; Forge will not invent ordering.`,
+          data: {
+            executionStarted: false,
+            workContractCreated: false,
+            admissionDecision: 'resolution_required',
+            resolutionRequired: true,
+            predecessorWorkId: terminalContinuationSource.workId,
+            planId: plan.planId,
+            candidatePlanSteps: eligibleSuccessors.map((step) => ({ id: step.id, objective: step.objective })),
+          },
+        });
+      }
+    }
+  }
+  const planStep = plan && resolvedPlanStepId ? plan.steps.find((step) => step.id === resolvedPlanStepId) : undefined;
   const requestedRequirementId = input.requirementId?.trim() || undefined;
+  const predecessorRequirementId = terminalContinuationSource?.requirementId;
+  if (predecessorRequirementId && requestedRequirementId && predecessorRequirementId !== requestedRequirementId) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `WORK_SUCCESSOR_REQUIREMENT_MISMATCH: predecessor ${terminalContinuationSource.workId} belongs to ${predecessorRequirementId}, not ${requestedRequirementId}.`,
+      data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource.workId, predecessorRequirementId, requestedRequirementId },
+    });
+  }
   if (plan && requestedRequirementId && requestedRequirementId !== plan.requirementId) {
     return buildFacadeResult({
       status: 'blocked',
@@ -688,7 +794,14 @@ export function startGoalWorkloop(
       data: { executionStarted: false, workContractCreated: false, planId: plan.planId, planRequirementId: plan.requirementId, requestedRequirementId },
     });
   }
-  const effectiveRequirementId = requestedRequirementId || plan?.requirementId;
+  if (plan?.requirementId && predecessorRequirementId && plan.requirementId !== predecessorRequirementId) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `WORK_SUCCESSOR_PLAN_REQUIREMENT_MISMATCH: predecessor ${terminalContinuationSource!.workId} belongs to ${predecessorRequirementId}, while ${plan.planId} belongs to ${plan.requirementId}.`,
+      data: { executionStarted: false, workContractCreated: false, predecessorWorkId: terminalContinuationSource!.workId, predecessorRequirementId, planId: plan.planId, planRequirementId: plan.requirementId },
+    });
+  }
+  const effectiveRequirementId = requestedRequirementId || plan?.requirementId || predecessorRequirementId;
   if (
     effectiveRequirementId
     && ctx.workStore.controllerHome
@@ -716,18 +829,19 @@ export function startGoalWorkloop(
     if (mismatches.length > 0) {
       return buildFacadeResult({
         status: 'blocked',
-        summary: `PLAN_STEP_WORK_CONTRACT_MISMATCH: ${input.planId}/${input.planStepId} conflicts with frozen Plan step field(s): ${mismatches.join(', ')}. Replan instead of widening or narrowing Work admission.`,
-        data: { executionStarted: false, workContractCreated: false, planId: input.planId, planStepId: input.planStepId, mismatches },
+        summary: `PLAN_STEP_WORK_CONTRACT_MISMATCH: ${resolvedPlanId}/${resolvedPlanStepId} conflicts with frozen Plan step field(s): ${mismatches.join(', ')}. Replan instead of widening or narrowing Work admission.`,
+        data: { executionStarted: false, workContractCreated: false, planId: resolvedPlanId, planStepId: resolvedPlanStepId, mismatches },
       });
     }
   }
+  const effectiveObjective = planStep?.objective ?? input.objective;
   const effectiveAcceptanceCriteria = planStep?.acceptanceCriteria ?? input.acceptanceCriteria ?? [];
   const effectiveAllowedPaths = planStep?.allowedPaths ?? input.allowedPaths ?? [];
   const effectiveForbiddenPaths = planStep?.forbiddenPaths ?? input.forbiddenPaths ?? [];
   const effectiveChecks = planStep?.checks ?? input.checks ?? [];
   const normalized = normalizeCheckIds(effectiveChecks, available);
-  const boundPlanStepWorks = input.planId && input.planStepId
-    ? activeWorks.filter((candidate) => candidate.planId === input.planId && candidate.planStepId === input.planStepId)
+  const boundPlanStepWorks = resolvedPlanId && resolvedPlanStepId
+    ? activeWorks.filter((candidate) => candidate.planId === resolvedPlanId && candidate.planStepId === resolvedPlanStepId)
     : [];
   const explicitPlanStepWork = planStep?.workId ? activeWorks.find((candidate) => candidate.workId === planStep.workId) : undefined;
   const planStepWork = explicitPlanStepWork ?? (boundPlanStepWorks.length === 1 ? boundPlanStepWorks[0] : undefined);
@@ -776,18 +890,18 @@ export function startGoalWorkloop(
   });
 
   if (boundPlanStepWorks.length > 1) {
-    return resolutionRequired(`PLAN_STEP_MULTIPLE_PRIMARY_WORKS: ${input.planId}/${input.planStepId} has ${boundPlanStepWorks.length} active primary Work records and requires repair before execution.`);
+    return resolutionRequired(`PLAN_STEP_MULTIPLE_PRIMARY_WORKS: ${resolvedPlanId}/${resolvedPlanStepId} has ${boundPlanStepWorks.length} active primary Work records and requires repair before execution.`);
   }
   if (planStep?.workId && !explicitPlanStepWork) {
     return buildFacadeResult({
       status: 'blocked',
-      summary: `PLAN_STEP_BOUND_WORK_MISSING: ${input.planId}/${input.planStepId} is bound to ${planStep.workId}, but that Work is not active. Repair the exact binding; do not create a replacement Work.`,
-      data: { executionStarted: false, workContractCreated: false, planId: input.planId, planStepId: input.planStepId, boundWorkId: planStep.workId, repairRequired: true },
+      summary: `PLAN_STEP_BOUND_WORK_MISSING: ${resolvedPlanId}/${resolvedPlanStepId} is bound to ${planStep.workId}, but that Work is not active. Repair the exact binding; do not create a replacement Work.`,
+      data: { executionStarted: false, workContractCreated: false, planId: resolvedPlanId, planStepId: resolvedPlanStepId, boundWorkId: planStep.workId, repairRequired: true },
       suggestedNextActions: [{
         label: 'Diagnose exact Plan step binding',
         tool: 'rh_work',
         operation: 'repair',
-        payload: { plan_id: input.planId, plan_step_id: input.planStepId, repair_operation: 'diagnose', dry_run: true },
+        payload: { plan_id: resolvedPlanId, plan_step_id: resolvedPlanStepId, repair_operation: 'diagnose', dry_run: true },
         risk: 'readonly',
         confidence: 'high',
         reason: 'The Plan step has an exact Work identity but the active Work view cannot resolve it. Diagnose that binding before any replacement Work can be admitted.',
@@ -807,7 +921,7 @@ export function startGoalWorkloop(
   if (planStepWork && !requestedRelation) {
     return buildFacadeResult({
       status: 'ok',
-      summary: `PLAN_STEP_REUSES_ACTIVE_WORK: ${input.planId}/${input.planStepId} already executes as ${planStepWork.workId}; reuse that Work instead of creating another.`,
+      summary: `PLAN_STEP_REUSES_ACTIVE_WORK: ${resolvedPlanId}/${resolvedPlanStepId} already executes as ${planStepWork.workId}; reuse that Work instead of creating another.`,
       data: {
         executionStarted: false,
         workContractCreated: false,
@@ -821,7 +935,7 @@ export function startGoalWorkloop(
     });
   }
 
-  if (requestedRelation === 'continue' || requestedRelation === 'extend') {
+  if ((requestedRelation === 'continue' || requestedRelation === 'extend') && !terminalContinuationSource) {
     if (!deterministicTarget) {
       return resolutionRequired(`${requestedRelation.toUpperCase()}_TARGET_REQUIRED: select related_work_id or bind the request to an active Plan/Requirement before execution.`);
     }
@@ -899,9 +1013,9 @@ export function startGoalWorkloop(
       data: { executionStarted: false, workContractCreated: false },
     });
   }
-  const generatedWorkId = requestedWorkId ?? workIdFor(input.objective);
-  if (input.planId || input.planStepId) {
-    if (!input.planId || !input.planStepId || !ctx.planStore || !ctx.sourceRevision || !plan || !planStep) {
+  const generatedWorkId = requestedWorkId ?? workIdFor(effectiveObjective);
+  if (resolvedPlanId || resolvedPlanStepId) {
+    if (!resolvedPlanId || !resolvedPlanStepId || !ctx.planStore || !ctx.sourceRevision || !plan || !planStep) {
       return buildFacadeResult({ status: 'blocked', summary: 'PLAN_CONTEXT_REQUIRED: plan_id, plan_step_id, an executable Plan step and a current source revision are required.', data: { executionStarted: false } });
     }
     if (plan.status !== 'approved' && plan.status !== 'executing') {
@@ -909,8 +1023,8 @@ export function startGoalWorkloop(
     }
     if (plan.sourceRevision !== ctx.sourceRevision) {
       const invalidated = claimPlanStepForWork(ctx.planStore, {
-        planId: input.planId,
-        stepId: input.planStepId,
+        planId: resolvedPlanId,
+        stepId: resolvedPlanStepId,
         workId: generatedWorkId,
         sourceRevision: ctx.sourceRevision,
       });
@@ -967,7 +1081,7 @@ export function startGoalWorkloop(
     routeDecisionFingerprint: routeDecision.inputFingerprint,
     routeDecision,
     mode: executionMode,
-    objective: input.objective,
+    objective: effectiveObjective,
     acceptanceCriteria: effectiveAcceptanceCriteria,
     constraints: {
       ...canonicalConstraints,
@@ -983,9 +1097,10 @@ export function startGoalWorkloop(
     issueId: input.issueId,
     taskId: input.taskId,
     requirementId: effectiveRequirementId,
-    planId: input.planId,
-    planStepId: input.planStepId,
-    planSourceRevision: input.planId ? ctx.sourceRevision : undefined,
+    predecessorWorkId: terminalContinuationSource?.workId,
+    planId: resolvedPlanId,
+    planStepId: resolvedPlanStepId,
+    planSourceRevision: resolvedPlanId ? ctx.sourceRevision : undefined,
     scopeSummary: input.modeInput.scopeClear ? 'scope declared at start' : 'scope incomplete',
     scopeEvidence: {
       initialLikelyPaths: [...new Set(input.initialLikelyPaths ?? effectiveAllowedPaths)].slice(0, 100),
@@ -1027,17 +1142,17 @@ export function startGoalWorkloop(
     },
     requestedBy: input.requestedBy ?? 'chatgpt',
     requestId: input.requestId?.trim() || undefined,
-    evidenceRefs: [initialEvidence(input.objective)],
+    evidenceRefs: [initialEvidence(effectiveObjective)],
     policyDecisions: policy ? [policy] : [],
     suggestedNextActions: initialSuggestedNextActions,
-    continuationPrompt: `Continue work ${ctx.repoId}: ${input.objective.slice(0, 200)}`,
+    continuationPrompt: `Continue work ${ctx.repoId}: ${effectiveObjective.slice(0, 200)}`,
   });
 
-  if (input.planId && input.planStepId && ctx.planStore && ctx.sourceRevision) {
+  if (resolvedPlanId && resolvedPlanStepId && ctx.planStore && ctx.sourceRevision) {
     try {
       const claimed = claimPlanStepForWork(ctx.planStore, {
-        planId: input.planId,
-        stepId: input.planStepId,
+        planId: resolvedPlanId,
+        stepId: resolvedPlanStepId,
         workId: work.workId,
         sourceRevision: ctx.sourceRevision,
       });
@@ -1052,16 +1167,18 @@ export function startGoalWorkloop(
       return buildFacadeResult({
         status: 'blocked',
         summary: error instanceof Error ? error.message : 'PLAN_STEP_CLAIM_FAILED',
-        data: { planId: input.planId, planStepId: input.planStepId, executionStarted: false, workContractCreated: true, work: summarizeWorkContract(work), canonicalWorkRetained: true },
+        data: { planId: resolvedPlanId, planStepId: resolvedPlanStepId, executionStarted: false, workContractCreated: true, work: summarizeWorkContract(work), canonicalWorkRetained: true },
       });
     }
   }
 
   return buildFacadeResult({
     status: 'ok',
-    summary: executionMode === 'direct_control'
-      ? `Direct-control Work lineage started as ${work.workId}.`
-      : `Goal workloop started as ${work.workId}.`,
+    summary: terminalContinuationSource
+      ? `Successor Work ${work.workId} continues semantic lineage from terminal ${terminalContinuationSource.workId}${resolvedPlanId && resolvedPlanStepId ? ` at ${resolvedPlanId}/${resolvedPlanStepId}` : ''}.`
+      : executionMode === 'direct_control'
+        ? `Direct-control Work lineage started as ${work.workId}.`
+        : `Goal workloop started as ${work.workId}.`,
     data: {
       mode: {
         mode: executionMode,

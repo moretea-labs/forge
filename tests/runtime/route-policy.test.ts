@@ -7,9 +7,10 @@ import { assessWorkMode } from '../../src/cli/controller/work-mode';
 import { applyEditOperations, beginEditSession, finalizeEditSession } from '../../src/cli/editing/edit-session';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { continueGoalWorkloop, finalizeGoalWorkloop, routeWorkStart, verifyGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
-import { approvePlanContract, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
-import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkScopeEvidence } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { acceptPlanStepEvidence, approvePlanContract, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, recordWorkScopeEvidence, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { selectExecutionMode } from '../../src/runtime/control-plane/facade/types';
+import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { getHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { decideRoute, type RoutePolicyInput } from '../../src/runtime/control-plane/routing/route-policy';
 const roots: string[] = [];
@@ -21,6 +22,38 @@ function temp(prefix: string): string {
   roots.push(root);
   return root;
 }
+function completeNoChangePlanWork(workStore: { root: string }, workId: string, reviewId: string): void {
+  const recordedAt = '2026-09-02T00:00:00.000Z';
+  transitionWorkContractPhase(workStore, workId, { status: 'running', phase: 'verification', state: 'satisfied', summary: 'Exact no-change Plan slice verified.' });
+  requestWorkImplementationReview(workStore, workId, 'Plan slice requires explicit Controller review before completion.');
+  recordWorkImplementationReview(workStore, workId, {
+    schemaVersion: 1,
+    reviewId,
+    workId,
+    reviewerPrincipalId: 'principal-a',
+    reviewerControllerSessionId: 'transport-plan-successor',
+    decision: 'approved',
+    rationale: 'The exact no-change Plan slice is reviewed before successor admission.',
+    findings: [],
+    sourceRevision: 'revision-a',
+    workspaceFingerprint: `${workId}:content`,
+    verificationWorkspaceFingerprint: `${workId}:verification`,
+    changedPaths: [],
+    changedPathDigest: implementationReviewChangedPathDigest([]),
+    acceptanceCriteriaSummary: 'Plan slice delivery is ready for semantic acceptance.',
+    verificationEvidence: [],
+    architectureEvidence: [],
+    recordedAt,
+  });
+  recordWorkCompletionReceipt(workStore, workId, {
+    schemaVersion: 1, receiptId: `receipt-${reviewId}`, source: 'controller_work', issueId: workId, taskId: workId, workId,
+    targetBranch: 'kernel-v2/architecture', targetRevision: 'revision-a', changedPaths: [],
+    delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
+    cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
+    verifiedAt: recordedAt, recordedAt,
+  }, 'completed_no_change', 'completed_no_change');
+}
+
 function sharedInput(overrides: Partial<RoutePolicyInput> = {}): RoutePolicyInput {
   return {
     intent: {
@@ -74,7 +107,7 @@ describe('single Route Policy authority', () => {
       workBoundProcessEvidenceIds: ['proc-exact-work-bound-success'],
     }, { workId: workId! });
     expect(continued.status).toBe('ok');
-    expect(continued.data).toMatchObject({ nextStep: 'finalize' });
+    expect(continued.data).toMatchObject({ nextStep: 'review' });
   });
   test('returns the identical replayable RouteDecision through the remaining adapters', () => {
     const input = sharedInput();
@@ -763,6 +796,177 @@ describe('single Route Policy authority', () => {
     expect(resumed.summary).toContain('PLAN_STEP_REUSES_ACTIVE_WORK');
     expect(resumed.data).toMatchObject({ workContractCreated: false, admissionDecision: 'reuse_existing', work: { workId } });
   });
+  test('continues an accepted Plan goal into one explicit successor Work without inheriting transport identity', () => {
+    const root = temp('route-plan-successor-work-');
+    const planStore = { root: join(root, 'plan') };
+    const workStore = { root: join(root, 'work') };
+    createPlanContract(planStore, {
+      planId: 'plan-successor', repoId: 'repo-a', requirementId: 'REQ-successor', scopeKey: 'successor-lineage', sourceRevision: 'revision-a', goal: 'Deliver two durable slices',
+      steps: [
+        { id: 'step-a', objective: 'Deliver first slice', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['check:successor'], acceptanceCriteria: ['first slice delivered'] },
+        { id: 'step-b', objective: 'Deliver second slice', dependencies: ['step-a'], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['check:successor'], acceptanceCriteria: ['second slice delivered'] },
+      ],
+    });
+    approvePlanContract(planStore, 'plan-successor');
+    const context = {
+      workStore, handoffStore: { root: join(root, 'handoff') }, planStore,
+      repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a', controllerInstanceId: 'runtime-a', sourceRevision: 'revision-a', availableChecks: [{ id: 'check:successor' }],
+    };
+    const first = routeWorkStart(context, {
+      objective: 'Deliver first slice', planId: 'plan-successor', planStepId: 'step-a', workKind: 'completed_no_change',
+      modeInput: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
+    });
+    const firstWorkId = (first.data as { work?: { workId?: string } }).work?.workId;
+    expect(firstWorkId).toBeTruthy();
+    completeNoChangePlanWork(workStore, firstWorkId!, 'REV-successor-first');
+    completePlanStepForWork(planStore, { planId: 'plan-successor', stepId: 'step-a', work: getWorkContract(workStore, firstWorkId!)! });
+
+    const beforeAcceptance = routeWorkStart(context, {
+      objective: 'Continue the same durable goal', relatedWorkId: firstWorkId, workRelation: 'continue',
+      modeInput: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
+    });
+    expect(beforeAcceptance.status).toBe('blocked');
+    expect(beforeAcceptance.summary).toContain('PLAN_STEP_SEMANTIC_ACCEPTANCE_REQUIRED');
+    expect((beforeAcceptance.data as { workContractCreated?: boolean }).workContractCreated).toBe(false);
+
+    acceptPlanStepEvidence(planStore, {
+      planId: 'plan-successor', stepId: 'step-a', reviewer: 'principal-a', rationale: 'First slice evidence satisfies the approved Plan step.', acceptedSourceRevision: 'revision-a',
+    });
+    const successor = routeWorkStart(context, {
+      objective: 'Continue the same durable goal', relatedWorkId: firstWorkId, workRelation: 'continue',
+      modeInput: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
+    });
+    const successorWorkId = (successor.data as { work?: { workId?: string } }).work?.workId;
+    expect(successor.status).toBe('ok');
+    expect(successor.summary).toContain('continues semantic lineage');
+    expect(successorWorkId).toBeTruthy();
+    expect(successorWorkId).not.toBe(firstWorkId);
+    expect(getWorkContract(workStore, successorWorkId!)).toMatchObject({
+      predecessorWorkId: firstWorkId,
+      requirementId: 'REQ-successor',
+      planId: 'plan-successor',
+      planStepId: 'step-b',
+      objective: 'Deliver second slice',
+      acceptanceCriteria: ['second slice delivered'],
+    });
+    expect(getPlanContract(planStore, 'plan-successor')?.steps[1]).toMatchObject({ status: 'executing', workId: successorWorkId });
+  });
+
+  test('requires Controller resolution when a terminal Plan Work has multiple executable successor steps', () => {
+    const root = temp('route-plan-successor-ambiguous-');
+    const planStore = { root: join(root, 'plan') };
+    const workStore = { root: join(root, 'work') };
+    createPlanContract(planStore, {
+      planId: 'plan-ambiguous-successor', repoId: 'repo-a', requirementId: 'REQ-ambiguous-successor', scopeKey: 'ambiguous-successor', sourceRevision: 'revision-a', goal: 'Allow two parallel next slices',
+      steps: [
+        { id: 'step-a', objective: 'Deliver root slice', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['check:successor'], acceptanceCriteria: ['root delivered'] },
+        { id: 'step-b', objective: 'Deliver branch B', dependencies: ['step-a'], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['check:successor'], acceptanceCriteria: ['B delivered'] },
+        { id: 'step-c', objective: 'Deliver branch C', dependencies: ['step-a'], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['check:successor'], acceptanceCriteria: ['C delivered'] },
+      ],
+    });
+    approvePlanContract(planStore, 'plan-ambiguous-successor');
+    const context = {
+      workStore, handoffStore: { root: join(root, 'handoff') }, planStore,
+      repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a', controllerInstanceId: 'runtime-a', sourceRevision: 'revision-a', availableChecks: [{ id: 'check:successor' }],
+    };
+    const first = routeWorkStart(context, {
+      objective: 'Deliver root slice', planId: 'plan-ambiguous-successor', planStepId: 'step-a', workKind: 'completed_no_change',
+      modeInput: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
+    });
+    const firstWorkId = (first.data as { work?: { workId?: string } }).work?.workId!;
+    completeNoChangePlanWork(workStore, firstWorkId, 'REV-ambiguous-root');
+    completePlanStepForWork(planStore, { planId: 'plan-ambiguous-successor', stepId: 'step-a', work: getWorkContract(workStore, firstWorkId)! });
+    acceptPlanStepEvidence(planStore, {
+      planId: 'plan-ambiguous-successor', stepId: 'step-a', reviewer: 'principal-a', rationale: 'Root slice accepted.', acceptedSourceRevision: 'revision-a',
+    });
+
+    const ambiguous = routeWorkStart(context, {
+      objective: 'Continue the same durable goal', relatedWorkId: firstWorkId, workRelation: 'continue',
+      modeInput: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
+    });
+    expect(ambiguous.status).toBe('ok');
+    expect(ambiguous.summary).toContain('PLAN_SUCCESSOR_STEP_RESOLUTION_REQUIRED');
+    expect(ambiguous.data).toMatchObject({
+      executionStarted: false,
+      workContractCreated: false,
+      admissionDecision: 'resolution_required',
+      resolutionRequired: true,
+      predecessorWorkId: firstWorkId,
+      planId: 'plan-ambiguous-successor',
+    });
+    expect((ambiguous.data as { candidatePlanSteps?: Array<{ id: string }> }).candidatePlanSteps?.map((step) => step.id).sort()).toEqual(['step-b', 'step-c']);
+  });
+
+  test('continues a terminal Requirement-only Work without inventing a Plan or reusing the terminal Work id', () => {
+    const root = temp('route-requirement-successor-');
+    const workStore = { root: join(root, 'work') };
+    const predecessor = createWorkContract(workStore, {
+      workId: 'work-requirement-predecessor', repoId: 'repo-a', mode: 'goal_workloop', objective: 'Finish first Requirement slice',
+      acceptanceCriteria: ['first slice attempted'], constraints: { requireHandoffOnAmbiguity: true }, risk: 'readonly', workKind: 'completed_no_change',
+      status: 'cancelled', requirementId: 'REQ-requirement-successor', checks: [], allowedPaths: [], forbiddenPaths: [], requestedBy: 'chatgpt',
+    });
+    const successor = routeWorkStart({
+      workStore, handoffStore: { root: join(root, 'handoff') }, repoId: 'repo-a', checkoutId: 'checkout-a', sourceRevision: 'revision-b',
+    }, {
+      objective: 'Continue remaining Requirement work', relatedWorkId: predecessor.workId, workRelation: 'continue',
+      modeInput: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
+    });
+    const successorWorkId = (successor.data as { work?: { workId?: string } }).work?.workId;
+    expect(successor.status).toBe('ok');
+    expect(successorWorkId).toBeTruthy();
+    expect(successorWorkId).not.toBe(predecessor.workId);
+    const successorWork = getWorkContract(workStore, successorWorkId!)!;
+    expect(successorWork).toMatchObject({
+      predecessorWorkId: predecessor.workId,
+      requirementId: 'REQ-requirement-successor',
+      objective: 'Continue remaining Requirement work',
+    });
+    expect(successorWork).not.toHaveProperty('planId');
+    expect(successorWork).not.toHaveProperty('planStepId');
+  });
+
+  test('returns goal_complete instead of creating another Work after the final accepted Plan step', () => {
+    const root = temp('route-plan-goal-complete-');
+    const planStore = { root: join(root, 'plan') };
+    const workStore = { root: join(root, 'work') };
+    createPlanContract(planStore, {
+      planId: 'plan-goal-complete', repoId: 'repo-a', requirementId: 'REQ-goal-complete', scopeKey: 'goal-complete', sourceRevision: 'revision-a', goal: 'Finish one durable slice',
+      steps: [{ id: 'only-step', objective: 'Deliver only slice', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['check:successor'], acceptanceCriteria: ['only slice delivered'] }],
+    });
+    approvePlanContract(planStore, 'plan-goal-complete');
+    const context = {
+      workStore, handoffStore: { root: join(root, 'handoff') }, planStore,
+      repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a', controllerInstanceId: 'runtime-a', sourceRevision: 'revision-a', availableChecks: [{ id: 'check:successor' }],
+    };
+    const first = routeWorkStart(context, {
+      objective: 'Deliver only slice', planId: 'plan-goal-complete', planStepId: 'only-step', workKind: 'completed_no_change',
+      modeInput: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
+    });
+    const firstWorkId = (first.data as { work?: { workId?: string } }).work?.workId!;
+    completeNoChangePlanWork(workStore, firstWorkId, 'REV-goal-complete');
+    completePlanStepForWork(planStore, { planId: 'plan-goal-complete', stepId: 'only-step', work: getWorkContract(workStore, firstWorkId)! });
+    acceptPlanStepEvidence(planStore, {
+      planId: 'plan-goal-complete', stepId: 'only-step', reviewer: 'principal-a', rationale: 'Final slice accepted.', acceptedSourceRevision: 'revision-a',
+    });
+    expect(getPlanContract(planStore, 'plan-goal-complete')?.status).toBe('finalized');
+
+    const completed = routeWorkStart(context, {
+      objective: 'Continue same goal', relatedWorkId: firstWorkId, workRelation: 'continue',
+      modeInput: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
+    });
+    expect(completed.status).toBe('ok');
+    expect(completed.summary).toContain('CONTINUATION_GOAL_COMPLETE');
+    expect(completed.data).toMatchObject({
+      executionStarted: false,
+      workContractCreated: false,
+      admissionDecision: 'goal_complete',
+      goalComplete: true,
+      predecessorWorkId: firstWorkId,
+      planId: 'plan-goal-complete',
+      requirementId: 'REQ-goal-complete',
+    });
+  });
+
   test('keeps predicted, inspected, and actual scope evidence separate from policy fences', () => {
     const root = temp('route-scope-evidence-');
     const store = { root: join(root, 'work') };
@@ -882,21 +1086,7 @@ describe('single Route Policy authority', () => {
       forbiddenPaths: [],
       requestedBy: 'chatgpt',
     });
-    recordWorkCompletionReceipt(workStore, work.workId, {
-      schemaVersion: 1,
-      receiptId: 'receipt-terminal-verify',
-      source: 'controller_work',
-      issueId: 'issue-terminal-verify',
-      taskId: 'task-terminal-verify',
-      workId: work.workId,
-      targetBranch: 'main',
-      targetRevision: 'revision-a',
-      changedPaths: [],
-      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt: '2026-08-24T00:00:00.000Z' },
-      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt: '2026-08-24T00:00:00.000Z' },
-      verifiedAt: '2026-08-24T00:00:00.000Z',
-      recordedAt: '2026-08-24T00:00:00.000Z',
-    }, 'completed_no_change', 'completed_no_change');
+    completeNoChangePlanWork(workStore, work.workId, 'REV-terminal-verify');
 
     const before = getWorkContract(workStore, work.workId)!;
     const verified = verifyGoalWorkloop(context, { workId: work.workId, checkId: 'check:baseline', infrastructureFailed: true });

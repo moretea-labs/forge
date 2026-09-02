@@ -386,6 +386,8 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
   const create = (): WorkContract => {
     const at = input.createdAt ?? input.updatedAt ?? nowIso(options);
     const workId = sanitizeFileComponent(input.workId);
+    const predecessorWorkId = input.predecessorWorkId ? sanitizeFileComponent(input.predecessorWorkId) : undefined;
+    if (predecessorWorkId === workId) throw new Error('WORK_PREDECESSOR_SELF_REFERENCE');
     const contract: WorkContract = validateWorkSemantics({
       schemaVersion: 2,
       workId,
@@ -414,6 +416,7 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       workKind: input.workKind ?? 'repository_change',
       lifecycleRole: input.lifecycleRole ?? 'primary',
       parentWorkId: input.parentWorkId?.trim() || undefined,
+      predecessorWorkId: predecessorWorkId && predecessorWorkId !== 'unknown' ? predecessorWorkId : undefined,
       supersedes: input.supersedes?.map((value) => sanitizeFileComponent(value)).filter((value) => value !== 'unknown').slice(0, 50),
       supersededBy: input.supersededBy ? sanitizeFileComponent(input.supersededBy) : undefined,
       supersessionReason: input.supersessionReason?.trim().slice(0, 500),

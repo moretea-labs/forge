@@ -477,6 +477,11 @@ forbid(
 requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'completeRemoteEffectWorkFromProcessReceipt');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'packages/kernel/work/api/index');
 requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'packages/kernel/work/api/index');
+requireText('packages/kernel/work/domain/types.ts', 'predecessorWorkId?: string');
+requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'PLAN_STEP_SEMANTIC_ACCEPTANCE_REQUIRED');
+requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'PLAN_SUCCESSOR_STEP_RESOLUTION_REQUIRED');
+requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'CONTINUATION_GOAL_COMPLETE');
+requireText('src/runtime/control-plane/facade/goal-workloop.ts', "requestedBy ?? 'chatgpt') === 'scheduler'");
 // B3 ControllerSession authority and provider-neutral host boundary.
 requireText('packages/kernel/controller/domain/types.ts', 'export interface ControllerBinding');
 requireText('packages/kernel/controller/domain/types.ts', 'export interface ControllerLease');

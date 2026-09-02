@@ -382,6 +382,8 @@ export interface WorkContract {
   lifecycleRole?: 'primary' | 'execution_child';
   /** Optional objective-level parent when this Work is only an execution child. */
   parentWorkId?: string;
+  /** Immediate prior primary Work in the same semantic continuation lineage. Relationship evidence only; never execution or deletion authority. */
+  predecessorWorkId?: string;
   /** Historical predecessors explicitly replaced by this Work. Relationship evidence only; never deletion authority. */
   supersedes?: string[];
   /** Current successor that replaced this Work. Presence makes this Work historical even before cleanup terminalizes it. */
