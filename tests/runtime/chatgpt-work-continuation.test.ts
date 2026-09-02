@@ -18,7 +18,7 @@ import {
 import { classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { createWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { chatgptBridgeTargetMatchesPage, isWslWindowsRuntime, openWslWindowsBridgeTarget } from '../../src/cli/chatgpt-browser/bridge-provider';
+import { chatgptBridgeTargetMatchesPage, findInstalledWslWindowsBridgeBrowser, isWslWindowsRuntime, openWslWindowsBridgeTarget } from '../../src/cli/chatgpt-browser/bridge-provider';
 import { writeChatgptBridgeExtension } from '../../src/cli/chatgpt-browser/bridge-extension';
 import { ensureBridgeToken, readBrowserBinding } from '../../src/cli/chatgpt-browser/binding';
 import {
@@ -185,7 +185,36 @@ describe('ChatGPT Work conversation binding', () => {
       .toEqual({ status: 'session_closed' });
   });
 
-  test('opens WSL bridge targets with an explicit Google Chrome executable and fails closed otherwise', async () => {
+  test('discovers only an enabled Windows Chromium profile whose installed Forge bridge matches the current capability', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-wsl-bridge-discovery-'));
+    roots.push(root);
+    const userRoot = join(root, 'user');
+    const executable = join(root, 'CentBrowser', 'chrome.exe');
+    const profileRoot = join(userRoot, 'AppData', 'Local', 'CentBrowser', 'User Data', 'Default');
+    const extensionDir = join(root, 'installed-bridge');
+    mkdirSync(profileRoot, { recursive: true });
+    mkdirSync(extensionDir, { recursive: true });
+    mkdirSync(join(root, 'CentBrowser'), { recursive: true });
+    writeFileSync(executable, '', 'utf8');
+    const bridgeUrl = 'http://127.0.0.1:17651';
+    const token = 'stage3b-capability-token';
+    writeFileSync(join(extensionDir, 'content-script.js'), `const url=${JSON.stringify(bridgeUrl)}; const token=${JSON.stringify(token)};`, 'utf8');
+    writeFileSync(join(profileRoot, 'Preferences'), JSON.stringify({
+      extensions: { settings: { bridge: { state: 1, path: extensionDir } } },
+    }), 'utf8');
+    expect(findInstalledWslWindowsBridgeBrowser(bridgeUrl, token, {
+      userName: 'fixture',
+      userRoot,
+      candidates: [{ executable, profileRelativeRoot: 'AppData/Local/CentBrowser/User Data' }],
+    })).toEqual({ executable, profileDirectory: 'Default', extensionDir });
+    expect(findInstalledWslWindowsBridgeBrowser(bridgeUrl, 'wrong-token', {
+      userName: 'fixture',
+      userRoot,
+      candidates: [{ executable, profileRelativeRoot: 'AppData/Local/CentBrowser/User Data' }],
+    })).toBeUndefined();
+  });
+
+  test('opens WSL bridge targets with the exact discovered Chromium profile and fails closed otherwise', async () => {
     const launches: Array<{ executable: string; args: readonly string[] }> = [];
     const launch = ((executable: string, args: readonly string[]) => {
       launches.push({ executable, args });
@@ -201,13 +230,16 @@ describe('ChatGPT Work conversation binding', () => {
     await openWslWindowsBridgeTarget('https://chatgpt.com/c/round-1', {
       platform: 'linux',
       wslDistroName: 'UbuntuDev',
-      chromeExecutables: ['/missing/chrome.exe', '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe'],
-      fileExists: (path) => path === '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe',
+      browserBinding: {
+        executable: '/mnt/c/Program Files/CentBrowser/Application/chrome.exe',
+        profileDirectory: 'Default',
+        extensionDir: '/mnt/c/Users/tester/AppData/Local/ForgeDesktop/.ai/harness/chatgpt/bridge-extension',
+      },
       launch,
     });
     expect(launches).toEqual([{
-      executable: '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe',
-      args: ['--new-tab', 'https://chatgpt.com/c/round-1'],
+      executable: '/mnt/c/Program Files/CentBrowser/Application/chrome.exe',
+      args: ['--profile-directory=Default', '--new-tab', 'https://chatgpt.com/c/round-1'],
     }]);
     await expect(openWslWindowsBridgeTarget('https://chatgpt.com/', {
       platform: 'linux',
@@ -215,7 +247,7 @@ describe('ChatGPT Work conversation binding', () => {
       chromeExecutables: ['/missing/chrome.exe'],
       fileExists: () => false,
       launch,
-    })).rejects.toThrow('CHATGPT_BRIDGE_CHROME_UNAVAILABLE');
+    })).rejects.toThrow('CHATGPT_BRIDGE_BROWSER_UNAVAILABLE');
     await expect(openWslWindowsBridgeTarget('https://example.com/', {
       platform: 'linux',
       wslDistroName: 'UbuntuDev',
