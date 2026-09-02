@@ -33,6 +33,14 @@ function isPlaceholder(paths, lines) {
   return lines <= 1 && paths.every((path) => path.endsWith('/.gitkeep'));
 }
 
+function isPureBarrelReExport(paths, lines) {
+  if (lines !== 1) return false;
+  return paths.every((path) => {
+    const source = readFileSync(path, 'utf8').trim();
+    return /^export\s+\*\s+from\s+['"]\.\/[^'"]+['"];?$/.test(source);
+  });
+}
+
 const duplicateGroups = [...byHash.values()].filter((group) => group.length > 1);
 const failures = [];
 let classifiedGroups = 0;
@@ -41,7 +49,7 @@ for (const group of duplicateGroups) {
   const paths = group.map(({ path }) => path).sort();
   const lines = group[0].lines;
   const redundantLines = lines * (group.length - 1);
-  if (isGeneratedTemplateProjection(paths) || isGuidanceAlias(paths) || isPlaceholder(paths, lines)) {
+  if (isGeneratedTemplateProjection(paths) || isGuidanceAlias(paths) || isPlaceholder(paths, lines) || isPureBarrelReExport(paths, lines)) {
     classifiedGroups += 1;
     classifiedRedundantLines += redundantLines;
     continue;
