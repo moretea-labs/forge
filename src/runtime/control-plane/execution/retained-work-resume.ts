@@ -1,13 +1,17 @@
-import { existsSync } from 'fs';
-import { resolve } from 'path';
+import { createHash } from 'crypto';
+import { spawnSync } from 'child_process';
+import { existsSync, readFileSync } from 'fs';
+import { join, resolve } from 'path';
+import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { listRepositories, repositoryCheckoutLifecycle, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { getControllerSession } from '../../../../packages/kernel/controller/api/index';
-import { getWorkContract, resumeRetainedCancelledWorkContract, updateWorkContract } from '../../../../packages/kernel/work/api/index';
+import { getWorkContract, resumeRetainedCancelledWorkContract, transitionWorkContractPhase, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { gitCommitAtRef, gitWorktreeSnapshot } from './work-lifecycle-audit';
-import { readWorkHandle, writeWorkHandle } from './work-handle-store';
+import { findWorkPathScopeViolation } from './work-path-scope';
+import { readWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
 
 export interface RetainedWorkResumeIdentity {
   principalId: string;
@@ -31,6 +35,192 @@ export interface EnsureRunningRepositoryWorkCheckoutInput {
   workId: string;
   identity: RetainedWorkResumeIdentity;
   prepareDependencies?: boolean;
+}
+
+interface GitResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+}
+
+function git(root: string, args: string[], timeoutMs = 30_000): GitResult {
+  const result = spawnSync('git', ['-C', root, ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: timeoutMs,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  return {
+    ok: result.status === 0,
+    stdout: String(result.stdout ?? '').trim(),
+    stderr: String(result.stderr ?? '').trim(),
+  };
+}
+
+function normalizedPaths(value: readonly string[]): string[] {
+  return [...new Set(value.map((entry) => entry.trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right));
+}
+
+function restoreArchivedBlockedDeliveryCheckout(input: {
+  controllerHome: string;
+  repository: RepositoryRecord;
+  work: NonNullable<ReturnType<typeof getWorkContract>>;
+  handle: WorkHandleState;
+  identity: RetainedWorkResumeIdentity;
+  prepareDependencies?: boolean;
+}): { reconstructedCheckout: boolean } | undefined {
+  const { controllerHome, repository, work, handle, identity } = input;
+  const receipt = handle.cleanupReceipt;
+  if (handle.state !== 'cleaned' || receipt?.terminalOutcome !== 'blocked_terminal') return undefined;
+  if (work.completionReceipt || work.completionOutcome || work.status !== 'blocked' || work.phase !== 'delivery') {
+    throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_LIFECYCLE_CONFLICT: ${work.workId}`);
+  }
+  if (!['none', 'partial', 'valid', 'stale'].includes(work.evidenceState)) {
+    throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_EVIDENCE_CONFLICT: ${work.workId}:${work.evidenceState}`);
+  }
+  if (!receipt.complete
+    || receipt.partial
+    || receipt.blockers.length > 0
+    || receipt.branchCleanup.status !== 'archived'
+    || (receipt.branchCleanup.uniqueCommits ?? 0) < 1
+    || !['removed', 'already_removed'].includes(receipt.worktree.status)
+    || !['removed', 'already_removed'].includes(receipt.checkoutRegistry.status)
+    || handle.finalization.validation !== 'done'
+    || handle.finalization.commit !== 'done'
+    || handle.finalization.merge !== 'failed') {
+    throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_EVIDENCE_INCOMPLETE: ${work.workId}`);
+  }
+  if (receipt.workId !== work.workId || receipt.repoId !== repository.repoId || receipt.branch !== handle.branch) {
+    throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_IDENTITY_MISMATCH: ${work.workId}`);
+  }
+  if (handle.principalId !== identity.principalId) {
+    throw new Error(`WORK_CONTINUE_HANDLE_PRINCIPAL_MISMATCH: ${work.workId}`);
+  }
+  const candidateRevision = handle.expectedHead?.trim();
+  const baseRevisionRaw = work.baseRevision?.trim() || handle.baseCommit?.trim();
+  const targetBranch = receipt.targetBranch?.trim();
+  const bundlePath = receipt.preservation.bundlePath?.trim();
+  const bundleSha256 = receipt.preservation.bundleSha256?.trim();
+  if (!candidateRevision || !baseRevisionRaw || !targetBranch || !bundlePath || !bundleSha256) {
+    throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_AUTHORITY_REQUIRED: ${work.workId}`);
+  }
+  if (handle.deliveryTargetBranch?.trim() && handle.deliveryTargetBranch.trim() !== targetBranch) {
+    throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_TARGET_MISMATCH: ${work.workId}`);
+  }
+  const expectedBundlePath = resolve(join(
+    repositoryControllerRoot(controllerHome, repository.repoId),
+    'cleanup-artifacts',
+    work.workId,
+    'branch.bundle',
+  ));
+  if (resolve(bundlePath) !== expectedBundlePath || !existsSync(bundlePath)) {
+    throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_BUNDLE_PATH_INVALID: ${work.workId}`);
+  }
+  const actualBundleSha256 = createHash('sha256').update(readFileSync(bundlePath)).digest('hex');
+  if (actualBundleSha256 !== bundleSha256) {
+    throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_BUNDLE_DIGEST_MISMATCH: ${work.workId}`);
+  }
+  const verified = git(repository.canonicalRoot, ['bundle', 'verify', bundlePath], 60_000);
+  if (!verified.ok) throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_BUNDLE_INVALID: ${work.workId}: ${verified.stderr}`);
+  const heads = git(repository.canonicalRoot, ['bundle', 'list-heads', bundlePath]);
+  if (!heads.ok) throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_BUNDLE_HEADS_UNAVAILABLE: ${work.workId}`);
+  const archivedRef = `refs/heads/${handle.branch}`;
+  const archivedHead = heads.stdout.split(/\r?\n/)
+    .map((line) => line.trim().split(/\s+/, 2))
+    .find(([, ref]) => ref === archivedRef)?.[0];
+  if (!archivedHead || archivedHead !== candidateRevision) {
+    throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_BUNDLE_HEAD_MISMATCH: ${work.workId}`);
+  }
+
+  let candidateCommit = gitCommitAtRef(repository.canonicalRoot, candidateRevision);
+  if (!candidateCommit) {
+    const fetched = git(repository.canonicalRoot, ['fetch', '--no-write-fetch-head', bundlePath, archivedRef], 60_000);
+    if (!fetched.ok) throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_IMPORT_FAILED: ${work.workId}: ${fetched.stderr}`);
+    candidateCommit = gitCommitAtRef(repository.canonicalRoot, candidateRevision);
+  }
+  if (candidateCommit !== candidateRevision) {
+    throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_CANDIDATE_MISSING: ${work.workId}`);
+  }
+  const baseRevision = gitCommitAtRef(repository.canonicalRoot, baseRevisionRaw);
+  if (!baseRevision) throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_BASE_MISSING: ${work.workId}`);
+  if (git(repository.canonicalRoot, ['merge-base', '--is-ancestor', candidateRevision, targetBranch]).ok) {
+    throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_ALREADY_INTEGRATED: ${work.workId}`);
+  }
+  const changed = git(repository.canonicalRoot, ['diff', '--name-only', `${baseRevision}..${candidateRevision}`]);
+  if (!changed.ok) throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_DIFF_UNAVAILABLE: ${work.workId}`);
+  const changedPaths = normalizedPaths(changed.stdout.split(/\r?\n/));
+  if (changedPaths.length === 0) throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_ZERO_DELTA: ${work.workId}`);
+  const scopeViolation = findWorkPathScopeViolation(work, changedPaths);
+  if (scopeViolation) {
+    throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_SCOPE_VIOLATION: ${scopeViolation.kind}:${scopeViolation.path}`);
+  }
+  const recordedChangedPaths = normalizedPaths(work.scopeEvidence?.actualChangedPaths ?? []);
+  if (recordedChangedPaths.length > 0 && JSON.stringify(recordedChangedPaths) !== JSON.stringify(changedPaths)) {
+    throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_PATH_IDENTITY_MISMATCH: ${work.workId}`);
+  }
+
+  const branchName = `work/resume-archived-${work.workId.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 34)}-${candidateRevision.slice(0, 12)}`;
+  const existingResumeBranch = gitCommitAtRef(repository.canonicalRoot, `refs/heads/${branchName}`);
+  if (existingResumeBranch && existingResumeBranch !== candidateRevision) {
+    throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_RECONSTRUCTION_BRANCH_CONFLICT: ${work.workId}`);
+  }
+  const workspace = ensureManagedWorkspace(controllerHome, repository, {
+    requestId: `${work.workId}:archived-delivery-recovery:${candidateRevision}`,
+    title: `${work.objective} archived delivery recovery`,
+    branchName,
+    baseRef: candidateRevision,
+    prepareDependencies: input.prepareDependencies === true,
+  });
+  if (!workspace.managed || !workspace.checkoutId || !workspace.root || !workspace.branch) {
+    throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_RECONSTRUCTION_FAILED: ${work.workId}`);
+  }
+  const refreshedRepository = listRepositories(controllerHome, { includeRemoved: true })
+    .find((candidate) => candidate.repoId === repository.repoId);
+  if (!refreshedRepository) throw new Error(`WORK_CONTINUE_REPOSITORY_MISSING: ${work.workId}`);
+  const reconstructed = selectRepositoryCheckout(refreshedRepository, workspace.checkoutId);
+  const reconstructedStatus = repositoryGitStatus(reconstructed);
+  if (!reconstructedStatus.clean || reconstructedStatus.head !== candidateRevision || reconstructedStatus.branch !== workspace.branch) {
+    throw new Error(`WORK_CONTINUE_ARCHIVED_DELIVERY_RECONSTRUCTION_REVISION_MISMATCH: ${work.workId}`);
+  }
+
+  const at = new Date().toISOString();
+  const store = { controllerHome, repoId: repository.repoId };
+  updateWorkContract(store, work.workId, {
+    checkoutId: workspace.checkoutId,
+    worktreeRef: workspace.root,
+    controllerInstanceId: identity.controllerInstanceId,
+    continuationPrompt: `Continue work ${repository.repoId}: ${work.objective.slice(0, 500)}. Forge rehydrated exact archived candidate ${candidateRevision}; rerun verification/review before delivery.`,
+  });
+  transitionWorkContractPhase(store, work.workId, {
+    phase: 'verification',
+    status: 'running',
+    state: 'active',
+    summary: `Archived candidate ${candidateRevision} was rehydrated from verified blocked-terminal preservation; fresh verification is required before delivery.`,
+  });
+  if (work.evidenceState === 'partial' || work.evidenceState === 'valid') {
+    updateWorkContract(store, work.workId, { evidenceState: 'stale' });
+  }
+  writeWorkHandle(controllerHome, {
+    ...handle,
+    principalId: identity.principalId,
+    sessionId: identity.sessionId,
+    checkoutId: workspace.checkoutId,
+    worktreePath: workspace.root,
+    branch: workspace.branch,
+    sourceCheckoutId: repository.activeCheckoutId,
+    deliveryTargetBranch: handle.deliveryTargetBranch?.trim() || targetBranch,
+    managedWorktree: true,
+    baseCommit: baseRevision,
+    deliveryBaseCommit: baseRevision,
+    expectedHead: candidateRevision,
+    state: 'validating',
+    validatedInputFingerprint: undefined,
+    failureReason: undefined,
+    cleanupReceipt: undefined,
+    finalization: { validation: 'pending', commit: 'done', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+    updatedAt: at,
+  });
+  return { reconstructedCheckout: true };
 }
 
 /**
@@ -70,6 +260,10 @@ export function ensureRunningRepositoryWorkCheckout(
   if (handle.checkoutId !== recordedCheckoutId || resolve(handle.worktreePath) !== resolve(recordedWorktree)) {
     throw new Error(`WORK_CONTINUE_CHECKOUT_OWNERSHIP_MISMATCH: ${workId}`);
   }
+  const archivedDelivery = restoreArchivedBlockedDeliveryCheckout({
+    controllerHome, repository, work, handle, identity, prepareDependencies: input.prepareDependencies,
+  });
+  if (archivedDelivery) return archivedDelivery;
   if (['committed', 'merged', 'cleaned', 'failed_terminal_cleanup'].includes(handle.state)
     || handle.finalization.commit === 'done'
     || handle.finalization.merge === 'done'

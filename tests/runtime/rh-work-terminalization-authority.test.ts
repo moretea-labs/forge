@@ -13,6 +13,8 @@ import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, cre
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { ensureRepositoryWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-authority';
+import { ensureRunningRepositoryWorkCheckout } from '../../src/runtime/control-plane/execution/retained-work-resume';
+import { cleanupTerminalWork } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { resolveExplicitClaimedRepositoryWork } from '../../src/runtime/control-plane/execution/repository-work-attribution';
 import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
@@ -230,6 +232,150 @@ describe('rh_work terminalization authority', () => {
     expect(handle.baseCommit).toBe(baseRevision);
     expect(handle.expectedHead).toBe(baseRevision);
   }, 15_000);
+
+  test('blocked delivery rehydrates the exact archived candidate and invalidates old delivery authority', async () => {
+    const fx = fixture();
+    const workId = 'work-archived-blocked-delivery-recovery';
+    const caller = {
+      principalId: 'principal-archived-blocked-delivery',
+      sessionId: 'transport-archived-blocked-delivery',
+      controllerInstanceId: 'runtime-archived-blocked-delivery',
+    };
+    const branch = 'work/archived-blocked-delivery';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'Archived blocked delivery recovery',
+      branchName: branch,
+    });
+    const baseRevision = workspace.baseRevision!;
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const ready = "archived-candidate";\n');
+    execFileSync('git', ['add', 'src/index.ts'], { cwd: workspace.root! });
+    execFileSync('git', ['commit', '-m', 'archived blocked delivery candidate'], { cwd: workspace.root! });
+    const candidateRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+    expect(candidateRevision).not.toBe(baseRevision);
+
+    const now = new Date().toISOString();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Deliver an exact committed candidate after a temporary target blocker clears.',
+      acceptanceCriteria: [],
+      constraints: { requireWorktree: true, directMainProhibited: true },
+      allowedPaths: ['src/index.ts'],
+      forbiddenPaths: [],
+      checks: ['package:check:type'],
+      requestedBy: 'chatgpt',
+      status: 'blocked',
+      phase: 'delivery',
+      evidenceState: 'valid',
+      worktreeRef: workspace.root,
+      scopeEvidence: {
+        initialLikelyPaths: ['src/index.ts'],
+        inspectedPaths: ['src/index.ts'],
+        actualChangedPaths: ['src/index.ts'],
+        recordedAt: now,
+      },
+    });
+    let handle = writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      workContractId: workId,
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      repositoryId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      worktreePath: workspace.root!,
+      branch,
+      managedWorktree: true,
+      baseCommit: baseRevision,
+      deliveryBaseCommit: baseRevision,
+      expectedHead: candidateRevision,
+      permissionSnapshotVersion: 1,
+      state: 'committed',
+      createdAt: now,
+      updatedAt: now,
+      validatedInputFingerprint: 'old-validation-authority',
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: {
+        validation: 'done',
+        commit: 'done',
+        merge: 'failed',
+        branchCleanup: 'pending',
+        worktreeCleanup: 'pending',
+        lastError: 'target temporarily blocked',
+      },
+    });
+
+    const cleaned = await cleanupTerminalWork({
+      controllerHome: fx.controllerHome,
+      handle,
+      targetBranch: 'main',
+      deleteBranch: true,
+      terminalOutcome: 'blocked_terminal',
+      failureReason: 'target temporarily blocked',
+    });
+    expect(cleaned.handle.state).toBe('cleaned');
+    expect(cleaned.receipt.complete).toBe(true);
+    expect(cleaned.receipt.branchCleanup).toMatchObject({ status: 'archived', uniqueCommits: 1 });
+    expect(cleaned.receipt.preservation.bundlePath).toBeTruthy();
+    expect(cleaned.receipt.preservation.bundleSha256).toBeTruthy();
+    expect(existsSync(workspace.root!)).toBe(false);
+
+    const tampered = writeWorkHandle(fx.controllerHome, {
+      ...cleaned.handle,
+      cleanupReceipt: {
+        ...cleaned.receipt,
+        preservation: { ...cleaned.receipt.preservation, bundleSha256: '0'.repeat(64) },
+      },
+    });
+    expect(() => ensureRunningRepositoryWorkCheckout({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId,
+      identity: caller,
+    })).toThrow('WORK_CONTINUE_ARCHIVED_DELIVERY_BUNDLE_DIGEST_MISMATCH');
+    writeWorkHandle(fx.controllerHome, {
+      ...tampered,
+      cleanupReceipt: cleaned.receipt,
+    });
+
+    const recovered = ensureRunningRepositoryWorkCheckout({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId,
+      identity: caller,
+    });
+    expect(recovered.reconstructedCheckout).toBe(true);
+    const work = getWorkContract(store, workId)!;
+    handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
+    expect(work.status).toBe('running');
+    expect(work.phase).toBe('verification');
+    expect(work.evidenceState).toBe('stale');
+    expect(work.checkoutId).not.toBe(workspace.checkoutId!);
+    expect(work.worktreeRef).not.toBe(workspace.root!);
+    expect(handle.state).toBe('validating');
+    expect(handle.baseCommit).toBe(baseRevision);
+    expect(handle.deliveryBaseCommit).toBe(baseRevision);
+    expect(handle.expectedHead).toBe(candidateRevision);
+    expect(handle.deliveryTargetBranch).toBe('main');
+    expect(handle.validatedInputFingerprint).toBeUndefined();
+    expect(handle.cleanupReceipt).toBeUndefined();
+    expect(handle.finalization).toMatchObject({
+      validation: 'pending',
+      commit: 'done',
+      merge: 'pending',
+      branchCleanup: 'pending',
+      worktreeCleanup: 'pending',
+    });
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: work.worktreeRef!, encoding: 'utf8' }).trim()).toBe(candidateRevision);
+  }, 20_000);
 
   test('continue fails closed and preserves dirty source when the running Work checkout is archived but still present', async () => {
     const fx = fixture();
