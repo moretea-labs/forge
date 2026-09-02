@@ -1311,8 +1311,10 @@ requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_IN
 requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_CAPTURE_CAPABILITY');
 requireText('src/runtime/plugins/desktop-operator-registration.ts', 'pluginVersion: options.pluginVersion');
 forbid('src/runtime/plugins/desktop-operator-registration.ts', /pluginVersion:\s*options\.pluginVersion\s*\?\?|pluginVersion:\s*['"]0\./, 'Forge must not invent the Desktop Operator provider release version');
-requireText('src/runtime/plugins/external-unix-socket.ts', 'EXTERNAL_RPC_METHOD_PATTERN');
-forbid('src/runtime/plugins/external-unix-socket.ts', /packages\/protocols\/computer|computer_execute|macos_browser_automation/, 'Generic external Unix socket transport must not own Computer or Desktop provider method identities');
+requireText('packages/plugin-runtime/external/unix-jsonl-transport.ts', 'EXTERNAL_RPC_METHOD_PATTERN');
+requireText('src/runtime/plugins/external-unix-socket.ts', 'callExternalUnixJsonl');
+forbid('src/runtime/plugins/external-unix-socket.ts', /createConnection|EXTERNAL_RPC_METHOD_PATTERN|packages\/protocols\/computer|computer_execute|macos_browser_automation/, 'Runtime external Unix socket compatibility layer must delegate async transport and must not own Computer/Desktop provider method identities');
+forbid('adapters/computer/desktop-operator-provider.ts', /src\/runtime\/plugins\/external-unix-socket|callExternalUnixSocket/, 'Computer provider adapters must consume provider-neutral plugin-runtime transport rather than Runtime socket implementation');
 
 // C0 Browser runtime authority: contracts and provider selection belong to plugin-runtime/protocols.
 requireText('packages/plugin-runtime/browser/runtime-contract.ts', 'export interface BrowserTransaction');

@@ -4,7 +4,10 @@ import {
   type ComputerBrowserAutomationRequest,
 } from '../../packages/protocols/computer/index';
 import type { ComputerProvider } from '../../packages/plugin-runtime/computer/index';
-import { callExternalUnixSocket } from '../../src/runtime/plugins/external-unix-socket';
+import {
+  callExternalUnixJsonl,
+  ExternalUnixJsonlTransportError,
+} from '../../packages/plugin-runtime/external/index';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 import { DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID } from './desktop-operator-contract';
 import {
@@ -24,6 +27,13 @@ export {
   resetDesktopOperatorComputerSocketPathForTest,
   setDesktopOperatorComputerSocketPathForTest,
 } from './desktop-operator-discovery';
+
+function toAssistantPluginError(error: ExternalUnixJsonlTransportError): AssistantPluginError {
+  return new AssistantPluginError(error.code, error.detailMessage, {
+    retryable: error.retryable,
+    details: error.details,
+  });
+}
 
 function unavailable(error: AssistantPluginError, endpoint: DesktopOperatorComputerEndpoint): AssistantPluginError {
   if (!/^EXTERNAL_PLUGIN_(SOCKET_UNAVAILABLE|TIMEOUT|TRANSPORT_FAILED|PROTOCOL_ERROR)$/.test(error.code)) return error;
@@ -50,7 +60,7 @@ async function verifyProvider(
   timeoutMs: number,
   requestedAction?: string,
 ): Promise<DesktopOperatorComputerTransportPlan> {
-  const handshake = await callExternalUnixSocket({
+  const handshake = await callExternalUnixJsonl({
     socketPath: endpoint.socketPath,
     requestId: `computer-provider-handshake:${randomUUID()}`,
     method: 'handshake',
@@ -69,7 +79,7 @@ export async function callDesktopOperatorComputerBrowserAutomation(
   try {
     const plan = await verifyProvider(endpoint, timeoutMs, request.action);
     const invocation = buildDesktopOperatorComputerInvocation(plan, request, timeoutMs);
-    return await callExternalUnixSocket({
+    return await callExternalUnixJsonl({
       socketPath: endpoint.socketPath,
       requestId: `computer-provider:${randomUUID()}`,
       method: invocation.method,
@@ -79,6 +89,7 @@ export async function callDesktopOperatorComputerBrowserAutomation(
     });
   } catch (error) {
     if (error instanceof AssistantPluginError) throw unavailable(error, endpoint);
+    if (error instanceof ExternalUnixJsonlTransportError) throw unavailable(toAssistantPluginError(error), endpoint);
     throw error;
   }
 }
