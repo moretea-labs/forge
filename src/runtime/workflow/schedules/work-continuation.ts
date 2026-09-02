@@ -391,6 +391,11 @@ export function eventDrivenContinuationSchedule(
   },
 ): RepositorySchedule {
   const workSchedules = listWorkContinuationSchedules(controllerHome, repoId, { workId: input.workId }).schedules;
+  const exact = workSchedules
+    .filter((schedule) => schedule.enabled)
+    .filter((schedule) => schedule.action.operation === 'external_controller_wake')
+    .find((schedule) => schedule.trigger.type === 'repository-event' && schedule.trigger.eventName === input.eventName);
+  if (exact) return exact;
   const existing = workSchedules
     .filter((schedule) => schedule.action.operation === 'external_controller_wake')
     .reverse()
