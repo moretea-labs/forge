@@ -1,9 +1,14 @@
-import { ComputerProviderError, ComputerProviderRegistry } from '../../../packages/plugin-runtime/computer/index';
+import {
+  ComputerProviderError,
+  ComputerProviderRegistry,
+  computerProviderRegistrationSnapshot,
+} from '../../../packages/plugin-runtime/computer/index';
 import type { ComputerBrowserAutomationRequest, ComputerBrowserProduct } from '../../../packages/protocols/computer/index';
 import { DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID } from '../../../adapters/computer/desktop-operator-contract';
 import { createDesktopOperatorComputerProvider } from '../../../adapters/computer/index';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
 import { getExternalPluginAdapter } from '../plugins/external-adapter';
+import { getExternalPluginRegistration } from '../plugins/external-registration';
 import { AssistantPluginError } from '../plugins/errors';
 import type { AssistantPluginActionExecutionInput } from '../plugins/types';
 
@@ -16,7 +21,12 @@ let composed = false;
 
 function ensureComputerComposition(): void {
   if (composed) return;
-  computerProviders.register(createDesktopOperatorComputerProvider({ resolveControllerHome }));
+  computerProviders.register(createDesktopOperatorComputerProvider({
+    lookupRegistration: (providerPluginId) => {
+      const registration = getExternalPluginRegistration(resolveControllerHome(), providerPluginId);
+      return registration ? computerProviderRegistrationSnapshot(registration) : undefined;
+    },
+  }));
   composed = true;
 }
 

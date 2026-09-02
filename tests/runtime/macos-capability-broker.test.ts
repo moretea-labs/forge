@@ -9,11 +9,18 @@ import {
   setMacOsCapabilityBrokerSocketPathForTest,
 } from '../../src/runtime/plugins/macos-capability-broker';
 import { createDesktopOperatorComputerProvider } from '../../adapters/computer/desktop-operator-provider';
+import { computerProviderRegistrationSnapshot } from '../../packages/plugin-runtime/computer/index';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
-import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
+import { getExternalPluginRegistration, installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 
 const roots: string[] = [];
 const servers: Server[] = [];
+function registrationLookup(controllerHome: string) {
+  return (providerPluginId: string) => {
+    const registration = getExternalPluginRegistration(controllerHome, providerPluginId);
+    return registration ? computerProviderRegistrationSnapshot(registration) : undefined;
+  };
+}
 afterEach(async () => {
   resetMacOsCapabilityBrokerSocketPathForTest();
   for (const server of servers.splice(0)) await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -192,7 +199,7 @@ describe('macOS capability broker handshake', () => {
       protocolVersion: '1.0',
     }));
 
-    const provider = createDesktopOperatorComputerProvider({ resolveControllerHome: () => controllerHome });
+    const provider = createDesktopOperatorComputerProvider({ lookupRegistration: registrationLookup(controllerHome) });
     const result = await provider.executeBrowserAutomation({ action: 'list_tabs', product: 'chrome' }, 2_000);
     expect(result).toMatchObject({ acceptedAction: 'list_tabs', value: 'ok' });
     expect(calls).toEqual(['handshake', 'macos_browser_automation']);
@@ -210,7 +217,7 @@ describe('macOS capability broker handshake', () => {
       enabled: false,
     }));
 
-    const provider = createDesktopOperatorComputerProvider({ resolveControllerHome: () => controllerHome });
+    const provider = createDesktopOperatorComputerProvider({ lookupRegistration: registrationLookup(controllerHome) });
     await expect(provider.executeBrowserAutomation({ action: 'list_tabs', product: 'chrome' }, 2_000))
       .rejects.toThrow('PLUGIN_COMPUTER_PROVIDER_DISABLED');
   });

@@ -1270,7 +1270,7 @@ requireText('adapters/computer/desktop-operator-contract.ts', 'DESKTOP_OPERATOR_
 requireText('adapters/computer/desktop-operator-negotiation.ts', 'negotiateDesktopOperatorComputerHandshake');
 requireText('adapters/computer/desktop-operator-negotiation.ts', 'buildDesktopOperatorComputerInvocation');
 requireText('adapters/computer/desktop-operator-provider.ts', 'createDesktopOperatorComputerProvider');
-requireText('adapters/computer/desktop-operator-discovery.ts', 'getExternalPluginRegistration');
+requireText('adapters/computer/desktop-operator-discovery.ts', 'ComputerProviderRegistrationLookup');
 requireText('adapters/computer/desktop-operator-discovery.ts', "source: 'registration'");
 requireText('adapters/computer/desktop-operator-discovery.ts', "source: 'legacy_fallback'");
 forbid('adapters/computer/desktop-operator-provider.ts', /getExternalPluginRegistration|controller-home|computerCapabilities|internalCapabilities|browserAutomationProtocolVersion|browserAutomationActions|macos_browser_automation|computer_execute/, 'Desktop Operator provider transport must consume discovery and negotiation results rather than own Controller lookup or wire negotiation');
@@ -1279,10 +1279,12 @@ forbid('adapters/computer/desktop-operator-discovery.ts', /macos_browser_automat
 if (text('adapters/computer/desktop-operator-provider.ts').split(/\r?\n/).length > 120) failures.push('adapters/computer/desktop-operator-provider.ts must remain a focused Computer provider transport adapter');
 forbid('adapters/computer/desktop-operator-provider.ts', /getExternalPluginAdapter|AssistantPluginActionExecutionInput|desktop_session_open|NATIVE_BROWSER_BUNDLE_IDS|activateDesktopOperatorBrowserApplication/, 'Desktop Operator Computer transport adapter must not own Runtime plugin-action application activation glue');
 for (const path of sourceFiles('adapters/computer')) {
-  forbid(path, /src\/runtime\/plugins\/errors|AssistantPluginError/, 'Computer adapters must expose provider errors through plugin-runtime rather than depend on Runtime plugin error types');
+  forbid(path, /src\/runtime\//, 'Computer adapters must consume provider-neutral ports and contracts rather than depend on Runtime implementations');
+  forbid(path, /AssistantPluginError/, 'Computer adapters must expose provider errors through plugin-runtime rather than depend on Runtime plugin error types');
 }
 if (text('adapters/computer/desktop-operator-negotiation.ts').split(/\r?\n/).length > 230) failures.push('adapters/computer/desktop-operator-negotiation.ts must remain a focused handshake-to-transport-plan owner');
-requireText('src/runtime/root/computer-composition.ts', 'createDesktopOperatorComputerProvider({ resolveControllerHome })');
+requireText('src/runtime/root/computer-composition.ts', 'lookupRegistration: (providerPluginId) =>');
+requireText('src/runtime/root/computer-composition.ts', 'computerProviderRegistrationSnapshot(registration)');
 requireText('src/runtime/root/computer-composition.ts', 'getExternalPluginAdapter(input.controllerHome, DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID)');
 requireText('src/runtime/plugins/browser-automation-service.ts', 'executeRuntimeComputerBrowserAutomation');
 requireText('src/runtime/plugins/browser-adapter.ts', 'activateRuntimeComputerBrowserApplication');

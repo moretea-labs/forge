@@ -1,8 +1,11 @@
 import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { COMPUTER_BROWSER_AUTOMATION_CAPABILITY } from '../../packages/protocols/computer/index';
-import { ComputerProviderError } from '../../packages/plugin-runtime/computer/index';
-import { getExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
+import {
+  ComputerProviderError,
+  type ComputerProviderRegistrationLookup,
+  type ComputerProviderRegistrationSnapshot,
+} from '../../packages/plugin-runtime/computer/index';
 import {
   DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID,
   DESKTOP_OPERATOR_PROVIDER_PROTOCOL_VERSION,
@@ -22,7 +25,7 @@ export interface DesktopOperatorComputerEndpoint {
 }
 
 export interface DesktopOperatorComputerProviderOptions {
-  resolveControllerHome?: () => string;
+  lookupRegistration?: ComputerProviderRegistrationLookup;
 }
 
 export function desktopOperatorComputerSocketPath(accountHome = process.env.HOME?.trim() || homedir()): string {
@@ -37,10 +40,12 @@ export function resetDesktopOperatorComputerSocketPathForTest(): void {
   testSocketPath = undefined;
 }
 
-function registeredEndpoint(controllerHome: string): DesktopOperatorComputerEndpoint | undefined {
-  let registration;
+function registeredEndpoint(
+  lookupRegistration: ComputerProviderRegistrationLookup,
+): DesktopOperatorComputerEndpoint | undefined {
+  let registration: ComputerProviderRegistrationSnapshot | undefined;
   try {
-    registration = getExternalPluginRegistration(controllerHome, DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID);
+    registration = lookupRegistration(DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID);
   } catch (error) {
     throw new ComputerProviderError(
       'PLUGIN_COMPUTER_PROVIDER_REGISTRATION_INVALID',
@@ -73,14 +78,14 @@ function registeredEndpoint(controllerHome: string): DesktopOperatorComputerEndp
       },
     );
   }
-  if (registration.transport.kind !== 'unix_socket_jsonl') {
+  if (registration.transport.kind !== 'unix_socket_jsonl' || !registration.transport.socketPath) {
     throw new ComputerProviderError(
       'PLUGIN_COMPUTER_PROVIDER_TRANSPORT_UNSUPPORTED',
       'Forge Desktop Operator registration must use the trusted Unix-socket transport.',
       { retryable: false, details: { transportKind: registration.transport.kind, registrationRevision: registration.revision } },
     );
   }
-  const capabilityIds = new Set(registration.capabilities.map((capability) => capability.capabilityId));
+  const capabilityIds = new Set(registration.capabilityIds);
   const declaresComputerCapability = capabilityIds.has(COMPUTER_BROWSER_AUTOMATION_CAPABILITY);
   const legacyRegistrationCompatible = LEGACY_REGISTRATION_CAPABILITIES.every((capability) => capabilityIds.has(capability));
   if (!declaresComputerCapability && !legacyRegistrationCompatible) {
@@ -119,9 +124,8 @@ export function resolveDesktopOperatorComputerEndpoint(
       maxResponseBytes: DESKTOP_OPERATOR_MAX_RESPONSE_BYTES,
     };
   }
-  const controllerHome = options.resolveControllerHome?.();
-  if (controllerHome) {
-    const registered = registeredEndpoint(controllerHome);
+  if (options.lookupRegistration) {
+    const registered = registeredEndpoint(options.lookupRegistration);
     if (registered) return registered;
   }
   return {
