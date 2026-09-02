@@ -26,6 +26,9 @@ function ensureComputerComposition(): void {
       const registration = getExternalPluginRegistration(resolveControllerHome(), providerPluginId);
       return registration ? computerProviderRegistrationSnapshot(registration) : undefined;
     },
+    // Compatibility is a Runtime composition decision, not a hidden adapter default.
+    // Remove this switch once Desktop Operator 0.2.x support is retired.
+    legacyFallback: 'unregistered_v0_2',
   }));
   composed = true;
 }

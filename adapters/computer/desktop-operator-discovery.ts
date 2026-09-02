@@ -24,8 +24,11 @@ export interface DesktopOperatorComputerEndpoint {
   registrationRevision?: number;
 }
 
+export type DesktopOperatorLegacyFallbackMode = 'disabled' | 'unregistered_v0_2';
+
 export interface DesktopOperatorComputerProviderOptions {
   lookupRegistration?: ComputerProviderRegistrationLookup;
+  legacyFallback?: DesktopOperatorLegacyFallbackMode;
 }
 
 export function desktopOperatorComputerSocketPath(accountHome = process.env.HOME?.trim() || homedir()): string {
@@ -127,6 +130,19 @@ export function resolveDesktopOperatorComputerEndpoint(
   if (options.lookupRegistration) {
     const registered = registeredEndpoint(options.lookupRegistration);
     if (registered) return registered;
+  }
+  if (options.legacyFallback !== 'unregistered_v0_2') {
+    throw new ComputerProviderError(
+      'PLUGIN_COMPUTER_PROVIDER_REGISTRATION_REQUIRED',
+      'Computer provider registration is required unless the Runtime composition explicitly enables the bounded Desktop Operator 0.2.x compatibility fallback.',
+      {
+        retryable: false,
+        details: {
+          providerPluginId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID,
+          legacyFallback: options.legacyFallback ?? 'disabled',
+        },
+      },
+    );
   }
   return {
     socketPath: desktopOperatorComputerSocketPath(),
