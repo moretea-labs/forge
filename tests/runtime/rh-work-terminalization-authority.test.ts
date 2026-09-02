@@ -693,8 +693,9 @@ describe('rh_work terminalization authority', () => {
     expect(released.status).toBe('ok');
   }, 15_000);
 
-  test('authenticated principal may use explicit opaque session when transport session is absent', async () => {
+  test('direct Work authority follows the authenticated principal/runtime across explicit and MCP transport rotation', async () => {
     const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     const workA = 'work-explicit-session-a';
     const workB = 'work-explicit-session-b';
     createReadyWork(fx.controllerHome, fx.repository.repoId, workA);
@@ -713,60 +714,62 @@ describe('rh_work terminalization authority', () => {
     expect(missing.status).toBe('blocked');
     expect(missing.summary).toContain('CONTROLLER_AUTHENTICATED_SESSION_REQUIRED');
 
-    const claimA = structured(await callRuntimeTool(
+    expect(structured(await callRuntimeTool(
       withoutTransport(),
       'rh_work',
       { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workA, session_id: 'opaque-a' },
-    ));
-    expect(claimA.status).toBe('ok');
-    expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workA)?.sessionId).toBe('opaque-a');
-
-    const claimB = structured(await callRuntimeTool(
+    )).status).toBe('ok');
+    expect(structured(await callRuntimeTool(
       withoutTransport(),
       'rh_work',
       { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workB, session_id: 'opaque-b' },
-    ));
-    expect(claimB.status).toBe('ok');
+    )).status).toBe('ok');
 
-    const foreignStop = structured(await callRuntimeTool(
+    // Explicit session_id is the transport binding when no MCP transport exists;
+    // it is not a durable conversation/scope authority. The exact Work plus the
+    // authenticated principal/current Runtime owns the direct mutation.
+    const rotatedStopB = structured(await callRuntimeTool(
       withoutTransport(),
       'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workB, requested_by: 'chatgpt', reason: 'foreign explicit session', session_id: 'opaque-a' },
+      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workB, requested_by: 'chatgpt', reason: 'same owner via replacement explicit transport', session_id: 'opaque-a' },
     ));
-    expect(foreignStop.status).toBe('blocked');
-    expect(foreignStop.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+    expect(rotatedStopB.status).toBe('ok');
+    expect(getWorkContract(store, workB)?.status).toBe('cancelled');
 
-    const ownStop = structured(await callRuntimeTool(
+    const rotatedStopA = structured(await callRuntimeTool(
       withoutTransport(),
       'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workB, requested_by: 'chatgpt', reason: 'own explicit session', session_id: 'opaque-b' },
+      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workA, requested_by: 'chatgpt', reason: 'same owner via another replacement explicit transport', session_id: 'opaque-b' },
     ));
-    expect(ownStop.status).toBe('ok');
+    expect(rotatedStopA.status).toBe('ok');
+    expect(getWorkContract(store, workA)?.status).toBe('cancelled');
   }, 15_000);
 
-  test('terminalization requires an explicit exact-Work claim after transport rotation', async () => {
+  test('same-Runtime direct Work authority survives transport rollover while stale Runtime remains fenced', async () => {
     const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     const workId = 'work-claim-before-stale-stop';
     createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
-    const owner = claimControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
-      workId,
-      controllerId: 'principal-a',
-      controllerType: 'chatgpt',
-      sessionId: 'transport-claimed',
-      principalId: 'principal-a',
-      controllerInstanceId: 'runtime-new',
-      leaseMs: 60_000,
-    });
+
+    const claimed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-a', 'transport-claimed', 'runtime-new'),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId },
+    ));
+    expect(claimed.status).toBe('ok');
+    expect(String(claimed.data?.controllerAuthorityId ?? '')).toStartWith('ctrl_');
+    const owner = getControllerSession(store, workId)!;
+    expect(owner.authorityDigest).toBeTruthy();
     expect(owner.claimGeneration).toBe(1);
 
     const stale = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, 'principal-a', 'transport-stale', 'runtime-old'),
       'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, requested_by: 'system', reason: 'launcher had not reached a new Controller claim' },
+      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, requested_by: 'system', reason: 'stale Runtime must not take ownership' },
     ));
     expect(stale.status).toBe('blocked');
     expect(stale.summary).toContain('WORK_CONTROLLER_INSTANCE_MISMATCH');
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('ready');
+    expect(getWorkContract(store, workId)?.status).toBe('ready');
 
     const staleFinalize = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, 'principal-a', 'transport-stale-finalize', 'runtime-old'),
@@ -775,35 +778,31 @@ describe('rh_work terminalization authority', () => {
     ));
     expect(staleFinalize.status).toBe('blocked');
     expect(staleFinalize.summary).toContain('WORK_CONTROLLER_INSTANCE_MISMATCH');
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('ready');
+    expect(getWorkContract(store, workId)?.status).toBe('ready');
 
-    const rotatedWithoutClaim = structured(await callRuntimeTool(
+    const continued = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-a', 'transport-continued', 'runtime-new'),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'continue', work_id: workId, requested_by: 'chatgpt' },
+    ));
+    expect(continued.summary).not.toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+    expect(getControllerSession(store, workId)).toMatchObject({
+      principalId: 'principal-a',
+      sessionId: 'transport-continued',
+      controllerInstanceId: 'runtime-new',
+      claimGeneration: owner.claimGeneration,
+    });
+
+    const rotatedStop = structured(await callRuntimeTool(
       ctx(fx.controllerHome, fx.repository, 'principal-a', 'transport-rotated', 'runtime-new'),
       'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, requested_by: 'chatgpt', reason: 'current owner semantic disposition' },
+      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, requested_by: 'chatgpt', reason: 'same durable owner after another transport rollover' },
     ));
-    expect(rotatedWithoutClaim.status).toBe('blocked');
-    expect(rotatedWithoutClaim.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('ready');
-
-    const claimed = structured(await callRuntimeTool(
-      ctx(fx.controllerHome, fx.repository, 'principal-a', 'transport-rotated', 'runtime-new'),
-      'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId },
-    ));
-    expect(claimed.status).toBe('ok');
-    expect(getControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.sessionId).toBe('transport-rotated');
-
-    const current = structured(await callRuntimeTool(
-      ctx(fx.controllerHome, fx.repository, 'principal-a', 'transport-rotated', 'runtime-new'),
-      'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workId, requested_by: 'chatgpt', reason: 'current owner semantic disposition' },
-    ));
-    expect(current.status).toBe('ok');
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)?.status).toBe('cancelled');
+    expect(rotatedStop.status).toBe('ok');
+    expect(getWorkContract(store, workId)?.status).toBe('cancelled');
   }, 15_000);
 
-  test('two same-principal controller scopes cannot terminally mutate each other', async () => {
+  test('same-principal same-Runtime direct Work ownership is Work-scoped, not transport-scoped', async () => {
     const fx = fixture();
     const workA = 'work-controller-scope-a';
     const workB = 'work-controller-scope-b';
@@ -821,38 +820,20 @@ describe('rh_work terminalization authority', () => {
       repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workB,
     })).status).toBe('ok');
 
-    const foreignStop = structured(await callRuntimeTool(scopeA, 'rh_work', {
-      repo_id: fx.repository.repoId, operation: 'stop', work_id: workB, requested_by: 'user', reason: 'foreign conversation directive',
+    // Direct Work ownership is selected by exact Work identity plus authenticated
+    // Controller/Runtime epoch. A transient transport/conversation is not a second
+    // semantic scope authority.
+    const stopBFromReplacementTransport = structured(await callRuntimeTool(scopeA, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'stop', work_id: workB, requested_by: 'user', reason: 'same durable owner through replacement transport',
     }));
-    expect(foreignStop.status).toBe('blocked');
-    expect(foreignStop.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+    expect(stopBFromReplacementTransport.status).toBe('ok');
 
-    const foreignFinalize = structured(await callRuntimeTool(scopeA, 'rh_work', {
-      repo_id: fx.repository.repoId, operation: 'finalize', work_id: workB, requested_by: 'chatgpt',
+    const stopAFromReplacementTransport = structured(await callRuntimeTool(scopeB, 'rh_work', {
+      repo_id: fx.repository.repoId, operation: 'stop', work_id: workA, requested_by: 'user', reason: 'same durable owner through another replacement transport',
     }));
-    expect(foreignFinalize.status).toBe('blocked');
-    expect(foreignFinalize.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workA)?.status).toBe('ready');
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workB)?.status).toBe('ready');
-
-    const ownStopB = structured(await callRuntimeTool(scopeB, 'rh_work', {
-      repo_id: fx.repository.repoId, operation: 'stop', work_id: workB, requested_by: 'user', reason: 'own conversation directive',
-    }));
-    expect(ownStopB.status).toBe('ok');
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workB)?.status).toBe('cancelled');
-
-    const foreignStopA = structured(await callRuntimeTool(scopeB, 'rh_work', {
-      repo_id: fx.repository.repoId, operation: 'stop', work_id: workA, requested_by: 'user', reason: 'foreign conversation directive',
-    }));
-    expect(foreignStopA.status).toBe('blocked');
-    expect(foreignStopA.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
-    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workA)?.status).toBe('ready');
-
-    const ownStopA = structured(await callRuntimeTool(scopeA, 'rh_work', {
-      repo_id: fx.repository.repoId, operation: 'stop', work_id: workA, requested_by: 'user', reason: 'own conversation directive',
-    }));
-    expect(ownStopA.status).toBe('ok');
+    expect(stopAFromReplacementTransport.status).toBe('ok');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workA)?.status).toBe('cancelled');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workB)?.status).toBe('cancelled');
   }, 15_000);
 
   test('Work-bound controller capability survives execution-session invalidation and transport rotation without collapsing same-principal conversations', async () => {

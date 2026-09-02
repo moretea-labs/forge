@@ -1258,18 +1258,21 @@ function currentFacadeTerminalizationAuthority(
     throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
   }
   if (ownerInstanceId !== identity.controllerInstanceId || owner.sessionId !== identity.sessionId) {
-    const relay = assertFacadeControllerRoundAuthority(ctx, store, workId, args);
-    const relayAuthorized = Boolean(relay?.authorityId?.trim());
-    const directAuthorityAuthorized = !relayAuthorized && controllerSessionAuthorityMatches(owner, identity.controllerAuthorityId);
-    if (!relayAuthorized && !directAuthorityAuthorized) {
-      if (ownerInstanceId !== identity.controllerInstanceId && !owner.authorityDigest) {
-        throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
-      }
-      throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; terminalization requires the exact Work-bound controller authority after transport rotation.`);
+    const relay = getControllerRoundRelay(store, workId);
+    if (relay) {
+      // An active ControllerRound is its own semantic authority. Transport
+      // rollover must keep presenting that round's opaque capability so another
+      // same-principal conversation cannot settle the wrong round.
+      assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+    } else if (identity.controllerAuthorityId && !controllerSessionAuthorityMatches(owner, identity.controllerAuthorityId)) {
+      // Direct Work ownership is not transport-scoped, but an explicitly
+      // supplied capability must still match rather than being silently ignored.
+      throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; explicit Work-bound controller authority does not match.`);
     }
-    // Relay and direct claims both provide Work-bound opaque authority. The
-    // capability authorizes rebinding only the execution transport; ownership
-    // generation remains fenced by ControllerSession.
+    // For direct Work ownership, the Kernel binding service is the authority for
+    // transport/runtime rebinding. Same-principal same-Runtime transport
+    // rollover preserves claimGeneration; Runtime-instance changes require proof
+    // that the requested instance is the current canonical Runtime.
     owner = bindFacadeControllerOwnership(ctx, store, workId, identity);
   }
   const reboundPrincipal = controllerSessionPrincipalId(owner);
@@ -5131,19 +5134,20 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             if (work && !['cancelled', 'completed', 'failed'].includes(work.status)) {
               const identity = authenticatedFacadeControllerIdentity(ctx, args);
               const existingOwner = getControllerSession(store, workId);
-              if (existingOwner && (existingOwner.sessionId !== identity.sessionId || (existingOwner.controllerInstanceId?.trim() || '') !== identity.controllerInstanceId)) {
-                const relay = getControllerRoundRelay(store, workId);
-                if (!relay?.authorityId?.trim() && existingOwner.authorityDigest && !controllerSessionAuthorityMatches(existingOwner, identity.controllerAuthorityId)) {
-                  throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; continue requires the exact Work-bound controller authority after transport rotation.`);
-                }
+              const relay = getControllerRoundRelay(store, workId);
+              if (
+                existingOwner
+                && !relay
+                && identity.controllerAuthorityId
+                && !controllerSessionAuthorityMatches(existingOwner, identity.controllerAuthorityId)
+              ) {
+                throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; explicit Work-bound controller authority does not match.`);
               }
-              resumedControllerSession = resumeControllerSession(store, {
-                workId,
-                controllerId: identity.controllerId,
-                controllerType: identity.controllerType,
-                sessionId: identity.sessionId,
-                principalId: identity.principalId,
-                controllerInstanceId: identity.controllerInstanceId,
+              // Continue uses the same Kernel rebind authority as terminalization.
+              // MCP transport identity is replaceable; principal/controller and
+              // canonical Runtime ownership remain fenced by the ControllerSession.
+              resumedControllerSession = bindFacadeControllerOwnership(ctx, store, workId, identity, {
+                allowClaimIfMissing: true,
                 leaseMs: 3_600_000,
               });
               rebindRepositoryWorkHandleControllerIdentity({
