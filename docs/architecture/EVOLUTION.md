@@ -40,3 +40,10 @@ Earlier V4–V8 Controller, Local Bridge, Supervisor, Issue/Task/Job and recover
 - Made provider-wide native tab inventory optional for compatibility with the stable Desktop Operator broker: absence of inventory may reduce cross-tab reuse, but must never permit guessing or adopting an unrelated user tab.
 - Kept foreground/physical input explicit. Browser background actions never silently activate a tab; Desktop Operator foreground/physical actions remain a separate verified capability boundary.
 - Added current-source live acceptance coverage for Chrome/Vivaldi native lifecycle, background foreground-preservation, URL drift/rebind, replacement postconditions, internal resources, cleanup, and attributable latency reporting. Environment-owned browser permission gaps remain typed external blockers rather than reasons to weaken the runtime contract.
+
+## 2026-09-02 — Kernel V2 governance moves from textual fences to structural authority
+
+- Defined Kernel V2 as a domain/authority migration toward a modular monolith with explicit Kernel, protocol, plugin-runtime, adapter, and composition-root dependency direction.
+- Made compatibility a shrinking migration debt with a replacement owner, bounded consumers, and an objective removal condition rather than a permanent parallel layer.
+- Established an architecture-enforcement hierarchy that prefers compiler/type/package and AST/dependency-graph proofs over raw string/regex assertions or source-line-count gates.
+- Changed the migration cadence to batch facts, implement coherent slices, review architecture centrally, run focused checks at slice boundaries, and reserve broad multi-review/validation plus Runtime baseline activation for integrated candidate boundaries.
