@@ -22,7 +22,15 @@ describe('Desktop Operator trusted external registration', () => {
       'desktop.capture',
       'desktop.clipboard',
       'desktop.batch',
+      'computer.observe.v1',
+      'computer.input.v1',
+      'computer.capture.v1',
+      'computer.browser_automation.v1',
     ]);
+    expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.observe.v1')?.actions).toEqual(['desktop_observe']);
+    expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.input.v1')?.actions).toEqual(['desktop_press', 'desktop_type_text', 'desktop_key']);
+    expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.capture.v1')?.actions).toEqual(['desktop_screenshot']);
+    expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.browser_automation.v1')?.actions).toEqual([]);
     expect(input.capabilities.find((capability) => capability.capabilityId === 'desktop.interact')?.actions).toEqual([
       'desktop_press',
       'desktop_type_text',
