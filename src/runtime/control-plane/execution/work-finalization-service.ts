@@ -25,7 +25,7 @@ import {
   latestImplementationReview,
   normalizeImplementationReviewChangedPaths,
   type ImplementationReviewCandidateIdentity,
-} from '../../../../packages/kernel/work/domain/implementation-review';
+} from '../../../../packages/kernel/work/api/index';
 import { effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from './verification-evidence';
 import { completeWorkWithReceipt } from './work-completion-authority';
 import { markWorkHandleFailed, readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle } from './work-handle-store';

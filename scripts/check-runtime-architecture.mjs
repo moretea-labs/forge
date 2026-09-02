@@ -509,6 +509,22 @@ for (const path of sourceFiles('src')) {
 for (const path of sourceFiles('src')) {
   forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*controller-session-store['"]/, 'production source must consume packages/kernel/controller instead of retired ControllerSession facade authority');
 }
+const B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS = new Set([
+  'src/runtime/control-plane/facade/controller-session-store.ts',
+  'src/runtime/control-plane/facade/controller-round-relay.ts',
+  'src/runtime/control-plane/facade/work-contract-store.ts',
+  'src/runtime/control-plane/facade/work-state-machine.ts',
+  'src/runtime/control-plane/facade/work-implementation-review.ts',
+  'src/runtime/control-plane/facade/types.ts',
+  'src/runtime/workflow/schedules/settlement.ts',
+  'src/runtime/workflow/schedules/types.ts',
+]);
+for (const path of sourceFiles('src')) {
+  if (B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS.has(path)) continue;
+  forbid(path, /packages\/kernel\/[^'"/]+\/(?:domain|application|infrastructure)\//, 'active legacy Runtime code must consume Kernel public api/index surfaces; direct internals are compatibility-boundary-only');
+}
+requireText('src/runtime/control-plane/facade/types.ts', 'packages/kernel/work/domain/types');
+requireText('src/runtime/control-plane/facade/types.ts', 'packages/kernel/controller/domain/types');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'completeWorkWithReceipt(');
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'resetFinalizationStagesForRequest');
 forbid(

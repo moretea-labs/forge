@@ -47,7 +47,7 @@ import {
   type ImplementationReviewCandidateIdentity,
   type WorkImplementationReviewFinding,
   type WorkImplementationReviewRecord,
-} from '../../../../packages/kernel/work/domain/implementation-review';
+} from '../../../../packages/kernel/work/api/index';
 import { buildFacadeResult } from './facade-result';
 import { validateSuggestedNextActions } from './suggested-actions';
 import { buildWorkContinuationSnapshot } from './work-continuation';

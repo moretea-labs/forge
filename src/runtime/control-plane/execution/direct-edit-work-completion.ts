@@ -20,7 +20,7 @@ import {
   latestImplementationReview,
   normalizeImplementationReviewChangedPaths,
   type ImplementationReviewCandidateIdentity,
-} from '../../../../packages/kernel/work/domain/implementation-review';
+} from '../../../../packages/kernel/work/api/index';
 
 export interface DirectEditWorkCompletionReconciliation {
   completedWorkIds: string[];
