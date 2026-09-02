@@ -1262,6 +1262,10 @@ forbid('adapters/mcp/tunnels/openai-secure-tunnel.ts', /\bidentityMatches\b/, 't
 requireText('packages/protocols/computer/contract.ts', 'COMPUTER_BROWSER_AUTOMATION_CAPABILITY');
 requireText('packages/protocols/computer/contract.ts', 'ComputerRuntimeProviderCapabilityId');
 requireText('packages/plugin-runtime/computer/provider.ts', 'ComputerRuntimeProviderCapabilityId');
+requireText('packages/plugin-runtime/computer/provider-registry.ts', 'COMPUTER_PROVIDER_AMBIGUOUS');
+requireText('packages/plugin-runtime/computer/provider-registry.ts', 'COMPUTER_PROVIDER_DUPLICATE_ID');
+forbid('packages/plugin-runtime/computer/provider-registry.ts', /throw new Error\(/, 'Computer provider resolution must expose typed provider errors rather than raw order-dependent failures');
+
 requireText('packages/protocols/computer/contract.ts', 'COMPUTER_CAPABILITY_PROTOCOL_VERSION');
 requireText('packages/protocols/computer/contract.ts', 'COMPUTER_CAPABILITY_EXECUTION_METHOD');
 requireText('packages/protocols/computer/contract.ts', 'export interface ComputerCapabilityAdvertisement');
