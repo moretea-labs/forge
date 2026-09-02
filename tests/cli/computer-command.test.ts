@@ -31,7 +31,7 @@ function registerProvider(home: string, options: { version?: string; enabled?: b
     socketPath: join(home, 'missing-desktop-operator.sock'),
     launchAgentLabel: 'com.moretea.forge.desktop-operator',
     expectedProgramContains: 'Forge Desktop Operator.app',
-    pluginVersion: options.version ?? '0.3.1',
+    pluginVersion: options.version ?? '0.3.2',
     protocolVersion: '1.0',
     enabled: options.enabled,
   }));
@@ -49,7 +49,7 @@ describe('Computer product facade', () => {
       provider: {
         implementation: 'Forge Desktop Operator',
         pluginId: 'desktop_operator',
-        catalogVersion: '0.3.1',
+        catalogVersion: '0.3.2',
         enabled: false,
         releaseIndependent: true,
         health: { state: 'not_installed', ready: false, probed: false },
@@ -68,7 +68,7 @@ describe('Computer product facade', () => {
       implementation: 'Forge Desktop Operator',
       pluginId: 'desktop_operator',
       installedVersion: '0.2.3',
-      catalogVersion: '0.3.1',
+      catalogVersion: '0.3.2',
       protocolVersion: '1.0',
       enabled: false,
       updateAvailable: true,
