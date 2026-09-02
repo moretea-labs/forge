@@ -368,6 +368,47 @@ export function transitionWorkHandle(
   });
 }
 
+export interface WorkHandleSuccessorAdoption {
+  candidateHead: string;
+  targetHead: string;
+}
+
+/**
+ * Explicit WorkHandle authority transition for a conflict-repaired managed
+ * candidate. Git lineage/scope/cleanliness must be proven by the finalizer
+ * before this transition is called. Adopting a rewritten candidate never
+ * transfers validation implicitly: the new source identity must obtain exact
+ * verification/review authority before delivery can resume.
+ */
+export function adoptWorkHandleSuccessorCandidate(
+  controllerHome: string,
+  handle: WorkHandleState,
+  adoption: WorkHandleSuccessorAdoption,
+): WorkHandleState {
+  const candidateHead = adoption.candidateHead.trim();
+  const targetHead = adoption.targetHead.trim();
+  if (!handle.managedWorktree) throw new Error('WORK_SUCCESSOR_ADOPTION_MANAGED_CHECKOUT_REQUIRED');
+  if (!candidateHead || !targetHead) throw new Error('WORK_SUCCESSOR_ADOPTION_REVISION_REQUIRED');
+  if (candidateHead === handle.expectedHead) throw new Error('WORK_SUCCESSOR_ADOPTION_NO_CHANGE');
+  return transitionWorkHandle(controllerHome, handle, 'validating', {
+    deliveryBaseCommit: targetHead,
+    expectedHead: candidateHead,
+    failureReason: undefined,
+    finalization: {
+      ...handle.finalization,
+      validation: 'pending',
+      commit: 'done',
+      merge: 'pending',
+      branchCleanup: 'pending',
+      worktreeCleanup: 'pending',
+      lastError: undefined,
+    },
+    validationRun: undefined,
+    validatedInputFingerprint: undefined,
+    cleanupReceipt: undefined,
+  });
+}
+
 export function markWorkHandleFailed(controllerHome: string, handle: WorkHandleState, reason: string): WorkHandleState {
   return writeWorkHandle(controllerHome, {
     ...handle,

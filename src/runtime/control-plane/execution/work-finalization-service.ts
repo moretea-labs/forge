@@ -28,7 +28,7 @@ import {
 } from '../../../../packages/kernel/work/api/index';
 import { effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from './verification-evidence';
 import { completeWorkWithReceipt } from './work-completion-authority';
-import { markWorkHandleFailed, readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle } from './work-handle-store';
+import { adoptWorkHandleSuccessorCandidate, markWorkHandleFailed, readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle } from './work-handle-store';
 import type { WorkFinalizationStages, WorkHandleState } from './work-handle-store';
 import { findWorkPathScopeViolation } from './work-path-scope';
 import type { WorkRemoteDeliveryReceipt } from './work-remote-delivery';
@@ -605,6 +605,102 @@ export function inspectDirectCanonicalTargetAdvanceReconciliation(input: {
   };
 }
 
+export interface ManagedWorkSuccessorAdoptionInspection {
+  adoptable: boolean;
+  reason:
+    | 'not_managed_worktree'
+    | 'path_mismatch'
+    | 'branch_mismatch'
+    | 'workspace_dirty'
+    | 'revision_unavailable'
+    | 'no_head_change'
+    | 'descendant_progress'
+    | 'target_not_advanced'
+    | 'target_history_rewritten'
+    | 'target_not_candidate_ancestor'
+    | 'non_linear_candidate'
+    | 'scope_violation'
+    | 'adoptable';
+  previousHead?: string;
+  previousDeliveryBase?: string;
+  candidateHead?: string;
+  targetHead?: string;
+  candidateChangedPaths: string[];
+  detail?: string;
+}
+
+/**
+ * Inspect a manually conflict-repaired managed Work candidate before changing
+ * WorkHandle authority. This is intentionally narrower than ordinary
+ * descendant progress: canonical target must have advanced linearly from the
+ * recorded delivery base, and the rewritten clean candidate must contain that
+ * exact target with only Work-scoped target-relative changes.
+ */
+export function inspectManagedWorkSuccessorAdoption(input: {
+  root: string;
+  worktreePath: string;
+  managedWorktree: boolean;
+  workBranch: string;
+  targetBranch: string;
+  expectedRevision?: string;
+  deliveryBaseRevision?: string;
+  status: ReturnType<typeof repositoryGitStatus>;
+  scope?: { allowedPaths: string[]; forbiddenPaths: string[] };
+}): ManagedWorkSuccessorAdoptionInspection {
+  const empty = (reason: ManagedWorkSuccessorAdoptionInspection['reason'], detail?: string): ManagedWorkSuccessorAdoptionInspection => ({
+    adoptable: false,
+    reason,
+    candidateChangedPaths: [],
+    ...(detail ? { detail } : {}),
+  });
+  if (!input.managedWorktree) return empty('not_managed_worktree');
+  try {
+    if (realpathSync(input.root) !== realpathSync(input.worktreePath)) return empty('path_mismatch');
+  } catch {
+    return empty('path_mismatch');
+  }
+  const branch = spawnSync('git', ['-C', input.root, 'branch', '--show-current'], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  if (branch.status !== 0 || String(branch.stdout ?? '').trim() !== input.workBranch) return empty('branch_mismatch');
+  if (!input.status.clean) return empty('workspace_dirty');
+
+  const previousHead = input.expectedRevision ? gitRevision(input.root, input.expectedRevision) : undefined;
+  const previousDeliveryBase = input.deliveryBaseRevision ? gitRevision(input.root, input.deliveryBaseRevision) : undefined;
+  const candidateHead = input.status.head ? gitRevision(input.root, input.status.head) : undefined;
+  const targetHead = gitRevision(input.root, input.targetBranch);
+  if (!previousHead || !previousDeliveryBase || !candidateHead || !targetHead) return empty('revision_unavailable');
+  const base = { previousHead, previousDeliveryBase, candidateHead, targetHead, candidateChangedPaths: [] as string[] };
+  if (candidateHead === previousHead) return { ...base, adoptable: false, reason: 'no_head_change' };
+  if (gitIsAncestor(input.root, previousHead, candidateHead)) return { ...base, adoptable: false, reason: 'descendant_progress' };
+  if (targetHead === previousDeliveryBase) return { ...base, adoptable: false, reason: 'target_not_advanced' };
+  if (!gitIsAncestor(input.root, previousDeliveryBase, targetHead)) {
+    return { ...base, adoptable: false, reason: 'target_history_rewritten' };
+  }
+  if (!gitIsAncestor(input.root, targetHead, candidateHead)) {
+    return { ...base, adoptable: false, reason: 'target_not_candidate_ancestor' };
+  }
+  const mergeCommits = targetAdvanceLinearMergeCommits(input.root, targetHead, candidateHead);
+  if (mergeCommits.length > 0) {
+    return { ...base, adoptable: false, reason: 'non_linear_candidate', detail: mergeCommits.slice(0, 8).join(', ') };
+  }
+  const candidateChangedPaths = gitChangedPaths(input.root, targetHead, candidateHead);
+  if (!input.scope) {
+    return { ...base, candidateChangedPaths, adoptable: false, reason: 'scope_violation', detail: 'WorkContract scope unavailable' };
+  }
+  const scopeViolation = findWorkPathScopeViolation(input.scope, candidateChangedPaths);
+  if (scopeViolation) {
+    return {
+      ...base,
+      candidateChangedPaths,
+      adoptable: false,
+      reason: 'scope_violation',
+      detail: `${scopeViolation.kind}:${scopeViolation.path}`,
+    };
+  }
+  return { ...base, candidateChangedPaths, adoptable: true, reason: 'adoptable' };
+}
+
 export function completionReceiptChangedPaths(repoRoot: string, baseRevision: string, deliveryRevision: string): string[] {
   const result = spawnSync('git', ['-C', repoRoot, 'diff', '--name-only', `${baseRevision}..${deliveryRevision}`], {
     encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
@@ -1136,6 +1232,63 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
       command: 'work_finalize',
     });
   if (gitAuthorization.decision !== 'allow') return { authorization: gitAuthorization, work: compactHandle(current), stages: current.finalization };
+
+  // A conflict-repaired managed candidate rewrites commit identity, so the
+  // normal descendant-HEAD fence cannot authorize it. Re-adopt only an exact,
+  // clean, scope-contained candidate that has reconciled the linearly advanced
+  // target. The transition returns before delivery, so the successor must gain
+  // current-source verification/review authority before merge can resume.
+  if (wants.merge && current.managedWorktree && current.expectedHead) {
+    const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
+    const worktree = selectRepositoryCheckout(repository, current.checkoutId, { allowArchived: true });
+    const target = selectWorkFinalizationTarget(repository, current);
+    const targetBranch = explicitTargetBranch ?? target.defaultBranch ?? 'main';
+    const contract = contractFor(ctx, current);
+    const adoption = inspectManagedWorkSuccessorAdoption({
+      root: worktree.canonicalRoot,
+      worktreePath: current.worktreePath,
+      managedWorktree: current.managedWorktree,
+      workBranch: current.branch,
+      targetBranch,
+      expectedRevision: current.expectedHead,
+      deliveryBaseRevision: workDeliveryBaseRevision(current),
+      status: repositoryGitStatus(worktree),
+      scope: contract ? { allowedPaths: contract.allowedPaths, forbiddenPaths: contract.forbiddenPaths } : undefined,
+    });
+    if (adoption.adoptable && adoption.candidateHead && adoption.targetHead) {
+      const previousHead = current.expectedHead;
+      current = transact('managed-successor-adopted', (fresh) => adoptWorkHandleSuccessorCandidate(
+        ctx.controllerHome,
+        fresh,
+        { candidateHead: adoption.candidateHead!, targetHead: adoption.targetHead! },
+      ));
+      if (contract) {
+        transitionWorkContractPhase(
+          { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
+          contract.workId,
+          {
+            phase: 'verification',
+            status: 'running',
+            state: 'active',
+            summary: `Conflict-repaired successor ${adoption.candidateHead} adopted after canonical ${targetBranch} advanced to ${adoption.targetHead}; current-source verification is required before delivery resumes.`,
+          },
+        );
+      }
+      appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
+        title: 'managed Work successor candidate adopted',
+        summary: `WorkHandle authority moved ${previousHead} -> ${adoption.candidateHead} only after proving clean exact checkout ownership, canonical target ancestry at ${adoption.targetHead}, linear candidate history, and ${adoption.candidateChangedPaths.length} scope-contained target-relative path(s). Validation/delivery authority was re-armed; no canonical target mutation occurred.`,
+        detailLevel: 'summary',
+      });
+      markWorkValidationPending(ctx.controllerHome, current);
+      return {
+        work: compactHandle(current),
+        stages: current.finalization,
+        completed: false,
+        successorAdopted: true,
+        continuation: `WORK_SUCCESSOR_REVALIDATION_REQUIRED: successor ${adoption.candidateHead} is now the exact Work candidate after target ${adoption.targetHead}; verify/review this source revision before retrying delivery`,
+      };
+    }
+  }
 
   // A direct Work can share canonical main with another Work's preserved dirty
   // delta. If main advanced after this Work was prepared, keep the global
