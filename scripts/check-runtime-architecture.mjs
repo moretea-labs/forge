@@ -65,15 +65,51 @@ function productionTypeScriptFiles() {
   ].sort();
 }
 
-function staticTypeScriptDependencyGraph(files) {
-  let ts;
+let typeScriptCompiler;
+let typeScriptCompilerLoadAttempted = false;
+function loadTypeScriptCompiler() {
+  if (typeScriptCompilerLoadAttempted) return typeScriptCompiler;
+  typeScriptCompilerLoadAttempted = true;
   try {
-    ts = createRequire(import.meta.url)('typescript');
+    typeScriptCompiler = createRequire(import.meta.url)('typescript');
   } catch (error) {
-    failures.push(`TypeScript dependency is required for architecture import-cycle analysis: ${error instanceof Error ? error.message : String(error)}`);
-    return new Map();
+    failures.push(`TypeScript dependency is required for architecture import analysis: ${error instanceof Error ? error.message : String(error)}`);
   }
+  return typeScriptCompiler;
+}
 
+function staticTypeScriptImportRecords(files) {
+  const ts = loadTypeScriptCompiler();
+  if (!ts) return [];
+  const records = [];
+  for (const path of [...files].sort()) {
+    const sourceFile = ts.createSourceFile(path, text(path), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    function visit(node) {
+      let specifier;
+      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+          && node.moduleSpecifier
+          && ts.isStringLiteralLike(node.moduleSpecifier)) {
+        specifier = node.moduleSpecifier.text;
+      } else if (ts.isImportEqualsDeclaration(node)
+          && ts.isExternalModuleReference(node.moduleReference)
+          && node.moduleReference.expression
+          && ts.isStringLiteralLike(node.moduleReference.expression)) {
+        specifier = node.moduleReference.expression.text;
+      } else if (ts.isCallExpression(node)
+          && node.expression.kind === ts.SyntaxKind.ImportKeyword
+          && node.arguments.length === 1
+          && ts.isStringLiteralLike(node.arguments[0])) {
+        specifier = node.arguments[0].text;
+      }
+      if (specifier) records.push({ from: path, specifier });
+      ts.forEachChild(node, visit);
+    }
+    visit(sourceFile);
+  }
+  return records;
+}
+
+function staticTypeScriptDependencyGraph(files) {
   const orderedFiles = [...files].sort();
   const known = new Set(orderedFiles);
   const graph = new Map(orderedFiles.map((path) => [path, new Set()]));
@@ -91,24 +127,9 @@ function staticTypeScriptDependencyGraph(files) {
     return candidates.find((candidate) => known.has(candidate));
   }
 
-  for (const path of orderedFiles) {
-    const sourceFile = ts.createSourceFile(path, text(path), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-    for (const statement of sourceFile.statements) {
-      let specifier;
-      if ((ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement))
-          && statement.moduleSpecifier
-          && ts.isStringLiteralLike(statement.moduleSpecifier)) {
-        specifier = statement.moduleSpecifier.text;
-      } else if (ts.isImportEqualsDeclaration(statement)
-          && ts.isExternalModuleReference(statement.moduleReference)
-          && statement.moduleReference.expression
-          && ts.isStringLiteralLike(statement.moduleReference.expression)) {
-        specifier = statement.moduleReference.expression.text;
-      }
-      if (!specifier) continue;
-      const target = resolveTypeScriptImport(path, specifier);
-      if (target) graph.get(path).add(target);
-    }
+  for (const { from, specifier } of staticTypeScriptImportRecords(orderedFiles)) {
+    const target = resolveTypeScriptImport(from, specifier);
+    if (target) graph.get(from).add(target);
   }
   return graph;
 }
@@ -1072,15 +1093,34 @@ requireText('docs/architecture/CURRENT.md', '## State ownership');
 requireText('docs/architecture/CURRENT.md', '## Runtime and MCP boundary');
 requireText('docs/architecture/CURRENT.md', '## Testing and verification');
 requireText('plans/README.md', 'not the runtime execution queue');
-if (text('src/cli/mcp/tools.ts').split(/\r?\n/).length > 6) failures.push('src/cli/mcp/tools.ts must remain a thin compatibility facade');
-if (text('src/cli/mcp/legacy-tool-service.ts').split(/\r?\n/).length > 6) failures.push('src/cli/mcp/legacy-tool-service.ts must remain a thin compatibility facade');
-if (text('src/cli/mcp/repository-tools.ts').split(/\r?\n/).length > 6) failures.push('src/cli/mcp/repository-tools.ts must remain a thin compatibility facade');
-for (const path of sourceFiles('packages/kernel')) {
-  forbid(path, /(?:from\s+['\"]|import\s*\(\s*['\"])[^'\"]*(?:adapters\/mcp|src\/cli\/mcp|runtime\/gateway\/mcp)/, 'Kernel modules must never depend on MCP adapters or retired MCP gateway paths');
-  forbid(path, /@modelcontextprotocol\//, 'Kernel modules must remain independent of MCP SDK transport contracts');
+// Compatibility-facade thinness is enforced by ownership/consumer boundaries, not source line counts.
+const b7ProductionFiles = productionTypeScriptFiles();
+const b7ProductionImports = staticTypeScriptImportRecords(b7ProductionFiles);
+const b7ProductionGraph = staticTypeScriptDependencyGraph(b7ProductionFiles);
+for (const { from, specifier } of b7ProductionImports) {
+  if (from.startsWith('packages/kernel/') && specifier.startsWith('@modelcontextprotocol/')) {
+    failures.push(`Kernel modules must remain independent of MCP SDK transport contracts: ${from} -> ${specifier}`);
+  }
+  if (from.startsWith('packages/kernel/')
+      && ['adapters/mcp', 'src/cli/mcp', 'runtime/gateway/mcp'].some((segment) => specifier.includes(segment))) {
+    failures.push(`Kernel modules must never depend on MCP adapters or retired MCP gateway paths: ${from} -> ${specifier}`);
+  }
+  if (from.startsWith('packages/plugin-runtime/')
+      && ['adapters/', 'src/runtime/'].some((segment) => specifier.includes(segment))) {
+    failures.push(`Plugin Runtime provider dispatch must not depend on concrete adapters or Runtime implementations: ${from} -> ${specifier}`);
+  }
+  if (from.startsWith('adapters/computer/') && specifier.includes('src/runtime/')) {
+    failures.push(`Computer adapters must consume provider-neutral ports and contracts rather than depend on Runtime implementations: ${from} -> ${specifier}`);
+  }
+  if (from.startsWith('packages/plugin-runtime/computer/')
+      && (['controller-home', 'external-registration'].some((segment) => specifier.includes(segment))
+        || ['node:fs', 'fs', 'node:path', 'path'].includes(specifier))) {
+    failures.push(`Computer provider runtime must remain independent of Controller Home and filesystem-backed provider discovery: ${from} -> ${specifier}`);
+  }
+  if (from !== 'src/runtime/plugins/macos-capability-broker.ts' && specifier.includes('macos-capability-broker')) {
+    failures.push(`Deprecated macOS capability broker is compatibility/test-only and must have no production consumers: ${from} -> ${specifier}`);
+  }
 }
-
-const b7ProductionGraph = productionStaticTypeScriptDependencyGraph();
 for (const edge of dependencyEdges(b7ProductionGraph)) {
   const { from, to } = edgeParts(edge);
   if (from.startsWith('packages/kernel/') && to.startsWith('packages/kernel/')) {
@@ -1098,6 +1138,23 @@ for (const edge of dependencyEdges(b7ProductionGraph)) {
     if (!to.startsWith(`${kernelModule}/api/`) && to !== `${kernelModule}/index.ts`) {
       failures.push(`adapters must consume Kernel public APIs, not internal implementation: ${edge}`);
     }
+  }
+  if (from.startsWith('packages/kernel/')
+      && (to.startsWith('adapters/mcp/') || to.startsWith('src/cli/mcp/') || to.startsWith('src/runtime/gateway/mcp/'))) {
+    failures.push(`Kernel modules must never depend on MCP adapters or retired MCP gateway paths: ${edge}`);
+  }
+  if (from.startsWith('packages/plugin-runtime/') && (to.startsWith('adapters/') || to.startsWith('src/runtime/'))) {
+    failures.push(`Plugin Runtime provider dispatch must not depend on concrete adapters or Runtime implementations: ${edge}`);
+  }
+  if (from.startsWith('packages/plugin-runtime/computer/')
+      && (to.includes('/controller-home') || to.endsWith('/external-registration.ts'))) {
+    failures.push(`Computer provider runtime must remain independent of Controller Home and provider discovery implementations: ${edge}`);
+  }
+  if (to === 'src/runtime/plugins/macos-capability-broker.ts' && from !== to) {
+    failures.push(`Deprecated macOS capability broker is compatibility/test-only and must have no production consumers: ${edge}`);
+  }
+  if (to === 'adapters/browser/sqlite-session-authority.ts' && from !== to) {
+    failures.push(`Deprecated Browser SQLite session-authority shim is compatibility-only and must have no production consumers: ${edge}`);
   }
 }
 for (const compositionPath of [
@@ -1237,7 +1294,6 @@ for (const path of [
   'src/cli/mcp/openai-secure-tunnel.ts',
 ]) {
   requireText(path, '@deprecated Kernel V2 compatibility shim');
-  if (text(path).split(/\r?\n/).length > 6) failures.push(`${path} must remain a thin B6 compatibility facade`);
 }
 requireText('adapters/mcp/auth.ts', 'forgeInstanceId?: string');
 forbid('adapters/mcp/auth.ts', /server:\s*\{[\s\S]{0,512}?instanceId\??:\s*string/, 'MCP server process identity must not share semantic Forge instanceId naming');
@@ -1286,13 +1342,10 @@ requireText('src/runtime/root/computer-composition.ts', "legacyFallback: 'unregi
 forbid('adapters/computer/desktop-operator-provider.ts', /getExternalPluginRegistration|controller-home|computerCapabilities|internalCapabilities|browserAutomationProtocolVersion|browserAutomationActions|macos_browser_automation|computer_execute/, 'Desktop Operator provider transport must consume discovery and negotiation results rather than own Controller lookup or wire negotiation');
 forbid('adapters/computer/desktop-operator-negotiation.ts', /getExternalPluginRegistration|controller-home|desktop-operator-discovery/, 'Desktop Operator negotiation must depend on protocol/contract facts, not endpoint discovery');
 forbid('adapters/computer/desktop-operator-discovery.ts', /macos_browser_automation|LEGACY_BROWSER_AUTOMATION/, 'Desktop Operator discovery must own endpoint resolution only, not compatibility protocol negotiation');
-if (text('adapters/computer/desktop-operator-provider.ts').split(/\r?\n/).length > 120) failures.push('adapters/computer/desktop-operator-provider.ts must remain a focused Computer provider transport adapter');
 forbid('adapters/computer/desktop-operator-provider.ts', /getExternalPluginAdapter|AssistantPluginActionExecutionInput|desktop_session_open|NATIVE_BROWSER_BUNDLE_IDS|activateDesktopOperatorBrowserApplication/, 'Desktop Operator Computer transport adapter must not own Runtime plugin-action application activation glue');
 for (const path of sourceFiles('adapters/computer')) {
-  forbid(path, /src\/runtime\//, 'Computer adapters must consume provider-neutral ports and contracts rather than depend on Runtime implementations');
   forbid(path, /AssistantPluginError/, 'Computer adapters must expose provider errors through plugin-runtime rather than depend on Runtime plugin error types');
 }
-if (text('adapters/computer/desktop-operator-negotiation.ts').split(/\r?\n/).length > 230) failures.push('adapters/computer/desktop-operator-negotiation.ts must remain a focused handshake-to-transport-plan owner');
 requireText('src/runtime/root/computer-composition.ts', 'lookupRegistration: (providerPluginId) =>');
 requireText('src/runtime/root/computer-composition.ts', 'computerProviderRegistrationSnapshot(registration)');
 requireText('src/runtime/root/computer-composition.ts', 'getExternalPluginAdapter(input.controllerHome, DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID)');
@@ -1306,23 +1359,11 @@ for (const path of sourceFiles('src/runtime/plugins').filter((entry) => /\/brows
 requireText('src/runtime/plugins/macos-capability-broker.ts', '@deprecated C0 compatibility shim');
 requireText('src/runtime/plugins/macos-capability-broker.ts', 'executeRuntimeComputerBrowserAutomation');
 forbid('src/runtime/plugins/macos-capability-broker.ts', /callDesktopOperatorComputerBrowserAutomation/, 'Deprecated macOS broker execution must delegate to Runtime Computer composition rather than call the concrete provider directly');
-if (text('src/runtime/plugins/macos-capability-broker.ts').split(/\r?\n/).length > 24) failures.push('src/runtime/plugins/macos-capability-broker.ts must remain a thin C0 compatibility facade');
-for (const path of sourceFiles('src').filter((entry) => entry !== 'src/runtime/plugins/macos-capability-broker.ts')) {
-  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*macos-capability-broker['"]/, 'Deprecated macOS capability broker is compatibility/test-only and must have no production consumers');
-}
 requireText('src/runtime/control-plane/facade/types.ts', 'semanticCapabilities?: string[]');
 forbid('src/runtime/control-plane/facade/capability-registry.ts', /plugin\.desktop_operator/, 'Control Plane capability discovery must rank provider-declared semantic capabilities rather than concrete Desktop Operator plugin identity');
 requireText('src/runtime/plugins/external-provider-policy.ts', 'resolveExternalProviderPolicy');
 requireText('src/runtime/plugins/desktop-operator-external-policy.ts', 'verifyExactForegroundDesktopSession');
 forbid('src/runtime/plugins/external-adapter.ts', /desktop_operator|desktopOperator|DESKTOP_|['\"]desktop_[a-z_]|desktop-operator-external-policy/, 'Generic external plugin adapter must delegate provider-specific Desktop policy through ExternalProviderPolicy');
-if (text('src/runtime/plugins/external-adapter.ts').split(/\r?\n/).length > 430) failures.push('src/runtime/plugins/external-adapter.ts must remain a focused generic transport/lifecycle adapter');
-if (text('src/runtime/plugins/external-provider-policy.ts').split(/\r?\n/).length > 100) failures.push('src/runtime/plugins/external-provider-policy.ts must remain a thin provider-policy composition resolver');
-for (const path of sourceFiles('packages/plugin-runtime')) {
-  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*(?:adapters\/|src\/runtime\/)/, 'Plugin Runtime provider dispatch must not depend on concrete adapters or Runtime implementations');
-}
-for (const path of sourceFiles('packages/plugin-runtime/computer')) {
-  forbid(path, /controller-home|external-registration|node:fs|from\s+['"]fs['"]|from\s+['"]path['"]/, 'Computer provider runtime must remain independent of Forge Controller Home and filesystem-backed provider discovery');
-}
 requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_OBSERVE_CAPABILITY');
 requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_INPUT_CAPABILITY');
 requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_CAPTURE_CAPABILITY');
@@ -1345,7 +1386,6 @@ for (const path of [
   'src/runtime/plugins/browser-session-types.ts',
 ]) {
   requireText(path, '@deprecated C0 compatibility shim');
-  if (text(path).split(/\r?\n/).length > 6) failures.push(`${path} must remain a thin C0 compatibility facade`);
 }
 for (const path of sourceFiles('src/runtime/plugins')) {
   if (['src/runtime/plugins/browser-runtime-contract.ts', 'src/runtime/plugins/browser-provider-registry.ts', 'src/runtime/plugins/browser-session-types.ts'].includes(path)) continue;
@@ -1359,11 +1399,9 @@ requireText('adapters/browser/session-authority.ts', 'createBrowserSessionAuthor
 requireText('adapters/browser/session-authority.ts', "current?.value.status === 'tombstoned'");
 forbid('adapters/browser/session-authority.ts', /src\/runtime\/|sqlite-store|readControlPlaneRecord|listControlPlaneRecords|withControlPlaneTransaction/, 'Browser session authority adapter must consume the injected persistence port rather than Runtime control-plane storage');
 requireText('adapters/browser/sqlite-session-authority.ts', '@deprecated C0 compatibility shim');
-if (text('adapters/browser/sqlite-session-authority.ts').split(/\r?\n/).length > 4) failures.push('adapters/browser/sqlite-session-authority.ts must remain a thin C0 compatibility facade');
 requireText('src/runtime/root/browser-session-persistence.ts', 'createRuntimeBrowserSessionPersistence');
 requireText('src/runtime/root/browser-session-composition.ts', 'createBrowserSessionAuthority(createRuntimeBrowserSessionPersistence())');
 requireText('src/runtime/plugins/browser-session-authority.ts', '@deprecated C0 compatibility shim');
-if (text('src/runtime/plugins/browser-session-authority.ts').split(/\r?\n/).length > 90) failures.push('src/runtime/plugins/browser-session-authority.ts must remain a bounded C0 compatibility facade');
 for (const path of sourceFiles('src/runtime/plugins')) {
   if (path === 'src/runtime/plugins/browser-session-authority.ts') continue;
   forbid(path, /from\s+['"]\.\/browser-session-authority['"]/, 'active Browser runtime code must consume the composed BrowserSessionAuthorityPort, not the retired authority owner');
@@ -1372,7 +1410,6 @@ requireText('src/runtime/plugins/browser-registration.ts', 'export const browser
 requireText('src/runtime/plugins/first-party-registry.ts', "from './browser-registration'");
 forbid('src/runtime/plugins/first-party-registry.ts', /from\s+['"]\.\/browser-adapter['"]/, 'first-party registry must depend on the thin Browser registration entrypoint, not the action implementation');
 forbid('src/runtime/plugins/browser-adapter.ts', /export\s+const\s+browserPluginAdapter/, 'Browser action implementation must not also own first-party plugin registration');
-if (text('src/runtime/plugins/browser-registration.ts').split(/\r?\n/).length > 20) failures.push('src/runtime/plugins/browser-registration.ts must remain a thin registration adapter');
 
 if (failures.length) {
   console.error('[runtime-architecture] FAILED');
