@@ -1265,7 +1265,9 @@ requireText('packages/plugin-runtime/computer/provider-registry.ts', 'export cla
 requireText('adapters/computer/desktop-operator-provider.ts', 'createDesktopOperatorComputerProvider');
 requireText('src/runtime/root/computer-composition.ts', 'createDesktopOperatorComputerProvider');
 requireText('src/runtime/plugins/browser-automation-service.ts', 'executeRuntimeComputerBrowserAutomation');
+requireText('src/runtime/plugins/browser-adapter.ts', 'activateRuntimeComputerBrowserApplication');
 forbid('src/runtime/plugins/browser-automation-service.ts', /desktop_operator|macos-capability-broker|desktop-operator\.sock|macos_browser_automation/, 'Browser automation must depend on the provider-neutral Computer boundary, not Desktop Operator transport details');
+forbid('src/runtime/plugins/browser-adapter.ts', /desktop_operator|Desktop Operator|getExternalPluginAdapter|desktop_session_open/, 'Browser adapter must not know the concrete Desktop Operator application provider');
 requireText('src/runtime/plugins/macos-capability-broker.ts', '@deprecated C0 compatibility shim');
 if (text('src/runtime/plugins/macos-capability-broker.ts').split(/\r?\n/).length > 24) failures.push('src/runtime/plugins/macos-capability-broker.ts must remain a thin C0 compatibility facade');
 for (const path of sourceFiles('packages/plugin-runtime')) {

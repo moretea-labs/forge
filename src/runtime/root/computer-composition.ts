@@ -1,6 +1,10 @@
 import { ComputerProviderRegistry } from '../../../packages/plugin-runtime/computer/index';
-import type { ComputerBrowserAutomationRequest } from '../../../packages/protocols/computer/index';
-import { createDesktopOperatorComputerProvider } from '../../../adapters/computer/index';
+import type { ComputerBrowserAutomationRequest, ComputerBrowserProduct } from '../../../packages/protocols/computer/index';
+import type { AssistantPluginActionExecutionInput } from '../plugins/types';
+import {
+  activateDesktopOperatorBrowserApplication,
+  createDesktopOperatorComputerProvider,
+} from '../../../adapters/computer/index';
 
 const computerProviders = new ComputerProviderRegistry();
 let composed = false;
@@ -17,6 +21,13 @@ export async function executeRuntimeComputerBrowserAutomation(
 ): Promise<Record<string, unknown>> {
   ensureComputerComposition();
   return await computerProviders.executeBrowserAutomation(request, timeoutMs);
+}
+
+export async function activateRuntimeComputerBrowserApplication(
+  input: AssistantPluginActionExecutionInput,
+  product: ComputerBrowserProduct,
+): Promise<void> {
+  await activateDesktopOperatorBrowserApplication(input, product);
 }
 
 export function runtimeComputerProviderSnapshot(): Array<{ providerId: string; capabilities: string[] }> {
