@@ -2,7 +2,8 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { homedir, hostname } from 'os';
-import { basename, dirname, isAbsolute, join, resolve } from 'path';
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'path';
+import { assertStorageHeadroom } from '../shared/storage-capacity';
 import { observeRuntimeStatus } from '../root/status';
 import {
   activeRuntimeEntrypoint,
@@ -76,6 +77,14 @@ export interface OpenAiSecureTunnelServiceConfig extends PublicTunnelRecoveryPol
 
 export type PublicTunnelServiceConfig = LaunchdPublicTunnelServiceConfig | OpenAiSecureTunnelServiceConfig;
 
+export interface SystemdUserRecoveryTunnelServiceConfig extends PublicTunnelRecoveryPolicy {
+  platform: 'systemd-user';
+  /** Exact systemd --user unit owned by the dedicated Recovery public tunnel. */
+  unitName: string;
+}
+
+export type RecoveryTunnelServiceConfig = PublicTunnelServiceConfig | SystemdUserRecoveryTunnelServiceConfig;
+
 export interface PrimaryRuntimeServiceConfig {
   platform: 'launchd' | 'systemd-user';
   minimumFailures?: number;
@@ -117,7 +126,7 @@ export interface RecoveryConfig {
   controllerHome: string;
   publicMcpUrl?: string;
   recoveryPublicUrl?: string;
-  recoveryTunnelService?: PublicTunnelServiceConfig;
+  recoveryTunnelService?: RecoveryTunnelServiceConfig;
   /** Optional public tunnel serving publicMcpUrl; independent from the OAuth Connector process. */
   primaryPublicTunnelService?: PublicTunnelServiceConfig;
   primaryRuntimeService?: PrimaryRuntimeServiceConfig;
@@ -412,9 +421,15 @@ function json<T>(path: string): T | undefined {
 }
 
 function writeJson(path: string, value: unknown): void {
+  const content = `${JSON.stringify(value, null, 2)}\n`;
+  assertStorageHeadroom(path, {
+    operation: 'standalone_recovery_state_write',
+    requiredBytes: Buffer.byteLength(content),
+    reserveBytes: 16 * 1024 * 1024,
+  });
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  writeFileSync(temporary, content, { encoding: 'utf8', mode: 0o600 });
   try { chmodSync(temporary, 0o600); } catch { /* best effort */ }
   renameSync(temporary, path);
 }
@@ -441,7 +456,7 @@ export function saveWatchdogState(config: RecoveryConfig, state: WatchdogState):
   return persisted;
 }
 
-function configuredRecoveryTunnel(config: RecoveryConfig): PublicTunnelServiceConfig | undefined {
+function configuredRecoveryTunnel(config: RecoveryConfig): RecoveryTunnelServiceConfig | undefined {
   return config.recoveryTunnelService;
 }
 
@@ -967,7 +982,7 @@ async function observeOpenAiTunnelRuntime(
 ): Promise<OpenAiSecureTunnelRuntimeObservation> {
   let args: string[];
   try {
-    args = openAiSecureTunnelStatusArgs(configured.alias);
+    args = openAiSecureTunnelStatusArgs(configured.alias, configured);
   } catch (error) {
     return {
       ok: false, running: false, healthy: false, ready: false, tunnelMatches: false, endpointMatches: false,
@@ -977,6 +992,8 @@ async function observeOpenAiTunnelRuntime(
   }
   const status = await runCommand('tunnel-client', args, 15_000);
   if (!status.stdout.trim()) {
+    const local = await observeOpenAiTunnelLocalHealthFallback(configured);
+    if (local) return local;
     return {
       ok: false, running: false, healthy: false, ready: false, tunnelMatches: false, endpointMatches: false,
       alias: configured.alias, tunnelId: configured.tunnelId,
@@ -986,6 +1003,66 @@ async function observeOpenAiTunnelRuntime(
   return parseOpenAiSecureTunnelRuntimeStatus(status.stdout, {
     alias: configured.alias, tunnelId: configured.tunnelId, mcpServerUrl: configured.mcpServerUrl,
   });
+}
+
+/**
+ * tunnel-client's structured status command can itself be delayed by a
+ * control-plane query. When that happens, retain a bounded observation of the
+ * locally supervised runtime instead of treating a live, identity-matched
+ * alias as failed. This reads only the client-owned profile and loopback
+ * health URL; it never creates, repoints, or restarts a tunnel.
+ */
+export async function observeOpenAiTunnelLocalHealthFallback(
+  configured: OpenAiSecureTunnelServiceConfig,
+  options: {
+    request?: (url: string, init: { signal: AbortSignal }) => Promise<{ ok: boolean; status: number }>;
+  } = {},
+): Promise<OpenAiSecureTunnelRuntimeObservation | undefined> {
+  if (!configured.profile?.trim() || !configured.profileDir?.trim()) return undefined;
+  const profilePath = join(configured.profileDir, `${configured.profile}.yaml`);
+  let profile: string;
+  try { profile = readFileSync(profilePath, 'utf8'); } catch { return undefined; }
+  const identityMatches = profile.includes(configured.tunnelId);
+  const endpointMatches = profile.includes(configured.mcpServerUrl);
+  const urlFileMatch = profile.match(/["']?url_file["']?\s*:\s*["']([^"']+)["']/i);
+  if (!urlFileMatch) return undefined;
+  let base: URL;
+  try {
+    base = new URL(readFileSync(urlFileMatch[1].trim(), 'utf8').trim());
+    if (base.protocol !== 'http:' || !['127.0.0.1', 'localhost', '::1'].includes(base.hostname)) return undefined;
+  } catch { return undefined; }
+  const request = options.request ?? ((url: string, init: { signal: AbortSignal }) => fetch(url, init));
+  const probe = async (pathname: '/healthz' | '/readyz'): Promise<boolean> => {
+    const url = new URL(base);
+    url.pathname = pathname;
+    url.search = '';
+    url.hash = '';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort('RECOVERY_TUNNEL_HEALTH_TIMEOUT'), 4_000);
+    try { return (await request(url.toString(), { signal: controller.signal })).ok; } catch { return false; } finally { clearTimeout(timer); }
+  };
+  const [healthy, ready] = await Promise.all([probe('/healthz'), probe('/readyz')]);
+  const ok = healthy && ready && identityMatches && endpointMatches;
+  const failures: string[] = [];
+  if (!identityMatches) failures.push('profile tunnel id does not match');
+  if (!endpointMatches) failures.push('profile MCP endpoint does not match');
+  if (!healthy) failures.push('local healthz failed');
+  if (!ready) failures.push('local readyz failed');
+  return {
+    ok,
+    running: healthy,
+    healthy,
+    ready,
+    tunnelMatches: identityMatches,
+    endpointMatches,
+    alias: configured.alias,
+    tunnelId: configured.tunnelId,
+    ...(identityMatches ? { observedTunnelId: configured.tunnelId } : {}),
+    detail: ok
+      ? `managed runtime ${configured.alias} is locally healthy and ready for ${configured.tunnelId} (status command unavailable)`
+      : failures.join('; ') || 'OpenAI tunnel local health fallback failed',
+    profilePath,
+  };
 }
 
 async function observeOpenAiRecoveryTunnel(
@@ -1563,6 +1640,23 @@ interface CommandResult { ok: boolean; status: number | null; stdout: string; st
 type CommandRunner = (commandName: string, args: string[], timeoutMs?: number) => Promise<CommandResult>;
 interface LaunchdService { uid: number; domain: string; target: string; label: string; plistPath: string; }
 
+/**
+ * systemd --user does not necessarily inherit the interactive shell PATH.
+ * Recovery owns tunnel repair, so its non-interactive command environment must
+ * still find user-installed runtime tools without adding a second service
+ * owner or accepting an executable path through RPC.
+ */
+export function recoveryCommandPath(
+  inheritedPath = process.env.PATH ?? '',
+  platform: NodeJS.Platform = process.platform,
+  accountHome = homedir(),
+): string {
+  if (platform === 'win32') return inheritedPath;
+  const userBin = join(accountHome, '.local', 'bin');
+  const entries = inheritedPath.split(delimiter).filter(Boolean);
+  return entries.includes(userBin) ? inheritedPath : [userBin, ...entries].join(delimiter);
+}
+
 export interface PublicTunnelRepairDependencies {
   platform?: NodeJS.Platform;
   currentUid?: () => Promise<number | undefined>;
@@ -1575,12 +1669,19 @@ export interface PublicTunnelRepairDependencies {
 
 function command(commandName: string, args: string[], timeoutMs = 10_000, options: { cwd?: string; maxOutputBytes?: number } = {}): Promise<CommandResult> {
   return new Promise((resolveCommand) => {
-    const child = spawn(commandName, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, cwd: options.cwd });
+    const child = spawn(commandName, args, {
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      cwd: options.cwd,
+      env: { ...process.env, PATH: recoveryCommandPath() },
+    });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let size = 0;
     const maxOutputBytes = options.maxOutputBytes ?? 256 * 1024;
     let settled = false;
+    let stopping = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = (result: CommandResult) => {
       if (settled) return;
@@ -1593,19 +1694,28 @@ function command(commandName: string, args: string[], timeoutMs = 10_000, option
       if (!child.pid || child.exitCode != null) return;
       try { process.kill(child.pid, signalName); } catch { /* Process already exited. */ }
     };
-    const stop = () => {
-      if (child.exitCode != null) return;
+    const stop = (detail: string) => {
+      if (child.exitCode != null || stopping) return;
+      stopping = true;
       signalChild('SIGTERM');
-      killTimer = setTimeout(() => signalChild('SIGKILL'), 1_000);
+      killTimer = setTimeout(() => {
+        signalChild('SIGKILL');
+        finish({
+          ok: false,
+          status: null,
+          stdout: Buffer.concat(stdout).toString('utf8'),
+          stderr: [Buffer.concat(stderr).toString('utf8').trim(), detail].filter(Boolean).join('\n'),
+        });
+      }, 1_000);
     };
-    const timeout = setTimeout(stop, timeoutMs);
+    const timeout = setTimeout(() => stop(`command timed out after ${timeoutMs}ms`), timeoutMs);
     child.stdout.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (size <= maxOutputBytes) stdout.push(Buffer.from(chunk)); else stop();
+      if (size <= maxOutputBytes) stdout.push(Buffer.from(chunk)); else stop(`command output exceeded ${maxOutputBytes} bytes`);
     });
     child.stderr.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (size <= maxOutputBytes) stderr.push(Buffer.from(chunk)); else stop();
+      if (size <= maxOutputBytes) stderr.push(Buffer.from(chunk)); else stop(`command output exceeded ${maxOutputBytes} bytes`);
     });
     child.once('error', () => finish({ ok: false, status: null, stdout: '', stderr: 'command spawn failed' }));
     child.once('close', (status) => finish({ ok: status === 0, status, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') }));
@@ -1646,6 +1756,8 @@ export interface PrimaryRuntimeRecoveryDependencies {
   currentUid?: () => Promise<number | undefined>;
   runCommand?: CommandRunner;
   verifyLocal?: (config: RecoveryConfig) => Promise<VerifyResult>;
+  /** Rebind the independently supervised OAuth Connector after a whole-Runtime release switch. */
+  repairPrimaryConnectorBinding?: (config: RecoveryConfig) => Promise<{ ok: boolean; attempted: boolean; noOp?: boolean; detail: string }>;
   runtimeRunning?: (config: RecoveryConfig) => boolean;
   ensureRuntimeLaunchContract?: (controllerHome: string) => void;
   now?: () => number;
@@ -2639,6 +2751,8 @@ export async function activateRuntimeRelease(
   const wait = dependencies.sleep ?? sleep;
   const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
   const verifyLocal = dependencies.verifyLocal ?? verifyLocalRuntime;
+  const repairConnectorBinding = dependencies.repairPrimaryConnectorBinding
+    ?? ((value: RecoveryConfig) => repairPrimaryConnectorBinding(value, platform));
   const operationId = `recovery-activate-runtime-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const lockRequestId = guard.requestId?.trim() || operationId;
   const locked = await withLock(config, { action: 'activate_runtime_release', requestId: lockRequestId }, async () => {
@@ -2690,10 +2804,10 @@ export async function activateRuntimeRelease(
         return { ok: false, attempted: false, noOp: true, detail, operationId } satisfies RuntimeReleaseActivationResult;
       }
       return {
-        ok: true,
+        ok: (await repairConnectorBinding(config)).ok,
         attempted: false,
         noOp: true,
-        detail: 'requested Runtime release is already the active whole-Runtime release',
+        detail: 'requested Runtime release is already the active whole-Runtime release; its persistent Connector binding was reconciled',
         operationId,
         verify: await verifyLocal(config),
       } satisfies RuntimeReleaseActivationResult;
@@ -2802,8 +2916,36 @@ export async function activateRuntimeRelease(
     let after = activated.verify;
     let activationFailureDetail: string | undefined;
     if (activated.ok && after.releases.active?.revision === candidate.manifest.releaseId) {
-      audit(config, 'runtime_release_activation_succeeded', { serviceTarget: service.target, operationId, requestId: lockRequestId, activeRevision: after.releases.active?.revision, expectedAuthorityRevision: guard.expectedAuthorityRevision, expectedActiveReleaseId: guard.expectedActiveReleaseId, controllerHomeStorageMigrated: storageMigration?.migrated === true });
-      return { ok: true, attempted: true, detail: storageMigration?.migrated ? 'requested Runtime release activated, Controller Home migrated to .noindex storage, and whole-Runtime verification passed' : 'requested Runtime release activated and passed whole-Runtime verification', serviceTarget: service.target, operationId, verify: after } satisfies RuntimeReleaseActivationResult;
+      const connectorBinding = await repairConnectorBinding(config);
+      if (connectorBinding.ok) {
+        audit(config, 'runtime_release_activation_succeeded', {
+          serviceTarget: service.target,
+          operationId,
+          requestId: lockRequestId,
+          activeRevision: after.releases.active?.revision,
+          expectedAuthorityRevision: guard.expectedAuthorityRevision,
+          expectedActiveReleaseId: guard.expectedActiveReleaseId,
+          controllerHomeStorageMigrated: storageMigration?.migrated === true,
+          connectorBindingRepaired: connectorBinding.attempted,
+        });
+        return {
+          ok: true,
+          attempted: true,
+          detail: storageMigration?.migrated
+            ? 'requested Runtime release activated, Controller Home migrated to .noindex storage, persistent Connector rebound, and whole-Runtime verification passed'
+            : 'requested Runtime release activated, persistent Connector rebound, and whole-Runtime verification passed',
+          serviceTarget: service.target,
+          operationId,
+          verify: after,
+        } satisfies RuntimeReleaseActivationResult;
+      }
+      activationFailureDetail = `persistent Connector binding failed after Runtime activation: ${connectorBinding.detail}`;
+      audit(config, 'runtime_release_activation_connector_binding_failed', {
+        serviceTarget: service.target,
+        operationId,
+        requestId: lockRequestId,
+        detail: connectorBinding.detail,
+      });
     }
     if (!activated.ok) {
       activationFailureDetail = activated.detail;
@@ -2815,7 +2957,7 @@ export async function activateRuntimeRelease(
             ? 'runtime_release_activation_start_failed'
             : 'runtime_release_activation_unverified';
       audit(config, auditAction, { serviceTarget: service.target, operationId, detail: activated.detail });
-    } else {
+    } else if (!activationFailureDetail) {
       activationFailureDetail = `activated Runtime release identity mismatch: expected ${candidate.manifest.releaseId}, observed ${after.releases.active?.revision ?? 'none'}`;
       audit(config, 'runtime_release_activation_commit_mismatch', { serviceTarget: service.target, operationId, detail: activationFailureDetail });
     }
@@ -2864,7 +3006,23 @@ export async function activateRuntimeRelease(
           timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
           successDetail: 'previous whole-Runtime release and SQLite backup restored, restarted, and verified',
         });
-        rollback = { ok: restarted.ok, operationId: rollbackOperationId, detail: restarted.detail, verify: restarted.verify };
+        const connectorBinding = restarted.ok ? await repairConnectorBinding(config) : undefined;
+        if (connectorBinding && !connectorBinding.ok) {
+          audit(config, 'runtime_release_activation_rollback_connector_binding_failed', {
+            serviceTarget: service.target,
+            operationId,
+            rollbackOperationId,
+            detail: connectorBinding.detail,
+          });
+        }
+        rollback = {
+          ok: restarted.ok && (connectorBinding?.ok ?? true),
+          operationId: rollbackOperationId,
+          detail: connectorBinding && !connectorBinding.ok
+            ? `${restarted.detail}; previous persistent Connector binding failed: ${connectorBinding.detail}`
+            : restarted.detail,
+          verify: restarted.verify,
+        };
       } catch (error) {
         rollback = { ok: false, detail: error instanceof Error ? error.message : 'previous whole-Runtime release rollback failed' };
       }
@@ -2961,7 +3119,7 @@ export async function stageAndActivateConfiguredRuntimeRelease(
   };
 }
 
-function tunnelLaunchdService(configured: PublicTunnelServiceConfig | undefined, uid: number): LaunchdService | undefined {
+function tunnelLaunchdService(configured: RecoveryTunnelServiceConfig | undefined, uid: number): LaunchdService | undefined {
   if (!configured || configured.platform !== 'launchd') return undefined;
   if (!/^com\.[A-Za-z0-9._-]{1,180}$/.test(configured.label)) return undefined;
   const plistPath = configured.plistPath;
@@ -2977,6 +3135,14 @@ function tunnelLaunchdService(configured: PublicTunnelServiceConfig | undefined,
 
 function recoveryTunnelService(config: RecoveryConfig, uid: number): LaunchdService | undefined {
   return tunnelLaunchdService(configuredRecoveryTunnel(config), uid);
+}
+
+function recoverySystemdTunnelUnit(config: RecoveryConfig): string | undefined {
+  const configured = configuredRecoveryTunnel(config);
+  if (!configured || configured.platform !== 'systemd-user') return undefined;
+  const unitName = configured.unitName.trim();
+  if (!/^[A-Za-z0-9_.@-]{1,180}\.service$/.test(unitName)) return undefined;
+  return unitName;
 }
 
 function primaryPublicTunnelService(config: RecoveryConfig, uid: number): LaunchdService | undefined {
@@ -3009,6 +3175,7 @@ export async function repairPublicTunnel(config: RecoveryConfig, dependencies: P
   let serviceLabel: string;
   let serviceTarget: string;
   let launchdService: LaunchdService | undefined;
+  let systemdUnitName: string | undefined;
   if (configured.platform === 'launchd') {
     if ((dependencies.platform ?? process.platform) !== 'darwin') {
       return { ok: false, attempted: false, noOp: true, detail: 'configured launchd public tunnel can only be repaired on macOS', verify: initial, localVerify };
@@ -3018,6 +3185,18 @@ export async function repairPublicTunnel(config: RecoveryConfig, dependencies: P
     if (!launchdService) return { ok: false, attempted: false, noOp: true, detail: 'public tunnel launchd configuration is invalid or unavailable', verify: initial, localVerify };
     serviceLabel = launchdService.label;
     serviceTarget = launchdService.target;
+  } else if (configured.platform === 'systemd-user') {
+    if ((dependencies.platform ?? process.platform) !== 'linux') {
+      return { ok: false, attempted: false, noOp: true, detail: 'configured systemd-user public tunnel can only be repaired on Linux', verify: initial, localVerify };
+    }
+    systemdUnitName = recoverySystemdTunnelUnit(config);
+    if (!systemdUnitName) return { ok: false, attempted: false, noOp: true, detail: 'public tunnel systemd-user configuration is invalid', verify: initial, localVerify };
+    const loaded = await runCommand('systemctl', ['--user', 'show', '--property=LoadState', '--value', systemdUnitName], 5_000);
+    if (!loaded.ok || loaded.stdout.trim() !== 'loaded') {
+      return { ok: false, attempted: false, noOp: true, detail: `public tunnel systemd-user unit is not loaded: ${systemdUnitName}`, verify: initial, localVerify };
+    }
+    serviceLabel = systemdUnitName;
+    serviceTarget = systemdUnitName;
   } else {
     serviceLabel = configured.alias;
     serviceTarget = `tunnel-client:${configured.alias}`;
@@ -3051,6 +3230,13 @@ export async function repairPublicTunnel(config: RecoveryConfig, dependencies: P
       if (!started.ok) {
         audit(config, 'public_tunnel_restart_failed', { serviceLabel, serviceTarget, detail: started.detail });
         return { ok: false, attempted: true, detail: started.detail, serviceLabel, serviceTarget, verify: before, localVerify: localBefore };
+      }
+    } else if (configured.platform === 'systemd-user') {
+      const restarted = await runCommand('systemctl', ['--user', 'restart', systemdUnitName!], 15_000);
+      if (!restarted.ok) {
+        const detail = `systemd-user restart failed: ${restarted.stderr || restarted.stdout || restarted.status}`;
+        audit(config, 'public_tunnel_restart_failed', { serviceLabel, serviceTarget, detail });
+        return { ok: false, attempted: true, detail, serviceLabel, serviceTarget, verify: before, localVerify: localBefore };
       }
     } else {
       const observed = await observeOpenAiRecoveryTunnel(config, runCommand);

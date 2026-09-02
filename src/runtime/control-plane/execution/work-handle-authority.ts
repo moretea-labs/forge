@@ -13,6 +13,28 @@ export interface RepositoryWorkHandleControllerIdentity {
   principalId: string;
 }
 
+function resolveRepositoryWorkHandlePlacement(input: {
+  controllerHome: string;
+  repositoryId: string;
+  checkoutId: string;
+  worktreeRef?: string;
+}) {
+  const registeredRepository = getRepository(input.repositoryId, input.controllerHome, { includeRemoved: true });
+  const executionRepository = resolveRepositorySelection({ repoId: registeredRepository.repoId, checkoutId: input.checkoutId, controllerHome: input.controllerHome, allowSoleRepository: false });
+  const checkout = selectRepositoryCheckout(executionRepository, input.checkoutId, { allowArchived: true });
+  const registeredCheckout = registeredRepository.checkouts.find((entry) => entry.checkoutId === input.checkoutId);
+  if (!registeredCheckout) throw new Error(`WORK_CHECKOUT_NOT_REGISTERED: ${input.checkoutId}`);
+  const status = repositoryGitStatus(checkout);
+  const branch = status.branch;
+  if (!branch) throw new Error(`WORKTREE_DETACHED: ${input.checkoutId} has no branch`);
+  const managedWorktree = registeredCheckout.worktree === true
+    && Boolean(input.worktreeRef)
+    && resolve(input.worktreeRef!) === resolve(checkout.canonicalRoot)
+    && input.checkoutId !== registeredRepository.activeCheckoutId
+    && resolve(checkout.canonicalRoot) !== resolve(registeredRepository.canonicalRoot);
+  return { registeredRepository, registeredCheckout, checkout, status, branch, managedWorktree };
+}
+
 /**
  * Canonical compatibility repair for a goal-workloop Work whose durable
  * WorkContract exists but whose WorkHandle has not yet been materialized.
@@ -36,28 +58,18 @@ export function ensureRepositoryWorkHandle(input: {
   // Callers may already be scoped to the Work checkout. Re-read the unselected
   // registry record so WorkHandle source/delivery authority never mistakes an
   // isolated execution worktree for the canonical source checkout.
-  const registeredRepository = getRepository(input.repository.repoId, input.controllerHome, { includeRemoved: true });
-  const executionRepository = resolveRepositorySelection({
-    repoId: registeredRepository.repoId,
-    checkoutId: contract.checkoutId,
+  const placement = resolveRepositoryWorkHandlePlacement({
     controllerHome: input.controllerHome,
-    allowSoleRepository: false,
+    repositoryId: input.repository.repoId,
+    checkoutId: contract.checkoutId,
+    worktreeRef: contract.worktreeRef,
   });
-  const checkout = selectRepositoryCheckout(executionRepository, contract.checkoutId, { allowArchived: true });
-  const registeredCheckout = registeredRepository.checkouts.find((entry) => entry.checkoutId === contract.checkoutId);
-  if (!registeredCheckout) throw new Error(`WORK_CHECKOUT_NOT_REGISTERED: ${contract.checkoutId}`);
-  const status = repositoryGitStatus(checkout);
-  if (!status.branch) throw new Error(`WORKTREE_DETACHED: ${contract.checkoutId} has no branch`);
+  const { registeredRepository, checkout, status, branch, managedWorktree } = placement;
   const sourceCheckoutId = registeredRepository.activeCheckoutId;
   const sourceCheckout = selectRepositoryCheckout(registeredRepository, sourceCheckoutId, { allowArchived: true });
   const sourceStatus = repositoryGitStatus(sourceCheckout);
   if (!sourceStatus.branch) throw new Error(`WORK_DELIVERY_TARGET_DETACHED: source checkout ${sourceCheckoutId} has no branch`);
   const at = new Date().toISOString();
-  const managedWorktree = registeredCheckout.worktree === true
-    && Boolean(contract.worktreeRef)
-    && resolve(contract.worktreeRef!) === resolve(checkout.canonicalRoot)
-    && contract.checkoutId !== registeredRepository.activeCheckoutId
-    && resolve(checkout.canonicalRoot) !== resolve(registeredRepository.canonicalRoot);
   return writeWorkHandle(input.controllerHome, {
     schemaVersion: 1,
     workId: input.workId,
@@ -66,7 +78,7 @@ export function ensureRepositoryWorkHandle(input: {
     repositoryId: input.repository.repoId,
     checkoutId: contract.checkoutId,
     worktreePath: checkout.canonicalRoot,
-    branch: status.branch,
+    branch,
     sourceCheckoutId,
     deliveryTargetBranch: sourceStatus.branch,
     managedWorktree,
@@ -87,6 +99,25 @@ export function ensureRepositoryWorkHandle(input: {
     },
     cleanupResponsibility: { owner: 'work_finalizer', registeredAt: at },
   });
+}
+
+/** Upgrade only a legacy false-negative managed-worktree classification after all durable placement authorities agree. */
+export function reconcileRepositoryWorkHandlePlacement(input: {
+  controllerHome: string;
+  repositoryId: string;
+  workId: string;
+}): WorkHandleState | undefined {
+  const existing = readWorkHandle(input.controllerHome, input.repositoryId, input.workId);
+  if (!existing || existing.managedWorktree) return existing;
+  const contract = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repositoryId }, input.workId);
+  if (!contract || contract.workKind !== 'repository_change' || contract.mode !== 'goal_workloop' || !contract.checkoutId) return existing;
+  if (contract.checkoutId !== existing.checkoutId) throw new Error(`WORK_HANDLE_PLACEMENT_CHECKOUT_MISMATCH: ${input.workId}`);
+  const placement = resolveRepositoryWorkHandlePlacement({ controllerHome: input.controllerHome, repositoryId: input.repositoryId, checkoutId: contract.checkoutId, worktreeRef: contract.worktreeRef });
+  if (!placement.managedWorktree) return existing;
+  if (placement.registeredCheckout.lifecycle !== 'active') throw new Error(`WORK_HANDLE_PLACEMENT_CHECKOUT_NOT_ACTIVE: ${input.workId}`);
+  if (resolve(existing.worktreePath) !== resolve(placement.checkout.canonicalRoot)) throw new Error(`WORK_HANDLE_PLACEMENT_PATH_MISMATCH: ${input.workId}`);
+  if (existing.branch !== placement.branch || (placement.registeredCheckout.branch && placement.registeredCheckout.branch !== placement.branch)) throw new Error(`WORK_HANDLE_PLACEMENT_BRANCH_MISMATCH: ${input.workId}`);
+  return writeWorkHandle(input.controllerHome, { ...existing, sourceCheckoutId: placement.registeredRepository.activeCheckoutId, managedWorktree: true });
 }
 
 /**

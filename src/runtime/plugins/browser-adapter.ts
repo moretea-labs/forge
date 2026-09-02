@@ -151,6 +151,15 @@ interface BrowserActionTarget {
   existingSession?: BrowserSessionState;
 }
 
+export function browserExplicitSessionRequiresExistingResource(
+  actionId: string,
+  explicitSessionId: string | undefined,
+  existingSessionPresent: boolean,
+): boolean {
+  if (!explicitSessionId) return false;
+  return actionId === 'navigate' || existingSessionPresent;
+}
+
 interface BrowserActionScreenshot {
   path: string;
   relativePath: string;
@@ -2702,9 +2711,10 @@ const STABLE_SELECTOR_HELPERS = `
 `;
 
 const EXTRACTION_SCRIPTS = {
-  query: (selector: string, limit: number) => `(() => {
+  query: (selector: string, limit: number, fromEnd = false) => `(() => {
     ${STABLE_SELECTOR_HELPERS}
-    const nodes = ${openShadowSelectorExpression(selector, true)}.slice(0, ${limit});
+    const allNodes = ${openShadowSelectorExpression(selector, true)};
+    const nodes = ${fromEnd ? `allNodes.slice(-${limit})` : `allNodes.slice(0, ${limit})`};
     return nodes.map((el) => {
       const role = el.getAttribute('role');
       const text = (el.innerText || el.textContent || '').trim().slice(0, 120);
@@ -3776,7 +3786,13 @@ async function executeBrowserPluginActionInternal(
               ? { text: await extractText(page, undefined, positiveNumber(input.args.max_chars, DEFAULT_MAX_TEXT_CHARS)) }
               : {}),
           };
-        }, { requireExistingResource: Boolean(existingSessionId) });
+        }, {
+          requireExistingResource: browserExplicitSessionRequiresExistingResource(
+            input.actionId,
+            existingSessionId,
+            Boolean(target.existingSession),
+          ),
+        });
       }
       case 'reload':
       case 'go_back':
@@ -3846,7 +3862,11 @@ async function executeBrowserPluginActionInternal(
         const limit = Math.min(positiveNumber(input.args.limit, 25), 100);
         return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           const selection = resolveBrowserEvaluationScope(page, input.args, connection);
-          const matches = await selection.scope.evaluate<Array<Record<string, unknown>>>(EXTRACTION_SCRIPTS.query(selector, input.actionId === 'query_selector' ? 1 : limit));
+          const matches = await selection.scope.evaluate<Array<Record<string, unknown>>>(EXTRACTION_SCRIPTS.query(
+            selector,
+            input.actionId === 'query_selector' ? 1 : limit,
+            input.actionId === 'query_all' && input.args.from_end === true,
+          ));
           return {
             provider: browserResultProvider(connection.provider),
             sessionId: target.sessionId,

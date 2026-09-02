@@ -7,9 +7,9 @@ import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { runProcess } from '../../../effects/process-runner';
 import { getWorkContract, recordWorkImplementationReview, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { completeWorkWithReceipt } from './work-completion-authority';
-import { isDirectEditWorkCompletionReceipt, isTerminalWorkContractStatus, type DirectEditWorkCompletionReceipt, type WorkReconciliationRecord } from '../facade/types';
+import { isDirectEditWorkCompletionReceipt, isTerminalWorkContractStatus, type DirectEditWorkCompletionReceipt, type WorkContract, type WorkReconciliationRecord } from '../facade/types';
 import { historicalVerificationEvidenceAtRevision, workspaceValidationFingerprint } from './verification-evidence';
-import { readWorkHandle } from './work-handle-store';
+import { readWorkHandle, type WorkHandleState } from './work-handle-store';
 import { assertWorkPathsWithinScope, findWorkPathScopeViolation } from './work-path-scope';
 import { implementationReviewContentFingerprint, implementationReviewIndexFingerprint } from './implementation-review-content';
 import { transferWorkVerificationAcrossContentEquivalentCommit } from './work-verification-service';
@@ -374,6 +374,32 @@ function unresolvedRepositorySourcePaths(repoRoot: string): string[] {
   ])].sort((left, right) => left.localeCompare(right));
 }
 
+export function isFailedReviewedDirectEditWorkRecovery(
+  work: WorkContract,
+  handle?: WorkHandleState,
+): handle is WorkHandleState {
+  return work.workKind === 'repository_change'
+    && work.status === 'failed'
+    && handle?.managedWorktree === false
+    && handle.state === 'failed'
+    && handle.finalization.validation === 'failed'
+    && String(handle.finalization.lastError ?? handle.failureReason ?? '').includes('WORK_HANDLE_HEAD_CHANGED');
+}
+
+export function hasReviewedDirectEditReconciliationOwnership(input: {
+  work: WorkContract;
+  handle?: WorkHandleState;
+  activeOwnerPrincipal?: string;
+  callerPrincipal: string;
+}): boolean {
+  const callerPrincipal = input.callerPrincipal.trim();
+  if (!callerPrincipal) return false;
+  const activeOwnerPrincipal = input.activeOwnerPrincipal?.trim();
+  if (activeOwnerPrincipal) return activeOwnerPrincipal === callerPrincipal;
+  return isFailedReviewedDirectEditWorkRecovery(input.work, input.handle)
+    && input.handle.principalId.trim() === callerPrincipal;
+}
+
 /**
  * Explicitly close a historically delivered Direct Edit Work whose original
  * edit-session binding was missed. This is never inferred: the caller must
@@ -396,13 +422,7 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
     throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_WORK_TERMINAL: ${input.workId}`);
   }
   const currentHandle = readWorkHandle(input.controllerHome, input.repoId, input.workId);
-  const failedHandle = work.status === 'failed' ? currentHandle : undefined;
-  const failedReviewedRecovery = work.workKind === 'repository_change'
-    && work.status === 'failed'
-    && failedHandle?.managedWorktree === false
-    && failedHandle.state === 'failed'
-    && failedHandle.finalization.validation === 'failed'
-    && String(failedHandle.finalization.lastError ?? failedHandle.failureReason ?? '').includes('WORK_HANDLE_HEAD_CHANGED');
+  const failedReviewedRecovery = isFailedReviewedDirectEditWorkRecovery(work, currentHandle);
   const historicalEffectRecovery = !currentHandle
     && !isTerminalWorkContractStatus(work.status)
     && (work.workKind === 'local_effect' || work.workKind === 'remote_effect');

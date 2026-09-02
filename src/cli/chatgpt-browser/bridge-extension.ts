@@ -35,6 +35,7 @@ const FORGE_CHATGPT_SEND_BUTTONS = [
   'button[data-testid*="send"]',
 ];
 const FORGE_CHATGPT_ASSISTANT = '[data-message-author-role="assistant"]';
+const FORGE_CHATGPT_USER = '[data-message-author-role="user"]';
 
 function forgeVisible(element) {
   return Boolean(element && element.getClientRects && element.getClientRects().length);
@@ -133,22 +134,60 @@ function forgeComposerText() {
   return ('value' in composer ? composer.value : composer.textContent || '').trim();
 }
 
-async function forgeWaitForSubmission(timeoutMs, initialUrl) {
+function forgeNormalizeOutboundText(value) {
+  return String(value || '')
+    .split(String.fromCharCode(10)).join(' ')
+    .split(String.fromCharCode(13)).join(' ')
+    .split(String.fromCharCode(9)).join(' ')
+    .split(' ').filter(Boolean).join(' ')
+    .trim();
+}
+
+function forgeOutboundFingerprint(prompt) {
+  const normalized = forgeNormalizeOutboundText(prompt);
+  const prefix = normalized.slice(0, 160);
+  const suffix = normalized.length > 240 ? normalized.slice(-80) : '';
+  return suffix ? prefix + '|' + suffix : prefix;
+}
+
+function forgeOutboundMessageMatchesPrompt(messageText, prompt) {
+  const message = forgeNormalizeOutboundText(messageText);
+  const normalizedPrompt = forgeNormalizeOutboundText(prompt);
+  return Boolean(message && normalizedPrompt && message === normalizedPrompt);
+}
+
+function forgeHasConversationIdentity(urlValue) {
+  try {
+    const pathParts = new URL(urlValue, location.href).pathname.split('/').filter(Boolean);
+    return pathParts.length >= 2 && pathParts[0] === 'c' && Boolean(pathParts[1]);
+  } catch (_error) {
+    return false;
+  }
+}
+
+async function forgeWaitForSubmission(timeoutMs, initialUrl, prompt, initialUserMessageCount) {
   const deadline = Date.now() + timeoutMs;
-  const initialHasConversation = /\/c\/[^/?#]+/.test(new URL(initialUrl).pathname);
-  let submissionObserved = false;
+  const initialHasConversation = forgeHasConversationIdentity(initialUrl);
+  let transportSignalObserved = false;
   while (Date.now() < deadline) {
     if (!forgeComposerText() || document.querySelector('[data-testid="stop-button"], button[aria-label*="Stop"]')) {
-      submissionObserved = true;
+      transportSignalObserved = true;
     }
-    if (submissionObserved) {
-      if (initialHasConversation) return location.href;
-      if (/\/c\/[^/?#]+/.test(location.pathname)) return location.href;
+    const userMessages = [...document.querySelectorAll(FORGE_CHATGPT_USER)];
+    const newUserMessage = userMessages.length > initialUserMessageCount ? userMessages.at(-1) : undefined;
+    const outboundConfirmed = Boolean(newUserMessage && forgeOutboundMessageMatchesPrompt(newUserMessage.innerText || newUserMessage.textContent || '', prompt));
+    const conversationEstablished = initialHasConversation || forgeHasConversationIdentity(location.href);
+    if (outboundConfirmed && conversationEstablished) {
+      return {
+        conversationUrl: location.href,
+        outboundFingerprint: forgeOutboundFingerprint(prompt),
+        confirmedAt: new Date().toISOString(),
+      };
     }
     await forgeSleep(100);
   }
-  throw new Error(submissionObserved
-    ? 'ChatGPT prompt was submitted but no conversation identity was established'
+  throw new Error(transportSignalObserved
+    ? 'ChatGPT transport changed, but the corresponding outbound user message fingerprint was not observed'
     : 'ChatGPT prompt submission was not observed');
 }
 
@@ -174,10 +213,11 @@ async function forgeWaitForAssistant(timeoutMs) {
 async function forgeRunTask(task) {
   await forgePost('/api/extension/task-started', {taskId: task.id, url: location.href});
   try {
+    const initialUserMessageCount = document.querySelectorAll(FORGE_CHATGPT_USER).length;
     await forgeSubmitPrompt(task.prompt);
     if (task.dispatchOnly === true) {
-      const conversationUrl = await forgeWaitForSubmission(Math.min(task.timeoutMs || 10000, 10000), location.href);
-      forgeLastDispatch = {taskId: task.id, conversationUrl};
+      const confirmation = await forgeWaitForSubmission(Math.min(task.timeoutMs || 10000, 10000), location.href, task.prompt, initialUserMessageCount);
+      forgeLastDispatch = {taskId: task.id, ...confirmation};
       await forgePost('/api/extension/dispatched', forgeLastDispatch).catch(() => undefined);
       return;
     }

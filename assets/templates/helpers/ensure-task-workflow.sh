@@ -337,7 +337,7 @@ Complete this inventory before implementation. If any line is unknown, keep the 
 - Implementation notes file: `tasks/notes/{{ARTIFACT_STEM}}.notes.md`
 - Template: `.claude/templates/contract.template.md`
 - Verification command: `bash scripts/verify-contract.sh --contract tasks/contracts/{{ARTIFACT_STEM}}.contract.md --strict`
-- Active plan rule: `.ai/harness/active-plan` is authoritative for this worktree when present; `.ai/harness/active-worktree` records the owning worktree; `.claude/.active-plan` is a legacy fallback during transition. Do not infer active execution from the latest non-archived plan.
+- Active plan rule: `.ai/harness/active-plan` is authoritative for this worktree when present; `.ai/harness/active-worktree` records the owning worktree; `.claude/.active-plan` is a legacy fallback during transition. Do not infer active execution from plan filename order, recency, or mere presence.
 
 ## Handoff
 
@@ -600,7 +600,7 @@ CURRENT_STATUS_EOF
 }
 
 ensure_auxiliary_files() {
-  mkdir -p plans plans/archive plans/prds plans/sprints tasks/issues tasks/archive tasks/contracts tasks/reviews tasks/notes tasks/workstreams docs/architecture/domains docs/architecture/modules docs/architecture/requests docs/architecture/snapshots docs/architecture/diagrams scripts .ai/context .ai/harness/checks .ai/harness/session .ai/harness/controller/packets .ai/harness/projections .ai/harness/transfers .ai/harness/scripts .ai/harness/failures .ai/harness/security .ai/harness/planning .ai/harness/architecture .ai/harness/worktrees .ai/harness/runs .ai/harness/jobs .ai/harness/local-jobs .ai/harness/controller .ai/harness/edit-sessions
+  mkdir -p plans plans/prds plans/sprints tasks/issues tasks/contracts tasks/reviews tasks/notes tasks/workstreams docs/architecture/domains docs/architecture/modules docs/architecture/requests docs/architecture/snapshots docs/architecture/diagrams scripts .ai/context .ai/harness/checks .ai/harness/session .ai/harness/controller/packets .ai/harness/projections .ai/harness/transfers .ai/harness/scripts .ai/harness/failures .ai/harness/security .ai/harness/planning .ai/harness/architecture .ai/harness/worktrees .ai/harness/runs .ai/harness/jobs .ai/harness/local-jobs .ai/harness/controller .ai/harness/edit-sessions
 
   if [[ ! -f "docs/spec.md" ]]; then
     cat > docs/spec.md <<'SPEC_EOF'
@@ -741,7 +741,7 @@ CAPABILITIES_EOF
 ## Architecture Drift Flow
 
 - `scripts/architecture-queue.sh` records architecture-sensitive edits as requests.
-- `scripts/archive-architecture-request.sh` archives handled requests after an agent records the resolution status and linked artifacts.
+- `scripts/architecture-queue.sh resolve --file <request>` removes a handled request, clears stale context pointers, and reindexes the live queue; Git history is the archive.
 - `scripts/context-contract-sync.sh` keeps only the controlled architecture block in functional-block `AGENTS.md` and `CLAUDE.md` files aligned.
 - `scripts/workstream-sync.sh` keeps durable multi-session progress under `tasks/workstreams/<domain>/<capability>/` and projects only pointers into local contracts.
 - Semantic architecture diagrams live as Mermaid fenced blocks in the relevant module or snapshot Markdown.
@@ -764,7 +764,6 @@ ARCHITECTURE_INDEX_EOF
     "marker_file": ".ai/harness/active-plan",
     "legacy_marker_file": ".claude/.active-plan",
     "directory": "plans",
-    "archive_directory": "plans/archive",
     "glob": "plan-*.md",
     "active_worktree_marker_file": ".ai/harness/active-worktree",
     "source_of_truth": "per-worktree explicit marker with active-worktree owner; legacy Claude marker fallback only"
@@ -847,7 +846,7 @@ ARCHITECTURE_INDEX_EOF
     "notes": {
       "dir": "tasks/notes",
       "purpose": "task-local implementation decisions, deviations, tradeoffs, and open questions",
-      "promotion": "archive on workflow close; promote only repeated or durable findings"
+      "promotion": "promote repeated or durable findings before terminal closeout; delete task-local notes only after Git preserves their exact final state"
     },
     "evidence": {
       "latest": ".ai/harness/checks/latest.json",
@@ -943,15 +942,14 @@ ARCHITECTURE_INDEX_EOF
     "strategy_version": 1,
     "supported_legacy_versions": ["pre-tasks-first", "tasks-first-without-contract-manifest", "current-v1"],
     "action_classes": {
-      "preserve": "keep user-authored hooks, ignored reference material, private operations state, secrets, and local env files unchanged",
-      "archive": "move user-authored legacy workflow documents or checklists into archive/research surfaces before refresh",
+      "preserve": "keep user-authored legacy workflow documents, hooks, ignored reference material, private operations state, secrets, and local env files unchanged until explicitly triaged",
       "reconfigure": "merge managed config defaults without overwriting explicit repo overrides",
       "remove": "delete only workflow-contract actions marked ownership=known_generated"
     },
     "cleanup": {
       "source": ".ai/harness/workflow-contract.json#migrations.upgrade.actions",
       "remove_only_ownership": "known_generated",
-      "unknown_files": "preserve-or-archive",
+      "unknown_files": "preserve",
       "custom_hooks": "preserve",
       "ignored_reference_material": "preserve",
       "local_operations_state": "preserve",

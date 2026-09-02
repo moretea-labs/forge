@@ -99,13 +99,25 @@ describe("Bootstrap Script Contracts", () => {
     expect(pkg.scripts["check:ci"]).toBe("bun run check:main");
     expect(pkg.scripts["check:task"]).toBe("bun scripts/run-governed-gate.ts task");
     expect(pkg.scripts["check:main"]).toBe("bun scripts/run-governed-gate.ts main");
-    expect(pkg.scripts["check:brain-manifest"]).toBe("forge run check-brain-manifest");
-    expect(pkg.scripts["check:task-sync"]).toBe("forge run check-task-sync");
-    expect(pkg.scripts["check:deploy-sql"]).toBe("forge run check-deploy-sql-order");
-    expect(pkg.scripts["check:architecture-sync"]).toBe("forge run check-architecture-sync");
-    expect(pkg.scripts["check:task-workflow"]).toBe("forge run check-task-workflow --strict");
-    expect(pkg.scripts["check:context-files"]).toBe("forge run check-context-files");
-    expect(pkg.scripts["sync:brain-docs"]).toBe("forge run sync-brain-docs --all");
+    for (const script of [
+      "check:brain-manifest",
+      "check:context-files",
+      "check:deploy-sql",
+      "check:architecture-sync",
+      "check:task-sync",
+      "check:task-workflow",
+      "sync:brain-docs",
+    ]) {
+      expect(pkg.scripts[script]).toStartWith("bun src/cli/index.ts run ");
+      expect(pkg.scripts[script]).not.toStartWith("forge run ");
+    }
+    expect(pkg.scripts["check:brain-manifest"]).toBe("bun src/cli/index.ts run check-brain-manifest");
+    expect(pkg.scripts["check:task-sync"]).toBe("bun src/cli/index.ts run check-task-sync");
+    expect(pkg.scripts["check:deploy-sql"]).toBe("bun src/cli/index.ts run check-deploy-sql-order");
+    expect(pkg.scripts["check:architecture-sync"]).toBe("bun src/cli/index.ts run check-architecture-sync");
+    expect(pkg.scripts["check:task-workflow"]).toBe("bun src/cli/index.ts run check-task-workflow --strict");
+    expect(pkg.scripts["check:context-files"]).toBe("bun src/cli/index.ts run check-context-files");
+    expect(pkg.scripts["sync:brain-docs"]).toBe("bun src/cli/index.ts run sync-brain-docs --all");
   });
 
   test("ci gate should delegate to the content-addressed main gate", () => {
@@ -166,7 +178,6 @@ describe("Bootstrap Script Contracts", () => {
     expect(contract.helpers.scripts).toContain("refresh-current-status.sh");
     expect(contract.helpers.scripts).not.toContain("context-budget.ts");
     expect(contract.helpers.scripts).toContain("architecture-queue.sh");
-    expect(contract.helpers.scripts).toContain("archive-architecture-request.sh");
     expect(contract.helpers.scripts).toContain("context-contract-sync.sh");
     expect(contract.helpers.scripts).toContain("workstream-sync.sh");
     expect(contract.helpers.scripts).toContain("contract-worktree.sh");

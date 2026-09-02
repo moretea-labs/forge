@@ -12,9 +12,10 @@ import { implementationReviewChangedPathDigest } from '../../src/runtime/control
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch } from '../../src/runtime/control-plane/facade/controller-round-relay';
-import { ensureRepositoryWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-authority';
+import { ensureRepositoryWorkHandle, reconcileRepositoryWorkHandlePlacement } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { ensureRunningRepositoryWorkCheckout } from '../../src/runtime/control-plane/execution/retained-work-resume';
 import { cleanupTerminalWork } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
+
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { resolveExplicitClaimedRepositoryWork } from '../../src/runtime/control-plane/execution/repository-work-attribution';
 import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
@@ -120,6 +121,138 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 }
 
 describe('rh_work terminalization authority', () => {
+  test('continue upgrades only a proven legacy false-negative managed WorkHandle placement', async () => {
+    const fx = fixture();
+    const workId = 'work-legacy-managed-placement-reconcile';
+    const caller = {
+      principalId: 'principal-legacy-managed-placement',
+      sessionId: 'transport-legacy-managed-placement',
+      controllerInstanceId: 'runtime-legacy-managed-placement',
+    };
+    const branch = 'work/legacy-managed-placement';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'Legacy managed placement reconciliation',
+      branchName: branch,
+    });
+    expect(workspace.root).toBeTruthy();
+    expect(workspace.checkoutId).toBeTruthy();
+    const baseRevision = workspace.baseRevision!;
+    const now = new Date().toISOString();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Reconcile a legacy false-negative managed WorkHandle.',
+      acceptanceCriteria: [],
+      constraints: { requireWorktree: true, directMainProhibited: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+      phase: 'implementation',
+      worktreeRef: workspace.root,
+      scopeEvidence: { initialLikelyPaths: [], inspectedPaths: [], actualChangedPaths: [], recordedAt: now },
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      workContractId: workId,
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      repositoryId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      sourceCheckoutId: workspace.checkoutId!,
+      worktreePath: workspace.root!,
+      branch,
+      managedWorktree: false,
+      baseCommit: baseRevision,
+      deliveryBaseCommit: baseRevision,
+      expectedHead: baseRevision,
+      permissionSnapshotVersion: 1,
+      state: 'prepared',
+      createdAt: now,
+      updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+    });
+    claimControllerSession(store, {
+      workId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+
+    const continued = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'continue', work_id: workId },
+    ));
+    expect(continued.data?.ownershipResumed).toBe(true);
+    const repaired = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
+    expect(repaired.managedWorktree).toBe(true);
+    expect(repaired.sourceCheckoutId).toBe(fx.repository.activeCheckoutId);
+    expect(repaired.checkoutId).toBe(workspace.checkoutId!);
+    expect(repaired.worktreePath).toBe(workspace.root!);
+    expect(repaired.branch).toBe(branch);
+
+    const directWorkId = 'work-direct-placement-remains-direct';
+    createWorkContract(store, {
+      workId: directWorkId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Keep a direct canonical WorkHandle direct.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+      phase: 'implementation',
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId: directWorkId,
+      workContractId: directWorkId,
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      repositoryId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      worktreePath: fx.repoRoot,
+      branch: 'main',
+      managedWorktree: false,
+      baseCommit: baseRevision,
+      deliveryBaseCommit: baseRevision,
+      expectedHead: baseRevision,
+      permissionSnapshotVersion: 1,
+      state: 'prepared',
+      createdAt: now,
+      updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+    });
+    expect(reconcileRepositoryWorkHandlePlacement({
+      controllerHome: fx.controllerHome,
+      repositoryId: fx.repository.repoId,
+      workId: directWorkId,
+    })?.managedWorktree).toBe(false);
+  }, 15_000);
+
   test('continue reconstructs the same running Work before preserving the repository implementation gate', async () => {
     const fx = fixture();
     const workId = 'work-running-checkout-runtime-recovery';
@@ -503,6 +636,7 @@ describe('rh_work terminalization authority', () => {
       workId,
       ok: true,
       bindingId: `chatgpt:${fx.repository.repoId}:${workId}`,
+
     });
     const caller = ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-round', runtimeInstanceId);
     const wrongAuthority = relay.authorityId === 'cra_00000000000000000000000000000000'
@@ -772,6 +906,81 @@ describe('rh_work terminalization authority', () => {
       },
     ));
     expect(ownStop.status).toBe('ok');
+    expect(getWorkContract(store, workId)?.status).toBe('cancelled');
+  }, 15_000);
+
+  test('explicit user recovery can rekey only a direct exact-Work authority after capability loss without weakening normal transport fencing', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const principalId = 'principal-direct-authority-recovery';
+    const runtimeInstanceId = 'runtime-direct-authority-recovery';
+    const workId = 'work-direct-authority-recovery';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    publishCurrentRuntime(fx.controllerHome, runtimeInstanceId);
+
+    const initial = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-recovery-1', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId },
+    ));
+    const initialAuthority = String(initial.data?.controllerAuthorityId ?? '');
+    expect(initial.status).toBe('ok');
+    expect(initialAuthority).toStartWith('ctrl_');
+
+    const ordinaryRotatedClaim = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-recovery-2', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId },
+    ));
+    expect(ordinaryRotatedClaim.status).toBe('blocked');
+    expect(ordinaryRotatedClaim.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+
+    const automatedRecovery = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-recovery-2', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'repair',
+        work_id: workId,
+        capability_id: `controller.authority.recover:${workId}`,
+        requested_by: 'chatgpt',
+      },
+    ));
+    expect(automatedRecovery.status).toBe('blocked');
+    expect(automatedRecovery.summary).toContain('WORK_CONTROLLER_AUTHORITY_RECOVERY_USER_REQUIRED');
+
+    const recovered = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-recovery-2', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'repair',
+        work_id: workId,
+        capability_id: `controller.authority.recover:${workId}`,
+        requested_by: 'user',
+      },
+    ));
+    const recoveredAuthority = String(recovered.data?.controllerAuthorityId ?? '');
+    expect(recovered.status).toBe('ok');
+    expect(recovered.data?.authorityRecovered).toBe(true);
+    expect(recoveredAuthority).toStartWith('ctrl_');
+    expect(recoveredAuthority).not.toBe(initialAuthority);
+    expect(getControllerSession(store, workId)?.sessionId).toBe('transport-recovery-2');
+    expect(JSON.stringify(getControllerSession(store, workId))).not.toContain(recoveredAuthority);
+
+    const finalStop = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-recovery-3', runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'stop',
+        work_id: workId,
+        controller_authority_id: recoveredAuthority,
+        requested_by: 'chatgpt',
+        reason: 'exact recovered direct authority survives another transport rotation',
+      },
+    ));
+    expect(finalStop.status).toBe('ok');
     expect(getWorkContract(store, workId)?.status).toBe('cancelled');
   }, 15_000);
 

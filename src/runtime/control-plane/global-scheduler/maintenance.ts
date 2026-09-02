@@ -28,6 +28,7 @@ export async function runSchedulerPeriodicCleanup(input: {
     input.runtimeCleanup(input.controllerHome, {
       reason: 'periodic',
       nowMs: input.nowMs,
+      periodicSequence: Math.floor(input.nowMs / input.cleanupIntervalMs),
       protectedControllerPid: input.controllerPid,
     });
   } catch (error) {

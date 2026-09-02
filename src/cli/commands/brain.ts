@@ -1,6 +1,6 @@
 /**
  * `agentic-dev brain` / `forge brain` — explicit external knowledge
- * sync and archive promotion surface.
+ * sync and terminal-workflow promotion surface.
  *
  * Hooks only emit [BrainPromote] advisories. This command owns the deliberate
  * write boundary from repo files into ~/brain/<project>/*.
@@ -426,20 +426,98 @@ export function runBrain(mode: 'status' | 'check' | 'sync', opts: BrainCommandOp
   return { repoRoot, manifestPath, brainRoot: root, project: manifest.project || path.basename(repoRoot), mode, scope, selected: items, synced, skipped, issues, dryRun: opts.dryRun === true };
 }
 
-function findArchiveSources(repoRoot: string, slug: string): string[] {
-  const safeSlug = slug.replace(/[^A-Za-z0-9._-]+/g, '-');
-  const sources: string[] = [];
-  for (const dir of ['plans/archive', 'tasks/archive']) {
-    const fullDir = path.resolve(repoRoot, dir);
-    if (!fs.existsSync(fullDir)) continue;
-    for (const file of fs.readdirSync(fullDir).sort()) {
-      if (!file.endsWith('.md')) continue;
-      if (dir === 'plans/archive' && !file.startsWith('plan-')) continue;
-      if (dir === 'tasks/archive' && !file.startsWith('notes-')) continue;
-      if (file.includes(safeSlug)) sources.push(`${dir}/${file}`);
-    }
+interface HistoricalBrainSource {
+  sourcePath: string;
+  gitRef: string;
+  content: string;
+  terminalAt: string;
+}
+
+function gitText(repoRoot: string, args: string[]): string {
+  return execFileSync('git', ['-C', repoRoot, ...args], {
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    maxBuffer: 16 * 1024 * 1024,
+  });
+}
+
+function terminalSourceKind(sourcePath: string): 'plan' | 'notes' | null {
+  const normalized = normalizeSlashes(sourcePath);
+  const base = path.posix.basename(normalized);
+  if ((/^plans\/plan-[^/]+\.md$/).test(normalized) || (normalized.startsWith('plans/archive/') && base.startsWith('plan-') && base.endsWith('.md'))) {
+    return 'plan';
   }
-  return sources;
+  if ((/^tasks\/notes\/[^/]+\.notes\.md$/).test(normalized) || (normalized.startsWith('tasks/archive/') && base.startsWith('notes-') && base.endsWith('.md'))) {
+    return 'notes';
+  }
+  return null;
+}
+
+function findTerminalHistorySources(repoRoot: string, slug: string): HistoricalBrainSource[] {
+  const safeSlug = slug.replace(/[^A-Za-z0-9._-]+/g, '-');
+  let log = '';
+  try {
+    log = gitText(repoRoot, [
+      'log',
+      '--all',
+      '--date=iso-strict',
+      '--format=@@FORGE_COMMIT@@%H%x09%aI',
+      '--diff-filter=DR',
+      '-M',
+      '--name-status',
+      '--',
+      'plans',
+      'tasks',
+    ]);
+  } catch {
+    return [];
+  }
+
+  let commit = '';
+  let terminalAt = '';
+  const selected = new Map<'plan' | 'notes', HistoricalBrainSource>();
+  for (const rawLine of log.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.startsWith('@@FORGE_COMMIT@@')) {
+      const [nextCommit, nextTerminalAt = ''] = line.slice('@@FORGE_COMMIT@@'.length).split('\t');
+      commit = nextCommit || '';
+      terminalAt = nextTerminalAt || '';
+      continue;
+    }
+    if (!commit || !line.includes(safeSlug)) continue;
+    const fields = line.split('\t');
+    const status = fields[0] ?? '';
+    let sourcePath = '';
+    let gitRef = '';
+    if (status === 'D' && fields[1]) {
+      sourcePath = normalizeSlashes(fields[1]);
+      gitRef = `${commit}^:${sourcePath}`;
+    } else if (status.startsWith('R') && fields[1] && fields[2]) {
+      const oldPath = normalizeSlashes(fields[1]);
+      const newPath = normalizeSlashes(fields[2]);
+      if (terminalSourceKind(newPath)) {
+        sourcePath = newPath;
+        gitRef = `${commit}:${newPath}`;
+      } else {
+        sourcePath = oldPath;
+        gitRef = `${commit}^:${oldPath}`;
+      }
+    } else {
+      continue;
+    }
+    const kind = terminalSourceKind(sourcePath);
+    if (!kind || selected.has(kind)) continue;
+    try {
+      const content = gitText(repoRoot, ['show', gitRef]);
+      selected.set(kind, { sourcePath, gitRef, content, terminalAt });
+    } catch {
+      // A transition without a readable Git snapshot is not safe promotion
+      // evidence. Continue looking for an older durable terminal transition.
+    }
+    if (selected.size === 2) break;
+  }
+  return Array.from(selected.values());
 }
 
 function frontmatterValue(content: string, label: string): string {
@@ -461,29 +539,29 @@ export function runBrainPromote(opts: BrainPromoteOptions): BrainPromoteResult {
   const project = manifest.project || path.basename(repoRoot);
   const root = brainRoot();
   const issues: BrainIssue[] = [];
-  const sources = findArchiveSources(repoRoot, opts.slug);
+  const historicalSources = findTerminalHistorySources(repoRoot, opts.slug);
+  const sources = historicalSources.map((source) => `git:${source.gitRef}`);
   const brainPath = logicalBrainPath(project, opts.category, `${opts.slug}.md`);
   const targetPath = safeBrainPath(root, brainPath, `promote:${opts.slug}`, issues) || path.resolve(root, project, opts.category, `${opts.slug}.md`);
 
-  if (sources.length === 0) {
-    issue(issues, 'error', `No archived plan or notes found for slug: ${opts.slug}`);
+  if (historicalSources.length === 0) {
+    issue(issues, 'error', `No terminal plan or notes found in Git history for slug: ${opts.slug}`);
   }
 
-  const sections = sources.map((sourcePath) => {
-    const content = fs.readFileSync(path.resolve(repoRoot, sourcePath), 'utf-8');
-    const title = sourcePath;
-    return `## Source: ${title}\n\n${content.trim()}\n`;
-  });
-  const firstContent = sources.length > 0 ? fs.readFileSync(path.resolve(repoRoot, sources[0]), 'utf-8') : '';
-  const relatedPlan = sources.find((source) => source.startsWith('plans/archive/')) || frontmatterValue(firstContent, 'Related Plan');
-  const archivedAt = frontmatterValue(firstContent, 'Archived') || new Date().toISOString();
+  const sections = historicalSources.map((source) =>
+    `## Source: git:${source.gitRef}\n\n${source.content.trim()}\n`
+  );
+  const firstContent = historicalSources[0]?.content ?? '';
+  const relatedPlanSource = historicalSources.find((source) => terminalSourceKind(source.sourcePath) === 'plan');
+  const relatedPlan = relatedPlanSource ? `git:${relatedPlanSource.gitRef}` : frontmatterValue(firstContent, 'Related Plan');
+  const terminalAt = historicalSources[0]?.terminalAt || frontmatterValue(firstContent, 'Archived') || new Date().toISOString();
   const outcome = frontmatterValue(firstContent, 'Outcome') || 'Promoted';
   const body = [
     '---',
     `slug: ${yamlQuote(opts.slug)}`,
     `category: ${yamlQuote(opts.category)}`,
     `source_plan: ${yamlQuote(relatedPlan || '')}`,
-    `archived_at: ${yamlQuote(archivedAt)}`,
+    `terminal_at: ${yamlQuote(terminalAt)}`,
     `outcome: ${yamlQuote(outcome)}`,
     `repo: ${yamlQuote(repoRoot)}`,
     '---',
@@ -551,7 +629,7 @@ function exitCodeFor(issues: BrainIssue[]): number {
 }
 
 export function buildBrainCommand(): Command {
-  const brain = new Command('brain').description('Manage explicit repo-to-brain sync and archive promotion');
+  const brain = new Command('brain').description('Manage explicit repo-to-brain sync and terminal-workflow promotion');
 
   brain
     .command('status')
@@ -593,8 +671,8 @@ export function buildBrainCommand(): Command {
 
   brain
     .command('promote')
-    .description('Promote archived plan/notes by slug into ~/brain/<project>/<category>/')
-    .requiredOption('--slug <slug>', 'Archived workflow slug')
+    .description('Promote terminal plan/notes from Git history into ~/brain/<project>/<category>/')
+    .requiredOption('--slug <slug>', 'Terminal workflow slug')
     .requiredOption('--category <category>', 'Target category: decisions|runbooks|patterns|references')
     .option('--repo <path>', 'Repository root to inspect')
     .option('--dry-run', 'Show planned promotion without writing files')

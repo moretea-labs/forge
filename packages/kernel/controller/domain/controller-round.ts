@@ -9,6 +9,13 @@ export const CONTROLLER_ROUND_DISPOSITIONS = [
 export type ControllerRoundDisposition = (typeof CONTROLLER_ROUND_DISPOSITIONS)[number];
 
 export const CONTROLLER_RELAY_ABANDONED_RELEASE_ERROR = 'CONTROLLER_RELAY_CLAIM_RELEASED_WITHOUT_DISPOSITION';
+
+export type ControllerRoundLifecycleStage =
+  | 'dispatching'
+  | 'dispatch_confirmed'
+  | 'controller_claimed'
+  | 'semantic_round_closed';
+
 export type ControllerRoundRelayStatus =
   | 'pending_release'
   | 'dispatching'
@@ -28,6 +35,8 @@ export interface ControllerRoundRelayRecord {
   requirementId?: string;
   disposition: ControllerRoundDisposition;
   status: ControllerRoundRelayStatus;
+  /** Durable semantic stage; transport/session state must never substitute for lifecycle authority. */
+  lifecycleStage?: ControllerRoundLifecycleStage;
   controllerId: string;
   controllerType: ControllerType;
   principalId: string;

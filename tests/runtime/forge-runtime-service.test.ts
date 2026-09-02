@@ -25,7 +25,7 @@ import {
   type PackageRuntimeActivationRequest,
 } from '../../src/runtime/root/package-runtime-service';
 import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
-import { ensurePackageConnectorService, packageConnectorEndpointStatusHealthy, packageConnectorLaunchSpec, packageConnectorServiceMatchesRelease, packageConnectorServicePaths, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit, waitForPackageConnectorEndpointReady } from '../../src/runtime/root/package-connector-service';
+import { ensurePackageConnectorService, packageConnectorEndpointStatusHealthy, packageConnectorLaunchSpec, packageConnectorServiceMatchesRelease, packageConnectorServicePaths, packageConnectorSystemdInstallCommands, readPackageConnectorServiceAuthority, renderPackageConnectorLaunchAgent, renderPackageConnectorSystemdUserUnit, waitForPackageConnectorEndpointReady } from '../../src/runtime/root/package-connector-service';
 import { retireConflictingForgeLaunchAgents } from '../../src/cli/controller/launch-agents';
 import { writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 
@@ -580,6 +580,43 @@ describe('Forge Runtime service', () => {
     const unit = renderPackageConnectorSystemdUserUnit({ launch });
     expect(unit).toContain('Restart=on-failure');
     expect(unit).toContain('8767');
+  });
+
+  test('uses no local MCP auth only when an instance explicitly selects Secure Tunnel auth', () => {
+    const fx = fixture(), packageRoot = join(fx.root, 'package');
+    for (const dir of ['src/cli', 'src/runtime/shared', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
+    writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
+    writeFileSync(join(packageRoot, 'src', 'cli', 'index.ts'), '');
+    writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), '');
+    writeMcpServiceLocalConfig(fx.home, { auth: { mode: 'none' }, identity: { forgeInstanceId: 'forge-wsl' }, chatgpt: { } });
+    const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'connector-secure-tunnel-auth-test' });
+    const launch = packageConnectorLaunchSpec({ release, controllerHome: fx.home, endpoint: 'http://127.0.0.1:8767/mcp' });
+    expect(launch.authMode).toBe('none');
+    expect(launch.args.join(' ')).toContain('--auth none');
+    expect(renderPackageConnectorSystemdUserUnit({ launch })).toContain('Description=Forge ChatGPT Secure Tunnel Connector');
+  });
+
+  test('binds a persisted Forge instance identity into the durable OAuth Connector', () => {
+    const fx = fixture(), packageRoot = join(fx.root, 'package');
+    for (const dir of ['src/cli', 'src/runtime/shared', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
+    writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
+    writeFileSync(join(packageRoot, 'src', 'cli', 'index.ts'), '');
+    writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), '');
+    writeMcpServiceLocalConfig(fx.home, { identity: { forgeInstanceId: 'forge-wsl' }, chatgpt: { } });
+    const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'connector-instance-id-test' });
+    const launch = packageConnectorLaunchSpec({ release, controllerHome: fx.home, endpoint: 'http://127.0.0.1:8767/mcp' });
+    expect(launch.environment.FORGE_MCP_INSTANCE_ID).toBe('forge-wsl');
+    expect(renderPackageConnectorSystemdUserUnit({ launch })).toContain('FORGE_MCP_INSTANCE_ID=forge-wsl');
+  });
+
+  test('restarts a rewritten systemd Connector unit so its active process receives the new release environment', () => {
+    expect(packageConnectorSystemdInstallCommands('com.moretea.forge.mcp-gateway.test.service')).toEqual([
+      ['--user', 'daemon-reload'],
+      ['--user', 'enable', 'com.moretea.forge.mcp-gateway.test.service'],
+      ['--user', 'restart', 'com.moretea.forge.mcp-gateway.test.service'],
+    ]);
   });
 
   test('classifies only expected MCP/OAuth connector responses as healthy', () => {

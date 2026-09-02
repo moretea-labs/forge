@@ -55,9 +55,14 @@ export function tunnelRuntimeProfileTargetsEndpoint(profilePath: string | undefi
   try { return readFileSync(profilePath, 'utf8').includes(endpoint); } catch { return false; }
 }
 
-export function openAiSecureTunnelStatusArgs(alias: string): string[] {
+export function openAiSecureTunnelStatusArgs(
+  alias: string,
+  options: Pick<OpenAiSecureTunnelRuntimeConfig, 'adminProfile'> = {},
+): string[] {
   if (!isOpenAiTunnelAlias(alias)) throw new Error('OPENAI_TUNNEL_ALIAS_INVALID');
-  return ['runtimes', 'status', alias, '--json'];
+  const args = ['runtimes', 'status', alias, '--json'];
+  if (options.adminProfile?.trim()) args.push('--admin-profile', options.adminProfile.trim());
+  return args;
 }
 
 export function openAiSecureTunnelConnectArgs(config: OpenAiSecureTunnelRuntimeConfig): string[] {

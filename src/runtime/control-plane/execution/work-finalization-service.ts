@@ -107,6 +107,69 @@ export function targetAdvanceLinearMergeCommits(root: string, targetRevision: st
   return output.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
 
+export interface FailedNonLinearTargetAdvanceRepairInspection {
+  eligible: boolean;
+  reason:
+    | 'equivalent_linear_repair'
+    | 'same_revision'
+    | 'target_not_ancestor_of_failed'
+    | 'failed_candidate_is_linear'
+    | 'target_not_ancestor_of_repair'
+    | 'repair_contains_merge'
+    | 'tree_mismatch';
+  failedHead: string;
+  repairedHead: string;
+  targetHead: string;
+  failedTree: string;
+  repairedTree: string;
+  failedMergeCommits: string[];
+  repairedMergeCommits: string[];
+}
+
+function gitTree(root: string, revision: string, label: string): string {
+  const result = spawnSync('git', ['-C', root, 'rev-parse', '--verify', `${revision}^{tree}`], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  if (result.status !== 0 || result.error || typeof result.stdout !== 'string' || !result.stdout.trim()) {
+    throw new Error(`WORK_TARGET_ADVANCE_${label}_TREE_UNAVAILABLE: ${revision}`);
+  }
+  return result.stdout.trim();
+}
+
+/**
+ * Inspect the only safe history-repair case after target-advance finalization
+ * rejected a controller-created merge commit. The repaired candidate may move
+ * backwards in commit ancestry only when it is a clean linear representation
+ * of the exact same Git tree above the same reconciled target. This proves a
+ * history-shape repair, not a source-content rewrite.
+ */
+export function inspectFailedNonLinearTargetAdvanceRepair(
+  root: string,
+  failedRevision: string,
+  repairedRevision: string,
+  targetRevision: string,
+): FailedNonLinearTargetAdvanceRepairInspection {
+  const failedHead = gitCommit(root, failedRevision, 'FAILED_NON_LINEAR_CANDIDATE');
+  const repairedHead = gitCommit(root, repairedRevision, 'REPAIRED_LINEAR_CANDIDATE');
+  const targetHead = gitCommit(root, targetRevision, 'REPAIRED_LINEAR_TARGET');
+  const failedTree = gitTree(root, failedHead, 'FAILED_NON_LINEAR');
+  const repairedTree = gitTree(root, repairedHead, 'REPAIRED_LINEAR');
+  const failedMergeCommits = gitIsAncestor(root, targetHead, failedHead)
+    ? targetAdvanceLinearMergeCommits(root, targetHead, failedHead)
+    : [];
+  const repairedMergeCommits = gitIsAncestor(root, targetHead, repairedHead)
+    ? targetAdvanceLinearMergeCommits(root, targetHead, repairedHead)
+    : [];
+  const base = { failedHead, repairedHead, targetHead, failedTree, repairedTree, failedMergeCommits, repairedMergeCommits };
+  if (failedHead === repairedHead) return { ...base, eligible: false, reason: 'same_revision' };
+  if (!gitIsAncestor(root, targetHead, failedHead)) return { ...base, eligible: false, reason: 'target_not_ancestor_of_failed' };
+  if (failedMergeCommits.length === 0) return { ...base, eligible: false, reason: 'failed_candidate_is_linear' };
+  if (!gitIsAncestor(root, targetHead, repairedHead)) return { ...base, eligible: false, reason: 'target_not_ancestor_of_repair' };
+  if (repairedMergeCommits.length > 0) return { ...base, eligible: false, reason: 'repair_contains_merge' };
+  if (failedTree !== repairedTree) return { ...base, eligible: false, reason: 'tree_mismatch' };
+  return { ...base, eligible: true, reason: 'equivalent_linear_repair' };
+}
+
 function normalizedReadScope(scope: string): string {
   return scope.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '') || '.';
 }
@@ -941,6 +1004,99 @@ function retryHandleStateForFinalization(stages: WorkFinalizationStages): WorkHa
   return 'validating';
 }
 
+function reconcileFailedNonLinearTargetAdvanceRepair(
+  ctx: McpExecutionContext,
+  current: WorkHandleState,
+  args: Record<string, unknown>,
+): WorkHandleState {
+  const failure = current.finalization.lastError ?? current.failureReason ?? '';
+  if (
+    current.state !== 'failed'
+    || current.finalization.merge !== 'failed'
+    || args.merge !== true
+    || !current.managedWorktree
+    || !current.expectedHead
+    || !failure.startsWith('WORK_TARGET_ADVANCE_LINEAR_HISTORY_VIOLATION:')
+  ) return current;
+
+  const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
+  const worktree = selectRepositoryCheckout(repository, current.checkoutId);
+  const status = repositoryGitStatus(worktree);
+  const repairedHead = status.head;
+  if (!status.clean || !repairedHead || repairedHead === current.expectedHead) return current;
+  const branch = spawnSync('git', ['-C', worktree.canonicalRoot, 'branch', '--show-current'], {
+    encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
+  });
+  if (branch.status !== 0 || String(branch.stdout ?? '').trim() !== current.branch) {
+    throw new Error('WORK_TARGET_ADVANCE_REPAIR_BRANCH_MISMATCH');
+  }
+
+  const targetRevision = workDeliveryBaseRevision(current);
+  if (!targetRevision) throw new Error('WORK_TARGET_ADVANCE_REPAIR_TARGET_MISSING');
+  const inspection = inspectFailedNonLinearTargetAdvanceRepair(
+    worktree.canonicalRoot,
+    current.expectedHead,
+    repairedHead,
+    targetRevision,
+  );
+  if (!inspection.eligible) {
+    throw new Error(`WORK_TARGET_ADVANCE_REPAIR_UNSAFE: ${inspection.reason}`);
+  }
+
+  const contract = contractFor(ctx, current);
+  if (!contract) throw new Error(`WORK_TARGET_ADVANCE_REPAIR_CONTRACT_MISSING: ${current.workContractId ?? current.workId}`);
+  const changedPaths = gitChangedPaths(worktree.canonicalRoot, inspection.targetHead, inspection.repairedHead);
+  const scopeViolation = targetAdvanceWorkScopeViolation(contract, changedPaths);
+  if (scopeViolation) {
+    throw new Error(`WORK_TARGET_ADVANCE_REPAIR_SCOPE_VIOLATION: Work-owned ${scopeViolation.kind} path ${scopeViolation.path}`);
+  }
+
+  const repaired = withControllerLock(
+    ctx.controllerHome,
+    { scope: 'worktree', repoId: current.repositoryId, worktreeId: current.checkoutId },
+    `work-finalize:${current.workId}:repair-non-linear-target-advance`,
+    () => {
+      const fresh = readWorkHandle(ctx.controllerHome, current.repositoryId, current.workId) ?? current;
+      if (fresh.state !== 'failed' || fresh.expectedHead !== inspection.failedHead || fresh.finalization.merge !== 'failed') {
+        throw new Error('WORK_TARGET_ADVANCE_REPAIR_STALE_HANDLE');
+      }
+      return transitionWorkHandle(ctx.controllerHome, fresh, 'validating', {
+        expectedHead: inspection.repairedHead,
+        deliveryBaseCommit: inspection.targetHead,
+        failureReason: undefined,
+        validationRun: undefined,
+        validatedInputFingerprint: undefined,
+        finalization: {
+          ...fresh.finalization,
+          validation: 'pending',
+          commit: fresh.finalization.commit === 'failed' ? 'pending' : fresh.finalization.commit,
+          merge: 'pending',
+          lastError: undefined,
+        },
+      });
+    },
+    10_000,
+  );
+  replaceTargetAdvanceScopeEvidence(ctx, contract, changedPaths);
+  transitionWorkContractPhase(
+    { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
+    contract.workId,
+    {
+      phase: 'delivery',
+      status: 'running',
+      state: 'active',
+      summary: `Repaired non-linear target-advance history ${inspection.failedHead} -> ${inspection.repairedHead} with identical Git tree; exact validation is required again before delivery.`,
+    },
+  );
+  appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, contract.workId, {
+    title: 'non-linear target-advance candidate repaired',
+    summary: `Replaced failed merge candidate ${inspection.failedHead} with linear candidate ${inspection.repairedHead} above target ${inspection.targetHead} only after exact Git-tree equality, zero repaired merge commits, clean exact Work checkout/branch ownership, and Work path-scope verification. Prior validation identity was invalidated and must be re-established.`,
+    detailLevel: 'summary',
+  });
+  markRepositoryProjectionDirty(ctx.controllerHome, current.repositoryId, `finalize:${current.workId}:non-linear-target-repair`);
+  return repaired;
+}
+
 export function resetFinalizationStagesForRequest(
   stages: WorkFinalizationStages,
   wants: { commit: boolean; merge: boolean; cleanup: boolean },
@@ -1034,7 +1190,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
   const session = requireSession(ctx, args);
   let current = workForSession(ctx, session, args, { allowClaimedTerminalCleanup: args.cleanup !== false });
   const requestedWants = { commit: args.commit === true, merge: args.merge === true, cleanup: args.cleanup === true };
-  const retryStage = current.state === 'failed'
+  let retryStage = current.state === 'failed'
     ? requestedFailedFinalizationRetry(current.finalization, requestedWants)
     : undefined;
   const retryContract = retryStage ? contractFor(ctx, current) : undefined;
@@ -1060,6 +1216,8 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     return await reconcileTerminalCleanup(ctx, session, current, args, terminalOutcome);
   }
   const terminalizationOwner = assertWorkControllerOwnership(ctx, session, current, args);
+  current = reconcileFailedNonLinearTargetAdvanceRepair(ctx, current, args);
+  if (current.state !== 'failed') retryStage = undefined;
   if (terminalOutcome && args.cleanup === false) {
     const recordedAt = new Date().toISOString();
     current = withControllerLock(

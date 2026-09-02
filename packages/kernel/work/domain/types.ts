@@ -1,7 +1,7 @@
-import type { ProcessCheckReceiptEvidence } from '../../../../src/runtime/evidence/process-check-receipt';
-import type { CompletionReceipt as RepositoryCompletionReceipt } from '../../../../src/cli/controller/types';
-import type { AccessMode } from '../../../../src/runtime/control-plane/governance/access-policy';
-import type { RouteDecision } from '../../../../src/runtime/control-plane/routing/route-policy';
+import type { ExecutionPlacement, ScopeRef } from '../../identity/api/index';
+import type { ProcessCheckReceiptEvidence } from './check-receipt';
+import type { WorkAccessMode, WorkRouteDecisionSnapshot } from './execution-snapshot';
+import type { RepositoryCompletionReceipt } from './repository-completion-receipt';
 import type { WorkImplementationReviewRecord } from './implementation-review';
 
 /** Work-persisted orchestration metadata is Kernel-owned; facade is a consumer. */
@@ -256,7 +256,7 @@ export interface WorkContractConstraints {
   allowDestructive?: boolean;
   requireHandoffOnAmbiguity?: boolean;
   /** Immutable execution-policy snapshot captured when work starts. */
-  accessMode?: AccessMode;
+  accessMode?: WorkAccessMode;
   /** current is the stability-first default; isolated is opt-in or used for explicit parallelism. */
   workspaceMode?: 'current' | 'isolated' | 'auto';
   requireWorktree?: boolean;
@@ -350,8 +350,13 @@ export interface WorkReconciliationRecord {
 export interface WorkContract {
   schemaVersion: 1 | 2;
   workId: string;
+  /** Portable semantic scope. New records derive this from Requirement/Plan/Work identity, never local repository registration. */
+  scopeRef?: ScopeRef;
+  /** Replaceable node-local placement. repoId/checkoutId below remain compatibility fields during V2 migration. */
+  executionPlacement?: ExecutionPlacement;
+  /** @deprecated Node-local placement compatibility field; do not use as semantic Work identity. */
   repoId: string;
-  /** Execution identity snapshot. Optional only for legacy records. */
+  /** @deprecated Node-local placement compatibility field. Optional only for legacy/current-workspace records. */
   checkoutId?: string;
   principalId?: string;
   controllerInstanceId?: string;
@@ -360,7 +365,7 @@ export interface WorkContract {
   repositoryBaseState?: 'revision' | 'unborn';
   workspaceFingerprint?: string;
   routeDecisionFingerprint?: string;
-  routeDecision?: RouteDecision;
+  routeDecision?: WorkRouteDecisionSnapshot;
   mode: ExecutionMode;
   objective: string;
   acceptanceCriteria: string[];
@@ -377,6 +382,12 @@ export interface WorkContract {
   lifecycleRole?: 'primary' | 'execution_child';
   /** Optional objective-level parent when this Work is only an execution child. */
   parentWorkId?: string;
+  /** Historical predecessors explicitly replaced by this Work. Relationship evidence only; never deletion authority. */
+  supersedes?: string[];
+  /** Current successor that replaced this Work. Presence makes this Work historical even before cleanup terminalizes it. */
+  supersededBy?: string;
+  /** Bounded durable reason for the supersession edge. */
+  supersessionReason?: string;
   dispatchState: DispatchState;
   evidenceState: EvidenceState;
   completionOutcome?: CompletionOutcome;
@@ -450,6 +461,31 @@ export interface SubmittedWorkOperation {
     mode: string;
     quantity?: number;
   }>;
+}
+
+/** Resolve portable semantic scope without consulting node-local repository identity. */
+export function semanticScopeRefForWork(
+  work: Pick<WorkContract, 'workId' | 'scopeRef' | 'requirementId' | 'planId' | 'planStepId'>,
+): ScopeRef {
+  if (work.scopeRef) return work.scopeRef;
+  if (work.requirementId?.trim()) return { schemaVersion: 1, kind: 'requirement', id: work.requirementId.trim() };
+  if (work.planId?.trim() && work.planStepId?.trim()) {
+    return { schemaVersion: 1, kind: 'plan_step', id: `${work.planId.trim()}:${work.planStepId.trim()}` };
+  }
+  if (work.planId?.trim()) return { schemaVersion: 1, kind: 'plan', id: work.planId.trim() };
+  return { schemaVersion: 1, kind: 'work', id: work.workId.trim() };
+}
+
+/** Resolve replaceable execution placement from explicit V2 placement or compatibility fields. */
+export function executionPlacementForWork(
+  work: Pick<WorkContract, 'executionPlacement' | 'repoId' | 'checkoutId'>,
+): ExecutionPlacement {
+  if (work.executionPlacement) return work.executionPlacement;
+  return {
+    schemaVersion: 1,
+    repositoryId: work.repoId,
+    ...(work.checkoutId?.trim() ? { checkoutId: work.checkoutId.trim() } : {}),
+  };
 }
 
 export interface WorkContractStore {

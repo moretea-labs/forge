@@ -74,7 +74,7 @@ with the project.
 
 ## Information Lifecycle
 
-- Notes: `tasks/notes/<plan-stem>.notes.md` is task-local and auditable. It should not be treated as durable knowledge by default.
+- Notes: `tasks/notes/<plan-stem>.notes.md` is task-local and auditable while the workflow is live. Promote durable truth before closeout; terminal notes are deleted after their exact final state is committed to Git.
 - Current status: `tasks/current.md` is a tracked derived snapshot for orientation only. It must be regenerated from source artifacts and must not contain hand-written kanban/checklist state.
 - Evidence: `.ai/harness/checks/latest.json` is the current gate, while `.ai/harness/runs/*.json` keeps immutable verification snapshots for later audit.
 - Memory: `docs/researches/`, `tasks/lessons.md`, and gbrain are advisory. Current repo state and evidence override summaries.

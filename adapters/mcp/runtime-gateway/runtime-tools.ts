@@ -28,7 +28,8 @@ import { completeRemoteEffectWorkFromProcessReceipt } from '../../../packages/ke
 import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../../../src/runtime/execution/process-runtime/command-facade';
 import { buildJobOperationDigest } from '../../../src/runtime/control-plane/facade/operation-digest';
 import { readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, type WorkHandleState } from '../../../src/runtime/control-plane/execution/work-handle-store';
-import { ensureRepositoryWorkHandle, rebindRepositoryWorkHandleControllerIdentity } from '../../../src/runtime/control-plane/execution/work-handle-authority';
+import { ensureRepositoryWorkHandle, rebindRepositoryWorkHandleControllerIdentity, reconcileRepositoryWorkHandlePlacement } from '../../../src/runtime/control-plane/execution/work-handle-authority';
+import { recoverDirectControllerAuthority } from '../../../src/runtime/control-plane/execution/controller-authority-recovery';
 import { recoverTerminalWorkHandle } from '../../../src/runtime/control-plane/execution/work-terminal-cleanup';
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from '../../../src/runtime/control-plane/execution/verification-evidence';
 import { resolveWorkVerificationContext } from '../../../src/runtime/control-plane/execution/work-verification-context';
@@ -59,10 +60,14 @@ import {
 import { applyScheduleDedupe, buildScheduleDedupeReport, deleteSchedule } from '../../../packages/kernel/scheduler/api/index';
 import {
   createWorkContinuationSchedule,
+  ensureControllerDispositionContinuation,
   getWorkContinuationSchedule,
   listWorkContinuationSchedules,
   pauseWorkContinuationSchedule,
+  repositoryCleanContinuationEventName,
+  resolveHandoffAndTriggerContinuation,
   resumeWorkContinuationSchedule,
+  triggerWorkContinuationRepositoryEvent,
   triggerWorkContinuationSchedule,
   type ContinuationControllerType,
 } from '../../../src/runtime/workflow/schedules/work-continuation';
@@ -168,7 +173,6 @@ import {
   summarizeCapabilityGroups,
   listHandoffItems,
   normalizeCheckIds,
-  resolveHandoffItem,
   runGoalWorkloop,
   runSelfHealingLoop,
   delegateToCodexCerebellum,
@@ -3205,13 +3209,18 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           }) as unknown as Record<string, unknown>);
         }
         if (operation === 'resolve') {
-          const item = resolveHandoffItem(store, String(args.handoff_id ?? '').trim(), {
-            decision: String(args.decision ?? 'resolved'),
-            resolver: String(args.resolver ?? 'chatgpt'),
-          });
+          const { item, continuationOccurrences } = await resolveHandoffAndTriggerContinuation(
+            ctx.controllerHome,
+            repository.repoId,
+            String(args.handoff_id ?? '').trim(),
+            {
+              decision: String(args.decision ?? 'resolved'),
+              resolver: String(args.resolver ?? 'chatgpt'),
+            },
+          );
           return result(buildFacadeResult({
             summary: `Resolved handoff ${item.id}.`,
-            data: { item: { id: item.id, status: item.status, decision: item.decision, resolver: item.resolver } },
+            data: { item: { id: item.id, status: item.status, decision: item.decision, resolver: item.resolver }, continuationOccurrences },
           }) as unknown as Record<string, unknown>);
         }
         if (operation === 'dismiss') {
@@ -3912,6 +3921,42 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Schedule operation failed.', data: {} }) as unknown as Record<string, unknown>, true);
           }
         }
+        const directAuthorityRecoveryWorkId = operation === 'repair' && typeof args.capability_id === 'string' && args.capability_id.startsWith('controller.authority.recover:')
+          ? args.capability_id.slice('controller.authority.recover:'.length).trim()
+          : '';
+        if (directAuthorityRecoveryWorkId) {
+          const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+          if (!explicitWorkId || explicitWorkId !== directAuthorityRecoveryWorkId) {
+            return result(buildFacadeResult({
+              status: 'blocked',
+              summary: `WORK_CONTROLLER_AUTHORITY_RECOVERY_SCOPE_MISMATCH: capability targets ${directAuthorityRecoveryWorkId}; exact work_id is required.`,
+              data: { workId: directAuthorityRecoveryWorkId, authorityRecovered: false },
+            }) as unknown as Record<string, unknown>, true);
+          }
+          try {
+            const recovered = recoverDirectControllerAuthority({
+              controllerHome: ctx.controllerHome,
+              repoId: repository.repoId,
+              repositoryActiveCheckoutId: repository.activeCheckoutId,
+              workId: directAuthorityRecoveryWorkId,
+              requestedBy: typeof args.requested_by === 'string' ? args.requested_by : undefined,
+              identity: authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true }),
+              runtime: runtimeIdentitySnapshot(ctx),
+              leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
+            });
+            return result(buildFacadeResult({
+              summary: `Direct controller authority for exact Work ${directAuthorityRecoveryWorkId} was rekeyed onto the current authenticated transport without changing semantic Work ownership.`,
+              data: recovered,
+            }) as unknown as Record<string, unknown>);
+          } catch (error) {
+            return result(buildFacadeResult({
+              status: 'blocked',
+              summary: error instanceof Error ? error.message : 'Direct controller authority recovery failed.',
+              data: { workId: directAuthorityRecoveryWorkId, authorityRecovered: false },
+            }) as unknown as Record<string, unknown>, true);
+          }
+        }
+
         if (operation === 'controller_get_owner') {
           const owner = getControllerSession(store, String(args.work_id ?? '').trim());
           return result(buildFacadeResult({ summary: owner ? `Work is claimed by ${owner.controllerId}.` : 'Work has no active controller owner.', data: { owner } }) as unknown as Record<string, unknown>);
@@ -4039,12 +4084,19 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               maxRepeatedState: typeof args.max_repeated_state === 'number' ? args.max_repeated_state : undefined,
               maxFailures: typeof args.max_failures === 'number' ? args.max_failures : undefined,
             });
+            const continuationSchedule = ensureControllerDispositionContinuation(
+              ctx.controllerHome,
+              repository.repoId,
+              relay,
+            );
             return result(buildFacadeResult({
               status: relay.status === 'blocked' ? 'blocked' : 'ok',
               summary: relay.status === 'pending_release'
                 ? `Controller disposition ${relay.disposition} recorded; relay will dispatch only after the current lease is released.`
-                : `Controller disposition ${relay.disposition} recorded with status ${relay.status}.`,
-              data: { relay },
+                : continuationSchedule
+                  ? `Controller disposition ${relay.disposition} recorded with status ${relay.status}; exact-Work continuation is now event-driven by ${continuationSchedule.trigger.eventName}.`
+                  : `Controller disposition ${relay.disposition} recorded with status ${relay.status}.`,
+              data: { relay, ...(continuationSchedule ? { continuationSchedule } : {}) },
             }) as unknown as Record<string, unknown>, relay.status === 'blocked');
           } catch (error) {
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Controller disposition failed.', data: {} }) as unknown as Record<string, unknown>, true);
@@ -5020,11 +5072,28 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           const lifecycleClosed = Boolean(completed?.completionReceipt)
             && (!readWorkHandle(ctx.controllerHome, repository.repoId, workId)
               || readWorkHandle(ctx.controllerHome, repository.repoId, workId)?.finalization.worktreeCleanup !== 'pending');
+          let blockerResolutionOccurrences: Array<{ scheduleId: string; occurrenceId?: string; status?: string }> = [];
+          if (lifecycleClosed && facade.status === 'ok') {
+            const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
+              ? args.target_branch.trim()
+              : repository.defaultBranch || 'main';
+            const targetStatus = repositoryGitStatus(repository);
+            if (targetStatus.clean && targetStatus.branch === targetBranch && targetStatus.head) {
+              blockerResolutionOccurrences = await triggerWorkContinuationRepositoryEvent(
+                ctx.controllerHome,
+                repository.repoId,
+                repositoryCleanContinuationEventName(targetBranch),
+                `repository-clean:${targetBranch}:${targetStatus.head}`,
+                { data: { targetBranch, targetRevision: targetStatus.head, sourceWorkId: workId } },
+              );
+            }
+          }
           const response = {
             ...facade,
             data: {
               ...(facade.data && typeof facade.data === 'object' ? facade.data : {}),
               lifecycleClosed,
+              ...(blockerResolutionOccurrences.length > 0 ? { blockerResolutionOccurrences } : {}),
             },
           };
           return result(response as unknown as Record<string, unknown>, response.status === 'blocked' || response.status === 'failed' || response.status === 'not_found');
@@ -5082,6 +5151,11 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 repositoryId: repository.repoId,
                 workId,
                 identity: { sessionId: identity.sessionId, principalId: identity.principalId },
+              });
+              reconcileRepositoryWorkHandlePlacement({
+                controllerHome: ctx.controllerHome,
+                repositoryId: repository.repoId,
+                workId,
               });
               const recovered = ensureRunningRepositoryWorkCheckout({
                 controllerHome: ctx.controllerHome,

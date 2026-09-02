@@ -8,12 +8,14 @@ import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-actions';
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
-import { acceptReviewedDirectEditWorkReconciliation, completeReviewedDirectEditWorkAfterCommit, prepareReviewedDirectEditWorkCommit, reconcileFinalizedDirectEditWorksAfterCommit, type ReviewedDirectEditWorkCommitPlan } from '../../src/runtime/control-plane/execution/direct-edit-work-completion';
+import { acceptReviewedDirectEditWorkReconciliation, completeReviewedDirectEditWorkAfterCommit, hasReviewedDirectEditReconciliationOwnership, isFailedReviewedDirectEditWorkRecovery, prepareReviewedDirectEditWorkCommit, reconcileFinalizedDirectEditWorksAfterCommit, type ReviewedDirectEditWorkCommitPlan } from '../../src/runtime/control-plane/execution/direct-edit-work-completion';
 import { implementationReviewContentFingerprint } from '../../src/runtime/control-plane/execution/implementation-review-content';
 import { createWorkContract, getWorkContract, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
+import type { WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
+
 
 const roots: string[] = [];
 afterEach(() => {
@@ -276,7 +278,59 @@ describe('standalone Direct Edit Work completion', () => {
     expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(headBefore);
   });
 
+  test('authorizes ownerless failed reviewed recovery only for the exact historical WorkHandle principal', () => {
+    const fx = fixture();
+    const work = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)!;
+    const failedWork = { ...work, workKind: 'repository_change' as const, status: 'failed' as const };
+    const now = new Date().toISOString();
+    const handle: WorkHandleState = {
+      schemaVersion: 1,
+      workId: fx.workId,
+      workContractId: fx.workId,
+      sessionId: 'historical-session',
+      principalId: 'historical-principal',
+      repositoryId: fx.repoId,
+      checkoutId: fx.checkoutId,
+      worktreePath: fx.repoRoot,
+      branch: 'main',
+      managedWorktree: false,
+      permissionSnapshotVersion: 1,
+      state: 'failed',
+      createdAt: now,
+      updatedAt: now,
+      finalization: {
+        validation: 'failed',
+        commit: 'pending',
+        merge: 'pending',
+        branchCleanup: 'pending',
+        worktreeCleanup: 'pending',
+        lastError: 'WORK_HANDLE_HEAD_CHANGED: expected old, found current',
+      },
+    };
+
+    expect(isFailedReviewedDirectEditWorkRecovery(failedWork, handle)).toBe(true);
+    expect(hasReviewedDirectEditReconciliationOwnership({
+      work: failedWork,
+      handle,
+      callerPrincipal: 'historical-principal',
+    })).toBe(true);
+    expect(hasReviewedDirectEditReconciliationOwnership({
+      work: failedWork,
+      handle,
+      callerPrincipal: 'foreign-principal',
+    })).toBe(false);
+    expect(hasReviewedDirectEditReconciliationOwnership({
+      work: failedWork,
+      handle,
+      activeOwnerPrincipal: 'active-foreign-principal',
+      callerPrincipal: 'historical-principal',
+    })).toBe(false);
+    expect(isFailedReviewedDirectEditWorkRecovery({ ...failedWork, status: 'cancelled' }, handle)).toBe(false);
+    expect(isFailedReviewedDirectEditWorkRecovery(failedWork, { ...handle, managedWorktree: true })).toBe(false);
+  });
+
   test('retires postcommit completion authority so new Direct Edit delivery cannot bypass precommit implementation review', () => {
+
     const fx = fixture();
     commitExample(fx.repoRoot);
 

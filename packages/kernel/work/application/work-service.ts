@@ -77,6 +77,8 @@ export {
   getWorkContractByRequestId,
   acceptSubmittedWorkContract,
   listWorkContracts,
+  isCurrentWorkContract,
+  supersedeWorkContract,
   reconcileStaleWorkContracts,
   getWorkContract,
   summarizeWorkContract,
@@ -94,6 +96,7 @@ export {
 export type {
   CreateWorkContractInput,
   ListWorkContractOptions,
+  SupersedeWorkContractInput,
   WorktreeAvailability,
   WorkContractReconciliationInput,
   WorkContractReconciliationResult,

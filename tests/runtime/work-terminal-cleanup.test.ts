@@ -19,6 +19,7 @@ import { createProcessRecord } from '../../src/runtime/execution/process-runtime
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
 import { resetFinalizationStagesForRequest, selectDefaultWorkValidationChecks } from '../../src/runtime/gateway/mcp/execution-tools';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
+import { cleanupControllerRuntimeState } from '../../src/runtime/control-plane/runtime-cleanup';
 
 const roots: string[] = [];
 
@@ -484,6 +485,85 @@ describe('terminal Work cleanup', () => {
     expect(result.receipt.preservation.bundleSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(result.receipt.branchCleanup).toMatchObject({ status: 'archived', uniqueCommits: 1 });
     expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(false);
+  });
+
+
+  test('does not create a bundle for ancestry-only unique commits with no source delta', async () => {
+    const fx = fixture('empty-unique');
+    git(fx.workspace.root!, ['commit', '--allow-empty', '-m', 'chore: ancestry-only marker']);
+    const head = git(fx.workspace.root!, ['rev-parse', 'HEAD']);
+    const current = writeWorkHandle(fx.controllerHome, { ...fx.handle, expectedHead: head });
+
+    const result = await cleanup(fx, current);
+
+    expect(result.receipt.complete).toBe(true);
+    expect(result.receipt.branchCleanup).toMatchObject({ status: 'deleted', uniqueCommits: 1 });
+    expect(result.receipt.preservation.bundlePath).toBeUndefined();
+    expect(result.receipt.preservation.bundleRetirement).toMatchObject({
+      status: 'not_needed',
+      reason: 'no_source_delta',
+      protectedRevision: head,
+      comparedPaths: [],
+    });
+    expect(existsSync(fx.workspace.root!)).toBe(false);
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(false);
+  });
+
+  test('periodic cleanup retires a terminal bundle only after local and origin target content contain the protected delta', async () => {
+    const fx = fixture('retire-contained-bundle');
+    writeFileSync(join(fx.workspace.root!, 'contained.txt'), 'delivered content\n');
+    git(fx.workspace.root!, ['add', 'contained.txt']);
+    git(fx.workspace.root!, ['commit', '-m', 'feat: preserved then delivered']);
+    const head = git(fx.workspace.root!, ['rev-parse', 'HEAD']);
+    const current = writeWorkHandle(fx.controllerHome, { ...fx.handle, expectedHead: head });
+    const cleaned = await cleanup(fx, current);
+    const bundlePath = cleaned.receipt.preservation.bundlePath!;
+    expect(existsSync(bundlePath)).toBe(true);
+
+    git(fx.repositoryRoot, ['cherry-pick', head]);
+    const delivered = git(fx.repositoryRoot, ['rev-parse', 'HEAD']);
+    git(fx.repositoryRoot, ['update-ref', 'refs/remotes/origin/main', delivered]);
+
+    const report = cleanupControllerRuntimeState(fx.controllerHome, {
+      cleanupArtifactRetentionGraceMs: 0,
+      maxEntries: 1_000,
+      maxRemovals: 50,
+    });
+
+    expect(existsSync(bundlePath)).toBe(false);
+    expect(report.removedCleanupArtifactPaths.some((path) => path.endsWith(`${fx.handle.workId}/branch.bundle`))).toBe(true);
+    const after = readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)!;
+    expect(after.cleanupReceipt?.preservation.bundlePath).toBeUndefined();
+    expect(after.cleanupReceipt?.preservation.bundleRetirement).toMatchObject({
+      status: 'removed',
+      reason: 'target_and_remote_content_contained',
+      protectedRevision: head,
+      targetRevision: delivered,
+      remoteRevision: delivered,
+      comparedPaths: ['contained.txt'],
+    });
+  });
+
+  test('periodic cleanup preserves a bundle when remote target containment is not proven', async () => {
+    const fx = fixture('retain-without-remote-proof');
+    writeFileSync(join(fx.workspace.root!, 'local-only.txt'), 'local delivery only\n');
+    git(fx.workspace.root!, ['add', 'local-only.txt']);
+    git(fx.workspace.root!, ['commit', '-m', 'feat: local only delivery']);
+    const head = git(fx.workspace.root!, ['rev-parse', 'HEAD']);
+    const current = writeWorkHandle(fx.controllerHome, { ...fx.handle, expectedHead: head });
+    const cleaned = await cleanup(fx, current);
+    const bundlePath = cleaned.receipt.preservation.bundlePath!;
+    git(fx.repositoryRoot, ['cherry-pick', head]);
+
+    const report = cleanupControllerRuntimeState(fx.controllerHome, {
+      cleanupArtifactRetentionGraceMs: 0,
+      maxEntries: 1_000,
+      maxRemovals: 50,
+    });
+
+    expect(existsSync(bundlePath)).toBe(true);
+    expect(report.removedCleanupArtifactPaths).not.toContain(bundlePath);
+    expect(report.cycle.skippedByReason.cleanup_artifact_containment_remote_revision_unavailable).toBeGreaterThan(0);
   });
 
   test('fails closed while another Work Process owns the checkout', async () => {

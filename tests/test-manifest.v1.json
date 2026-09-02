@@ -213,6 +213,10 @@
       "module": "workflow",
       "resource": "git-worktree"
     },
+    "tests/cli/brain-command.test.ts": {
+      "module": "core",
+      "resource": "temp-isolated"
+    },
     "tests/cli/legacy-control-plane-cutover.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
@@ -484,6 +488,14 @@
     "tests/runtime/git-status-sampler.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
+    },
+    "tests/runtime/independent-host-rescue.test.ts": {
+      "module": "process-runtime",
+      "resource": "pure"
+    },
+    "tests/runtime/windows-host-recovery.test.ts": {
+      "module": "process-runtime",
+      "resource": "pure"
     },
     "tests/runtime/github-actions-plugin.test.ts": {
       "module": "controller",

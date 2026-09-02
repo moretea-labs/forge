@@ -99,6 +99,15 @@ describe('Forge setup session', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  test('persists a stable instance identity for the ChatGPT OAuth Connector', () => {
+    const root = temp('forge-setup-instance-id-'); try {
+      const controllerHome = join(root, 'controller');
+      runMcpSetupChatgpt({ controllerHome, userLevel: true, instanceId: 'Forge-WSL' });
+      const localConfig = JSON.parse(require('fs').readFileSync(join(controllerHome, 'mcp', 'mcp.local.json'), 'utf8'));
+      expect(localConfig.identity.forgeInstanceId).toBe('forge-wsl');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   test('auto remote access keeps OpenAI Secure MCP Tunnel first even when public tunnel CLIs are installed', () => {
     const root = temp('forge-setup-openai-first-'); try {
       const profile = configureSetupProfile({ setupRoot: root, controller: 'chatgpt', tunnel: 'auto' });

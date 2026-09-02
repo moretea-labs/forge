@@ -345,7 +345,7 @@ export function saveOccurrence(controllerHome: string, occurrence: ScheduleOccur
     appendRuntimeEvent(controllerHome, { repoId: saved.repoId, entityType: 'occurrence', entityId: saved.occurrenceId, eventType: `occurrence_${saved.status}`, requestId: `${schedule.requestId}:${saved.windowKey}`, revision: saved.revision, correlationId: saved.scheduleId, data: { decision: saved.decision, jobId: saved.jobId, reason: saved.reason } });
     return saved;
   }, 10_000);
-  if (next.status === 'succeeded') resolveRecoveredScheduleFailureHandoffs(controllerHome, next);
+  if (next.status === 'succeeded' || next.status === 'dispatched') resolveRecoveredScheduleFailureHandoffs(controllerHome, next);
   return next;
 }
 

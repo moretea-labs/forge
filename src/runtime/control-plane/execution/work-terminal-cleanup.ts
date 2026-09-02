@@ -40,6 +40,7 @@ import {
   type WorkHandleState,
   type WorkTerminalOutcome,
 } from './work-handle-store';
+import { proveWorkPreservationContained } from '../cleanup-artifact-retention';
 
 const CHECKPOINT_MESSAGE = 'chore(checkpoint): preserve terminal work before cleanup';
 
@@ -749,17 +750,38 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
   }
   receipt.branchCleanup.uniqueCommits = uniqueCommits;
 
-  if (uniqueCommits > 0 && !receipt.preservation.bundlePath) {
-    try {
-      const bundle = createVerifiedBundle(input.controllerHome, current, target.canonicalRoot);
-      receipt.preservation.bundlePath = bundle.path;
-      receipt.preservation.bundleSha256 = bundle.sha256;
-      receipt.preservation.recoveryInstructions = [
-        receipt.preservation.recoveryInstructions,
-        `Recover branch commits with: git fetch ${bundle.path} refs/heads/${current.branch}:refs/heads/${current.branch}`,
-      ].filter(Boolean).join(' ');
-    } catch (error) {
-      addBlocker(receipt, `BRANCH_BUNDLE_FAILED: ${error instanceof Error ? error.message : String(error)}`);
+  let branchPreserved = Boolean(
+    receipt.preservation.bundlePath
+    || receipt.preservation.bundleRetirement?.status === 'not_needed'
+    || receipt.preservation.bundleRetirement?.status === 'removed',
+  );
+  if (uniqueCommits > 0 && !branchPreserved) {
+    const proof = proveWorkPreservationContained(target.canonicalRoot, { ...current, cleanupReceipt: receipt }, targetBranch);
+    if (proof.contained) {
+      receipt.preservation.bundleRetirement = {
+        status: 'not_needed',
+        reason: proof.reason === 'no_source_delta' ? 'no_source_delta' : 'target_and_remote_content_contained',
+        protectedRevision: proof.protectedRevision!,
+        targetRevision: proof.targetRevision,
+        remoteRevision: proof.remoteRevision,
+        comparedPaths: proof.comparedPaths,
+        provedAt: nowIso(),
+      };
+      receipt.preservation.recoveryInstructions = `Branch bundle not created after ${proof.reason}; exact proof is stored in cleanupReceipt.preservation.bundleRetirement.`;
+      branchPreserved = true;
+    } else {
+      try {
+        const bundle = createVerifiedBundle(input.controllerHome, current, target.canonicalRoot);
+        receipt.preservation.bundlePath = bundle.path;
+        receipt.preservation.bundleSha256 = bundle.sha256;
+        receipt.preservation.recoveryInstructions = [
+          receipt.preservation.recoveryInstructions,
+          `Recover branch commits with: git fetch ${bundle.path} refs/heads/${current.branch}:refs/heads/${current.branch}`,
+        ].filter(Boolean).join(' ');
+        branchPreserved = true;
+      } catch (error) {
+        addBlocker(receipt, `BRANCH_BUNDLE_FAILED: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   }
   current = persist(input.controllerHome, current, receipt);
@@ -820,7 +842,7 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
     receipt.branchCleanup.status = 'retained';
     receipt.branchCleanup.reason = 'Branch is checked out by another worktree.';
     addBlocker(receipt, `BRANCH_IN_USE: ${current.branch}`);
-  } else if (uniqueCommits > 0 && !receipt.preservation.bundlePath) {
+  } else if (uniqueCommits > 0 && !branchPreserved) {
     receipt.branchCleanup.status = 'retained';
     receipt.branchCleanup.reason = 'Unique commits are not archived.';
     addBlocker(receipt, `BRANCH_UNPRESERVED: ${current.branch}`);
@@ -836,7 +858,7 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
       receipt.branchCleanup.reason = deleted.stderr || 'branch delete failed';
       addBlocker(receipt, `BRANCH_DELETE_FAILED: ${receipt.branchCleanup.reason}`);
     } else {
-      receipt.branchCleanup.status = uniqueCommits > 0 ? 'archived' : 'deleted';
+      receipt.branchCleanup.status = uniqueCommits > 0 && receipt.preservation.bundlePath ? 'archived' : 'deleted';
     }
   }
 

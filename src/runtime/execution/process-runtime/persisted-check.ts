@@ -37,6 +37,7 @@ import { durationAwareInteractiveWaitMs } from './interactive-admission';
 export const DEFAULT_WORK_CHECK_LEASE_WAIT_MS = 30_000;
 
 const PERSISTED_CHECK_SOURCE_ENTRY = 'src/runtime/execution/process-runtime/check-runner-sidecar.ts';
+const PERSISTED_CHECK_NODE_LOADER = 'src/runtime/shared/node-ts-loader.mjs';
 
 export function resolvePersistedCheckCliInvocation(
   cliEntry: string,
@@ -108,15 +109,24 @@ export function resolvePersistedCheckProcessInvocation(
   if (cliTarget.runtimeKind === 'compiled_bun_release') {
     return { executable, args };
   }
+  const entryExists = options.entryExists ?? existsSync;
   const sourceEntry = resolve(cliTarget.cwd, PERSISTED_CHECK_SOURCE_ENTRY);
-  if (!(options.entryExists ?? existsSync)(sourceEntry)) {
+  if (!entryExists(sourceEntry)) {
     throw new Error(`PERSISTED_CHECK_SOURCE_RUNNER_MISSING: ${sourceEntry}`);
+  }
+  let nodeSourceLoaderEntry: string | undefined;
+  if (cliTarget.runtimeKind === 'node_source') {
+    nodeSourceLoaderEntry = resolve(cliTarget.cwd, PERSISTED_CHECK_NODE_LOADER);
+    if (!entryExists(nodeSourceLoaderEntry)) {
+      throw new Error(`PERSISTED_CHECK_NODE_LOADER_MISSING: ${nodeSourceLoaderEntry}`);
+    }
   }
   return resolvePersistedCheckCliInvocation(sourceEntry, args, {
     runtimeExecutable: executable,
     runtimeKind: cliTarget.runtimeKind,
     sourceRevision: cliTarget.sourceRevision,
     immutable: false,
+    ...(nodeSourceLoaderEntry ? { nodeSourceLoaderEntry } : {}),
     ...(cliTarget.runtimeKind === 'package_launcher' ? { launcherEntry: cliTarget.entry } : {}),
   });
 }

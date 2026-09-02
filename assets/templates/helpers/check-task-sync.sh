@@ -31,9 +31,6 @@ has_task_sync_change=0
 
 for file in "${changed_files[@]}"; do
   case "$file" in
-    tasks/archive/*)
-      has_non_task_change=1
-      ;;
     tasks/*)
       has_task_sync_change=1
       ;;

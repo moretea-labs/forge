@@ -1,7 +1,8 @@
 import { execFileSync } from 'child_process';
-import { existsSync, lstatSync, readdirSync, rmSync, statfsSync } from 'fs';
+import { existsSync, lstatSync, readdirSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
+import { readStorageCapacity } from '../shared/storage-capacity';
 
 export interface RuntimeProcessSample {
   pid: number;
@@ -323,19 +324,10 @@ export function collectRuntimePerformanceDiagnostics(input: DiagnosticsInput): R
   const temp = input.includeTempDirs === false
     ? { roots: [] as string[], entries: [] as RuntimeTempEntry[] }
     : scanRuntimeTempEntries(processes);
-  let availableBytes: number | undefined;
-  try {
-    const fs = statfsSync(input.repoRoot);
-    availableBytes = Number(fs.bavail) * Number(fs.bsize);
-  } catch {}
-  const availableGiB = availableBytes === undefined ? undefined : Math.round((availableBytes / (1024 ** 3)) * 10) / 10;
-  const storagePressure: RuntimePerformanceDiagnostics['storage']['pressure'] = availableGiB === undefined
-    ? 'unknown'
-    : availableGiB < 30
-      ? 'critical'
-      : availableGiB < 50
-        ? 'warning'
-        : 'normal';
+  const storage = readStorageCapacity(input.repoRoot);
+  const availableBytes = storage.availableBytes;
+  const availableGiB = storage.availableGiB;
+  const storagePressure: RuntimePerformanceDiagnostics['storage']['pressure'] = storage.pressure;
   const managedCacheRoots = [
     join(input.repoRoot, '.forge', 'ios', 'DerivedData'),
     join(input.repoRoot, '.ai', 'harness'),

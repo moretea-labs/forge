@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { basename, dirname, join, relative, resolve } from 'path';
 import { tmpdir } from 'os';
+import { assertStorageHeadroom } from '../shared/storage-capacity';
 import { runProcess } from '../../effects/process-runner';
 import { cleanupEditSession, getEditSession, listEditSessions, reconcileEditSession } from '../../cli/editing/edit-session';
 import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../cli/repositories/runtime-storage';
@@ -189,10 +190,16 @@ function readJson(path: string): unknown {
 }
 
 function writeJsonAtomic(path: string, value: unknown): void {
+  const content = `${JSON.stringify(value, null, 2)}\n`;
+  assertStorageHeadroom(path, {
+    operation: 'runtime_maintenance_state_write',
+    requiredBytes: Buffer.byteLength(content),
+    reserveBytes: 16 * 1024 * 1024,
+  });
   mkdirSync(dirname(path), { recursive: true });
   const temporaryPath = `${path}.${process.pid}.${Date.now()}.tmp`;
   try {
-    writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    writeFileSync(temporaryPath, content, { encoding: 'utf8', mode: 0o600 });
     renameSync(temporaryPath, path);
   } finally {
     rmSync(temporaryPath, { force: true });

@@ -18,7 +18,7 @@ CLAUDE.md is a routing card. Keep context minimal and load only what the current
 | Evaluator verdict | `tasks/reviews/<plan-stem>.review.md` |
 | Implementation notes | `tasks/notes/<plan-stem>.notes.md` |
 | Latest verification evidence | `.ai/harness/checks/latest.json` |
-| Historical implementation context | `plans/archive/` and `tasks/archive/` |
+| Historical implementation context | Git history and durable Control Plane Plan/Work/Verification evidence |
 | Agentic skill routing | `docs/reference-configs/agentic-development-flow.md` |
 | Harness runtime model | `docs/reference-configs/harness-overview.md` |
 | Sprint contract rules | `docs/reference-configs/sprint-contracts.md` |

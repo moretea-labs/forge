@@ -110,7 +110,7 @@ export function inspectRepo(repo: string): InspectionResult {
   const requiredDecisions: string[] = [];
   const safeDefaults = [
     "Preserve repo-local tasks-first workflow",
-    "Archive uncertain legacy content instead of overwriting it",
+    "Preserve uncertain legacy content in place until explicit currentness triage",
     "Delete only manifest-owned known_generated legacy files",
     "Distill repeated corrections into tasks/lessons.md and hidden contracts into docs/researches/",
   ];

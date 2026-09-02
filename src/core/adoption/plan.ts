@@ -33,7 +33,6 @@ const MINIMAL_DIRS = [
 ] as const;
 
 const STANDARD_EXTRA_DIRS = [
-  "plans/archive",
   "plans/prds",
   "plans/sprints",
   "tasks/workstreams",

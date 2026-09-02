@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { basename, dirname, join, relative, resolve, sep } from 'path';
 import { randomUUID } from 'crypto';
+import { assertStorageHeadroom } from '../shared/storage-capacity';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { repositoryControllerRoot } from '../../cli/repositories/controller-home';
 import { findExecutionJob } from '../execution/jobs/store';
@@ -61,10 +62,16 @@ const DEFAULT_MIN_AGE_MINUTES = 0;
 function now(): string { return new Date().toISOString(); }
 
 function atomicWriteJson(path: string, value: unknown): void {
+  const content = `${JSON.stringify(value, null, 2)}\n`;
+  assertStorageHeadroom(path, {
+    operation: 'local_jobs_repair_state_write',
+    requiredBytes: Buffer.byteLength(content),
+    reserveBytes: 16 * 1024 * 1024,
+  });
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
+    writeFileSync(tmp, content, 'utf-8');
     renameSync(tmp, path);
   } finally {
     rmSync(tmp, { force: true });

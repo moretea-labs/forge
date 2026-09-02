@@ -154,6 +154,52 @@ describe("architecture sync gate", () => {
     });
   });
 
+  test("capability resolver emits compact unique ids for bulk gate consumers", () => {
+    tmpRepo((cwd) => {
+      const res = spawnSync(
+        process.execPath,
+        ["scripts/capability-resolver.ts", "match", "--paths-from", "-", "--format", "ids"],
+        {
+          cwd,
+          encoding: "utf-8",
+          input: "apps/web/src/routes/account.tsx\napps/web/src/routes/settings.tsx\npackage.json\n",
+        },
+      );
+      expect(res.status).toBe(0);
+      expect(res.stdout).toBe("apps-web\nroot\n");
+    });
+  });
+
+  test("resolve deletes a handled request, clears context pointers, and does not create an archive", () => {
+    tmpRepo((cwd) => {
+      installRuntimeArchitectureBaseline(cwd);
+      writePendingCard(cwd);
+      writeFileSync(
+        join(cwd, "AGENTS.md"),
+        ["# Root contract", "", "- Pending architecture request: `docs/architecture/requests/apps-web.md`", ""].join("\n"),
+      );
+      mkdirSync(join(cwd, "apps/web"), { recursive: true });
+      writeFileSync(
+        join(cwd, "apps/web/CLAUDE.md"),
+        ["# Web contract", "", "- Pending architecture request: `requests/apps-web.md`", ""].join("\n"),
+      );
+
+      const res = run(
+        "bash",
+        ["scripts/architecture-queue.sh", "resolve", "--file", "docs/architecture/requests/apps-web.md"],
+        cwd,
+      );
+
+      expect(res.status).toBe(0);
+      expect(existsSync(join(cwd, "docs/architecture/requests/apps-web.md"))).toBe(false);
+      expect(existsSync(join(cwd, "docs/architecture/requests/archive"))).toBe(false);
+      expect(readFileSync(join(cwd, "AGENTS.md"), "utf8")).toContain("- Pending architecture request: `(none)`");
+      expect(readFileSync(join(cwd, "apps/web/CLAUDE.md"), "utf8")).toContain("- Pending architecture request: `(none)`");
+      expect(readFileSync(join(cwd, "docs/architecture/index.md"), "utf8")).toContain("- (none)");
+      expect(res.stdout).toContain("Git history is the archive");
+    });
+  });
+
   test("strict blocks when a changed capability has a pending request at the threshold", () => {
     tmpRepo((cwd) => {
       writePolicy(cwd, "strict");

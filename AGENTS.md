@@ -22,7 +22,7 @@ Treat ChatGPT as the controller and Forge as its repository execution layer. Cha
 - `tasks/lessons.md` for correction-derived rules
 - `docs/researches/` for deep repo knowledge
 - `tasks/notes/` for task-local implementation decisions, deviations, tradeoffs, and open questions
-- `plans/` for timestamped plans, with `plans/archive/` for history
+- `plans/` for current reviewable repo-local plans; terminal plan/contract/review/notes history belongs in Git and durable Control Plane evidence, not a maintained repository archive
 - `.ai/harness/workflow-contract.json` for the installed workflow contract manifest
 - `.ai/harness/policy.json` for the machine-readable workflow contract
 - `.ai/context/context-map.json` for progressive context loading
@@ -34,6 +34,7 @@ Treat ChatGPT as the controller and Forge as its repository execution layer. Cha
 - Treat Forge as one local MCP application, one active Runtime, one deployable release, and one in-process lifecycle owner. Gateway, MCP transport, Controller, and Scheduler may be modules; they are not independently deployable generations by default.
 - Bounded restart downtime is acceptable. Prefer `stop -> switch complete release -> start -> verify -> full rollback`; do not add ingress, blue/green slots, adoption, or mixed generations without an explicit product requirement.
 - Do not respond to an incident by adding a second status authority, daemon, proxy, KeepAlive wrapper, watchdog, recovery owner, or fallback path; extend the canonical Runtime or standalone Recovery owner instead. First identify the violated invariant and remove, merge, or correct the existing cause.
+- When a concrete scenario exposes a missing capability, strengthen an existing general capability and reuse its authority/lifecycle first. Add a specialized plugin, module, script, or helper only when an independent authority, security, protocol, persistence, or lifecycle boundary is proven; incident-specific helpers are temporary debt otherwise.
 - Readiness is one derived whole-system conclusion. Multiple diagnostic checks and reason codes are allowed, but they must not become independent durable readiness state machines.
 - Keep lifecycle, readiness, liveness, capability, authorization, release identity, and diagnostics separate. Do not create composite states such as `status=ready` with `degraded=true`.
 - Only one component may perform lifecycle or recovery side effects. Observers and probes are read-only and submit typed requests to that owner.

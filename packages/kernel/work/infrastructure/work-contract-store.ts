@@ -11,7 +11,6 @@ import {
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
 } from '../../../../src/runtime/control-plane/persistence/sqlite-store';
-import { assertWorkAdmissionAllowed } from '../../../../src/runtime/control-plane/facade/work-admission-policy';
 import {
   MAX_IMPLEMENTATION_REVIEW_HISTORY,
   implementationReviewDecisionTarget,
@@ -21,6 +20,14 @@ import {
   type WorkImplementationReviewRecord,
 } from '../domain/implementation-review';
 import { phaseIndex, suggestedActionsForStatus, transitionPhaseEvidence, validateWorkSemanticTransition, validateWorkSemantics } from '../domain/state-machine';
+import {
+  WORK_ADMISSION_POLICY_KEY,
+  WORK_ADMISSION_POLICY_NAMESPACE,
+  WORK_ADMISSION_POLICY_SCOPE,
+  assertWorkAdmissionPolicyAllows,
+  normalWorkAdmissionPolicy,
+  type WorkAdmissionPolicy,
+} from '../domain/admission-policy';
 import {
   type EvidenceRef,
   type CompletionOutcome,
@@ -40,9 +47,11 @@ import {
   type WorkPhaseEvidenceMap,
   type WorkPhaseEvidenceState,
   type WorkContractStore,
+  executionPlacementForWork,
   isDirectEditWorkCompletionReceipt,
   isRepositoryCompletionReceipt,
   isTerminalWorkContractStatus,
+  semanticScopeRefForWork,
 } from '../domain/types';
 
 import type { WorkContractStoreLocation, WorkContractStoreOptions } from '../ports/work-contract-store';
@@ -230,6 +239,8 @@ function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore
       return validateWorkSemantics({
         ...legacy,
         schemaVersion: legacy.schemaVersion ?? 1,
+        scopeRef: semanticScopeRefForWork(legacy),
+        executionPlacement: executionPlacementForWork(legacy),
         status,
         phase,
         phaseEvidence: legacy.phaseEvidence ?? legacyPhaseEvidence({
@@ -340,6 +351,21 @@ function withWorkContractStoreWrite<T>(options: WorkContractStoreOptions, operat
   );
 }
 
+
+function assertCanonicalWorkAdmissionAllowed(
+  options: WorkContractStoreOptions,
+  input: { operation: 'create' | 'continue' | 'maintenance'; workId?: string },
+): WorkAdmissionPolicy {
+  if (!options.controllerHome) return normalWorkAdmissionPolicy(nowIso(options));
+  const policy = readControlPlaneRecord<WorkAdmissionPolicy>(
+    options.controllerHome,
+    WORK_ADMISSION_POLICY_NAMESPACE,
+    WORK_ADMISSION_POLICY_SCOPE,
+    WORK_ADMISSION_POLICY_KEY,
+  )?.value ?? normalWorkAdmissionPolicy(nowIso(options));
+  return assertWorkAdmissionPolicyAllows(policy, input);
+}
+
 function defaultDriver(mode: WorkContract['mode']): WorkContract['driver'] {
   if (mode === 'direct_control') {
     return { preferred: 'direct_edit', allowWorker: false, allowDirectEdit: true };
@@ -352,7 +378,7 @@ function defaultDriver(mode: WorkContract['mode']): WorkContract['driver'] {
 
 export function createWorkContract(options: WorkContractStoreOptions, input: CreateWorkContractInput): WorkContract {
   if (options.controllerHome) {
-    assertWorkAdmissionAllowed(options.controllerHome, { operation: 'create', workId: input.workId });
+    assertCanonicalWorkAdmissionAllowed(options, { operation: 'create', workId: input.workId });
   }
   if (input.status === 'completed' || input.completionReceipt || input.completionOutcome) {
     throw new Error('WORK_COMPLETION_REQUIRES_RECORD_API');
@@ -363,6 +389,14 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
     const contract: WorkContract = validateWorkSemantics({
       schemaVersion: 2,
       workId,
+      scopeRef: semanticScopeRefForWork({
+        workId,
+        scopeRef: input.scopeRef,
+        requirementId: input.requirementId,
+        planId: input.planId,
+        planStepId: input.planStepId,
+      }),
+      executionPlacement: input.executionPlacement ?? executionPlacementForWork({ repoId: input.repoId, checkoutId: input.checkoutId }),
       repoId: input.repoId,
       checkoutId: input.checkoutId,
       principalId: input.principalId,
@@ -380,6 +414,9 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       workKind: input.workKind ?? 'repository_change',
       lifecycleRole: input.lifecycleRole ?? 'primary',
       parentWorkId: input.parentWorkId?.trim() || undefined,
+      supersedes: input.supersedes?.map((value) => sanitizeFileComponent(value)).filter((value) => value !== 'unknown').slice(0, 50),
+      supersededBy: input.supersededBy ? sanitizeFileComponent(input.supersededBy) : undefined,
+      supersessionReason: input.supersessionReason?.trim().slice(0, 500),
       dispatchState: input.dispatchState ?? inferredDispatchState(input.status ?? 'open'),
       evidenceState: input.evidenceState ?? inferredEvidenceState(input.status ?? 'open'),
       completionOutcome: input.completionOutcome,
@@ -577,6 +614,13 @@ export function acceptSubmittedWorkContract(
   });
 }
 
+export function isCurrentWorkContract(contract: WorkContract): boolean {
+  return !isTerminalWorkContractStatus(contract.status)
+    && !contract.supersededBy?.trim()
+    && contract.workKind !== 'superseded'
+    && contract.completionOutcome !== 'superseded';
+}
+
 export function listWorkContracts(options: ListWorkContractOptions): WorkContract[] {
   const store = readWorkContractStore(options);
   const status = options.status ?? 'active';
@@ -584,7 +628,7 @@ export function listWorkContracts(options: ListWorkContractOptions): WorkContrac
   return store.contracts
     .filter((contract) => {
       if (status === 'all') return true;
-      if (status === 'active') return !isTerminalWorkContractStatus(contract.status);
+      if (status === 'active') return isCurrentWorkContract(contract);
       return contract.status === status;
     })
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
@@ -740,6 +784,67 @@ export function getWorkContract(options: WorkContractStoreOptions, workId: strin
   return readWorkContractStore(options).contracts.find((contract) => contract.workId === sanitizedId);
 }
 
+export interface SupersedeWorkContractInput {
+  workId: string;
+  supersededBy: string;
+  reason: string;
+}
+
+function workSupersessionWouldCycle(contracts: WorkContract[], predecessorId: string, successorId: string): boolean {
+  const byId = new Map(contracts.map((contract) => [contract.workId, contract]));
+  const visited = new Set<string>();
+  let cursorId: string | undefined = successorId;
+  while (cursorId) {
+    if (cursorId === predecessorId) return true;
+    if (visited.has(cursorId)) return true;
+    visited.add(cursorId);
+    cursorId = byId.get(cursorId)?.supersededBy?.trim() || undefined;
+  }
+  return false;
+}
+
+/** Persist one explicit Work supersession edge without deleting or terminalizing either side. */
+export function supersedeWorkContract(
+  options: WorkContractStoreOptions,
+  input: SupersedeWorkContractInput,
+): { predecessor: WorkContract; successor: WorkContract } {
+  return withWorkContractStoreWrite(options, () => {
+    const predecessorId = sanitizeFileComponent(input.workId);
+    const successorId = sanitizeFileComponent(input.supersededBy);
+    if (!predecessorId || predecessorId === 'unknown' || !successorId || successorId === 'unknown') throw new Error('WORK_SUPERSESSION_IDS_REQUIRED');
+    if (predecessorId === successorId) throw new Error('WORK_SUCCESSOR_ID_MUST_CHANGE');
+    const store = readWorkContractStore(options);
+    const predecessorIndex = store.contracts.findIndex((contract) => contract.workId === predecessorId);
+    const successorIndex = store.contracts.findIndex((contract) => contract.workId === successorId);
+    if (predecessorIndex < 0) throw new Error(`WORK_PREDECESSOR_NOT_FOUND: ${predecessorId}`);
+    if (successorIndex < 0) throw new Error(`WORK_SUCCESSOR_NOT_FOUND: ${successorId}`);
+    const predecessor = store.contracts[predecessorIndex]!;
+    const successor = store.contracts[successorIndex]!;
+    if (predecessor.supersededBy && predecessor.supersededBy !== successorId) throw new Error(`WORK_SUPERSESSION_CONFLICT: ${predecessorId}:existing=${predecessor.supersededBy}:requested=${successorId}`);
+    if ((predecessor.supersedes ?? []).includes(successorId) || workSupersessionWouldCycle(store.contracts, predecessorId, successorId)) throw new Error(`WORK_SUPERSESSION_CYCLE: ${predecessorId}:${successorId}`);
+    const at = nowIso(options);
+    const reason = String(input.reason ?? '').trim().slice(0, 500);
+    if (!reason) throw new Error('WORK_SUPERSESSION_REASON_REQUIRED');
+    const predecessorNext = validateWorkSemantics({ ...predecessor, supersededBy: successorId, supersessionReason: reason, updatedAt: at });
+    const successorNext = validateWorkSemantics({ ...successor, supersedes: [...new Set([...(successor.supersedes ?? []), predecessorId])], updatedAt: at });
+    const contracts = [...store.contracts];
+    contracts[predecessorIndex] = predecessorNext;
+    contracts[successorIndex] = successorNext;
+    if (!sqliteBacked(options)) {
+      writeJsonAtomic(workContractStorePath(options), { schemaVersion: 2, updatedAt: at, contracts });
+    } else {
+      withControlPlaneTransaction(options.controllerHome, (database) => {
+        for (const contract of [predecessorNext, successorNext]) {
+          const current = readControlPlaneRecordWithinTransaction<WorkContract>(database, 'work_contract', options.repoId, contract.workId);
+          if (!current) throw new Error(`WORK_LINEAGE_RECORD_MISSING: ${contract.workId}`);
+          writeControlPlaneRecordWithinTransaction(database, { namespace: 'work_contract', scope: options.repoId, key: contract.workId, schemaVersion: 2, value: contract, action: 'work_contract_supersession_linked', expectedRevision: current.revision });
+        }
+      });
+    }
+    return { predecessor: predecessorNext, successor: successorNext };
+  });
+}
+
 export function summarizeWorkContract(contract: WorkContract): WorkContractSummary {
   return {
     workId: contract.workId,
@@ -772,7 +877,7 @@ function updateWorkContractInternal(
     const at = nowIso(options);
     const current = store.contracts[index];
     if (options.controllerHome) {
-      assertWorkAdmissionAllowed(options.controllerHome, {
+      assertCanonicalWorkAdmissionAllowed(options, {
         operation: patch.status !== undefined && isTerminalWorkContractStatus(patch.status)
           ? 'maintenance'
           : 'continue',

@@ -1,31 +1,31 @@
 # Plan Governance
 
-`plans/` is the repository-owned business-intent and implementation-planning layer. It is **not the runtime execution queue** and is never scanned on the MCP, health, Job status, or scheduler hot paths.
+`plans/` is the repository-owned planning surface. It is not the runtime execution queue, a historical database, or a substitute for durable Control Plane Plan/Work state.
 
 ## Directory contract
 
-- `plans/prds/` — product intent and acceptance boundary.
-- `plans/sprints/` — ordered delivery backlog derived from a PRD.
-- `plans/plan-*.md` — reviewable implementation plans and scope contracts.
-- `plans/archive/` — completed, superseded, abandoned, or historical plans.
+- `plans/prds/` — product intent and acceptance boundaries.
+- `plans/sprints/` — ordered delivery backlogs derived from PRDs or current product intent.
+- `plans/plan-*.md` — live, reviewable implementation plans selected explicitly for a worktree.
 
-A Plan describes why and how work should be performed. Runtime execution is owned by `ExecutionJob`, Agent `Run`, `EditSession`, `Verification`, resource `Lease`, event and evidence records in Controller Home.
+A plan becomes execution context only through an explicit active-plan/worktree binding or the durable Forge Plan -> Work lineage. The mere presence, timestamp, or status text of a plan file never creates current work.
 
-## Lifecycle
+## Lifecycle and history
 
 ```text
-Draft -> Reviewed -> Active -> Completed | Superseded | Abandoned -> Archive
+Draft -> Reviewed -> Active -> Completed | Superseded | Abandoned -> terminal closeout
 ```
 
-Only an explicitly selected plan may be considered active. Existing scripts may project the selected plan into a Task checklist, but the plan file itself does not acquire resources, start a Worker, or determine Job terminal state.
+At terminal closeout, final plan/contract/review/notes state is committed first. Repo-local lifecycle artifacts may then be removed once Forge proves that Git contains their exact final state and no unique staged, unstaged, or untracked evidence would be lost. The durable historical authorities are:
+
+- Git history for repository-authored planning and implementation evidence.
+- Forge Control Plane Requirement/Plan/Work/Verification records for execution lineage and currentness.
+- Current architecture, operations, product, and release documents for present-tense truth.
+
+Do not create a parallel `plans/archive/` or `tasks/archive/` history tree. Unknown user-authored legacy files are preserved in place and explicitly triaged rather than copied into a second authority.
 
 ## Performance and retention
 
-- Gateway and Controller health paths must not scan this directory.
-- Historical plans remain available for audit but are moved to `plans/archive/` when their status is known.
-- Unknown legacy plans remain preserved rather than being silently declared complete.
-- Large logs, generated artifacts, runtime state, credentials, dependencies and Worktrees must never be stored here.
-
-## Current architecture migration
-
-The 2026-06-25 target runtime migration is recorded in `plans/archive/plan-20260625-target-runtime-architecture-completed.md`. Its executable authority is the code under `src/runtime/` and the current architecture documents under `docs/architecture/current/`.
+- Gateway, Runtime health, scheduler, and Work currentness paths must not scan `plans/`.
+- Large logs, generated artifacts, runtime state, credentials, dependencies, and worktrees never belong here.
+- Long-lived capability progress belongs in `tasks/workstreams/`; release history belongs in `CHANGELOG.md` / release metadata; current architecture belongs under `docs/architecture/current/` and `docs/architecture/CURRENT.md`.

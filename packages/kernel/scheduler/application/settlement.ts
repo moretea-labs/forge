@@ -15,7 +15,7 @@ export interface ScheduledExecutionReference {
   payload: Record<string, unknown>;
 }
 
-const TERMINAL_OCCURRENCE_STATUSES = new Set<ScheduleOccurrence['status']>(['succeeded', 'failed', 'shadowed', 'skipped']);
+const TERMINAL_OCCURRENCE_STATUSES = new Set<ScheduleOccurrence['status']>(['dispatched', 'succeeded', 'failed', 'shadowed', 'skipped']);
 
 function computeScheduleBackoff(schedule: ReturnType<typeof getSchedule>, nextFailures: number): string {
   const backoffBase = Math.max(1, schedule.policy.backoffBaseMinutes ?? schedule.policy.cooldownMinutes ?? 1);
@@ -154,7 +154,7 @@ export function settleScheduledExecution(
   if (!scheduleId || !occurrenceId) return;
   try {
     const occurrence = getOccurrence(controllerHome, job.repoId, occurrenceId);
-    if (occurrence && !['succeeded', 'failed', 'shadowed', 'skipped'].includes(occurrence.status)) {
+    if (occurrence && !['dispatched', 'succeeded', 'failed', 'shadowed', 'skipped'].includes(occurrence.status)) {
       saveOccurrence(controllerHome, {
         ...occurrence,
         status: outcome,

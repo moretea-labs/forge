@@ -237,7 +237,7 @@ const architectureRootMarkdown = readdirSync(resolve(root, 'docs/architecture'),
   .sort();
 for (const name of architectureRootMarkdown) {
   if (!allowedArchitectureRootMarkdown.has(name)) {
-    failures.push(`docs/architecture/${name} must be archived under docs/architecture/history/ instead of acting as parallel root architecture authority`);
+    failures.push(`docs/architecture/${name} must be merged into CURRENT.md/EVOLUTION.md or deleted instead of acting as parallel root architecture authority; Git history is the archive`);
   }
 }
 
@@ -282,8 +282,14 @@ const required = [
   'src/runtime/control-plane/execution/work-verification-context.ts',
   'src/runtime/control-plane/execution/work-verification-service.ts',
   'src/runtime/control-plane/execution/implementation-review-content.ts',
+  'packages/protocols/handoff/status.ts',
+  'packages/kernel/work/domain/admission-policy.ts',
   'packages/kernel/work/domain/implementation-review.ts',
   'packages/kernel/work/domain/state-machine.ts',
+  'packages/kernel/identity/domain/scope.ts',
+  'packages/kernel/work/domain/check-receipt.ts',
+  'packages/kernel/work/domain/execution-snapshot.ts',
+  'packages/kernel/work/domain/repository-completion-receipt.ts',
   'packages/kernel/work/domain/types.ts',
   'packages/kernel/work/application/work-service.ts',
   'packages/kernel/work/ports/work-contract-store.ts',
@@ -615,10 +621,10 @@ requireMissing('docs/architecture/transactional-adoption-planner.md');
 requireMissing('docs/architecture/global-hook-runtime.md');
 requireMissing('docs/architecture/ios-semantic-automation-provider-v2.md');
 requireMissing('docs/architecture/chatgpt-handoff-facade.md');
-requireText('docs/architecture/history/global-hook-runtime.md', 'Status: **Historical Evidence — Not Runtime Authority**');
-requireText('docs/architecture/history/ios-semantic-automation-provider-v2.md', 'Status: **Historical Design Evidence — Not Runtime Authority**');
-requireText('docs/architecture/history/chatgpt-handoff-facade.md', 'Status: **Historical Design Rationale — Not Runtime Authority**');
-requireText('docs/architecture/history/README.md', 'Status: **Historical Evidence — Not Runtime Authority**');
+requireMissing('docs/architecture/history/global-hook-runtime.md');
+requireMissing('docs/architecture/history/ios-semantic-automation-provider-v2.md');
+requireMissing('docs/architecture/history/chatgpt-handoff-facade.md');
+requireMissing('docs/architecture/history/README.md');
 requireMissing('docs/operations/20260802-requirement-portfolio-migration.md');
 requireMissing('docs/runbooks/RELIABILITY-SESSION-PROTOCOL.md');
 requireMissing('docs/architecture/decisions/20260718-mcp-session-lifecycle-and-ingress-isolation.md');
@@ -1143,6 +1149,9 @@ for (const edge of dependencyEdges(b7ProductionGraph)) {
       && (to.startsWith('adapters/mcp/') || to.startsWith('src/cli/mcp/') || to.startsWith('src/runtime/gateway/mcp/'))) {
     failures.push(`Kernel modules must never depend on MCP adapters or retired MCP gateway paths: ${edge}`);
   }
+  if (/^packages\/kernel\/[^/]+\/(?:domain|application)\//.test(from) && to.startsWith('src/')) {
+    failures.push(`Kernel domain/application must depend only on Kernel/protocol ports, never legacy src mechanisms: ${edge}`);
+  }
   if (from.startsWith('packages/plugin-runtime/') && (to.startsWith('adapters/') || to.startsWith('src/runtime/'))) {
     failures.push(`Plugin Runtime provider dispatch must not depend on concrete adapters or Runtime implementations: ${edge}`);
   }
@@ -1169,15 +1178,10 @@ const b7KernelLegacyEdges = edgeSet(b7ProductionGraph, (edge) => {
   return from.startsWith('packages/kernel/') && to.startsWith('src/');
 });
 const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
-  'packages/kernel/work/domain/types.ts -> src/runtime/evidence/process-check-receipt.ts',
-  'packages/kernel/work/domain/types.ts -> src/cli/controller/types.ts',
-  'packages/kernel/work/domain/types.ts -> src/runtime/control-plane/governance/access-policy.ts',
-  'packages/kernel/work/domain/types.ts -> src/runtime/control-plane/routing/route-policy.ts',
   'packages/kernel/work/infrastructure/work-contract-store.ts -> src/cli/repositories/controller-home.ts',
   'packages/kernel/work/infrastructure/work-contract-store.ts -> src/cli/repositories/locks.ts',
   'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/shared/json-files.ts',
   'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
-  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/control-plane/facade/work-admission-policy.ts',
   'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/cli/repositories/controller-home.ts',
   'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/cli/repositories/locks.ts',
   'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/runtime/control-plane/execution/session-store.ts',
@@ -1188,7 +1192,6 @@ const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
   'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
   'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/runtime/execution/work-activity.ts',
   'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/runtime/control-plane/facade/handoff-inbox-store.ts',
-  'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/runtime/control-plane/facade/types.ts',
   'packages/kernel/controller/infrastructure/controller-binding-store.ts -> src/cli/repositories/locks.ts',
   'packages/kernel/controller/infrastructure/controller-binding-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/cli/repositories/controller-home.ts',
@@ -1200,6 +1203,13 @@ const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
   'packages/kernel/scheduler/infrastructure/continuation-dispatch-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
 ]);
 requireExactShrinkingDebt('Kernel -> legacy src dependency debt', b7KernelLegacyEdges, B7_ALLOWED_KERNEL_LEGACY_EDGES);
+const b7ProductionEdges = new Set(dependencyEdges(b7ProductionGraph));
+for (const requiredEdge of [
+  'packages/kernel/work/domain/types.ts -> packages/kernel/identity/api/index.ts',
+  'packages/kernel/scheduler/domain/schedule.ts -> packages/kernel/identity/api/index.ts',
+]) {
+  if (!b7ProductionEdges.has(requiredEdge)) failures.push(`Portable semantic identity contract must be consumed through the Kernel Identity boundary: ${requiredEdge}`);
+}
 
 const b7LifecycleOwnerMarkers = new Map([
   ['WorkContract transition authority', ['packages/kernel/work/domain/state-machine.ts']],

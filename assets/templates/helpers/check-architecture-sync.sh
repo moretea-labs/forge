@@ -257,15 +257,7 @@ if [[ -z "$changed_files" ]]; then
   exit 0
 fi
 
-matches_json="$(printf '%s\n' "$changed_files" | bun scripts/capability-resolver.ts match --paths-from - --format json)"
-capabilities="$(
-  MATCHES_JSON="$matches_json" node -e '
-const matches = JSON.parse(process.env.MATCHES_JSON || "[]");
-const ids = new Set();
-for (const item of matches) ids.add(item.capability_id || "root");
-for (const id of [...ids].sort()) console.log(id);
-'
-)"
+capabilities="$(printf '%s\n' "$changed_files" | bun scripts/capability-resolver.ts match --paths-from - --format ids)"
 changed_count="$(printf '%s\n' "$capabilities" | sed '/^$/d' | wc -l | tr -d ' ')"
 blocking_lines="$(pending_requests_for_capabilities "$threshold" "$capabilities")"
 blocking_count="$(printf '%s\n' "$blocking_lines" | sed '/^$/d' | wc -l | tr -d ' ')"

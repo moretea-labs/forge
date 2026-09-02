@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { spawnSync } from 'child_process';
 import {
   GlobalScheduler,
   selectSchedulerSourceScanRepositories,
@@ -19,6 +20,10 @@ import {
 } from '../../src/runtime/control-plane/facade/work-admission-policy';
 import { markRepositoryProjectionDirty, repositoryProjectionIsDirty } from '../../src/runtime/projections/invalidation';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
+import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
+import { registerRepository } from '../../src/cli/repositories/registry';
+import { resolveGitExecutable } from '../../src/effects/git-executable';
+import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 
 const homes: string[] = [];
 
@@ -184,6 +189,73 @@ describe('runtime cleanup', () => {
     expect(periodic?.removedWorktrees).toContain('repositories/repo-a/worktrees/RUN-orphaned');
     expect(periodic?.removedTemporaryPaths).toContain('repositories/repo-a/execution-jobs/records/job.json.123.tmp');
     expect(periodic?.skippedActiveWorktrees).toContain('repositories/repo-a/worktrees/RUN-active');
+  });
+
+  test('periodic cleanup migrates an idle legacy physical node_modules copy to canonical dependency reuse', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-runtime-dependency-migration-'));
+    homes.push(root);
+    const home = join(root, 'controller');
+    const repositoryRoot = join(root, 'repository');
+    mkdirSync(repositoryRoot, { recursive: true });
+    const git = resolveGitExecutable();
+    expect(spawnSync(git, ['-C', repositoryRoot, 'init', '-b', 'main']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.name', 'Test']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.email', 'test@example.com']).status).toBe(0);
+    writeFileSync(join(repositoryRoot, 'package.json'), '{"name":"fixture","private":true,"dependencies":{"commander":"1.0.0"}}\n');
+    writeFileSync(join(repositoryRoot, 'bun.lock'), '# lock\n');
+    mkdirSync(join(repositoryRoot, 'node_modules', 'commander'), { recursive: true });
+    writeFileSync(join(repositoryRoot, 'node_modules', 'commander', 'package.json'), '{"name":"commander"}\n');
+    expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'package.json', 'bun.lock']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
+    const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'dependency-migration' });
+    const workspace = ensureManagedWorkspace(home, repository, { requestId: 'dependency-migration', title: 'dependency migration' });
+    const dependencyPath = join(workspace.root!, 'node_modules');
+    rmSync(dependencyPath, { recursive: true, force: true });
+    mkdirSync(join(dependencyPath, 'legacy-copy'), { recursive: true });
+    writeFileSync(join(dependencyPath, 'legacy-copy', 'marker'), 'legacy\n');
+
+    const report = cleanupControllerRuntimeState(home, { reason: 'periodic', maxEntries: 200, maxRemovals: 20, periodicSequence: 0 });
+    expect(lstatSync(dependencyPath).isSymbolicLink()).toBe(true);
+    expect(realpathSync(dependencyPath)).toBe(realpathSync(join(repositoryRoot, 'node_modules')));
+    expect(report.migratedDependencyPaths.some((entry) => entry.includes('node_modules'))).toBe(true);
+  });
+
+  test('periodic cleanup preserves a legacy physical dependency copy while its checkout has an active workspace lease', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-runtime-dependency-lease-'));
+    homes.push(root);
+    const home = join(root, 'controller');
+    const repositoryRoot = join(root, 'repository');
+    mkdirSync(repositoryRoot, { recursive: true });
+    const git = resolveGitExecutable();
+    expect(spawnSync(git, ['-C', repositoryRoot, 'init', '-b', 'main']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.name', 'Test']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.email', 'test@example.com']).status).toBe(0);
+    writeFileSync(join(repositoryRoot, 'package.json'), '{"name":"fixture","private":true,"dependencies":{"commander":"1.0.0"}}\n');
+    writeFileSync(join(repositoryRoot, 'bun.lock'), '# lock\n');
+    mkdirSync(join(repositoryRoot, 'node_modules', 'commander'), { recursive: true });
+    writeFileSync(join(repositoryRoot, 'node_modules', 'commander', 'package.json'), '{"name":"commander"}\n');
+    expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'package.json', 'bun.lock']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
+    const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'dependency-lease' });
+    const workspace = ensureManagedWorkspace(home, repository, { requestId: 'dependency-lease', title: 'dependency lease' });
+    const dependencyPath = join(workspace.root!, 'node_modules');
+    rmSync(dependencyPath, { recursive: true, force: true });
+    mkdirSync(join(dependencyPath, 'legacy-copy'), { recursive: true });
+    writeFileSync(join(dependencyPath, 'legacy-copy', 'marker'), 'legacy\n');
+    const leaseRoot = join(repositoryControllerRoot(home, repository.repoId), 'leases', 'active');
+    mkdirSync(leaseRoot, { recursive: true });
+    const now = Date.now();
+    writeFileSync(join(leaseRoot, 'LEASE-active.json'), JSON.stringify({
+      schemaVersion: 1, leaseId: 'LEASE-active', repoId: repository.repoId, checkoutId: workspace.checkoutId,
+      resourceKey: `workspace:${workspace.checkoutId}`, mode: 'read', ownerJobId: 'job-active', fencingToken: 1,
+      acquiredAt: new Date(now).toISOString(), heartbeatAt: new Date(now).toISOString(), expiresAt: new Date(now + 60_000).toISOString(),
+    }));
+
+    const report = cleanupControllerRuntimeState(home, { reason: 'periodic', maxEntries: 200, maxRemovals: 20, periodicSequence: 0 });
+    expect(lstatSync(dependencyPath).isDirectory()).toBe(true);
+    expect(lstatSync(dependencyPath).isSymbolicLink()).toBe(false);
+    expect(report.migratedDependencyPaths).toEqual([]);
+    expect(report.cycle.skippedByReason.dependency_active_owner).toBeGreaterThanOrEqual(1);
   });
 
   test('malformed Run metadata prevents worktree deletion for that repository', () => {
@@ -433,7 +505,7 @@ describe('runtime cleanup', () => {
       processGc: (options: { repoId: string }) => { ok: boolean };
       workValidationReconcile: (controllerHome: string, repoId: string, limit: number) => { errors: unknown[] };
       editValidationReconcile: (controllerHome: string, repository: { repoId: string }, limit: number) => Promise<{ errors: unknown[] }>;
-      repositoryList: () => Array<{ repoId: string; enabled: boolean; removedAt?: string }>;
+      repositoryList: () => Array<{ repoId: string; enabled: boolean; canonicalRoot: string; removedAt?: string }>;
       lastSourceScanAt: number;
       lastGitStatusSampleAt: number;
     };
@@ -454,9 +526,9 @@ describe('runtime cleanup', () => {
       return { errors: [] };
     };
     internal.repositoryList = () => [
-      { repoId: 'repo-a', enabled: true },
-      { repoId: 'repo-b', enabled: true },
-      { repoId: 'repo-disabled', enabled: false },
+      { repoId: 'repo-a', enabled: true, canonicalRoot: home },
+      { repoId: 'repo-b', enabled: true, canonicalRoot: home },
+      { repoId: 'repo-disabled', enabled: false, canonicalRoot: home },
     ];
     internal.lastSourceScanAt = now;
     internal.lastGitStatusSampleAt = now;

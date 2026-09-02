@@ -97,7 +97,6 @@ scripts/capability-resolver.ts
 scripts/architecture-event.ts
 scripts/capability-config.ts
 scripts/architecture-queue.sh
-scripts/archive-architecture-request.sh
 scripts/context-contract-sync.sh
 scripts/workstream-sync.sh
 scripts/prepare-codex-handoff.sh

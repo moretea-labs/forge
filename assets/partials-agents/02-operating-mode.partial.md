@@ -23,8 +23,7 @@
 - Lessons contract: `tasks/lessons.md`.
 - Plan directory: `plans/` (timestamped plans).
 - Active plan rule: `.ai/harness/active-plan` for this worktree when present, `.ai/harness/active-worktree` as owner marker, and `.claude/.active-plan` legacy fallback during transition. Do not infer active execution from the latest plan.
-- Plan archive: `plans/archive/`.
-- Todo archive: `tasks/archive/`.
+- Terminal repo-local workflow artifacts are deleted only after their exact final state is represented by Git; do not maintain plan/todo archive directories.
 - Shared automation layer: `.ai/hooks/`.
 - Host adapters: user-level `~/.claude/settings.json` and `~/.codex/hooks.json` call `forge-hook`, falling back to `forge hook`, which dispatches into opted-in repos.
 - External reference cache: `_ref/` is an occasional ignored external checkout cache, read/refresh-only comparison material, and must stay out of commits; decisions based on it must cite repo+commit/tag+path in notes or research.

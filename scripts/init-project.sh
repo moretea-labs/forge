@@ -206,11 +206,9 @@ create_structure() {
     if pi_should_generate_full_docs; then
         mkdir -p docs/architecture
     fi
-    mkdir -p tasks/archive
     mkdir -p tasks/contracts
     mkdir -p tasks/reviews
     mkdir -p tasks/notes
-    mkdir -p plans/archive
     mkdir -p .ai/context
     mkdir -p .ai/harness/checks
     mkdir -p .ai/harness/session .ai/harness/controller/packets .ai/harness/projections .ai/harness/transfers

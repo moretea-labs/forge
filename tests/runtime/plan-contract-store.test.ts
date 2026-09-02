@@ -289,7 +289,8 @@ test('requires explicit Requirement relation and permits only distinct-scope par
   expect(unresolved).toMatchObject({ admissionDecision: 'resolution_required', reason: 'requirement_relation_required' });
   const extended = admitPlanContract(options, { ...base, planId: 'plan-extended', scopeKey: 'extended-scope', planRelation: 'extend', relatedPlanId: 'plan-primary' });
   expect(extended).toMatchObject({ admissionDecision: 'create_new', reason: 'extend_existing', plan: { planId: 'plan-extended', status: 'draft' } });
-  expect(getPlanContract(options, 'plan-primary')).toMatchObject({ status: 'superseded', supersededBy: 'plan-extended' });
+  expect(getPlanContract(options, 'plan-primary')).toMatchObject({ status: 'superseded', supersededBy: 'plan-extended', supersessionReason: 'extend_existing' });
+  expect(getPlanContract(options, 'plan-extended')).toMatchObject({ supersedes: ['plan-primary'] });
   const parallel = admitPlanContract(options, { ...base, planId: 'plan-parallel', scopeKey: 'parallel-scope', planRelation: 'parallel' });
   expect(parallel).toMatchObject({ admissionDecision: 'create_new', plan: { planId: 'plan-parallel' } });
   const duplicateParallel = admitPlanContract(options, { ...base, planId: 'plan-parallel-duplicate', scopeKey: 'parallel-scope', planRelation: 'parallel' });
@@ -316,8 +317,27 @@ test('atomically replaces the exact-scope Plan authority during serial replannin
     relatedPlanId: 'plan-r1',
   });
   expect(replacement).toMatchObject({ admissionDecision: 'create_new', reason: 'extend_existing', plan: { planId: 'plan-r2', scopeKey: 'release-scope', status: 'draft' } });
-  expect(getPlanContract(options, 'plan-r1')).toMatchObject({ status: 'superseded', supersededBy: 'plan-r2' });
+  expect(getPlanContract(options, 'plan-r1')).toMatchObject({ status: 'superseded', supersededBy: 'plan-r2', supersessionReason: 'extend_existing' });
+  expect(getPlanContract(options, 'plan-r2')).toMatchObject({ supersedes: ['plan-r1'] });
   expect(listPlanContracts({ ...options, status: 'active' }).map((plan) => plan.planId)).toEqual(['plan-r2']);
+});
+
+test('direct supersession records bidirectional Plan lineage and removes the predecessor from current Plans', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-direct-supersession-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-direct-supersession' };
+  const create = (planId: string, scopeKey: string) => createPlanContract(options, {
+    planId, repoId: options.repoId, scopeKey, sourceRevision: 'revision-a', goal: `Deliver ${planId}`,
+    steps: [{ id: 'step-a', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['typecheck'], acceptanceCriteria: ['done'] }],
+  });
+  create('plan-direct-old', 'scope-old');
+  create('plan-direct-new', 'scope-new');
+  supersedePlanContract(options, 'plan-direct-old', 'plan-direct-new', 'replanned_after_drift');
+  expect(getPlanContract(options, 'plan-direct-old')).toMatchObject({
+    status: 'superseded', supersededBy: 'plan-direct-new', supersessionReason: 'replanned_after_drift',
+  });
+  expect(getPlanContract(options, 'plan-direct-new')).toMatchObject({ supersedes: ['plan-direct-old'] });
+  expect(listPlanContracts({ ...options, status: 'active' }).map((plan) => plan.planId)).toEqual(['plan-direct-new']);
 });
 
 test('direct supersession rejects a missing successor without mutating the predecessor', () => {

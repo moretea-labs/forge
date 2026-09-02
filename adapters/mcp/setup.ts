@@ -25,7 +25,7 @@ import {
 import { ensureControllerHome, ensureRepoPreferredControllerHome } from "../../src/cli/repositories/controller-home";
 import { accessModeForLegacyToolset } from "./access-mode";
 import { migrateControllerToolsetConfig } from "./toolset-selection";
-import { ensureForgeInstanceIdentity } from "../../packages/kernel/identity/api/index";
+import { ensureForgeInstanceIdentity, normalizeConfiguredForgeInstanceId } from "../../packages/kernel/identity/api/index";
 
 export interface McpSetupResult {
   status: "ok";
@@ -304,6 +304,7 @@ export function runMcpSetupChatgpt(opts: {
   port?: string;
   endpoint?: string;
   serverName?: string;
+  instanceId?: string;
   localControllerPort?: string;
   connectorPort?: string;
 }): McpSetupResult {
@@ -312,9 +313,12 @@ export function runMcpSetupChatgpt(opts: {
     ? ensureControllerHome(opts.controllerHome)
     : ensureRepoPreferredControllerHome(repoRoot, opts.controllerHome);
   const changed: string[] = [];
+  const configuredInstanceId = opts.instanceId !== undefined
+    ? normalizeConfiguredForgeInstanceId(opts.instanceId)
+    : process.env.FORGE_INSTANCE_ID?.trim();
   const forgeInstance = ensureForgeInstanceIdentity({
     controllerHome,
-    preferredInstanceId: process.env.FORGE_INSTANCE_ID?.trim(),
+    preferredInstanceId: configuredInstanceId,
   });
   const existingConfig = loadMcpServiceLocalConfig(controllerHome, repoRoot);
   const configuredForgeInstanceId = existingConfig?.identity?.forgeInstanceId?.trim();

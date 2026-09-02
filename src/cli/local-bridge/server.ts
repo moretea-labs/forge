@@ -1445,9 +1445,9 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.post("/api/console/inbox/:handoffId/approve", (request, response) => {
+  app.post("/api/console/inbox/:handoffId/approve", async (request, response) => {
     try {
-      const result = approveConsoleHandoff(
+      const result = await approveConsoleHandoff(
         consoleCtx(request),
         String(request.params.handoffId ?? ""),
         "user",
@@ -1464,13 +1464,13 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.post("/api/console/inbox/:handoffId/resolve", (request, response) => {
+  app.post("/api/console/inbox/:handoffId/resolve", async (request, response) => {
     try {
       const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
         ? request.body as Record<string, unknown>
         : {};
       response.json({
-        item: resolveConsoleHandoff(
+        item: await resolveConsoleHandoff(
           consoleCtx(request),
           String(request.params.handoffId ?? ""),
           queryString(body.decision) ?? "resolved",

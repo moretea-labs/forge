@@ -4,6 +4,7 @@ import { homedir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
 import { spawn, spawnSync } from 'child_process';
 import { bootstrapLaunchAgentWithRetryV2, installLaunchAgent, launchAgentPath, retireConflictingForgeLaunchAgents } from '../../cli/controller/launch-agents';
+import { loadMcpServiceLocalConfig } from '../../cli/mcp/auth';
 import type { PackageRuntimeRelease } from './package-runtime-release';
 
 export interface PackageConnectorServicePaths {
@@ -40,6 +41,8 @@ export interface PackageConnectorServiceResult {
   releaseId?: string;
   releaseRoot?: string;
 }
+
+export type PackageConnectorAuthMode = 'oauth' | 'none';
 
 function xml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
@@ -146,7 +149,17 @@ export async function waitForPackageConnectorEndpointReady(
   return false;
 }
 
-export function packageConnectorLaunchSpec(input: { release: PackageConnectorReleaseBinding; controllerHome: string; endpoint: string; executable?: string }): { executable: string; args: string[]; environment: Record<string, string>; port: number } {
+export function packageConnectorAuthMode(controllerHome: string): PackageConnectorAuthMode {
+  // OpenAI Secure MCP Tunnels authenticate the tunnel itself. The local
+  // Connector must not advertise a loopback OAuth issuer to ChatGPT in that
+  // topology. Keep OAuth as the default for existing HTTPS Connectors, and
+  // require an explicit per-instance opt-in before disabling it.
+  return loadMcpServiceLocalConfig(controllerHome)?.auth?.mode?.trim().toLowerCase() === 'none'
+    ? 'none'
+    : 'oauth';
+}
+
+export function packageConnectorLaunchSpec(input: { release: PackageConnectorReleaseBinding; controllerHome: string; endpoint: string; executable?: string }): { executable: string; args: string[]; environment: Record<string, string>; port: number; authMode: PackageConnectorAuthMode } {
   const parsed = new URL(input.endpoint);
   const port = Number(parsed.port);
   if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || parsed.pathname !== '/mcp' || !Number.isInteger(port) || port < 1 || port > 65_535) {
@@ -160,18 +173,25 @@ export function packageConnectorLaunchSpec(input: { release: PackageConnectorRel
   const cliEntry = join(packageRoot, 'src', 'cli', 'index.ts');
   const nodeLoader = join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs');
   const isBun = Boolean(process.versions.bun) || /(?:^|[/\\-])bun(?:$|[/\\]|\.exe$)/i.test(basename(executable));
+  const instanceId = loadMcpServiceLocalConfig(input.controllerHome)?.identity?.forgeInstanceId?.trim();
+  const authMode = packageConnectorAuthMode(input.controllerHome);
   const cliArgs = [
     // The package snapshot is executable code, never an adopted repository.
     // Supplying it as --repo makes the Gateway try to register a non-Git
     // directory and fail before it can proxy the Canonical Runtime.
     'mcp', 'serve', '--controller-home', resolve(input.controllerHome),
-    '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'controller', '--auth', 'oauth',
+    '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'controller', '--auth', authMode,
   ];
   return {
     executable,
     args: isBun ? [cliEntry, ...cliArgs] : ['--loader', nodeLoader, cliEntry, ...cliArgs],
-    environment: { FORGE_CONTROLLER_HOME: resolve(input.controllerHome), FORGE_CONTROLLER_LIFECYCLE_OWNER: '1' },
+    environment: {
+      FORGE_CONTROLLER_HOME: resolve(input.controllerHome),
+      FORGE_CONTROLLER_LIFECYCLE_OWNER: '1',
+      ...(instanceId ? { FORGE_MCP_INSTANCE_ID: instanceId } : {}),
+    },
     port,
+    authMode,
   };
 }
 
@@ -185,7 +205,15 @@ export function renderPackageConnectorLaunchAgent(input: { paths: PackageConnect
 export function renderPackageConnectorSystemdUserUnit(input: { launch: ReturnType<typeof packageConnectorLaunchSpec> }): string {
   const quote = (value: string) => `"${value.replaceAll('%', '%%').replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
   const env = Object.entries(input.launch.environment).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `Environment=${quote(`${k}=${v}`)}`);
-  return ['[Unit]', 'Description=Forge ChatGPT OAuth Gateway', 'After=network-online.target', '', '[Service]', 'Type=simple', `ExecStart=${[input.launch.executable, ...input.launch.args].map(quote).join(' ')}`, ...env, 'Restart=on-failure', 'RestartSec=5', '', '[Install]', 'WantedBy=default.target', ''].join('\n');
+  const description = input.launch.authMode === 'oauth'
+    ? 'Forge ChatGPT OAuth Gateway'
+    : 'Forge ChatGPT Secure Tunnel Connector';
+  return ['[Unit]', `Description=${description}`, 'After=network-online.target', '', '[Service]', 'Type=simple', `ExecStart=${[input.launch.executable, ...input.launch.args].map(quote).join(' ')}`, ...env, 'Restart=on-failure', 'RestartSec=5', '', '[Install]', 'WantedBy=default.target', ''].join('\n');
+}
+
+/** A rewritten user unit needs an explicit restart; enable --now preserves an already-running old process. */
+export function packageConnectorSystemdInstallCommands(unitName: string): string[][] {
+  return [['--user', 'daemon-reload'], ['--user', 'enable', unitName], ['--user', 'restart', unitName]];
 }
 
 export function packageConnectorServiceMatchesRelease(input: {
@@ -232,7 +260,7 @@ function installSystemd(paths: PackageConnectorServicePaths, launch: ReturnType<
   const unitName = `${paths.label}.service`;
   const unitPath = join(env.HOME ?? homedir(), '.config', 'systemd', 'user', unitName);
   atomicWrite(unitPath, renderPackageConnectorSystemdUserUnit({ launch }), 0o644);
-  for (const args of [['--user', 'daemon-reload'], ['--user', 'enable', '--now', unitName]]) {
+  for (const args of packageConnectorSystemdInstallCommands(unitName)) {
     const result = spawnSync('systemctl', args, { encoding: 'utf8', env, timeout: 30_000 });
     if (result.status !== 0) throw new Error(`FORGE_PACKAGE_CONNECTOR_SYSTEMD_INSTALL_FAILED: ${(result.stderr || result.stdout || '').trim()}`);
   }
@@ -275,7 +303,7 @@ export async function installPackageConnectorService(input: { release: PackageCo
       desiredLabel: paths.label,
       labelPrefix: 'com.moretea.forge.mcp-gateway',
       port: launch.port,
-      requiredArguments: ['mcp', 'serve', '--auth', 'oauth'],
+      requiredArguments: ['mcp', 'serve', '--auth', launch.authMode],
     });
     atomicWrite(paths.sourcePlistPath, renderPackageConnectorLaunchAgent({ paths, launch }), 0o600);
     installLaunchAgent(paths.sourcePlistPath, paths.label);
@@ -312,6 +340,7 @@ export async function ensurePackageConnectorService(input: {
   probeEndpoint?: (endpoint: string) => Promise<boolean>;
 }): Promise<PackageConnectorServiceResult> {
   const platform = input.platform ?? process.platform;
+  const authMode = packageConnectorAuthMode(input.controllerHome);
   if (!input.refresh && !input.forcePortable && platform === 'darwin') {
     const paths = packageConnectorServicePaths(input.controllerHome, input.env?.HOME);
     const port = Number(new URL(input.endpoint).port);
@@ -320,7 +349,7 @@ export async function ensurePackageConnectorService(input: {
       desiredLabel: paths.label,
       labelPrefix: 'com.moretea.forge.mcp-gateway',
       port,
-      requiredArguments: ['mcp', 'serve', '--auth', 'oauth'],
+      requiredArguments: ['mcp', 'serve', '--auth', authMode],
     });
   }
   if (!input.refresh && !input.forcePortable) {

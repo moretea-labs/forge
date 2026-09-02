@@ -52,6 +52,7 @@ import {
   requestWorkImplementationReview,
   transitionWorkContractPhase,
 } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';
 
 describe('MCP canonical Runtime proxy routing', () => {
   test('bounds inner Runtime proxy lanes and leases them exclusively under concurrency', async () => {
@@ -736,7 +737,7 @@ function postFinalizeAttributionFixture() {
     workspaceFingerprint: 'post-finalize-no-change-content',
     verificationWorkspaceFingerprint: 'post-finalize-no-change-verification',
     changedPaths: [],
-    changedPathDigest: '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e852f6a27d1e6d5f7b3768e',
+    changedPathDigest: implementationReviewChangedPathDigest([]),
     acceptanceCriteriaSummary: 'readonly observation remains attributable after lifecycle close',
     verificationEvidence: [],
     architectureEvidence: [],

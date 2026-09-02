@@ -413,6 +413,7 @@ async function executeExternalControllerWake(
     );
     if (resumed.dispatch.status === 'rejected') {
       throw new Error(resumed.dispatch.reason ?? 'CONTROLLER_HOST_RESUME_REJECTED');
+
     }
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
       lastTriggeredAt: timestamp,
@@ -421,20 +422,20 @@ async function executeExternalControllerWake(
       nextEligibleAt: undefined,
       ...(current.enabled ? { pausedReason: undefined } : {}),
     }));
-    const succeededOccurrence = saveOccurrence(controllerHome, {
+    const dispatchedOccurrence = saveOccurrence(controllerHome, {
       ...wakeDecision,
-      status: 'succeeded',
+      status: 'dispatched',
       reason: resumed.reused
-        ? `Controller continuation occurrence ${occurrence.occurrenceId} was already durably dispatched; external replay suppressed.`
-        : `ControllerHost accepted exact session ${retainedSession.sessionId} for Work ${workId}; dispatch ${resumed.dispatch.hostDispatchId ?? resumed.dispatch.relayScopeId}.`,
+        ? `Controller continuation occurrence ${occurrence.occurrenceId} was already durably dispatched; external replay suppressed and semantic round closure is still pending.`
+        : `ControllerHost accepted exact session ${retainedSession.sessionId} for Work ${workId}; dispatch ${resumed.dispatch.hostDispatchId ?? resumed.dispatch.relayScopeId}; semantic round closure is still pending.`,
     });
     appendWorkEvidence(workStore, workId, {
-      evidenceId: succeededOccurrence.occurrenceId,
+      evidenceId: dispatchedOccurrence.occurrenceId,
       title: 'scheduled Controller continuation dispatched',
-      summary: `Schedule ${schedule.scheduleId} occurrence ${succeededOccurrence.occurrenceId} resumed the exact Work-bound ControllerSession through ControllerHost.`,
+      summary: `Schedule ${schedule.scheduleId} occurrence ${dispatchedOccurrence.occurrenceId} resumed the exact Work-bound ControllerSession through ControllerHost.`,
       detailLevel: 'summary',
     });
-    return succeededOccurrence;
+    return dispatchedOccurrence;
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     if (reason.startsWith('SCHEDULE_CONTINUATION_ROUND_ALREADY_OPEN:')) {

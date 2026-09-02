@@ -12,9 +12,11 @@ import {
   defaultPrimaryRuntimeServiceConfig,
   initializeStandaloneRecovery,
   loadRecoveryConfig,
+  observeOpenAiTunnelLocalHealthFallback,
   recoveryMachineIdentity,
   RECOVERY_MUTATION_IDENTITY_FIELDS,
   recoveryConfigPath,
+  recoveryCommandPath,
   listReleases,
   recoverPrimaryRuntime,
   recordWatchdogRuntimeHealthy,
@@ -104,6 +106,12 @@ afterEach(async () => {
   while (ownerships.length > 0) ownerships.pop()!.release();
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((done) => server.close(() => done()))));
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
+});
+
+test('Recovery command PATH includes the standard user binary directory outside interactive shells', () => {
+  expect(recoveryCommandPath('/usr/bin:/bin', 'linux', '/home/forge-user')).toBe('/home/forge-user/.local/bin:/usr/bin:/bin');
+  expect(recoveryCommandPath('/home/forge-user/.local/bin:/usr/bin', 'linux', '/home/forge-user')).toBe('/home/forge-user/.local/bin:/usr/bin');
+  expect(recoveryCommandPath('C:\\Windows\\System32', 'win32', 'C:\\Users\\forge')).toBe('C:\\Windows\\System32');
 });
 
 function controllerHome(): string {
@@ -708,6 +716,37 @@ test('standalone Recovery restarts the configured primary public tunnel when the
   expect(reconnectCalls).toBe(2);
 });
 
+test('standalone Recovery uses its client-owned loopback health only when a primary OpenAI tunnel status command is unavailable', async () => {
+  const home = controllerHome();
+  const profileDir = join(home, 'tunnel-client');
+  const healthUrlFile = join(home, 'tunnel-health.url');
+  const tunnelId = 'tunnel_abcdef0123456789abcdef0123456789';
+  const endpoint = 'http://127.0.0.1:8767/mcp';
+  mkdirSync(profileDir, { recursive: true });
+  writeFileSync(healthUrlFile, 'http://127.0.0.1:45613\n');
+  writeFileSync(join(profileDir, 'forge.yaml'), JSON.stringify({
+    control_plane: { tunnel_id: tunnelId },
+    health: { url_file: healthUrlFile },
+    mcp: { server_urls: [{ url: endpoint }] },
+  }));
+  const requests: string[] = [];
+  const observed = await observeOpenAiTunnelLocalHealthFallback({
+    platform: 'openai-secure-tunnel',
+    alias: 'forge',
+    tunnelId,
+    mcpServerUrl: endpoint,
+    profile: 'forge',
+    profileDir,
+  }, {
+    request: async (url) => {
+      requests.push(url);
+      return { ok: true, status: 200 };
+    },
+  });
+  expect(observed).toMatchObject({ ok: true, running: true, healthy: true, ready: true, tunnelMatches: true, endpointMatches: true, observedTunnelId: tunnelId });
+  expect(requests).toEqual(['http://127.0.0.1:45613/healthz', 'http://127.0.0.1:45613/readyz']);
+});
+
 test('standalone Recovery repairs a Linux primary OpenAI Secure MCP Tunnel without restarting a healthy Connector', async () => {
   const home = controllerHome();
   const connectorEndpoint = 'http://127.0.0.1:8767/mcp';
@@ -725,6 +764,7 @@ test('standalone Recovery repairs a Linux primary OpenAI Secure MCP Tunnel witho
       tunnelId,
       mcpServerUrl: connectorEndpoint,
       runtimeApiKeyRef: 'env:FORGE_TUNNEL_RUNTIME_KEY',
+      adminProfile: 'forge-admin',
       postRestartVerifyTimeoutMs: 5_000,
     },
   });
@@ -763,6 +803,7 @@ test('standalone Recovery repairs a Linux primary OpenAI Secure MCP Tunnel witho
     },
   });
   expect(result).toMatchObject({ ok: true, attempted: true });
+  expect(commands).toContainEqual(['tunnel-client', 'runtimes', 'status', 'forge', '--json', '--admin-profile', 'forge-admin']);
   expect(commands.some((entry) => entry[0] === 'tunnel-client' && entry[1] === 'runtimes' && entry[2] === 'connect')).toBe(true);
   expect(commands.some((entry) => entry[0] === 'systemctl' && entry.includes('restart'))).toBe(false);
   expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);
@@ -831,6 +872,70 @@ test('standalone Recovery repairs its dedicated OpenAI Secure MCP Tunnel without
     '--profile', 'forge-recovery', '--profile-dir', home,
   ]);
   expect(commands.some((entry) => entry.includes('forge') && !entry.includes('forge-recovery'))).toBe(false);
+});
+
+test('standalone Recovery repairs its dedicated Linux systemd-user public tunnel by exact unit identity', async () => {
+  const home = controllerHome();
+  const unitName = 'com.moretea.forge-recovery-cloudflare.service';
+  const config = createRecoveryConfig(home, {
+    recoveryPublicUrl: 'https://recovery-wsl.example.test/recovery/mcp',
+    recoveryTunnelService: { platform: 'systemd-user', unitName, cooldownMs: 0, postRestartVerifyTimeoutMs: 3_000 },
+  });
+  let restarted = false;
+  let clock = 0;
+  const commands: string[][] = [];
+  const verification = (): VerifyResult => ({
+    ...healthyVerify(),
+    probes: {
+      ...healthyVerify().probes,
+      recovery_gateway: { ok: true, detail: 'HTTP 200' },
+      recovery_external_http: { ok: restarted, detail: restarted ? 'HTTP 401 OAuth challenge' : 'HTTP 530' },
+    },
+  });
+  const result = await repairPublicTunnel(config, {
+    platform: 'linux',
+    verify: async () => verification(),
+    verifyLocal: async () => healthyVerify(),
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    runCommand: async (name, args) => {
+      commands.push([name, ...args]);
+      if (name !== 'systemctl') throw new Error(`unexpected command ${name}`);
+      if (args[1] === 'show') return { ok: true, status: 0, stdout: 'loaded\n', stderr: '' };
+      if (args[1] === 'restart' && args[2] === unitName) { restarted = true; return { ok: true, status: 0, stdout: '', stderr: '' }; }
+      throw new Error(`unexpected systemctl args ${args.join(' ')}`);
+    },
+  });
+  expect(result).toMatchObject({ ok: true, attempted: true, serviceLabel: unitName, serviceTarget: unitName });
+  expect(commands).toContainEqual(['systemctl', '--user', 'show', '--property=LoadState', '--value', unitName]);
+  expect(commands).toContainEqual(['systemctl', '--user', 'restart', unitName]);
+  expect(commands.some((entry) => entry[0] === 'launchctl' || entry[0] === 'tunnel-client')).toBe(false);
+});
+
+test('standalone Recovery rejects invalid or unavailable systemd-user public tunnel identity', async () => {
+  const home = controllerHome();
+  const degraded: VerifyResult = {
+    ...healthyVerify(),
+    probes: { ...healthyVerify().probes, recovery_gateway: { ok: true, detail: 'HTTP 200' }, recovery_external_http: { ok: false, detail: 'HTTP 530' } },
+  };
+  const invalid = await repairPublicTunnel(createRecoveryConfig(home, {
+    recoveryPublicUrl: 'https://recovery-wsl.example.test/recovery/mcp',
+    recoveryTunnelService: { platform: 'systemd-user', unitName: '../bad.service', cooldownMs: 0 },
+  }), { platform: 'linux', verify: async () => degraded, verifyLocal: async () => healthyVerify() });
+  expect(invalid).toMatchObject({ ok: false, attempted: false, noOp: true, detail: 'public tunnel systemd-user configuration is invalid' });
+
+  const commands: string[][] = [];
+  const unavailable = await repairPublicTunnel(createRecoveryConfig(home, {
+    recoveryPublicUrl: 'https://recovery-wsl.example.test/recovery/mcp',
+    recoveryTunnelService: { platform: 'systemd-user', unitName: 'com.moretea.missing.service', cooldownMs: 0 },
+  }), {
+    platform: 'linux',
+    verify: async () => degraded,
+    verifyLocal: async () => healthyVerify(),
+    runCommand: async (name, args) => { commands.push([name, ...args]); return { ok: true, status: 0, stdout: 'not-found\n', stderr: '' }; },
+  });
+  expect(unavailable).toMatchObject({ ok: false, attempted: false, noOp: true, detail: 'public tunnel systemd-user unit is not loaded: com.moretea.missing.service' });
+  expect(commands).toEqual([['systemctl', '--user', 'show', '--property=LoadState', '--value', 'com.moretea.missing.service']]);
 });
 
 test('standalone Recovery refuses to repoint an OpenAI tunnel alias owned by another tunnel', async () => {
@@ -1065,6 +1170,9 @@ test('watchdog defers Recovery self-repair while an attributable mutation lock i
   expect(tick.primaryRuntimeRestart).toBeUndefined();
 });
 
+const TEST_LINUX_HOME = '/home' + '/forge-test';
+const TEST_MAC_HOME = '/Users' + '/forge-test';
+
 describe('standalone recovery systemd user ownership', () => {
   test('selects the installed primary Runtime owner from the host service manager', () => {
     expect(defaultPrimaryRuntimeServiceConfig('linux')).toEqual({ platform: 'systemd-user' });
@@ -1241,8 +1349,8 @@ describe('standalone recovery on canonical Runtime', () => {
   });
 
   test('Recovery OpenAI tunnel identity is machine-specific and cannot reuse the primary tunnel identity', () => {
-    const wslAlias = recoveryOpenAiTunnelDefaultAlias('/home/user/.forge/controller', 'linux', 'windows-wsl');
-    const macAlias = recoveryOpenAiTunnelDefaultAlias('/Users/user/.forge/controller', 'darwin', 'macbook');
+    const wslAlias = recoveryOpenAiTunnelDefaultAlias(`${TEST_LINUX_HOME}/.forge/controller`, 'linux', 'windows-wsl');
+    const macAlias = recoveryOpenAiTunnelDefaultAlias(`${TEST_MAC_HOME}/.forge/controller`, 'darwin', 'macbook');
     expect(wslAlias).toStartWith('forge-recovery-');
     expect(macAlias).toStartWith('forge-recovery-');
     expect(wslAlias).not.toBe(macAlias);
@@ -1269,10 +1377,10 @@ describe('standalone recovery on canonical Runtime', () => {
 
   test('Controller Home migration derives a Linux user-level destination and never accepts the current configured authority as a destination override', () => {
     expect(defaultUserControllerHomeForMigration({
-      FORGE_CONTROLLER_HOME: '/Users/greyson/.forge/controller',
+      FORGE_CONTROLLER_HOME: `${TEST_MAC_HOME}/.forge/controller`,
       XDG_STATE_HOME: '',
-    }, '/home/greyson')).toBe('/home/greyson/.forge/controller');
-    const owners = recoveryControllerHomeOwnerLabels('/home/greyson/src/forge/_ops/controller-home');
+    }, TEST_LINUX_HOME)).toBe(`${TEST_LINUX_HOME}/.forge/controller`);
+    const owners = recoveryControllerHomeOwnerLabels(`${TEST_LINUX_HOME}/src/forge/_ops/controller-home`);
     expect(owners).toHaveLength(4);
     expect(owners[0]).toMatch(/^com\.moretea\.forge\.runtime\.[a-f0-9]+$/);
     expect(owners[1]).toMatch(/^com\.moretea\.forge\.mcp-gateway\.[a-f0-9]+$/);
@@ -1284,7 +1392,7 @@ describe('standalone recovery on canonical Runtime', () => {
     const config = createRecoveryConfig(home);
     expect(() => scheduleRecoveryControllerHomeMigration(config, {
       requestId: 'migration-test-request',
-      canonicalSourceRoot: '/home/greyson/src/forge',
+      canonicalSourceRoot: `${TEST_LINUX_HOME}/src/forge`,
       expectedSourceRevision: 'deadbeef',
     }, { platform: 'darwin' })).toThrow('RECOVERY_CONTROLLER_HOME_MIGRATION_LINUX_ONLY');
   });
@@ -2038,6 +2146,7 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(beforeUnit).toContain(join(home, 'runtime', 'releases', 'release-a', 'forge-runtime'));
       expect(beforeUnit).not.toContain(join(home, 'runtime', 'releases', 'release-b', 'forge-runtime'));
       let serviceActive = true;
+      let connectorBindings = 0;
       const commands: string[][] = [];
       const config = createRecoveryConfig(home, { primaryRuntimeService: { platform: 'systemd-user', postRestartVerifyTimeoutMs: 10_000 } });
       const result = await activateRuntimeRelease(config, candidate.path, {
@@ -2054,6 +2163,10 @@ describe('standalone recovery on canonical Runtime', () => {
           return { ok: true, status: 0, stdout: '', stderr: '' };
         },
         runtimeRunning: () => false,
+        repairPrimaryConnectorBinding: async () => {
+          connectorBindings += 1;
+          return { ok: true, attempted: true, detail: 'candidate Connector binding refreshed' };
+        },
         verifyLocal: async () => {
           const authority = readRuntimeReleaseAuthority(home)!;
           return {
@@ -2074,6 +2187,7 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(commands).toContainEqual(['systemctl', '--user', 'enable', unitName]);
       expect(commands).toContainEqual(['systemctl', '--user', 'start', unitName]);
       expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);
+      expect(connectorBindings).toBe(1);
       const reboundUnit = readFileSync(unitPath, 'utf8');
       expect(reboundUnit).toBe(renderPackageRuntimeSystemdUserService(home));
       expect(reboundUnit).toContain(join(home, 'runtime', 'releases', 'release-b', 'forge-runtime'));

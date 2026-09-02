@@ -13,8 +13,10 @@ import {
   finishControllerRoundRelayDispatch,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
+import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { createWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { chatgptBridgeTargetMatchesPage, isWslWindowsRuntime, openWslWindowsBridgeTarget } from '../../src/cli/chatgpt-browser/bridge-provider';
+import { writeChatgptBridgeExtension } from '../../src/cli/chatgpt-browser/bridge-extension';
 import { ensureBridgeToken, readBrowserBinding } from '../../src/cli/chatgpt-browser/binding';
 import {
   bindChatgptWorkConversation,
@@ -24,6 +26,7 @@ import {
   rebindChatgptWorkConversation,
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
 import {
+  chatgptOutboundMessageMatchesPrompt,
   chatgptAutomationControlQueryLimit,
   chatgptAutomationControlWaitBudgets,
   chatgptAutomationNavigationRequiresReplacement,
@@ -41,6 +44,12 @@ import {
 } from '../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
 import { migrateChatgptAutomationSchedule } from '../../src/runtime/workflow/schedules/chatgpt-automation-migration';
 import { classifyChatgptWakeFailure } from '../../src/runtime/workflow/schedules/engine';
+import {
+  createWorkContinuationSchedule,
+  handoffResolvedContinuationEventName,
+  resolveHandoffAndTriggerContinuation,
+} from '../../src/runtime/workflow/schedules/work-continuation';
+import { createSchedule, listOccurrences } from '../../src/runtime/workflow/schedules/store';
 import type { RepositorySchedule } from '../../src/runtime/workflow/schedules/types';
 
 const roots: string[] = [];
@@ -264,17 +273,43 @@ describe('ChatGPT Work conversation binding', () => {
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/', 'https://chatgpt.com/')).toBe(true);
     expect(chatgptBridgeTargetMatchesPage('https://chatgpt.com/', 'https://chatgpt.com/c/other-id')).toBe(false);
   });
-  test('scheduled WSL continuation uses dispatch-confirmed bridge semantics instead of Browser replay', () => {
+  test('native ChatGPT outbound matching is semantic and bounded', () => {
+    const prompt = '@forge Continue exact Work work-native-send and preserve the same conversation. '.repeat(6).trim();
+    expect(chatgptOutboundMessageMatchesPrompt(prompt, prompt)).toBe(true);
+    expect(chatgptOutboundMessageMatchesPrompt(prompt.replace(/\s+/g, '   '), prompt)).toBe(true);
+    expect(chatgptOutboundMessageMatchesPrompt(`prefix ${prompt}`, prompt)).toBe(false);
+    expect(chatgptOutboundMessageMatchesPrompt(`${prompt.slice(0, 160)} but wrong tail`, prompt)).toBe(false);
+    expect(chatgptOutboundMessageMatchesPrompt('', prompt)).toBe(false);
+  });
+
+  test('scheduled WSL continuation uses semantic outbound dispatch confirmation instead of Browser replay', () => {
     const launcher = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
     const provider = readFileSync(join(process.cwd(), 'src/cli/chatgpt-browser/bridge-provider.ts'), 'utf8');
     const extension = readFileSync(join(process.cwd(), 'src/cli/chatgpt-browser/bridge-extension.ts'), 'utf8');
+    const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8');
+    const generatedRoot = mkdtempSync(join(tmpdir(), 'forge-chatgpt-bridge-generated-'));
+    roots.push(generatedRoot);
+    const generated = writeChatgptBridgeExtension(generatedRoot, 'http://127.0.0.1:17651', 'test-token');
+    const generatedScript = readFileSync(generated.contentScriptPath, 'utf8');
+    expect(() => new Function(generatedScript)).not.toThrow();
     expect(launcher).toContain('if (isWslWindowsRuntime())');
     expect(launcher).toContain('dispatchOnly: true');
     expect(launcher).toContain("provider: 'chatgpt-bridge'");
     expect(provider).toContain("url.pathname === '/api/extension/dispatched'");
     expect(provider).toContain('state.dispatched');
+    expect(provider).toContain("typeof body.outboundFingerprint === 'string'");
     expect(extension).toContain('forgeLastDispatch');
+    expect(extension).toContain('FORGE_CHATGPT_USER');
+    expect(extension).toContain('forgeOutboundMessageMatchesPrompt');
     expect(extension).toContain("forgePost('/api/extension/dispatched'");
+    expect(generatedScript).toContain('forgeHasConversationIdentity');
+    expect(generatedScript).toContain('outboundFingerprint: forgeOutboundFingerprint(prompt)');
+    expect(generatedScript).toContain('.split(String.fromCharCode(10)).join');
+    expect(generatedScript).not.toContain("replace(/s+/g");
+    expect(generatedScript).not.toContain('initialHasConversation = //c/');
+    expect(engine).toContain("status: 'dispatched'");
+    expect(engine).toContain('semantic round closure is still pending');
+    expect(engine).not.toContain('ChatGPT dispatch action succeeded via');
   });
 
 
@@ -344,6 +379,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain('waitForChatgptIntelligenceControl'); expect(source).toContain('reasoningLabelMatches'); expect(source).toContain("'main button, main [role=\"button\"]'"); expect(source).toContain('limit: chatgptAutomationControlQueryLimit(selector)'); expect(source).toContain('chatgptAutomationReasoningLevelFromLabel'); expect(source).toContain('CHATGPT_AUTOMATION_LOGIN_REQUIRED'); expect(source).not.toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('resumeScheduledControllerContinuation'); expect(engine).toContain('controllerHostForScheduledBinding'); expect(engine).toContain('SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED'); expect(engine).not.toContain('runWorkChatgptContinuation'); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/'");
     expect(source).toContain('seedUrl && !binding && hasChatgptConversationIdentity(seedUrl)');
     expect(source).toContain('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'); expect(source).toContain('workflowToolAttributionInstruction'); expect(source).toContain('repository_command_execute and repository_safe_patch_apply');
+    expect(source).toContain('CHATGPT_USER_MESSAGE_SELECTOR'); expect(source).toContain("from_end: true"); expect(source).toContain("browserMutationOutcomeUnknown(error, 'click')"); expect(source).toContain('chatgptOutboundMessageMatchesPrompt(fullText, renderedPrompt)');
     expect(source).toContain("controllerBrowserAction(controllerHome, workId, 'close_page'");
     expect(source).toContain('closeChatgptAutomationTabAfterDispatch');
     expect(source).toContain('settleWorkChatgptAutomationTab');
@@ -384,6 +420,98 @@ describe('ChatGPT Work conversation binding', () => {
     expect(controllerRelease).toContain('settleWorkChatgptAutomationTab({');
     expect(controllerRelease).toContain("status: 'retained_for_immediate_continuation'");
     expect(controllerRelease).toContain("['waiting', 'waiting_for_user', 'goal_complete', 'blocked', 'failed']");
+  });
+
+  test('resolving a Handoff triggers only the exact Work repository-event continuation schedule', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-handoff-event-continuation-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    ensureControllerHome(controllerHome);
+    const repoRoot = join(root, 'repo');
+    mkdirSync(repoRoot, { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'fixture\n', 'utf8');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'handoff-event-continuation' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workId = 'WORK-HANDOFF-EVENT';
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Resume when the bounded Handoff is resolved.',
+      acceptanceCriteria: ['Only the exact Work continuation schedule may wake.'],
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    claimControllerSession(store, {
+      workId,
+      controllerId: 'test-controller',
+      controllerType: 'chatgpt',
+      sessionId: 'test-handoff-controller-session',
+      principalId: 'test-controller',
+      controllerInstanceId: 'test-runtime',
+      leaseMs: 60_000,
+    });
+    releaseControllerSession(store, workId, 'test-controller');
+    const handoffId = 'HND-HANDOFF-EVENT';
+    const eventName = handoffResolvedContinuationEventName(handoffId);
+    const schedule = createWorkContinuationSchedule(controllerHome, repository.repoId, {
+      workId,
+      controllerType: 'chatgpt',
+      triggerType: 'repository-event',
+      eventName,
+      shadowMode: true,
+      cooldownMinutes: 0,
+    }).schedule;
+    const decoy = createSchedule(controllerHome, {
+      requestId: 'decoy-handoff-event',
+      repoId: repository.repoId,
+      name: 'decoy other Work event continuation',
+      enabled: true,
+      trigger: { type: 'repository-event', eventName },
+      policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: true },
+      action: { operation: 'external_controller_wake', target: 'runtime', arguments: { work_id: 'WORK-DECOY', controller_type: 'chatgpt' } },
+      stopConditions: [],
+    });
+    createHandoffItem(store, {
+      id: handoffId,
+      repoId: repository.repoId,
+      workId,
+      title: 'Bounded continuation blocker',
+      severity: 'needs_review',
+      creationReason: 'ambiguous_outcome',
+      reason: 'A bounded decision blocks continuation.',
+      summary: 'Resume the exact Work after this Handoff resolves.',
+      currentState: { repoId: repository.repoId, workId, statusSummary: 'waiting for bounded resolution' },
+      attemptedActions: [],
+      evidenceRefs: [],
+      recommendedDecision: 'Resolve the bounded blocker.',
+      recommendedPrompt: 'Resolve the bounded blocker and resume the exact Work.',
+      suggestedNextActions: [],
+    });
+
+    const resolved = await resolveHandoffAndTriggerContinuation(controllerHome, repository.repoId, handoffId, {
+      decision: 'resolved for regression coverage',
+      resolver: 'test-controller',
+    });
+
+    expect(resolved.item.status).toBe('resolved');
+    expect(resolved.continuationOccurrences).toEqual([
+      expect.objectContaining({ scheduleId: schedule.scheduleId, status: 'shadowed' }),
+    ]);
+    const occurrences = listOccurrences(controllerHome, repository.repoId, schedule.scheduleId);
+    expect(occurrences).toHaveLength(1);
+    expect(occurrences[0]?.triggerContext).toMatchObject({ source: 'repository-event', eventName });
+    expect(listOccurrences(controllerHome, repository.repoId, decoy.scheduleId)).toHaveLength(0);
   });
 
   test('migrates legacy ChatGPT schedules idempotently without changing task state', () => {

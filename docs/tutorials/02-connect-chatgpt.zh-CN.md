@@ -127,7 +127,7 @@ Cloudflare/Tailscale/已有 HTTPS 本质上会让 MCP endpoint 成为公网或�
 
 ChatGPT UI 会变化，所以以 OpenAI 当前 Developer Mode 文档为准，不在 Forge 文档中固定截图路径。
 
-使用 Secure MCP Tunnel 时选择 **Tunnel** 连接方式并选择/填入 tunnel ID；使用 HTTPS 时填入稳定、以 `/mcp` 结尾的 URL，并走 Forge 生成的 OAuth 流程。
+使用 Secure MCP Tunnel 时选择 **Tunnel** 连接方式并选择/填入 tunnel ID，然后选择 **无身份验证**：已认证的 OpenAI Tunnel 就是外部授权边界；使用 HTTPS 时填入稳定、以 `/mcp` 结尾的 URL，并走 Forge 生成的 OAuth 流程。
 
 创建后扫描/刷新工具。不要为了看到更多工具名而直接切到 exhaustive compatibility toolset；默认收敛工具面是安全和可用性设计的一部分。
 

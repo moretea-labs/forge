@@ -41,6 +41,12 @@ Earlier V4–V8 Controller, Local Bridge, Supervisor, Issue/Task/Job and recover
 - Kept foreground/physical input explicit. Browser background actions never silently activate a tab; Desktop Operator foreground/physical actions remain a separate verified capability boundary.
 - Added current-source live acceptance coverage for Chrome/Vivaldi native lifecycle, background foreground-preservation, URL drift/rebind, replacement postconditions, internal resources, cleanup, and attributable latency reporting. Environment-owned browser permission gaps remain typed external blockers rather than reasons to weaken the runtime contract.
 
+## 2026-08-31 — Independent Windows/WSL host rescue
+
+- Added an emergency host-rescue boundary outside the Forge checkout and Controller Home so a broken Runtime, Connector, or existing Recovery deployment can still be reached from Windows through WSL.
+- Restricted the host-facing surface to a fixed set of status/start/restart/verification actions, with one WSL-side lock for every mutation; no arbitrary shell RPC, source mutation, release selection, or Controller-database ownership was added.
+- Kept the Windows scheduled task as a cold-start trigger and the WSL rescue service as the sole long-lived reconciliation owner. Tunnel credentials remain in tunnel-client's separately permissioned store rather than rescue configuration.
+
 ## 2026-09-02 — Kernel V2 governance moves from textual fences to structural authority
 
 - Defined Kernel V2 as a domain/authority migration toward a modular monolith with explicit Kernel, protocol, plugin-runtime, adapter, and composition-root dependency direction.

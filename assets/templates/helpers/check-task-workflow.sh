@@ -675,7 +675,7 @@ check_helper_runtime_files() {
       switch-plan.sh workflow-contract.ts
       inspect-project-state.ts migrate-workflow-docs.ts migrate-project-template.sh
       capability-resolver.ts architecture-event.ts capability-config.ts architecture-queue.sh
-      archive-architecture-request.sh context-contract-sync.sh workstream-sync.sh
+      context-contract-sync.sh workstream-sync.sh
       prepare-codex-handoff.sh codex-handoff-resume.sh
     )
   fi
@@ -735,11 +735,9 @@ if [[ -f "$policy_file" ]] && command -v jq >/dev/null 2>&1; then
 fi
 
 check_required_dir "plans"
-check_required_dir "plans/archive"
 check_required_dir "plans/prds"
 check_required_dir "$sprints_dir"
 check_required_dir "tasks"
-check_required_dir "tasks/archive"
 check_required_dir "$contracts_dir"
 check_required_dir "$reviews_dir"
 check_required_dir "$notes_dir"

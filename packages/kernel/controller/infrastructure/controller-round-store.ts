@@ -11,7 +11,7 @@ import { workHasActiveExecution } from '../../../../src/runtime/execution/work-a
 import { controllerSessionBlocksRecovery, getControllerSession } from './controller-session-store';
 import { getHandoffItem, listHandoffItems } from '../../../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { getWorkContract, readWorkContractStore, isTerminalWorkContractStatus, type WorkContract } from '../../work/api/index';
-import { isTerminalHandoffStatus } from '../../../../src/runtime/control-plane/facade/types';
+import { isTerminalHandoffStatus } from '../../../protocols/handoff/index';
 import type { ControllerSession, ControllerType } from '../domain/types';
 import {
   CONTROLLER_ROUND_DISPOSITIONS,
@@ -406,6 +406,7 @@ export function submitControllerRoundDisposition(
       ...(requirementId ? { requirementId } : {}),
       disposition: input.disposition,
       status,
+      lifecycleStage: 'semantic_round_closed',
       controllerId: authority.controllerId,
       controllerType: authority.controllerType,
       principalId: authority.principalId,
@@ -498,6 +499,7 @@ export function beginInitialControllerRoundDispatch(
       // launched controller must still submit its own end-of-round disposition.
       disposition: 'continue_immediately',
       status: blockedReason ? 'blocked' : 'dispatching',
+      lifecycleStage: 'dispatching',
       controllerId: input.identity.controllerId.trim().slice(0, 240) || 'controller-host',
       controllerType: input.identity.controllerType,
       principalId: input.identity.principalId.trim().slice(0, 240) || input.identity.controllerId.trim().slice(0, 240),
@@ -556,6 +558,7 @@ export function beginControllerRoundRelayAfterRelease(
       ...record,
       authorityId: newControllerRoundAuthorityId(),
       status: 'dispatching',
+      lifecycleStage: 'dispatching',
       updatedAt: at,
     };
     writeControlPlaneRecord(options.controllerHome, {
@@ -644,6 +647,7 @@ export function finishControllerRoundRelayDispatch(
       ? {
           ...current.value,
           status: 'dispatched',
+          lifecycleStage: 'dispatch_confirmed',
           consecutiveFailures: 0,
           lastError: undefined,
           nextRecoveryAt: undefined,
@@ -746,6 +750,7 @@ export function acknowledgeControllerRoundClaim(
         controllerInstanceId,
         sessionId: owner.sessionId,
         claimGeneration: owner.claimGeneration,
+        lifecycleStage: 'controller_claimed',
         claimedAt: at,
         updatedAt: at,
         lastError: undefined,
@@ -794,6 +799,7 @@ export function acknowledgeControllerRoundClaim(
       const rearmed: ControllerRoundRelayRecord = {
         ...current.value,
         status: 'claimed',
+        lifecycleStage: 'controller_claimed',
         controllerId: owner.controllerId,
         controllerType: owner.controllerType,
         principalId: ownerPrincipal,
@@ -836,6 +842,7 @@ export function acknowledgeControllerRoundClaim(
     const next: ControllerRoundRelayRecord = {
       ...current.value,
       status: 'claimed',
+      lifecycleStage: 'controller_claimed',
       controllerId: owner.controllerId,
       controllerType: owner.controllerType,
       principalId: owner.principalId?.trim() || owner.controllerId,
@@ -930,6 +937,7 @@ export function claimStalledControllerRoundRelays(
             ? latest.authorityId
             : newControllerRoundAuthorityId(),
         status: blockedReason ? 'blocked' : 'dispatching',
+        ...(blockedReason ? {} : { lifecycleStage: 'dispatching' as const }),
         stateFingerprint,
         roundCount,
         repeatedStateCount,

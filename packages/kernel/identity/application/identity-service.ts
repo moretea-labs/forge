@@ -10,6 +10,15 @@ import type {
 export { ensureForgeInstanceIdentity, forgeInstanceIdentityPath, readForgeInstanceIdentity } from '../infrastructure/identity-store';
 export type { ForgeIdentityStoreOptions } from '../infrastructure/identity-store';
 
+export function normalizeConfiguredForgeInstanceId(value: string | undefined, label = 'Forge instance id'): string | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (!/^[a-z][a-z0-9-]{1,62}$/.test(normalized)) {
+    throw new Error(`${label} must match ^[a-z][a-z0-9-]{1,62}$`);
+  }
+  return normalized;
+}
+
 export function principal(principalId: string, kind: PrincipalKind, issuer?: string): Principal {
   const normalized = principalId.trim();
   if (!normalized) throw new Error('PRINCIPAL_ID_REQUIRED');

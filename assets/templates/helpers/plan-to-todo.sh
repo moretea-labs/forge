@@ -241,24 +241,6 @@ set_plan_status() {
   mv "$tmp_file" "$file"
 }
 
-unique_archive_path() {
-  local desired="$1"
-  if [[ ! -e "$desired" ]]; then
-    printf '%s' "$desired"
-    return
-  fi
-
-  local stem counter candidate
-  stem="${desired%.md}"
-  counter=2
-  candidate="${stem}-v${counter}.md"
-  while [[ -e "$candidate" ]]; do
-    counter=$((counter + 1))
-    candidate="${stem}-v${counter}.md"
-  done
-  printf '%s' "$candidate"
-}
-
 rewrite_plan_artifact_references() {
   local plan_file="$1"
   local from_stem="$2"
@@ -600,7 +582,6 @@ fi
 
 maybe_start_contract_worktree "$plan_file"
 
-mkdir -p tasks/archive
 mkdir -p tasks/contracts
 mkdir -p tasks/reviews
 mkdir -p tasks/notes
@@ -621,8 +602,6 @@ artifact_stem="$(plan_artifact_stem_from_path "$plan_file")"
 contract_file="tasks/contracts/${artifact_stem}.contract.md"
 review_file="tasks/reviews/${artifact_stem}.review.md"
 notes_file="tasks/notes/${artifact_stem}.notes.md"
-previous_source_plan="$(get_todo_source_plan || true)"
-parent_run_id="${HOOK_RUN_ID:-${CLAUDE_RUN_ID:-${CODEX_RUN_ID:-run-${timestamp}}}}"
 capability_id="$(extract_capability_id "$plan_file")"
 capability_id="${capability_id:-root}"
 
@@ -631,16 +610,9 @@ rewrite_plan_artifact_references "$plan_file" "$original_artifact_stem" "$artifa
 if [[ -f "tasks/todos.md" ]] \
   && grep -q '[^[:space:]]' tasks/todos.md \
   && ! grep -Eq '^> \*\*Status\*\*:[[:space:]]*Backlog[[:space:]]*$' tasks/todos.md; then
-  archive_file="$(unique_archive_path "tasks/archive/todo-${timestamp}-${slug}.md")"
-  {
-    echo "> **Archived**: $(date '+%Y-%m-%d %H:%M')"
-    echo "> **Related Plan**: ${plan_file}"
-    echo "> **Outcome**: Converted to deferred-goal ledger"
-    echo "> **Source Plan**: ${previous_source_plan:-"(none)"}"
-    echo "> **Parent Run ID**: ${parent_run_id}"
-    echo
-    cat tasks/todos.md
-  } > "$archive_file"
+  echo "plan-to-todo: refusing to overwrite legacy tasks/todos.md; repository archive copies are no longer created" >&2
+  echo "Review the legacy checklist explicitly, preserve any still-live goals, then normalize tasks/todos.md to the deferred-goal ledger." >&2
+  exit 1
 fi
 
 if [[ ! -f "tasks/todos.md" ]] || ! grep -Eq '^> \*\*Status\*\*:[[:space:]]*Backlog[[:space:]]*$' tasks/todos.md; then

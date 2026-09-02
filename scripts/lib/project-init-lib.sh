@@ -195,7 +195,7 @@ Complete this inventory before implementation. If any line is unknown, keep the 
 - Implementation notes file: `tasks/notes/{{ARTIFACT_STEM}}.notes.md`
 - Template: `.claude/templates/contract.template.md`
 - Verification command: `bash .ai/harness/scripts/verify-contract.sh --contract tasks/contracts/{{ARTIFACT_STEM}}.contract.md --strict`
-- Active plan rule: `.ai/harness/active-plan` is authoritative for this worktree when present; `.ai/harness/active-worktree` records the owning worktree; `.claude/.active-plan` is a legacy fallback during transition. Do not infer active execution from the latest non-archived plan.
+- Active plan rule: `.ai/harness/active-plan` is authoritative for this worktree when present; `.ai/harness/active-worktree` records the owning worktree; `.claude/.active-plan` is a legacy fallback during transition. Do not infer active execution from plan filename order, recency, or mere presence.
 
 ## Handoff
 
@@ -1039,7 +1039,7 @@ pi_install_helpers() {
   local target_dir="$1"
   local helpers_dir="$2"
   local mode="${3:-apply}"
-  local helper_names="${4:-new-spec.sh new-sprint.sh new-plan.sh capture-plan.sh plan-to-todo.sh contract-run.ts contract-worktree.sh ship-worktrees.sh archive-workflow.sh refresh-current-status.sh prepare-handoff.sh verify-contract.sh summarize-failures.sh verify-sprint.sh sprint-backlog.sh check-task-sync.sh check-deploy-sql-order.sh check-architecture-sync.sh check-agent-tooling.sh check-context-files.sh check-brain-manifest.sh sync-brain-docs.sh check-skill-version.ts select-agent-context-blocks.sh ensure-task-workflow.sh check-task-workflow.sh switch-plan.sh workflow-contract.ts inspect-project-state.ts migrate-workflow-docs.ts migrate-project-template.sh capability-resolver.ts architecture-event.ts capability-config.ts architecture-queue.sh archive-architecture-request.sh context-contract-sync.sh workstream-sync.sh prepare-codex-handoff.sh codex-handoff-resume.sh}"
+  local helper_names="${4:-new-spec.sh new-sprint.sh new-plan.sh capture-plan.sh plan-to-todo.sh contract-run.ts contract-worktree.sh ship-worktrees.sh archive-workflow.sh refresh-current-status.sh prepare-handoff.sh verify-contract.sh summarize-failures.sh verify-sprint.sh sprint-backlog.sh check-task-sync.sh check-deploy-sql-order.sh check-architecture-sync.sh check-agent-tooling.sh check-context-files.sh check-brain-manifest.sh sync-brain-docs.sh check-skill-version.ts select-agent-context-blocks.sh ensure-task-workflow.sh check-task-workflow.sh switch-plan.sh workflow-contract.ts inspect-project-state.ts migrate-workflow-docs.ts migrate-project-template.sh capability-resolver.ts architecture-event.ts capability-config.ts architecture-queue.sh context-contract-sync.sh workstream-sync.sh prepare-codex-handoff.sh codex-handoff-resume.sh}"
   local scripts_dir="$target_dir/scripts"
   local runtime_dir="$target_dir/.ai/harness/scripts"
   local helper_name
@@ -1852,7 +1852,6 @@ pi_write_harness_policy() {
     "marker_file": ".ai/harness/active-plan",
     "legacy_marker_file": ".claude/.active-plan",
     "directory": "plans",
-    "archive_directory": "plans/archive",
     "glob": "plan-*.md",
     "active_worktree_marker_file": ".ai/harness/active-worktree",
     "source_of_truth": "per-worktree explicit marker with active-worktree owner; legacy Claude marker fallback only"
@@ -2047,15 +2046,14 @@ pi_write_harness_policy() {
     "strategy_version": 1,
     "supported_legacy_versions": ["pre-tasks-first", "tasks-first-without-contract-manifest", "current-v1"],
     "action_classes": {
-      "preserve": "keep user-authored hooks, ignored reference material, private operations state, secrets, and local env files unchanged",
-      "archive": "move user-authored legacy workflow documents or checklists into archive/research surfaces before refresh",
+      "preserve": "keep user-authored legacy workflow documents, hooks, ignored reference material, private operations state, secrets, and local env files unchanged until explicitly triaged",
       "reconfigure": "merge managed config defaults without overwriting explicit repo overrides",
       "remove": "delete only workflow-contract actions marked ownership=known_generated"
     },
     "cleanup": {
       "source": ".ai/harness/workflow-contract.json#migrations.upgrade.actions",
       "remove_only_ownership": "known_generated",
-      "unknown_files": "preserve-or-archive",
+      "unknown_files": "preserve",
       "custom_hooks": "preserve",
       "ignored_reference_material": "preserve",
       "local_operations_state": "preserve",
@@ -2462,7 +2460,7 @@ CURRENT_STATUS_EOF
 ## Architecture Drift Flow
 
 - `.ai/harness/scripts/architecture-queue.sh` records architecture-sensitive edits as requests.
-- `.ai/harness/scripts/archive-architecture-request.sh` archives handled requests after an agent records the resolution status and linked artifacts.
+- `.ai/harness/scripts/architecture-queue.sh resolve --file <request>` removes handled requests, clears stale context pointers, and reindexes the live queue; Git history is the archive.
 - `.ai/harness/scripts/context-contract-sync.sh` keeps only the controlled architecture block in functional-block `AGENTS.md` and `CLAUDE.md` files aligned.
 - `.ai/harness/scripts/workstream-sync.sh` keeps durable multi-session progress under `tasks/workstreams/<domain>/<capability>/` and projects only pointers into local contracts.
 - Semantic architecture diagrams live as Mermaid fenced blocks in the relevant module or snapshot Markdown.

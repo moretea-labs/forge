@@ -98,6 +98,8 @@ export type WorkAdmissionRelation = 'continue' | 'extend' | 'parallel' | 'new_go
 
 export interface GoalWorkloopStartInput {
   objective: string;
+  /** Optional exact durable identity reserved by the admission authority before creation. */
+  workId?: string;
   acceptanceCriteria?: string[];
   allowedPaths?: string[];
   /** Non-authoritative first-pass discovery candidates. */
@@ -889,7 +891,15 @@ export function startGoalWorkloop(
       rawAvailable: false,
     });
   }
-  const generatedWorkId = workIdFor(input.objective);
+  const requestedWorkId = input.workId?.trim();
+  if (requestedWorkId && !/^work-[a-z0-9][a-z0-9-]{0,199}$/i.test(requestedWorkId)) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: 'WORK_ID_INVALID: explicit Work ids must use the canonical work-<slug> form.',
+      data: { executionStarted: false, workContractCreated: false },
+    });
+  }
+  const generatedWorkId = requestedWorkId ?? workIdFor(input.objective);
   if (input.planId || input.planStepId) {
     if (!input.planId || !input.planStepId || !ctx.planStore || !ctx.sourceRevision || !plan || !planStep) {
       return buildFacadeResult({ status: 'blocked', summary: 'PLAN_CONTEXT_REQUIRED: plan_id, plan_step_id, an executable Plan step and a current source revision are required.', data: { executionStarted: false } });
@@ -2291,6 +2301,7 @@ export function runGoalWorkloop(
     case 'start':
       return routeWorkStart(ctx, {
         objective: String(args.objective ?? ''),
+        workId: typeof args.work_id === 'string' ? args.work_id : undefined,
         acceptanceCriteria: Array.isArray(args.acceptance_criteria) ? args.acceptance_criteria.map(String) : undefined,
         allowedPaths: Array.isArray(args.allowed_paths) ? args.allowed_paths.map(String) : undefined,
         initialLikelyPaths: Array.isArray(args.initial_likely_paths) ? args.initial_likely_paths.map(String) : undefined,

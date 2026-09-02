@@ -49,6 +49,7 @@ interface McpSetupChatgptOptions {
   port?: string;
   endpoint?: string;
   serverName?: string;
+  instanceId?: string;
   localControllerPort?: string;
   connectorPort?: string;
 }
@@ -245,6 +246,7 @@ export function buildMcpCommand(): Command {
     .option('--connector-port <port>', 'Loopback OAuth connector port for ChatGPT tunnels; defaults to MCP port + 2')
     .option('--endpoint <url>', 'Stable public HTTPS /mcp endpoint to store in ignored local config')
     .option('--server-name <name>', 'ChatGPT Connector/MCP server name to record in ignored local config')
+    .option('--instance-id <id>', 'Stable installation identity exposed by the OAuth Connector (for example forge-wsl)')
     .action((rawOpts: McpSetupChatgptOptions) => {
       void runMcpAction(() => {
         const result = runMcpSetupChatgpt(rawOpts);

@@ -46,6 +46,8 @@ import {
   type PrimaryConnectorServiceConfig,
   type RecoveryMachineIdentity,
   type PublicTunnelServiceConfig,
+  type RecoveryTunnelServiceConfig,
+  type SystemdUserRecoveryTunnelServiceConfig,
 } from '../../runtime/standalone-recovery/core';
 import { readRecoveryRuntimeIdentity } from '../../runtime/standalone-recovery/release';
 import {
@@ -57,7 +59,7 @@ import {
 } from '../../runtime/standalone-recovery/controller-home-migration';
 import { configureCodegraph, ensureCodegraph } from '../tools/codegraph';
 import { isProcessAlive } from '../../runtime/shared/process-tree';
-import { systemdUserServicePid, systemdUserUnitPath } from '../controller/systemd-user';
+import { systemdUserServicePid, systemdUserUnitName, systemdUserUnitPath } from '../controller/systemd-user';
 
 function output(value: unknown, json = true): void {
   console.log(json ? JSON.stringify(value, null, 2) : String(value));
@@ -79,6 +81,13 @@ function launchdService(label?: string, plistPath?: string, role = 'RECOVERY_TUN
   return { platform: 'launchd', label, ...(plistPath ? { plistPath } : {}) };
 }
 
+function systemdRecoveryTunnelService(unitName?: string): SystemdUserRecoveryTunnelServiceConfig | undefined {
+  if (!unitName) return undefined;
+  const normalized = systemdUserUnitName(unitName);
+  if (!/^[A-Za-z0-9_.@-]{1,180}\.service$/.test(normalized)) throw new Error('RECOVERY_TUNNEL_SYSTEMD_UNIT_INVALID');
+  return { platform: 'systemd-user', unitName: normalized };
+}
+
 export function recoveryOpenAiTunnelDefaultAlias(
   controllerHome: string,
   platform: NodeJS.Platform = process.platform,
@@ -89,7 +98,7 @@ export function recoveryOpenAiTunnelDefaultAlias(
 }
 
 export function assertDistinctRecoveryOpenAiTunnelIdentity(
-  recovery: PublicTunnelServiceConfig | undefined,
+  recovery: RecoveryTunnelServiceConfig | undefined,
   primary: PublicTunnelServiceConfig | undefined,
 ): void {
   if (recovery?.platform !== 'openai-secure-tunnel' || primary?.platform !== 'openai-secure-tunnel') return;
@@ -138,6 +147,7 @@ export interface RecoveryConnectorDependencies {
   launchdPid?: (role: 'gateway' | 'watchdog') => number | undefined;
   systemdPid?: (role: 'gateway' | 'watchdog') => number | undefined;
   tunnelLaunchdPid?: (label: string) => number | undefined;
+  tunnelSystemdPid?: (unitName: string) => number | undefined;
   openAiTunnelStatus?: (service: OpenAiSecureTunnelServiceConfig) => OpenAiSecureTunnelRuntimeObservation;
   processAlive?: (pid: number) => boolean;
 }
@@ -163,10 +173,12 @@ export interface RecoveryConnectorDescriptor {
     watchdog: { label: string; platform: 'launchd' | 'systemd-user'; serviceInstalled: boolean; plistInstalled: boolean; running: boolean; pid?: number };
     tunnel: {
       configured: boolean;
-      platform?: 'launchd' | 'openai-secure-tunnel';
+      platform?: 'launchd' | 'systemd-user' | 'openai-secure-tunnel';
       label?: string;
+      unitName?: string;
       alias?: string;
       tunnelId?: string;
+      serviceInstalled?: boolean;
       plistInstalled: boolean;
       restartSafe: boolean;
       running: boolean;
@@ -202,15 +214,22 @@ export function recoveryConnectorDescriptor(
   const processAlive = dependencies.processAlive ?? isProcessAlive;
   const configuredTunnel = config.recoveryTunnelService;
   const tunnelService = configuredTunnel?.platform === 'launchd' ? configuredTunnel : undefined;
+  const systemdTunnelService = configuredTunnel?.platform === 'systemd-user' ? configuredTunnel : undefined;
   const openAiTunnelService = configuredTunnel?.platform === 'openai-secure-tunnel' ? configuredTunnel : undefined;
   const tunnelContract = tunnelService ? inspectRecoveryTunnelLaunchdContract(tunnelService) : undefined;
   const tunnelLaunchdPid = tunnelService
     ? (dependencies.tunnelLaunchdPid ?? recoveryLaunchdServicePid)(tunnelService.label)
     : undefined;
   const tunnelPlistInstalled = Boolean(tunnelContract?.plistPath && pathExists(tunnelContract.plistPath));
+  const systemdTunnelUnitName = systemdTunnelService?.unitName.trim();
+  const systemdTunnelIdentityValid = Boolean(systemdTunnelUnitName && /^[A-Za-z0-9_.@-]{1,180}\.service$/.test(systemdTunnelUnitName));
+  const systemdTunnelInstalled = Boolean(systemdTunnelIdentityValid && pathExists(systemdUserUnitPath(systemdTunnelUnitName!)));
+  const systemdTunnelPid = systemdTunnelIdentityValid
+    ? (dependencies.tunnelSystemdPid ?? ((unitName: string) => systemdUserServicePid(unitName)))(systemdTunnelUnitName!)
+    : undefined;
   const openAiTunnelStatus = openAiTunnelService
     ? (dependencies.openAiTunnelStatus ?? ((service: OpenAiSecureTunnelServiceConfig) => {
-        const status = spawnSync('tunnel-client', openAiSecureTunnelStatusArgs(service.alias), {
+        const status = spawnSync('tunnel-client', openAiSecureTunnelStatusArgs(service.alias, service), {
           encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000,
         });
         return parseOpenAiSecureTunnelRuntimeStatus(status.stdout || '{}', { alias: service.alias, tunnelId: service.tunnelId, mcpServerUrl: service.mcpServerUrl });
@@ -220,8 +239,16 @@ export function recoveryConnectorDescriptor(
   if (openAiTunnelService) {
     try { openAiSecureTunnelConnectArgs(openAiTunnelService); openAiRestartSafe = true; } catch { openAiRestartSafe = false; }
   }
-  const tunnelRestartSafe = openAiTunnelService ? openAiRestartSafe : Boolean(tunnelContract?.restartSafe);
-  const tunnelRunning = openAiTunnelService ? openAiTunnelStatus?.running === true : Boolean(tunnelLaunchdPid && processAlive(tunnelLaunchdPid));
+  const tunnelRestartSafe = openAiTunnelService
+    ? openAiRestartSafe
+    : systemdTunnelService
+      ? systemdTunnelIdentityValid && systemdTunnelInstalled
+      : Boolean(tunnelContract?.restartSafe);
+  const tunnelRunning = openAiTunnelService
+    ? openAiTunnelStatus?.running === true
+    : systemdTunnelService
+      ? Boolean(systemdTunnelPid && processAlive(systemdTunnelPid))
+      : Boolean(tunnelLaunchdPid && processAlive(tunnelLaunchdPid));
   const tunnelHealthy = openAiTunnelService ? openAiTunnelStatus?.healthy === true : tunnelRunning;
   const tunnelReady = openAiTunnelService ? openAiTunnelStatus?.ok === true : tunnelRestartSafe && tunnelRunning;
   const gatewayPlistInstalled = pathExists(authority.gatewayLaunchAgent);
@@ -263,11 +290,13 @@ export function recoveryConnectorDescriptor(
     if (!tunnelRestartSafe) warnings.push('The dedicated OpenAI Recovery tunnel must use a valid alias, tunnel id, loopback MCP endpoint, and env:/file: runtime API key reference.');
     else if (!tunnelRunning) warnings.push(`The dedicated OpenAI Recovery tunnel runtime ${openAiTunnelService.alias} is not running.`);
     else if (!tunnelHealthy || !tunnelReady) warnings.push(`The dedicated OpenAI Recovery tunnel runtime ${openAiTunnelService.alias} is not healthy and ready.`);
-  } else if (!configuredUrl) warnings.push('The configured launchd Recovery tunnel requires --recovery-public-url.');
-  else if (!publicEndpoint) warnings.push('ChatGPT Recovery Connector requires an HTTPS public endpoint for launchd-managed public tunnels.');
-  else if (!tunnelPlistInstalled) warnings.push('The dedicated Forge Recovery tunnel plist is not installed.');
-  else if (!tunnelRestartSafe) warnings.push('The dedicated Forge Recovery tunnel plist must use RunAtLoad=true and unconditional KeepAlive=true.');
-  else if (!tunnelRunning) warnings.push('The dedicated Forge Recovery tunnel service is not running.');
+  } else if (!configuredUrl) warnings.push('The configured Recovery tunnel requires --recovery-public-url.');
+  else if (!publicEndpoint) warnings.push('ChatGPT Recovery Connector requires an HTTPS public endpoint for managed public tunnels.');
+  else if (systemdTunnelService && !systemdTunnelInstalled) warnings.push(`The dedicated Forge Recovery systemd-user tunnel unit ${systemdTunnelUnitName ?? systemdTunnelService.unitName} is not installed.`);
+  else if (systemdTunnelService && !tunnelRunning) warnings.push(`The dedicated Forge Recovery systemd-user tunnel unit ${systemdTunnelUnitName} is not running.`);
+  else if (!systemdTunnelService && !tunnelPlistInstalled) warnings.push('The dedicated Forge Recovery tunnel plist is not installed.');
+  else if (!systemdTunnelService && !tunnelRestartSafe) warnings.push('The dedicated Forge Recovery tunnel plist must use RunAtLoad=true and unconditional KeepAlive=true.');
+  else if (!systemdTunnelService && !tunnelRunning) warnings.push('The dedicated Forge Recovery tunnel service is not running.');
   if (!passphraseConfigured) warnings.push('MCP OAuth passphrase is not configured. Run forge mcp setup chatgpt first.');
 
   return {
@@ -307,12 +336,14 @@ export function recoveryConnectorDescriptor(
         configured: Boolean(configuredTunnel),
         ...(configuredTunnel ? { platform: configuredTunnel.platform } : {}),
         ...(tunnelService ? { label: tunnelService.label } : {}),
+        ...(systemdTunnelService ? { unitName: systemdTunnelUnitName ?? systemdTunnelService.unitName } : {}),
         ...(openAiTunnelService ? { alias: openAiTunnelService.alias, tunnelId: openAiTunnelService.tunnelId } : {}),
+        serviceInstalled: openAiTunnelService ? openAiRestartSafe : systemdTunnelService ? systemdTunnelInstalled : tunnelPlistInstalled,
         plistInstalled: tunnelPlistInstalled,
         restartSafe: tunnelRestartSafe,
         running: tunnelRunning,
         ...(openAiTunnelService ? { healthy: tunnelHealthy, ready: tunnelReady } : {}),
-        ...(tunnelLaunchdPid ? { pid: tunnelLaunchdPid } : {}),
+        ...(systemdTunnelPid ? { pid: systemdTunnelPid } : tunnelLaunchdPid ? { pid: tunnelLaunchdPid } : {}),
       },
     },
     tools: RECOVERY_TOOLS.map((tool) => tool.name),
@@ -831,6 +862,7 @@ export function buildRecoveryCommand(): Command {
     .option('--recovery-public-url <url>', 'Dedicated Forge Recovery MCP public URL')
     .option('--recovery-tunnel-service-label <label>', 'Dedicated Recovery tunnel launchd label')
     .option('--recovery-tunnel-service-plist <path>', 'Absolute Recovery tunnel launchd plist path')
+    .option('--recovery-tunnel-systemd-unit <unit>', 'Dedicated Recovery systemd --user tunnel unit (Linux only)')
     .option('--recovery-openai-tunnel-id <id>', 'Dedicated Recovery OpenAI Secure MCP Tunnel id')
     .option('--recovery-openai-tunnel-alias <alias>', 'Dedicated Recovery tunnel-client runtime alias (default: machine-specific forge-recovery-<id>)')
     .option('--recovery-openai-runtime-api-key-ref <ref>', 'Recovery tunnel runtime API key reference (env:NAME or file:/absolute/path)')
@@ -857,6 +889,7 @@ export function buildRecoveryCommand(): Command {
       recoveryPublicUrl?: string;
       recoveryTunnelServiceLabel?: string;
       recoveryTunnelServicePlist?: string;
+      recoveryTunnelSystemdUnit?: string;
       recoveryOpenaiTunnelId?: string;
       recoveryOpenaiTunnelAlias?: string;
       recoveryOpenaiRuntimeApiKeyRef?: string;
@@ -881,6 +914,9 @@ export function buildRecoveryCommand(): Command {
       const port = Number(opts.port);
       if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('RECOVERY_PORT_INVALID');
       const recoveryLaunchdTunnel = launchdService(opts.recoveryTunnelServiceLabel, opts.recoveryTunnelServicePlist, 'RECOVERY_TUNNEL') as PublicTunnelServiceConfig | undefined;
+      const recoverySystemdTunnel = systemdRecoveryTunnelService(opts.recoveryTunnelSystemdUnit);
+      if (recoveryLaunchdTunnel && process.platform === 'linux') throw new Error('RECOVERY_TUNNEL_LAUNCHD_UNSUPPORTED_ON_LINUX');
+      if (recoverySystemdTunnel && process.platform !== 'linux') throw new Error('RECOVERY_TUNNEL_SYSTEMD_UNSUPPORTED_ON_THIS_PLATFORM');
       const recoveryLocalMcpUrl = `http://127.0.0.1:${port}/recovery/mcp`;
       const recoveryOpenAiTunnel = openAiTunnelService({
         tunnelId: opts.recoveryOpenaiTunnelId,
@@ -893,8 +929,9 @@ export function buildRecoveryCommand(): Command {
         defaultAlias: recoveryOpenAiTunnelDefaultAlias(home),
         role: 'RECOVERY',
       });
-      if (recoveryLaunchdTunnel && recoveryOpenAiTunnel) throw new Error('RECOVERY_TUNNEL_OWNER_CONFLICT');
-      const recoveryTunnelService = recoveryOpenAiTunnel ?? recoveryLaunchdTunnel;
+      const recoveryTunnelOwners = [recoveryLaunchdTunnel, recoverySystemdTunnel, recoveryOpenAiTunnel].filter(Boolean);
+      if (recoveryTunnelOwners.length > 1) throw new Error('RECOVERY_TUNNEL_OWNER_CONFLICT');
+      const recoveryTunnelService: RecoveryTunnelServiceConfig | undefined = recoveryOpenAiTunnel ?? recoverySystemdTunnel ?? recoveryLaunchdTunnel;
 
       const primaryConnectorLaunchd = launchdService(opts.primaryConnectorServiceLabel, opts.primaryConnectorServicePlist, 'RECOVERY_PRIMARY_CONNECTOR') as PrimaryConnectorServiceConfig | undefined;
       const primaryConnectorLocalUrl = endpoint(opts.primaryConnectorLocalUrl, 'RECOVERY_PRIMARY_CONNECTOR_LOCAL_URL');
@@ -930,8 +967,8 @@ export function buildRecoveryCommand(): Command {
 
       const recoveryPublicUrl = endpoint(opts.recoveryPublicUrl, 'RECOVERY_PUBLIC_URL');
       if (recoveryOpenAiTunnel && recoveryPublicUrl) throw new Error('RECOVERY_OPENAI_TUNNEL_PUBLIC_URL_CONFLICT');
-      if (recoveryLaunchdTunnel && !recoveryPublicUrl) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
-      if (!recoveryLaunchdTunnel && !recoveryOpenAiTunnel && recoveryPublicUrl) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
+      if ((recoveryLaunchdTunnel || recoverySystemdTunnel) && !recoveryPublicUrl) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
+      if (!recoveryTunnelService && recoveryPublicUrl) throw new Error('RECOVERY_PUBLIC_URL_AND_TUNNEL_SERVICE_MUST_BE_CONFIGURED_TOGETHER');
 
       const packageRoot = resolve(import.meta.dir, '..', '..', '..');
       const primaryRuntimeSourceRoot = opts.primaryRuntimeSourceRoot ? resolve(opts.primaryRuntimeSourceRoot) : packageRoot;
