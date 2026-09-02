@@ -3,7 +3,8 @@ import {
   getWorkContract as readWorkContract,
   recordWorkCompletionReceipt as persistWorkCompletionReceipt,
 } from '../infrastructure/work-contract-store';
-import type { WorkContract, WorkContractStoreOptions } from '../domain/types';
+import type { WorkContract } from '../domain/types';
+import type { WorkContractStoreOptions } from '../ports/work-contract-store';
 
 export interface CompleteRemoteEffectProcessInput {
   processId: string;

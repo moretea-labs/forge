@@ -35,7 +35,7 @@ import {
   updateSchedule,
 } from '../../../../packages/kernel/scheduler/api/index';
 export { cronDue };
-import { ensureScheduledControllerBinding, controllerHostForScheduledBinding } from '../../../../adapters/scheduler/controller-binding';
+import { ensureScheduledControllerBinding, controllerHostForScheduledBinding } from '../../root/scheduled-controller-composition';
 import { listHandoffItems } from '../../control-plane/facade/handoff-inbox-store';
 import { runStandaloneChatgptPrompt } from '../../control-plane/launcher/chatgpt-work-continuation';
 

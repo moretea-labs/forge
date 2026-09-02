@@ -171,6 +171,8 @@ export interface ManagedProcessRecord {
   checkoutId?: string;
   /** Optional facade WorkContract that owns this command. */
   workId?: string;
+  /** Immutable pre-spawn authority required for post-terminal Work reconciliation. */
+  executionIdentity?: ResolvedExecutionIdentity;
   /** Caller-stable command identity; defaults to processId when omitted. */
   commandId?: string;
   /** Fingerprint bound to origin.requestId before spawn. */

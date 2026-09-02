@@ -2,14 +2,37 @@ import type { ProcessCheckReceiptEvidence } from '../../../../src/runtime/eviden
 import type { CompletionReceipt as RepositoryCompletionReceipt } from '../../../../src/cli/controller/types';
 import type { AccessMode } from '../../../../src/runtime/control-plane/governance/access-policy';
 import type { RouteDecision } from '../../../../src/runtime/control-plane/routing/route-policy';
-import type {
-  ExecutionMode,
-  FacadeDetailLevel,
-  EvidenceRef,
-  SuggestedNextAction,
-  PolicyDecision,
-} from '../../../../src/runtime/control-plane/facade/types';
 import type { WorkImplementationReviewRecord } from './implementation-review';
+
+/** Work-persisted orchestration metadata is Kernel-owned; facade is a consumer. */
+export type ExecutionMode = 'direct_control' | 'goal_workloop' | 'handoff_only';
+export type FacadeDetailLevel = 'summary' | 'detail' | 'raw';
+export interface EvidenceRef {
+  evidenceId?: string;
+  artifactId?: string;
+  title: string;
+  summary?: string;
+  detailLevel?: FacadeDetailLevel;
+}
+export interface SuggestedNextAction {
+  label: string;
+  tool: 'rh_access' | 'rh_status' | 'rh_inbox' | 'rh_context' | 'rh_work';
+  operation: string;
+  payload?: Record<string, unknown>;
+  risk: 'readonly' | 'local_repo_write' | 'workspace_write' | 'remote_write' | 'destructive_remote' | 'destructive' | 'raw_secret_config' | 'unknown';
+  confidence?: 'low' | 'medium' | 'high';
+  reason?: string;
+  fallback?: string;
+}
+export interface PolicyDecision {
+  decision: 'allowed' | 'approval_required' | 'denied' | 'dry_run_only';
+  reason: string;
+  capabilityId?: string;
+  approvalRequestId?: string;
+  requiredConfirmationText?: string;
+  warnings: string[];
+  suggestedNextActions: SuggestedNextAction[];
+}
 
 /** Canonical Kernel Work domain contracts. */
 export const WORK_CONTRACT_STATUSES = [

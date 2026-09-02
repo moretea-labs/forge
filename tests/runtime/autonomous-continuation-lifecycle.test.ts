@@ -15,7 +15,8 @@ import {
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { runSchedulerControllerRoundRecovery } from '../../src/runtime/control-plane/global-scheduler/maintenance';
 import { claimControllerSession, getControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
-import { createWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { bindChatgptWorkConversation } from '../../src/runtime/control-plane/launcher/chatgpt-work-binding-store';
 import { launchSuperController } from '../../src/runtime/control-plane/launcher/thin-launcher';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
@@ -109,23 +110,23 @@ describe('autonomous continuation lifecycle', () => {
       sessionId: 'external-session:codex:stale',
       principalId: 'external:codex:stale',
       controllerInstanceId: 'runtime-old',
-      leaseMs: 60 * 60_000,
+      leaseMs: 5 * 60_000,
     });
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
       identity: {
-        controllerId: 'schedule:test',
+        controllerId: 'schedule:test', controllerType: 'chatgpt',
         principalId: 'forge-scheduler',
         controllerInstanceId: 'runtime-test',
         sessionId: 'occurrence-test',
       },
     });
-    finishControllerRoundRelayDispatch(store, {
+    const staleOwnerBinding = bindChatgptWorkConversation(store, {
       workId,
-      ok: true,
-      browserSessionId: 'forge-chatgpt-work-test',
       conversationUrl: 'https://chatgpt.com/c/stale-owner-recovery',
+      latestBrowserSessionId: 'forge-chatgpt-work-test',
     });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true, bindingId: staleOwnerBinding.bindingId });
 
     const claimed = structured(await callRuntimeTool(
       mcpContext(controllerHome, repository, {
@@ -185,7 +186,7 @@ describe('autonomous continuation lifecycle', () => {
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
       identity: {
-        controllerId: 'schedule:test',
+        controllerId: 'schedule:test', controllerType: 'chatgpt',
         principalId: 'forge-scheduler',
         controllerInstanceId: 'runtime-test',
         sessionId: 'occurrence-test',
@@ -204,6 +205,27 @@ describe('autonomous continuation lifecycle', () => {
     expect(acknowledgeControllerRoundClaim(store, { workId, session: owner })?.status).toBe('claimed');
 
     const recordedAt = '2026-08-27T12:00:00.000Z';
+    transitionWorkContractPhase(store, workId, { status: 'running', phase: 'verification', state: 'satisfied', summary: 'Exact no-change candidate verified for terminal relay semantics.' });
+    requestWorkImplementationReview(store, workId, 'No-change candidate requires explicit Controller review before completion.');
+    recordWorkImplementationReview(store, workId, {
+      schemaVersion: 1,
+      reviewId: 'REV-autonomous-continuation-facade',
+      workId,
+      reviewerPrincipalId: 'chatgpt-principal',
+      reviewerControllerSessionId: 'mcp-before-finalize',
+      decision: 'approved',
+      rationale: 'The exact no-change candidate is reviewed before terminal goal closure.',
+      findings: [],
+      sourceRevision: targetRevision,
+      workspaceFingerprint: 'autonomous-no-change-content',
+      verificationWorkspaceFingerprint: 'autonomous-no-change-verification',
+      changedPaths: [],
+      changedPathDigest: implementationReviewChangedPathDigest([]),
+      acceptanceCriteriaSummary: 'Terminal goal_complete survives MCP transport rotation.',
+      verificationEvidence: [],
+      architectureEvidence: [],
+      recordedAt,
+    });
     recordWorkCompletionReceipt(store, workId, {
       schemaVersion: 1,
       receiptId: 'receipt-autonomous-continuation-facade',
@@ -324,7 +346,7 @@ describe('autonomous continuation lifecycle', () => {
       workId,
       maxRepeatedState: 3,
       identity: {
-        controllerId: 'schedule:test',
+        controllerId: 'schedule:test', controllerType: 'chatgpt',
         principalId: 'forge-scheduler',
         controllerInstanceId: 'runtime-test',
         sessionId: 'occurrence-abandoned',
@@ -373,7 +395,7 @@ describe('autonomous continuation lifecycle', () => {
       workId,
       maxRepeatedState: 3,
       identity: {
-        controllerId: 'schedule:test-relaunch',
+        controllerId: 'schedule:test-relaunch', controllerType: 'chatgpt',
         principalId: 'forge-scheduler',
         controllerInstanceId: 'runtime-test',
         sessionId: 'occurrence-relaunch',
@@ -459,23 +481,26 @@ describe('autonomous continuation lifecycle', () => {
       requestedBy: 'chatgpt',
       status: 'running',
     });
+    const recoveryBinding = bindChatgptWorkConversation(store, {
+      workId,
+      conversationUrl: 'https://chatgpt.com/c/recovery-conversation',
+      latestBrowserSessionId: 'browser-recovery',
+    });
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
       identity: {
-        controllerId: 'schedule:recovery',
+        controllerId: 'schedule:recovery', controllerType: 'chatgpt',
         principalId: 'forge-scheduler',
         controllerInstanceId: 'runtime-test',
         sessionId: 'occurrence-recovery',
       },
-      browserSessionId: 'browser-recovery',
-      conversationUrl: 'https://chatgpt.com/c/recovery-conversation',
+      bindingId: recoveryBinding.bindingId,
       maxFailures: 2,
     });
     const dispatched = finishControllerRoundRelayDispatch(store, {
       workId,
       ok: true,
-      browserSessionId: opened.browserSessionId,
-      conversationUrl: opened.conversationUrl,
+      bindingId: recoveryBinding.bindingId,
     })!;
     const firstRecoveryAt = Date.parse(dispatched.updatedAt) + 61_000;
     const observed: Array<Record<string, unknown>> = [];

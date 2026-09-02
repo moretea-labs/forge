@@ -26,13 +26,13 @@ import { invalidateExecutionSession, startExecutionSession } from '../../src/run
 import {
   acknowledgeControllerRoundClaim,
   beginInitialControllerRoundDispatch,
-  buildControllerRoundRelayPrompt,
   claimStalledControllerRoundRelays,
   finishControllerRoundRelayDispatch,
   parseControllerDispositionCompatibilityCapability,
   parseControllerRoundCompatibilityCapability,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
+import { buildChatgptControllerRoundPrompt } from '../../adapters/chatgpt/controller-round-host';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { awaitExternalControllerWake, classifyChatgptWakeFailure, evaluateSchedule, externalControllerWakeTimeoutMs } from '../../src/runtime/workflow/schedules/engine';
 import { applyScheduleRetryableFailure } from '../../src/runtime/workflow/schedules/settlement';
@@ -852,10 +852,10 @@ describe('scheduled external Controller wake', () => {
     const store = { controllerHome, repoId: repository.repoId };
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
+      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
     });
     expect(opened.status).toBe('dispatching');
-    const scheduledPrompt = buildControllerRoundRelayPrompt(store, opened, { exactOriginWork: true });
+    const scheduledPrompt = buildChatgptControllerRoundPrompt(store, opened, { exactOriginWork: true });
     expect(scheduledPrompt).toContain(`Claim and advance only origin Work ${workId}.`);
     expect(scheduledPrompt).toContain(`controller.round:controller_claim:${opened.authorityId}:${opened.relayScopeId}`);
     expect(scheduledPrompt).toContain('Do not select, start, delegate, or resume a sibling Work');
@@ -863,8 +863,7 @@ describe('scheduled external Controller wake', () => {
     const dispatched = finishControllerRoundRelayDispatch(store, {
       workId,
       ok: true,
-      browserSessionId: 'browser-test',
-      conversationUrl: 'https://chatgpt.com/c/relay-test',
+      bindingId: `chatgpt:${repository.repoId}:${workId}`,
     });
     expect(dispatched?.status).toBe('dispatched');
 
@@ -925,6 +924,7 @@ describe('scheduled external Controller wake', () => {
       workId,
       identity: {
         controllerId: nextSession.controllerId,
+        controllerType: nextSession.controllerType,
         principalId: nextSession.principalId ?? nextSession.controllerId,
         controllerInstanceId: nextSession.controllerInstanceId ?? 'runtime-test',
         sessionId: nextSession.sessionId,
@@ -963,7 +963,7 @@ describe('scheduled external Controller wake', () => {
     const store = { controllerHome, repoId: repository.repoId };
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:persistent-noop', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-persistent-noop' },
+      identity: { controllerId: 'schedule:persistent-noop', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-persistent-noop' },
     });
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
     startExecutionSession(controllerHome, {
@@ -1007,6 +1007,7 @@ describe('scheduled external Controller wake', () => {
       workId,
       identity: {
         controllerId: session.controllerId,
+        controllerType: session.controllerType,
         principalId: session.principalId ?? session.controllerId,
         controllerInstanceId: session.controllerInstanceId ?? 'runtime-test',
         sessionId: session.sessionId,
@@ -1044,7 +1045,7 @@ describe('scheduled external Controller wake', () => {
     const store = { controllerHome, repoId: repository.repoId };
     const first = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-1' },
+      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-1' },
     });
     expect(first).toMatchObject({ status: 'dispatching', roundCount: 1, repeatedStateCount: 0 });
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
@@ -1062,6 +1063,7 @@ describe('scheduled external Controller wake', () => {
       workId,
       identity: {
         controllerId: firstSession.controllerId,
+        controllerType: firstSession.controllerType,
         principalId: firstSession.principalId ?? firstSession.controllerId,
         controllerInstanceId: firstSession.controllerInstanceId ?? 'runtime-test',
         sessionId: firstSession.sessionId,
@@ -1073,12 +1075,12 @@ describe('scheduled external Controller wake', () => {
 
     const second = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-2' },
+      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-2' },
     });
     expect(second).toMatchObject({ status: 'dispatching', roundCount: 1, repeatedStateCount: 0 });
     expect(() => beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-duplicate' },
+      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-duplicate' },
     })).toThrow(/CONTROLLER_RELAY_ROUND_ALREADY_OPEN/);
 
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
@@ -1096,6 +1098,7 @@ describe('scheduled external Controller wake', () => {
       workId,
       identity: {
         controllerId: secondSession.controllerId,
+        controllerType: secondSession.controllerType,
         principalId: secondSession.principalId ?? secondSession.controllerId,
         controllerInstanceId: secondSession.controllerInstanceId ?? 'runtime-test',
         sessionId: secondSession.sessionId,
@@ -1131,6 +1134,7 @@ describe('scheduled external Controller wake', () => {
       workId,
       identity: {
         controllerId: thirdSession.controllerId,
+        controllerType: thirdSession.controllerType,
         principalId: thirdSession.principalId ?? thirdSession.controllerId,
         controllerInstanceId: thirdSession.controllerInstanceId ?? 'runtime-test',
         sessionId: thirdSession.sessionId,
@@ -1158,7 +1162,7 @@ describe('scheduled external Controller wake', () => {
     const store = { controllerHome, repoId: repository.repoId };
     const first = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-failed' },
+      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-failed' },
       maxFailures: 1,
     });
     expect(first).toMatchObject({ status: 'dispatching', consecutiveFailures: 0, maxFailures: 1 });
@@ -1167,14 +1171,14 @@ describe('scheduled external Controller wake', () => {
 
     const second = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-retry' },
+      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-retry' },
       maxFailures: 1,
     });
     expect(second).toMatchObject({ status: 'dispatching', consecutiveFailures: 0, maxFailures: 1, roundCount: 1, repeatedStateCount: 0 });
     expect(second.blockedReason).toBeUndefined();
     expect(() => beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-duplicate' },
+      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-duplicate' },
       maxFailures: 1,
     })).toThrow(/CONTROLLER_RELAY_ROUND_ALREADY_OPEN/);
   });
@@ -1203,7 +1207,7 @@ describe('scheduled external Controller wake', () => {
     const store = { controllerHome, repoId: repository.repoId };
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
+      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
     });
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
     startExecutionSession(controllerHome, {
@@ -1225,6 +1229,7 @@ describe('scheduled external Controller wake', () => {
       workId,
       identity: {
         controllerId: session.controllerId,
+        controllerType: session.controllerType,
         principalId: session.principalId ?? session.controllerId,
         controllerInstanceId: session.controllerInstanceId ?? 'runtime-test',
         sessionId: session.sessionId,
@@ -1271,7 +1276,7 @@ describe('scheduled external Controller wake', () => {
     const store = { controllerHome, repoId: repository.repoId };
     const dispatching = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
+      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
     });
     expect(dispatching.status).toBe('dispatching');
     const afterGrace = Date.parse(dispatching.updatedAt) + 2 * 60_000;
@@ -1323,7 +1328,7 @@ describe('scheduled external Controller wake', () => {
     const originWorkId = workIds.at(-1)!;
     const opened = beginInitialControllerRoundDispatch(store, {
       workId: originWorkId,
-      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
+      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
     });
     const dispatched = finishControllerRoundRelayDispatch(store, { workId: originWorkId, ok: true });
     expect(dispatched?.status).toBe('dispatched');
@@ -1377,7 +1382,7 @@ describe('scheduled external Controller wake', () => {
     });
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
+      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
     });
     expect(opened.status).toBe('dispatching');
     const session = claimControllerSession(store, {
@@ -1402,6 +1407,7 @@ describe('scheduled external Controller wake', () => {
       relayScopeId: opened.relayScopeId,
       identity: {
         controllerId: session.controllerId,
+        controllerType: session.controllerType,
         principalId: session.principalId!,
         controllerInstanceId: session.controllerInstanceId!,
         sessionId: session.sessionId,
@@ -1435,7 +1441,7 @@ describe('scheduled external Controller wake', () => {
     const store = { controllerHome, repoId: repository.repoId };
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-a', sessionId: 'occurrence-test' },
+      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-a', sessionId: 'occurrence-test' },
     });
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
     const original = claimControllerSession(store, {
@@ -1485,6 +1491,7 @@ describe('scheduled external Controller wake', () => {
       workId,
       identity: {
         controllerId: rotated.controllerId,
+        controllerType: rotated.controllerType,
         principalId: rotated.principalId ?? rotated.controllerId,
         controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-b',
         sessionId: rotated.sessionId,
@@ -1549,7 +1556,7 @@ describe('scheduled external Controller wake', () => {
     const store = { controllerHome, repoId: repository.repoId };
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
+      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
     });
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
     const session = claimControllerSession(store, {
@@ -1575,6 +1582,7 @@ describe('scheduled external Controller wake', () => {
     expect(rotated.claimGeneration).toBe(session.claimGeneration);
     expect(getControllerSession(store, workId)).toMatchObject({
       controllerId: session.controllerId,
+      controllerType: session.controllerType,
       principalId: session.principalId,
       controllerInstanceId: 'runtime-rotated',
       sessionId: 'chatgpt-session-rotated',
@@ -1627,6 +1635,7 @@ describe('scheduled external Controller wake', () => {
     expect(getControllerSession(store, workId)).toBeUndefined();
     const postFinalizeIdentity = {
       controllerId: rotated.controllerId,
+      controllerType: rotated.controllerType,
       principalId: rotated.principalId ?? rotated.controllerId,
       controllerInstanceId: 'runtime-after-finalize',
       sessionId: 'chatgpt-session-after-finalize',
@@ -1675,6 +1684,7 @@ describe('scheduled external Controller wake', () => {
       disposition: 'goal_complete',
       relayScopeId: opened.relayScopeId,
       controllerId: rotated.controllerId,
+      controllerType: rotated.controllerType,
       principalId: rotated.principalId ?? rotated.controllerId,
       controllerInstanceId: 'runtime-after-finalize',
       sessionId: 'chatgpt-session-after-finalize',
@@ -1684,6 +1694,7 @@ describe('scheduled external Controller wake', () => {
       workId,
       identity: {
         controllerId: rotated.controllerId,
+        controllerType: rotated.controllerType,
         principalId: rotated.principalId ?? rotated.controllerId,
         controllerInstanceId: rotated.controllerInstanceId ?? 'runtime-rotated',
         sessionId: rotated.sessionId,
@@ -1816,7 +1827,7 @@ describe('scheduled external Controller wake', () => {
     expect(getHandoffItem({ controllerHome, repoId: repository.repoId }, distinct.handoffId!)?.status).toBe('resolved');
   });
 
-  test('fails a scheduled external Controller wake that exits before exact Work claim and releases its reservation', async () => {
+  test('blocks a scheduled external Controller wake without an existing ControllerSession authority', async () => {
     const root = temp('forge-schedule-wake-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
     const runtimeOwner = acquireRuntimeOwnership(controllerHome, 'runtime-schedule-wake');
@@ -1841,11 +1852,11 @@ describe('scheduled external Controller wake', () => {
     createWorkContract({ controllerHome, repoId: repository.repoId }, { workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop', objective: 'Continue a bounded goal from a scheduled external Controller wake.', acceptanceCriteria: ['external controller was launched'], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running' });
     const schedule = createSchedule(controllerHome, { requestId: 'schedule-wake-request', repoId: repository.repoId, name: 'continue bounded work', enabled: true, trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: false }, action: { operation: 'external_controller_wake', target: 'runtime', arguments: { work_id: workId, controller_type: 'codex', executable: fakeController } }, stopConditions: [] });
     const failedWake = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual' });
-    expect(failedWake).toMatchObject({ status: 'failed', decision: 'execute' });
-    expect(failedWake?.reason).toContain('external Controller exited before exact Work claim became live');
+    expect(failedWake).toMatchObject({ status: 'skipped', decision: 'operation_blocked' });
+    expect(failedWake?.reason).toContain(`SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED:${workId}`);
     expect(getControllerSession({ controllerHome, repoId: repository.repoId }, workId)).toBeUndefined();
     expect(getExternalControllerLaunchReservation({ controllerHome, repoId: repository.repoId }, workId)).toBeUndefined();
-    expect(failedWake?.handoffId).toBeTruthy();
+    expect(failedWake?.handoffId).toBeUndefined();
     runtimeOwner.release();
   });
 });

@@ -26,6 +26,7 @@ import { startConfiguredRuntimeLocalBridge, type RuntimeLocalBridgeHandle } from
 import { removeRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from './status';
 import type {
   CanonicalRuntimeConfig,
+  CanonicalRuntimeStatusSnapshot,
   RuntimeExitEvidence,
   RuntimeReadiness,
   RuntimeReleaseManifest,
@@ -158,7 +159,7 @@ export class CanonicalForgeRuntime {
   private publishStatus(): void {
     if (!this.ownership || !this.release) return;
     try {
-      writeRuntimeStatusSnapshot(this.config.controllerHome, {
+      const snapshot: CanonicalRuntimeStatusSnapshot = {
         schemaVersion: 1,
         forgeInstanceId: this.forgeInstanceId,
         runtimeInstanceId: this.runtimeInstanceId,
@@ -170,7 +171,8 @@ export class CanonicalForgeRuntime {
         readiness: this.readiness(),
         startedAt: this.ownership.record.acquiredAt,
         updatedAt: new Date().toISOString(),
-      });
+      };
+      writeRuntimeStatusSnapshot(this.config.controllerHome, snapshot);
     } catch {
       // Status is a read-only projection. Projection failure cannot become a
       // second Runtime readiness or lifecycle authority.

@@ -1603,7 +1603,22 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
       projectWorkValidationOutcome(ctx.controllerHome, current, 'passed', 'No validation checks were required after commit.');
     }
   } else if (!wants.commit && current.finalization.commit === 'pending') {
-    current = transact('commit-skipped', (fresh) => writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, commit: 'skipped' } }));
+    const committedRepository = validateWorkHandle(ctx.controllerHome, current, identity, 'full', 'finalize').worktreeRepository;
+    const committedStatus = repositoryGitStatus(committedRepository);
+    const alreadyMaterializedCommit = Boolean(
+      committedStatus.clean
+      && committedStatus.head
+      && current.expectedHead
+      && current.baseCommit
+      && committedStatus.head === current.expectedHead
+      && committedStatus.head !== current.baseCommit,
+    );
+    current = alreadyMaterializedCommit
+      ? transact('commit-already-materialized', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, 'committed', {
+          finalization: { ...fresh.finalization, commit: 'done', lastError: undefined },
+          failureReason: undefined,
+        }))
+      : transact('commit-skipped', (fresh) => writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, commit: 'skipped' } }));
   }
 
   if (wants.merge && current.finalization.merge === 'pending' && current.finalization.commit === 'done') {

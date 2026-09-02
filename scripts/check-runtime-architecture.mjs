@@ -44,8 +44,10 @@ function forbidBetween(path, startNeedle, endNeedle, expression, description) {
   if (expression.test(source.slice(start, end))) failures.push(`${path} violates ${description}`);
 }
 function sourceFiles(directory) {
+  const absolute = resolve(root, directory);
+  if (!existsSync(absolute)) return [];
   const files = [];
-  for (const entry of readdirSync(resolve(root, directory), { withFileTypes: true })) {
+  for (const entry of readdirSync(absolute, { withFileTypes: true })) {
     const path = `${directory}/${entry.name}`;
     if (entry.isDirectory()) files.push(...sourceFiles(path));
     else if (entry.isFile() && path.endsWith('.ts')) files.push(path);
@@ -53,7 +55,17 @@ function sourceFiles(directory) {
   return files;
 }
 
-function relativeStaticTypeScriptDependencyGraph(directory = 'src') {
+function productionTypeScriptFiles() {
+  return [
+    ...sourceFiles('src'),
+    ...sourceFiles('packages'),
+    ...sourceFiles('adapters'),
+    ...sourceFiles('apps'),
+    ...sourceFiles('plugins'),
+  ].sort();
+}
+
+function staticTypeScriptDependencyGraph(files) {
   let ts;
   try {
     ts = createRequire(import.meta.url)('typescript');
@@ -62,9 +74,9 @@ function relativeStaticTypeScriptDependencyGraph(directory = 'src') {
     return new Map();
   }
 
-  const files = sourceFiles(directory).sort();
-  const known = new Set(files);
-  const graph = new Map(files.map((path) => [path, new Set()]));
+  const orderedFiles = [...files].sort();
+  const known = new Set(orderedFiles);
+  const graph = new Map(orderedFiles.map((path) => [path, new Set()]));
 
   function resolveTypeScriptImport(fromPath, specifier) {
     if (!specifier.startsWith('.')) return undefined;
@@ -79,7 +91,7 @@ function relativeStaticTypeScriptDependencyGraph(directory = 'src') {
     return candidates.find((candidate) => known.has(candidate));
   }
 
-  for (const path of files) {
+  for (const path of orderedFiles) {
     const sourceFile = ts.createSourceFile(path, text(path), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     for (const statement of sourceFile.statements) {
       let specifier;
@@ -101,6 +113,51 @@ function relativeStaticTypeScriptDependencyGraph(directory = 'src') {
   return graph;
 }
 
+function relativeStaticTypeScriptDependencyGraph(directory = 'src') {
+  return staticTypeScriptDependencyGraph(sourceFiles(directory));
+}
+
+function productionStaticTypeScriptDependencyGraph() {
+  return staticTypeScriptDependencyGraph(productionTypeScriptFiles());
+}
+
+function dependencyEdges(graph) {
+  const edges = [];
+  for (const [from, targets] of graph) {
+    for (const to of targets) edges.push(`${from} -> ${to}`);
+  }
+  return edges.sort();
+}
+
+function edgeSet(graph, predicate) {
+  return new Set(dependencyEdges(graph).filter((edge) => predicate(edge)));
+}
+
+function edgeParts(edge) {
+  const separator = edge.indexOf(' -> ');
+  return { from: edge.slice(0, separator), to: edge.slice(separator + 4) };
+}
+
+function architectureRoot(path) {
+  if (path.startsWith('packages/kernel/')) return path.split('/').slice(0, 3).join('/');
+  if (path.startsWith('adapters/')) return path.split('/').slice(0, 2).join('/');
+  if (path.startsWith('apps/')) return path.split('/').slice(0, 2).join('/');
+  if (path.startsWith('plugins/')) return path.split('/').slice(0, 2).join('/');
+  if (path.startsWith('src/runtime/root/')) return 'src/runtime/root';
+  return path.startsWith('src/') ? 'src' : path.split('/')[0];
+}
+
+function requireExactShrinkingDebt(label, actual, allowed) {
+  for (const edge of actual) {
+    if (!allowed.has(edge)) failures.push(`${label} introduced forbidden dependency: ${edge}`);
+  }
+  for (const edge of allowed) {
+    if (!actual.has(edge)) failures.push(`${label} allowlist contains retired dependency; remove it so the debt ledger only shrinks: ${edge}`);
+  }
+}
+
+// Kernel V2 B7 graph analysis. Legacy boundary debt below is exact and must only shrink.
+// Inventory is derived from the production graph before the gate is activated.
 function stronglyConnectedComponents(graph) {
   let index = 0;
   const indices = new Map();
@@ -143,7 +200,7 @@ function stronglyConnectedComponents(graph) {
 }
 
 function requireAcyclicProductionTypeScript() {
-  const graph = relativeStaticTypeScriptDependencyGraph('src');
+  const graph = productionStaticTypeScriptDependencyGraph();
   const cyclic = stronglyConnectedComponents(graph).filter((component) =>
     component.length > 1 || (component.length === 1 && graph.get(component[0])?.has(component[0])),
   );
@@ -423,7 +480,8 @@ requireText('packages/kernel/scheduler/application/continuation-service.ts', 'ho
 requireText('packages/kernel/scheduler/application/continuation-service.ts', 'SCHEDULE_CONTINUATION_OUTCOME_UNKNOWN');
 requireText('packages/kernel/scheduler/application/continuation-service.ts', 'scheduler_continuation_prepare');
 requireText('packages/kernel/scheduler/application/continuation-service.ts', 'scheduler_continuation_bind_round');
-requireText('adapters/scheduler/controller-binding.ts', 'controllerHostForScheduledBinding');
+requireText('src/runtime/root/scheduled-controller-composition.ts', 'controllerHostForScheduledBinding');
+requireMissing('adapters/scheduler/controller-binding.ts');
 requireText('adapters/chatgpt/controller-host.ts', 'createChatgptControllerHost');
 requireText('adapters/controller-process/controller-host.ts', 'createProcessControllerHost');
 requireText('src/runtime/workflow/schedules/engine.ts', 'resumeScheduledControllerContinuation');
@@ -998,6 +1056,40 @@ for (const path of sourceFiles('packages/kernel')) {
   forbid(path, /(?:from\s+['\"]|import\s*\(\s*['\"])[^'\"]*(?:adapters\/mcp|src\/cli\/mcp|runtime\/gateway\/mcp)/, 'Kernel modules must never depend on MCP adapters or retired MCP gateway paths');
   forbid(path, /@modelcontextprotocol\//, 'Kernel modules must remain independent of MCP SDK transport contracts');
 }
+
+const b7ProductionGraph = productionStaticTypeScriptDependencyGraph();
+for (const edge of dependencyEdges(b7ProductionGraph)) {
+  const { from, to } = edgeParts(edge);
+  if (from.startsWith('packages/kernel/') && to.startsWith('packages/kernel/')) {
+    const fromModule = architectureRoot(from);
+    const toModule = architectureRoot(to);
+    if (fromModule !== toModule && !to.startsWith(`${toModule}/api/`) && to !== `${toModule}/index.ts`) {
+      failures.push(`Kernel sibling modules must use public API boundaries: ${edge}`);
+    }
+  }
+  if (from.startsWith('adapters/') && to.startsWith('adapters/') && architectureRoot(from) !== architectureRoot(to)) {
+    failures.push(`adapter sibling wiring belongs in a composition root, not another adapter: ${edge}`);
+  }
+  if (from.startsWith('adapters/') && to.startsWith('packages/kernel/')) {
+    const kernelModule = architectureRoot(to);
+    if (!to.startsWith(`${kernelModule}/api/`) && to !== `${kernelModule}/index.ts`) {
+      failures.push(`adapters must consume Kernel public APIs, not internal implementation: ${edge}`);
+    }
+  }
+}
+for (const compositionPath of [
+  'src/runtime/root/scheduled-controller-composition.ts',
+  'src/runtime/root/controller-round-composition.ts',
+]) requireText(compositionPath, 'Kernel V2 composition root');
+
+const b7KernelLegacyEdges = edgeSet(b7ProductionGraph, (edge) => {
+  const { from, to } = edgeParts(edge);
+  return from.startsWith('packages/kernel/') && to.startsWith('src/');
+});
+const b7AdapterLegacyEdges = edgeSet(b7ProductionGraph, (edge) => {
+  const { from, to } = edgeParts(edge);
+  return from.startsWith('adapters/') && to.startsWith('src/');
+});
 for (const path of [
   'src/runtime/gateway/mcp/execution-tools.ts',
   'src/runtime/gateway/mcp/legacy-ios-tool-adapter.ts',

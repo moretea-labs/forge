@@ -3,13 +3,14 @@ import {
   type ControllerBinding,
   type ControllerHost,
   type ControllerSession,
-} from '../../packages/kernel/controller/api/index';
-import { createChatgptControllerHost } from '../chatgpt/controller-host';
-import { upsertChatgptControllerBinding } from '../chatgpt/controller-binding-store';
-import { getChatgptWorkConversationBinding } from '../chatgpt/work-conversation-binding-store';
-import { createProcessControllerHost } from '../controller-process/controller-host';
-import { upsertProcessControllerBinding, type ProcessControllerType } from '../controller-process/binding-store';
+} from '../../../packages/kernel/controller/api/index';
+import { createChatgptControllerHost } from '../../../adapters/chatgpt/controller-host';
+import { upsertChatgptControllerBinding } from '../../../adapters/chatgpt/controller-binding-store';
+import { getChatgptWorkConversationBinding } from '../../../adapters/chatgpt/work-conversation-binding-store';
+import { createProcessControllerHost } from '../../../adapters/controller-process/controller-host';
+import { upsertProcessControllerBinding, type ProcessControllerType } from '../../../adapters/controller-process/binding-store';
 
+// Kernel V2 composition root: Scheduler selects Kernel continuation; this file wires concrete provider adapters.
 export function ensureScheduledControllerBinding(
   options: { controllerHome: string; repoId: string },
   input: { workId: string; session: ControllerSession; scheduleName?: string; args: Record<string, unknown> },

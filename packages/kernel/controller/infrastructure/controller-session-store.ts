@@ -445,11 +445,14 @@ export function claimControllerSession(
       assertWorkClaimable(options, input.workId);
       const store = read(options);
       const current = activeSession(store, input.workId, optionsNowMs(options));
+      const previous = current ?? store.sessions
+        .filter((entry) => entry.workId === input.workId)
+        .sort((left, right) => (right.claimGeneration ?? 0) - (left.claimGeneration ?? 0))[0];
       assertExpectedGeneration(input, current);
       if (current && (current.controllerId !== input.controllerId || current.sessionId !== input.sessionId)) {
         throw new Error(`WORK_ALREADY_CLAIMED: ${input.workId} is owned by ${current.controllerId}`);
       }
-      return persistClaim(options, store, input, current);
+      return persistClaim(options, store, input, previous);
     },
   );
 }
@@ -478,7 +481,12 @@ export function resumeControllerSession(
       const currentNowMs = optionsNowMs(options);
       const current = activeSession(store, input.workId, currentNowMs);
       assertExpectedGeneration(input, current);
-      if (!current) return persistClaim(options, store, input);
+      if (!current) {
+        const previous = store.sessions
+          .filter((entry) => entry.workId === input.workId)
+          .sort((left, right) => (right.claimGeneration ?? 0) - (left.claimGeneration ?? 0))[0];
+        return persistClaim(options, store, input, previous);
+      }
       const priorExecution = peekExecutionSession(options.controllerHome, current.sessionId);
       const currentPrincipal = current.principalId?.trim() || priorExecution?.principalId?.trim() || current.controllerId;
       const staleRecoveryAllowed = input.allowStaleRecovery === true

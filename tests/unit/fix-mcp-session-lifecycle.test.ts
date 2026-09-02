@@ -25,6 +25,7 @@ function addSession(
   const transport = new FakeTransport();
   registry.register({
     sessionId,
+    connectionId: `connection-${sessionId}`,
     transport,
     toolContext: {},
     route: options.route ?? '/mcp',
@@ -76,11 +77,11 @@ describe('MCP session lifecycle registry', () => {
     });
     const first = new FakeTransport();
     registry.register({
-      sessionId: 'explicit-close', transport: first, toolContext: { marker: 'first' }, route: '/mcp', principalId: 'principal-a', clientIdentity: 'client-a',
+      sessionId: 'explicit-close', connectionId: 'connection-explicit-close', transport: first, toolContext: { marker: 'first' }, route: '/mcp', principalId: 'principal-a', clientIdentity: 'client-a',
     });
     const second = new FakeTransport();
     registry.register({
-      sessionId: 'transport-close', transport: second, toolContext: { marker: 'second' }, route: '/mcp', principalId: 'principal-a', clientIdentity: 'client-b',
+      sessionId: 'transport-close', connectionId: 'connection-transport-close', transport: second, toolContext: { marker: 'second' }, route: '/mcp', principalId: 'principal-a', clientIdentity: 'client-b',
     });
 
     expect(await registry.close('explicit-close', 'client_delete')).toBe(true);
@@ -120,6 +121,7 @@ describe('MCP session lifecycle registry', () => {
     registry.beginStream('newer');
 
     const reservation = await registry.reserveForInitialize({
+      connectionId: 'connection-capacity-pressure',
       principalId: 'principal-c',
       route: '/mcp',
     });
@@ -144,6 +146,7 @@ describe('MCP session lifecycle registry', () => {
     registry.beginPost('protected');
 
     expect(await registry.reserveForInitialize({
+      connectionId: 'connection-protected-capacity',
       principalId: 'principal-b',
       route: '/mcp',
     })).toBeUndefined();
@@ -163,8 +166,8 @@ describe('MCP session lifecycle registry', () => {
     addSession(registry, 'other-principal', { principalId: 'principal-b' });
 
     const reservations = await Promise.all([
-      registry.reserveForInitialize({ principalId: 'principal-a', route: '/mcp' }),
-      registry.reserveForInitialize({ principalId: 'principal-b', route: '/mcp-grok' }),
+      registry.reserveForInitialize({ connectionId: 'connection-parallel-a', principalId: 'principal-a', route: '/mcp' }),
+      registry.reserveForInitialize({ connectionId: 'connection-parallel-b', principalId: 'principal-b', route: '/mcp-grok' }),
     ]);
     expect(reservations.every(Boolean)).toBe(true);
     expect(registry.get('existing')).toBeDefined();
@@ -181,6 +184,7 @@ describe('MCP session lifecycle registry', () => {
     registry.beginStream('previous');
 
     expect(await registry.reserveForInitialize({
+      connectionId: 'connection-supersede-previous',
       principalId: 'oauth-client:chatgpt',
       route: '/mcp',
       supersedeSessionId: 'previous',
@@ -199,6 +203,7 @@ describe('MCP session lifecycle registry', () => {
     });
 
     expect(await registry.reserveForInitialize({
+      connectionId: 'connection-parallel-agent',
       principalId: 'oauth-client:chatgpt',
       route: '/mcp',
     })).toBeDefined();
@@ -212,15 +217,17 @@ describe('MCP session lifecycle registry', () => {
     registry.beginPost('existing');
 
     const [first, second] = await Promise.all([
-      registry.reserveForInitialize({ principalId: 'principal-a', route: '/mcp' }),
-      registry.reserveForInitialize({ principalId: 'principal-a', route: '/mcp' }),
+      registry.reserveForInitialize({ connectionId: 'connection-principal-a-1', principalId: 'principal-a', route: '/mcp' }),
+      registry.reserveForInitialize({ connectionId: 'connection-principal-a-2', principalId: 'principal-a', route: '/mcp' }),
     ]);
     expect([first, second].filter(Boolean)).toHaveLength(1);
 
     const reservation = first ?? second!;
+    const connectionId = first ? 'connection-principal-a-1' : 'connection-principal-a-2';
     const transport = new FakeTransport();
     registry.commitInitialize(reservation, {
       sessionId: 'initializing',
+      connectionId,
       transport,
       toolContext: {},
       route: '/mcp',
@@ -268,7 +275,7 @@ describe('MCP session lifecycle registry', () => {
     const registry = new McpSessionRegistry({ maximumSessions: 3 });
     const transport = addSession(registry, 'stale-surface', { principalId: 'oauth-client:chatgpt', route: '/mcp', toolSurfaceFingerprint: 'schema-old' });
     expect(mcpSessionToolSurfaceFingerprintIsCurrent('schema-old', 'schema-new')).toBe(false); expect(registry.get('stale-surface')).toBeDefined(); expect(transport.closeCalls).toBe(0);
-    expect(await registry.reserveForInitialize({ principalId: 'oauth-client:chatgpt', route: '/mcp', supersedeSessionId: 'stale-surface' })).toBeDefined();
+    expect(await registry.reserveForInitialize({ connectionId: 'connection-stale-surface-replacement', principalId: 'oauth-client:chatgpt', route: '/mcp', supersedeSessionId: 'stale-surface' })).toBeDefined();
     expect(registry.get('stale-surface')).toBeUndefined(); expect(transport.closeCalls).toBe(1); expect(registry.snapshot().closed.superseded).toBe(1); expect(registry.snapshot().closed.toolSurfaceChanged).toBe(0);
   });
 

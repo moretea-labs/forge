@@ -1,7 +1,7 @@
 import {
   CONTROLLER_ROUND_DISPOSITIONS,
   type ControllerRoundDisposition,
-} from '../../packages/kernel/controller/application/controller-round-service';
+} from '../../packages/kernel/controller/api/index';
 
 const CONTROLLER_DISPOSITION_COMPATIBILITY_PREFIX = 'controller.disposition:';
 const CONTROLLER_ROUND_COMPATIBILITY_PREFIX = 'controller.round:';

@@ -36,7 +36,7 @@ import { buildMcpToolDefinitions } from '../tool-mapping/tools';
 import { resolveControllerHome } from '../../../src/cli/repositories/controller-home';
 import {
   controllerExposureSnapshot,
-} from '../tool-mapping/toolset';
+} from '../toolset';
 import { readForgeRuntimeStatus } from '../../../src/runtime/control-plane/runtime-status-client';
 import { invalidateExecutionSession } from '../../../src/runtime/control-plane/execution/session-store';
 import { runtimeIdentitySnapshot } from '../runtime-gateway/runtime-tools';

@@ -1,8 +1,23 @@
-import type { WorkContract, VerificationOutcome } from '../../../../packages/kernel/work/domain/types';
+import type {
+  WorkContract,
+  VerificationOutcome,
+  ExecutionMode,
+  FacadeDetailLevel,
+  EvidenceRef,
+  SuggestedNextAction,
+  PolicyDecision,
+} from '../../../../packages/kernel/work/domain/types';
+export type {
+  ExecutionMode,
+  FacadeDetailLevel,
+  EvidenceRef,
+  SuggestedNextAction,
+  PolicyDecision,
+} from '../../../../packages/kernel/work/domain/types';
 import { decideRoute, type ExplicitTaskMode, type RouteDecision, type RoutePolicyInput } from '../routing/route-policy';
 
 export const EXECUTION_MODES = ['direct_control', 'goal_workloop', 'handoff_only'] as const;
-export type ExecutionMode = (typeof EXECUTION_MODES)[number];
+const _executionModesTypeCheck: readonly ExecutionMode[] = EXECUTION_MODES;
 
 export const FACADE_TOOLS = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'] as const;
 export type FacadeTool = (typeof FACADE_TOOLS)[number];
@@ -11,7 +26,6 @@ export type CapabilityExecutionSurface = FacadeTool | 'plugin_action_execute';
 export const FACADE_STATUSES = ['ok', 'blocked', 'failed', 'approval_required', 'not_found'] as const;
 export type FacadeStatus = (typeof FACADE_STATUSES)[number];
 
-export type FacadeDetailLevel = 'summary' | 'detail' | 'raw';
 
 export const CAPABILITY_DOMAINS = ['repository', 'plugin', 'controller', 'evidence', 'maintenance'] as const;
 export type CapabilityDomain = (typeof CAPABILITY_DOMAINS)[number];
@@ -134,25 +148,6 @@ export const HANDOFF_CREATION_REASONS = [
   'destructive_action_requires_confirmation',
 ] as const;
 export type HandoffCreationReason = (typeof HANDOFF_CREATION_REASONS)[number];
-
-export interface EvidenceRef {
-  evidenceId?: string;
-  artifactId?: string;
-  title: string;
-  summary?: string;
-  detailLevel?: FacadeDetailLevel;
-}
-
-export interface SuggestedNextAction {
-  label: string;
-  tool: FacadeTool;
-  operation: string;
-  payload?: Record<string, unknown>;
-  risk: CapabilityRisk;
-  confidence?: 'low' | 'medium' | 'high';
-  reason?: string;
-  fallback?: string;
-}
 
 export interface FacadeResult<TData = Record<string, unknown>> {
   schemaVersion: 1;
@@ -332,16 +327,6 @@ export interface CapabilityGroupSummary {
   operationClasses: CapabilityOperationClass[];
   risks: CapabilityRisk[];
   schemaExposures: CapabilitySchemaExposure[];
-}
-
-export interface PolicyDecision {
-  decision: PolicyDecisionKind;
-  reason: string;
-  capabilityId?: string;
-  approvalRequestId?: string;
-  requiredConfirmationText?: string;
-  warnings: string[];
-  suggestedNextActions: SuggestedNextAction[];
 }
 
 export interface ExecutionModeSelectionInput {

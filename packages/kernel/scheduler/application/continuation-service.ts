@@ -78,7 +78,7 @@ export async function resumeScheduledControllerContinuation(
   if (prepared.status === 'outcome_unknown') throw new Error(`SCHEDULE_CONTINUATION_OUTCOME_UNKNOWN: ${input.occurrenceId}`);
   if (prepared.status === 'dispatching') throw new Error(`SCHEDULE_CONTINUATION_ALREADY_DISPATCHING: ${input.occurrenceId}`);
 
-  const roundMatchesReservedOccurrence = (candidate: ReturnType<typeof getControllerRoundRelay>): candidate is NonNullable<typeof candidate> => Boolean(
+  const roundMatchesReservedOccurrence = (candidate: ReturnType<typeof getControllerRoundRelay>): boolean => Boolean(
     candidate
     && candidate.status === 'dispatching'
     && candidate.relayScopeId === prepared.relayScopeId
@@ -118,6 +118,7 @@ export async function resumeScheduledControllerContinuation(
       }
     }
   }
+  if (!relay) throw new Error(`SCHEDULE_CONTINUATION_ROUND_MISSING: ${input.occurrenceId}`);
   if (relay.status === 'blocked') throw new Error(`CONTROLLER_RELAY_LAUNCH_BLOCKED: ${relay.blockedReason ?? relay.relayScopeId}`);
   if (!relay.authorityId) throw new Error(`CONTROLLER_ROUND_AUTHORITY_REQUIRED: ${relay.relayScopeId}`);
 

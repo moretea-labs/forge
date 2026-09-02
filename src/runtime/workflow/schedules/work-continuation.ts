@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { getWorkContract, isTerminalWorkContractStatus, type WorkContract } from '../../../../packages/kernel/work/api/index';
 import { getRetainedControllerSession, type ControllerType } from '../../../../packages/kernel/controller/api/index';
-import { ensureScheduledControllerBinding } from '../../../../adapters/scheduler/controller-binding';
+import { ensureScheduledControllerBinding } from '../../root/scheduled-controller-composition';
 import { assertAutomatedOperationAllowed } from '../../control-plane/governance/external-effects';
 import { evaluateSchedule } from './engine';
 import {
@@ -176,8 +176,8 @@ export function createWorkContinuationSchedule(
   if (scheduleMode === 'continuation' && !retainedSession) {
     throw new Error(`SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED: ${work!.workId}`);
   }
+  if (retainedSession?.controllerType === 'human') throw new Error('SCHEDULE_CONTINUATION_HUMAN_HOST_UNSUPPORTED');
   const controllerType = (retainedSession?.controllerType ?? requestedControllerType ?? 'chatgpt') as ContinuationControllerType;
-  if (controllerType === 'human') throw new Error('SCHEDULE_CONTINUATION_HUMAN_HOST_UNSUPPORTED');
   if (requestedControllerType && retainedSession && requestedControllerType !== retainedSession.controllerType) {
     throw new Error(`SCHEDULE_CONTINUATION_CONTROLLER_TYPE_MISMATCH: ${work!.workId}:expected=${retainedSession.controllerType}:requested=${requestedControllerType}`);
   }

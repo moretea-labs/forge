@@ -207,9 +207,12 @@ import { reconcileWorkValidation } from './work-validation-reconciler';
 import { callExecutionTool } from './execution-tools';
 import { launchSuperController } from '../../../src/runtime/control-plane/launcher/thin-launcher';
 import { runStandaloneChatgptPrompt, runWorkChatgptContinuation, settleWorkChatgptAutomationTab } from '../../../src/runtime/control-plane/launcher/chatgpt-work-continuation';
-import { getChatgptWorkConversationBinding } from '../../chatgpt/work-conversation-binding-store';
-import { buildChatgptControllerRoundPrompt, chatgptControllerRoundBindingAuthorizesRecovery } from '../../chatgpt/controller-round-host';
-import { recordChatgptControllerRoundSettlement } from '../../chatgpt/controller-round-settlement-store';
+import {
+  chatgptControllerRoundBinding,
+  chatgptControllerRoundRecoveryAuthorized,
+  recordChatgptControllerRoundTabSettlement,
+  renderChatgptControllerRoundPrompt,
+} from '../../../src/runtime/root/controller-round-composition';
 import {
   bindControllerSessionToCurrentRuntime,
   claimControllerSession,
@@ -1146,11 +1149,12 @@ function authenticatedFacadeControllerIdentity(
 }
 
 export function dispatchedChatgptRelayAuthorizesStaleControllerRecovery(
+  store: { controllerHome: string; repoId: string },
+  workId: string,
   relay: ControllerRoundRelayRecord | undefined,
   controllerType: 'chatgpt' | 'codex' | 'claude' | 'grok' | 'human',
-  binding?: ReturnType<typeof getChatgptWorkConversationBinding>,
 ): boolean {
-  return controllerType === 'chatgpt' && chatgptControllerRoundBindingAuthorizesRecovery(relay, binding);
+  return controllerType === 'chatgpt' && chatgptControllerRoundRecoveryAuthorized(store, workId, relay);
 }
 
 function assertFacadeControllerRoundAuthority(
@@ -3933,7 +3937,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 observedOwner!.controllerId !== identity.controllerId
                 || controllerSessionPrincipalId(observedOwner!) !== identity.principalId
               )
-              && dispatchedChatgptRelayAuthorizesStaleControllerRecovery(dispatchedRelay, identity.controllerType, getChatgptWorkConversationBinding(store, workId));
+              && dispatchedChatgptRelayAuthorizesStaleControllerRecovery(store, workId, dispatchedRelay, identity.controllerType);
             const session = resumeControllerSession(store, {
               workId,
               controllerId: identity.controllerId,
@@ -4020,7 +4024,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 bindFacadeControllerOwnership(ctx, store, workId, { ...identity, controllerType: 'chatgpt' });
               }
             }
-            const chatgptBinding = getChatgptWorkConversationBinding(store, workId);
+            const chatgptBinding = chatgptControllerRoundBinding(store, workId);
             const relay = submitControllerRoundDisposition({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, {
               workId,
               identity,
@@ -4050,7 +4054,22 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           try {
             const workId = String(args.work_id ?? '').trim();
             const identity = authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true });
-            assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+            try {
+              assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+            } catch (error) {
+              const observed = getControllerSession(store, workId);
+              const runtime = runtimeIdentitySnapshot(ctx);
+              const samePrincipalCanonicalRuntimeMigration = Boolean(
+                observed
+                && observed.controllerId === identity.controllerId
+                && observed.controllerType === identity.controllerType
+                && controllerSessionPrincipalId(observed) === identity.principalId
+                && (observed.controllerInstanceId?.trim() || '') !== identity.controllerInstanceId
+                && runtime.running
+                && runtime.runtimeInstanceId === identity.controllerInstanceId,
+              );
+              if (!samePrincipalCanonicalRuntimeMigration) throw error;
+            }
             const observedOwner = getControllerSession(store, workId);
             const work = getWorkContract(store, workId);
             const terminalWork = work ? ['completed', 'failed', 'cancelled'].includes(work.status) : false;
@@ -4122,7 +4141,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   relay_scope_id: relay.relayScopeId,
                   requirement_id: relay.requirementId,
                 });
-                const prompt = buildChatgptControllerRoundPrompt(relayStore, relay);
+                const prompt = renderChatgptControllerRoundPrompt(relayStore, relay);
+                const relayBinding = chatgptControllerRoundBinding(relayStore, workId);
                 const dispatched = await runWorkChatgptContinuation({
                   controllerHome: ctx.controllerHome,
                   repoId: repository.repoId,
@@ -4131,20 +4151,20 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   prompt,
                   controllerAuthorityId: relay.authorityId,
                   relayScopeId: relay.relayScopeId,
-                  browserSessionId: getChatgptWorkConversationBinding(relayStore, workId)?.latestBrowserSessionId,
-                  conversationUrl: getChatgptWorkConversationBinding(relayStore, workId)?.conversationUrl,
+                  browserSessionId: relayBinding?.browserSessionId,
+                  conversationUrl: relayBinding?.conversationUrl,
                   tabPolicy: 'reuse',
                 });
                 if (dispatched.status === 'failed') throw new Error(dispatched.error?.message ?? 'CONTROLLER_RELAY_DISPATCH_FAILED');
                 // The next prompt is externally committed before this transition is
                 // recorded. Contiguous immediate rounds intentionally retain one
                 // Forge-owned tab, avoiding a close/reopen race and duplicate prompt.
-                recordChatgptControllerRoundSettlement(relayStore, {
+                recordChatgptControllerRoundTabSettlement(relayStore, {
                   workId,
                   relayScopeId: relay.relayScopeId,
                   status: 'retained_for_immediate_continuation',
                 });
-                const updatedBinding = getChatgptWorkConversationBinding(relayStore, workId);
+                const updatedBinding = chatgptControllerRoundBinding(relayStore, workId);
                 const completed = finishControllerRoundRelayDispatch(
                   relayStore,
                   { workId, ok: true, bindingId: updatedBinding?.bindingId },
@@ -4172,15 +4192,15 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               && settledRelay
               && ['waiting', 'waiting_for_user', 'goal_complete', 'blocked', 'failed'].includes(settledRelay.status)
             ) {
-              const binding = getChatgptWorkConversationBinding(store, workId);
-              const browserSessionId = binding?.latestBrowserSessionId;
+              const binding = chatgptControllerRoundBinding(store, workId);
+              const browserSessionId = binding?.browserSessionId;
               if (browserSessionId) {
                 tabSettlement = await settleWorkChatgptAutomationTab({
                   controllerHome: ctx.controllerHome,
                   workId,
                   browserSessionId,
                 });
-                recordChatgptControllerRoundSettlement(relayStore, {
+                recordChatgptControllerRoundTabSettlement(relayStore, {
                   workId,
                   relayScopeId: settledRelay.relayScopeId,
                   status: tabSettlement.status,
@@ -4231,7 +4251,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) throw new Error(`CHATGPT_LAUNCH_TIMEOUT_INVALID: ${timeoutValue}`);
               const continuationPrompt = typeof args.continuation_prompt === 'string' ? args.continuation_prompt.trim() : '';
               const relayStore = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
-              const existingBinding = getChatgptWorkConversationBinding(relayStore, workId);
+              const existingBinding = chatgptControllerRoundBinding(relayStore, workId);
               const relay = beginInitialControllerRoundDispatch(
                 relayStore,
                 {
@@ -4245,7 +4265,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 throw new Error(`CONTROLLER_RELAY_LAUNCH_BLOCKED: ${relay.blockedReason ?? relay.relayScopeId}`);
               }
               const prompt = [
-                buildChatgptControllerRoundPrompt(store, relay, { exactOriginWork: true }),
+                renderChatgptControllerRoundPrompt(store, relay, { exactOriginWork: true }),
                 `Controller round: ${relay.relayScopeId}. launcher_start opened this durable round; dispatch success is not semantic completion.`,
                 handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
                 continuationPrompt ? `Continuation: ${continuationPrompt}` : '',
@@ -4275,7 +4295,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 );
                 throw launchError;
               }
-              const updatedBinding = getChatgptWorkConversationBinding(relayStore, workId);
+              const updatedBinding = chatgptControllerRoundBinding(relayStore, workId);
               const completedRelay = finishControllerRoundRelayDispatch(
                 relayStore,
                 { workId, ok: true, bindingId: updatedBinding?.bindingId },
