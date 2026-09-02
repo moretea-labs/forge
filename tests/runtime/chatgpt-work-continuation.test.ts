@@ -376,7 +376,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain('CHATGPT_CAPABILITY_MENUITEM_SELECTOR');
     expect(source).toContain('aria-keyshortcuts~=\"ArrowRight\"');
     expect(source).not.toContain(':has-text(');
-    expect(source).toContain('waitForChatgptIntelligenceControl'); expect(source).toContain('reasoningLabelMatches'); expect(source).toContain("'main button, main [role=\"button\"]'"); expect(source).toContain('limit: chatgptAutomationControlQueryLimit(selector)'); expect(source).toContain('chatgptAutomationReasoningLevelFromLabel'); expect(source).toContain('CHATGPT_AUTOMATION_LOGIN_REQUIRED'); expect(source).not.toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('runWorkChatgptContinuation'); expect(engine).toContain("if (controllerType === 'chatgpt')"); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/'"); expect(engine).toContain("conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined");
+    expect(source).toContain('waitForChatgptIntelligenceControl'); expect(source).toContain('reasoningLabelMatches'); expect(source).toContain("'main button, main [role=\"button\"]'"); expect(source).toContain('limit: chatgptAutomationControlQueryLimit(selector)'); expect(source).toContain('chatgptAutomationReasoningLevelFromLabel'); expect(source).toContain('CHATGPT_AUTOMATION_LOGIN_REQUIRED'); expect(source).not.toContain('runScheduledChatgptPrompt'); const engine = readFileSync(join(process.cwd(), 'src/runtime/workflow/schedules/engine.ts'), 'utf8'); expect(engine).toContain('resumeScheduledControllerContinuation'); expect(engine).toContain('controllerHostForScheduledBinding'); expect(engine).toContain('SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED'); expect(engine).not.toContain('runWorkChatgptContinuation'); expect(source).toContain('conversationUrl?: string'); expect(source).toContain("binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/'");
     expect(source).toContain('seedUrl && !binding && hasChatgptConversationIdentity(seedUrl)');
     expect(source).toContain('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'); expect(source).toContain('workflowToolAttributionInstruction'); expect(source).toContain('repository_command_execute and repository_safe_patch_apply');
     expect(source).toContain('CHATGPT_USER_MESSAGE_SELECTOR'); expect(source).toContain("from_end: true"); expect(source).toContain("browserMutationOutcomeUnknown(error, 'click')"); expect(source).toContain('chatgptOutboundMessageMatchesPrompt(fullText, renderedPrompt)');
@@ -398,10 +398,11 @@ describe('ChatGPT Work conversation binding', () => {
     expect(standaloneSource).not.toContain('getWorkContract(');
     expect(standaloneSource).not.toContain('bindChatgptWorkConversation(');
     expect(engine).toContain('runStandaloneChatgptPrompt');
-    expect(engine).toContain('controllerAuthorityId: relay.authorityId');
-    expect(engine).toContain('relayScopeId: relay.relayScopeId');
+    expect(engine).toContain('resumeScheduledControllerContinuation(');
+    expect(engine).not.toContain('controllerAuthorityId: relay.authorityId');
+    expect(engine).not.toContain('relayScopeId: relay.relayScopeId');
     expect(engine).toContain('Standalone browser keepalive auth-required prompt dispatched to ChatGPT.');
-    const runtimeTools = readFileSync(join(process.cwd(), 'src/runtime/gateway/mcp/runtime-tools.ts'), 'utf8');
+    const runtimeTools = readFileSync(join(process.cwd(), 'adapters/mcp/runtime-gateway/runtime-tools.ts'), 'utf8');
     const launcherStart = runtimeTools.slice(runtimeTools.indexOf("if (operation === 'launcher_start')"), runtimeTools.indexOf('const checks = listControllerChecks', runtimeTools.indexOf("if (operation === 'launcher_start')")));
     expect(launcherStart).toContain("if (controllerType === 'chatgpt')");
     expect(launcherStart).toContain('await runWorkChatgptContinuation({');
@@ -451,6 +452,16 @@ describe('ChatGPT Work conversation binding', () => {
       requestedBy: 'chatgpt',
       status: 'running',
     });
+    claimControllerSession(store, {
+      workId,
+      controllerId: 'test-controller',
+      controllerType: 'chatgpt',
+      sessionId: 'test-handoff-controller-session',
+      principalId: 'test-controller',
+      controllerInstanceId: 'test-runtime',
+      leaseMs: 60_000,
+    });
+    releaseControllerSession(store, workId, 'test-controller');
     const handoffId = 'HND-HANDOFF-EVENT';
     const eventName = handoffResolvedContinuationEventName(handoffId);
     const schedule = createWorkContinuationSchedule(controllerHome, repository.repoId, {
@@ -617,7 +628,7 @@ describe('controller relay repeated-state rearm', () => {
     beginInitialControllerRoundDispatch(store, {
       workId,
       relayScopeId,
-      identity: { controllerId: 'launcher', principalId: 'launcher', controllerInstanceId: 'runtime-test', sessionId: 'launch-1' },
+      identity: { controllerId: 'launcher', controllerType: 'chatgpt', principalId: 'launcher', controllerInstanceId: 'runtime-test', sessionId: 'launch-1' },
     });
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
     const firstSession = claimControllerSession(store, {
@@ -635,6 +646,7 @@ describe('controller relay repeated-state rearm', () => {
       relayScopeId,
       identity: {
         controllerId: firstSession.controllerId,
+        controllerType: firstSession.controllerType,
         principalId: firstSession.principalId ?? firstSession.controllerId,
         controllerInstanceId: firstSession.controllerInstanceId ?? 'runtime-test',
         sessionId: firstSession.sessionId,
@@ -660,6 +672,7 @@ describe('controller relay repeated-state rearm', () => {
       relayScopeId,
       identity: {
         controllerId: secondSession.controllerId,
+        controllerType: secondSession.controllerType,
         principalId: secondSession.principalId ?? secondSession.controllerId,
         controllerInstanceId: secondSession.controllerInstanceId ?? 'runtime-test',
         sessionId: secondSession.sessionId,
@@ -684,6 +697,7 @@ describe('controller relay repeated-state rearm', () => {
       relayScopeId,
       identity: {
         controllerId: secondSession.controllerId,
+        controllerType: secondSession.controllerType,
         principalId: secondSession.principalId ?? secondSession.controllerId,
         controllerInstanceId: secondSession.controllerInstanceId ?? 'runtime-test',
         sessionId: secondSession.sessionId,

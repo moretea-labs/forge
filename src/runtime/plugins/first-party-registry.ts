@@ -1,5 +1,5 @@
 import { appStoreConnectPluginAdapter } from './app-store-connect-adapter';
-import { browserPluginAdapter } from './browser-adapter';
+import { browserPluginAdapter } from './browser-registration';
 import { githubPluginAdapter } from './github-adapter';
 import { gmailPluginAdapter } from './gmail-adapter';
 import { googleCalendarPluginAdapter } from './google-calendar-adapter';

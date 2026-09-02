@@ -46,3 +46,10 @@ Earlier V4–V8 Controller, Local Bridge, Supervisor, Issue/Task/Job and recover
 - Added an emergency host-rescue boundary outside the Forge checkout and Controller Home so a broken Runtime, Connector, or existing Recovery deployment can still be reached from Windows through WSL.
 - Restricted the host-facing surface to a fixed set of status/start/restart/verification actions, with one WSL-side lock for every mutation; no arbitrary shell RPC, source mutation, release selection, or Controller-database ownership was added.
 - Kept the Windows scheduled task as a cold-start trigger and the WSL rescue service as the sole long-lived reconciliation owner. Tunnel credentials remain in tunnel-client's separately permissioned store rather than rescue configuration.
+
+## 2026-09-02 — Kernel V2 governance moves from textual fences to structural authority
+
+- Defined Kernel V2 as a domain/authority migration toward a modular monolith with explicit Kernel, protocol, plugin-runtime, adapter, and composition-root dependency direction.
+- Made compatibility a shrinking migration debt with a replacement owner, bounded consumers, and an objective removal condition rather than a permanent parallel layer.
+- Established an architecture-enforcement hierarchy that prefers compiler/type/package and AST/dependency-graph proofs over raw string/regex assertions or source-line-count gates.
+- Changed the migration cadence to batch facts, implement coherent slices, review architecture centrally, run focused checks at slice boundaries, and reserve broad multi-review/validation plus Runtime baseline activation for integrated candidate boundaries.

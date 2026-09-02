@@ -2,7 +2,7 @@ import {
   getWorkContract,
   transitionWorkContractPhase,
   updateWorkContract,
-} from '../facade/work-contract-store';
+} from '../../../../packages/kernel/work/api/index';
 import {
   listValidatingWorkHandles,
   transitionWorkHandle,

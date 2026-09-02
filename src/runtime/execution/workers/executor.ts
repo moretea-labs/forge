@@ -1,14 +1,14 @@
 import { bindRepositoryEntities } from '../../../cli/repositories/entity-migration';
 import { getRepository, repositorySummary, selectRepositoryCheckout } from '../../../cli/repositories/registry';
-import { callRepositoryTool } from '../../../cli/mcp/repository-tools';
-import { callMcpTool, type CallToolResult, type McpToolContext } from '../../../cli/mcp/tools';
-import { runtimePolicy, type MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
-import { callRuntimeTool } from '../../gateway/mcp/runtime-tools';
+import { callRepositoryTool } from '../../../../adapters/mcp/tool-mapping/repository-tools';
+import { callMcpTool, type CallToolResult, type McpToolContext } from '../../../../adapters/mcp/tool-mapping/tools';
+import { runtimePolicy, type MultiRepositoryMcpToolContext } from '../../../../adapters/mcp/multi-repository';
+import { callRuntimeTool } from '../../../../adapters/mcp/runtime-gateway/runtime-tools';
 import { ensureRepositoryRuntimeStorage } from '../../../cli/repositories/runtime-storage';
 import { evaluateReleaseGate } from '../../release/release-gate';
 import { executeLocalBridgeJobInline, getLocalBridgeJob } from '../../../cli/local-bridge/job-store';
 import type { LocalBridgeJob } from '../../../cli/local-bridge/types';
-import { settleScheduledExecution } from '../../workflow/schedules/settlement';
+import { settleScheduledExecution } from '../../../../packages/kernel/scheduler/api/index';
 import type { ExecutionJob, ExecutionJobOutcome } from '../jobs/types';
 import {
   buildDelegatedExecutionResult,

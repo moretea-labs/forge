@@ -9,8 +9,11 @@ import {
   getWorkContract,
   getWorkContractByRequestId,
   recordWorkCompletionReceipt,
+  recordWorkImplementationReview,
+  requestWorkImplementationReview,
   transitionWorkContractPhase,
 } from '../src/runtime/control-plane/facade/work-contract-store';
+import { implementationReviewChangedPathDigest } from '../src/runtime/control-plane/facade/work-implementation-review';
 import {
   claimControllerSession,
   getControllerSession,
@@ -24,7 +27,7 @@ import {
   waitForProcess,
 } from '../src/runtime/execution/process-runtime';
 import { executionIdentityForRepository } from '../src/runtime/control-plane/execution/execution-identity';
-import { createSchedule } from '../src/runtime/workflow/schedules/store';
+import { createSchedule } from '../packages/kernel/scheduler/api/index';
 import { assertAutomatedOperationAllowed } from '../src/runtime/control-plane/governance/external-effects';
 
 const root = mkdtempSync(join(tmpdir(), 'forge-recovery-smoke-'));
@@ -132,6 +135,36 @@ try {
   assert(getControllerSession({ controllerHome, repoId: repository.repoId }, accepted.contract.workId)?.sessionId === 'session-recovery-b', 'replacement Controller session missing');
   const completionRecordedAt = new Date().toISOString();
   const completionRevision = String(spawnSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout).trim();
+  transitionWorkContractPhase({ controllerHome, repoId: repository.repoId }, accepted.contract.workId, {
+    phase: 'verification',
+    status: 'running',
+    state: 'satisfied',
+    summary: 'Recovered Process completed successfully for the exact no-change candidate.',
+  });
+  requestWorkImplementationReview(
+    { controllerHome, repoId: repository.repoId },
+    accepted.contract.workId,
+    'Recovery smoke verification completed; implementation review is required before completion.',
+  );
+  recordWorkImplementationReview({ controllerHome, repoId: repository.repoId }, accepted.contract.workId, {
+    schemaVersion: 1,
+    reviewId: `REV-smoke-${accepted.contract.workId}`,
+    workId: accepted.contract.workId,
+    reviewerPrincipalId: replacement.principalId ?? replacement.controllerId,
+    reviewerControllerSessionId: replacement.sessionId,
+    decision: 'approved',
+    rationale: 'Recovery smoke reviewed the exact recovered no-change candidate before terminal completion.',
+    findings: [],
+    sourceRevision: completionRevision,
+    workspaceFingerprint: 'runtime-recovery-smoke-no-change-content',
+    verificationWorkspaceFingerprint: 'runtime-recovery-smoke-no-change-verification',
+    changedPaths: [],
+    changedPathDigest: implementationReviewChangedPathDigest([]),
+    acceptanceCriteriaSummary: 'Managed Process recovery, Controller reclaim, and no-change Work completion remain coherent.',
+    verificationEvidence: [],
+    architectureEvidence: [],
+    recordedAt: completionRecordedAt,
+  });
   recordWorkCompletionReceipt(
     { controllerHome, repoId: repository.repoId },
     accepted.contract.workId,

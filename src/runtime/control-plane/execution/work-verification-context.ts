@@ -1,7 +1,7 @@
 import { listControllerChecks, type ControllerCheck } from '../../../cli/controller/check-runner';
 import { selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
-import { getWorkContract } from '../facade/work-contract-store';
+import { getWorkContract } from '../../../../packages/kernel/work/api/index';
 import type { WorkContract } from '../facade/types';
 
 export interface WorkVerificationContext {

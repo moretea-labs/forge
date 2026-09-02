@@ -30,6 +30,7 @@ import {
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { capProcessOutput } from '../../../effects/process-runner';
+import { getRepository, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { redactSensitiveText, sanitizeSensitiveTextFileInPlace } from '../../evidence/sensitive-output';
 import { isProcessAlive, terminateProcessTree } from '../../shared/process-tree';
 import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../shared/process-environment';
@@ -54,6 +55,7 @@ import {
   updateProcessRecord,
 } from './store';
 import { assertExecutionIdentity } from '../../control-plane/execution/execution-identity';
+import { settleWorkHandleExpectedHeadAfterRepositoryCommand } from '../../control-plane/execution/work-head-settlement';
 import {
   DEFAULT_INTERACTIVE_WAIT_MS,
   DEFAULT_MAX_OUTPUT_BYTES,
@@ -587,6 +589,38 @@ export function completeProcessFromEvidence(
   const afterTerminal = completion.record ?? getProcessRecord(controllerHome, repoId, processId);
   if (afterTerminal && (completion.ok || completion.reason === 'already_terminal' || afterTerminal.terminalWritten === true)) {
     const released = releaseProcessLeasesOnce(controllerHome, repoId, processId) ?? afterTerminal;
+    // Successful repository mutation settlement is deliberately downstream of
+    // durable terminal persistence. Recovery may repeat this block, but the
+    // WorkHandle CAS plus immutable expectedHead makes reconciliation idempotent.
+    if (
+      released.status === 'succeeded'
+      && released.exitCode === 0
+      && released.cancelled !== true
+      && released.timedOut !== true
+      && released.workId
+      && released.executionIdentity
+    ) {
+      try {
+        const repository = selectRepositoryCheckout(
+          getRepository(released.executionIdentity.repositoryId, controllerHome),
+          released.executionIdentity.checkoutId,
+          { allowArchived: released.executionIdentity.allowArchived },
+        );
+        settleWorkHandleExpectedHeadAfterRepositoryCommand({
+          controllerHome,
+          repository,
+          executionIdentity: released.executionIdentity,
+          workId: released.workId,
+          ok: true,
+          cancelled: false,
+          timedOut: false,
+        });
+      } catch {
+        // Terminal Process evidence remains valid even when its exact historical
+        // checkout is no longer selectable. Never infer authority from active
+        // checkout/session state; Work finalization will continue to fail closed.
+      }
+    }
     cleanupTerminalRunnerReceipts(released);
     return released;
   }
@@ -1186,6 +1220,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     repoId: input.repoId,
     checkoutId: input.checkoutId,
     workId: input.workId,
+    executionIdentity: input.executionIdentity,
     commandId: input.commandId?.trim() || processId,
     requestFingerprint: requestId ? commandFingerprint : undefined,
     checkExecution: input.checkExecution,

@@ -15,21 +15,23 @@ import {
   browserPermissions,
 } from './browser-manifest-surface';
 import { executeBrowserActionThroughNode, shouldUseBrowserNodeBridge } from './browser-node-bridge';
-import { BrowserProviderUnavailableBeforeActionError } from './browser-provider-registry';
-import { MAX_BROWSER_CDP_ENDPOINT_CANDIDATES } from './browser-runtime-contract';
+import { BrowserProviderUnavailableBeforeActionError } from '../../../packages/plugin-runtime/browser/provider-registry';
+import { MAX_BROWSER_CDP_ENDPOINT_CANDIDATES } from '../../../packages/plugin-runtime/browser/runtime-contract';
 import {
   ALL_BROWSER_PROVIDER_CAPABILITIES,
   browserActionCanReplayAfterDispatch as canReplayBrowserActionAfterDispatch,
   executeBrowserRuntimeAction,
   invalidateBrowserRuntime,
 } from './browser-runtime';
-import { getExternalPluginAdapter } from './external-adapter';
+import { activateRuntimeComputerBrowserApplication } from '../root/computer-composition';
 import {
-  currentBrowserSessionAuthorityContext,
   DEFAULT_BROWSER_SESSION_LIST_LIMIT,
   MAX_BROWSER_SESSION_LIST_LIMIT,
-  withBrowserSessionAuthorityContext,
-} from './browser-session-authority';
+} from '../../../packages/plugin-runtime/browser/session-authority';
+import {
+  currentRuntimeBrowserSessionAuthorityContext as currentBrowserSessionAuthorityContext,
+  withRuntimeBrowserSessionAuthorityContext as withBrowserSessionAuthorityContext,
+} from '../root/browser-session-composition';
 import {
   closeMacOsBrowserOwnedTab,
   createMacOsBrowserOwnedPage,
@@ -87,7 +89,7 @@ import type {
   BrowserTabMatchReason,
   BrowserTabResumeState,
   CdpAttachAttempt,
-} from './browser-session-types';
+} from '../../../packages/protocols/browser/index';
 
 const BROWSER_PLUGIN_ID = 'browser';
 const CONFIG_ROOT = '.forge/plugins';
@@ -254,39 +256,6 @@ interface BrowserPluginRuntimeHooks {
   activateNativeBrowserApplication(input: AssistantPluginActionExecutionInput, product: MacOsBrowserProduct): Promise<void>;
 }
 
-const NATIVE_BROWSER_BUNDLE_IDS: Record<MacOsBrowserProduct, string> = {
-  chrome: 'com.google.Chrome',
-  vivaldi: 'com.vivaldi.Vivaldi',
-};
-
-async function activateNativeBrowserApplicationViaDesktopOperator(
-  input: AssistantPluginActionExecutionInput,
-  product: MacOsBrowserProduct,
-): Promise<void> {
-  const desktopOperator = getExternalPluginAdapter(input.controllerHome, 'desktop_operator');
-  if (!desktopOperator) {
-    throw new AssistantPluginError(
-      'PLUGIN_BROWSER_NATIVE_FOREGROUND_ACTIVATOR_UNAVAILABLE',
-      'Native browser foreground activation requires the registered Forge Desktop Operator.',
-      { retryable: true, details: { browserProduct: product } },
-    );
-  }
-  await desktopOperator.executeAction({
-    controllerHome: input.controllerHome,
-    repoId: input.repoId,
-    repoRoot: input.repoRoot,
-    pluginId: 'desktop_operator',
-    actionId: 'desktop_session_open',
-    requestId: `${input.requestId}:native-browser-foreground:${product}`,
-    args: { bundle_id: NATIVE_BROWSER_BUNDLE_IDS[product], launch: false, activate: true },
-    origin: input.origin,
-    jobId: input.jobId,
-    timeoutMs: input.timeoutMs,
-    signal: input.signal,
-    deadlineAtMs: input.deadlineAtMs,
-  });
-}
-
 const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
   now: () => new Date().toISOString(),
   moduleAvailable: (name: string, repoRoot?: string) => {
@@ -327,7 +296,7 @@ const defaultRuntimeHooks: BrowserPluginRuntimeHooks = {
       clearTimeout(timer);
     }
   },
-  activateNativeBrowserApplication: activateNativeBrowserApplicationViaDesktopOperator,
+  activateNativeBrowserApplication: activateRuntimeComputerBrowserApplication,
 };
 
 let runtimeHooks: BrowserPluginRuntimeHooks = { ...defaultRuntimeHooks };
@@ -1063,7 +1032,7 @@ async function establishAuthoritativeNativeForeground(
     const cause = error instanceof Error ? error.message : String(error);
     throw new AssistantPluginError(
       'PLUGIN_BROWSER_ACTIVATION_FAILED',
-      'Native browser exact-tab activation could not establish macOS system foreground authority through Forge Desktop Operator.',
+      'Native browser exact-tab activation could not establish system foreground authority through the configured Computer provider.',
       { retryable: true, details: { sessionId: target.sessionId, browserProduct: product, ...state, ...(causeCode ? { causeCode } : {}), cause: cause.slice(0, 500) } },
     );
   }
@@ -4608,10 +4577,3 @@ export async function executeBrowserPluginAction(input: AssistantPluginActionExe
     () => executeBrowserPluginActionInternal(input),
   );
 }
-
-export const browserPluginAdapter = {
-  pluginId: BROWSER_PLUGIN_ID,
-  buildManifest: buildBrowserPluginManifest,
-  executeAction: executeBrowserPluginAction,
-  resolveAuthorizationContext: resolveBrowserPluginAuthorizationContext,
-};

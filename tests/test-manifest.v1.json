@@ -30,6 +30,18 @@
       ]
     },
     {
+      "prefix": "src/cli/commands/computer.ts",
+      "modules": [
+        "core"
+      ]
+    },
+    {
+      "prefix": "src/cli/commands/plugin.ts",
+      "modules": [
+        "core"
+      ]
+    },
+    {
       "prefix": "src/runtime/plugins/ios",
       "modules": [
         "ios"
@@ -189,6 +201,10 @@
       "module": "controller",
       "resource": "temp-isolated"
     },
+    "tests/cli/computer-command.test.ts": {
+      "module": "core",
+      "resource": "controller-home-isolated"
+    },
     "tests/cli/init.test.ts": {
       "module": "core",
       "resource": "temp-isolated"
@@ -334,6 +350,10 @@
       "resource": "pure"
     },
     "tests/runtime/browser-runtime-v3.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
+    "tests/runtime/computer-provider-registry.test.ts": {
       "module": "browser",
       "resource": "pure"
     },

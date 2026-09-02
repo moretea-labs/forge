@@ -1,5 +1,5 @@
 import type { RepositoryRecord } from '../../cli/repositories/types';
-import { loadMcpRuntimeState } from '../../cli/mcp/auth';
+import { loadMcpRuntimeState } from '../../../adapters/mcp/auth';
 import { listControllerChecks } from '../../cli/controller/check-runner';
 import { listLocalBridgeJobSnapshots } from '../../cli/local-bridge/job-store';
 import { ensureRepositoryRuntimeStorage } from '../../cli/repositories/runtime-storage';

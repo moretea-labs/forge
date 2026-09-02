@@ -3,7 +3,7 @@ import {
   appendWorkEvidence,
   recordWorkCompletionReceipt,
   type WorkContractStoreOptions,
-} from '../facade/work-contract-store';
+} from '../../../../packages/kernel/work/api/index';
 import type { WorkContract, WorkKind } from '../facade/types';
 
 export interface WorkRequirementProjectionResult {

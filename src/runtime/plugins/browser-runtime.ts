@@ -7,12 +7,13 @@ import {
   type BrowserProviderCapability,
   type BrowserTargetIdentity,
   type BrowserTransaction,
-} from './browser-runtime-contract';
+} from '../../../packages/plugin-runtime/browser/runtime-contract';
 import {
   BrowserProviderRegistry,
+  BrowserProviderSelectionError,
   BrowserProviderUnavailableBeforeActionError,
   type BrowserRuntimeProvider,
-} from './browser-provider-registry';
+} from '../../../packages/plugin-runtime/browser/provider-registry';
 
 export const ALL_BROWSER_PROVIDER_CAPABILITIES = [
   'dom.read',
@@ -166,12 +167,20 @@ export async function executeBrowserRuntimeAction(options: {
   const policy = browserRuntimeActionPolicy(options.input.actionId);
   const excluded = new Set<string>();
   while (true) {
-    const selection = await registry.select({
-      input: options.input,
-      requiredCapabilities: policy.requiredCapabilities,
-      foreground: policy.foreground,
-      excludedProviderIds: excluded,
-    });
+    let selection;
+    try {
+      selection = await registry.select({
+        input: options.input,
+        requiredCapabilities: policy.requiredCapabilities,
+        foreground: policy.foreground,
+        excludedProviderIds: excluded,
+      });
+    } catch (error) {
+      if (error instanceof BrowserProviderSelectionError) {
+        throw new AssistantPluginError(error.code, error.message, { retryable: error.retryable });
+      }
+      throw error;
+    }
     const transaction = transactionFor(options.input, selection.provider.providerId, policy);
     const validationErrors = validateBrowserTransaction(transaction);
     if (validationErrors.length > 0) {

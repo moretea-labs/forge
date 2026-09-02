@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import { performance } from 'perf_hooks';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { readMcpServiceBearerToken } from '../src/cli/mcp/auth';
+import { readMcpServiceBearerToken } from '../adapters/mcp/auth';
 import { resolveRepoPreferredControllerHome } from '../src/cli/repositories/controller-home';
 import {
   aggregateMcpTransportLatencySamples,

@@ -17,6 +17,7 @@ import { buildSetupCommand, formatInitHook, runInitHook } from './commands/init-
 import { formatMigratePlan, runMigrate } from './commands/migrate';
 import { buildToolsCommand } from './commands/tools';
 import { buildPluginCommand } from './commands/plugin';
+import { buildComputerCommand } from './commands/computer';
 import { buildBrainCommand } from './commands/brain';
 import { buildCapabilityContextCommand } from './commands/capability-context';
 import { buildDocsCommand } from './commands/docs';
@@ -53,6 +54,7 @@ export const SUBCOMMANDS = [
   'setup',
   'tools',
   'plugin',
+  'computer',
   'brain',
   'capability-context',
   'docs',
@@ -509,6 +511,7 @@ export function buildProgram(): Command {
 
   program.addCommand(buildToolsCommand());
   program.addCommand(buildPluginCommand());
+  program.addCommand(buildComputerCommand());
   program.addCommand(buildBrainCommand(), { hidden: true });
   program.addCommand(buildCapabilityContextCommand(), { hidden: true });
   program.addCommand(buildDocsCommand());

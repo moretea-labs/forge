@@ -1,8 +1,2 @@
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { createForgeMcpServer, type McpServerOptions } from '../server';
-
-export async function startMcpStdio(opts: McpServerOptions): Promise<void> {
-  const server = createForgeMcpServer(opts);
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-}
+/** @deprecated Kernel V2 compatibility shim. MCP stdio transport lives in adapters/mcp. */
+export * from '../../../../adapters/mcp/transports/stdio';

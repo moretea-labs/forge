@@ -99,6 +99,54 @@ Explicit **Scale** is the opt-in coordination form of this existing model, not a
 - Work command execution and validation live in `work-operation-service.ts`. Both MCP Gateway and Durable Worker call this application service directly; Workers must never dynamic-import MCP transport to obtain Work semantics. The architecture gate also forbids any `runtime/control-plane` source from depending back on `runtime/gateway`.
 - Production Browser session persistence is Controller-home SQLite `BrowserSessionAuthority`. Compatibility JSON may be imported or used only when no Controller authority is available; handoff sidecars return interaction results and never write BrowserSession state directly.
 
+## Kernel V2 module and migration contract
+
+Kernel V2 converges Forge toward a domain-first modular monolith. Directory placement is not cosmetic: it encodes dependency direction and semantic ownership.
+
+```text
+apps / composition roots
+        |
+        v
+adapters / providers --------> protocols
+        |                         ^
+        v                         |
+packages/kernel/* ----------> public ports/contracts
+packages/plugin-runtime/* --> neutral plugin/provider contracts
+```
+
+- `packages/kernel/<domain>` owns durable domain semantics such as Work, Controller, Scheduler, Resources, Identity, and Execution. Each domain exposes one intentional public API; sibling modules do not deep-import its infrastructure or persistence internals.
+- `packages/protocols` owns wire/provider-neutral contracts that must be usable without importing Runtime, MCP, CLI, UI, or concrete provider implementations.
+- `packages/plugin-runtime` owns provider-neutral plugin dispatch, resource, receipt, and provider-selection semantics. It may depend on neutral protocols/ports, never on concrete adapters or Runtime implementation modules.
+- `adapters/*` implement outward-facing mechanisms and may depend inward on Kernel/plugin/protocol contracts. Concrete provider identity, filesystem discovery, OAuth/tunnel details, Browser/ChatGPT host mechanics, and SQLite implementations belong here when they are mechanism rather than domain authority.
+- `apps/*` and Runtime composition roots wire concrete implementations. Composition may know both sides of a port; business semantics must not leak upward into the composition root.
+- Legacy `src/cli/*` and `src/runtime/*` code is migrated by owner, not mechanically by path. A legacy file that still owns current semantics must be moved/split into its target module; a retained legacy path may only be a thin compatibility facade delegating to the new owner.
+
+### Single-authority rule
+
+For each durable fact or lifecycle transition there is exactly one mutable authority. A projection, cache, transport session, compatibility record, provider live handle, UI model, or diagnostic snapshot may derive from that authority but must not independently decide or persist competing state. When two implementations appear to own the same semantic transition, Kernel V2 resolves the duplication by choosing one owner and deleting/merging the other rather than synchronizing two authorities.
+
+### Migration-debt lifecycle
+
+Compatibility exists to move consumers to the new owner, not to preserve old architecture indefinitely. Every retained compatibility shim, legacy import allowlist, translation layer, or migration-only assertion must identify: the replacement owner, the bounded legacy consumers, and a machine-observable removal condition. New production consumers of a deprecated owner are forbidden. Once the final consumer is gone or the removal condition is met, the compatibility code and its gate/allowlist entry are removed in the same coherent slice.
+
+A fallback must never become a second semantic authority. Capability negotiation may select an explicitly supported provider/version, and safety boundaries may refuse unsafe or ambiguous execution, but missing architecture capability is repaired at the owning general layer rather than hidden behind silent fallback, duplicate persistence, or an alternate lifecycle path.
+
+### Architecture enforcement hierarchy
+
+Architecture checks should prove the invariant at the highest semantic level available:
+
+1. compiler/type contracts and package/public-API visibility;
+2. AST/import/dependency-graph direction and cycle checks;
+3. focused semantic contract tests for behavior that static structure cannot express;
+4. path existence/removal checks for finite migrations;
+5. raw source-text/regex assertions only as temporary migration fences when no stronger representation exists.
+
+Source-line-count limits are review heuristics, not architecture truth, and must not be permanent merge gates. Text assertions that merely require a spelling or forbid a provider name should be replaced by typed contracts or structural dependency checks as the migrated owner stabilizes. Architecture debt checks are shrinking ledgers: a retired dependency causes its allowlist/assertion to be deleted, never preserved for historical symmetry.
+
+### Kernel V2 delivery cadence
+
+Within one migration slice, gather facts in batches, decide ownership once, implement a coherent patch, then review the whole slice for authority/dependency drift before running focused checks. Repeated full-suite validation after each small move is discouraged because it slows structural work without increasing semantic confidence. Milestone/candidate boundaries receive broader cross-module review, multi-review where useful, and whole-candidate validation. Runtime baseline activation is deliberately later than source integration: a locally passing partial slice does not become the active baseline until the integrated candidate satisfies the Kernel V2 architecture contract.
+
 ## Runtime and MCP boundary
 
 - Canonical Runtime is activated as one immutable whole release with a previous release retained for rollback.
@@ -122,6 +170,14 @@ Host hook files are integration surfaces, not lifecycle or architecture authorit
 ## Provider boundary
 
 Typed provider/plugin actions should use Forge capability/resource semantics directly instead of hiding host/browser/device operations inside arbitrary repository shell commands. Built-in providers may remain inside Forge when they are tightly coupled to Controller policy and lifecycle; independent products/providers retain independent release boundaries and integrate through the Plugin Protocol.
+
+### Computer and macOS provider boundary
+
+`Browser` and `Computer` are distinct semantic product surfaces over one provider-neutral Computer capability boundary. Browser owns DOM/tab/navigation/session/transaction semantics; Computer owns generic application observation, input, capture, and native-platform capability management. Browser may consume provider-native browser support through `computer.browser_automation.v1`, but concrete `desktop_operator` identity must not leak back into Browser as routing or session authority.
+
+On macOS, Forge Desktop Operator is the independently released native Computer provider. Its Git repository, app bundle identity, user LaunchAgent, socket endpoint, native interaction sessions, and TCC permissions remain provider-owned and release-independent. Forge owns trusted catalog selection, registration, capability/action policy, authorization, provider selection, and the `forge computer setup|status|doctor|update|uninstall` product facade. The stable Desktop Operator bundle/LaunchAgent identity must not be renamed merely to match product wording because TCC identity and provider lifecycle are intentionally independent from Forge Runtime releases.
+
+Trusted `ExternalPluginRegistration` is the endpoint/lifecycle authority for an installed Computer provider. A bounded explicit compatibility fallback may support an old unregistered provider during migration, but it is never the primary endpoint authority and must not survive as a second discovery path after its compatibility window. Provider protocol negotiation prefers provider-neutral `computer_execute`; legacy `macos_browser_automation` is compatibility-only and cannot become Browser authority. Forge uninstall must complete the provider-owned native uninstall lifecycle before forgetting a registered provider, so package/registration cleanup cannot orphan a running native service.
 
 ### iOS physical-device boundary
 

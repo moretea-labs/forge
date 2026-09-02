@@ -1,7 +1,11 @@
 import { createHash } from 'crypto';
+import { getWorkContract, isTerminalWorkContractStatus, type WorkContract } from '../../../../packages/kernel/work/api/index';
+import { getRetainedControllerSession, type ControllerRoundRelayRecord, type ControllerType } from '../../../../packages/kernel/controller/api/index';
+import { ensureScheduledControllerBinding } from '../../root/scheduled-controller-composition';
 import { resolveHandoffItem } from '../../control-plane/facade/handoff-inbox-store';
-import { getWorkContract } from '../../control-plane/facade/work-contract-store';
-import { isTerminalWorkContractStatus, type HandoffItem, type WorkContract } from '../../control-plane/facade/types';
+import type { HandoffItem } from '../../control-plane/facade/types';
+import { readWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
+
 import { assertAutomatedOperationAllowed } from '../../control-plane/governance/external-effects';
 import { evaluateSchedule } from './engine';
 import {
@@ -10,7 +14,7 @@ import {
   listOccurrences,
   listSchedules,
   saveSchedule,
-} from './store';
+} from '../../../../packages/kernel/scheduler/api/index';
 import type {
   RepositorySchedule,
   ScheduleCondition,
@@ -18,9 +22,9 @@ import type {
   ScheduleTrigger,
   ScheduleTriggerContext,
   ScheduleTriggerType,
-} from './types';
+} from '../../../../packages/kernel/scheduler/api/index';
 
-export type ContinuationControllerType = 'chatgpt' | 'codex' | 'claude' | 'grok';
+export type ContinuationControllerType = Exclude<ControllerType, 'human'>;
 export type WorkScheduleMode = 'continuation' | 'browser_watch' | 'browser_keepalive';
 
 export interface WorkContinuationScheduleInput {
@@ -107,7 +111,7 @@ function normalizedTrigger(input: WorkContinuationScheduleInput): ScheduleTrigge
   };
 }
 
-function wakeArguments(input: WorkContinuationScheduleInput, controllerType: ContinuationControllerType): Record<string, unknown> {
+function providerSeedArguments(input: WorkContinuationScheduleInput, controllerType: ContinuationControllerType): Record<string, unknown> {
   const workId = input.workId?.trim();
   return {
     ...(workId ? { work_id: workId } : {}),
@@ -118,7 +122,22 @@ function wakeArguments(input: WorkContinuationScheduleInput, controllerType: Con
     ...(input.handoffId?.trim() ? { handoff_id: input.handoffId.trim() } : {}),
     ...(input.browserSessionId?.trim() ? { browser_session_id: input.browserSessionId.trim() } : {}),
     ...(input.conversationUrl?.trim() ? { conversation_url: input.conversationUrl.trim() } : {}),
-    ...(input.continuationPrompt?.trim() ? { continuation_prompt: input.continuationPrompt.trim() } : {}),
+  };
+}
+
+function exactContinuationArguments(input: {
+  workId: string;
+  controllerType: ContinuationControllerType;
+  controllerSessionId: string;
+  controllerBindingId: string;
+  continuationHint?: string;
+}): Record<string, unknown> {
+  return {
+    work_id: input.workId,
+    controller_type: input.controllerType,
+    controller_session_id: input.controllerSessionId,
+    controller_binding_id: input.controllerBindingId,
+    ...(input.continuationHint?.trim() ? { continuation_hint: input.continuationHint.trim() } : {}),
   };
 }
 
@@ -127,7 +146,7 @@ function probeArguments(input: WorkContinuationScheduleInput, controllerType: Co
     throw new Error('SCHEDULE_BROWSER_PROBE_TARGET_REQUIRED');
   }
   return {
-    ...wakeArguments(input, controllerType),
+    ...providerSeedArguments(input, controllerType),
     ...(input.probeUrl?.trim() ? { probe_url: input.probeUrl.trim() } : {}),
     ...(input.probeBrowserSessionId?.trim() ? { probe_session_id: input.probeBrowserSessionId.trim() } : {}),
     ...(input.probeSelector?.trim() ? { selector: input.probeSelector.trim() } : {}),
@@ -150,23 +169,51 @@ export function createWorkContinuationSchedule(
   repoId: string,
   input: WorkContinuationScheduleInput,
 ): { schedule: RepositorySchedule; work?: WorkContract } {
-  const controllerType = input.controllerType ?? 'chatgpt';
   const scheduleMode = input.scheduleMode ?? 'continuation';
   const requestedWorkId = input.workId?.trim();
+  const requestedControllerType = input.controllerType;
   if (!requestedWorkId && scheduleMode !== 'browser_keepalive') throw new Error('WORK_ID_REQUIRED');
-  if (!requestedWorkId && scheduleMode === 'browser_keepalive' && controllerType !== 'chatgpt') throw new Error('STANDALONE_BROWSER_KEEPALIVE_CHATGPT_REQUIRED');
   const work = requestedWorkId ? activeWork(controllerHome, repoId, requestedWorkId) : undefined;
+  const retainedSession = scheduleMode === 'continuation' && work
+    ? getRetainedControllerSession({ controllerHome, repoId }, work.workId)
+    : undefined;
+  if (scheduleMode === 'continuation' && !retainedSession) {
+    throw new Error(`SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED: ${work!.workId}`);
+  }
+  if (retainedSession?.controllerType === 'human') throw new Error('SCHEDULE_CONTINUATION_HUMAN_HOST_UNSUPPORTED');
+  const controllerType = (retainedSession?.controllerType ?? requestedControllerType ?? 'chatgpt') as ContinuationControllerType;
+  if (requestedControllerType && retainedSession && requestedControllerType !== retainedSession.controllerType) {
+    throw new Error(`SCHEDULE_CONTINUATION_CONTROLLER_TYPE_MISMATCH: ${work!.workId}:expected=${retainedSession.controllerType}:requested=${requestedControllerType}`);
+  }
+  if (!requestedWorkId && scheduleMode === 'browser_keepalive' && controllerType !== 'chatgpt') throw new Error('STANDALONE_BROWSER_KEEPALIVE_CHATGPT_REQUIRED');
   const trigger = normalizedTrigger(input);
   const operation = scheduleMode === 'continuation' ? 'external_controller_wake' : 'browser_probe';
-  const actionArguments = scheduleMode === 'continuation'
-    ? wakeArguments(input, controllerType)
-    : probeArguments(input, controllerType, scheduleMode === 'browser_keepalive');
-  assertAutomatedOperationAllowed(operation, actionArguments);
   const name = input.scheduleName?.trim()
     || (scheduleMode === 'browser_watch' ? `Watch external state for Work ${work!.workId}`
       : scheduleMode === 'browser_keepalive'
         ? (work ? `Keep browser session alive for Work ${work.workId}` : 'Keep browser session alive')
         : `Continue Work ${work!.workId}`);
+  const controllerBinding = scheduleMode === 'continuation'
+    ? ensureScheduledControllerBinding(
+        { controllerHome, repoId },
+        {
+          workId: work!.workId,
+          session: retainedSession!,
+          scheduleName: name,
+          args: providerSeedArguments(input, controllerType),
+        },
+      )
+    : undefined;
+  const actionArguments = scheduleMode === 'continuation'
+    ? exactContinuationArguments({
+        workId: work!.workId,
+        controllerType,
+        controllerSessionId: retainedSession!.sessionId,
+        controllerBindingId: controllerBinding!.bindingId,
+        continuationHint: input.continuationPrompt,
+      })
+    : probeArguments(input, controllerType, scheduleMode === 'browser_keepalive');
+  assertAutomatedOperationAllowed(operation, actionArguments);
   const policy = {
     maxActiveOccurrences: 1,
     maxFailures: input.maxFailures !== undefined ? Math.max(1, Math.trunc(input.maxFailures)) : 3,
@@ -232,8 +279,8 @@ export function createWorkContinuationSchedule(
     enabled: true,
     trigger,
     policy,
-    // Work-bound schedules only perform a deterministic wake or a bounded read-only
-    // browser probe. Controller/Work write ownership is acquired separately.
+    // Work-bound continuation schedules persist only exact Work/ControllerSession/ControllerBinding identities.
+    // Browser/process launch metadata lives in ControllerHost adapter stores; browser probes remain adapter actions.
     action: { operation, target: 'runtime', arguments: actionArguments, resourceClaims: [] },
     stopConditions,
   });
@@ -305,6 +352,10 @@ export async function triggerWorkContinuationSchedule(
   return evaluateSchedule(controllerHome, schedule, true, context);
 }
 
+export function repositoryCleanContinuationEventName(targetBranch: string): string {
+  return `repository-clean:${targetBranch.trim() || 'main'}`;
+}
+
 export function handoffResolvedContinuationEventName(handoffId: string): string {
   return `handoff-resolved:${handoffId.trim()}`;
 }
@@ -331,6 +382,68 @@ export async function triggerWorkContinuationRepositoryEvent(
     triggered.push({ scheduleId: schedule.scheduleId, occurrenceId: occurrence?.occurrenceId, status: occurrence?.status });
   }
   return triggered;
+}
+
+export function eventDrivenContinuationSchedule(
+  controllerHome: string,
+  repoId: string,
+  input: {
+    workId: string;
+    eventName: string;
+    reason: string;
+  },
+): RepositorySchedule {
+  const workSchedules = listWorkContinuationSchedules(controllerHome, repoId, { workId: input.workId }).schedules;
+  const existing = workSchedules
+    .filter((schedule) => schedule.action.operation === 'external_controller_wake')
+    .reverse()
+    .find((schedule) => schedule.enabled)
+    ?? workSchedules.at(-1);
+  return createWorkContinuationSchedule(controllerHome, repoId, {
+    workId: input.workId,
+    continuationPrompt: `Resume exact Work ${input.workId}. Mechanical blocker changed: ${input.reason}`,
+    scheduleName: `Event continuation for ${input.workId}`,
+    triggerType: 'repository-event',
+    eventName: input.eventName,
+    maxFailures: existing?.policy.maxFailures,
+    cooldownMinutes: existing?.policy.cooldownMinutes,
+    dailyBudgetMinutes: existing?.policy.dailyBudgetMinutes,
+    shadowMode: false,
+    backoffBaseMinutes: existing?.policy.backoffBaseMinutes,
+    backoffMaxMinutes: existing?.policy.backoffMaxMinutes,
+    stopConditions: existing?.stopConditions,
+  }).schedule;
+}
+
+
+function dirtyTargetBranchFromWorkHandle(handle: WorkHandleState | undefined): string | undefined {
+  const reason = handle?.finalization.lastError ?? handle?.failureReason ?? '';
+  const match = /WORK_TARGET_DIRTY_OWNERSHIP_REQUIRED: target ([^\s]+) has dirty path/.exec(reason);
+  return match?.[1]?.trim() || undefined;
+}
+
+export function ensureControllerDispositionContinuation(
+  controllerHome: string,
+  repoId: string,
+  relay: Pick<ControllerRoundRelayRecord, 'originWorkId' | 'status' | 'handoffId'>,
+): RepositorySchedule | undefined {
+  if (relay.status === 'waiting') {
+    const targetBranch = dirtyTargetBranchFromWorkHandle(readWorkHandle(controllerHome, repoId, relay.originWorkId));
+    if (!targetBranch) return undefined;
+    return eventDrivenContinuationSchedule(controllerHome, repoId, {
+      workId: relay.originWorkId,
+      eventName: repositoryCleanContinuationEventName(targetBranch),
+      reason: `target ${targetBranch} is clean after WORK_TARGET_DIRTY_OWNERSHIP_REQUIRED`,
+    });
+  }
+  if (relay.status === 'waiting_for_user' && relay.handoffId) {
+    return eventDrivenContinuationSchedule(controllerHome, repoId, {
+      workId: relay.originWorkId,
+      eventName: handoffResolvedContinuationEventName(relay.handoffId),
+      reason: `handoff ${relay.handoffId} was resolved`,
+    });
+  }
+  return undefined;
 }
 
 export async function resolveHandoffAndTriggerContinuation(

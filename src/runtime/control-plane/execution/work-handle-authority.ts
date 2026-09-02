@@ -2,8 +2,8 @@ import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
-import { getWorkContract, updateWorkContract } from '../facade/work-contract-store';
-import { controllerSessionPrincipalId, getControllerSession } from '../facade/controller-session-store';
+import { getWorkContract, updateWorkContract } from '../../../../packages/kernel/work/api/index';
+import { controllerSessionPrincipalId, getControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { isTerminalWorkContractStatus } from '../facade/types';
 import { currentPermissionSnapshotVersion } from './validation';
 import { readWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
@@ -20,12 +20,7 @@ function resolveRepositoryWorkHandlePlacement(input: {
   worktreeRef?: string;
 }) {
   const registeredRepository = getRepository(input.repositoryId, input.controllerHome, { includeRemoved: true });
-  const executionRepository = resolveRepositorySelection({
-    repoId: registeredRepository.repoId,
-    checkoutId: input.checkoutId,
-    controllerHome: input.controllerHome,
-    allowSoleRepository: false,
-  });
+  const executionRepository = resolveRepositorySelection({ repoId: registeredRepository.repoId, checkoutId: input.checkoutId, controllerHome: input.controllerHome, allowSoleRepository: false });
   const checkout = selectRepositoryCheckout(executionRepository, input.checkoutId, { allowArchived: true });
   const registeredCheckout = registeredRepository.checkouts.find((entry) => entry.checkoutId === input.checkoutId);
   if (!registeredCheckout) throw new Error(`WORK_CHECKOUT_NOT_REGISTERED: ${input.checkoutId}`);
@@ -70,6 +65,10 @@ export function ensureRepositoryWorkHandle(input: {
     worktreeRef: contract.worktreeRef,
   });
   const { registeredRepository, checkout, status, branch, managedWorktree } = placement;
+  const sourceCheckoutId = registeredRepository.activeCheckoutId;
+  const sourceCheckout = selectRepositoryCheckout(registeredRepository, sourceCheckoutId, { allowArchived: true });
+  const sourceStatus = repositoryGitStatus(sourceCheckout);
+  if (!sourceStatus.branch) throw new Error(`WORK_DELIVERY_TARGET_DETACHED: source checkout ${sourceCheckoutId} has no branch`);
   const at = new Date().toISOString();
   return writeWorkHandle(input.controllerHome, {
     schemaVersion: 1,
@@ -80,7 +79,8 @@ export function ensureRepositoryWorkHandle(input: {
     checkoutId: contract.checkoutId,
     worktreePath: checkout.canonicalRoot,
     branch,
-    sourceCheckoutId: registeredRepository.activeCheckoutId,
+    sourceCheckoutId,
+    deliveryTargetBranch: sourceStatus.branch,
     managedWorktree,
     workContractId: contract.workId,
     baseCommit: contract.baseRevision ?? status.head ?? undefined,
@@ -101,13 +101,7 @@ export function ensureRepositoryWorkHandle(input: {
   });
 }
 
-/**
- * Upgrades only a legacy false-negative managed-worktree classification after
- * current durable authorities independently prove the exact same placement.
- * The repair never downgrades a managed handle and never infers ownership from
- * a path alone: WorkContract, Registry, live checkout, branch, and handle path
- * must all agree before the compare-and-swap write.
- */
+/** Upgrade only a legacy false-negative managed-worktree classification after all durable placement authorities agree. */
 export function reconcileRepositoryWorkHandlePlacement(input: {
   controllerHome: string;
   repositoryId: string;
@@ -117,31 +111,13 @@ export function reconcileRepositoryWorkHandlePlacement(input: {
   if (!existing || existing.managedWorktree) return existing;
   const contract = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repositoryId }, input.workId);
   if (!contract || contract.workKind !== 'repository_change' || contract.mode !== 'goal_workloop' || !contract.checkoutId) return existing;
-  if (contract.checkoutId !== existing.checkoutId) {
-    throw new Error(`WORK_HANDLE_PLACEMENT_CHECKOUT_MISMATCH: ${input.workId}`);
-  }
-  const placement = resolveRepositoryWorkHandlePlacement({
-    controllerHome: input.controllerHome,
-    repositoryId: input.repositoryId,
-    checkoutId: contract.checkoutId,
-    worktreeRef: contract.worktreeRef,
-  });
+  if (contract.checkoutId !== existing.checkoutId) throw new Error(`WORK_HANDLE_PLACEMENT_CHECKOUT_MISMATCH: ${input.workId}`);
+  const placement = resolveRepositoryWorkHandlePlacement({ controllerHome: input.controllerHome, repositoryId: input.repositoryId, checkoutId: contract.checkoutId, worktreeRef: contract.worktreeRef });
   if (!placement.managedWorktree) return existing;
-  if (placement.registeredCheckout.lifecycle !== 'active') {
-    throw new Error(`WORK_HANDLE_PLACEMENT_CHECKOUT_NOT_ACTIVE: ${input.workId}`);
-  }
-  if (resolve(existing.worktreePath) !== resolve(placement.checkout.canonicalRoot)) {
-    throw new Error(`WORK_HANDLE_PLACEMENT_PATH_MISMATCH: ${input.workId}`);
-  }
-  if (existing.branch !== placement.branch
-    || (placement.registeredCheckout.branch && placement.registeredCheckout.branch !== placement.branch)) {
-    throw new Error(`WORK_HANDLE_PLACEMENT_BRANCH_MISMATCH: ${input.workId}`);
-  }
-  return writeWorkHandle(input.controllerHome, {
-    ...existing,
-    sourceCheckoutId: placement.registeredRepository.activeCheckoutId,
-    managedWorktree: true,
-  });
+  if (placement.registeredCheckout.lifecycle !== 'active') throw new Error(`WORK_HANDLE_PLACEMENT_CHECKOUT_NOT_ACTIVE: ${input.workId}`);
+  if (resolve(existing.worktreePath) !== resolve(placement.checkout.canonicalRoot)) throw new Error(`WORK_HANDLE_PLACEMENT_PATH_MISMATCH: ${input.workId}`);
+  if (existing.branch !== placement.branch || (placement.registeredCheckout.branch && placement.registeredCheckout.branch !== placement.branch)) throw new Error(`WORK_HANDLE_PLACEMENT_BRANCH_MISMATCH: ${input.workId}`);
+  return writeWorkHandle(input.controllerHome, { ...existing, sourceCheckoutId: placement.registeredRepository.activeCheckoutId, managedWorktree: true });
 }
 
 /**

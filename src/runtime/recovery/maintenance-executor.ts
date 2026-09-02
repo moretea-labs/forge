@@ -7,13 +7,13 @@ import { cleanupEditSession, getEditSession, listEditSessions, reconcileEditSess
 import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../cli/repositories/runtime-storage';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
-import { getWorkContract, readWorkContractStore, transitionWorkContractPhase } from '../control-plane/facade/work-contract-store';
-import { getControllerSession, withControllerSessionTerminalizationFence } from '../control-plane/facade/controller-session-store';
+import { getWorkContract, readWorkContractStore, transitionWorkContractPhase } from '../../../packages/kernel/work/api/index';
+import { getControllerSession, withControllerSessionTerminalizationFence } from '../../../packages/kernel/controller/api/index';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { listControlPlaneRecords, type ControlPlaneRecord } from '../control-plane/persistence/sqlite-store';
 import { isTerminalWorkContractStatus, type WorkContract } from '../control-plane/facade/types';
-import { listSchedules } from '../workflow/schedules/store';
+import { listSchedules } from '../../../packages/kernel/scheduler/api/index';
 import {
   collectRuntimeProcesses,
   removeRuntimeTempEntry,

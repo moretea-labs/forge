@@ -1,6 +1,6 @@
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { createForgeMcpServerFromContext, createMcpToolContext } from '../../cli/mcp/server';
-import { controllerExposureSnapshot } from '../../cli/mcp/toolset';
+import { createForgeMcpServerFromContext, createMcpToolContext } from '../../../adapters/mcp/server';
+import { controllerExposureSnapshot } from '../../../adapters/mcp/toolset';
 import type { RuntimeControllerServices } from './controller-services';
 
 export interface RuntimeGatewayServerOptions {

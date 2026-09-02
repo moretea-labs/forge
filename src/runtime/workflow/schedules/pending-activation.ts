@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { resolveControllerHome } from '../../../cli/repositories/controller-home';
-import { getSchedule, saveSchedule } from './store';
+import { getSchedule, saveSchedule } from '../../../../packages/kernel/scheduler/api/index';
 
 const EXTERNAL_CONTROLLER_WAKE_OPERATION = 'external_controller_wake';
 

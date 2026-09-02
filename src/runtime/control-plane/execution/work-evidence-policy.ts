@@ -133,7 +133,11 @@ export function evaluateWorkCompletionEvidence(
   const durableResultEvidence = availableDurableEvidenceIds.size > 0
     || applicableCheckRefs.some((record) => isAuthoritativeCurrentWorkVerification(work, record, currentRevision))
     || cleanReadOnlyReviewEvidence;
-  const requiresSemanticAcceptance = work.workKind === 'local_effect' && work.checks.length === 0;
+  const sourceDeltaRequiresImplementationReview = work.workKind === 'local_effect'
+    && (currentWorkspaceChangedPaths?.length ?? 0) > 0;
+  const requiresSemanticAcceptance = work.workKind === 'local_effect'
+    && work.checks.length === 0
+    && !sourceDeltaRequiresImplementationReview;
   const acceptedCriteria = new Set((work.semanticAcceptanceEvidence ?? [])
     .filter((review) => review.evidenceIds.length > 0 && review.evidenceIds.every((evidenceId) => availableDurableEvidenceIds.has(evidenceId)))
     .map((review) => review.criterion));

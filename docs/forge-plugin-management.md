@@ -10,18 +10,34 @@ forge plugin catalog
 
 | Plugin ID | Product | Pinned release | Platforms |
 | --- | --- | --- | --- |
-| `desktop_operator` | [Forge Desktop Operator](https://github.com/moretea-labs/forge-desktop-operator) | `v0.2.3` | macOS |
+| `desktop_operator` | [Forge Desktop Operator](https://github.com/moretea-labs/forge-desktop-operator) | `v0.3.0` | macOS |
 | `design` | [Forge Design](https://github.com/moretea-labs/forge-design) | `v0.3.0` | macOS, Linux, Windows |
 | `personal_knowledge` | [Personal Knowledge Assistant](https://github.com/moretea-labs/personal-knowledge-assistant) | `v0.2.1` | macOS, Linux, Windows |
 
 Investment Decision System remains an independent product and is intentionally not a Forge plugin.
 
-## Install and inspect
+## Product facades and generic provider management
+
+The native macOS provider has a product-level **Computer** facade. This is the preferred user surface:
+
+```bash
+forge computer setup
+forge computer status
+forge computer doctor
+forge computer update
+forge computer uninstall
+# destructive provider-state removal is explicit:
+forge computer uninstall --purge
+```
+
+`Computer` is the Forge product/capability identity. `desktop_operator` remains the implementation/provider identity used for trusted registration, release diagnostics, the stable macOS app bundle, LaunchAgent, socket, and TCC permissions. Its provider release is independent from the Forge Runtime release. `status` is a bounded projection of registration and recorded health; `doctor` refreshes provider health before reporting platform, registration, pinned-release, and readiness checks. Setup/update use the same pinned official catalog transaction as generic plugin installation. Uninstall invokes the provider-owned native uninstaller before Forge removes registration/package state, and fails closed rather than orphaning a native service when that lifecycle cannot be proven.
+
+Generic provider administration remains available for diagnostics and non-Computer providers:
 
 ```bash
 forge plugin install design
 forge plugin install personal_knowledge
-forge plugin install desktop_operator   # macOS
+forge plugin install desktop_operator   # compatibility/advanced path on macOS
 forge plugin list --refresh
 ```
 

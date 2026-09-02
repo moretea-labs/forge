@@ -1,15 +1,15 @@
 import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
-import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
+import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
-import { appendWorkEvidence, getWorkContract, updateWorkContract } from '../facade/work-contract-store';
+import { appendWorkEvidence, getWorkContract, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { admitPreparedRepositoryWorkContract } from '../facade/repository-work-admission';
 import { isTerminalWorkContractStatus, type WorkReconciliationRecord } from '../facade/types';
-import { claimControllerSession, getControllerSession, resumeControllerSession } from '../facade/controller-session-store';
+import { claimControllerSession, getControllerSession, resumeControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { updateExecutionSession, type ExecutionSessionContext } from './session-store';
 import { currentPermissionSnapshotVersion, validateWorkHandle } from './validation';
 import { assertExecutionIdentity, executionIdentityFromCoordinates } from './execution-identity';
@@ -25,7 +25,7 @@ function requireExplicitRepoId(args: Record<string, unknown>): string {
   return value;
 }
 
-function selectedRepository(ctx: MultiRepositoryMcpToolContext, session: ExecutionSessionContext, args: Record<string, unknown>, allowSession = true) {
+function selectedRepository(ctx: McpExecutionContext, session: ExecutionSessionContext, args: Record<string, unknown>, allowSession = true) {
   const requested = typeof args.repo_id === 'string' && args.repo_id.trim() ? args.repo_id.trim() : undefined;
   const selectedRepoId = requested ?? (allowSession ? session.activeRepositoryId : undefined);
   if (!selectedRepoId) throw new Error('SESSION_REPOSITORY_REQUIRED: bind a repository before using this work tool');
@@ -75,7 +75,7 @@ function workPrepareFingerprint(input: {
 }
 
 function claimPreparedWorkOwnership(
-  ctx: MultiRepositoryMcpToolContext,
+  ctx: McpExecutionContext,
   session: ExecutionSessionContext,
   handle: WorkHandleState,
   args: Record<string, unknown>,
@@ -96,7 +96,7 @@ function claimPreparedWorkOwnership(
 }
 
 function claimHeadAdoptionOwnership(
-  ctx: MultiRepositoryMcpToolContext,
+  ctx: McpExecutionContext,
   session: ExecutionSessionContext,
   handle: WorkHandleState,
   args: Record<string, unknown>,
@@ -133,7 +133,7 @@ function claimHeadAdoptionOwnership(
 }
 
 function adoptExistingWorkHead(
-  ctx: MultiRepositoryMcpToolContext,
+  ctx: McpExecutionContext,
   session: ExecutionSessionContext,
   repository: RepositoryRecord,
   handle: WorkHandleState,
@@ -289,7 +289,7 @@ function adoptExistingWorkHead(
   };
 }
 
-function invalidateActiveWork(ctx: MultiRepositoryMcpToolContext, session: ExecutionSessionContext, reason: string): void {
+function invalidateActiveWork(ctx: McpExecutionContext, session: ExecutionSessionContext, reason: string): void {
   if (!session.activeRepositoryId || !session.activeWorkId) return;
   const handle = readWorkHandle(ctx.controllerHome, session.activeRepositoryId, session.activeWorkId);
   if (!handle || handle.state === 'cleaned') return;
@@ -298,7 +298,7 @@ function invalidateActiveWork(ctx: MultiRepositoryMcpToolContext, session: Execu
   markWorkHandleFailed(ctx.controllerHome, handle, reason);
 }
 
-export function bindSessionRepository(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Record<string, unknown> {
+export function bindSessionRepository(ctx: McpExecutionContext, args: Record<string, unknown>): Record<string, unknown> {
   const session = requireSession(ctx, args);
   const repository = resolveRepositorySelection({ repoId: requireExplicitRepoId(args), checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome: ctx.controllerHome, allowSoleRepository: false });
   const switching = session.activeRepositoryId !== undefined && (session.activeRepositoryId !== repository.repoId || session.activeCheckoutId !== repository.activeCheckoutId);
@@ -314,7 +314,7 @@ export function bindSessionRepository(ctx: MultiRepositoryMcpToolContext, args: 
   return { session: next, repository: { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, canonicalRoot: repository.canonicalRoot, branch: repository.checkouts.find((entry) => entry.checkoutId === repository.activeCheckoutId)?.branch ?? null }, switched: switching };
 }
 
-export function prepareWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Record<string, unknown> {
+export function prepareWork(ctx: McpExecutionContext, args: Record<string, unknown>): Record<string, unknown> {
   const session = requireSession(ctx, args);
   const repository = selectedRepository(ctx, session, args, true);
   if (!session.activeRepositoryId) {

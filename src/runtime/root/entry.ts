@@ -46,6 +46,7 @@ export async function runCanonicalRuntimeCli(argv = process.argv): Promise<void>
   await runtime.start();
   process.stderr.write(`${JSON.stringify({
     event: 'forge_runtime_started',
+    forgeInstanceId: runtime.forgeInstanceId,
     runtimeInstanceId: runtime.runtimeInstanceId,
     endpoint: runtime.endpoint(),
     readiness: runtime.readiness(),

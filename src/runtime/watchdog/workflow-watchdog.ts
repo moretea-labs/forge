@@ -3,7 +3,7 @@ import { getLocalBridgeJobEventsSnapshot, listLocalBridgeJobSnapshots } from '..
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { listExecutionJobs } from '../execution/jobs/store';
 import { collectRuntimePerformanceDiagnostics, type RuntimePerformanceDiagnostics } from '../diagnostics/performance';
-import { listSchedules } from '../workflow/schedules/store';
+import { listSchedules } from '../../../packages/kernel/scheduler/api/index';
 
 const ACTIVE_AGENT_STATUSES = new Set(['queued', 'starting', 'running']);
 

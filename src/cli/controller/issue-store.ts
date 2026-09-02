@@ -30,7 +30,7 @@ import { completionEvidenceComplete, executionScopesConflict, taskExecutionPolic
 import { resolveCompletionTargetBranch } from './completion-target';
 import { listControllerChecks } from './check-runner';
 import { normalizeCheckIds } from '../../runtime/control-plane/facade/check-normalization';
-import { getWorkContract } from '../../runtime/control-plane/facade/work-contract-store';
+import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import { projectControllerTaskFromWork } from '../../runtime/control-plane/facade/work-task-projection';
 import type { WorkContract } from '../../runtime/control-plane/facade/types';
 import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';

@@ -32,6 +32,16 @@ export interface SelectedPathCommitResult {
   error?: { code: string; message: string };
 }
 
+export interface SelectedPathBeforeCommitGuardInput {
+  repository: RepositoryRecord;
+  requestedPaths: string[];
+  stagedPaths: string[];
+  /** Exact HEAD observed after staging and immediately before the physical commit. */
+  currentHead: string | null;
+}
+
+export type SelectedPathBeforeCommitGuard = (input: SelectedPathBeforeCommitGuardInput) => void;
+
 export interface TransferArtifactPreview {
   path: string;
   exists: boolean;
@@ -249,7 +259,7 @@ export function stageSelectedPaths(
 export function commitSelectedPaths(
   controllerHome: string,
   repository: RepositoryRecord,
-  input: { paths: unknown; message: unknown },
+  input: { paths: unknown; message: unknown; beforeCommitGuard?: SelectedPathBeforeCommitGuard },
 ): SelectedPathCommitResult {
   const paths = normalizeSelectedPaths(repository, input.paths);
   const message = String(input.message ?? '').trim();
@@ -282,6 +292,12 @@ export function commitSelectedPaths(
       error: { code: 'NO_SELECTED_CHANGES', message: 'No staged changes remain for the selected paths.' },
     };
   }
+
+  // The repository layer owns staging and exact staged-path discovery, but it
+  // does not own Work lifecycle/review policy. Callers may inject one typed
+  // fail-closed guard at the last safe boundary before the physical commit.
+  const currentHead = gitText(repository, ['rev-parse', '--verify', 'HEAD']) || null;
+  input.beforeCommitGuard?.({ repository, requestedPaths: paths, stagedPaths: staged, currentHead });
 
   const commit = executeRepositoryGitCommand(controllerHome, repository, {
     args: ['commit', '--only', '-m', message, '--', ...paths],

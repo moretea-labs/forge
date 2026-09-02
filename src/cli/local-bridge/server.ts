@@ -118,10 +118,10 @@ import { applyCompletionDecision, completionDecisionQueues, finishCompletionBack
 import { finishEditSession, finishTaskRun } from "../controller/completion-orchestrator";
 import { prepareCodexContinuation } from "../controller/codex-continuation";
 import { applyStuckStateMigration, inspectStuckControllerStates } from "../controller/stuck-state-migration";
-import { getMcpPolicy } from "../mcp/policy";
-import type { MultiRepositoryMcpToolContext } from "../mcp/multi-repository";
-import { createMcpToolContext as createControllerMcpToolContext } from "../mcp/server";
-import { loadMcpLocalConfig, loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from "../mcp/auth";
+import { getMcpPolicy } from "../../../adapters/mcp/policy";
+import type { MultiRepositoryMcpToolContext } from "../../../adapters/mcp/multi-repository";
+import { createMcpToolContext as createControllerMcpToolContext } from "../../../adapters/mcp/server";
+import { loadMcpLocalConfig, loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from "../../../adapters/mcp/auth";
 import { loadRepositoryRegistry, registerRepository, removeRepository, resolveRepositorySelection } from "../repositories/registry";
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../repositories/controller-home";
 import { ensureRepositoryRuntimeStorage } from "../repositories/runtime-storage";
@@ -138,7 +138,7 @@ import {
   verifyMobileIntentRequest,
 } from "./mobile-intents";
 import { buildMobileMonitorSnapshot } from "./mobile-monitor";
-import { controllerExposureSnapshot } from "../mcp/toolset";
+import { controllerExposureSnapshot } from "../../../adapters/mcp/toolset";
 import { completeGoogleOAuthLogin } from "../../runtime/safe-tooling/google-oauth-broker";
 import { completeResendOAuthLogin } from "../../runtime/safe-tooling/resend-oauth";
 import { summarizePluginForLowInterception } from "../../runtime/safe-tooling";

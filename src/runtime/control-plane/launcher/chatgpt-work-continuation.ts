@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { runBridgeProvider, isWslWindowsRuntime } from '../../../cli/chatgpt-browser/bridge-provider';
 import { buildBrowserPluginManifest, executeBrowserPluginAction } from '../../plugins/browser-adapter';
 import { controllerPluginRepository } from '../../plugins/store';
-import { getWorkContract } from '../facade/work-contract-store';
+import { getWorkContract } from '../../../../packages/kernel/work/api/index';
 import {
   bindChatgptWorkConversation,
   getChatgptWorkConversationBinding,
@@ -10,7 +10,7 @@ import {
   parseChatgptConversationIdentity,
   rebindChatgptWorkConversation,
   type ChatgptWorkConversationBinding,
-} from './chatgpt-work-binding-store';
+} from '../../../../adapters/chatgpt/work-conversation-binding-store';
 
 const LEGACY_CONTROLLER_CHATGPT_SESSION_ID = 'forge-chatgpt-supercontroller';
 export const DEFAULT_CHATGPT_AUTOMATION_MODEL = 'gpt-5.6';

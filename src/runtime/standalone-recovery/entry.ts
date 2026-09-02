@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { basename, join, resolve } from 'path';
 import { pathToFileURL } from 'url';
-import { readMcpServiceOAuthPassphrase } from '../../cli/mcp/auth';
+import { readMcpServiceOAuthPassphrase } from '../../../adapters/mcp/auth';
 import { FORGE_VERSION } from '../../version';
 import {
   activateRuntimeRelease,

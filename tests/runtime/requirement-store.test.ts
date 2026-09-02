@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { backupControlPlaneDatabase, restoreControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { completeRequirementFromWork, createRequirement, readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { createWorkContract, listWorkContracts, recordWorkCompletionReceipt, supersedeWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, supersedeWorkContract, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { buildRequirementBoard } from '../../src/runtime/control-plane/facade/requirement-board';
 
@@ -77,6 +78,16 @@ test('keeps superseded Work as durable history while removing it from the curren
     supersededBy: 'work-lineage-other',
     reason: 'conflicting replacement',
   })).toThrow('WORK_SUPERSESSION_CONFLICT');
+  supersedeWorkContract(options, {
+    workId: 'work-lineage-new',
+    supersededBy: 'work-lineage-other',
+    reason: 'new successor verified',
+  });
+  expect(() => supersedeWorkContract(options, {
+    workId: 'work-lineage-other',
+    supersededBy: 'work-lineage-old',
+    reason: 'must reject transitive cycle',
+  })).toThrow('WORK_SUPERSESSION_CYCLE');
 });
 
 test('rejects reopening a completed Requirement without an explicit replacement state', () => {
@@ -184,6 +195,31 @@ test('requires a Work-owned receipt before completing an active Requirement', ()
     requestedBy: 'chatgpt',
     workKind: 'completed_no_change',
     status: 'running',
+  });
+  transitionWorkContractPhase({ controllerHome: home, repoId: 'repo-req' }, work.workId, {
+    phase: 'verification',
+    status: 'running',
+    state: 'satisfied',
+    summary: 'No checks are required for the no-change fixture.',
+  });
+  requestWorkImplementationReview({ controllerHome: home, repoId: 'repo-req' }, work.workId, 'Review the no-change completion fixture.');
+  recordWorkImplementationReview({ controllerHome: home, repoId: 'repo-req' }, work.workId, {
+    schemaVersion: 1,
+    reviewId: 'REV-req-work-completion',
+    workId: work.workId,
+    reviewerPrincipalId: 'test-reviewer',
+    decision: 'approved',
+    rationale: 'The exact no-change candidate is reviewed before delivery.',
+    findings: [],
+    sourceRevision: 'abc123',
+    workspaceFingerprint: 'workspace-req-work-completion',
+    verificationWorkspaceFingerprint: 'verification-req-work-completion',
+    changedPaths: [],
+    changedPathDigest: implementationReviewChangedPathDigest([]),
+    acceptanceCriteriaSummary: 'Requirement receipt projection fixture reviewed.',
+    verificationEvidence: [],
+    architectureEvidence: [],
+    recordedAt: '2026-08-02T00:00:00.000Z',
   });
   const receipt = {
     schemaVersion: 1 as const,

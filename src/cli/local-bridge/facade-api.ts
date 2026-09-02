@@ -9,9 +9,9 @@ import {
 import {
   persistControllerAccessMode,
   resolveControllerAccessState,
-} from '../mcp/access-mode';
+} from '../../../adapters/mcp/access-mode';
 import { listControllerChecks } from '../controller/check-runner';
-import { createMcpToolContext, type MultiRepositoryMcpToolContext } from '../mcp/multi-repository';
+import { createMcpToolContext, type MultiRepositoryMcpToolContext } from '../../../adapters/mcp/multi-repository';
 import { readSchedulerHealthSnapshot } from '../../runtime/control-plane/global-scheduler/scheduler';
 import { observeRuntimeStatus } from '../../runtime/root/status';
 import { readForgeRuntimeStatus } from '../../runtime/control-plane/runtime-status-client';
@@ -52,13 +52,13 @@ import { resolveHandoffAndTriggerContinuation } from '../../runtime/workflow/sch
 import { buildRuntimeMaintenanceStatus } from '../../runtime/recovery';
 import { applySafePatch } from '../repositories/safe-patch';
 import { withControllerLock } from '../repositories/locks';
-import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from '../mcp/auth';
+import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from '../../../adapters/mcp/auth';
 import {
   buildLocalConnectorStatusForRepo,
   EXPECTED_FACADE_TOOLS,
   type ConnectorFreshnessReport,
 } from './connector-freshness';
-import { controllerExposedToolNames } from '../mcp/toolset';
+import { controllerExposedToolNames } from '../../../adapters/mcp/toolset';
 import {
   statusLabelForPhase,
   type UserFacingErrorClass,
@@ -91,7 +91,7 @@ import type {
   VerificationViewModel,
   WorkSummaryViewModel,
 } from './console-view-models';
-import { listActiveOccurrences, listSchedules } from '../../runtime/workflow/schedules/store';
+import { listActiveOccurrences, listSchedules } from '../../../packages/kernel/scheduler/api/index';
 import { executeWorkVerification } from '../../runtime/control-plane/execution/work-verification-service';
 
 export type ConsoleFacadeContext = {

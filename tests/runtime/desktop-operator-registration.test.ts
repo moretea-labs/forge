@@ -8,11 +8,12 @@ import { join } from 'path';
 
 describe('Desktop Operator trusted external registration', () => {
   test('Forge owns the complete provider action policy', () => {
-    const input = createDesktopOperatorRegistrationInput({ socketPath: '/tmp/forge-desktop-operator.sock' });
+    const input = createDesktopOperatorRegistrationInput({ socketPath: '/tmp/forge-desktop-operator.sock', pluginVersion: '0.2.3' });
     expect(input.pluginId).toBe('desktop_operator');
     expect(input.providerPluginId).toBe('desktop_operator');
     expect(input.displayName).toBe('Forge Desktop Operator');
-    expect(input.pluginVersion).toBe('0.2.1');
+    expect(input.pluginVersion).toBe('0.2.3');
+    expect(input.transport).toMatchObject({ kind: 'unix_socket_jsonl', maxResponseBytes: 4 * 1_048_576 });
     expect(input.capabilities.map((capability) => capability.capabilityId)).toEqual([
       'desktop.status',
       'desktop.permissions',
@@ -22,7 +23,15 @@ describe('Desktop Operator trusted external registration', () => {
       'desktop.capture',
       'desktop.clipboard',
       'desktop.batch',
+      'computer.observe.v1',
+      'computer.input.v1',
+      'computer.capture.v1',
+      'computer.browser_automation.v1',
     ]);
+    expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.observe.v1')?.actions).toEqual(['desktop_observe']);
+    expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.input.v1')?.actions).toEqual(['desktop_press', 'desktop_type_text', 'desktop_key']);
+    expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.capture.v1')?.actions).toEqual(['desktop_screenshot']);
+    expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.browser_automation.v1')?.actions).toEqual([]);
     expect(input.capabilities.find((capability) => capability.capabilityId === 'desktop.interact')?.actions).toEqual([
       'desktop_press',
       'desktop_type_text',
@@ -128,6 +137,7 @@ describe('Desktop Operator trusted external registration', () => {
       socketPath: '/tmp/forge-desktop-operator.sock',
       launchAgentLabel: 'com.moretea.desktop-operator',
       expectedProgramContains: 'forge-desktop-operator',
+      pluginVersion: '0.2.3',
     });
     expect(input.lifecycle).toEqual({
       kind: 'verified_user_launch_agent',
@@ -141,7 +151,7 @@ describe('Desktop Operator trusted external registration', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-desktop-registration-'));
     const installed = installExternalPluginRegistration(
       controllerHome,
-      createDesktopOperatorRegistrationInput({ socketPath: '/tmp/forge-desktop-operator.sock' }),
+      createDesktopOperatorRegistrationInput({ socketPath: '/tmp/forge-desktop-operator.sock', pluginVersion: '0.2.3' }),
     );
     expect(installed.revision).toBe(1);
     expect(installed.registrationFingerprint).toHaveLength(64);

@@ -339,11 +339,15 @@ describe('handoff and facade contracts', () => {
         ],
       },
       {
-        pluginId: 'desktop_operator',
-        displayName: 'Forge Desktop Operator',
+        pluginId: 'native_computer',
+        displayName: 'Native Computer Provider',
+        capabilities: [
+          { capabilityId: 'computer.observe.v1', title: 'Computer observe', description: 'Observe native UI.', scopes: [], actions: ['observe_ui'] },
+          { capabilityId: 'computer.input.v1', title: 'Computer input', description: 'Interact with native UI.', scopes: [], actions: ['press_ui'] },
+        ],
         actions: [
-          { actionId: 'desktop_session_open', title: 'Open desktop session', description: 'Open an exact foreground desktop session.', readOnly: false, risk: 'workspace_write' },
-          { actionId: 'desktop_observe', title: 'Observe desktop', description: 'Read current visual state.', readOnly: true, risk: 'readonly' },
+          { actionId: 'observe_ui', title: 'Observe native UI', description: 'Read current visual state.', readOnly: true, risk: 'readonly' },
+          { actionId: 'press_ui', title: 'Press native UI', description: 'Perform bounded native input.', readOnly: false, risk: 'workspace_write' },
         ],
       },
     ] as unknown as Parameters<typeof searchCapabilityDescriptors>[1];
@@ -354,15 +358,17 @@ describe('handoff and facade contracts', () => {
       'platform.ios',
       'plugin.app_store_connect.auth_status',
       'plugin.app_store_connect.configure',
-      'plugin.desktop_operator.desktop_session_open',
+      'plugin.native_computer.observe_ui',
+      'plugin.native_computer.press_ui',
     ]));
+    expect(apple.find((entry) => entry.capabilityId === 'plugin.native_computer.observe_ui')?.descriptor.semanticCapabilities).toContain('computer.observe.v1');
     expect(apple.every((entry) => entry.descriptor.exposedVia === 'plugin_action_execute' || entry.descriptor.exposedVia.startsWith('rh_'))).toBe(true);
 
     const browser = searchCapabilityDescriptors('browser login authentication', manifests, 12);
     const browserIds = browser.map((entry) => entry.capabilityId);
     expect(browserIds).toContain('plugin.browser');
-    expect(browserIds).toContain('plugin.desktop_operator.desktop_session_open');
-    expect(browser.find((entry) => entry.capabilityId === 'plugin.desktop_operator.desktop_session_open')?.descriptor.exposedVia).toBe('plugin_action_execute');
+    expect(browserIds).toContain('plugin.native_computer.observe_ui');
+    expect(browser.find((entry) => entry.capabilityId === 'plugin.native_computer.observe_ui')?.descriptor.exposedVia).toBe('plugin_action_execute');
   });
 
   test('policy gate preserves bounded direct edit and blocks raw secret access', () => {

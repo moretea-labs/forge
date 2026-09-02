@@ -1,11 +1,11 @@
 import { spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { loadMcpServiceLocalConfig } from '../mcp/auth';
+import { loadMcpServiceLocalConfig } from '../../../adapters/mcp/auth';
 import { resolveControllerHome } from '../repositories/controller-home';
 import { observeRuntimeStatus } from '../../runtime/root/status';
 import { dirname, join, resolve } from 'path';
-import { openAiSecureTunnelStatusArgs, parseOpenAiSecureTunnelRuntimeStatus, tunnelRuntimeProfileTargetsEndpoint } from '../mcp/openai-secure-tunnel';
+import { openAiSecureTunnelStatusArgs, parseOpenAiSecureTunnelRuntimeStatus, tunnelRuntimeProfileTargetsEndpoint } from '../../../adapters/mcp/tunnels/openai-secure-tunnel';
 
 export type SetupControllerKind = 'chatgpt' | 'codex' | 'claude' | 'mcp';
 export type SetupTunnelProvider = 'auto' | 'openai' | 'cloudflare' | 'tailscale' | 'existing' | 'none';

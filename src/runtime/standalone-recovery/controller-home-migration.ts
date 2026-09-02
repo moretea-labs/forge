@@ -44,7 +44,7 @@ import {
   loadMcpServiceLocalConfig,
   writeMcpServiceLocalConfig,
   type McpLocalConfig,
-} from '../../cli/mcp/auth';
+} from '../../../adapters/mcp/auth';
 import {
   installSystemdUserUnit,
   systemdUserAvailable,

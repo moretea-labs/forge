@@ -1,0 +1,22 @@
+/** Stable Scheduler lifecycle façade. Persistence remains internal to the Scheduler module. */
+export {
+  applyScheduleDedupe,
+  buildScheduleDedupeReport,
+  createSchedule,
+  deleteSchedule,
+  getOccurrence,
+  getSchedule,
+  getScheduleDecision,
+  listActiveOccurrences,
+  listOccurrences,
+  listSchedules,
+  recordScheduleOccurrenceHandoff,
+  saveOccurrence,
+  saveSchedule,
+  saveScheduleDecision,
+  updateSchedule,
+  type ScheduleDedupeApplyResult,
+  type ScheduleDedupeReport,
+  type ScheduleDuplicateGroup,
+  type ScheduleDuplicateMember,
+} from '../infrastructure/schedule-store';

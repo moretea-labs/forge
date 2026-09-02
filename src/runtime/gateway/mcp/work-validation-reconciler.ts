@@ -1,1 +1,2 @@
-export * from '../../control-plane/execution/work-validation-reconciler';
+/** @deprecated Kernel V2 compatibility shim. MCP gateway mapping authority lives in adapters/mcp. */
+export * from '../../../../adapters/mcp/runtime-gateway/work-validation-reconciler';

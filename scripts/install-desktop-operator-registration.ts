@@ -13,13 +13,15 @@ function argument(name: string): string | undefined {
 }
 
 function usage(): never {
-  throw new Error('Usage: bun scripts/install-desktop-operator-registration.ts --controller-home <path> [--socket <absolute-path>] [--launch-agent-label <label>] [--expected-program-contains <identity>] [--version 0.2.1] [--protocol 1.0] [--expected-revision N] [--disabled]');
+  throw new Error('Usage: bun scripts/install-desktop-operator-registration.ts --controller-home <path> --version <provider-version> [--socket <absolute-path>] [--launch-agent-label <label>] [--expected-program-contains <identity>] [--protocol 1.0] [--expected-revision N] [--disabled]');
 }
 
 const controllerHome = argument('--controller-home') ?? process.env.FORGE_CONTROLLER_HOME?.trim();
 if (!controllerHome) usage();
 const userHome = homedir();
 const socketPath = argument('--socket') ?? join(userHome, 'Library', 'Caches', 'Forge', 'desktop-operator.sock');
+const pluginVersion = argument('--version');
+if (!pluginVersion) usage();
 const launchAgentLabel = argument('--launch-agent-label') ?? 'com.moretea.forge.desktop-operator';
 const expectedProgramContains = argument('--expected-program-contains')
   ?? join(userHome, 'Applications', 'Forge Desktop Operator.app', 'Contents', 'MacOS', 'desktop-operator');
@@ -35,7 +37,7 @@ const registration = installExternalPluginRegistration(
     socketPath,
     launchAgentLabel,
     expectedProgramContains,
-    pluginVersion: argument('--version') ?? '0.2.1',
+    pluginVersion,
     protocolVersion: argument('--protocol') ?? '1.0',
     enabled: !process.argv.includes('--disabled'),
   }),

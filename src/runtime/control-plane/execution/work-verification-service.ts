@@ -1,4 +1,4 @@
-import { readLatestControllerCheckEvidence } from '../../../cli/controller/check-runner';
+import { controllerCheckExecutionIdentity, listControllerChecks, readLatestControllerCheckEvidence } from '../../../cli/controller/check-runner';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import {
@@ -13,10 +13,11 @@ import { classifyPersistedCheckTerminalEvidence } from '../../execution/process-
 import { buildFacadeResult } from '../facade/facade-result';
 import { classifyVerificationOutcome, normalizeCheckIds } from '../facade/check-normalization';
 import { verifyGoalWorkloop } from '../facade/goal-workloop';
-import type { FacadeResult, WorkContract } from '../facade/types';
+import type { FacadeResult, VerificationRecord, WorkContract } from '../facade/types';
 import { executionIdentityForRepository } from './execution-identity';
-import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from './verification-evidence';
+import { commandFingerprint, effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint } from './verification-evidence';
 import { resolveWorkVerificationContext } from './work-verification-context';
+import { appendVerificationRecord } from '../../../../packages/kernel/work/api/index';
 
 export interface ExecuteWorkVerificationInput {
   controllerHome: string;
@@ -43,6 +44,101 @@ export interface ExecuteWorkVerificationResult {
 
 function result(facade: FacadeResult, isError = false): ExecuteWorkVerificationResult {
   return { facade, isError };
+}
+
+export interface ContentEquivalentWorkVerificationTransferResult {
+  transferredRecords: VerificationRecord[];
+  reusableCheckIds: string[];
+  invalidatedCheckIds: string[];
+}
+
+/**
+ * Canonical verification-authority transfer across a Forge-owned commit that
+ * changes Git representation only. Both managed Work finalization and Direct
+ * Edit commit completion must use this helper instead of manufacturing a second
+ * verification/review authority.
+ */
+export function transferWorkVerificationAcrossContentEquivalentCommit(input: {
+  controllerHome: string;
+  repository: RepositoryRecord;
+  workId: string;
+  preCommitSourceRevision: string;
+  preCommitWorkspaceFingerprint: string;
+  postCommitSourceRevision: string;
+  postCommitWorkspaceFingerprint: string;
+  recordedAt?: string;
+}): ContentEquivalentWorkVerificationTransferResult {
+  const resolved = resolveWorkVerificationContext({
+    controllerHome: input.controllerHome,
+    repository: input.repository,
+    workId: input.workId,
+  });
+  if (!resolved.ok || !resolved.context.workContract) {
+    throw new Error(`WORK_VERIFICATION_TRANSFER_CONTEXT_REQUIRED: ${input.workId}`);
+  }
+  const { store, workContract, repository, checks } = resolved.context;
+  if (workContract.completionReceipt) throw new Error(`WORK_VERIFICATION_TRANSFER_WORK_TERMINAL: ${input.workId}`);
+  const requestedChecks = workContract.checks;
+  const checkById = new Map(listControllerChecks(repository.canonicalRoot).map((check) => [check.id, check] as const));
+  const transferredRecords: VerificationRecord[] = [];
+  const reusableCheckIds: string[] = [];
+  const invalidatedCheckIds: string[] = [];
+  const recordedAt = input.recordedAt ?? new Date().toISOString();
+
+  for (const checkId of requestedChecks) {
+    const check = checkById.get(checkId) ?? checks.find((entry) => entry.id === checkId);
+    const sourcePass = effectiveVerificationEvidence(workContract.checkRefs, {
+      sourceRevision: input.preCommitSourceRevision,
+      workspaceFingerprint: input.preCommitWorkspaceFingerprint,
+      checkId,
+      requestedChecks,
+    }).find((entry) => entry.current && entry.record.outcome === 'valid_pass' && Boolean(entry.record.receipt))?.record;
+    if (!check || !sourcePass?.receipt || check.effects?.git !== undefined) {
+      invalidatedCheckIds.push(checkId);
+      continue;
+    }
+    let currentExecutionIdentity;
+    try {
+      currentExecutionIdentity = controllerCheckExecutionIdentity(repository.canonicalRoot, checkId);
+    } catch {
+      invalidatedCheckIds.push(checkId);
+      continue;
+    }
+    const receipt = sourcePass.receipt;
+    const definitionUnchanged = Boolean(receipt.checkDefinitionDigest)
+      && receipt.checkDefinitionDigest === currentExecutionIdentity.definitionDigest;
+    const contentInputsUnchanged = Boolean(receipt.checkRevision)
+      && receipt.checkRevision === currentExecutionIdentity.revision;
+    const environmentUnchanged = Boolean(receipt.checkEnvironmentFingerprint)
+      && receipt.checkEnvironmentFingerprint === currentExecutionIdentity.environmentFingerprint;
+    if (!definitionUnchanged || !contentInputsUnchanged || !environmentUnchanged) {
+      invalidatedCheckIds.push(checkId);
+      continue;
+    }
+    const transferred: VerificationRecord = {
+      ...sourcePass,
+      summary: `Verification authority transferred across a content-equivalent Forge commit for ${checkId}.`,
+      recordedAt,
+      sourceRevision: input.postCommitSourceRevision,
+      workspaceFingerprint: input.postCommitWorkspaceFingerprint,
+      verificationInputFingerprint: verificationInputFingerprint({
+        sourceRevision: input.postCommitSourceRevision,
+        workspaceFingerprint: input.postCommitWorkspaceFingerprint,
+        checkId,
+        requestedChecks,
+      }),
+      evidenceRef: {
+        title: checkId,
+        summary: 'Reused the exact persisted Process receipt after proving check definition, content inputs, environment, and non-Git read semantics are unchanged across the commit.',
+        detailLevel: 'summary',
+      },
+    };
+    appendVerificationRecord(store, input.workId, transferred);
+    transferredRecords.push(transferred);
+    reusableCheckIds.push(checkId);
+  }
+
+  return { transferredRecords, reusableCheckIds, invalidatedCheckIds };
 }
 
 /**

@@ -1,4 +1,4 @@
-import type { RepositorySchedule } from './types';
+import type { RepositorySchedule } from '../../../../packages/kernel/scheduler/api/index';
 
 export const CHATGPT_AUTOMATION_EXECUTION_PROFILE = 'chatgpt_browser_v1';
 export const CHATGPT_AUTOMATION_DEFAULT_MODEL = 'gpt-5.6';

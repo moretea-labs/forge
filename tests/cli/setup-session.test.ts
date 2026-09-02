@@ -104,7 +104,7 @@ describe('Forge setup session', () => {
       const controllerHome = join(root, 'controller');
       runMcpSetupChatgpt({ controllerHome, userLevel: true, instanceId: 'Forge-WSL' });
       const localConfig = JSON.parse(require('fs').readFileSync(join(controllerHome, 'mcp', 'mcp.local.json'), 'utf8'));
-      expect(localConfig.chatgpt.instanceId).toBe('forge-wsl');
+      expect(localConfig.identity.forgeInstanceId).toBe('forge-wsl');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

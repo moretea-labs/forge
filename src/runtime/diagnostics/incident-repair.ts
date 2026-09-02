@@ -6,7 +6,7 @@ import { listRepositories, selectRepositoryCheckout } from '../../cli/repositori
 import { withControllerLock } from '../../cli/repositories/locks';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
-import { appendWorkEvidence, getWorkContract, listWorkContracts } from '../control-plane/facade/work-contract-store';
+import { appendWorkEvidence, getWorkContract, listWorkContracts } from '../../../packages/kernel/work/api/index';
 import { routeWorkStart } from '../control-plane/facade/goal-workloop';
 import { createWorkContinuationSchedule } from '../workflow/schedules/work-continuation';
 import { touchSchedulerWakeSignal } from '../control-plane/global-scheduler/wake-signal';

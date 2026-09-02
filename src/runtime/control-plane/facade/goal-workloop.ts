@@ -4,7 +4,7 @@ import {
   listHandoffItems,
   type HandoffInboxStoreOptions,
 } from './handoff-inbox-store';
-import { getControllerSession } from './controller-session-store';
+import { getControllerSession } from '../../../../packages/kernel/controller/api/index';
 import {
   appendVerificationRecord,
   appendWorkEvidence,
@@ -13,11 +13,13 @@ import {
   getWorkContract,
   listWorkContracts,
   recordWorkScopeEvidence,
+  recordWorkImplementationReview,
+  requestWorkImplementationReview,
   summarizeWorkContract,
   transitionWorkContractPhase,
   updateWorkContract,
   type WorkContractStoreOptions,
-} from './work-contract-store';
+} from '../../../../packages/kernel/work/api/index';
 import {
   claimPlanStepForWork,
   completePlanStepForWork,
@@ -35,6 +37,17 @@ import {
   type CheckDefinitionLike,
 } from './check-normalization';
 import { evaluatePolicyGate } from './policy-gate';
+import {
+  assertImplementationReviewPreDeliveryBoundary,
+  authoritativeImplementationReviewVerificationEvidence,
+  implementationReviewChangedPathDigest,
+  normalizeImplementationReviewChangedPaths,
+  workRequiresImplementationReview,
+  type ImplementationReviewDecision,
+  type ImplementationReviewCandidateIdentity,
+  type WorkImplementationReviewFinding,
+  type WorkImplementationReviewRecord,
+} from '../../../../packages/kernel/work/api/index';
 import { buildFacadeResult } from './facade-result';
 import { validateSuggestedNextActions } from './suggested-actions';
 import { buildWorkContinuationSnapshot } from './work-continuation';
@@ -54,7 +67,7 @@ import type {
 import { selectExecutionMode } from './types';
 import { resolveWorkspaceAdmissionConstraint } from '../routing/workspace-admission';
 
-export type GoalWorkloopOperation = 'start' | 'continue' | 'verify' | 'finalize' | 'stop';
+export type GoalWorkloopOperation = 'start' | 'continue' | 'verify' | 'review' | 'finalize' | 'stop';
 
 export interface GoalWorkloopContext {
   workStore: WorkContractStoreOptions;
@@ -69,6 +82,8 @@ export interface GoalWorkloopContext {
   principalId?: string;
   controllerInstanceId?: string;
   workspaceFingerprint?: string;
+  /** Stage-insensitive Git-canonical identity of the exact current review candidate. Derived by the trusted repository adapter. */
+  implementationReviewWorkspaceFingerprint?: string;
   /** Current net repository paths changed from the Work base plus dirty checkout paths. */
   workspaceChangedPaths?: readonly string[];
   /** Durable terminal repository Process ids explicitly bound to this Work + checkout. */
@@ -153,6 +168,13 @@ export interface GoalWorkloopVerifyInput {
   skipped?: boolean;
 }
 
+export interface GoalWorkloopReviewInput {
+  workId: string;
+  decision: ImplementationReviewDecision;
+  rationale: string;
+  findings?: WorkImplementationReviewFinding[];
+}
+
 export interface GoalWorkloopFinalizeInput {
   workId: string;
   forceFailed?: boolean;
@@ -167,6 +189,57 @@ export interface GoalWorkloopStopInput {
 
 function nowIso(ctx: GoalWorkloopContext): string {
   return ctx.now?.() ?? new Date().toISOString();
+}
+
+function currentImplementationReviewCandidate(
+  ctx: GoalWorkloopContext,
+  work: WorkContract,
+): ImplementationReviewCandidateIdentity {
+  const sourceRevision = ctx.sourceRevision?.trim() ?? '';
+  const verificationWorkspaceFingerprint = ctx.workspaceFingerprint?.trim() ?? '';
+  const workspaceFingerprint = ctx.implementationReviewWorkspaceFingerprint?.trim() ?? '';
+  const changedPaths = normalizeImplementationReviewChangedPaths(
+    ctx.workspaceChangedPaths ?? work.scopeEvidence?.actualChangedPaths ?? [],
+  );
+  if (!sourceRevision || !verificationWorkspaceFingerprint || !workspaceFingerprint) {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_SOURCE_IDENTITY_REQUIRED');
+  }
+  const verification = authoritativeImplementationReviewVerificationEvidence({
+    repoId: work.repoId,
+    workId: work.workId,
+    requiredCheckIds: work.checks,
+    records: work.checkRefs,
+    sourceRevision,
+    workspaceFingerprint: verificationWorkspaceFingerprint,
+  });
+  if (verification.missingCheckIds.length > 0) {
+    throw new Error(`WORK_IMPLEMENTATION_REVIEW_VERIFICATION_REQUIRED: ${verification.missingCheckIds.join(', ')}`);
+  }
+  return {
+    sourceRevision,
+    workspaceFingerprint,
+    verificationWorkspaceFingerprint,
+    changedPaths,
+    verificationEvidence: verification.evidence,
+    architectureEvidence: [],
+  };
+}
+
+function implementationReviewAcceptanceSummary(work: WorkContract): string {
+  const summary = work.acceptanceCriteria.map((criterion) => criterion.trim()).filter(Boolean).join(' | ');
+  return (summary || 'No explicit acceptance criteria; reviewer assessed the Work objective and exact current implementation evidence.').slice(0, 2_000);
+}
+
+function implementationReviewSuggestedAction(workId: string): SuggestedNextAction {
+  return {
+    label: 'Review implementation',
+    tool: 'rh_work',
+    operation: 'review',
+    payload: { work_id: workId },
+    risk: 'workspace_write',
+    confidence: 'high',
+    reason: 'Verification is complete; an explicit Controller implementation decision is required before delivery.',
+  };
 }
 
 function workIdFor(objective: string): string {
@@ -1546,38 +1619,35 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
     });
   }
 
-  const suggested = validateSuggestedNextActions([
-    {
-      label: 'Finalize work',
-      tool: 'rh_work',
-      operation: 'finalize',
-      payload: { work_id: work.workId },
-      risk: 'readonly',
-      confidence: 'high',
-    },
-  ]).actions;
+  const changedPaths = normalizeImplementationReviewChangedPaths(ctx.workspaceChangedPaths ?? work.scopeEvidence?.actualChangedPaths ?? []);
+  if (workRequiresImplementationReview(work.workKind, changedPaths)) {
+    recordWorkScopeEvidence(ctx.workStore, work.workId, { actualChangedPaths: changedPaths });
+    transitionWorkContractPhase(ctx.workStore, work.workId, {
+      status: 'running',
+      phase: 'verification',
+      state: 'satisfied',
+      summary: 'Exact Work completion evidence proves the current candidate is verified and eligible for implementation review.',
+      evidenceRefs: work.evidenceRefs,
+    });
+    requestWorkImplementationReview(ctx.workStore, work.workId, 'Implementation and verification evidence are complete; explicit Controller implementation review is required before delivery.');
+    const suggested = validateSuggestedNextActions([implementationReviewSuggestedAction(work.workId)]).actions;
+    const updated = updateWorkContract(ctx.workStore, work.workId, { suggestedNextActions: suggested });
+    return buildFacadeResult({
+      status: 'ok',
+      summary: 'Continue: implementation and verification evidence are complete; explicit implementation review is next.',
+      data: { work: summarizeWorkContract(updated), backgroundCompleted: false, nextStep: 'review' },
+      suggestedNextActions: suggested,
+    });
+  }
+  const suggested = validateSuggestedNextActions([{
+    label: 'Finalize work', tool: 'rh_work', operation: 'finalize', payload: { work_id: work.workId }, risk: 'readonly', confidence: 'high',
+  }]).actions;
   transitionWorkContractPhase(ctx.workStore, work.workId, {
-    status: 'running',
-    phase: 'delivery',
-    state: 'active',
-    summary: work.workKind === 'read_only_review'
-      ? 'Read-only review evidence is source-bound and clean; semantic no-change finalization is next.'
-      : 'Implementation and verification evidence are sufficient; exact delivery and cleanup receipt is next.',
-    evidenceRefs: work.evidenceRefs,
+    status: 'running', phase: 'delivery', state: 'active',
+    summary: 'Source-free Work evidence is complete; implementation review is not required and semantic finalization is next.', evidenceRefs: work.evidenceRefs,
   });
-  const updated = updateWorkContract(ctx.workStore, work.workId, {
-    suggestedNextActions: suggested,
-  });
-  return buildFacadeResult({
-    status: 'ok',
-    summary: `Continue: checks satisfied or none required; ready to finalize after ChatGPT review.`,
-    data: {
-      work: summarizeWorkContract(updated),
-      backgroundCompleted: false,
-      nextStep: 'finalize',
-    },
-    suggestedNextActions: suggested,
-  });
+  const updated = updateWorkContract(ctx.workStore, work.workId, { suggestedNextActions: suggested });
+  return buildFacadeResult({ status: 'ok', summary: 'Continue: evidence is complete; ready to finalize.', data: { work: summarizeWorkContract(updated), backgroundCompleted: false, nextStep: 'finalize' }, suggestedNextActions: suggested });
 }
 
 export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopVerifyInput): FacadeResult {
@@ -1684,17 +1754,32 @@ export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
   const completionEvidence = classified.outcome === 'valid_pass'
     ? evaluateWorkCompletionEvidence(updated, sourceRevision, input.workspaceFingerprint)
     : undefined;
-  const validPassReadyToFinalize = completionEvidence?.status === 'complete';
+  const validPassReadyForNextBoundary = completionEvidence?.status === 'complete';
+  const reviewRequiredAfterPass = validPassReadyForNextBoundary
+    && workRequiresImplementationReview(updated.workKind, normalizeImplementationReviewChangedPaths(ctx.workspaceChangedPaths ?? updated.scopeEvidence?.actualChangedPaths ?? []));
+  if (reviewRequiredAfterPass) {
+    recordWorkScopeEvidence(ctx.workStore, updated.workId, { actualChangedPaths: [...(ctx.workspaceChangedPaths ?? [])] });
+    transitionWorkContractPhase(ctx.workStore, updated.workId, {
+      status: 'running',
+      phase: 'verification',
+      state: 'satisfied',
+      summary: 'All required exact Work verification receipts are current; implementation review admission is now allowed.',
+      evidenceRefs: updated.evidenceRefs,
+    });
+    requestWorkImplementationReview(ctx.workStore, updated.workId, 'Verification is complete; explicit Controller implementation review is required before delivery.');
+  }
   const suggested = validateSuggestedNextActions(
     classified.outcome === 'valid_pass'
-      ? [{
-          label: validPassReadyToFinalize ? 'Finalize work' : 'Continue workloop',
-          tool: 'rh_work',
-          operation: validPassReadyToFinalize ? 'finalize' : 'continue',
-          payload: { work_id: work.workId },
-          risk: 'readonly',
-          confidence: 'high',
-        }]
+      ? [reviewRequiredAfterPass
+          ? implementationReviewSuggestedAction(work.workId)
+          : {
+              label: validPassReadyForNextBoundary ? 'Finalize work' : 'Continue workloop',
+              tool: 'rh_work',
+              operation: validPassReadyForNextBoundary ? 'finalize' : 'continue',
+              payload: { work_id: work.workId },
+              risk: 'readonly',
+              confidence: 'high',
+            }]
       : classified.outcome === 'valid_fail'
         ? [{
             label: 'Continue for review handoff',
@@ -1730,13 +1815,77 @@ export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
       },
       backgroundCompleted: false,
       ...(classified.outcome === 'valid_pass'
-        ? { nextStep: validPassReadyToFinalize ? 'finalize' : 'continue' }
+        ? { nextStep: reviewRequiredAfterPass ? 'review' : validPassReadyForNextBoundary ? 'finalize' : 'continue' }
         : {}),
     },
     warnings: classified.warnings,
     evidenceRefs: record.evidenceRef ? [record.evidenceRef] : [],
     suggestedNextActions: suggested,
   });
+}
+
+export function reviewGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopReviewInput): FacadeResult {
+  let work = getWorkContract(ctx.workStore, input.workId);
+  if (!work) return buildFacadeResult({ status: 'not_found', summary: `WorkContract ${input.workId} not found.`, data: { workId: input.workId } });
+  if (work.status === 'completed' || work.status === 'cancelled' || work.status === 'failed') {
+    return buildFacadeResult({ status: 'blocked', summary: `WorkContract ${work.workId} is terminal (${work.status}); implementation review was not recorded.`, data: { work: summarizeWorkContract(work) } });
+  }
+  const reviewerPrincipalId = ctx.principalId?.trim() ?? '';
+  if (!reviewerPrincipalId) {
+    return buildFacadeResult({ status: 'blocked', summary: 'WORK_IMPLEMENTATION_REVIEW_REVIEWER_REQUIRED: authenticated reviewer principal is required.', data: { work: summarizeWorkContract(work) } });
+  }
+  if (!input.rationale?.trim()) {
+    return buildFacadeResult({ status: 'blocked', summary: 'WORK_IMPLEMENTATION_REVIEW_RATIONALE_REQUIRED: explicit review rationale is required.', data: { work: summarizeWorkContract(work) } });
+  }
+  try {
+    const candidate = currentImplementationReviewCandidate(ctx, work);
+    recordWorkScopeEvidence(ctx.workStore, work.workId, { actualChangedPaths: [...candidate.changedPaths] });
+    work = getWorkContract(ctx.workStore, work.workId) ?? work;
+    if (work.phase !== 'review') {
+      throw new Error('WORK_IMPLEMENTATION_REVIEW_PHASE_REQUIRED: verify or continue the exact candidate into review before recording a decision.');
+    }
+    const at = nowIso(ctx);
+    const review: WorkImplementationReviewRecord = {
+      schemaVersion: 1,
+      reviewId: `impl-review-${randomUUID().slice(0, 12)}`,
+      workId: work.workId,
+      reviewerPrincipalId,
+      decision: input.decision,
+      rationale: input.rationale.trim().slice(0, 4_000),
+      findings: (input.findings ?? []).slice(0, 100).map((finding) => ({
+        severity: finding.severity,
+        category: finding.category.trim().slice(0, 160),
+        summary: finding.summary.trim().slice(0, 1_000),
+        ...(finding.path?.trim() ? { path: finding.path.trim() } : {}),
+        ...(finding.symbol?.trim() ? { symbol: finding.symbol.trim().slice(0, 240) } : {}),
+      })),
+      sourceRevision: candidate.sourceRevision,
+      workspaceFingerprint: candidate.workspaceFingerprint,
+      verificationWorkspaceFingerprint: candidate.verificationWorkspaceFingerprint,
+      changedPaths: [...candidate.changedPaths],
+      changedPathDigest: implementationReviewChangedPathDigest(candidate.changedPaths),
+      acceptanceCriteriaSummary: implementationReviewAcceptanceSummary(work),
+      verificationEvidence: [...candidate.verificationEvidence],
+      architectureEvidence: [...(candidate.architectureEvidence ?? [])],
+      recordedAt: at,
+    };
+    const updated = recordWorkImplementationReview(ctx.workStore, work.workId, review);
+    const suggested = validateSuggestedNextActions(input.decision === 'approved'
+      ? [{ label: 'Finalize reviewed work', tool: 'rh_work', operation: 'finalize', payload: { work_id: work.workId }, risk: 'workspace_write', confidence: 'high' }]
+      : input.decision === 'changes_required'
+        ? [{ label: 'Continue implementation repairs', tool: 'rh_work', operation: 'continue', payload: { work_id: work.workId }, risk: 'workspace_write', confidence: 'high' }]
+        : [{ label: 'Inspect blocked review evidence', tool: 'rh_context', operation: 'get', payload: { work_id: work.workId }, risk: 'readonly', confidence: 'high' }]).actions;
+    const persisted = updateWorkContract(ctx.workStore, work.workId, { suggestedNextActions: suggested });
+    return buildFacadeResult({
+      status: input.decision === 'blocked' ? 'blocked' : 'ok',
+      summary: `Implementation review ${review.reviewId}: ${input.decision}.`,
+      data: { work: summarizeWorkContract(persisted), review, nextStep: input.decision === 'approved' ? 'finalize' : input.decision === 'changes_required' ? 'continue' : 'blocked' },
+      suggestedNextActions: suggested,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return buildFacadeResult({ status: 'blocked', summary: message, data: { work: summarizeWorkContract(work) }, suggestedNextActions: suggestedForWork(work) });
+  }
 }
 
 export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopFinalizeInput): FacadeResult {
@@ -1778,6 +1927,65 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
       evidenceRefs: work.evidenceRefs.slice(0, 5),
       suggestedNextActions: [{ label: 'Read controller status', tool: 'rh_status', operation: 'get', risk: 'readonly' }],
     });
+  }
+
+  const currentChangedPaths = normalizeImplementationReviewChangedPaths(ctx.workspaceChangedPaths ?? work.scopeEvidence?.actualChangedPaths ?? []);
+  if (workRequiresImplementationReview(work.workKind, currentChangedPaths)) {
+    try {
+      const candidate = currentImplementationReviewCandidate(ctx, work);
+      assertImplementationReviewPreDeliveryBoundary({
+        repoId: work.repoId,
+        workId: work.workId,
+        workKind: work.workKind,
+        reviews: work.implementationReviews,
+        candidate,
+        requiredCheckIds: work.checks,
+        verificationRecords: work.checkRefs,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const reviewDecisionBlocked = /WORK_IMPLEMENTATION_REVIEW_(REQUIRED|STALE|CHANGES_REQUIRED|BLOCKED)/.test(message);
+      if (reviewDecisionBlocked) {
+        transitionWorkContractPhase(ctx.workStore, work.workId, {
+          status: 'running',
+          phase: 'verification',
+          state: 'satisfied',
+          summary: `Current exact verification remains authoritative, but implementation review must be renewed before delivery: ${message}`,
+          evidenceRefs: work.evidenceRefs,
+        });
+        requestWorkImplementationReview(ctx.workStore, work.workId, `Pre-delivery implementation review gate requires a renewed Controller decision: ${message}`);
+        const suggested = validateSuggestedNextActions([implementationReviewSuggestedAction(work.workId)]).actions;
+        const updated = updateWorkContract(ctx.workStore, work.workId, { suggestedNextActions: suggested });
+        return buildFacadeResult({
+          status: 'blocked',
+          summary: message,
+          data: { work: summarizeWorkContract(updated), nextStep: 'review' },
+          suggestedNextActions: suggested,
+        });
+      }
+      transitionWorkContractPhase(ctx.workStore, work.workId, {
+        status: 'running',
+        phase: 'verification',
+        state: 'active',
+        summary: `Pre-delivery review could not prove an exact verified candidate: ${message}`,
+        evidenceRefs: work.evidenceRefs,
+      });
+      const suggested = validateSuggestedNextActions([{
+        label: 'Verify exact candidate',
+        tool: 'rh_work',
+        operation: 'verify',
+        payload: { work_id: work.workId, check_id: work.checks[0] },
+        risk: 'workspace_write',
+        confidence: work.checks[0] ? 'high' : 'medium',
+      }], { validCheckIds: work.checks }).actions;
+      const updated = updateWorkContract(ctx.workStore, work.workId, { suggestedNextActions: suggested });
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: message,
+        data: { work: summarizeWorkContract(updated), nextStep: 'verify' },
+        suggestedNextActions: suggested,
+      });
+    }
   }
 
   const completionEvidence = evaluateWorkCompletionEvidence(
@@ -2173,6 +2381,31 @@ export function runGoalWorkloop(
         checkFailed: args.check_failed === true,
         skipped: args.skipped === true,
       });
+    case 'review': {
+      if (args.review_decision !== 'approved' && args.review_decision !== 'changes_required' && args.review_decision !== 'blocked') {
+        return buildFacadeResult({
+          status: 'blocked',
+          summary: 'WORK_IMPLEMENTATION_REVIEW_DECISION_REQUIRED: operation=review requires an explicit approved, changes_required, or blocked decision.',
+          data: { workId: String(args.work_id ?? '') },
+        });
+      }
+      return reviewGoalWorkloop(ctx, {
+        workId: String(args.work_id ?? ''),
+        decision: args.review_decision,
+        rationale: typeof args.review_rationale === 'string' ? args.review_rationale : '',
+        findings: Array.isArray(args.implementation_review_findings)
+          ? args.implementation_review_findings
+              .filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object')
+              .map((value) => ({
+                severity: value.severity === 'critical' || value.severity === 'high' || value.severity === 'medium' || value.severity === 'low' || value.severity === 'info' ? value.severity : 'info',
+                category: typeof value.category === 'string' ? value.category : '',
+                summary: typeof value.summary === 'string' ? value.summary : '',
+                ...(typeof value.path === 'string' ? { path: value.path } : {}),
+                ...(typeof value.symbol === 'string' ? { symbol: value.symbol } : {}),
+              }))
+          : undefined,
+      });
+    }
     case 'finalize':
       return finalizeGoalWorkloop(ctx, {
         workId: String(args.work_id ?? ''),

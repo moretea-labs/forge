@@ -7,7 +7,8 @@ import { getRepository, listRepositories, registerRepository } from "../../src/c
 import { callMcpTool } from "../../src/cli/mcp/tools";
 import { callRepositoryTool, repositoryToolDefinitions } from "../../src/cli/mcp/repository-tools";
 import { repositoryGitCommit, repositoryGitMergeBranch, repositoryGitRebaseOnto } from "../../src/cli/repositories/structured-git";
-import { completionReceiptChangedPaths, inspectDirectTargetDelivery, inspectFailedNonLinearTargetAdvanceRepair, inspectWorkTargetAdvance, planTargetAdvanceValidationAuthority, targetAdvanceLinearMergeCommits, targetAdvanceWorkScopeViolation } from "../../src/runtime/gateway/mcp/execution-tools";
+import { completionReceiptChangedPaths, inspectDirectTargetDelivery, inspectWorkTargetAdvance, planTargetAdvanceValidationAuthority, targetAdvanceLinearMergeCommits, targetAdvanceWorkScopeViolation } from "../../src/runtime/gateway/mcp/execution-tools";
+import { inspectFailedNonLinearTargetAdvanceRepair } from "../../src/runtime/control-plane/execution/work-finalization-service";
 import { commandFingerprint, verificationInputFingerprint } from "../../src/runtime/control-plane/execution/verification-evidence";
 import type { ControllerCheck } from "../../src/cli/controller/check-runner";
 import type { VerificationRecord } from "../../src/runtime/control-plane/facade/types";

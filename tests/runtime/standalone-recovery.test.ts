@@ -743,7 +743,7 @@ test('standalone Recovery uses its client-owned loopback health only when a prim
       return { ok: true, status: 200 };
     },
   });
-  expect(observed).toMatchObject({ ok: true, running: true, healthy: true, ready: true, identityMatches: true, endpointMatches: true, observedTunnelId: tunnelId });
+  expect(observed).toMatchObject({ ok: true, running: true, healthy: true, ready: true, tunnelMatches: true, endpointMatches: true, observedTunnelId: tunnelId });
   expect(requests).toEqual(['http://127.0.0.1:45613/healthz', 'http://127.0.0.1:45613/readyz']);
 });
 

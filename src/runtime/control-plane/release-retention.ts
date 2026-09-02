@@ -55,6 +55,24 @@ function canonical(path: string): string {
   }
 }
 
+/**
+ * Canonicalize a path even when its leaf has already been removed by resolving
+ * the nearest existing ancestor first and then projecting the missing suffix.
+ * This preserves filesystem identity across logical aliases such as macOS
+ * /var -> /private/var without requiring historical artifacts to still exist.
+ */
+function canonicalProjectedPath(path: string): string {
+  let cursor = resolve(path);
+  const missingSuffix: string[] = [];
+  while (!existsSync(cursor)) {
+    const parent = dirname(cursor);
+    if (parent === cursor) return resolve(path);
+    missingSuffix.unshift(basename(cursor));
+    cursor = parent;
+  }
+  return resolve(canonical(cursor), ...missingSuffix);
+}
+
 function directChild(root: string, path: string): boolean {
   return dirname(canonical(path)) === canonical(root);
 }
@@ -142,10 +160,12 @@ function validateRecoveryKnownGoodHistory(controllerHome: string, releasesRoot: 
     if (!releaseId || !manifestPathValue) throw new Error('standalone recovery known-good release identity is incomplete');
     const manifestPath = resolve(manifestPathValue);
     const releaseRoot = dirname(manifestPath);
+    const exactHistoricalManifestPath = resolve(canonical(releasesRoot), releaseId, 'manifest.json');
+    const historicalManifestPath = canonicalProjectedPath(manifestPath);
     if (
       basename(manifestPath) !== 'manifest.json'
       || basename(releaseRoot) !== releaseId
-      || !directChild(releasesRoot, releaseRoot)
+      || historicalManifestPath !== exactHistoricalManifestPath
     ) {
       throw new Error('standalone recovery known-good release is outside runtime releases');
     }

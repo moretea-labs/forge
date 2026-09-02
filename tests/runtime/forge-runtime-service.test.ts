@@ -589,7 +589,7 @@ describe('Forge Runtime service', () => {
     writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
     writeFileSync(join(packageRoot, 'src', 'cli', 'index.ts'), '');
     writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), '');
-    writeMcpServiceLocalConfig(fx.home, { auth: { mode: 'none' }, chatgpt: { instanceId: 'forge-wsl' } });
+    writeMcpServiceLocalConfig(fx.home, { auth: { mode: 'none' }, identity: { forgeInstanceId: 'forge-wsl' }, chatgpt: { } });
     const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'connector-secure-tunnel-auth-test' });
     const launch = packageConnectorLaunchSpec({ release, controllerHome: fx.home, endpoint: 'http://127.0.0.1:8767/mcp' });
     expect(launch.authMode).toBe('none');
@@ -604,7 +604,7 @@ describe('Forge Runtime service', () => {
     writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
     writeFileSync(join(packageRoot, 'src', 'cli', 'index.ts'), '');
     writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), '');
-    writeMcpServiceLocalConfig(fx.home, { chatgpt: { instanceId: 'forge-wsl' } });
+    writeMcpServiceLocalConfig(fx.home, { identity: { forgeInstanceId: 'forge-wsl' }, chatgpt: { } });
     const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'connector-instance-id-test' });
     const launch = packageConnectorLaunchSpec({ release, controllerHome: fx.home, endpoint: 'http://127.0.0.1:8767/mcp' });
     expect(launch.environment.FORGE_MCP_INSTANCE_ID).toBe('forge-wsl');

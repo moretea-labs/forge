@@ -157,6 +157,8 @@ export interface WorkHandleState {
   worktreePath: string;
   branch: string;
   sourceCheckoutId?: string;
+  /** Canonical branch this repository-change Work is authorized to deliver into. Absent only for legacy handles. */
+  deliveryTargetBranch?: string;
   goalId?: string;
   delegationVersion?: number;
   managedWorktree: boolean;
@@ -198,6 +200,24 @@ export function workDeliveryBaseRevision(
   handle: Pick<WorkHandleState, 'baseCommit' | 'deliveryBaseCommit'>,
 ): string | undefined {
   return handle.deliveryBaseCommit?.trim() || handle.baseCommit?.trim() || undefined;
+}
+
+export function resolveWorkDeliveryTargetBranch(
+  handle: Pick<WorkHandleState, 'workId' | 'deliveryTargetBranch'>,
+  repositoryDefaultBranch?: string,
+  explicitTargetBranch?: string,
+): string {
+  const bound = handle.deliveryTargetBranch?.trim();
+  const explicit = explicitTargetBranch?.trim();
+  if (bound) {
+    if (explicit && explicit !== bound) {
+      throw new Error(
+        `WORK_DELIVERY_TARGET_BRANCH_MISMATCH: work ${handle.workId} is bound to ${bound}; omit target_branch or use ${bound}, not ${explicit}`,
+      );
+    }
+    return bound;
+  }
+  return explicit || repositoryDefaultBranch?.trim() || 'main';
 }
 
 function workHandlePath(controllerHome: string, handle: Pick<WorkHandleState, 'repositoryId' | 'workId'>): string {
@@ -375,6 +395,47 @@ export function transitionWorkHandle(
     ...patch,
     state: nextState,
     ...(nextState === 'failed' && !patch.failureReason ? { failureReason: handle.failureReason ?? 'work handle failed' } : {}),
+  });
+}
+
+export interface WorkHandleSuccessorAdoption {
+  candidateHead: string;
+  targetHead: string;
+}
+
+/**
+ * Explicit WorkHandle authority transition for a conflict-repaired managed
+ * candidate. Git lineage/scope/cleanliness must be proven by the finalizer
+ * before this transition is called. Adopting a rewritten candidate never
+ * transfers validation implicitly: the new source identity must obtain exact
+ * verification/review authority before delivery can resume.
+ */
+export function adoptWorkHandleSuccessorCandidate(
+  controllerHome: string,
+  handle: WorkHandleState,
+  adoption: WorkHandleSuccessorAdoption,
+): WorkHandleState {
+  const candidateHead = adoption.candidateHead.trim();
+  const targetHead = adoption.targetHead.trim();
+  if (!handle.managedWorktree) throw new Error('WORK_SUCCESSOR_ADOPTION_MANAGED_CHECKOUT_REQUIRED');
+  if (!candidateHead || !targetHead) throw new Error('WORK_SUCCESSOR_ADOPTION_REVISION_REQUIRED');
+  if (candidateHead === handle.expectedHead) throw new Error('WORK_SUCCESSOR_ADOPTION_NO_CHANGE');
+  return transitionWorkHandle(controllerHome, handle, 'validating', {
+    deliveryBaseCommit: targetHead,
+    expectedHead: candidateHead,
+    failureReason: undefined,
+    finalization: {
+      ...handle.finalization,
+      validation: 'pending',
+      commit: 'done',
+      merge: 'pending',
+      branchCleanup: 'pending',
+      worktreeCleanup: 'pending',
+      lastError: undefined,
+    },
+    validationRun: undefined,
+    validatedInputFingerprint: undefined,
+    cleanupReceipt: undefined,
   });
 }
 

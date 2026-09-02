@@ -25,7 +25,7 @@ import {
 } from './service';
 import { materializePackageRuntimeRelease, type PackageRuntimeRelease } from './package-runtime-release';
 import { readRuntimeReleaseAuthority, revertInitialRuntimeReleasePublication, rollbackRuntimeRelease } from './release-store';
-import { loadMcpServiceLocalConfig } from '../../cli/mcp/auth';
+import { loadMcpServiceLocalConfig } from '../../../adapters/mcp/auth';
 import { ensurePackageConnectorService, type PackageConnectorServiceResult } from './package-connector-service';
 import {
   bootstrapLaunchAgentWithRetryV2,

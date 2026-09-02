@@ -88,6 +88,12 @@ export interface CanonicalRuntimeConfig {
 
 export interface RuntimeStatusSnapshot {
   schemaVersion: 1;
+  /**
+   * Stable installed Forge identity. Legacy/transitional read-only snapshots may
+   * omit it; the canonical Runtime writer uses CanonicalRuntimeStatusSnapshot.
+   */
+  forgeInstanceId?: string;
+  /** Ephemeral Runtime process/fencing identity. */
   runtimeInstanceId: string;
   pid: number;
   releaseId: string;
@@ -98,6 +104,11 @@ export interface RuntimeStatusSnapshot {
   readiness: RuntimeReadiness;
   startedAt: string;
   updatedAt: string;
+}
+
+/** Canonical Runtime publication must always carry the stable Forge identity. */
+export interface CanonicalRuntimeStatusSnapshot extends RuntimeStatusSnapshot {
+  forgeInstanceId: string;
 }
 
 export interface RuntimeStatusObservation {

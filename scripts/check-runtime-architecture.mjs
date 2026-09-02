@@ -44,8 +44,10 @@ function forbidBetween(path, startNeedle, endNeedle, expression, description) {
   if (expression.test(source.slice(start, end))) failures.push(`${path} violates ${description}`);
 }
 function sourceFiles(directory) {
+  const absolute = resolve(root, directory);
+  if (!existsSync(absolute)) return [];
   const files = [];
-  for (const entry of readdirSync(resolve(root, directory), { withFileTypes: true })) {
+  for (const entry of readdirSync(absolute, { withFileTypes: true })) {
     const path = `${directory}/${entry.name}`;
     if (entry.isDirectory()) files.push(...sourceFiles(path));
     else if (entry.isFile() && path.endsWith('.ts')) files.push(path);
@@ -53,18 +55,64 @@ function sourceFiles(directory) {
   return files;
 }
 
-function relativeStaticTypeScriptDependencyGraph(directory = 'src') {
-  let ts;
-  try {
-    ts = createRequire(import.meta.url)('typescript');
-  } catch (error) {
-    failures.push(`TypeScript dependency is required for architecture import-cycle analysis: ${error instanceof Error ? error.message : String(error)}`);
-    return new Map();
-  }
+function productionTypeScriptFiles() {
+  return [
+    ...sourceFiles('src'),
+    ...sourceFiles('packages'),
+    ...sourceFiles('adapters'),
+    ...sourceFiles('apps'),
+    ...sourceFiles('plugins'),
+  ].sort();
+}
 
-  const files = sourceFiles(directory).sort();
-  const known = new Set(files);
-  const graph = new Map(files.map((path) => [path, new Set()]));
+let typeScriptCompiler;
+let typeScriptCompilerLoadAttempted = false;
+function loadTypeScriptCompiler() {
+  if (typeScriptCompilerLoadAttempted) return typeScriptCompiler;
+  typeScriptCompilerLoadAttempted = true;
+  try {
+    typeScriptCompiler = createRequire(import.meta.url)('typescript');
+  } catch (error) {
+    failures.push(`TypeScript dependency is required for architecture import analysis: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return typeScriptCompiler;
+}
+
+function staticTypeScriptImportRecords(files) {
+  const ts = loadTypeScriptCompiler();
+  if (!ts) return [];
+  const records = [];
+  for (const path of [...files].sort()) {
+    const sourceFile = ts.createSourceFile(path, text(path), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    function visit(node) {
+      let specifier;
+      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+          && node.moduleSpecifier
+          && ts.isStringLiteralLike(node.moduleSpecifier)) {
+        specifier = node.moduleSpecifier.text;
+      } else if (ts.isImportEqualsDeclaration(node)
+          && ts.isExternalModuleReference(node.moduleReference)
+          && node.moduleReference.expression
+          && ts.isStringLiteralLike(node.moduleReference.expression)) {
+        specifier = node.moduleReference.expression.text;
+      } else if (ts.isCallExpression(node)
+          && node.expression.kind === ts.SyntaxKind.ImportKeyword
+          && node.arguments.length === 1
+          && ts.isStringLiteralLike(node.arguments[0])) {
+        specifier = node.arguments[0].text;
+      }
+      if (specifier) records.push({ from: path, specifier });
+      ts.forEachChild(node, visit);
+    }
+    visit(sourceFile);
+  }
+  return records;
+}
+
+function staticTypeScriptDependencyGraph(files) {
+  const orderedFiles = [...files].sort();
+  const known = new Set(orderedFiles);
+  const graph = new Map(orderedFiles.map((path) => [path, new Set()]));
 
   function resolveTypeScriptImport(fromPath, specifier) {
     if (!specifier.startsWith('.')) return undefined;
@@ -79,28 +127,58 @@ function relativeStaticTypeScriptDependencyGraph(directory = 'src') {
     return candidates.find((candidate) => known.has(candidate));
   }
 
-  for (const path of files) {
-    const sourceFile = ts.createSourceFile(path, text(path), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-    for (const statement of sourceFile.statements) {
-      let specifier;
-      if ((ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement))
-          && statement.moduleSpecifier
-          && ts.isStringLiteralLike(statement.moduleSpecifier)) {
-        specifier = statement.moduleSpecifier.text;
-      } else if (ts.isImportEqualsDeclaration(statement)
-          && ts.isExternalModuleReference(statement.moduleReference)
-          && statement.moduleReference.expression
-          && ts.isStringLiteralLike(statement.moduleReference.expression)) {
-        specifier = statement.moduleReference.expression.text;
-      }
-      if (!specifier) continue;
-      const target = resolveTypeScriptImport(path, specifier);
-      if (target) graph.get(path).add(target);
-    }
+  for (const { from, specifier } of staticTypeScriptImportRecords(orderedFiles)) {
+    const target = resolveTypeScriptImport(from, specifier);
+    if (target) graph.get(from).add(target);
   }
   return graph;
 }
 
+function relativeStaticTypeScriptDependencyGraph(directory = 'src') {
+  return staticTypeScriptDependencyGraph(sourceFiles(directory));
+}
+
+function productionStaticTypeScriptDependencyGraph() {
+  return staticTypeScriptDependencyGraph(productionTypeScriptFiles());
+}
+
+function dependencyEdges(graph) {
+  const edges = [];
+  for (const [from, targets] of graph) {
+    for (const to of targets) edges.push(`${from} -> ${to}`);
+  }
+  return edges.sort();
+}
+
+function edgeSet(graph, predicate) {
+  return new Set(dependencyEdges(graph).filter((edge) => predicate(edge)));
+}
+
+function edgeParts(edge) {
+  const separator = edge.indexOf(' -> ');
+  return { from: edge.slice(0, separator), to: edge.slice(separator + 4) };
+}
+
+function architectureRoot(path) {
+  if (path.startsWith('packages/kernel/')) return path.split('/').slice(0, 3).join('/');
+  if (path.startsWith('adapters/')) return path.split('/').slice(0, 2).join('/');
+  if (path.startsWith('apps/')) return path.split('/').slice(0, 2).join('/');
+  if (path.startsWith('plugins/')) return path.split('/').slice(0, 2).join('/');
+  if (path.startsWith('src/runtime/root/')) return 'src/runtime/root';
+  return path.startsWith('src/') ? 'src' : path.split('/')[0];
+}
+
+function requireExactShrinkingDebt(label, actual, allowed) {
+  for (const edge of actual) {
+    if (!allowed.has(edge)) failures.push(`${label} introduced forbidden dependency: ${edge}`);
+  }
+  for (const edge of allowed) {
+    if (!actual.has(edge)) failures.push(`${label} allowlist contains retired dependency; remove it so the debt ledger only shrinks: ${edge}`);
+  }
+}
+
+// Kernel V2 B7 graph analysis. Legacy boundary debt below is exact and must only shrink.
+// Inventory is derived from the production graph before the gate is activated.
 function stronglyConnectedComponents(graph) {
   let index = 0;
   const indices = new Map();
@@ -143,7 +221,7 @@ function stronglyConnectedComponents(graph) {
 }
 
 function requireAcyclicProductionTypeScript() {
-  const graph = relativeStaticTypeScriptDependencyGraph('src');
+  const graph = productionStaticTypeScriptDependencyGraph();
   const cyclic = stronglyConnectedComponents(graph).filter((component) =>
     component.length > 1 || (component.length === 1 && graph.get(component[0])?.has(component[0])),
   );
@@ -170,7 +248,7 @@ for (const path of ['README.md', 'docs/ROADMAP.md', 'docs/architecture/CURRENT.m
 }
 
 const required = [
-  'src/runtime/gateway/mcp/router.ts',
+  'adapters/mcp/runtime-gateway/router.ts',
   'src/cli/agent-jobs/executable-resolver.ts',
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
   'src/runtime/control-plane/global-scheduler/config.ts',
@@ -203,6 +281,20 @@ const required = [
   'src/runtime/control-plane/execution/work-handle-authority.ts',
   'src/runtime/control-plane/execution/work-verification-context.ts',
   'src/runtime/control-plane/execution/work-verification-service.ts',
+  'src/runtime/control-plane/execution/implementation-review-content.ts',
+  'packages/kernel/work/domain/implementation-review.ts',
+  'packages/kernel/work/domain/state-machine.ts',
+  'packages/kernel/work/domain/types.ts',
+  'packages/kernel/work/application/work-service.ts',
+  'packages/kernel/work/ports/work-contract-store.ts',
+  'packages/kernel/work/infrastructure/work-contract-store.ts',
+  'packages/kernel/work/api/index.ts',
+  'packages/kernel/controller/domain/types.ts',
+  'packages/kernel/controller/ports/controller-host.ts',
+  'packages/kernel/controller/infrastructure/controller-session-store.ts',
+  'packages/kernel/controller/application/controller-service.ts',
+  'packages/kernel/controller/api/index.ts',
+  'src/runtime/control-plane/facade/work-implementation-review.ts',
   'src/runtime/control-plane/execution/repository-work-attribution.ts',
   'src/runtime/control-plane/execution/work-completion-authority.ts',
   'src/runtime/control-plane/execution/work-evidence-policy.ts',
@@ -213,9 +305,21 @@ const required = [
   'src/runtime/control-plane/facade/work-state-machine.ts',
   'src/runtime/evidence/process-check-execution.ts',
   'src/runtime/context/semantic-navigation-contract.ts',
-  'src/cli/mcp/tool-contract.ts',
+  'packages/protocols/mcp/tool-contract.ts',
+  'packages/protocols/mcp/execution-context.ts',
   'src/cli/github/contracts.ts',
-  'src/runtime/gateway/mcp/runtime-tool-definitions.ts',
+  'adapters/mcp/runtime-gateway/runtime-tool-definitions.ts',
+  'adapters/mcp/server.ts',
+  'adapters/mcp/oauth.ts',
+  'adapters/mcp/multi-repository.ts',
+  'adapters/mcp/toolset.ts',
+  'adapters/mcp/tool-mapping/tools.ts',
+  'adapters/mcp/tool-mapping/legacy-tool-service.ts',
+  'adapters/mcp/tool-mapping/repository-tools.ts',
+  'adapters/mcp/tool-mapping/access-tools.ts',
+  'adapters/mcp/transports/http.ts',
+  'adapters/mcp/transports/stdio.ts',
+  'adapters/mcp/transports/session-registry.ts',
   'docs/architecture/CURRENT.md',
   'src/runtime/resources/leases/store.ts',
   'src/runtime/evidence/event-ledger.ts',
@@ -255,7 +359,7 @@ requireText('src/runtime/control-plane/execution/work-verification-service.ts', 
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'interactiveWaitMs: input.interactiveWaitMs ?? 0');
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'checkContentRevision');
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'observedGitHead');
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'executeWorkVerification({');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'executeWorkVerification({');
 requireText('src/cli/local-bridge/facade-api.ts', 'executeWorkVerification({');
 forbid(
   'src/cli/local-bridge/facade-api.ts',
@@ -263,7 +367,7 @@ forbid(
   'Local Bridge Work verification must use the canonical persisted Work verification service',
 );
 forbid(
-  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /function\s+classifyTerminalCheckEvidence\s*\(/,
   'terminal Check evidence classification belongs to Process Runtime, not the Gateway transport',
 );
@@ -271,6 +375,54 @@ forbid(
   'src/runtime/control-plane/execution/work-verification-service.ts',
   /runControllerCheck\s*\(/,
   'route Work verification through persisted Process Runtime instead of synchronous check execution',
+);
+
+
+// Kernel V2 B1/B2: Work lifecycle/review authority lives in packages/kernel/work.
+// Historical facade modules are compatibility-only re-exports. Gateway/finalizer
+// consume the Kernel API/domain instead of owning a parallel policy/store.
+requireText('packages/kernel/work/domain/implementation-review.ts', 'assertImplementationReviewPreDeliveryBoundary');
+requireText('packages/kernel/work/domain/implementation-review.ts', 'deriveImplementationReviewAcrossCommit');
+requireText('packages/kernel/work/domain/state-machine.ts', 'validateWorkSemanticTransition');
+requireText('packages/kernel/work/application/work-service.ts', 'transitionWorkContractPhase');
+requireText('packages/kernel/work/api/index.ts', "export * from '../application/work-service'");
+requireText('src/runtime/control-plane/execution/implementation-review-content.ts', 'implementationReviewContentFingerprint');
+requireText('src/runtime/control-plane/execution/implementation-review-content.ts', 'implementationReviewIndexFingerprint');
+requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'requestWorkImplementationReview');
+requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'recordWorkImplementationReview');
+requireText('src/runtime/control-plane/facade/work-contract-store.ts', '@deprecated Kernel V2 compatibility shim');
+requireText('src/runtime/control-plane/facade/work-state-machine.ts', '@deprecated Kernel V2 compatibility shim');
+requireText('src/runtime/control-plane/facade/work-implementation-review.ts', '@deprecated Kernel V2 compatibility shim');
+requireText('packages/kernel/work/domain/types.ts', "['implementation', 'verification', 'review', 'delivery', 'cleanup']");
+requireText('src/cli/repositories/selected-path-actions.ts', 'beforeCommitGuard');
+requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'prepareReviewedDirectEditWorkCommit');
+requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'completeReviewedDirectEditWorkAfterCommit');
+requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'transferWorkVerificationAcrossContentEquivalentCommit');
+requireText('src/runtime/control-plane/execution/edit-validation-coordinator.ts', 'workId: session.workId');
+requireText('src/runtime/control-plane/execution/edit-validation-coordinator.ts', 'verificationSnapshot: work ?');
+requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'assertPhysicalImplementationReviewGate');
+requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'assertPhysicalBranchCleanupImplementationReviewGate');
+requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'transferWorkVerificationAcrossContentEquivalentCommit');
+requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', 'review_decision');
+requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', 'implementation_review_findings');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "operation === 'review'");
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'implementationReviewContentFingerprint');
+requireText('adapters/mcp/controller-round-compatibility.ts', "'review'");
+requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', 'readControllerRoundContextSnapshot');
+requireText('adapters/chatgpt/controller-round-host.ts', 'buildChatgptControllerRoundPrompt');
+requireText('adapters/chatgpt/controller-round-settlement-store.ts', 'recordChatgptControllerRoundSettlement');
+forbid('packages/kernel/controller/infrastructure/controller-round-store.ts', /browserSessionId|conversationUrl|recordControllerRoundTabSettlement|buildControllerRoundRelayPrompt|capability_id=/, 'Kernel ControllerRound must remain provider/transport neutral; ChatGPT/MCP rendering and settlement belong to adapters');
+requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', "controllerTypes: ['chatgpt']");
+requireText('src/runtime/control-plane/facade/suggested-actions.ts', "case 'review'");
+forbid(
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
+  /function\s+(?:assert|evaluate|derive)[A-Za-z0-9_]*ImplementationReview/,
+  'Gateway transport must not implement implementation-review policy authority',
+);
+forbid(
+  'src/runtime/control-plane/execution/work-finalization-service.ts',
+  /function\s+deriveImplementationReviewAcrossCommit/,
+  'Finalizer must consume the canonical Kernel Work review derivation instead of owning a second review authority',
 );
 for (const adapter of [
   'src/cli/controller/work-mode.ts',
@@ -293,15 +445,109 @@ forbid(
 );
 requireText('src/runtime/control-plane/facade/goal-workloop.ts', "from '../execution/work-evidence-policy'");
 for (const path of sourceFiles('src/runtime/control-plane')) {
-  if (path === 'src/runtime/control-plane/facade/work-contract-store.ts' || path === 'src/runtime/control-plane/execution/work-completion-authority.ts') continue;
+  if (path === 'src/runtime/control-plane/execution/work-completion-authority.ts') continue;
   forbid(
     path,
     /\brecordWorkCompletionReceipt\s*\(/,
     'route Work completion through the canonical work-completion-authority instead of writing terminal receipts directly',
   );
 }
+// B2 ownership fence: production code may consume only the Kernel Work API/domain,
+// never the retired facade store/state-machine or Kernel persistence implementation.
+for (const path of sourceFiles('src')) {
+  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*(?:work-contract-store|work-state-machine|work-implementation-review)['"]/, 'production source must consume packages/kernel/work instead of retired Work facade authority');
+  forbid(path, /packages\/kernel\/work\/infrastructure\/work-contract-store/, 'production source must consume the Work application/API boundary, not persistence infrastructure');
+}
+forbid(
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
+  /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/,
+  'MCP Gateway must not mutate Work through facade/persistence authority',
+);
+forbid(
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
+  /\b(?:appendWorkEvidence|recordWorkCompletionReceipt)\s*\(/,
+  'MCP Gateway must submit Work application commands instead of writing lifecycle/evidence records directly',
+);
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'completeRemoteEffectWorkFromProcessReceipt');
+requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'packages/kernel/work/api/index');
+requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'packages/kernel/work/api/index');
+// B3 ControllerSession authority and provider-neutral host boundary.
+requireText('packages/kernel/controller/domain/types.ts', 'export interface ControllerBinding');
+requireText('packages/kernel/controller/domain/types.ts', 'export interface ControllerLease');
+requireText('packages/kernel/controller/ports/controller-host.ts', 'export interface ControllerHost');
+requireText('packages/kernel/controller/ports/controller-host.ts', 'resume(binding: ControllerBinding, roundContext: ControllerRoundContext)');
+requireText('packages/kernel/controller/infrastructure/controller-session-store.ts', 'claimControllerSession');
+requireText('packages/kernel/controller/infrastructure/controller-session-store.ts', 'releaseControllerSessionWithAuthority');
+requireText('src/runtime/control-plane/facade/controller-session-store.ts', '@deprecated Kernel V2 compatibility shim');
+forbid('packages/kernel/controller/index.ts', /infrastructure\//, 'Kernel module root must expose only its public API');
+forbid('packages/kernel/controller/application/controller-service.ts', /export\s+\*\s+from\s+['"]\.\.\/infrastructure\//, 'Controller application façade must not wildcard-export infrastructure');
+// B4 Scheduler continuation authority: Schedule owns occurrence state only;
+// continuation resolves exact Work + retained ControllerSession + opaque ControllerBinding
+// and dispatches exclusively through ControllerHost.resume.
+requireText('packages/kernel/scheduler/domain/schedule.ts', 'export interface RepositorySchedule');
+requireText('packages/kernel/scheduler/domain/schedule.ts', 'export interface ScheduleOccurrence');
+requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occurrences.json'");
+requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'saveScheduleDecision');
+requireText('packages/kernel/scheduler/application/schedule-service.ts', 'createSchedule');
+requireText('packages/kernel/scheduler/api/index.ts', "../application/schedule-service");
+forbid('packages/kernel/scheduler/api/index.ts', /\.\.\/infrastructure\//, 'Scheduler public API must expose application/domain surfaces, not infrastructure stores');
+requireText('packages/kernel/scheduler/application/eligibility.ts', 'evaluateScheduleTriggerEligibility');
+requireText('packages/kernel/scheduler/application/eligibility.ts', 'evaluateScheduleOccurrenceAdmission');
+requireText('packages/kernel/scheduler/application/eligibility.ts', 'scheduleTriggerWindowKey');
+requireText('packages/kernel/scheduler/application/settlement.ts', 'applyScheduleFailure');
+requireText('packages/kernel/scheduler/application/settlement.ts', 'applyScheduleRetryableFailure');
+requireText('packages/kernel/scheduler/application/settlement.ts', 'settleScheduledExecution');
+requireText('src/runtime/workflow/schedules/settlement.ts', '@deprecated Kernel V2 compatibility shim');
+requireText('packages/kernel/scheduler/domain/continuation.ts', 'export interface ScheduledContinuationDispatch');
+requireText('packages/kernel/scheduler/application/continuation-service.ts', 'resumeScheduledControllerContinuation');
+requireText('packages/kernel/scheduler/application/continuation-service.ts', 'getRetainedControllerSession');
+requireText('packages/kernel/scheduler/application/continuation-service.ts', 'getControllerSessionBinding');
+requireText('packages/kernel/scheduler/application/continuation-service.ts', 'host.resume(bindingRecord.binding');
+requireText('packages/kernel/scheduler/application/continuation-service.ts', 'SCHEDULE_CONTINUATION_OUTCOME_UNKNOWN');
+requireText('packages/kernel/scheduler/application/continuation-service.ts', 'scheduler_continuation_prepare');
+requireText('packages/kernel/scheduler/application/continuation-service.ts', 'scheduler_continuation_bind_round');
+requireText('src/runtime/root/scheduled-controller-composition.ts', 'controllerHostForScheduledBinding');
+requireMissing('adapters/scheduler/controller-binding.ts');
+requireText('adapters/chatgpt/controller-host.ts', 'createChatgptControllerHost');
+requireText('adapters/controller-process/controller-host.ts', 'createProcessControllerHost');
+requireText('src/runtime/workflow/schedules/engine.ts', 'resumeScheduledControllerContinuation');
+requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleTriggerEligibility');
+requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleOccurrenceAdmission');
+requireText('src/runtime/workflow/schedules/engine.ts', 'controller_session_id');
+requireText('src/runtime/workflow/schedules/engine.ts', 'controller_binding_id');
+requireText('src/runtime/workflow/schedules/store.ts', '@deprecated Kernel V2 compatibility shim');
+requireText('src/runtime/workflow/schedules/store.ts', 'packages/kernel/scheduler/api/index');
+forbid('src/runtime/workflow/schedules/store.ts', /scheduler\/infrastructure\//, 'legacy Schedule shim must route through the Kernel Scheduler public API');
+requireText('src/runtime/workflow/schedules/types.ts', '@deprecated Kernel V2 compatibility shim');
+for (const path of sourceFiles('packages/kernel/scheduler')) {
+  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*adapters\//, 'Kernel Scheduler must not import provider adapters');
+  forbid(path, /\b(?:runWorkChatgptContinuation|launchSuperController|getChatgptWorkConversationBinding)\b|\bbrowser_session_id\b|\bconversation_url\b|\blaunch_args\b/, 'Kernel Scheduler must not own provider transport or provider binding payload fields');
+}
+forbid('src/runtime/workflow/schedules/engine.ts', /\brunWorkChatgptContinuation\b|\blaunchSuperController\b/, 'Schedule execution must dispatch Controller continuation through Kernel Scheduler + ControllerHost, never launch providers directly');
+for (const path of sourceFiles('src')) {
+  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*workflow\/schedules\/(?:store|types|settlement)['"]/, 'production source must consume packages/kernel/scheduler instead of retired Schedule store/types/settlement authority');
+}
+for (const path of sourceFiles('src')) {
+  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*controller-session-store['"]/, 'production source must consume packages/kernel/controller instead of retired ControllerSession facade authority');
+}
+const B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS = new Set([
+  'src/runtime/control-plane/facade/controller-session-store.ts',
+  'src/runtime/control-plane/facade/controller-round-relay.ts',
+  'src/runtime/control-plane/facade/work-contract-store.ts',
+  'src/runtime/control-plane/facade/work-state-machine.ts',
+  'src/runtime/control-plane/facade/work-implementation-review.ts',
+  'src/runtime/control-plane/facade/types.ts',
+  'src/runtime/workflow/schedules/settlement.ts',
+  'src/runtime/workflow/schedules/types.ts',
+]);
+for (const path of sourceFiles('src')) {
+  if (B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS.has(path)) continue;
+  forbid(path, /packages\/kernel\/[^'"/]+\/(?:domain|application|infrastructure)\//, 'active legacy Runtime code must consume Kernel public api/index surfaces; direct internals are compatibility-boundary-only');
+}
+requireText('src/runtime/control-plane/facade/types.ts', 'packages/kernel/work/domain/types');
+requireText('src/runtime/control-plane/facade/types.ts', 'packages/kernel/controller/domain/types');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'completeWorkWithReceipt(');
-requireText('src/runtime/gateway/mcp/execution-tools.ts', 'resetFinalizationStagesForRequest');
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'resetFinalizationStagesForRequest');
 forbid(
   'src/runtime/plugins/browser-handoff-host.ts',
   /browser\/sessions|saveBrowserSession|writeBrowserSession|sessionPath/,
@@ -314,22 +560,22 @@ forbid(
 );
 requireText('src/runtime/plugins/browser-runtime.ts', 'browserActionCanReplayAfterDispatch');
 forbid(
-  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /\b(?:createRequirement|resumeRetainedCancelledWorkContract)\s*\(/,
   'keep Requirement admission and retained-cancelled Work lifecycle authority out of the MCP transport',
 );
 forbid(
-  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /\b(?:updateWorkContract|writeWorkHandle)\s*\(/,
   'keep WorkContract/WorkHandle persistence policy out of the MCP transport',
 );
 forbid(
-  'src/runtime/gateway/mcp/execution-tools.ts',
+  'adapters/mcp/runtime-gateway/execution-tools.ts',
   /\bcreateWorkContract\s*\(/,
   'route compatibility work preparation through canonical Work admission authority',
 );
 forbid(
-  'src/cli/mcp/legacy-tool-service.ts',
+  'adapters/mcp/tool-mapping/legacy-tool-service.ts',
   /\bcreateWorkContract\s*\(/,
   'keep the legacy MCP surface as translation over canonical Work admission authority',
 );
@@ -536,7 +782,7 @@ forbid(
 requireText('scripts/smoke-schedule-engine.ts', 'listHandoffItems');
 requireText('scripts/smoke-schedule-engine.ts', 'listExecutionJobs');
 requireText('scripts/smoke-schedule-engine.ts', "operation: 'runtime_maintenance_apply'");
-const server = text('src/cli/mcp/server.ts');
+const server = text('adapters/mcp/server.ts');
 const runtimeCall = server.indexOf('callRuntimeTool(ctx, name, args)');
 const durableCall = server.indexOf('routeDurableMcpCall(ctx, name, args)');
 const legacyCall = server.indexOf('callMultiRepositoryTool(ctx, name, args)');
@@ -557,16 +803,16 @@ if (executionRegion.includes('forceDurable: true') && executionRegion.includes('
   failures.push('Public MCP Work mutations must not force the retired durable ExecutionJob path');
 }
 forbid(
-  'src/runtime/gateway/mcp/router.ts',
+  'adapters/mcp/runtime-gateway/router.ts',
   /\bcreateExecutionJob\b|\bgetExecutionJob\b/,
   'Gateway Router must not retain dormant ExecutionJob creation or lookup paths',
 );
-requireText('src/runtime/gateway/mcp/router.ts', 'executionJobCreationRetired');
-requireText('src/runtime/gateway/mcp/router.ts', "'EXECUTION_JOB_RETIRED'");
-requireText('src/runtime/gateway/mcp/execution-tools.ts', 'isDurableWorkOperation');
-requireText('src/runtime/gateway/mcp/execution-tools.ts', "'work_execute'");
-requireText('src/runtime/gateway/mcp/execution-tools.ts', "'work_validate'");
-requireText('src/runtime/gateway/mcp/execution-tools.ts', "'work_finalize'");
+requireText('adapters/mcp/runtime-gateway/router.ts', 'executionJobCreationRetired');
+requireText('adapters/mcp/runtime-gateway/router.ts', "'EXECUTION_JOB_RETIRED'");
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'isDurableWorkOperation');
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "'work_execute'");
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "'work_validate'");
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "'work_finalize'");
 requireText('src/runtime/execution/workers/executor.ts', 'executeWork(runtimeContext');
 requireText('src/runtime/execution/workers/executor.ts', 'validateWork(runtimeContext');
 requireText('src/runtime/execution/workers/executor.ts', 'finalizeWork(runtimeContext');
@@ -576,9 +822,9 @@ forbid(
   'Execution Worker must invoke control-plane Work application services directly, never MCP transport',
 );
 requireText('src/runtime/execution/workers/executor.ts', '__from_durable_worker');
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'managedProcessOperationDigest');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'managedProcessOperationDigest');
 forbid(
-  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /\bcreateExecutionJob\b/,
   'Runtime MCP tools must not retain dormant ExecutionJob creation paths',
 );
@@ -593,12 +839,12 @@ forbid(
   'Local Bridge HTTP creation routes must return retirement handoffs without dormant Job submission or dispatch code',
 );
 forbid(
-  'src/cli/mcp/repository-tools.ts',
+  'adapters/mcp/tool-mapping/repository-tools.ts',
   /\bsubmitLocalBridgeJob\b|\bexecuteLocalBridgeJob\b|\bwaitForRepositoryCommandHandoff\b/,
   'Repository command MCP fallback must use Process Runtime or an external-Controller handoff, never Local Bridge Jobs',
 );
 forbid(
-  'src/cli/mcp/legacy-tool-service.ts',
+  'adapters/mcp/tool-mapping/legacy-tool-service.ts',
   /\bsubmitLocalBridgeJob\b|\bexecuteLocalBridgeJob\b|\bacceptTaskJob\b|\bdispatchAcceptedTaskJob\b|\bstartTaskJob\b|\blegacy_agent_run\b/,
   'Legacy MCP compatibility may read or cancel historical Jobs and Runs but must not create or dispatch new ones',
 );
@@ -639,24 +885,24 @@ forbid(
   'Local Bridge HTTP must not call Agent Run create/start/retry write boundaries',
 );
 forbid(
-  'src/cli/mcp/legacy-tool-service.ts',
+  'adapters/mcp/tool-mapping/legacy-tool-service.ts',
   /\bretryAgentJob\b/,
   'Legacy MCP must not call Agent Run retry',
 );
-forbid('src/runtime/gateway/mcp/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
+forbid('adapters/mcp/runtime-gateway/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
 requireMatch(
-  'src/runtime/gateway/mcp/router.ts',
+  'adapters/mcp/runtime-gateway/router.ts',
   /const DIRECT_REPOSITORY_TOOLS = new Set\(\[[\s\S]*?'repository_list'[\s\S]*?'repository_get'[\s\S]*?'repository_workbench'[\s\S]*?\]\);/,
   'declare DIRECT_REPOSITORY_TOOLS with repository_list, repository_get, and repository_workbench',
 );
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', "case 'controller_context'");
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', "case 'local_bridge_status'");
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'readAgentExecutableReadinessSnapshot');
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'connectorExposedTools');
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'currentCallableTools');
-forbid('src/runtime/gateway/mcp/runtime-tools.ts', /inspectAgentExecutableReadiness|resolveAgentExecutable|writeAgentExecutableReadinessSnapshot/, 'Gateway readiness must only read the Daemon-produced Agent executable snapshot');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "case 'controller_context'");
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "case 'local_bridge_status'");
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'readAgentExecutableReadinessSnapshot');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'connectorExposedTools');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'currentCallableTools');
+forbid('adapters/mcp/runtime-gateway/runtime-tools.ts', /inspectAgentExecutableReadiness|resolveAgentExecutable|writeAgentExecutableReadinessSnapshot/, 'Gateway readiness must only read the Daemon-produced Agent executable snapshot');
 forbidBetween(
-  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
   "case 'repository_runtime_snapshot':",
   "case 'runtime_performance_diagnostics':",
   /rebuildRepositoryProjection\s*\(/,
@@ -670,9 +916,9 @@ forbid(
 );
 requireText('src/runtime/projections/controller-context.ts', 'controllerContextProjectionPayloadMatchesSourceIdentity');
 requireText('src/runtime/projections/controller-context.ts', 'sourceIdentityMatches');
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'CONTEXT_PROJECTION_SOURCE_MISMATCH');
-forbid('src/runtime/gateway/mcp/router.ts', /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"]controller_context['"][\s\S]*?\);/, 'controller_context must use a materialized projection or Durable Job, never the legacy Gateway path');
-forbid('src/runtime/gateway/mcp/router.ts', /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"](?:local_bridge_status|get_local_job|get_local_job_output)['"][\s\S]*?\);/, 'Local Bridge observations must use bounded snapshots, never reconciliation in the Gateway');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'CONTEXT_PROJECTION_SOURCE_MISMATCH');
+forbid('adapters/mcp/runtime-gateway/router.ts', /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"]controller_context['"][\s\S]*?\);/, 'controller_context must use a materialized projection or Durable Job, never the legacy Gateway path');
+forbid('adapters/mcp/runtime-gateway/router.ts', /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"](?:local_bridge_status|get_local_job|get_local_job_output)['"][\s\S]*?\);/, 'Local Bridge observations must use bounded snapshots, never reconciliation in the Gateway');
 requireText('src/runtime/execution/jobs/types.ts', 'requestId: string');
 requireText('src/runtime/execution/jobs/types.ts', 'semanticKey: string');
 requireText('src/runtime/execution/jobs/types.ts', 'admissionTimeoutMs: number');
@@ -684,7 +930,7 @@ requireText('src/runtime/control-plane/facade/operation-digest.ts', 'operationId
 requireText('src/runtime/control-plane/facade/operation-digest.ts', 'resultRef');
 requireText('src/runtime/control-plane/facade/operation-digest.ts', 'nextActions');
 requireText('src/runtime/control-plane/facade/operation-digest.ts', 'admissionTimeoutMs');
-forbid('src/runtime/gateway/mcp/router.ts', /Math\.min\(\s*typeof args\.timeout_ms[\s\S]{0,140}?,\s*120_000\s*\)/, 'Agent parent timeout must never silently truncate timeout_ms to 120 seconds');
+forbid('adapters/mcp/runtime-gateway/router.ts', /Math\.min\(\s*typeof args\.timeout_ms[\s\S]{0,140}?,\s*120_000\s*\)/, 'Agent parent timeout must never silently truncate timeout_ms to 120 seconds');
 requireText('src/runtime/execution/jobs/store.ts', "'active.json'");
 requireText('src/runtime/execution/jobs/store.ts', "'recent.json'");
 requireText('src/runtime/execution/jobs/store.ts', "'requests'");
@@ -755,13 +1001,13 @@ forbidBetween(
   /rebuildRepositoryProjection\s*\(/,
   'Projection rebuild must happen outside the Repo Actor mailbox lock',
 );
-requireText('src/runtime/workflow/schedules/store.ts', "'occurrences.json'");
+requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occurrences.json'");
 requireText('src/runtime/projections/git-status-sampler.ts', 'writeRepositoryGitStatusSample');
 requireText('src/runtime/projections/git-status-sampler.ts', 'readRepositoryGitStatusSample');
-requireText('src/cli/mcp/repository-tools.ts', 'readRepositoryGitStatusSample');
-requireText('src/cli/mcp/repository-tools.ts', 'args.refresh === true');
+requireText('adapters/mcp/tool-mapping/repository-tools.ts', 'readRepositoryGitStatusSample');
+requireText('adapters/mcp/tool-mapping/repository-tools.ts', 'args.refresh === true');
 forbidBetween(
-  'src/cli/mcp/repository-tools.ts',
+  'adapters/mcp/tool-mapping/repository-tools.ts',
   "case 'repository_git_status':",
   "case 'repository_git_diff':",
   /repositoryGitStatus\s*\(/,
@@ -770,35 +1016,35 @@ forbidBetween(
 requireText('src/runtime/control-plane/execution/session-store.ts', 'lastValidatedAt: now');
 requireText('src/runtime/control-plane/execution/validation.ts', 'warnings.push');
 requireText('src/runtime/control-plane/execution/work-handle-store.ts', "failed: ['validating', 'editing', 'committed', 'merged', 'cleaned', 'failed_terminal_cleanup']");
-requireText('src/runtime/gateway/mcp/execution-tools.ts', "from '../../control-plane/execution/work-finalization-service'");
-requireText('src/runtime/gateway/mcp/execution-tools.ts', "from '../../control-plane/execution/work-preparation-service'");
-requireText('src/runtime/gateway/mcp/execution-tools.ts', "from '../../control-plane/execution/work-operation-service'");
-requireText('src/runtime/gateway/mcp/execution-tools.ts', 'Compatibility exports: implementation authority lives in control-plane execution.');
-requireText('src/runtime/gateway/mcp/execution-tools.ts', 'resetFinalizationStagesForRequest,');
-requireText('src/runtime/gateway/mcp/execution-tools.ts', 'selectDefaultWorkValidationChecks');
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', "callExecutionTool(ctx, 'work_finalize'");
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "from '../../../src/runtime/control-plane/execution/work-finalization-service'");
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "from '../../../src/runtime/control-plane/execution/work-preparation-service'");
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "from '../../../src/runtime/control-plane/execution/work-operation-service'");
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'Compatibility exports: implementation authority lives in control-plane execution.');
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'resetFinalizationStagesForRequest,');
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'selectDefaultWorkValidationChecks');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "callExecutionTool(ctx, 'work_finalize'");
 forbid(
-  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /repositoryGit(?:Commit|FinishWorkflow|MergeBranch|DeleteBranch|RebaseOnto)\s*\(/,
   'rh_work facade finalization must delegate to the canonical Work finalization application service instead of performing Git delivery itself',
 );
 forbid(
-  'src/runtime/gateway/mcp/execution-tools.ts',
+  'adapters/mcp/runtime-gateway/execution-tools.ts',
   /function\s+finalizeWork\s*\(/,
   'MCP execution transport must delegate Work finalization to the control-plane application service',
 );
 forbid(
-  'src/runtime/gateway/mcp/execution-tools.ts',
+  'adapters/mcp/runtime-gateway/execution-tools.ts',
   /function\s+(?:prepareWork|adoptExistingWorkHead)\s*\(/,
   'MCP execution transport must delegate Work preparation/adoption to the control-plane application service',
 );
 forbid(
-  'src/runtime/gateway/mcp/execution-tools.ts',
+  'adapters/mcp/runtime-gateway/execution-tools.ts',
   /function\s+(?:executeWork|validateWork)\s*\(/,
   'MCP execution transport must delegate Work execute/validate operations to the control-plane application service',
 );
 forbid(
-  'src/runtime/gateway/mcp/execution-tools.ts',
+  'adapters/mcp/runtime-gateway/execution-tools.ts',
   /(?:ensureManagedWorkspace|admitPreparedRepositoryWorkContract)\s*\(/,
   'MCP execution transport must not own managed-workspace or WorkContract preparation admission',
 );
@@ -815,25 +1061,26 @@ forbidBetween(
   /withControllerLock\([\s\S]{0,900}?(?:repositoryGitCommit|repositoryGitFinishWorkflow|runCleanup|repositoryGitDeleteBranch)/,
   'Work finalization must not hold the controller lock while committing, merging, deleting branches, or removing worktrees',
 );
-requireText('src/runtime/workflow/schedules/types.ts', "'repository-event'");
-requireText('src/runtime/workflow/schedules/types.ts', "'dependency-checkpoint'");
-requireText('src/runtime/workflow/schedules/store.ts', 'saveScheduleDecision');
-requireText('src/runtime/workflow/schedules/settlement.ts', 'backoffMinutes');
+requireText('packages/kernel/scheduler/domain/schedule.ts', "'repository-event'");
+requireText('packages/kernel/scheduler/domain/schedule.ts', "'dependency-checkpoint'");
+requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'saveScheduleDecision');
+requireText('packages/kernel/scheduler/application/settlement.ts', 'backoffMinutes');
 requireText('src/runtime/release/release-gate.ts', 'releaseReady');
-requireText('src/cli/mcp/transports/http.ts', "'/ready'");
-requireText('src/cli/mcp/transports/http.ts', "'/repos/:repoId/health'");
+requireText('adapters/mcp/transports/http.ts', "'/ready'");
+requireText('adapters/mcp/transports/http.ts', "'/repos/:repoId/health'");
 requireText('src/runtime/control-plane/governance/external-effects.ts', 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED');
 requireText('src/runtime/control-plane/governance/external-effects.ts', 'AUTOMATED_REQUIREMENT_REQUIRES_CANDIDATE');
-requireText('src/cli/mcp/tools.ts', "export * from './legacy-tool-service'");
+requireText('adapters/mcp/tool-mapping/tools.ts', "export * from './legacy-tool-service'");
+requireText('src/cli/mcp/tools.ts', '@deprecated Kernel V2 compatibility shim');
 
 for (const path of [
-  'src/runtime/gateway/mcp/router.ts',
-  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/router.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
   'src/runtime/control-plane/repo-actor/actor.ts',
   'src/runtime/workflow/schedules/engine.ts',
   'src/runtime/workflow/schedules/work-continuation.ts',
-  'src/cli/mcp/transports/http.ts',
+  'adapters/mcp/transports/http.ts',
 ]) {
   forbid(path, /\b(?:spawnSync|execSync|execFileSync)\s*\(/, 'the non-blocking Gateway/Controller hot-path rule');
 }
@@ -846,7 +1093,337 @@ requireText('docs/architecture/CURRENT.md', '## State ownership');
 requireText('docs/architecture/CURRENT.md', '## Runtime and MCP boundary');
 requireText('docs/architecture/CURRENT.md', '## Testing and verification');
 requireText('plans/README.md', 'not the runtime execution queue');
-if (text('src/cli/mcp/tools.ts').split(/\r?\n/).length > 40) failures.push('src/cli/mcp/tools.ts must remain a thin compatibility facade');
+// Compatibility-facade thinness is enforced by ownership/consumer boundaries, not source line counts.
+const b7ProductionFiles = productionTypeScriptFiles();
+const b7ProductionImports = staticTypeScriptImportRecords(b7ProductionFiles);
+const b7ProductionGraph = staticTypeScriptDependencyGraph(b7ProductionFiles);
+for (const { from, specifier } of b7ProductionImports) {
+  if (from.startsWith('packages/kernel/') && specifier.startsWith('@modelcontextprotocol/')) {
+    failures.push(`Kernel modules must remain independent of MCP SDK transport contracts: ${from} -> ${specifier}`);
+  }
+  if (from.startsWith('packages/kernel/')
+      && ['adapters/mcp', 'src/cli/mcp', 'runtime/gateway/mcp'].some((segment) => specifier.includes(segment))) {
+    failures.push(`Kernel modules must never depend on MCP adapters or retired MCP gateway paths: ${from} -> ${specifier}`);
+  }
+  if (from.startsWith('packages/plugin-runtime/')
+      && ['adapters/', 'src/runtime/'].some((segment) => specifier.includes(segment))) {
+    failures.push(`Plugin Runtime provider dispatch must not depend on concrete adapters or Runtime implementations: ${from} -> ${specifier}`);
+  }
+  if (from.startsWith('adapters/computer/') && specifier.includes('src/runtime/')) {
+    failures.push(`Computer adapters must consume provider-neutral ports and contracts rather than depend on Runtime implementations: ${from} -> ${specifier}`);
+  }
+  if (from.startsWith('packages/plugin-runtime/computer/')
+      && (['controller-home', 'external-registration'].some((segment) => specifier.includes(segment))
+        || ['node:fs', 'fs', 'node:path', 'path'].includes(specifier))) {
+    failures.push(`Computer provider runtime must remain independent of Controller Home and filesystem-backed provider discovery: ${from} -> ${specifier}`);
+  }
+  if (from !== 'src/runtime/plugins/macos-capability-broker.ts' && specifier.includes('macos-capability-broker')) {
+    failures.push(`Deprecated macOS capability broker is compatibility/test-only and must have no production consumers: ${from} -> ${specifier}`);
+  }
+}
+for (const edge of dependencyEdges(b7ProductionGraph)) {
+  const { from, to } = edgeParts(edge);
+  if (from.startsWith('packages/kernel/') && to.startsWith('packages/kernel/')) {
+    const fromModule = architectureRoot(from);
+    const toModule = architectureRoot(to);
+    if (fromModule !== toModule && !to.startsWith(`${toModule}/api/`) && to !== `${toModule}/index.ts`) {
+      failures.push(`Kernel sibling modules must use public API boundaries: ${edge}`);
+    }
+  }
+  if (from.startsWith('adapters/') && to.startsWith('adapters/') && architectureRoot(from) !== architectureRoot(to)) {
+    failures.push(`adapter sibling wiring belongs in a composition root, not another adapter: ${edge}`);
+  }
+  if (from.startsWith('adapters/') && to.startsWith('packages/kernel/')) {
+    const kernelModule = architectureRoot(to);
+    if (!to.startsWith(`${kernelModule}/api/`) && to !== `${kernelModule}/index.ts`) {
+      failures.push(`adapters must consume Kernel public APIs, not internal implementation: ${edge}`);
+    }
+  }
+  if (from.startsWith('packages/kernel/')
+      && (to.startsWith('adapters/mcp/') || to.startsWith('src/cli/mcp/') || to.startsWith('src/runtime/gateway/mcp/'))) {
+    failures.push(`Kernel modules must never depend on MCP adapters or retired MCP gateway paths: ${edge}`);
+  }
+  if (from.startsWith('packages/plugin-runtime/') && (to.startsWith('adapters/') || to.startsWith('src/runtime/'))) {
+    failures.push(`Plugin Runtime provider dispatch must not depend on concrete adapters or Runtime implementations: ${edge}`);
+  }
+  if (from.startsWith('packages/plugin-runtime/computer/')
+      && (to.includes('/controller-home') || to.endsWith('/external-registration.ts'))) {
+    failures.push(`Computer provider runtime must remain independent of Controller Home and provider discovery implementations: ${edge}`);
+  }
+  if (to === 'src/runtime/plugins/macos-capability-broker.ts' && from !== to) {
+    failures.push(`Deprecated macOS capability broker is compatibility/test-only and must have no production consumers: ${edge}`);
+  }
+  if (to === 'adapters/browser/sqlite-session-authority.ts' && from !== to) {
+    failures.push(`Deprecated Browser SQLite session-authority shim is compatibility-only and must have no production consumers: ${edge}`);
+  }
+}
+for (const compositionPath of [
+  'src/runtime/root/scheduled-controller-composition.ts',
+  'src/runtime/root/controller-round-composition.ts',
+]) requireText(compositionPath, 'Kernel V2 composition root');
+
+// Exact legacy edges are frozen below after a read-only graph inventory; new debt is never accepted.
+// The V2 baseline lineage is immutable; this gate must not require rebasing onto unrelated main work.
+const b7KernelLegacyEdges = edgeSet(b7ProductionGraph, (edge) => {
+  const { from, to } = edgeParts(edge);
+  return from.startsWith('packages/kernel/') && to.startsWith('src/');
+});
+const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
+  'packages/kernel/work/domain/types.ts -> src/runtime/evidence/process-check-receipt.ts',
+  'packages/kernel/work/domain/types.ts -> src/cli/controller/types.ts',
+  'packages/kernel/work/domain/types.ts -> src/runtime/control-plane/governance/access-policy.ts',
+  'packages/kernel/work/domain/types.ts -> src/runtime/control-plane/routing/route-policy.ts',
+  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/cli/repositories/controller-home.ts',
+  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/cli/repositories/locks.ts',
+  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/shared/json-files.ts',
+  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
+  'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/control-plane/facade/work-admission-policy.ts',
+  'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/cli/repositories/controller-home.ts',
+  'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/cli/repositories/locks.ts',
+  'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/runtime/control-plane/execution/session-store.ts',
+  'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/runtime/shared/json-files.ts',
+  'packages/kernel/controller/infrastructure/controller-session-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
+  'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/cli/repositories/locks.ts',
+  'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/runtime/control-plane/persistence/requirement-store.ts',
+  'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
+  'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/runtime/execution/work-activity.ts',
+  'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/runtime/control-plane/facade/handoff-inbox-store.ts',
+  'packages/kernel/controller/infrastructure/controller-round-store.ts -> src/runtime/control-plane/facade/types.ts',
+  'packages/kernel/controller/infrastructure/controller-binding-store.ts -> src/cli/repositories/locks.ts',
+  'packages/kernel/controller/infrastructure/controller-binding-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
+  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/cli/repositories/controller-home.ts',
+  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/cli/repositories/locks.ts',
+  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/control-plane/facade/handoff-inbox-store.ts',
+  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/shared/json-files.ts',
+  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/evidence/event-ledger.ts',
+  'packages/kernel/scheduler/infrastructure/continuation-dispatch-store.ts -> src/cli/repositories/locks.ts',
+  'packages/kernel/scheduler/infrastructure/continuation-dispatch-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
+]);
+requireExactShrinkingDebt('Kernel -> legacy src dependency debt', b7KernelLegacyEdges, B7_ALLOWED_KERNEL_LEGACY_EDGES);
+
+const b7LifecycleOwnerMarkers = new Map([
+  ['WorkContract transition authority', ['packages/kernel/work/domain/state-machine.ts']],
+  ['ControllerSession claim authority', ['packages/kernel/controller/infrastructure/controller-session-store.ts']],
+  ['ControllerRound relay authority', ['packages/kernel/controller/infrastructure/controller-round-store.ts']],
+  ['Schedule occurrence authority', ['packages/kernel/scheduler/infrastructure/schedule-store.ts']],
+  ['Forge instance identity authority', ['packages/kernel/identity/infrastructure/identity-store.ts']],
+]);
+for (const [label, owners] of b7LifecycleOwnerMarkers) {
+  for (const owner of owners) text(owner);
+  if (new Set(owners).size !== 1) failures.push(`${label} must have exactly one declared durable owner`);
+}
+const b7UniqueMutationSymbols = new Map([
+  ['transitionWorkContractPhase', 'Work lifecycle mutation'],
+  ['claimControllerSession', 'ControllerSession claim mutation'],
+  ['beginInitialControllerRoundDispatch', 'ControllerRound dispatch mutation'],
+  ['ensureForgeInstanceIdentity', 'Forge instance identity creation'],
+]);
+for (const [symbol, label] of b7UniqueMutationSymbols) {
+  let count = 0;
+  for (const path of productionTypeScriptFiles()) {
+    count += (text(path).match(new RegExp(`export\\s+(?:async\\s+)?function\\s+${symbol}\\s*\\(`, 'g')) ?? []).length;
+  }
+  if (count !== 1) failures.push(`${label} must have exactly one exported production owner; found ${count} for ${symbol}`);
+}
+for (const path of [
+  'src/runtime/gateway/mcp/execution-tools.ts',
+  'src/runtime/gateway/mcp/legacy-ios-tool-adapter.ts',
+  'src/runtime/gateway/mcp/persisted-check-process.ts',
+  'src/runtime/gateway/mcp/process-tools.ts',
+  'src/runtime/gateway/mcp/router.ts',
+  'src/runtime/gateway/mcp/runtime-tool-definitions.ts',
+  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'src/runtime/gateway/mcp/work-validation-reconciler.ts',
+]) requireText(path, '@deprecated Kernel V2 compatibility shim');
+for (const path of [
+  'src/cli/mcp/access-tools.ts',
+  'src/cli/mcp/legacy-context.ts',
+  'src/cli/mcp/legacy-tool-service.ts',
+  'src/cli/mcp/multi-repository.ts',
+  'src/cli/mcp/repository-tools.ts',
+  'src/cli/mcp/server.ts',
+  'src/cli/mcp/tools.ts',
+  'src/cli/mcp/toolset.ts',
+]) requireText(path, '@deprecated Kernel V2 compatibility shim');
+requireText('src/runtime/control-plane/execution/work-execution-support.ts', 'packages/protocols/mcp/execution-context');
+requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'packages/protocols/mcp/execution-context');
+requireText('src/runtime/control-plane/execution/work-operation-service.ts', 'packages/protocols/mcp/execution-context');
+requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'packages/protocols/mcp/execution-context');
+for (const path of [
+  'adapters/mcp/transports/http.ts',
+  'adapters/mcp/transports/session-registry.ts',
+  'adapters/mcp/transports/stdio.ts',
+]) forbid(path, /recordWorkCompletionReceipt|transitionWorkContractPhase|releaseControllerSessionWithAuthority|recordWorkImplementationReview/, 'MCP transport/session lifecycle must never terminalize Work or Controller authority');
+
+// Kernel V2 B6: semantic Forge identity is independent of Runtime processes,
+// transport sessions, OAuth credentials, tunnel ids, and endpoint rotation.
+for (const path of [
+  'packages/kernel/identity/domain/types.ts',
+  'packages/kernel/identity/application/identity-service.ts',
+  'packages/kernel/identity/infrastructure/identity-store.ts',
+  'packages/kernel/identity/api/index.ts',
+]) text(path);
+for (const symbol of ['ForgeInstanceIdentity', 'Principal', 'CredentialReference', 'CapabilityGrant', 'ConnectionIdentity']) {
+  requireText('packages/kernel/identity/domain/types.ts', `interface ${symbol}`);
+}
+requireText('packages/kernel/identity/application/identity-service.ts', 'export function connectionIdentity');
+requireText('packages/kernel/identity/infrastructure/identity-store.ts', "'identity', 'forge-instance.json'");
+requireText('packages/kernel/identity/infrastructure/identity-store.ts', 'linkSync(temporary, path)');
+forbid(
+  'packages/kernel/identity/domain/types.ts',
+  /\b(?:tunnelId|mcpServerUrl|endpointUrl|runtimeApiKey|accessToken|refreshToken|oauthToken|bearerToken)\b/,
+  'Kernel identity contracts must contain semantic ids or credential references, never transport endpoint/tunnel/token material',
+);
+forbidBetween(
+  'packages/kernel/identity/application/identity-service.ts',
+  'const semanticKey = [',
+  "].join('\\u0000')",
+  /\b(?:endpoint|url|tunnel|pid|process|session)\b/i,
+  'ConnectionIdentity semantic key must remain independent of endpoint, tunnel, process, and session identity',
+);
+forbidBetween(
+  'packages/kernel/identity/infrastructure/identity-store.ts',
+  'const identity: ForgeInstanceIdentity = {',
+  '};',
+  /\b(?:pid|process|endpoint|url|tunnel|token)\b/i,
+  'ForgeInstanceIdentity creation must remain independent of process and adapter transport/auth metadata',
+);
+for (const path of [
+  'src/cli/mcp/auth.ts',
+  'src/cli/mcp/setup.ts',
+  'src/cli/mcp/openai-secure-tunnel.ts',
+]) {
+  requireText(path, '@deprecated Kernel V2 compatibility shim');
+}
+requireText('adapters/mcp/auth.ts', 'forgeInstanceId?: string');
+forbid('adapters/mcp/auth.ts', /server:\s*\{[\s\S]{0,512}?instanceId\??:\s*string/, 'MCP server process identity must not share semantic Forge instanceId naming');
+requireText('adapters/mcp/setup.ts', 'ensureForgeInstanceIdentity');
+requireText('adapters/mcp/setup.ts', 'MCP_FORGE_INSTANCE_ID_MISMATCH');
+requireText('src/runtime/root/types.ts', 'forgeInstanceId: string');
+requireText('src/runtime/root/types.ts', 'runtimeInstanceId: string');
+requireText('src/runtime/root/runtime.ts', 'readonly forgeInstanceId: string');
+requireText('src/runtime/root/runtime.ts', 'ensureForgeInstanceIdentity');
+requireText('src/runtime/root/entry.ts', 'forgeInstanceId: runtime.forgeInstanceId');
+requireText('adapters/mcp/transports/http.ts', 'forgeInstanceId: forgeInstance.instanceId');
+requireText('adapters/mcp/transports/http.ts', 'controllerInstanceId: process.env.FORGE_MCP_INSTANCE_ID');
+forbid('adapters/mcp/transports/http.ts', /\{\s*instanceId:\s*process\.env\.FORGE_MCP_INSTANCE_ID/, 'MCP process identity must not be exposed as semantic Forge instanceId');
+requireText('adapters/mcp/transports/http.ts', "adapterId: 'mcp-http'");
+requireText('adapters/mcp/transports/session-registry.ts', 'connectionId: string');
+requireText('adapters/mcp/transports/session-registry.ts', 'reservation.connectionId !== input.connectionId');
+requireText('adapters/mcp/tunnels/openai-secure-tunnel.ts', 'tunnelMatches: boolean');
+requireText('adapters/mcp/tunnels/openai-secure-tunnel.ts', 'credentialReference(config.runtimeApiKeyRef');
+forbid('adapters/mcp/tunnels/openai-secure-tunnel.ts', /\bidentityMatches\b/, 'tunnel binding match must not masquerade as Forge semantic identity');
+
+// C0 Computer capability boundary: Browser and Desktop remain separate providers.
+requireText('packages/protocols/computer/contract.ts', 'COMPUTER_BROWSER_AUTOMATION_CAPABILITY');
+requireText('packages/protocols/computer/contract.ts', 'ComputerRuntimeProviderCapabilityId');
+requireText('packages/plugin-runtime/computer/provider.ts', 'ComputerRuntimeProviderCapabilityId');
+requireText('packages/plugin-runtime/computer/provider-registry.ts', 'COMPUTER_PROVIDER_AMBIGUOUS');
+requireText('packages/plugin-runtime/computer/provider-registry.ts', 'COMPUTER_PROVIDER_DUPLICATE_ID');
+forbid('packages/plugin-runtime/computer/provider-registry.ts', /throw new Error\(/, 'Computer provider resolution must expose typed provider errors rather than raw order-dependent failures');
+
+requireText('packages/protocols/computer/contract.ts', 'COMPUTER_CAPABILITY_PROTOCOL_VERSION');
+requireText('packages/protocols/computer/contract.ts', 'COMPUTER_CAPABILITY_EXECUTION_METHOD');
+requireText('packages/protocols/computer/contract.ts', 'export interface ComputerCapabilityAdvertisement');
+forbid('adapters/computer/desktop-operator-negotiation.ts', /interface\s+ComputerCapabilityAdvertisement/, 'Desktop Operator negotiation must consume the provider-neutral Computer capability advertisement contract instead of redefining it');
+requireText('packages/plugin-runtime/computer/provider.ts', 'export interface ComputerProvider');
+requireText('packages/plugin-runtime/computer/provider-registry.ts', 'export class ComputerProviderRegistry');
+requireText('adapters/computer/desktop-operator-contract.ts', 'DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID');
+requireText('adapters/computer/desktop-operator-negotiation.ts', 'negotiateDesktopOperatorComputerHandshake');
+requireText('adapters/computer/desktop-operator-negotiation.ts', 'buildDesktopOperatorComputerInvocation');
+requireText('adapters/computer/desktop-operator-provider.ts', 'createDesktopOperatorComputerProvider');
+requireText('adapters/computer/desktop-operator-discovery.ts', 'ComputerProviderRegistrationLookup');
+requireText('adapters/computer/desktop-operator-discovery.ts', "source: 'registration'");
+requireText('adapters/computer/desktop-operator-discovery.ts', "source: 'legacy_fallback'");
+requireText('adapters/computer/desktop-operator-discovery.ts', "DesktopOperatorLegacyFallbackMode");
+requireText('adapters/computer/desktop-operator-discovery.ts', "PLUGIN_COMPUTER_PROVIDER_REGISTRATION_REQUIRED");
+requireText('src/runtime/root/computer-composition.ts', "legacyFallback: 'unregistered_v0_2'");
+requireText('src/cli/commands/computer.ts', "new Command('computer')");
+requireText('src/cli/commands/computer.ts', 'installOfficialPlugin(COMPUTER_PROVIDER_PLUGIN_ID');
+requireText('src/cli/commands/computer.ts', 'provider release: independent');
+requireText('src/cli/commands/computer.ts', 'COMPUTER_PROVIDER_UNINSTALLER_MISSING');
+requireText('src/cli/commands/computer.ts', 'readStoredAssistantPluginManifest');
+requireText('src/cli/commands/computer.ts', 'syncAssistantPluginManifest');
+requireText('src/cli/commands/computer.ts', 'withOfficialPluginLifecycleLock');
+forbid('src/cli/commands/computer.ts', /syncAssistantPluginRegistry|getAssistantPluginManifest\(/, 'Computer status/doctor must use stored or targeted provider health APIs rather than globally probing the plugin registry or execution-style manifest lookup');
+requireText('src/cli/commands/plugin.ts', 'external-plugin:${pluginId}');
+requireText('src/runtime/plugins/store.ts', 'export function readStoredAssistantPluginManifest');
+requireText('src/runtime/plugins/store.ts', 'export function syncAssistantPluginManifest');
+requireText('src/runtime/plugins/store.ts', 'export function removeAssistantPluginManifestProjection');
+requireText('src/cli/index.ts', 'buildComputerCommand');
+requireText('src/cli/index.ts', "'computer'");
+
+forbid('adapters/computer/desktop-operator-provider.ts', /getExternalPluginRegistration|controller-home|computerCapabilities|internalCapabilities|browserAutomationProtocolVersion|browserAutomationActions|macos_browser_automation|computer_execute/, 'Desktop Operator provider transport must consume discovery and negotiation results rather than own Controller lookup or wire negotiation');
+forbid('adapters/computer/desktop-operator-negotiation.ts', /getExternalPluginRegistration|controller-home|desktop-operator-discovery/, 'Desktop Operator negotiation must depend on protocol/contract facts, not endpoint discovery');
+forbid('adapters/computer/desktop-operator-discovery.ts', /macos_browser_automation|LEGACY_BROWSER_AUTOMATION/, 'Desktop Operator discovery must own endpoint resolution only, not compatibility protocol negotiation');
+forbid('adapters/computer/desktop-operator-provider.ts', /getExternalPluginAdapter|AssistantPluginActionExecutionInput|desktop_session_open|NATIVE_BROWSER_BUNDLE_IDS|activateDesktopOperatorBrowserApplication/, 'Desktop Operator Computer transport adapter must not own Runtime plugin-action application activation glue');
+for (const path of sourceFiles('adapters/computer')) {
+  forbid(path, /AssistantPluginError/, 'Computer adapters must expose provider errors through plugin-runtime rather than depend on Runtime plugin error types');
+}
+requireText('src/runtime/root/computer-composition.ts', 'lookupRegistration: (providerPluginId) =>');
+requireText('src/runtime/root/computer-composition.ts', 'computerProviderRegistrationSnapshot(registration)');
+requireText('src/runtime/root/computer-composition.ts', 'getExternalPluginAdapter(input.controllerHome, DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID)');
+requireText('src/runtime/plugins/browser-automation-service.ts', 'executeRuntimeComputerBrowserAutomation');
+requireText('src/runtime/plugins/browser-adapter.ts', 'activateRuntimeComputerBrowserApplication');
+forbid('src/runtime/plugins/browser-automation-service.ts', /desktop_operator|macos-capability-broker|desktop-operator\.sock|macos_browser_automation/, 'Browser automation must depend on the provider-neutral Computer boundary, not Desktop Operator transport details');
+forbid('src/runtime/plugins/browser-adapter.ts', /desktop_operator|Desktop Operator|getExternalPluginAdapter|desktop_session_open/, 'Browser adapter must not know the concrete Desktop Operator application provider');
+for (const path of sourceFiles('src/runtime/plugins').filter((entry) => /\/browser-(?!registration\.ts)[^/]+\.ts$/.test(entry))) {
+  forbid(path, /desktop_operator|Desktop Operator|desktop-operator\.sock|macos_browser_automation/, 'Browser modules must depend on Computer capabilities rather than concrete Desktop Operator transport identity');
+}
+requireText('src/runtime/plugins/macos-capability-broker.ts', '@deprecated C0 compatibility shim');
+requireText('src/runtime/plugins/macos-capability-broker.ts', 'executeRuntimeComputerBrowserAutomation');
+forbid('src/runtime/plugins/macos-capability-broker.ts', /callDesktopOperatorComputerBrowserAutomation/, 'Deprecated macOS broker execution must delegate to Runtime Computer composition rather than call the concrete provider directly');
+requireText('src/runtime/control-plane/facade/types.ts', 'semanticCapabilities?: string[]');
+forbid('src/runtime/control-plane/facade/capability-registry.ts', /plugin\.desktop_operator/, 'Control Plane capability discovery must rank provider-declared semantic capabilities rather than concrete Desktop Operator plugin identity');
+requireText('src/runtime/plugins/external-provider-policy.ts', 'resolveExternalProviderPolicy');
+requireText('src/runtime/plugins/desktop-operator-external-policy.ts', 'verifyExactForegroundDesktopSession');
+forbid('src/runtime/plugins/external-adapter.ts', /desktop_operator|desktopOperator|DESKTOP_|['\"]desktop_[a-z_]|desktop-operator-external-policy/, 'Generic external plugin adapter must delegate provider-specific Desktop policy through ExternalProviderPolicy');
+requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_OBSERVE_CAPABILITY');
+requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_INPUT_CAPABILITY');
+requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_CAPTURE_CAPABILITY');
+requireText('src/runtime/plugins/desktop-operator-registration.ts', 'pluginVersion: options.pluginVersion');
+forbid('src/runtime/plugins/desktop-operator-registration.ts', /pluginVersion:\s*options\.pluginVersion\s*\?\?|pluginVersion:\s*['"]0\./, 'Forge must not invent the Desktop Operator provider release version');
+requireText('packages/plugin-runtime/external/unix-jsonl-transport.ts', 'EXTERNAL_RPC_METHOD_PATTERN');
+requireText('src/runtime/plugins/external-unix-socket.ts', 'callExternalUnixJsonl');
+forbid('src/runtime/plugins/external-unix-socket.ts', /createConnection|EXTERNAL_RPC_METHOD_PATTERN|packages\/protocols\/computer|computer_execute|macos_browser_automation/, 'Runtime external Unix socket compatibility layer must delegate async transport and must not own Computer/Desktop provider method identities');
+forbid('adapters/computer/desktop-operator-provider.ts', /src\/runtime\/plugins\/external-unix-socket|callExternalUnixSocket/, 'Computer provider adapters must consume provider-neutral plugin-runtime transport rather than Runtime socket implementation');
+
+// C0 Browser runtime authority: contracts and provider selection belong to plugin-runtime/protocols.
+requireText('packages/plugin-runtime/browser/runtime-contract.ts', 'export interface BrowserTransaction');
+requireText('packages/plugin-runtime/browser/provider-registry.ts', 'export class BrowserProviderRegistry');
+requireText('packages/plugin-runtime/browser/provider-registry.ts', 'export class BrowserProviderSelectionError');
+forbid('packages/plugin-runtime/browser/provider-registry.ts', /AssistantPluginError|src\/runtime|adapters\//, 'Browser provider selection must remain provider-neutral inside plugin-runtime');
+requireText('packages/protocols/browser/session.ts', 'export interface BrowserSessionState');
+for (const path of [
+  'src/runtime/plugins/browser-runtime-contract.ts',
+  'src/runtime/plugins/browser-provider-registry.ts',
+  'src/runtime/plugins/browser-session-types.ts',
+]) {
+  requireText(path, '@deprecated C0 compatibility shim');
+}
+for (const path of sourceFiles('src/runtime/plugins')) {
+  if (['src/runtime/plugins/browser-runtime-contract.ts', 'src/runtime/plugins/browser-provider-registry.ts', 'src/runtime/plugins/browser-session-types.ts'].includes(path)) continue;
+  forbid(path, /from\s+['"]\.\/browser-(?:runtime-contract|provider-registry|session-types)['"]/, 'active Browser runtime code must consume plugin-runtime/protocol Browser contracts, not retired local owners');
+}
+requireText('packages/plugin-runtime/browser/session-authority.ts', 'export interface BrowserSessionAuthorityPort');
+forbid('packages/plugin-runtime/browser/session-authority.ts', /sqlite|control-plane|src\/runtime|adapters\//, 'Browser session authority port must not own persistence implementation');
+requireText('packages/plugin-runtime/browser/session-persistence.ts', 'export interface BrowserSessionPersistencePort');
+forbid('packages/plugin-runtime/browser/session-persistence.ts', /sqlite|control-plane|src\/runtime|adapters\//, 'Browser session persistence port must remain storage-implementation neutral');
+requireText('adapters/browser/session-authority.ts', 'createBrowserSessionAuthority');
+requireText('adapters/browser/session-authority.ts', "current?.value.status === 'tombstoned'");
+forbid('adapters/browser/session-authority.ts', /src\/runtime\/|sqlite-store|readControlPlaneRecord|listControlPlaneRecords|withControlPlaneTransaction/, 'Browser session authority adapter must consume the injected persistence port rather than Runtime control-plane storage');
+requireText('adapters/browser/sqlite-session-authority.ts', '@deprecated C0 compatibility shim');
+requireText('src/runtime/root/browser-session-persistence.ts', 'createRuntimeBrowserSessionPersistence');
+requireText('src/runtime/root/browser-session-composition.ts', 'createBrowserSessionAuthority(createRuntimeBrowserSessionPersistence())');
+requireText('src/runtime/plugins/browser-session-authority.ts', '@deprecated C0 compatibility shim');
+for (const path of sourceFiles('src/runtime/plugins')) {
+  if (path === 'src/runtime/plugins/browser-session-authority.ts') continue;
+  forbid(path, /from\s+['"]\.\/browser-session-authority['"]/, 'active Browser runtime code must consume the composed BrowserSessionAuthorityPort, not the retired authority owner');
+}
+requireText('src/runtime/plugins/browser-registration.ts', 'export const browserPluginAdapter');
+requireText('src/runtime/plugins/first-party-registry.ts', "from './browser-registration'");
+forbid('src/runtime/plugins/first-party-registry.ts', /from\s+['"]\.\/browser-adapter['"]/, 'first-party registry must depend on the thin Browser registration entrypoint, not the action implementation');
+forbid('src/runtime/plugins/browser-adapter.ts', /export\s+const\s+browserPluginAdapter/, 'Browser action implementation must not also own first-party plugin registration');
 
 if (failures.length) {
   console.error('[runtime-architecture] FAILED');

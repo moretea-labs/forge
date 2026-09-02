@@ -6,12 +6,13 @@ import type { gcTerminalProcesses } from '../../execution/process-runtime/gc';
 import type { reconcilePendingWorkValidations } from '../execution/work-validation-reconciler';
 import type { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
 import {
-  buildControllerRoundRelayPrompt,
   claimStalledControllerRoundRelays,
   finishControllerRoundRelayDispatch,
-} from '../facade/controller-round-relay';
+} from '../../../../packages/kernel/controller/api/index';
 import { assertAutomatedOperationAllowed } from '../governance/external-effects';
 import { runWorkChatgptContinuation } from '../launcher/chatgpt-work-continuation';
+import { getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/work-conversation-binding-store';
+import { buildChatgptControllerRoundPrompt } from '../../../../adapters/chatgpt/controller-round-host';
 
 export async function runSchedulerPeriodicCleanup(input: {
   controllerHome: string;
@@ -104,6 +105,7 @@ export async function runSchedulerControllerRoundRecovery(input: {
       nowMs: input.nowMs,
       graceMs: input.graceMs,
       limit: maxRecoveries - claimed,
+      controllerTypes: ['chatgpt'],
     });
     claimed += records.length;
     for (const record of records) {
@@ -114,25 +116,26 @@ export async function runSchedulerControllerRoundRecovery(input: {
           relay_scope_id: record.relayScopeId,
           recovery_reason: 'unclosed_dispatched_round',
         });
+        const binding = getChatgptWorkConversationBinding(store, record.originWorkId);
         const result = await dispatchPrompt({
           controllerHome: input.controllerHome,
           repoId: repository.repoId,
           repoRoot: repository.canonicalRoot ?? repository.localRoot,
           workId: record.originWorkId,
-          prompt: buildControllerRoundRelayPrompt(store, record, { exactOriginWork: true }),
-          browserSessionId: record.browserSessionId,
-          conversationUrl: record.conversationUrl,
+          prompt: buildChatgptControllerRoundPrompt(store, record, { exactOriginWork: true }),
+          browserSessionId: binding?.latestBrowserSessionId,
+          conversationUrl: binding?.conversationUrl,
           model: 'gpt-5.6',
           reasoning: 'high',
           tabPolicy: 'auto',
           timeoutMs: 30_000,
         });
         if (result.status === 'failed') throw new Error(result.error?.message ?? 'CHATGPT_CONTROLLER_RELAY_RECOVERY_FAILED');
+        const updatedBinding = getChatgptWorkConversationBinding(store, record.originWorkId);
         finishControllerRoundRelayDispatch(store, {
           workId: record.originWorkId,
           ok: true,
-          browserSessionId: result.browserSessionId,
-          conversationUrl: result.conversationUrl,
+          bindingId: updatedBinding?.bindingId,
         });
         dispatched += 1;
       } catch (error) {

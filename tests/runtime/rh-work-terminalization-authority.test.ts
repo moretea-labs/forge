@@ -7,11 +7,15 @@ import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { getRepository, reconcileRepositoryCheckouts, registerRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
-import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { ensureRepositoryWorkHandle, reconcileRepositoryWorkHandlePlacement } from '../../src/runtime/control-plane/execution/work-handle-authority';
+import { ensureRunningRepositoryWorkCheckout } from '../../src/runtime/control-plane/execution/retained-work-resume';
+import { cleanupTerminalWork } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
+
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { resolveExplicitClaimedRepositoryWork } from '../../src/runtime/control-plane/execution/repository-work-attribution';
 import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
@@ -21,6 +25,8 @@ import { invalidateExecutionSession } from '../../src/runtime/control-plane/exec
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
+import { executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
+import { executionIdentityForWork } from '../../src/runtime/control-plane/execution/execution-identity';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
 
 const roots: string[] = [];
@@ -360,6 +366,150 @@ describe('rh_work terminalization authority', () => {
     expect(handle.expectedHead).toBe(baseRevision);
   }, 15_000);
 
+  test('blocked delivery rehydrates the exact archived candidate and invalidates old delivery authority', async () => {
+    const fx = fixture();
+    const workId = 'work-archived-blocked-delivery-recovery';
+    const caller = {
+      principalId: 'principal-archived-blocked-delivery',
+      sessionId: 'transport-archived-blocked-delivery',
+      controllerInstanceId: 'runtime-archived-blocked-delivery',
+    };
+    const branch = 'work/archived-blocked-delivery';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'Archived blocked delivery recovery',
+      branchName: branch,
+    });
+    const baseRevision = workspace.baseRevision!;
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const ready = "archived-candidate";\n');
+    execFileSync('git', ['add', 'src/index.ts'], { cwd: workspace.root! });
+    execFileSync('git', ['commit', '-m', 'archived blocked delivery candidate'], { cwd: workspace.root! });
+    const candidateRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+    expect(candidateRevision).not.toBe(baseRevision);
+
+    const now = new Date().toISOString();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Deliver an exact committed candidate after a temporary target blocker clears.',
+      acceptanceCriteria: [],
+      constraints: { requireWorktree: true, directMainProhibited: true },
+      allowedPaths: ['src/index.ts'],
+      forbiddenPaths: [],
+      checks: ['package:check:type'],
+      requestedBy: 'chatgpt',
+      status: 'blocked',
+      phase: 'delivery',
+      evidenceState: 'valid',
+      worktreeRef: workspace.root,
+      scopeEvidence: {
+        initialLikelyPaths: ['src/index.ts'],
+        inspectedPaths: ['src/index.ts'],
+        actualChangedPaths: ['src/index.ts'],
+        recordedAt: now,
+      },
+    });
+    let handle = writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      workContractId: workId,
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      repositoryId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      worktreePath: workspace.root!,
+      branch,
+      managedWorktree: true,
+      baseCommit: baseRevision,
+      deliveryBaseCommit: baseRevision,
+      expectedHead: candidateRevision,
+      permissionSnapshotVersion: 1,
+      state: 'committed',
+      createdAt: now,
+      updatedAt: now,
+      validatedInputFingerprint: 'old-validation-authority',
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: {
+        validation: 'done',
+        commit: 'done',
+        merge: 'failed',
+        branchCleanup: 'pending',
+        worktreeCleanup: 'pending',
+        lastError: 'target temporarily blocked',
+      },
+    });
+
+    const cleaned = await cleanupTerminalWork({
+      controllerHome: fx.controllerHome,
+      handle,
+      targetBranch: 'main',
+      deleteBranch: true,
+      terminalOutcome: 'blocked_terminal',
+      failureReason: 'target temporarily blocked',
+    });
+    expect(cleaned.handle.state).toBe('cleaned');
+    expect(cleaned.receipt.complete).toBe(true);
+    expect(cleaned.receipt.branchCleanup).toMatchObject({ status: 'archived', uniqueCommits: 1 });
+    expect(cleaned.receipt.preservation.bundlePath).toBeTruthy();
+    expect(cleaned.receipt.preservation.bundleSha256).toBeTruthy();
+    expect(existsSync(workspace.root!)).toBe(false);
+
+    const tampered = writeWorkHandle(fx.controllerHome, {
+      ...cleaned.handle,
+      cleanupReceipt: {
+        ...cleaned.receipt,
+        preservation: { ...cleaned.receipt.preservation, bundleSha256: '0'.repeat(64) },
+      },
+    });
+    expect(() => ensureRunningRepositoryWorkCheckout({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId,
+      identity: caller,
+    })).toThrow('WORK_CONTINUE_ARCHIVED_DELIVERY_BUNDLE_DIGEST_MISMATCH');
+    writeWorkHandle(fx.controllerHome, {
+      ...tampered,
+      cleanupReceipt: cleaned.receipt,
+    });
+
+    const recovered = ensureRunningRepositoryWorkCheckout({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId,
+      identity: caller,
+    });
+    expect(recovered.reconstructedCheckout).toBe(true);
+    const work = getWorkContract(store, workId)!;
+    handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)!;
+    expect(work.status).toBe('running');
+    expect(work.phase).toBe('verification');
+    expect(work.evidenceState).toBe('stale');
+    expect(work.checkoutId).not.toBe(workspace.checkoutId!);
+    expect(work.worktreeRef).not.toBe(workspace.root!);
+    expect(handle.state).toBe('validating');
+    expect(handle.baseCommit).toBe(baseRevision);
+    expect(handle.deliveryBaseCommit).toBe(baseRevision);
+    expect(handle.expectedHead).toBe(candidateRevision);
+    expect(handle.deliveryTargetBranch).toBe('main');
+    expect(handle.validatedInputFingerprint).toBeUndefined();
+    expect(handle.cleanupReceipt).toBeUndefined();
+    expect(handle.finalization).toMatchObject({
+      validation: 'pending',
+      commit: 'done',
+      merge: 'pending',
+      branchCleanup: 'pending',
+      worktreeCleanup: 'pending',
+    });
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: work.worktreeRef!, encoding: 'utf8' }).trim()).toBe(candidateRevision);
+  }, 20_000);
+
   test('continue fails closed and preserves dirty source when the running Work checkout is archived but still present', async () => {
     const fx = fixture();
     const workId = 'work-running-dirty-checkout-runtime-recovery';
@@ -475,7 +625,7 @@ describe('rh_work terminalization authority', () => {
     const relay = beginInitialControllerRoundDispatch(store, {
       workId,
       identity: {
-        controllerId: 'schedule:frozen-round',
+        controllerId: 'schedule:frozen-round', controllerType: 'chatgpt',
         principalId: 'forge-scheduler',
         controllerInstanceId: runtimeInstanceId,
         sessionId: 'occurrence-frozen-round',
@@ -485,8 +635,8 @@ describe('rh_work terminalization authority', () => {
     finishControllerRoundRelayDispatch(store, {
       workId,
       ok: true,
-      browserSessionId: 'forge-chatgpt-bridge-frozen-round',
-      conversationUrl: 'https://chatgpt.com/c/frozen-round',
+      bindingId: `chatgpt:${fx.repository.repoId}:${workId}`,
+
     });
     const caller = ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-round', runtimeInstanceId);
     const wrongAuthority = relay.authorityId === 'cra_00000000000000000000000000000000'
@@ -845,25 +995,21 @@ describe('rh_work terminalization authority', () => {
     createReadyWork(fx.controllerHome, fx.repository.repoId, workB);
 
     const beginRound = (workId: string, suffix: string) => {
+      const bindingId = `chatgpt:${fx.repository.repoId}:${workId}`;
       const relay = beginInitialControllerRoundDispatch(store, {
         workId,
         identity: {
           controllerId: principalId,
+          controllerType: 'chatgpt',
           principalId,
           controllerInstanceId: runtimeInstanceId,
           sessionId: `launcher-${suffix}`,
         },
         relayScopeId: `goal:${workId}`,
-        browserSessionId: `browser-${suffix}`,
-        conversationUrl: `https://chatgpt.com/c/conversation-${suffix}`,
+        bindingId,
       });
       expect(relay.authorityId).toBeTruthy();
-      finishControllerRoundRelayDispatch(store, {
-        workId,
-        ok: true,
-        browserSessionId: `browser-${suffix}`,
-        conversationUrl: `https://chatgpt.com/c/conversation-${suffix}`,
-      });
+      finishControllerRoundRelayDispatch(store, { workId, ok: true, bindingId });
       const owner = claimControllerSession(store, {
         workId,
         controllerId: principalId,
@@ -1428,6 +1574,27 @@ describe('rh_work terminalization authority', () => {
     });
     claimPlanStepForWork(store, { planId, stepId: 'release-gate', workId, sourceRevision: targetRevision });
     const recordedAt = '2026-08-27T07:00:00.000Z';
+    transitionWorkContractPhase(store, workId, { status: 'running', phase: 'verification', state: 'satisfied', summary: 'Exact no-change Plan candidate verified.' });
+    requestWorkImplementationReview(store, workId, 'Plan candidate requires explicit implementation review before completion.');
+    recordWorkImplementationReview(store, workId, {
+      schemaVersion: 1,
+      reviewId: 'REV-canary-subpart-only',
+      workId,
+      reviewerPrincipalId: 'principal-semantic-reviewer',
+      reviewerControllerSessionId: 'transport-finalize',
+      decision: 'approved',
+      rationale: 'The exact no-change canary candidate is reviewed before physical Work completion; Plan semantic acceptance remains separate.',
+      findings: [],
+      sourceRevision: targetRevision,
+      workspaceFingerprint: 'plan-no-change-content',
+      verificationWorkspaceFingerprint: 'plan-no-change-verification',
+      changedPaths: [],
+      changedPathDigest: implementationReviewChangedPathDigest([]),
+      acceptanceCriteriaSummary: 'Canary Work completion receipt exists.',
+      verificationEvidence: [],
+      architectureEvidence: [],
+      recordedAt,
+    });
     const completed = recordWorkCompletionReceipt(store, workId, {
       schemaVersion: 1,
       receiptId: 'receipt-canary-subpart-only',
@@ -1687,6 +1854,7 @@ describe('rh_work terminalization authority', () => {
         }],
       },
     ));
+    if (reviewed.status !== 'ok') throw new Error(`REVIEW_DIAGNOSTIC:${JSON.stringify(reviewed)}`);
     expect(reviewed.status).toBe('ok');
 
     const finalized = structured(await callRuntimeTool(
@@ -1716,7 +1884,7 @@ describe('rh_work terminalization authority', () => {
   }, 15_000);
 
 
-  test('isolated WorkHandle preserves canonical source identity and adopts an unscoped clean descendant before finalization', async () => {
+  test('isolated WorkHandle preserves canonical source identity and adopts a Work-attributed clean descendant before finalization', async () => {
     const fx = fixture();
     const workId = 'work-isolated-unscoped-head-adoption';
     const caller = {
@@ -1774,12 +1942,39 @@ describe('rh_work terminalization authority', () => {
       expectedHead: workspace.baseRevision,
     });
 
-    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const ready = \"isolated-unscoped-delivery\";\n');
-    execFileSync('git', ['add', 'src/index.ts'], { cwd: workspace.root! });
-    execFileSync('git', ['commit', '-m', 'isolated unscoped delivery'], { cwd: workspace.root! });
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const ready = \"isolated-work-attributed-delivery\";\n');
+    const committed = await executeRepositoryCommandViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repository: selectedWorktree,
+      command: ['git', 'commit', '--only', '-m', 'isolated work-attributed delivery', '--', 'src/index.ts'],
+      timeoutMs: 10_000,
+      workId,
+      executionIdentity: executionIdentityForWork(selectedWorktree, handle!),
+    });
+    const committedTerminal = committed.process?.completed
+      ? committed.process
+      : committed.process
+        ? await waitRepositoryCommandProcess(fx.controllerHome, canonicalRepository.repoId, committed.process.processId, { timeoutMs: 10_000 })
+        : undefined;
+    expect(committedTerminal?.ok ?? committed.ok).toBe(true);
     const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
-    expect(candidate).not.toBe(handle?.expectedHead);
-    expect(readWorkHandle(fx.controllerHome, canonicalRepository.repoId, workId)?.expectedHead).toBe(workspace.baseRevision ?? undefined);
+    expect(candidate).not.toBe(workspace.baseRevision ?? undefined);
+    expect(readWorkHandle(fx.controllerHome, canonicalRepository.repoId, workId)?.expectedHead).toBe(candidate);
+
+    const admitted = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, canonicalRepository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: canonicalRepository.repoId, checkout_id: workspace.checkoutId, operation: 'continue', work_id: workId, requested_by: 'chatgpt' },
+    ));
+    expect(admitted.status).toBe('ok');
+    expect(admitted.data.nextStep).toBe('review');
+
+    const reviewed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, canonicalRepository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: canonicalRepository.repoId, checkout_id: workspace.checkoutId, operation: 'review', work_id: workId, requested_by: 'chatgpt', review_decision: 'approved', review_rationale: 'Exact verified committed descendant reviewed before delivery.' },
+    ));
+    expect(reviewed.status).toBe('ok');
 
     const finalized = structured(await callRuntimeTool(
       ctx(fx.controllerHome, canonicalRepository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
@@ -1853,9 +2048,24 @@ describe('rh_work terminalization authority', () => {
       cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
     });
     writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const ready = "physically-delivered";\n');
-    execFileSync('git', ['add', 'src/index.ts'], { cwd: workspace.root! });
-    execFileSync('git', ['commit', '-m', 'source repair from effect work'], { cwd: workspace.root! });
+    const preparedHandle = readWorkHandle(fx.controllerHome, repository.repoId, workId)!;
+    const selectedWorktree = selectRepositoryCheckout(repository, workspace.checkoutId!);
+    const committed = await executeRepositoryCommandViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repository: selectedWorktree,
+      command: ['git', 'commit', '--only', '-m', 'source repair from effect work', '--', 'src/index.ts'],
+      timeoutMs: 10_000,
+      workId,
+      executionIdentity: executionIdentityForWork(selectedWorktree, preparedHandle),
+    });
+    const committedTerminal = committed.process?.completed
+      ? committed.process
+      : committed.process
+        ? await waitRepositoryCommandProcess(fx.controllerHome, repository.repoId, committed.process.processId, { timeoutMs: 10_000 })
+        : undefined;
+    expect(committedTerminal?.ok ?? committed.ok).toBe(true);
     const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+    expect(readWorkHandle(fx.controllerHome, repository.repoId, workId)?.expectedHead).toBe(candidate);
     claimControllerSession({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
       workId,
       controllerId: caller.principalId,
@@ -1865,6 +2075,21 @@ describe('rh_work terminalization authority', () => {
       controllerInstanceId: caller.controllerInstanceId,
       leaseMs: 60_000,
     });
+
+    const admitted = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: repository.repoId, checkout_id: workspace.checkoutId, operation: 'continue', work_id: workId, requested_by: 'chatgpt' },
+    ));
+    expect(admitted.status).toBe('ok');
+    expect(admitted.data.nextStep).toBe('review');
+
+    const reviewed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: repository.repoId, checkout_id: workspace.checkoutId, operation: 'review', work_id: workId, requested_by: 'chatgpt', review_decision: 'approved', review_rationale: 'Verified source delta discovered by effect Work is explicitly reviewed before physical delivery.' },
+    ));
+    expect(reviewed.status).toBe('ok');
 
     const finalized = structured(await callRuntimeTool(
       ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),

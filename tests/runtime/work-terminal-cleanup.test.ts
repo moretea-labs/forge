@@ -113,7 +113,7 @@ describe('terminal Work cleanup', () => {
 
   test('runtime architecture gate tracks the canonical finalization reset helper', () => {
     const gate = readFileSync(join(import.meta.dir, '../../scripts/check-runtime-architecture.mjs'), 'utf8');
-    expect(gate).toContain("requireText('src/runtime/gateway/mcp/execution-tools.ts', 'resetFinalizationStagesForRequest');");
+    expect(gate).toContain("requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'resetFinalizationStagesForRequest');");
     expect(gate).not.toContain("requireText('src/runtime/gateway/mcp/execution-tools.ts', 'resetFailedFinalizationStages');");
   });
 
@@ -910,4 +910,29 @@ describe('terminal Work cleanup', () => {
     }
     expect(git(fx.repositoryRoot, ['branch', '--format=%(refname:short)']).split('\n').filter(Boolean)).toEqual(['main']);
   });
+
+  test('terminal cleanup honors durable non-default delivery target and rejects explicit rebinding', async () => {
+    const fx = fixture('bound-delivery-target');
+    git(fx.repositoryRoot, ['branch', 'kernel-v2/architecture']);
+    const bound = writeWorkHandle(fx.controllerHome, {
+      ...fx.handle,
+      deliveryTargetBranch: 'kernel-v2/architecture',
+    });
+    await expect(cleanupTerminalWork({
+      controllerHome: fx.controllerHome,
+      handle: bound,
+      targetBranch: 'main',
+      deleteBranch: true,
+      terminalOutcome: 'failed',
+    })).rejects.toThrow(/WORK_DELIVERY_TARGET_BRANCH_MISMATCH.*kernel-v2\/architecture.*main/);
+
+    const cleaned = await cleanupTerminalWork({
+      controllerHome: fx.controllerHome,
+      handle: bound,
+      deleteBranch: true,
+      terminalOutcome: 'failed',
+    });
+    expect(cleaned.receipt.targetBranch).toBe('kernel-v2/architecture');
+  });
+
 });

@@ -3,16 +3,13 @@ import { basename, join } from 'path';
 import { writeJsonAtomic } from '../shared/json-files';
 import { AssistantPluginError } from './errors';
 import {
-  currentBrowserSessionAuthorityContext,
-  findBrowserSession as findBrowserSessionAuthority,
-  listAllBrowserSessionsForRepository,
-  saveBrowserSession as saveBrowserSessionAuthority,
-  tombstoneBrowserSession,
-} from './browser-session-authority';
+  currentRuntimeBrowserSessionAuthorityContext,
+  runtimeBrowserSessionAuthority,
+} from '../root/browser-session-composition';
 
 const BROWSER_STATE_ROOT = '.forge/browser';
 
-import type { BrowserSessionState } from './browser-session-types';
+import type { BrowserSessionState } from '../../../packages/protocols/browser/index';
 
 /**
  * Repository-local browser paths remain compatibility storage only. During
@@ -53,12 +50,12 @@ function readLegacyBrowserSessionJson(path: string): BrowserSessionState | undef
 }
 
 export function saveBrowserSession(repoRoot: string, session: BrowserSessionState): BrowserSessionState {
-  const authority = currentBrowserSessionAuthorityContext();
+  const authority = currentRuntimeBrowserSessionAuthorityContext();
   if (!authority) {
     writeJsonAtomic(sessionPath(repoRoot, session.sessionId), session);
     return session;
   }
-  const saved = saveBrowserSessionAuthority<BrowserSessionState>(authority.controllerHome, authority.repoId, repoRoot, session);
+  const saved = runtimeBrowserSessionAuthority().save<BrowserSessionState>(authority, repoRoot, session);
   if (saved.sessionId === session.sessionId || !saved.browser?.sessionResume) return saved;
   return {
     ...saved,
@@ -71,16 +68,16 @@ export function saveBrowserSession(repoRoot: string, session: BrowserSessionStat
 
 export function findBrowserSession(repoRoot: string, sessionId?: string): BrowserSessionState | undefined {
   if (!sessionId) return undefined;
-  const authority = currentBrowserSessionAuthorityContext();
+  const authority = currentRuntimeBrowserSessionAuthorityContext();
   return authority
-    ? findBrowserSessionAuthority<BrowserSessionState>(authority.controllerHome, authority.repoId, repoRoot, sessionId)
+    ? runtimeBrowserSessionAuthority().find<BrowserSessionState>(authority, repoRoot, sessionId)
     : readLegacyBrowserSessionJson(sessionPath(repoRoot, sessionId));
 }
 
 export function listSavedBrowserSessions(repoRoot: string): BrowserSessionState[] {
-  const authority = currentBrowserSessionAuthorityContext();
+  const authority = currentRuntimeBrowserSessionAuthorityContext();
   if (authority) {
-    return listAllBrowserSessionsForRepository<BrowserSessionState>(authority.controllerHome, authority.repoId, repoRoot);
+    return runtimeBrowserSessionAuthority().listAll<BrowserSessionState>(authority, repoRoot);
   }
   const root = browserStateDir(repoRoot, 'sessions');
   let names: string[];
@@ -100,9 +97,9 @@ export function listSavedBrowserSessions(repoRoot: string): BrowserSessionState[
 }
 
 export function removeBrowserSession(repoRoot: string, sessionId: string): void {
-  const authority = currentBrowserSessionAuthorityContext();
+  const authority = currentRuntimeBrowserSessionAuthorityContext();
   if (authority) {
-    tombstoneBrowserSession(authority.controllerHome, authority.repoId, repoRoot, sessionId);
+    runtimeBrowserSessionAuthority().tombstone(authority, repoRoot, sessionId);
     return;
   }
   rmSync(sessionPath(repoRoot, sessionId), { force: true });

@@ -12,7 +12,7 @@ import {
   loadMcpServiceRuntimeState,
   type McpLocalConfig,
   type McpRuntimeState,
-} from '../../cli/mcp/auth';
+} from '../../../adapters/mcp/auth';
 import { inferLocalControllerProcess } from '../diagnostics/performance';
 import type { LocalBridgeMode } from '../health/evaluator';
 

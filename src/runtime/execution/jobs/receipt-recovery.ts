@@ -1,4 +1,4 @@
-import { settleScheduledExecution } from '../../workflow/schedules/settlement';
+import { settleScheduledExecution } from '../../../../packages/kernel/scheduler/api/index';
 import {
   buildDelegatedExecutionResult,
   childReferenceFromJob,

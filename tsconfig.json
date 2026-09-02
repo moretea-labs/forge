@@ -17,6 +17,8 @@
     "skipLibCheck": true
   },
   "include": [
+    "adapters/**/*.ts",
+    "packages/**/*.ts",
     "evaluation/**/*.ts",
     "src/**/*.ts",
     "src/**/*.tsx",
