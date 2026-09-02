@@ -6,10 +6,13 @@ import {
   buildComputerCommand,
   formatComputerStatus,
   readComputerStatus,
+  runComputerDoctor,
   runComputerUninstall,
 } from '../../src/cli/commands/computer';
+import { withOfficialPluginLifecycleLock } from '../../src/cli/commands/plugin';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
+import { controllerPluginRepository, readStoredAssistantPluginManifest } from '../../src/runtime/plugins/store';
 
 const roots: string[] = [];
 
@@ -70,8 +73,38 @@ describe('Computer product facade', () => {
       enabled: false,
       updateAvailable: true,
       releaseIndependent: true,
+      health: { state: 'unprobed', ready: false, probed: false },
     });
     expect(formatComputerStatus(status)).not.toContain('desktop_operator');
+  });
+
+  test('doctor refreshes only the Computer provider and does not probe unrelated external providers', () => {
+    const home = controllerHome();
+    registerProvider(home);
+    installExternalPluginRegistration(home, {
+      pluginId: 'unrelated_provider',
+      displayName: 'Unrelated Provider',
+      provider: 'local-test',
+      pluginVersion: '1.0.0',
+      protocolVersion: '1.0',
+      scope: 'controller',
+      transport: { kind: 'unix_socket_jsonl', socketPath: join(home, 'unrelated-provider.sock') },
+      permissions: [],
+      capabilities: [],
+      actions: [],
+    });
+    const repository = controllerPluginRepository(home);
+    expect(readStoredAssistantPluginManifest(home, repository, 'desktop_operator')).toBeUndefined();
+    expect(readStoredAssistantPluginManifest(home, repository, 'unrelated_provider')).toBeUndefined();
+    runComputerDoctor({ controllerHome: home });
+    expect(readStoredAssistantPluginManifest(home, repository, 'desktop_operator')).toBeDefined();
+    expect(readStoredAssistantPluginManifest(home, repository, 'unrelated_provider')).toBeUndefined();
+  });
+
+  test('serializes Computer uninstall against the shared official-provider lifecycle lock', () => {
+    const home = controllerHome();
+    expect(() => withOfficialPluginLifecycleLock(home, 'desktop_operator', () =>
+      runComputerUninstall({ controllerHome: home }))).toThrow(/LOCK_HELD/);
   });
 
   test('fails closed instead of forgetting a registered native provider when its uninstaller is missing', () => {

@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { Command } from 'commander';
 import { resolveControllerHome, controllerSystemRoot } from '../repositories/controller-home';
+import { withControllerLock, type ControllerLockKey } from '../repositories/locks';
 import { installExternalPluginRegistration, listExternalPluginRegistrations, type ExternalPluginRegistration, type ExternalPluginRegistrationInput } from '../../runtime/plugins/external-registration';
 import { createDesktopOperatorRegistrationInput } from '../../runtime/plugins/desktop-operator-registration';
 import { controllerPluginRepository, getAssistantPluginManifest, syncAssistantPluginRegistry } from '../../runtime/plugins/store';
@@ -38,6 +39,10 @@ export function pluginCatalogCompatibility(entry:RegistryEntry,platform:NodeJS.P
 }
 export function officialPluginCatalogItems(platform:NodeJS.Platform=process.platform){return registry().plugins.map(entry=>({...entry,...pluginCatalogCompatibility(entry,platform)}));}
 export function officialPluginCatalogEntry(pluginId:string):RegistryEntry|undefined{return registry().plugins.find(entry=>entry.id===pluginId);}
+export function officialPluginLifecycleLockKey(pluginId:string):ControllerLockKey{return{scope:'global',resource:`external-plugin:${pluginId}`};}
+export function withOfficialPluginLifecycleLock<T>(controllerHome:string,pluginId:string,operation:()=>T):T{
+  return withControllerLock(controllerHome,officialPluginLifecycleLockKey(pluginId),`official-plugin-lifecycle:${pluginId}:${process.pid}`,operation);
+}
 export function externalPluginListItem(controllerHome:string,registration:ExternalPluginRegistration){
   const base={pluginId:registration.pluginId,version:registration.pluginVersion,provider:registration.provider,enabled:registration.enabled,scope:registration.scope,transport:registration.transport.kind};
   if(registration.scope==='repository')return{...base,healthScope:'repository_context_required' as const};
@@ -105,7 +110,7 @@ function install(entry:RegistryEntry,controllerHome:string):Record<string,unknow
 export function installOfficialPlugin(pluginId:string,controllerHome:string):Record<string,unknown>{
   const entry=officialPluginCatalogEntry(pluginId);
   if(!entry)throw new Error(`PLUGIN_NOT_IN_OFFICIAL_CATALOG: ${pluginId}`);
-  return install(entry,controllerHome);
+  return withOfficialPluginLifecycleLock(controllerHome,pluginId,()=>install(entry,controllerHome));
 }
 export function buildPluginCommand():Command{
   const root=new Command('plugin').description('Discover and install trusted Forge plugins');

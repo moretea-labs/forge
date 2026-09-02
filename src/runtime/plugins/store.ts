@@ -236,6 +236,15 @@ function readStoredManifest(controllerHome: string, repoId: string, pluginId: st
   }
 }
 
+/** Read-only persisted plugin projection. This never probes or rebuilds a provider manifest. */
+export function readStoredAssistantPluginManifest(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  pluginId: string,
+): AssistantPluginManifest | undefined {
+  return readStoredManifest(controllerHome, repository.repoId, pluginId);
+}
+
 function cachedManifestForRepository(
   controllerHome: string,
   repoId: string,
@@ -533,7 +542,7 @@ export function syncAssistantPluginRegistry(
   };
 }
 
-function syncAssistantPluginManifest(
+export function syncAssistantPluginManifest(
   controllerHome: string,
   repository: RepositoryRecord,
   pluginId: string,
@@ -556,6 +565,29 @@ function syncAssistantPluginManifest(
     manifest,
     index: writeRegistry(controllerHome, repository.repoId, manifests),
   };
+}
+
+/** Remove one persisted plugin projection without probing or rebuilding unrelated providers. */
+export function removeAssistantPluginManifestProjection(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  pluginId: string,
+): AssistantPluginRegistryIndex {
+  invalidateAssistantPluginManifestCache(controllerHome, repository.repoId, pluginId);
+  rmSync(manifestPath(controllerHome, repository.repoId, pluginId), { force: true });
+  const current = readJsonFile<AssistantPluginRegistryIndex>(indexPath(controllerHome, repository.repoId), {
+    schemaVersion: 1,
+    updatedAt: now(),
+    plugins: [],
+  });
+  const next: AssistantPluginRegistryIndex = {
+    ...current,
+    updatedAt: now(),
+    plugins: current.plugins.filter((entry) => entry.pluginId !== pluginId),
+  };
+  writeJsonAtomic(indexPath(controllerHome, repository.repoId), next);
+  markControllerContextProjectionDirty(repository.canonicalRoot, `plugin:${pluginId}:removed`);
+  return next;
 }
 
 export function isDirectPluginReadAction(action: AssistantPluginActionDescriptor): boolean {

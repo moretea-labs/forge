@@ -1342,6 +1342,14 @@ requireText('src/cli/commands/computer.ts', "new Command('computer')");
 requireText('src/cli/commands/computer.ts', 'installOfficialPlugin(COMPUTER_PROVIDER_PLUGIN_ID');
 requireText('src/cli/commands/computer.ts', 'provider release: independent');
 requireText('src/cli/commands/computer.ts', 'COMPUTER_PROVIDER_UNINSTALLER_MISSING');
+requireText('src/cli/commands/computer.ts', 'readStoredAssistantPluginManifest');
+requireText('src/cli/commands/computer.ts', 'syncAssistantPluginManifest');
+requireText('src/cli/commands/computer.ts', 'withOfficialPluginLifecycleLock');
+forbid('src/cli/commands/computer.ts', /syncAssistantPluginRegistry|getAssistantPluginManifest\(/, 'Computer status/doctor must use stored or targeted provider health APIs rather than globally probing the plugin registry or execution-style manifest lookup');
+requireText('src/cli/commands/plugin.ts', 'external-plugin:${pluginId}');
+requireText('src/runtime/plugins/store.ts', 'export function readStoredAssistantPluginManifest');
+requireText('src/runtime/plugins/store.ts', 'export function syncAssistantPluginManifest');
+requireText('src/runtime/plugins/store.ts', 'export function removeAssistantPluginManifestProjection');
 requireText('src/cli/index.ts', 'buildComputerCommand');
 requireText('src/cli/index.ts', "'computer'");
 

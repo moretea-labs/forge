@@ -4,8 +4,18 @@ import { join } from 'path';
 import { Command } from 'commander';
 import { resolveControllerHome, controllerSystemRoot } from '../repositories/controller-home';
 import { getExternalPluginRegistration, removeExternalPluginRegistration } from '../../runtime/plugins/external-registration';
-import { controllerPluginRepository, getAssistantPluginManifest, syncAssistantPluginRegistry } from '../../runtime/plugins/store';
-import { installOfficialPlugin, officialPluginCatalogEntry, pluginCatalogCompatibility } from './plugin';
+import {
+  controllerPluginRepository,
+  readStoredAssistantPluginManifest,
+  removeAssistantPluginManifestProjection,
+  syncAssistantPluginManifest,
+} from '../../runtime/plugins/store';
+import {
+  installOfficialPlugin,
+  officialPluginCatalogEntry,
+  pluginCatalogCompatibility,
+  withOfficialPluginLifecycleLock,
+} from './plugin';
 
 export const COMPUTER_PROVIDER_PLUGIN_ID = 'desktop_operator';
 const COMPUTER_PRODUCT_ID = 'computer';
@@ -81,20 +91,20 @@ function unavailableHealth(state: string, message: string): ComputerProviderHeal
 function providerHealth(controllerHome: string): ComputerProviderHealth {
   const registration = getExternalPluginRegistration(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID);
   if (!registration) return unavailableHealth('not_installed', 'Computer macOS provider is not installed.');
-  try {
-    const repository = controllerPluginRepository(controllerHome);
-    const health = getAssistantPluginManifest(controllerHome, repository, COMPUTER_PROVIDER_PLUGIN_ID).health;
-    return {
-      state: health.state,
-      ready: health.ready,
-      probed: health.probed,
-      errors: [...health.errors],
-      warnings: [...health.warnings],
-      details: health.details ? { ...health.details } : undefined,
-    };
-  } catch (error) {
-    return unavailableHealth('error', error instanceof Error ? error.message : String(error));
+  const repository = controllerPluginRepository(controllerHome);
+  const stored = readStoredAssistantPluginManifest(controllerHome, repository, COMPUTER_PROVIDER_PLUGIN_ID);
+  if (!stored) {
+    return unavailableHealth('unprobed', 'Computer provider health has not been recorded yet; run forge computer doctor.');
   }
+  const health = stored.health;
+  return {
+    state: health.state,
+    ready: health.ready,
+    probed: health.probed,
+    errors: [...health.errors],
+    warnings: [...health.warnings],
+    details: health.details ? { ...health.details } : undefined,
+  };
 }
 
 export function readComputerStatus(options: { controllerHome?: string } = {}): ComputerStatusReport {
@@ -145,7 +155,7 @@ export function runComputerUpdate(options: { controllerHome?: string } = {}) {
 export function runComputerDoctor(options: { controllerHome?: string } = {}): ComputerDoctorReport {
   const controllerHome = resolveControllerHome(options.controllerHome);
   if (getExternalPluginRegistration(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID)) {
-    syncAssistantPluginRegistry(controllerHome, controllerPluginRepository(controllerHome));
+    syncAssistantPluginManifest(controllerHome, controllerPluginRepository(controllerHome), COMPUTER_PROVIDER_PLUGIN_ID);
   }
   const status = readComputerStatus({ controllerHome });
   const checks: ComputerDoctorReport['checks'] = [];
@@ -217,20 +227,22 @@ export function runComputerUninstall(options: { controllerHome?: string; purge?:
   purged: boolean;
 } {
   const controllerHome = resolveControllerHome(options.controllerHome);
-  const registration = getExternalPluginRegistration(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID);
-  const packageRoot = providerPackageRoot(controllerHome);
-  if (!registration && !existsSync(packageRoot)) return { removed: false, purged: options.purge === true };
-  const scriptPath = join(packageRoot, 'scripts', 'uninstall.sh');
-  if (registration && !existsSync(scriptPath)) {
-    throw new Error('COMPUTER_PROVIDER_UNINSTALLER_MISSING: refusing to forget a registered provider while its native uninstall lifecycle cannot be proven.');
-  }
-  if (existsSync(scriptPath)) runProviderUninstaller(scriptPath, packageRoot, options.purge === true);
-  if (registration) {
-    removeExternalPluginRegistration(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID, { expectedRevision: registration.revision });
-  }
-  rmSync(packageRoot, { recursive: true, force: true });
-  syncAssistantPluginRegistry(controllerHome, controllerPluginRepository(controllerHome));
-  return { removed: true, purged: options.purge === true };
+  return withOfficialPluginLifecycleLock(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID, () => {
+    const registration = getExternalPluginRegistration(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID);
+    const packageRoot = providerPackageRoot(controllerHome);
+    if (!registration && !existsSync(packageRoot)) return { removed: false, purged: options.purge === true };
+    const scriptPath = join(packageRoot, 'scripts', 'uninstall.sh');
+    if (registration && !existsSync(scriptPath)) {
+      throw new Error('COMPUTER_PROVIDER_UNINSTALLER_MISSING: refusing to forget a registered provider while its native uninstall lifecycle cannot be proven.');
+    }
+    if (existsSync(scriptPath)) runProviderUninstaller(scriptPath, packageRoot, options.purge === true);
+    if (registration) {
+      removeExternalPluginRegistration(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID, { expectedRevision: registration.revision });
+    }
+    rmSync(packageRoot, { recursive: true, force: true });
+    removeAssistantPluginManifestProjection(controllerHome, controllerPluginRepository(controllerHome), COMPUTER_PROVIDER_PLUGIN_ID);
+    return { removed: true, purged: options.purge === true };
+  });
 }
 
 export function formatComputerStatus(report: ComputerStatusReport): string {
