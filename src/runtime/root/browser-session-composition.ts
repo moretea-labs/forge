@@ -3,10 +3,11 @@ import type {
   BrowserSessionAuthorityContext,
   BrowserSessionAuthorityPort,
 } from '../../../packages/plugin-runtime/browser/session-authority';
-import { createSqliteBrowserSessionAuthority } from '../../../adapters/browser/index';
+import { createBrowserSessionAuthority } from '../../../adapters/browser/index';
+import { createRuntimeBrowserSessionPersistence } from './browser-session-persistence';
 
 const browserSessionAuthorityContext = new AsyncLocalStorage<BrowserSessionAuthorityContext>();
-const browserSessionAuthority = createSqliteBrowserSessionAuthority();
+const browserSessionAuthority = createBrowserSessionAuthority(createRuntimeBrowserSessionPersistence());
 
 export function withRuntimeBrowserSessionAuthorityContext<T>(
   context: BrowserSessionAuthorityContext,

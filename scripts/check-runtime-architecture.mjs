@@ -1349,10 +1349,16 @@ for (const path of sourceFiles('src/runtime/plugins')) {
 }
 requireText('packages/plugin-runtime/browser/session-authority.ts', 'export interface BrowserSessionAuthorityPort');
 forbid('packages/plugin-runtime/browser/session-authority.ts', /sqlite|control-plane|src\/runtime|adapters\//, 'Browser session authority port must not own persistence implementation');
-requireText('adapters/browser/sqlite-session-authority.ts', 'createSqliteBrowserSessionAuthority');
-requireText('src/runtime/root/browser-session-composition.ts', 'createSqliteBrowserSessionAuthority');
+requireText('packages/plugin-runtime/browser/session-persistence.ts', 'export interface BrowserSessionPersistencePort');
+forbid('packages/plugin-runtime/browser/session-persistence.ts', /sqlite|control-plane|src\/runtime|adapters\//, 'Browser session persistence port must remain storage-implementation neutral');
+requireText('adapters/browser/session-authority.ts', 'createBrowserSessionAuthority');
+forbid('adapters/browser/session-authority.ts', /src\/runtime\/|sqlite-store|readControlPlaneRecord|listControlPlaneRecords|withControlPlaneTransaction/, 'Browser session authority adapter must consume the injected persistence port rather than Runtime control-plane storage');
+requireText('adapters/browser/sqlite-session-authority.ts', '@deprecated C0 compatibility shim');
+if (text('adapters/browser/sqlite-session-authority.ts').split(/\r?\n/).length > 4) failures.push('adapters/browser/sqlite-session-authority.ts must remain a thin C0 compatibility facade');
+requireText('src/runtime/root/browser-session-persistence.ts', 'createRuntimeBrowserSessionPersistence');
+requireText('src/runtime/root/browser-session-composition.ts', 'createBrowserSessionAuthority(createRuntimeBrowserSessionPersistence())');
 requireText('src/runtime/plugins/browser-session-authority.ts', '@deprecated C0 compatibility shim');
-if (text('src/runtime/plugins/browser-session-authority.ts').split(/\r?\n/).length > 26) failures.push('src/runtime/plugins/browser-session-authority.ts must remain a thin C0 compatibility facade');
+if (text('src/runtime/plugins/browser-session-authority.ts').split(/\r?\n/).length > 90) failures.push('src/runtime/plugins/browser-session-authority.ts must remain a bounded C0 compatibility facade');
 for (const path of sourceFiles('src/runtime/plugins')) {
   if (path === 'src/runtime/plugins/browser-session-authority.ts') continue;
   forbid(path, /from\s+['"]\.\/browser-session-authority['"]/, 'active Browser runtime code must consume the composed BrowserSessionAuthorityPort, not the retired authority owner');

@@ -1,1 +1,1 @@
-export * from './sqlite-session-authority';
+export * from './session-authority';
