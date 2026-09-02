@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { workContractStorePath } from '../../packages/kernel/work/infrastructure/work-contract-store';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import type { ManagedProcessRecord, ProcessCheckExecutionIdentity } from '../../src/runtime/execution/process-runtime/types';
@@ -128,7 +129,7 @@ function contractFor(fx: ReturnType<typeof fixture>) {
 }
 
 describe('Work validation receipt convergence', () => {
-  test('returns a successful terminal check across MCP transport rotation and advances Work delivery', () => {
+  test('returns a successful terminal check across MCP transport rotation and advances Work review', () => {
     const fx = fixture('succeeded');
     const rotatedHandle = { ...fx.handle, sessionId: 'session-validation-next' };
     const result = reconcileWorkValidation(fx.controllerHome, rotatedHandle);
@@ -136,11 +137,11 @@ describe('Work validation receipt convergence', () => {
     expect(result.handle.finalization.validation).toBe('done');
     expect(result.handle.validationRun).toBeUndefined();
     expect(result.handle.validatedInputFingerprint).toBe('validation-fingerprint');
-    expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'delivery', evidenceState: 'valid' });
+    expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'review', evidenceState: 'valid' });
 
     const repeated = reconcileWorkValidation(fx.controllerHome, result.handle);
     expect(repeated).toMatchObject({ outcome: 'not_validating', changed: false, handle: { state: 'editing' } });
-    expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'delivery', evidenceState: 'valid' });
+    expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'review', evidenceState: 'valid' });
   });
   test('accepts the producer cacheKey for the exact Work verification snapshot after authority-only worktree drift', () => {
     const snapshotControllerHome = mkdtempSync(join(tmpdir(), 'forge-work-validation-cache-key-controller-'));
@@ -390,7 +391,7 @@ describe('Work validation receipt convergence', () => {
       infrastructureFailure: 0,
       errors: [],
     });
-    expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'delivery', evidenceState: 'valid' });
+    expect(contractFor(fx)).toMatchObject({ status: 'running', phase: 'review', evidenceState: 'valid' });
   });
 
   test('accepted check failure is terminal for WorkHandle and WorkContract verification', () => {
@@ -525,5 +526,43 @@ describe('workspace-bound validation identity', () => {
       checkId: 'check:a',
       requestedChecks: ['check:a'],
     })[0]).toMatchObject({ current: false, staleReason: 'verification inputs changed' });
+  });
+
+  test('reads an in-flight legacy Work that predates the first-class review checkpoint', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-work-review-phase-migration-'));
+    roots.push(root);
+    const workId = 'work-legacy-review-phase';
+    createWorkContract({ root }, {
+      workId,
+      repoId: 'repo-legacy-review-phase',
+      mode: 'goal_workloop',
+      objective: 'Continue an in-flight Work across a Runtime schema upgrade.',
+      acceptanceCriteria: ['Durable Work remains readable after adding the review phase.'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: ['src/**'],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+
+    const storePath = workContractStorePath({ root });
+    const persisted = JSON.parse(readFileSync(storePath, 'utf8')) as { contracts: Array<Record<string, any>> };
+    const legacy = persisted.contracts[0]!;
+    legacy.phase = 'delivery';
+    legacy.phaseEvidence.implementation.state = 'satisfied';
+    legacy.phaseEvidence.verification.state = 'satisfied';
+    delete legacy.phaseEvidence.review;
+    legacy.phaseEvidence.delivery.state = 'active';
+    legacy.phaseEvidence.cleanup.state = 'pending';
+    writeFileSync(storePath, `${JSON.stringify(persisted, null, 2)}\
+`);
+
+    const migrated = getWorkContract({ root }, workId)!;
+    expect(migrated.phase).toBe('delivery');
+    expect(migrated.phaseEvidence.review.state).toBe('skipped');
+    expect(migrated.phaseEvidence.review.summary).toContain('compatibility-skipped without synthesizing Controller approval');
+    expect(migrated.implementationReviews).toEqual([]);
+    expect(migrated.phaseEvidence.delivery.state).toBe('active');
   });
 });

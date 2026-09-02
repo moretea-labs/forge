@@ -1,7 +1,9 @@
 import {
   getWorkContract,
+  requestWorkImplementationReview,
   transitionWorkContractPhase,
   updateWorkContract,
+  workRequiresImplementationReview,
 } from '../../../../packages/kernel/work/api/index';
 import {
   listValidatingWorkHandles,
@@ -74,14 +76,40 @@ export function projectWorkValidationOutcome(
   if (!contract || contract.completionReceipt) return;
 
   if (outcome === 'passed') {
+    // Validation reconciliation may be replayed during finalization. A receipt
+    // that is already current must not rewind an active or explicitly approved
+    // review. A genuinely new validation first marks evidence stale/partial, so
+    // only that path may re-enter verification/review. No-check commit transfer
+    // can preserve an approved review before evidenceState itself is projected.
+    const validationWasRearmed = contract.evidenceState === 'stale' || contract.evidenceState === 'partial';
+    const currentReviewIsAuthoritative = contract.phase === 'review' && contract.evidenceState === 'valid';
+    const approvedDeliveryIsAuthoritative = contract.phase === 'delivery'
+      && contract.phaseEvidence.review.state === 'satisfied'
+      && !validationWasRearmed;
+    if (currentReviewIsAuthoritative || approvedDeliveryIsAuthoritative) return;
+    const verified = transitionWorkContractPhase(options, contractId, {
+      phase: 'verification',
+      status: 'running',
+      state: 'satisfied',
+      summary: summary ?? 'All requested validation receipts passed.',
+      evidenceRefs: contract.evidenceRefs,
+    });
+    updateWorkContract(options, contractId, { evidenceState: 'valid' });
+    if (workRequiresImplementationReview(verified.workKind, verified.scopeEvidence?.actualChangedPaths ?? [])) {
+      requestWorkImplementationReview(
+        options,
+        contractId,
+        'Validation receipts passed; explicit Controller implementation review is required before delivery.',
+      );
+      return;
+    }
     transitionWorkContractPhase(options, contractId, {
       phase: 'delivery',
       status: 'running',
       state: 'active',
-      summary: summary ?? 'All requested validation receipts passed; delivery is next.',
-      evidenceRefs: contract.evidenceRefs,
+      summary: 'Validation receipts passed and this Work kind does not require implementation review; delivery is next.',
+      evidenceRefs: verified.evidenceRefs,
     });
-    updateWorkContract(options, contractId, { evidenceState: 'valid' });
     return;
   }
 

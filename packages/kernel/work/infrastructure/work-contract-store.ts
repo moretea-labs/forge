@@ -236,6 +236,29 @@ function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore
         : mappedStatus === 'completed'
           ? 'delivery'
           : legacy.phase ?? inferredPhase(status);
+      const legacyDefaults = legacyPhaseEvidence({
+        phase,
+        status,
+        evidenceRefs: legacy.evidenceRefs ?? [],
+        completionReceipt: legacy.completionReceipt,
+        updatedAt: legacy.updatedAt,
+      });
+      const existingPhaseEvidence = legacy.phaseEvidence as Partial<WorkPhaseEvidenceMap> | undefined;
+      const phaseEvidence: WorkPhaseEvidenceMap = existingPhaseEvidence
+        ? {
+            ...legacyDefaults,
+            ...existingPhaseEvidence,
+            review: existingPhaseEvidence.review ?? {
+              ...legacyDefaults.review,
+              ...(phaseIndex(phase) > phaseIndex('review')
+                ? {
+                    state: 'skipped' as const,
+                    summary: 'Legacy Work advanced beyond first-class implementation review; compatibility-skipped without synthesizing Controller approval.',
+                  }
+                : {}),
+            },
+          }
+        : legacyDefaults;
       return validateWorkSemantics({
         ...legacy,
         schemaVersion: legacy.schemaVersion ?? 1,
@@ -243,13 +266,7 @@ function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore
         executionPlacement: executionPlacementForWork(legacy),
         status,
         phase,
-        phaseEvidence: legacy.phaseEvidence ?? legacyPhaseEvidence({
-          phase,
-          status,
-          evidenceRefs: legacy.evidenceRefs ?? [],
-          completionReceipt: legacy.completionReceipt,
-          updatedAt: legacy.updatedAt,
-        }),
+        phaseEvidence,
         risk: legacy.risk ?? 'medium',
         workKind: legacy.workKind ?? 'repository_change',
         dispatchState: legacy.dispatchState ?? inferredDispatchState(status),
