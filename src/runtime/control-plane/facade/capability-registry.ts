@@ -1,3 +1,8 @@
+import {
+  COMPUTER_CAPTURE_CAPABILITY,
+  COMPUTER_INPUT_CAPABILITY,
+  COMPUTER_OBSERVE_CAPABILITY,
+} from '../../../../packages/protocols/computer/index';
 import type { AssistantPluginManifest } from '../../plugins/types';
 import type { CapabilityDescriptor, CapabilityDomain, CapabilityExecutionSurface, CapabilityGroupSummary, CapabilityOperationClass, CapabilityRisk, FacadeTool } from './types';
 
@@ -184,6 +189,10 @@ function pluginCapabilityDescriptor(
   manifest: AssistantPluginManifest,
   action: AssistantPluginManifest['actions'][number],
 ): CapabilityDescriptor {
+  const semanticCapabilities = (manifest.capabilities ?? [])
+    .filter((capability) => capability.actions.includes(action.actionId))
+    .map((capability) => capability.capabilityId)
+    .sort();
   return {
     capabilityId: `plugin.${manifest.pluginId}.${action.actionId}`,
     domain: domainFromPlugin(manifest.pluginId),
@@ -193,6 +202,7 @@ function pluginCapabilityDescriptor(
     exposedVia: exposedViaFromPluginAction(action.readOnly, action.risk),
     schemaExposure: 'plugin_manifest',
     summary: `${manifest.displayName}: ${action.title}. ${action.description}`,
+    ...(semanticCapabilities.length > 0 ? { semanticCapabilities } : {}),
   } satisfies CapabilityDescriptor;
 }
 
@@ -225,8 +235,10 @@ function capabilityIntentTokens(query: string): string[] {
   return [...new Set(normalizedCapabilityText(query).split(' ').filter((token) => token.length >= 2))];
 }
 
-function intentBoosts(query: string, capabilityId: string): Array<{ label: string; score: number }> {
+function intentBoosts(query: string, descriptor: CapabilityDescriptor): Array<{ label: string; score: number }> {
   const normalized = normalizedCapabilityText(query);
+  const capabilityId = descriptor.capabilityId;
+  const semanticCapabilities = new Set(descriptor.semanticCapabilities ?? []);
   const boosts: Array<{ label: string; score: number }> = [];
   const appleDevelopmentIntent = /\b(xcode|provision|provisioning|signing|developer account|apple developer)\b/.test(normalized);
   if (appleDevelopmentIntent) {
@@ -235,10 +247,9 @@ function intentBoosts(query: string, capabilityId: string): Array<{ label: strin
     if (capabilityId === 'plugin.app_store_connect.auth_status') boosts.push({ label: 'apple-development', score: 88 });
     else if (capabilityId === 'plugin.app_store_connect.configure') boosts.push({ label: 'apple-development', score: 82 });
     else if (capabilityId.startsWith('plugin.app_store_connect.')) boosts.push({ label: 'apple-development', score: 28 });
-    if (capabilityId === 'plugin.desktop_operator.desktop_session_open') boosts.push({ label: 'xcode-desktop-fallback', score: 86 });
-    else if (capabilityId === 'plugin.desktop_operator.desktop_observe') boosts.push({ label: 'xcode-desktop-fallback', score: 78 });
-    else if (capabilityId === 'plugin.desktop_operator.desktop_press') boosts.push({ label: 'xcode-desktop-fallback', score: 74 });
-    else if (capabilityId.startsWith('plugin.desktop_operator.')) boosts.push({ label: 'xcode-desktop-fallback', score: 22 });
+    if (semanticCapabilities.has(COMPUTER_OBSERVE_CAPABILITY)) boosts.push({ label: 'xcode-computer-observe', score: 78 });
+    if (semanticCapabilities.has(COMPUTER_INPUT_CAPABILITY)) boosts.push({ label: 'xcode-computer-input', score: 74 });
+    if (semanticCapabilities.has(COMPUTER_CAPTURE_CAPABILITY)) boosts.push({ label: 'xcode-computer-capture', score: 44 });
   }
 
   const browserLoginIntent = normalized.includes('browser')
@@ -246,9 +257,8 @@ function intentBoosts(query: string, capabilityId: string): Array<{ label: strin
   if (browserLoginIntent) {
     if (capabilityId === 'plugin.browser') boosts.push({ label: 'browser-auth', score: 90 });
     else if (capabilityId.startsWith('plugin.browser.')) boosts.push({ label: 'browser-auth', score: 62 });
-    if (capabilityId === 'plugin.desktop_operator.desktop_session_open') boosts.push({ label: 'browser-desktop-fallback', score: 70 });
-    else if (capabilityId === 'plugin.desktop_operator.desktop_observe') boosts.push({ label: 'browser-desktop-fallback', score: 62 });
-    else if (capabilityId.startsWith('plugin.desktop_operator.')) boosts.push({ label: 'browser-desktop-fallback', score: 18 });
+    if (semanticCapabilities.has(COMPUTER_OBSERVE_CAPABILITY)) boosts.push({ label: 'browser-computer-observe', score: 54 });
+    if (semanticCapabilities.has(COMPUTER_INPUT_CAPABILITY)) boosts.push({ label: 'browser-computer-input', score: 50 });
   }
   return boosts;
 }
@@ -272,6 +282,7 @@ export function searchCapabilityDescriptors(
         descriptor.domain,
         descriptor.operationClass,
         descriptor.exposedVia,
+        ...(descriptor.semanticCapabilities ?? []),
       ].join(' '));
       let score = haystack.includes(normalizedQuery) ? 48 : 0;
       const matchedTerms = new Set<string>();
@@ -280,7 +291,7 @@ export function searchCapabilityDescriptors(
         matchedTerms.add(token);
         score += descriptor.capabilityId.toLowerCase().includes(token) ? 12 : 5;
       }
-      for (const boost of intentBoosts(query, descriptor.capabilityId)) {
+      for (const boost of intentBoosts(query, descriptor)) {
         score += boost.score;
         matchedTerms.add(boost.label);
       }

@@ -316,6 +316,8 @@ export interface CapabilityDescriptor {
   exposedVia: CapabilityExecutionSurface;
   schemaExposure: CapabilitySchemaExposure;
   summary: string;
+  /** Provider-declared semantic capabilities implemented by this executable action. */
+  semanticCapabilities?: string[];
 }
 
 export interface CapabilityGroupSummary {

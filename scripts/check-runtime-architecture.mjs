@@ -1288,6 +1288,11 @@ for (const path of sourceFiles('src/runtime/plugins').filter((entry) => /\/brows
 }
 requireText('src/runtime/plugins/macos-capability-broker.ts', '@deprecated C0 compatibility shim');
 if (text('src/runtime/plugins/macos-capability-broker.ts').split(/\r?\n/).length > 24) failures.push('src/runtime/plugins/macos-capability-broker.ts must remain a thin C0 compatibility facade');
+for (const path of sourceFiles('src').filter((entry) => entry !== 'src/runtime/plugins/macos-capability-broker.ts')) {
+  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*macos-capability-broker['"]/, 'Deprecated macOS capability broker is compatibility/test-only and must have no production consumers');
+}
+requireText('src/runtime/control-plane/facade/types.ts', 'semanticCapabilities?: string[]');
+forbid('src/runtime/control-plane/facade/capability-registry.ts', /plugin\.desktop_operator/, 'Control Plane capability discovery must rank provider-declared semantic capabilities rather than concrete Desktop Operator plugin identity');
 for (const path of sourceFiles('packages/plugin-runtime')) {
   forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*(?:adapters\/|src\/runtime\/)/, 'Plugin Runtime provider dispatch must not depend on concrete adapters or Runtime implementations');
 }
