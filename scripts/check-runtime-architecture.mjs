@@ -1260,6 +1260,8 @@ forbid('adapters/mcp/tunnels/openai-secure-tunnel.ts', /\bidentityMatches\b/, 't
 
 // C0 Computer capability boundary: Browser and Desktop remain separate providers.
 requireText('packages/protocols/computer/contract.ts', 'COMPUTER_BROWSER_AUTOMATION_CAPABILITY');
+requireText('packages/protocols/computer/contract.ts', 'ComputerRuntimeProviderCapabilityId');
+requireText('packages/plugin-runtime/computer/provider.ts', 'ComputerRuntimeProviderCapabilityId');
 requireText('packages/protocols/computer/contract.ts', 'COMPUTER_CAPABILITY_PROTOCOL_VERSION');
 requireText('packages/protocols/computer/contract.ts', 'COMPUTER_CAPABILITY_EXECUTION_METHOD');
 requireText('packages/protocols/computer/contract.ts', 'export interface ComputerCapabilityAdvertisement');

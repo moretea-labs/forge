@@ -12,6 +12,13 @@ export type ComputerCapabilityId =
   | typeof COMPUTER_INPUT_CAPABILITY
   | typeof COMPUTER_CAPTURE_CAPABILITY;
 
+/**
+ * Capabilities with a typed request DTO and execution method in the plugin-runtime provider registry.
+ * Observe/input/capture remain provider-neutral semantic capabilities exposed by typed plugin actions
+ * until their dedicated Computer protocol requests are defined.
+ */
+export type ComputerRuntimeProviderCapabilityId = typeof COMPUTER_BROWSER_AUTOMATION_CAPABILITY;
+
 /** Runtime advertisement used to negotiate one provider-neutral Computer capability. */
 export interface ComputerCapabilityAdvertisement {
   capabilityId: string;
