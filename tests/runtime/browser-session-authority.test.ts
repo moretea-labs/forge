@@ -114,6 +114,23 @@ describe('browser session controller authority', () => {
     expect(findBrowserSession(controllerHome, 'repo-b', repoB, 'native-b')).toBeUndefined();
   });
 
+  test('legacy import cannot resurrect a tombstoned native identity from another repository', () => {
+    const { controllerHome, repoA, repoB } = fixture();
+    saveBrowserSession(controllerHome, 'repo-a', repoA, session('native-a', '2026-08-24T01:00:00.000Z', { native: true }));
+    expect(tombstoneBrowserSession(controllerHome, 'repo-a', repoA, 'native-a')).toBe(true);
+
+    const legacyRoot = join(repoB, '.forge', 'browser', 'sessions');
+    mkdirSync(legacyRoot, { recursive: true });
+    writeFileSync(join(legacyRoot, 'native-b.json'), JSON.stringify(
+      session('native-b', '2026-08-24T02:00:00.000Z', { native: true }),
+    ));
+
+    expect(ensureLegacyBrowserSessionsImported(controllerHome, 'repo-b', repoB)).toBe(0);
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'native-a')).toBeUndefined();
+    expect(findBrowserSession(controllerHome, 'repo-b', repoB, 'native-b')).toBeUndefined();
+    expect(listBrowserSessions(controllerHome, 'repo-b', repoB).sessions).toEqual([]);
+  });
+
   test('bounds and paginates listing', () => {
     const { controllerHome, repoA } = fixture();
     saveBrowserSession(controllerHome, 'repo-a', repoA, session('one', '2026-08-24T01:00:00.000Z'));

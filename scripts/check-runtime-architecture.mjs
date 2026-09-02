@@ -1356,6 +1356,7 @@ forbid('packages/plugin-runtime/browser/session-authority.ts', /sqlite|control-p
 requireText('packages/plugin-runtime/browser/session-persistence.ts', 'export interface BrowserSessionPersistencePort');
 forbid('packages/plugin-runtime/browser/session-persistence.ts', /sqlite|control-plane|src\/runtime|adapters\//, 'Browser session persistence port must remain storage-implementation neutral');
 requireText('adapters/browser/session-authority.ts', 'createBrowserSessionAuthority');
+requireText('adapters/browser/session-authority.ts', "current?.value.status === 'tombstoned'");
 forbid('adapters/browser/session-authority.ts', /src\/runtime\/|sqlite-store|readControlPlaneRecord|listControlPlaneRecords|withControlPlaneTransaction/, 'Browser session authority adapter must consume the injected persistence port rather than Runtime control-plane storage');
 requireText('adapters/browser/sqlite-session-authority.ts', '@deprecated C0 compatibility shim');
 if (text('adapters/browser/sqlite-session-authority.ts').split(/\r?\n/).length > 4) failures.push('adapters/browser/sqlite-session-authority.ts must remain a thin C0 compatibility facade');

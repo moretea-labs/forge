@@ -129,6 +129,8 @@ export function ensureLegacyBrowserSessionsImported(
     for (const session of sessions) {
       const key = recordKey(repoId, session);
       const current = transaction.read<BrowserSessionAuthorityEntry>(SESSION_NAMESPACE, SESSION_SCOPE, key);
+      // Legacy migration is observational compatibility, not authority to resurrect an explicitly retired session.
+      if (current?.value.status === 'tombstoned') continue;
       const next = mergeEntry(current?.value, repoId, session, { importedFromLegacy: true });
       transaction.write({
         namespace: SESSION_NAMESPACE,

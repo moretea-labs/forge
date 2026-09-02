@@ -333,6 +333,10 @@
       "module": "browser",
       "resource": "pure"
     },
+    "tests/runtime/computer-provider-registry.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
     "tests/runtime/browser-user-profile-authority.test.ts": {
       "module": "browser",
       "resource": "temp-isolated"
