@@ -1088,11 +1088,6 @@ const b7KernelLegacyEdges = edgeSet(b7ProductionGraph, (edge) => {
   const { from, to } = edgeParts(edge);
   return from.startsWith('packages/kernel/') && to.startsWith('src/');
 });
-const b7AdapterLegacyEdges = edgeSet(b7ProductionGraph, (edge) => {
-  const { from, to } = edgeParts(edge);
-  return from.startsWith('adapters/') && to.startsWith('src/');
-});
-
 const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
   'packages/kernel/work/domain/types.ts -> src/runtime/evidence/process-check-receipt.ts',
   'packages/kernel/work/domain/types.ts -> src/cli/controller/types.ts',
