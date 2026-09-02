@@ -1,3 +1,9 @@
+import {
+  COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
+  COMPUTER_CAPTURE_CAPABILITY,
+  COMPUTER_INPUT_CAPABILITY,
+  COMPUTER_OBSERVE_CAPABILITY,
+} from '../../../packages/protocols/computer/index';
 import type { ExternalPluginRegistrationInput } from './external-registration';
 import type { AssistantPluginActionDescriptor } from './types';
 
@@ -414,6 +420,10 @@ export function createDesktopOperatorRegistrationInput(
       { capabilityId: 'desktop.capture', title: 'Desktop capture', description: 'Capture authorized screenshots.', scopes: ['desktop.capture'], actions: ['desktop_screenshot'] },
       { capabilityId: 'desktop.clipboard', title: 'Desktop clipboard', description: 'Read or replace plain-text clipboard content and issue explicit copy/paste in a bound session.', scopes: ['desktop.clipboard'], actions: ['desktop_clipboard_read', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste'] },
       { capabilityId: 'desktop.batch', title: 'Desktop batch', description: 'Run bounded desktop action batches.', scopes: ['desktop.batch'], actions: ['desktop_batch'] },
+      { capabilityId: COMPUTER_OBSERVE_CAPABILITY, title: 'Computer observation', description: 'Provider-neutral bounded computer observation implemented by Desktop Operator.', scopes: ['desktop.observe'], actions: ['desktop_observe'] },
+      { capabilityId: COMPUTER_INPUT_CAPABILITY, title: 'Computer input', description: 'Provider-neutral bounded computer input implemented by Desktop Operator.', scopes: ['desktop.interact'], actions: ['desktop_press', 'desktop_type_text', 'desktop_key'] },
+      { capabilityId: COMPUTER_CAPTURE_CAPABILITY, title: 'Computer capture', description: 'Provider-neutral authorized computer capture implemented by Desktop Operator.', scopes: ['desktop.capture'], actions: ['desktop_screenshot'] },
+      { capabilityId: COMPUTER_BROWSER_AUTOMATION_CAPABILITY, title: 'Computer browser automation', description: 'Internal provider capability used by Forge Browser through the Computer runtime boundary.', scopes: ['desktop.observe', 'desktop.interact', 'desktop.capture'], actions: [] },
     ],
     actions,
     legacyIdentities: ['Repo Harness Desktop Operator'],

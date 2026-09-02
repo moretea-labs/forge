@@ -1258,6 +1258,23 @@ requireText('adapters/mcp/tunnels/openai-secure-tunnel.ts', 'tunnelMatches: bool
 requireText('adapters/mcp/tunnels/openai-secure-tunnel.ts', 'credentialReference(config.runtimeApiKeyRef');
 forbid('adapters/mcp/tunnels/openai-secure-tunnel.ts', /\bidentityMatches\b/, 'tunnel binding match must not masquerade as Forge semantic identity');
 
+// C0 Computer capability boundary: Browser and Desktop remain separate providers.
+requireText('packages/protocols/computer/contract.ts', 'COMPUTER_BROWSER_AUTOMATION_CAPABILITY');
+requireText('packages/plugin-runtime/computer/provider.ts', 'export interface ComputerProvider');
+requireText('packages/plugin-runtime/computer/provider-registry.ts', 'export class ComputerProviderRegistry');
+requireText('adapters/computer/desktop-operator-provider.ts', 'createDesktopOperatorComputerProvider');
+requireText('src/runtime/root/computer-composition.ts', 'createDesktopOperatorComputerProvider');
+requireText('src/runtime/plugins/browser-automation-service.ts', 'executeRuntimeComputerBrowserAutomation');
+forbid('src/runtime/plugins/browser-automation-service.ts', /desktop_operator|macos-capability-broker|desktop-operator\.sock|macos_browser_automation/, 'Browser automation must depend on the provider-neutral Computer boundary, not Desktop Operator transport details');
+requireText('src/runtime/plugins/macos-capability-broker.ts', '@deprecated C0 compatibility shim');
+if (text('src/runtime/plugins/macos-capability-broker.ts').split(/\r?\n/).length > 24) failures.push('src/runtime/plugins/macos-capability-broker.ts must remain a thin C0 compatibility facade');
+for (const path of sourceFiles('packages/plugin-runtime')) {
+  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*(?:adapters\/|src\/runtime\/)/, 'Plugin Runtime provider dispatch must not depend on concrete adapters or Runtime implementations');
+}
+requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_OBSERVE_CAPABILITY');
+requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_INPUT_CAPABILITY');
+requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_CAPTURE_CAPABILITY');
+
 if (failures.length) {
   console.error('[runtime-architecture] FAILED');
   for (const failure of failures) console.error(`- ${failure}`);

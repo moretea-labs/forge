@@ -515,7 +515,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'trusted_input',
       title: 'Trusted browser input',
-      description: 'Send bounded mouse, wheel, drag, key, or text input after authorization. Playwright/CDP uses page input primitives; native macOS sessions require the exact saved tab to already be foreground/active and use the stable Desktop Operator input broker without activating another tab.',
+      description: 'Send bounded mouse, wheel, drag, key, or text input after authorization. Playwright/CDP uses page input primitives; native sessions require the exact saved tab to already be foreground/active and use the configured Computer input provider without activating another tab.',
       readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
       argumentsSchema: interactSchema({

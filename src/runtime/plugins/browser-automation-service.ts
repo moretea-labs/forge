@@ -1,45 +1,24 @@
-import { callMacOsCapabilityBroker } from './macos-capability-broker';
+import type {
+  ComputerBrowserAutomationRequest,
+  ComputerBrowserProduct,
+  ComputerBrowserTabRef,
+  ComputerCaptureRegion,
+  ComputerTrustedInput,
+} from '../../../packages/protocols/computer/index';
+import { executeRuntimeComputerBrowserAutomation } from '../root/computer-composition';
 import { AssistantPluginError } from './errors';
 
-const BROWSER_AUTOMATION_PROTOCOL_VERSION = 1;
-
-export type BrowserAutomationProduct = 'chrome' | 'vivaldi';
-export interface BrowserAutomationTabRef {
-  windowId: string;
-  tabId: string;
-}
-export interface BrowserAutomationRegion {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-export type BrowserAutomationTrustedInput =
-  | { kind: 'click'; x: number; y: number; button: 'left' | 'middle' | 'right'; clickCount: number }
-  | { kind: 'move'; x: number; y: number; steps: number }
-  | { kind: 'wheel'; deltaX: number; deltaY: number }
-  | { kind: 'drag'; fromX: number; fromY: number; toX: number; toY: number; button: 'left' | 'middle' | 'right'; steps: number }
-  | { kind: 'key'; key: string }
-  | { kind: 'text'; text: string };
-
-export type BrowserAutomationBrokerAction =
-  | { action: 'metadata'; product: BrowserAutomationProduct; ref?: BrowserAutomationTabRef }
-  | { action: 'list_tabs'; product: BrowserAutomationProduct }
-  | { action: 'create_tab'; product: BrowserAutomationProduct; url: string }
-  | { action: 'close_tab'; product: BrowserAutomationProduct; ref: BrowserAutomationTabRef }
-  | { action: 'navigate'; product: BrowserAutomationProduct; ref?: BrowserAutomationTabRef; url: string }
-  | { action: 'reload'; product: BrowserAutomationProduct; ref?: BrowserAutomationTabRef }
-  | { action: 'execute_javascript'; product: BrowserAutomationProduct; ref?: BrowserAutomationTabRef; source: string }
-  | { action: 'activate'; product: BrowserAutomationProduct; ref?: BrowserAutomationTabRef }
-  | { action: 'trusted_input'; product: BrowserAutomationProduct; ref: BrowserAutomationTabRef; input: BrowserAutomationTrustedInput }
-  | { action: 'capture_region'; region: BrowserAutomationRegion };
+export type BrowserAutomationProduct = ComputerBrowserProduct;
+export type BrowserAutomationTabRef = ComputerBrowserTabRef;
+export type BrowserAutomationRegion = ComputerCaptureRegion;
+export type BrowserAutomationTrustedInput = ComputerTrustedInput;
+export type BrowserAutomationBrokerAction = ComputerBrowserAutomationRequest;
 
 export async function callBrowserAutomationBroker(
   request: BrowserAutomationBrokerAction,
   timeoutMs: number,
 ): Promise<Record<string, unknown>> {
-  return await callMacOsCapabilityBroker({ ...request, timeoutMs, protocolVersion: BROWSER_AUTOMATION_PROTOCOL_VERSION }, timeoutMs);
+  return await executeRuntimeComputerBrowserAutomation(request, timeoutMs);
 }
 
 export async function captureBrowserAutomationRegion(region: BrowserAutomationRegion, timeoutMs: number): Promise<Buffer> {
@@ -48,7 +27,7 @@ export async function captureBrowserAutomationRegion(region: BrowserAutomationRe
   if (!base64) {
     throw new AssistantPluginError(
       'PLUGIN_MACOS_CAPABILITY_BROKER_PROTOCOL_ERROR',
-      'Stable Forge macOS capability broker returned an invalid screenshot payload.',
+      'Computer capture provider returned an invalid screenshot payload.',
       { retryable: true },
     );
   }
