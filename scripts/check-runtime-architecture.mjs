@@ -1293,6 +1293,11 @@ for (const path of sourceFiles('src').filter((entry) => entry !== 'src/runtime/p
 }
 requireText('src/runtime/control-plane/facade/types.ts', 'semanticCapabilities?: string[]');
 forbid('src/runtime/control-plane/facade/capability-registry.ts', /plugin\.desktop_operator/, 'Control Plane capability discovery must rank provider-declared semantic capabilities rather than concrete Desktop Operator plugin identity');
+requireText('src/runtime/plugins/external-provider-policy.ts', 'resolveExternalProviderPolicy');
+requireText('src/runtime/plugins/desktop-operator-external-policy.ts', 'verifyExactForegroundDesktopSession');
+forbid('src/runtime/plugins/external-adapter.ts', /desktop_operator|desktopOperator|DESKTOP_|['\"]desktop_[a-z_]|desktop-operator-external-policy/, 'Generic external plugin adapter must delegate provider-specific Desktop policy through ExternalProviderPolicy');
+if (text('src/runtime/plugins/external-adapter.ts').split(/\r?\n/).length > 430) failures.push('src/runtime/plugins/external-adapter.ts must remain a focused generic transport/lifecycle adapter');
+if (text('src/runtime/plugins/external-provider-policy.ts').split(/\r?\n/).length > 100) failures.push('src/runtime/plugins/external-provider-policy.ts must remain a thin provider-policy composition resolver');
 for (const path of sourceFiles('packages/plugin-runtime')) {
   forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*(?:adapters\/|src\/runtime\/)/, 'Plugin Runtime provider dispatch must not depend on concrete adapters or Runtime implementations');
 }
