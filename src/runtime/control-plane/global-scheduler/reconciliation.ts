@@ -16,7 +16,7 @@ import { recoverCompletedReceipt } from '../../execution/jobs/receipt-recovery';
 import { operationReceiptMatchesJobOwnership, readOperationReceipt } from '../../execution/jobs/receipt-store';
 import { releaseExecutionLeases, renewExecutionLeases } from '../../resources/leases/store';
 import { isProcessAlive, terminateProcessTree, terminateProcessTreeSync, type ProcessTreeTerminationResult } from '../../shared/process-tree';
-import { settleScheduledExecution } from '../../workflow/schedules/settlement';
+import { settleScheduledExecution } from '../../../../packages/kernel/scheduler/api/index';
 
 const WORKER_HEARTBEAT_STALE_MS = 45_000;
 

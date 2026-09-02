@@ -91,7 +91,7 @@ import type {
   VerificationViewModel,
   WorkSummaryViewModel,
 } from './console-view-models';
-import { listActiveOccurrences, listSchedules } from '../../runtime/workflow/schedules/store';
+import { listActiveOccurrences, listSchedules } from '../../../packages/kernel/scheduler/api/index';
 import { executeWorkVerification } from '../../runtime/control-plane/execution/work-verification-service';
 
 export type ConsoleFacadeContext = {

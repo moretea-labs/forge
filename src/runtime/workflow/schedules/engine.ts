@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'crypto';
+import { createHash } from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { getRepository } from '../../../cli/repositories/registry';
@@ -10,28 +10,35 @@ import {
   previewAutomaticRuntimeMaintenance,
   type RuntimeMaintenanceActionId,
 } from '../../recovery/maintenance-executor';
-import { appendWorkEvidence, controllerSessionBlocksRecovery, getControllerSession, getWorkContract, isTerminalWorkContractStatus, listHandoffItems } from '../../control-plane/facade';
-import { launchSuperController } from '../../control-plane/launcher/thin-launcher';
-import { getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/work-conversation-binding-store';
-import { buildChatgptControllerRoundPrompt } from '../../../../adapters/chatgpt/controller-round-host';
-import { getExternalControllerLaunchReservation } from '../../control-plane/launcher/launch-reservation-store';
-import { runStandaloneChatgptPrompt, runWorkChatgptContinuation } from '../../control-plane/launcher/chatgpt-work-continuation';
+import { appendWorkEvidence, getWorkContract, isTerminalWorkContractStatus } from '../../../../packages/kernel/work/api/index';
 import {
-  beginInitialControllerRoundDispatch,
-  finishControllerRoundRelayDispatch,
+  controllerSessionBlocksRecovery,
+  getControllerSession,
+  getControllerSessionBinding,
+  getRetainedControllerSession,
 } from '../../../../packages/kernel/controller/api/index';
 import {
+  applyScheduleFailure,
+  applyScheduleRetryableFailure,
+  cronDue,
+  evaluateScheduleOccurrenceAdmission,
+  evaluateScheduleTriggerEligibility,
   getOccurrence,
   getSchedule,
   listActiveOccurrences,
   listOccurrences,
   recordScheduleOccurrenceHandoff,
+  resumeScheduledControllerContinuation,
   listSchedules,
   saveOccurrence,
   saveScheduleDecision,
   updateSchedule,
-} from './store';
-import { applyScheduleFailure, applyScheduleRetryableFailure } from './settlement';
+} from '../../../../packages/kernel/scheduler/api/index';
+export { cronDue };
+import { ensureScheduledControllerBinding, controllerHostForScheduledBinding } from '../../../../adapters/scheduler/controller-binding';
+import { listHandoffItems } from '../../control-plane/facade/handoff-inbox-store';
+import { runStandaloneChatgptPrompt } from '../../control-plane/launcher/chatgpt-work-continuation';
+
 import { classifyScheduledBrowserObservation, executeScheduledBrowserProbe } from './browser-probe';
 import { executeScheduledGithubIssueWatch } from './github-issue-watch';
 import type {
@@ -39,7 +46,7 @@ import type {
   ScheduleDecisionType,
   ScheduleOccurrence,
   ScheduleTriggerContext,
-} from './types';
+} from '../../../../packages/kernel/scheduler/api/index';
 
 const execFileAsync = promisify(execFile);
 const LIVE_MAINTENANCE_OPERATION = 'runtime_maintenance_apply';
@@ -66,128 +73,6 @@ function retiredScheduleReason(schedule: RepositorySchedule): string | undefined
   return undefined;
 }
 
-function normalizedWindow(minutes: number, at = Date.now()): string {
-  return String(Math.floor(at / (Math.max(1, minutes) * 60_000)));
-}
-
-interface ZonedDateParts {
-  year: number;
-  month: number;
-  day: number;
-  hour: number;
-  minute: number;
-  weekday: number;
-}
-
-function zonedDateParts(at: number, timezone = 'UTC'): ZonedDateParts {
-  let formatter: Intl.DateTimeFormat;
-  try {
-    formatter = new Intl.DateTimeFormat('en-US-u-ca-iso8601', {
-      timeZone: timezone,
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', weekday: 'short',
-      hourCycle: 'h23',
-    });
-  } catch {
-    throw new Error(`SCHEDULE_TIMEZONE_INVALID: ${timezone}`);
-  }
-  const values = Object.fromEntries(formatter.formatToParts(new Date(at)).map((entry) => [entry.type, entry.value]));
-  const weekdays: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-  return {
-    year: Number(values.year),
-    month: Number(values.month),
-    day: Number(values.day),
-    hour: Number(values.hour),
-    minute: Number(values.minute),
-    weekday: weekdays[String(values.weekday)] ?? 0,
-  };
-}
-
-function fixedCronTime(expression: string | undefined): { minute: number; hour: number; day: string; month: string; weekday: string } | undefined {
-  if (!expression) return undefined;
-  const fields = expression.trim().split(/\s+/);
-  if (fields.length !== 5 || !/^\d+$/.test(fields[0]) || !/^\d+$/.test(fields[1])) return undefined;
-  const minute = Number(fields[0]);
-  const hour = Number(fields[1]);
-  if (minute < 0 || minute > 59 || hour < 0 || hour > 23) return undefined;
-  return { minute, hour, day: fields[2], month: fields[3], weekday: fields[4] };
-}
-
-function cronWindowKey(schedule: RepositorySchedule, at = Date.now()): string {
-  const timezone = schedule.trigger.timezone ?? 'UTC';
-  const parts = zonedDateParts(at, timezone);
-  const fixed = fixedCronTime(schedule.trigger.cronExpression);
-  if (fixed) {
-    return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}@${String(fixed.hour).padStart(2, '0')}:${String(fixed.minute).padStart(2, '0')}[${timezone}]`;
-  }
-  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}T${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')}[${timezone}]`;
-}
-
-function triggerWindowKey(schedule: RepositorySchedule, context: ScheduleTriggerContext | undefined, at = Date.now()): string {
-  // Explicit control-plane triggers use a separate identity namespace from timer/cron windows.
-  // A caller-supplied event/request id is the stable retry key; otherwise each manual trigger is distinct.
-  if (context?.source === 'manual' && schedule.trigger.type !== 'manual') {
-    const stableManualKey = context.eventId?.trim();
-    return `manual:${stableManualKey || randomUUID()}`;
-  }
-  switch (schedule.trigger.type) {
-    case 'cron':
-      return cronWindowKey(schedule, at);
-    case 'calendar':
-      return schedule.trigger.calendarAt ?? new Date(at).toISOString().slice(0, 16);
-    case 'repository-event':
-      return context?.eventId?.trim() || `${context?.eventName ?? schedule.trigger.eventName ?? 'event'}:${normalizedWindow(1, at)}`;
-    case 'dependency-checkpoint':
-      return createHash('sha256').update(JSON.stringify(schedule.trigger.dependencyJobIds ?? [])).digest('hex').slice(0, 20);
-    case 'manual':
-      return context?.eventId?.trim() || normalizedWindow(1, at);
-    case 'condition':
-    case 'interval':
-    default:
-      return normalizedWindow(schedule.trigger.everyMinutes ?? 60, at);
-  }
-}
-
-function cronFieldMatches(value: number, field: string, min: number, max: number): boolean {
-  return field.split(',').some((part) => {
-    const trimmed = part.trim();
-    if (trimmed === '*') return true;
-    const stepMatch = trimmed.match(/^\*\/(\d+)$/);
-    if (stepMatch) return value % Math.max(1, Number(stepMatch[1])) === 0;
-    const rangeMatch = trimmed.match(/^(\d+)-(\d+)(?:\/(\d+))?$/);
-    if (rangeMatch) {
-      const start = Math.max(min, Number(rangeMatch[1]));
-      const end = Math.min(max, Number(rangeMatch[2]));
-      const step = Math.max(1, Number(rangeMatch[3] ?? 1));
-      return value >= start && value <= end && (value - start) % step === 0;
-    }
-    const exact = Number(trimmed);
-    return Number.isInteger(exact) && exact >= min && exact <= max && value === exact;
-  });
-}
-
-export function cronDue(
-  expression: string | undefined,
-  at = Date.now(),
-  timezone = 'UTC',
-  catchUpMinutes = 0,
-): boolean {
-  if (!expression) return false;
-  const fields = expression.trim().split(/\s+/);
-  if (fields.length !== 5) throw new Error(`SCHEDULE_CRON_INVALID: expected five fields, received ${fields.length}`);
-  const parts = zonedDateParts(at, timezone);
-  const calendarMatches = cronFieldMatches(parts.day, fields[2], 1, 31)
-    && cronFieldMatches(parts.month, fields[3], 1, 12)
-    && cronFieldMatches(parts.weekday, fields[4], 0, 6);
-  if (!calendarMatches) return false;
-  if (cronFieldMatches(parts.minute, fields[0], 0, 59) && cronFieldMatches(parts.hour, fields[1], 0, 23)) return true;
-  const fixed = fixedCronTime(expression);
-  if (!fixed || catchUpMinutes <= 0) return false;
-  const scheduledMinute = fixed.hour * 60 + fixed.minute;
-  const currentMinute = parts.hour * 60 + parts.minute;
-  return currentMinute >= scheduledMinute && currentMinute - scheduledMinute <= Math.min(24 * 60, catchUpMinutes);
-}
-
 async function workspaceDirty(controllerHome: string, repoId: string): Promise<boolean> {
   try {
     const repository = getRepository(repoId, controllerHome, { includeRemoved: true });
@@ -197,64 +82,6 @@ async function workspaceDirty(controllerHome: string, repoId: string): Promise<b
     return Boolean(result.stdout.trim());
   } catch {
     return true;
-  }
-}
-
-async function triggerDue(
-  controllerHome: string,
-  schedule: RepositorySchedule,
-  force: boolean,
-  context?: ScheduleTriggerContext,
-): Promise<{ due: boolean; reason?: string; evidence?: Record<string, unknown> }> {
-  if (force && schedule.trigger.type !== 'repository-event') return { due: true };
-  switch (schedule.trigger.type) {
-    case 'manual':
-      return { due: force, reason: force ? undefined : 'Manual Schedule requires an explicit trigger.' };
-    case 'interval':
-      return { due: true };
-    case 'cron':
-      return {
-        due: cronDue(schedule.trigger.cronExpression, Date.now(), schedule.trigger.timezone ?? 'UTC', schedule.trigger.catchUpMinutes ?? 0),
-        reason: `Cron expression is not due in the current ${schedule.trigger.timezone ?? 'UTC'} minute or catch-up window.`,
-      };
-    case 'calendar': {
-      const at = Date.parse(schedule.trigger.calendarAt ?? '');
-      if (!Number.isFinite(at)) throw new Error('SCHEDULE_CALENDAR_INVALID: calendarAt must be an ISO-8601 timestamp');
-      return { due: Date.now() >= at, reason: 'Calendar trigger is not due yet.', evidence: { calendarAt: schedule.trigger.calendarAt } };
-    }
-    case 'repository-event': {
-      const expected = schedule.trigger.eventName?.trim();
-      const actual = context?.eventName?.trim();
-      const due = context?.source === 'repository-event' && Boolean(actual) && (!expected || expected === actual);
-      return { due, reason: due ? undefined : 'Repository event did not match this Schedule.', evidence: { expected, actual, eventId: context?.eventId } };
-    }
-    case 'dependency-checkpoint': {
-      const dependencyJobIds = schedule.trigger.dependencyJobIds ?? [];
-      if (dependencyJobIds.length === 0) throw new Error('SCHEDULE_DEPENDENCY_REQUIRED: dependency checkpoint has no Job ids');
-      const jobs = dependencyJobIds.map((jobId) => findExecutionJob(controllerHome, jobId));
-      const due = jobs.every((job) => job?.status === 'succeeded');
-      return {
-        due,
-        reason: due ? undefined : 'Dependency checkpoint is not ready.',
-        evidence: { dependencies: dependencyJobIds.map((jobId, index) => ({ jobId, status: jobs[index]?.status ?? 'missing' })) },
-      };
-    }
-    case 'condition': {
-      const condition = schedule.trigger.condition;
-      if (!condition) throw new Error('SCHEDULE_CONDITION_REQUIRED');
-      if (condition.kind === 'repository_clean') {
-        const clean = !(await workspaceDirty(controllerHome, schedule.repoId));
-        return { due: clean, reason: clean ? undefined : 'Repository is not clean.', evidence: { clean } };
-      }
-      if (condition.kind === 'job_succeeded' || condition.kind === 'job_terminal') {
-        const job = condition.jobId ? findExecutionJob(controllerHome, condition.jobId) : undefined;
-        const terminal = Boolean(job && ['succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'stale', 'human_attention_required'].includes(job.status));
-        const due = condition.kind === 'job_succeeded' ? job?.status === 'succeeded' : terminal;
-        return { due, reason: due ? undefined : `Condition ${condition.kind} is not met.`, evidence: { jobId: condition.jobId, status: job?.status ?? 'missing' } };
-      }
-    }
-    default:
-      return { due: false, reason: 'Unsupported Schedule trigger.' };
   }
 }
 
@@ -431,20 +258,6 @@ export function classifyChatgptWakeFailure(reason: string): ChatgptWakeFailureCl
   return 'ordinary_failure';
 }
 
-function externalControllerLaunchArgs(args: Record<string, unknown>, controllerType: string): string[] {
-  const launchArgs = Array.isArray(args.launch_args) ? args.launch_args.map(String) : [];
-  if (controllerType !== 'chatgpt') return launchArgs;
-  const explicit = new Set(launchArgs.filter((value) => value.startsWith('--')).map((value) => value.split('=', 1)[0]));
-  const add = (flag: string, value: unknown) => {
-    if (explicit.has(flag) || typeof value !== 'string' || !value.trim()) return;
-    launchArgs.push(flag, value.trim());
-  };
-  add('--model', args.model);
-  add('--reasoning', args.reasoning);
-  add('--tab-policy', args.tab_policy);
-  return launchArgs;
-}
-
 async function executeExternalControllerWake(
   controllerHome: string,
   schedule: RepositorySchedule,
@@ -455,12 +268,8 @@ async function executeExternalControllerWake(
   options: { transientWakeFailure?: boolean } = {},
 ): Promise<ScheduleOccurrence> {
   const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-  const controllerType = typeof args.controller_type === 'string' ? args.controller_type.trim() : 'chatgpt';
   if (!workId) {
     return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', 'EXTERNAL_CONTROLLER_WAKE_WORK_ID_REQUIRED');
-  }
-  if (!['chatgpt', 'codex', 'claude', 'grok'].includes(controllerType)) {
-    return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', 'EXTERNAL_CONTROLLER_WAKE_TYPE_INVALID');
   }
   const workStore = { controllerHome, repoId: schedule.repoId };
   const work = getWorkContract(workStore, workId);
@@ -472,139 +281,139 @@ async function executeExternalControllerWake(
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ enabled: false, pausedReason: `Work ${workId} is terminal (${work.status}).`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
     return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} is terminal (${work.status}); automatic continuation stopped.`);
   }
-  const existingOwner = getControllerSession(workStore, workId);
+
+  const retainedSession = getRetainedControllerSession(workStore, workId);
+  if (!retainedSession) {
+    return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', `SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED:${workId}`);
+  }
+  const requestedControllerType = typeof args.controller_type === 'string' ? args.controller_type.trim() : '';
+  if (requestedControllerType && requestedControllerType !== retainedSession.controllerType) {
+    return decideOccurrence(
+      controllerHome,
+      schedule,
+      occurrence,
+      'operation_blocked',
+      'skipped',
+      `SCHEDULE_CONTINUATION_CONTROLLER_TYPE_MISMATCH:${workId}:expected=${retainedSession.controllerType}:requested=${requestedControllerType}`,
+    );
+  }
+  const expectedSessionId = typeof args.controller_session_id === 'string' ? args.controller_session_id.trim() : '';
+  if (expectedSessionId && expectedSessionId !== retainedSession.sessionId) {
+    return decideOccurrence(
+      controllerHome,
+      schedule,
+      occurrence,
+      'operation_blocked',
+      'skipped',
+      `SCHEDULE_CONTINUATION_SESSION_DRIFT:${workId}:expected=${expectedSessionId}:actual=${retainedSession.sessionId}`,
+    );
+  }
+
   const occurrenceNowMs = Date.parse(timestamp);
   const nowMs = Number.isFinite(occurrenceNowMs) ? occurrenceNowMs : Date.now();
   if (workHasActiveExecution(controllerHome, schedule.repoId, workId)) {
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
     return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} has active execution; duplicate Controller wake suppressed.`);
   }
+  const existingOwner = getControllerSession(workStore, workId);
   if (existingOwner && controllerSessionBlocksRecovery(workStore, workId, { nowMs })) {
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
     return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} has a recently active Controller ${existingOwner.controllerId}.`);
   }
-  const launchReservation = getExternalControllerLaunchReservation(workStore, workId);
-  if (launchReservation) {
-    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
-    return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} already has a pending external Controller launch ${launchReservation.reservationId}.`);
+
+  const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
+  let bindingId = typeof args.controller_binding_id === 'string' ? args.controller_binding_id.trim() : '';
+  let bindingRecord = bindingId ? getControllerSessionBinding(workStore, workId, retainedSession.sessionId) : undefined;
+  if (bindingRecord && bindingRecord.binding.bindingId !== bindingId) {
+    return decideOccurrence(
+      controllerHome,
+      schedule,
+      occurrence,
+      'operation_blocked',
+      'skipped',
+      `SCHEDULE_CONTINUATION_BINDING_DRIFT:${workId}:expected=${bindingId}:actual=${bindingRecord.binding.bindingId}`,
+    );
   }
+
+  // Explicit compatibility migration for schedules written before Kernel V2 B4.
+  // Provider metadata is copied once into the adapter-owned binding and the
+  // Schedule is rewritten to exact Work/ControllerSession/ControllerBinding ids.
+  if (!bindingRecord) {
+    const binding = ensureScheduledControllerBinding(
+      { controllerHome, repoId: schedule.repoId },
+      { workId, session: retainedSession, scheduleName: schedule.name, args },
+    );
+    bindingId = binding.bindingId;
+    bindingRecord = getControllerSessionBinding(workStore, workId, retainedSession.sessionId);
+    if (!bindingRecord || bindingRecord.binding.bindingId !== bindingId) {
+      throw new Error(`SCHEDULE_CONTINUATION_BINDING_MIGRATION_FAILED:${workId}`);
+    }
+    const continuationHint = typeof args.continuation_hint === 'string'
+      ? args.continuation_hint
+      : typeof args.continuation_prompt === 'string'
+        ? args.continuation_prompt
+        : undefined;
+    const relayScopeId = typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : undefined;
+    schedule = updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
+      action: {
+        ...current.action,
+        arguments: {
+          work_id: workId,
+          controller_type: retainedSession.controllerType,
+          controller_session_id: retainedSession.sessionId,
+          controller_binding_id: bindingId,
+          ...(relayScopeId ? { relay_scope_id: relayScopeId } : {}),
+          ...(continuationHint?.trim() ? { continuation_hint: continuationHint.trim() } : {}),
+        },
+      },
+    }));
+  }
+
+  const controllerType = retainedSession.controllerType;
+  const continuationHint = typeof schedule.action.arguments?.continuation_hint === 'string'
+    ? schedule.action.arguments.continuation_hint
+    : undefined;
+  const relayScopeId = typeof schedule.action.arguments?.relay_scope_id === 'string'
+    ? schedule.action.arguments.relay_scope_id
+    : undefined;
   const wakeDecision = decideOccurrence(
     controllerHome,
     schedule,
     occurrence,
     'execute',
     'running',
-    'Deterministic external Controller wake is starting through Thin Launcher.',
+    'Deterministic Controller continuation is starting through Kernel Scheduler and ControllerHost.',
     occurrenceDecisionEvidence({
       operation: schedule.action.operation,
       workId,
       controllerType,
-      ...(controllerType === 'chatgpt' ? {
-        model: typeof args.model === 'string' ? args.model : 'gpt-5.6',
-        reasoning: typeof args.reasoning === 'string' ? args.reasoning : 'high',
-        tabPolicy: typeof args.tab_policy === 'string' ? args.tab_policy : 'auto',
-      } : {}),
+      controllerSessionId: retainedSession.sessionId,
+      controllerBindingId: bindingRecord.binding.bindingId,
       ...extraEvidence,
     }),
   );
+
   try {
-    const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
-    const continuationPrompt = typeof args.continuation_prompt === 'string'
-      ? args.continuation_prompt
-      : `Scheduled continuation ${occurrence.occurrenceId} from ${schedule.scheduleId}. Read current Forge state and continue only the bounded Work objective.`;
-    if (controllerType === 'chatgpt') {
-      const reasoning = args.reasoning === 'medium' || args.reasoning === 'xhigh' ? args.reasoning : 'high';
-      const tabPolicy = args.tab_policy === 'reuse' || args.tab_policy === 'new' ? args.tab_policy : 'auto';
-      const timeoutMs = externalControllerWakeTimeoutMs(args.timeout_ms);
-      let relay;
-      try {
-        const existingBinding = getChatgptWorkConversationBinding(workStore, workId);
-        relay = beginInitialControllerRoundDispatch(workStore, {
-          workId,
-          identity: {
-            controllerId: `schedule:${schedule.scheduleId}`,
-            controllerType: 'chatgpt',
-            principalId: 'forge-scheduler',
-            controllerInstanceId: 'forge-runtime-scheduler',
-            sessionId: occurrence.occurrenceId,
-          },
-          requirementId: work.requirementId,
-          bindingId: existingBinding?.bindingId,
-        });
-        if (relay.status === 'blocked') throw new Error(`CONTROLLER_RELAY_LAUNCH_BLOCKED: ${relay.blockedReason ?? relay.relayScopeId}`);
-        const relayPrompt = `${buildChatgptControllerRoundPrompt(workStore, relay, { exactOriginWork: true })}\n\nScheduled continuation hint: ${continuationPrompt}`;
-        const dispatched = await awaitExternalControllerWake(runWorkChatgptContinuation({
-          controllerHome,
-          repoId: schedule.repoId,
-          repoRoot: repository.canonicalRoot,
-          workId,
-          prompt: relayPrompt,
-          controllerAuthorityId: relay.authorityId,
-          relayScopeId: relay.relayScopeId,
-          title: schedule.name,
-          browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
-          conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
-          model: typeof args.model === 'string' ? args.model : 'gpt-5.6',
-          reasoning,
-          tabPolicy,
-          timeoutMs,
-        }), timeoutMs);
-        if (dispatched.status === 'failed') throw new Error(dispatched.error?.message ?? 'CHATGPT_WORK_CONTINUATION_FAILED');
-        const updatedBinding = getChatgptWorkConversationBinding(workStore, workId);
-        const completedRelay = finishControllerRoundRelayDispatch(workStore, {
-          workId,
-          ok: true,
-          bindingId: updatedBinding?.bindingId,
-        });
-        updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
-          lastTriggeredAt: timestamp,
-          lastOccurrenceId: occurrence.occurrenceId,
-          consecutiveFailures: 0,
-          nextEligibleAt: undefined,
-          ...(current.enabled ? { pausedReason: undefined } : {}),
-        }));
-        const succeededOccurrence = saveOccurrence(controllerHome, {
-          ...wakeDecision,
-          status: 'succeeded',
-          reason: `ChatGPT dispatch action succeeded via ${dispatched.browserSessionId}; relay ${completedRelay?.relayScopeId ?? relay.relayScopeId} remains dispatched until the new Controller claims Work ${workId}.`,
-        });
-        appendWorkEvidence(workStore, workId, {
-          evidenceId: succeededOccurrence.occurrenceId,
-          title: 'scheduled ChatGPT continuation dispatched',
-          summary: `Schedule ${schedule.scheduleId} timer occurrence ${succeededOccurrence.occurrenceId} dispatched the Work-bound ChatGPT continuation successfully.`,
-          detailLevel: 'summary',
-        });
-        return succeededOccurrence;
-      } catch (error) {
-        if (relay) {
-          finishControllerRoundRelayDispatch(workStore, {
-            workId,
-            ok: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        if (error instanceof Error && error.message.startsWith('CONTROLLER_RELAY_ROUND_ALREADY_OPEN:')) {
-          updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
-          return decideOccurrence(controllerHome, schedule, wakeDecision, 'nothing_to_do', 'skipped', `Work ${workId} already has an open ChatGPT controller round awaiting claim or disposition.`);
-        }
-        throw error;
-      }
+    const host = controllerHostForScheduledBinding(
+      { controllerHome, repoId: schedule.repoId, repoRoot: repository.canonicalRoot },
+      bindingRecord.binding,
+    );
+    const resumed = await resumeScheduledControllerContinuation(
+      workStore,
+      {
+        scheduleId: schedule.scheduleId,
+        occurrenceId: occurrence.occurrenceId,
+        workId,
+        controllerSessionId: retainedSession.sessionId,
+        controllerBindingId: bindingRecord.binding.bindingId,
+        relayScopeId,
+        continuationHint,
+      },
+      host,
+    );
+    if (resumed.dispatch.status === 'rejected') {
+      throw new Error(resumed.dispatch.reason ?? 'CONTROLLER_HOST_RESUME_REJECTED');
     }
-    const launched = await launchSuperController({
-      work: { controllerHome, repoId: schedule.repoId },
-      handoff: { controllerHome, repoId: schedule.repoId },
-    }, {
-      controllerType: controllerType as 'codex' | 'claude' | 'grok',
-      executable: typeof args.executable === 'string' ? args.executable : undefined,
-      args: externalControllerLaunchArgs(args, controllerType),
-      workId,
-      handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
-      browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
-      conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
-      launchReservationMs: typeof args.launch_reservation_ms === 'number' ? args.launch_reservation_ms : typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
-      continuationPrompt,
-      cwd: repository.canonicalRoot,
-    });
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
       lastTriggeredAt: timestamp,
       lastOccurrenceId: occurrence.occurrenceId,
@@ -612,13 +421,26 @@ async function executeExternalControllerWake(
       nextEligibleAt: undefined,
       ...(current.enabled ? { pausedReason: undefined } : {}),
     }));
-    return saveOccurrence(controllerHome, {
+    const succeededOccurrence = saveOccurrence(controllerHome, {
       ...wakeDecision,
       status: 'succeeded',
-      reason: `External Controller wake started ${launched.controllerType} pid=${String(launched.pid ?? 'unknown')} for Work ${workId}.`,
+      reason: resumed.reused
+        ? `Controller continuation occurrence ${occurrence.occurrenceId} was already durably dispatched; external replay suppressed.`
+        : `ControllerHost accepted exact session ${retainedSession.sessionId} for Work ${workId}; dispatch ${resumed.dispatch.hostDispatchId ?? resumed.dispatch.relayScopeId}.`,
     });
+    appendWorkEvidence(workStore, workId, {
+      evidenceId: succeededOccurrence.occurrenceId,
+      title: 'scheduled Controller continuation dispatched',
+      summary: `Schedule ${schedule.scheduleId} occurrence ${succeededOccurrence.occurrenceId} resumed the exact Work-bound ControllerSession through ControllerHost.`,
+      detailLevel: 'summary',
+    });
+    return succeededOccurrence;
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
+    if (reason.startsWith('SCHEDULE_CONTINUATION_ROUND_ALREADY_OPEN:')) {
+      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
+      return decideOccurrence(controllerHome, schedule, wakeDecision, 'nothing_to_do', 'skipped', `Work ${workId} already has an open Controller round awaiting claim or disposition.`);
+    }
     const failureClass = controllerType === 'chatgpt' ? classifyChatgptWakeFailure(reason) : 'ordinary_failure';
     if (options.transientWakeFailure || failureClass === 'retryable_readiness' || failureClass === 'semantic_wait') {
       const semanticWait = failureClass === 'semantic_wait';
@@ -648,15 +470,17 @@ async function executeExternalControllerWake(
       ...(failureClass === 'user_action_required' ? { pauseReason: reason } : {}),
       handoff: {
         title: `External Controller wake ${occurrence.occurrenceId} failed`,
-        summary: 'Forge recorded the schedule trigger but could not wake the configured external Controller.',
+        summary: 'Forge recorded the schedule trigger but could not resume the exact configured ControllerSession through ControllerHost.',
         reason,
         creationReason: 'repeated_infrastructure_failure',
-        blockingDecision: 'Repair the external Controller/browser launch path or update the saved session reference.',
-        recommendedDecision: 'Inspect launcher/browser readiness, then retrigger this bounded continuation.',
-        recommendedPrompt: `Resume Work ${workId} manually, inspect failed wake occurrence ${occurrence.occurrenceId}, and repair the configured external Controller launch path before unattended continuation resumes.`,
-        statusSummary: 'Scheduled external Controller wake failed.',
+        blockingDecision: reason.startsWith('SCHEDULE_CONTINUATION_OUTCOME_UNKNOWN:')
+          ? 'Inspect the durable ControllerHost dispatch outcome before any retry; automatic replay is fenced.'
+          : 'Repair the ControllerHost adapter/binding or update the retained ControllerSession.',
+        recommendedDecision: 'Inspect the exact Scheduler continuation dispatch, ControllerSession, and adapter binding, then retrigger only when the outcome is known.',
+        recommendedPrompt: `Resume Work ${workId} manually, inspect failed wake occurrence ${occurrence.occurrenceId}, and repair the exact ControllerHost continuation path before unattended continuation resumes.`,
+        statusSummary: 'Scheduled ControllerHost continuation failed.',
         blockedBy: ['external_controller_wake_failed'],
-        attemptedActions: [`schedule:${schedule.scheduleId}`, `work:${workId}`, `controller:${controllerType}`],
+        attemptedActions: [`schedule:${schedule.scheduleId}`, `work:${workId}`, `controller:${controllerType}`, `session:${retainedSession.sessionId}`, `binding:${bindingRecord.binding.bindingId}`],
       },
     });
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
@@ -677,11 +501,23 @@ export async function evaluateSchedule(
   // Preserve retired schedule records as evidence, but do not create a new
   // occurrence or resume a controller/external action from their old payload.
   if (retiredScheduleReason(schedule)) return undefined;
-  if (!schedule.enabled && !force) return undefined;
-  const due = await triggerDue(controllerHome, schedule, force, triggerContext);
-  if (!due.due) return undefined;
+  const eligibilityNowMs = Date.now();
+  const triggerJobIds = new Set<string>(schedule.trigger.dependencyJobIds ?? []);
+  if (schedule.trigger.condition?.jobId) triggerJobIds.add(schedule.trigger.condition.jobId);
+  const jobStatuses = Object.fromEntries([...triggerJobIds].map((jobId) => [jobId, findExecutionJob(controllerHome, jobId)?.status]));
+  const repositoryClean = schedule.trigger.condition?.kind === 'repository_clean'
+    ? !(await workspaceDirty(controllerHome, schedule.repoId))
+    : undefined;
+  const due = evaluateScheduleTriggerEligibility(schedule, {
+    nowMs: eligibilityNowMs,
+    force,
+    context: triggerContext,
+    repositoryClean,
+    jobStatuses,
+  });
+  if (!due.due || !due.windowKey) return undefined;
 
-  const key = triggerWindowKey(schedule, triggerContext);
+  const key = due.windowKey;
   const occurrenceId = `OCC-${schedule.scheduleId}-${createHash('sha256').update(key).digest('hex').slice(0, 20)}`;
   const existing = getOccurrence(controllerHome, schedule.repoId, occurrenceId);
   if (existing) return existing;
@@ -733,8 +569,17 @@ export async function evaluateSchedule(
   }
 
   const recent = listOccurrences(controllerHome, schedule.repoId, schedule.scheduleId, 1000);
-  const stop = await stopReason(controllerHome, schedule);
-  if (stop) {
+  const active = listActiveOccurrences(controllerHome, schedule.repoId, schedule.scheduleId)
+    .filter((entry) => entry.occurrenceId !== occurrence.occurrenceId);
+  const admission = evaluateScheduleOccurrenceAdmission(schedule, {
+    nowMs: Date.now(),
+    force,
+    stopReason: await stopReason(controllerHome, schedule),
+    activeOccurrenceCount: active.length,
+    dailyRuntimeMinutes: dailyRuntimeMinutes(controllerHome, recent),
+  });
+  if (admission.kind === 'stop_condition') {
+    const stop = admission.reason ?? 'Schedule stop condition is active.';
     const stopped = decideOccurrence(controllerHome, schedule, occurrence, 'stopped', 'skipped', stop);
     if (!isLiveMaintenanceSchedule(schedule)) return stopped;
     const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
@@ -758,27 +603,21 @@ export async function evaluateSchedule(
     });
     return failed.occurrence ?? stopped;
   }
-
-  const active = listActiveOccurrences(controllerHome, schedule.repoId, schedule.scheduleId)
-    .filter((entry) => entry.occurrenceId !== occurrence.occurrenceId);
-  if (active.length >= schedule.policy.maxActiveOccurrences) {
-    return decideOccurrence(controllerHome, schedule, occurrence, 'active_occurrence', 'skipped', 'Maximum active occurrences reached.');
+  if (admission.kind === 'active_occurrence') {
+    return decideOccurrence(controllerHome, schedule, occurrence, 'active_occurrence', 'skipped', admission.reason);
   }
-  if (schedule.consecutiveFailures >= schedule.policy.maxFailures) {
+  if (admission.kind === 'failure_limit') {
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
       enabled: false,
       pausedReason: current.enabled ? 'Maximum consecutive failures reached.' : current.pausedReason,
     }));
-    return decideOccurrence(controllerHome, schedule, occurrence, 'stopped', 'skipped', 'Schedule paused after repeated failures.');
+    return decideOccurrence(controllerHome, schedule, occurrence, 'stopped', 'skipped', admission.reason);
   }
-  if (schedule.nextEligibleAt && Date.parse(schedule.nextEligibleAt) > Date.now() && !force) {
-    return decideOccurrence(controllerHome, schedule, occurrence, 'cooldown', 'skipped', `Schedule backoff remains active until ${schedule.nextEligibleAt}.`);
+  if (admission.kind === 'cooldown') {
+    return decideOccurrence(controllerHome, schedule, occurrence, 'cooldown', 'skipped', admission.reason);
   }
-  if (schedule.lastTriggeredAt && Date.now() - Date.parse(schedule.lastTriggeredAt) < schedule.policy.cooldownMinutes * 60_000 && !force) {
-    return decideOccurrence(controllerHome, schedule, occurrence, 'cooldown', 'skipped', 'Schedule is cooling down.');
-  }
-  if (dailyRuntimeMinutes(controllerHome, recent) >= schedule.policy.dailyBudgetMinutes) {
-    return decideOccurrence(controllerHome, schedule, occurrence, 'budget_exhausted', 'skipped', 'Daily schedule budget exhausted.');
+  if (admission.kind === 'budget_exhausted') {
+    return decideOccurrence(controllerHome, schedule, occurrence, 'budget_exhausted', 'skipped', admission.reason);
   }
   if (schedule.policy.shadowMode) {
     if (isLiveMaintenanceSchedule(schedule)) {

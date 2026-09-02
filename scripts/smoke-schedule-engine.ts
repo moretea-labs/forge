@@ -6,7 +6,7 @@ import { registerRepository } from '../src/cli/repositories/registry';
 import { listHandoffItems } from '../src/runtime/control-plane/facade/handoff-inbox-store';
 import { listExecutionJobs } from '../src/runtime/execution/jobs/store';
 import { evaluateSchedule } from '../src/runtime/workflow/schedules/engine';
-import { createSchedule, getSchedule, getScheduleDecision } from '../src/runtime/workflow/schedules/store';
+import { createSchedule, getSchedule, getScheduleDecision } from '../packages/kernel/scheduler/api/index';
 
 const root = mkdtempSync(join(tmpdir(), 'forge-schedule-smoke-'));
 const repoRoot = join(root, 'repo');

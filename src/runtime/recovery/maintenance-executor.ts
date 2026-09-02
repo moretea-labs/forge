@@ -12,7 +12,7 @@ import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { listControlPlaneRecords, type ControlPlaneRecord } from '../control-plane/persistence/sqlite-store';
 import { isTerminalWorkContractStatus, type WorkContract } from '../control-plane/facade/types';
-import { listSchedules } from '../workflow/schedules/store';
+import { listSchedules } from '../../../packages/kernel/scheduler/api/index';
 import {
   collectRuntimeProcesses,
   removeRuntimeTempEntry,

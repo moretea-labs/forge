@@ -15,7 +15,7 @@ import {
   mergeChildReferences,
 } from '../jobs/child-reference';
 import { markOperationCompleted, markOperationStarted, operationReceiptMatchesJobOwnership, readOperationReceipt } from '../jobs/receipt-store';
-import { markScheduledExecutionRunning } from '../../workflow/schedules/settlement';
+import { markScheduledExecutionRunning } from '../../../../packages/kernel/scheduler/api/index';
 import { invalidateExecutionWorker } from './ownership';
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { bindInheritedRuntimeWriteClaimFromEnvironment } from '../../root/write-fence';

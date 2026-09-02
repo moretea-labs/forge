@@ -1,5 +1,7 @@
 import { createHash } from 'crypto';
-import { getWorkContract, isTerminalWorkContractStatus, type WorkContract } from '../../control-plane/facade';
+import { getWorkContract, isTerminalWorkContractStatus, type WorkContract } from '../../../../packages/kernel/work/api/index';
+import { getRetainedControllerSession, type ControllerType } from '../../../../packages/kernel/controller/api/index';
+import { ensureScheduledControllerBinding } from '../../../../adapters/scheduler/controller-binding';
 import { assertAutomatedOperationAllowed } from '../../control-plane/governance/external-effects';
 import { evaluateSchedule } from './engine';
 import {
@@ -8,7 +10,7 @@ import {
   listOccurrences,
   listSchedules,
   saveSchedule,
-} from './store';
+} from '../../../../packages/kernel/scheduler/api/index';
 import type {
   RepositorySchedule,
   ScheduleCondition,
@@ -16,9 +18,9 @@ import type {
   ScheduleTrigger,
   ScheduleTriggerContext,
   ScheduleTriggerType,
-} from './types';
+} from '../../../../packages/kernel/scheduler/api/index';
 
-export type ContinuationControllerType = 'chatgpt' | 'codex' | 'claude' | 'grok';
+export type ContinuationControllerType = Exclude<ControllerType, 'human'>;
 export type WorkScheduleMode = 'continuation' | 'browser_watch' | 'browser_keepalive';
 
 export interface WorkContinuationScheduleInput {
@@ -105,7 +107,7 @@ function normalizedTrigger(input: WorkContinuationScheduleInput): ScheduleTrigge
   };
 }
 
-function wakeArguments(input: WorkContinuationScheduleInput, controllerType: ContinuationControllerType): Record<string, unknown> {
+function providerSeedArguments(input: WorkContinuationScheduleInput, controllerType: ContinuationControllerType): Record<string, unknown> {
   const workId = input.workId?.trim();
   return {
     ...(workId ? { work_id: workId } : {}),
@@ -116,7 +118,22 @@ function wakeArguments(input: WorkContinuationScheduleInput, controllerType: Con
     ...(input.handoffId?.trim() ? { handoff_id: input.handoffId.trim() } : {}),
     ...(input.browserSessionId?.trim() ? { browser_session_id: input.browserSessionId.trim() } : {}),
     ...(input.conversationUrl?.trim() ? { conversation_url: input.conversationUrl.trim() } : {}),
-    ...(input.continuationPrompt?.trim() ? { continuation_prompt: input.continuationPrompt.trim() } : {}),
+  };
+}
+
+function exactContinuationArguments(input: {
+  workId: string;
+  controllerType: ContinuationControllerType;
+  controllerSessionId: string;
+  controllerBindingId: string;
+  continuationHint?: string;
+}): Record<string, unknown> {
+  return {
+    work_id: input.workId,
+    controller_type: input.controllerType,
+    controller_session_id: input.controllerSessionId,
+    controller_binding_id: input.controllerBindingId,
+    ...(input.continuationHint?.trim() ? { continuation_hint: input.continuationHint.trim() } : {}),
   };
 }
 
@@ -125,7 +142,7 @@ function probeArguments(input: WorkContinuationScheduleInput, controllerType: Co
     throw new Error('SCHEDULE_BROWSER_PROBE_TARGET_REQUIRED');
   }
   return {
-    ...wakeArguments(input, controllerType),
+    ...providerSeedArguments(input, controllerType),
     ...(input.probeUrl?.trim() ? { probe_url: input.probeUrl.trim() } : {}),
     ...(input.probeBrowserSessionId?.trim() ? { probe_session_id: input.probeBrowserSessionId.trim() } : {}),
     ...(input.probeSelector?.trim() ? { selector: input.probeSelector.trim() } : {}),
@@ -148,23 +165,51 @@ export function createWorkContinuationSchedule(
   repoId: string,
   input: WorkContinuationScheduleInput,
 ): { schedule: RepositorySchedule; work?: WorkContract } {
-  const controllerType = input.controllerType ?? 'chatgpt';
   const scheduleMode = input.scheduleMode ?? 'continuation';
   const requestedWorkId = input.workId?.trim();
+  const requestedControllerType = input.controllerType;
   if (!requestedWorkId && scheduleMode !== 'browser_keepalive') throw new Error('WORK_ID_REQUIRED');
-  if (!requestedWorkId && scheduleMode === 'browser_keepalive' && controllerType !== 'chatgpt') throw new Error('STANDALONE_BROWSER_KEEPALIVE_CHATGPT_REQUIRED');
   const work = requestedWorkId ? activeWork(controllerHome, repoId, requestedWorkId) : undefined;
+  const retainedSession = scheduleMode === 'continuation' && work
+    ? getRetainedControllerSession({ controllerHome, repoId }, work.workId)
+    : undefined;
+  if (scheduleMode === 'continuation' && !retainedSession) {
+    throw new Error(`SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED: ${work!.workId}`);
+  }
+  const controllerType = (retainedSession?.controllerType ?? requestedControllerType ?? 'chatgpt') as ContinuationControllerType;
+  if (controllerType === 'human') throw new Error('SCHEDULE_CONTINUATION_HUMAN_HOST_UNSUPPORTED');
+  if (requestedControllerType && retainedSession && requestedControllerType !== retainedSession.controllerType) {
+    throw new Error(`SCHEDULE_CONTINUATION_CONTROLLER_TYPE_MISMATCH: ${work!.workId}:expected=${retainedSession.controllerType}:requested=${requestedControllerType}`);
+  }
+  if (!requestedWorkId && scheduleMode === 'browser_keepalive' && controllerType !== 'chatgpt') throw new Error('STANDALONE_BROWSER_KEEPALIVE_CHATGPT_REQUIRED');
   const trigger = normalizedTrigger(input);
   const operation = scheduleMode === 'continuation' ? 'external_controller_wake' : 'browser_probe';
-  const actionArguments = scheduleMode === 'continuation'
-    ? wakeArguments(input, controllerType)
-    : probeArguments(input, controllerType, scheduleMode === 'browser_keepalive');
-  assertAutomatedOperationAllowed(operation, actionArguments);
   const name = input.scheduleName?.trim()
     || (scheduleMode === 'browser_watch' ? `Watch external state for Work ${work!.workId}`
       : scheduleMode === 'browser_keepalive'
         ? (work ? `Keep browser session alive for Work ${work.workId}` : 'Keep browser session alive')
         : `Continue Work ${work!.workId}`);
+  const controllerBinding = scheduleMode === 'continuation'
+    ? ensureScheduledControllerBinding(
+        { controllerHome, repoId },
+        {
+          workId: work!.workId,
+          session: retainedSession!,
+          scheduleName: name,
+          args: providerSeedArguments(input, controllerType),
+        },
+      )
+    : undefined;
+  const actionArguments = scheduleMode === 'continuation'
+    ? exactContinuationArguments({
+        workId: work!.workId,
+        controllerType,
+        controllerSessionId: retainedSession!.sessionId,
+        controllerBindingId: controllerBinding!.bindingId,
+        continuationHint: input.continuationPrompt,
+      })
+    : probeArguments(input, controllerType, scheduleMode === 'browser_keepalive');
+  assertAutomatedOperationAllowed(operation, actionArguments);
   const policy = {
     maxActiveOccurrences: 1,
     maxFailures: input.maxFailures !== undefined ? Math.max(1, Math.trunc(input.maxFailures)) : 3,
@@ -230,8 +275,8 @@ export function createWorkContinuationSchedule(
     enabled: true,
     trigger,
     policy,
-    // Work-bound schedules only perform a deterministic wake or a bounded read-only
-    // browser probe. Controller/Work write ownership is acquired separately.
+    // Work-bound continuation schedules persist only exact Work/ControllerSession/ControllerBinding identities.
+    // Browser/process launch metadata lives in ControllerHost adapter stores; browser probes remain adapter actions.
     action: { operation, target: 'runtime', arguments: actionArguments, resourceClaims: [] },
     stopConditions,
   });

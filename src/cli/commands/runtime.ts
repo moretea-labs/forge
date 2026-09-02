@@ -8,7 +8,7 @@ import { readJobEvents } from '../../runtime/evidence/event-ledger';
 import { getRepository, listRepositories } from '../repositories/registry';
 import { executeReadOnlyDiagnostic, isReadOnlyDiagnosticTool } from '../../runtime/diagnostics/read-only-tool';
 import { readRepositoryProjection } from '../../runtime/projections/materialized-view';
-import { listOccurrences, listSchedules } from '../../runtime/workflow/schedules/store';
+import { listOccurrences, listSchedules } from '../../../packages/kernel/scheduler/api/index';
 import { observeRuntimeStatus } from '../../runtime/root/status';
 import { readMcpServiceBearerToken } from '../mcp/auth';
 import { publishRuntimeRelease } from '../../runtime/root/release-store';

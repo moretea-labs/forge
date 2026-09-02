@@ -24,7 +24,7 @@ import {
   waitForProcess,
 } from '../src/runtime/execution/process-runtime';
 import { executionIdentityForRepository } from '../src/runtime/control-plane/execution/execution-identity';
-import { createSchedule } from '../src/runtime/workflow/schedules/store';
+import { createSchedule } from '../packages/kernel/scheduler/api/index';
 import { assertAutomatedOperationAllowed } from '../src/runtime/control-plane/governance/external-effects';
 
 const root = mkdtempSync(join(tmpdir(), 'forge-recovery-smoke-'));

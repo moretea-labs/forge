@@ -4,7 +4,7 @@ import { repositoryControllerRoot } from '../../../../src/cli/repositories/contr
 import { withControllerLock } from '../../../../src/cli/repositories/locks';
 import { peekExecutionSession } from '../../../../src/runtime/control-plane/execution/session-store';
 import { readJsonFile } from '../../../../src/runtime/shared/json-files';
-import { readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../../../../src/runtime/control-plane/persistence/sqlite-store';
+import { readControlPlaneRecord, readOrImportControlPlaneRecord, writeControlPlaneRecord } from '../../../../src/runtime/control-plane/persistence/sqlite-store';
 import { getWorkContract, isTerminalWorkContractStatus } from '../../work/api/index';
 import { type ControllerSession, type ControllerSessionStore, type ControllerType } from '../domain/types';
 
@@ -56,6 +56,46 @@ function write(options: ControllerSessionStoreOptions, store: ControllerSessionS
     value: store,
     action: 'controller_session_claim_write',
   });
+}
+
+const RETAINED_SESSION_NAMESPACE = 'controller_session_identity';
+
+interface RetainedControllerSessionRecord {
+  schemaVersion: 1;
+  session: ControllerSession;
+  retainedAt: string;
+  releasedAt?: string;
+}
+
+function persistRetainedControllerSession(
+  options: ControllerSessionStoreOptions,
+  session: ControllerSession,
+  releasedAt?: string,
+): void {
+  const retainedAt = now(options);
+  writeControlPlaneRecord(options.controllerHome, {
+    namespace: RETAINED_SESSION_NAMESPACE,
+    scope: options.repoId,
+    key: session.workId,
+    schemaVersion: 1,
+    value: { schemaVersion: 1, session, retainedAt, ...(releasedAt ? { releasedAt } : {}) } satisfies RetainedControllerSessionRecord,
+    action: releasedAt ? 'controller_session_identity_released' : 'controller_session_identity_retained',
+  });
+}
+
+/** Durable session identity survives transport/lease release; it is not an ownership lease. */
+export function getRetainedControllerSession(
+  options: ControllerSessionStoreOptions,
+  workId: string,
+): ControllerSession | undefined {
+  const retained = readControlPlaneRecord<RetainedControllerSessionRecord>(
+    options.controllerHome,
+    RETAINED_SESSION_NAMESPACE,
+    options.repoId,
+    workId,
+  )?.value.session;
+  if (retained) return retained;
+  return read(options).sessions.find((entry) => entry.workId === workId);
 }
 
 const DEFAULT_CONTROLLER_RECOVERY_GRACE_MS = 5 * 60_000;
@@ -173,6 +213,7 @@ function persistClaim(
     session,
   ];
   write(options, { schemaVersion: 1, updatedAt: claimedAt, sessions });
+  persistRetainedControllerSession(options, session);
   return session;
 }
 
@@ -365,8 +406,10 @@ export function releaseControllerSessionWithAuthority(
       if (!controllerTerminalizationAuthorityMatches(owner, input.authority)) {
         return { allowed: false, reason: 'stale_controller_authority', owner };
       }
+      const releasedAt = now(options);
+      persistRetainedControllerSession(options, owner, releasedAt);
       const sessions = store.sessions.filter((entry) => entry.workId !== input.workId);
-      write(options, { schemaVersion: 1, updatedAt: now(options), sessions });
+      write(options, { schemaVersion: 1, updatedAt: releasedAt, sessions });
       return { allowed: true, value: undefined, owner };
     },
   );
@@ -510,8 +553,11 @@ export function releaseControllerSession(options: ControllerSessionStoreOptions,
     `controller-release:${controllerId}`,
     () => {
       const store = read(options);
+      const owner = store.sessions.find((entry) => entry.workId === workId && entry.controllerId === controllerId);
+      const releasedAt = now(options);
+      if (owner) persistRetainedControllerSession(options, owner, releasedAt);
       const sessions = store.sessions.filter((entry) => entry.workId !== workId || entry.controllerId !== controllerId);
-      write(options, { schemaVersion: 1, updatedAt: now(options), sessions });
+      write(options, { schemaVersion: 1, updatedAt: releasedAt, sessions });
     },
   );
 }

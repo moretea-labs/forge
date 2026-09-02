@@ -1,8 +1,8 @@
 import type { RepositoryRecord } from '../repositories/types';
 import { getWorkContract } from '../../runtime/control-plane/facade';
 import { evaluateSchedule } from '../../runtime/workflow/schedules/engine';
-import { getSchedule, listOccurrences, listSchedules, saveSchedule } from '../../runtime/workflow/schedules/store';
-import type { RepositorySchedule, ScheduleOccurrence } from '../../runtime/workflow/schedules/types';
+import { getSchedule, listOccurrences, listSchedules, saveSchedule } from '../../../packages/kernel/scheduler/api/index';
+import type { RepositorySchedule, ScheduleOccurrence } from '../../../packages/kernel/scheduler/api/index';
 
 export type ConsoleAutomationMode = 'browser_watch' | 'browser_keepalive' | 'continuation' | 'schedule';
 

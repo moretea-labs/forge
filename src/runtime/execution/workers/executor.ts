@@ -8,7 +8,7 @@ import { ensureRepositoryRuntimeStorage } from '../../../cli/repositories/runtim
 import { evaluateReleaseGate } from '../../release/release-gate';
 import { executeLocalBridgeJobInline, getLocalBridgeJob } from '../../../cli/local-bridge/job-store';
 import type { LocalBridgeJob } from '../../../cli/local-bridge/types';
-import { settleScheduledExecution } from '../../workflow/schedules/settlement';
+import { settleScheduledExecution } from '../../../../packages/kernel/scheduler/api/index';
 import type { ExecutionJob, ExecutionJobOutcome } from '../jobs/types';
 import {
   buildDelegatedExecutionResult,

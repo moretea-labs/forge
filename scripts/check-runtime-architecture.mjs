@@ -389,6 +389,46 @@ requireText('packages/kernel/controller/ports/controller-host.ts', 'resume(bindi
 requireText('packages/kernel/controller/infrastructure/controller-session-store.ts', 'claimControllerSession');
 requireText('packages/kernel/controller/infrastructure/controller-session-store.ts', 'releaseControllerSessionWithAuthority');
 requireText('src/runtime/control-plane/facade/controller-session-store.ts', '@deprecated Kernel V2 compatibility shim');
+// B4 Scheduler continuation authority: Schedule owns occurrence state only;
+// continuation resolves exact Work + retained ControllerSession + opaque ControllerBinding
+// and dispatches exclusively through ControllerHost.resume.
+requireText('packages/kernel/scheduler/domain/schedule.ts', 'export interface RepositorySchedule');
+requireText('packages/kernel/scheduler/domain/schedule.ts', 'export interface ScheduleOccurrence');
+requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occurrences.json'");
+requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'saveScheduleDecision');
+requireText('packages/kernel/scheduler/application/eligibility.ts', 'evaluateScheduleTriggerEligibility');
+requireText('packages/kernel/scheduler/application/eligibility.ts', 'evaluateScheduleOccurrenceAdmission');
+requireText('packages/kernel/scheduler/application/eligibility.ts', 'scheduleTriggerWindowKey');
+requireText('packages/kernel/scheduler/application/settlement.ts', 'applyScheduleFailure');
+requireText('packages/kernel/scheduler/application/settlement.ts', 'applyScheduleRetryableFailure');
+requireText('packages/kernel/scheduler/application/settlement.ts', 'settleScheduledExecution');
+requireText('src/runtime/workflow/schedules/settlement.ts', '@deprecated Kernel V2 compatibility shim');
+requireText('packages/kernel/scheduler/domain/continuation.ts', 'export interface ScheduledContinuationDispatch');
+requireText('packages/kernel/scheduler/application/continuation-service.ts', 'resumeScheduledControllerContinuation');
+requireText('packages/kernel/scheduler/application/continuation-service.ts', 'getRetainedControllerSession');
+requireText('packages/kernel/scheduler/application/continuation-service.ts', 'getControllerSessionBinding');
+requireText('packages/kernel/scheduler/application/continuation-service.ts', 'host.resume(bindingRecord.binding');
+requireText('packages/kernel/scheduler/application/continuation-service.ts', 'SCHEDULE_CONTINUATION_OUTCOME_UNKNOWN');
+requireText('packages/kernel/scheduler/application/continuation-service.ts', 'scheduler_continuation_prepare');
+requireText('packages/kernel/scheduler/application/continuation-service.ts', 'scheduler_continuation_bind_round');
+requireText('adapters/scheduler/controller-binding.ts', 'controllerHostForScheduledBinding');
+requireText('adapters/chatgpt/controller-host.ts', 'createChatgptControllerHost');
+requireText('adapters/controller-process/controller-host.ts', 'createProcessControllerHost');
+requireText('src/runtime/workflow/schedules/engine.ts', 'resumeScheduledControllerContinuation');
+requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleTriggerEligibility');
+requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleOccurrenceAdmission');
+requireText('src/runtime/workflow/schedules/engine.ts', 'controller_session_id');
+requireText('src/runtime/workflow/schedules/engine.ts', 'controller_binding_id');
+requireText('src/runtime/workflow/schedules/store.ts', '@deprecated Kernel V2 compatibility shim');
+requireText('src/runtime/workflow/schedules/types.ts', '@deprecated Kernel V2 compatibility shim');
+for (const path of sourceFiles('packages/kernel/scheduler')) {
+  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*adapters\//, 'Kernel Scheduler must not import provider adapters');
+  forbid(path, /\b(?:runWorkChatgptContinuation|launchSuperController|getChatgptWorkConversationBinding)\b|\bbrowser_session_id\b|\bconversation_url\b|\blaunch_args\b/, 'Kernel Scheduler must not own provider transport or provider binding payload fields');
+}
+forbid('src/runtime/workflow/schedules/engine.ts', /\brunWorkChatgptContinuation\b|\blaunchSuperController\b/, 'Schedule execution must dispatch Controller continuation through Kernel Scheduler + ControllerHost, never launch providers directly');
+for (const path of sourceFiles('src')) {
+  forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*workflow\/schedules\/(?:store|types|settlement)['"]/, 'production source must consume packages/kernel/scheduler instead of retired Schedule store/types/settlement authority');
+}
 for (const path of sourceFiles('src')) {
   forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*controller-session-store['"]/, 'production source must consume packages/kernel/controller instead of retired ControllerSession facade authority');
 }
@@ -847,7 +887,7 @@ forbidBetween(
   /rebuildRepositoryProjection\s*\(/,
   'Projection rebuild must happen outside the Repo Actor mailbox lock',
 );
-requireText('src/runtime/workflow/schedules/store.ts', "'occurrences.json'");
+requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occurrences.json'");
 requireText('src/runtime/projections/git-status-sampler.ts', 'writeRepositoryGitStatusSample');
 requireText('src/runtime/projections/git-status-sampler.ts', 'readRepositoryGitStatusSample');
 requireText('src/cli/mcp/repository-tools.ts', 'readRepositoryGitStatusSample');
@@ -907,10 +947,10 @@ forbidBetween(
   /withControllerLock\([\s\S]{0,900}?(?:repositoryGitCommit|repositoryGitFinishWorkflow|runCleanup|repositoryGitDeleteBranch)/,
   'Work finalization must not hold the controller lock while committing, merging, deleting branches, or removing worktrees',
 );
-requireText('src/runtime/workflow/schedules/types.ts', "'repository-event'");
-requireText('src/runtime/workflow/schedules/types.ts', "'dependency-checkpoint'");
-requireText('src/runtime/workflow/schedules/store.ts', 'saveScheduleDecision');
-requireText('src/runtime/workflow/schedules/settlement.ts', 'backoffMinutes');
+requireText('packages/kernel/scheduler/domain/schedule.ts', "'repository-event'");
+requireText('packages/kernel/scheduler/domain/schedule.ts', "'dependency-checkpoint'");
+requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'saveScheduleDecision');
+requireText('packages/kernel/scheduler/application/settlement.ts', 'backoffMinutes');
 requireText('src/runtime/release/release-gate.ts', 'releaseReady');
 requireText('src/cli/mcp/transports/http.ts', "'/ready'");
 requireText('src/cli/mcp/transports/http.ts', "'/repos/:repoId/health'");

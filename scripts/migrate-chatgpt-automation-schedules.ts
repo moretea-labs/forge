@@ -4,8 +4,8 @@ import { dirname, join, resolve } from 'path';
 import { resolveRepoPreferredControllerHome } from '../src/cli/repositories/controller-home';
 import { listRepositories } from '../src/cli/repositories/registry';
 import { migrateChatgptAutomationSchedule } from '../src/runtime/workflow/schedules/chatgpt-automation-migration';
-import { listSchedules, saveSchedule } from '../src/runtime/workflow/schedules/store';
-import type { RepositorySchedule } from '../src/runtime/workflow/schedules/types';
+import { listSchedules, saveSchedule } from '../packages/kernel/scheduler/api/index';
+import type { RepositorySchedule } from '../packages/kernel/scheduler/api/index';
 
 interface Args { controllerHome?: string; apply: boolean; json: boolean; }
 

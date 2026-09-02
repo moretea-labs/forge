@@ -47,5 +47,10 @@ export interface ControllerRoundContext {
   relayScopeId: string;
   roundNumber: number;
   authorityId: string;
-  continuationPrompt: string;
+  /** Exact Scheduler occurrence identity when resumed by a durable schedule. */
+  occurrenceId?: string;
+  /** Keep a Work-bound scheduled round on its exact origin Work. */
+  exactOriginWork?: boolean;
+  /** Provider-neutral semantic hint. ControllerHost decides how to render it. */
+  continuationHint?: string;
 }

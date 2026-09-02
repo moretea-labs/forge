@@ -56,7 +56,7 @@ import {
   type RuntimeOperationalView,
   type GradedObservation,
 } from '../../health';
-import { applyScheduleDedupe, buildScheduleDedupeReport, deleteSchedule } from '../../workflow/schedules/store';
+import { applyScheduleDedupe, buildScheduleDedupeReport, deleteSchedule } from '../../../../packages/kernel/scheduler/api/index';
 import {
   createWorkContinuationSchedule,
   getWorkContinuationSchedule,
