@@ -1,7 +1,7 @@
 import { listControllerChecks } from '../../../cli/controller/check-runner';
 import type { ControllerCheck } from '../../../cli/controller/check-runner';
 import type { CompletionReceipt } from '../../../cli/controller/types';
-import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
+import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
 import { globMatches } from '../../../cli/mcp/paths';
 import { withControllerLock } from '../../../cli/repositories/locks';
 import { getRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../../cli/repositories/registry';
@@ -205,7 +205,7 @@ export function targetAdvanceWorkScopeViolation(
 }
 
 function replaceTargetAdvanceScopeEvidence(
-  ctx: MultiRepositoryMcpToolContext,
+  ctx: McpExecutionContext,
   contract: NonNullable<ReturnType<typeof contractFor>>,
   actualChangedPaths: string[],
 ): void {
@@ -319,7 +319,7 @@ function currentWorkReviewChangedPaths(
 }
 
 function assertPhysicalImplementationReviewGate(input: {
-  ctx: MultiRepositoryMcpToolContext;
+  ctx: McpExecutionContext;
   repository: RepositoryRecord;
   handle: WorkHandleState;
   contract: NonNullable<ReturnType<typeof contractFor>>;
@@ -617,7 +617,7 @@ export function completionReceiptChangedPaths(repoRoot: string, baseRevision: st
 }
 
 function completionReceiptForFinalizedWork(
-  ctx: MultiRepositoryMcpToolContext,
+  ctx: McpExecutionContext,
   handle: WorkHandleState,
   contract: ReturnType<typeof contractFor>,
   args: Record<string, unknown>,
@@ -708,7 +708,7 @@ function runCleanup(targetRoot: string, worktreePath: string): { ok: boolean; me
  * crash without turning a missing checkout into proof of safety.
  */
 export function inspectCleanupOnlyMergedHead(
-  ctx: MultiRepositoryMcpToolContext,
+  ctx: McpExecutionContext,
   current: WorkHandleState,
   args: Record<string, unknown>,
 ): { currentHead: string; cancelledContract: boolean; worktreeMissing: boolean } | undefined {
@@ -771,7 +771,7 @@ interface FailedCleanupProof {
  * cleanup only; it never proves successful verification or delivery.
  */
 function failedCleanupOnlyHead(
-  ctx: MultiRepositoryMcpToolContext,
+  ctx: McpExecutionContext,
   current: WorkHandleState,
   args: Record<string, unknown>,
 ): FailedCleanupProof | undefined {
@@ -928,7 +928,7 @@ function currentWorkValidationInput(
   };
 }
 
-export async function finalizeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+export async function finalizeWork(ctx: McpExecutionContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const session = requireSession(ctx, args);
   let current = workForSession(ctx, session, args, { allowClaimedTerminalCleanup: args.cleanup !== false });
   const requestedWants = { commit: args.commit === true, merge: args.merge === true, cleanup: args.cleanup === true };

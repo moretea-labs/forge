@@ -170,7 +170,7 @@ for (const path of ['README.md', 'docs/ROADMAP.md', 'docs/architecture/CURRENT.m
 }
 
 const required = [
-  'src/runtime/gateway/mcp/router.ts',
+  'adapters/mcp/runtime-gateway/router.ts',
   'src/cli/agent-jobs/executable-resolver.ts',
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
   'src/runtime/control-plane/global-scheduler/config.ts',
@@ -227,9 +227,21 @@ const required = [
   'src/runtime/control-plane/facade/work-state-machine.ts',
   'src/runtime/evidence/process-check-execution.ts',
   'src/runtime/context/semantic-navigation-contract.ts',
-  'src/cli/mcp/tool-contract.ts',
+  'packages/protocols/mcp/tool-contract.ts',
+  'packages/protocols/mcp/execution-context.ts',
   'src/cli/github/contracts.ts',
-  'src/runtime/gateway/mcp/runtime-tool-definitions.ts',
+  'adapters/mcp/runtime-gateway/runtime-tool-definitions.ts',
+  'adapters/mcp/server.ts',
+  'adapters/mcp/oauth.ts',
+  'adapters/mcp/multi-repository.ts',
+  'adapters/mcp/toolset.ts',
+  'adapters/mcp/tool-mapping/tools.ts',
+  'adapters/mcp/tool-mapping/legacy-tool-service.ts',
+  'adapters/mcp/tool-mapping/repository-tools.ts',
+  'adapters/mcp/tool-mapping/access-tools.ts',
+  'adapters/mcp/transports/http.ts',
+  'adapters/mcp/transports/stdio.ts',
+  'adapters/mcp/transports/session-registry.ts',
   'docs/architecture/CURRENT.md',
   'src/runtime/resources/leases/store.ts',
   'src/runtime/evidence/event-ledger.ts',
@@ -269,7 +281,7 @@ requireText('src/runtime/control-plane/execution/work-verification-service.ts', 
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'interactiveWaitMs: input.interactiveWaitMs ?? 0');
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'checkContentRevision');
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'observedGitHead');
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'executeWorkVerification({');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'executeWorkVerification({');
 requireText('src/cli/local-bridge/facade-api.ts', 'executeWorkVerification({');
 forbid(
   'src/cli/local-bridge/facade-api.ts',
@@ -277,7 +289,7 @@ forbid(
   'Local Bridge Work verification must use the canonical persisted Work verification service',
 );
 forbid(
-  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /function\s+classifyTerminalCheckEvidence\s*\(/,
   'terminal Check evidence classification belongs to Process Runtime, not the Gateway transport',
 );
@@ -313,10 +325,10 @@ requireText('src/runtime/control-plane/execution/edit-validation-coordinator.ts'
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'assertPhysicalImplementationReviewGate');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'assertPhysicalBranchCleanupImplementationReviewGate');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'transferWorkVerificationAcrossContentEquivalentCommit');
-requireText('src/runtime/gateway/mcp/runtime-tool-definitions.ts', 'review_decision');
-requireText('src/runtime/gateway/mcp/runtime-tool-definitions.ts', 'implementation_review_findings');
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', "operation === 'review'");
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'implementationReviewContentFingerprint');
+requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', 'review_decision');
+requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', 'implementation_review_findings');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "operation === 'review'");
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'implementationReviewContentFingerprint');
 requireText('adapters/mcp/controller-round-compatibility.ts', "'review'");
 requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', 'readControllerRoundContextSnapshot');
 requireText('adapters/chatgpt/controller-round-host.ts', 'buildChatgptControllerRoundPrompt');
@@ -325,7 +337,7 @@ forbid('packages/kernel/controller/infrastructure/controller-round-store.ts', /b
 requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', "controllerTypes: ['chatgpt']");
 requireText('src/runtime/control-plane/facade/suggested-actions.ts', "case 'review'");
 forbid(
-  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /function\s+(?:assert|evaluate|derive)[A-Za-z0-9_]*ImplementationReview/,
   'Gateway transport must not implement implementation-review policy authority',
 );
@@ -369,16 +381,16 @@ for (const path of sourceFiles('src')) {
   forbid(path, /packages\/kernel\/work\/infrastructure\/work-contract-store/, 'production source must consume the Work application/API boundary, not persistence infrastructure');
 }
 forbid(
-  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/,
   'MCP Gateway must not mutate Work through facade/persistence authority',
 );
 forbid(
-  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /\b(?:appendWorkEvidence|recordWorkCompletionReceipt)\s*\(/,
   'MCP Gateway must submit Work application commands instead of writing lifecycle/evidence records directly',
 );
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'completeRemoteEffectWorkFromProcessReceipt');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'completeRemoteEffectWorkFromProcessReceipt');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'packages/kernel/work/api/index');
 requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'packages/kernel/work/api/index');
 // B3 ControllerSession authority and provider-neutral host boundary.
@@ -433,7 +445,7 @@ for (const path of sourceFiles('src')) {
   forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*controller-session-store['"]/, 'production source must consume packages/kernel/controller instead of retired ControllerSession facade authority');
 }
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'completeWorkWithReceipt(');
-requireText('src/runtime/gateway/mcp/execution-tools.ts', 'resetFinalizationStagesForRequest');
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'resetFinalizationStagesForRequest');
 forbid(
   'src/runtime/plugins/browser-handoff-host.ts',
   /browser\/sessions|saveBrowserSession|writeBrowserSession|sessionPath/,
@@ -446,22 +458,22 @@ forbid(
 );
 requireText('src/runtime/plugins/browser-runtime.ts', 'browserActionCanReplayAfterDispatch');
 forbid(
-  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /\b(?:createRequirement|resumeRetainedCancelledWorkContract)\s*\(/,
   'keep Requirement admission and retained-cancelled Work lifecycle authority out of the MCP transport',
 );
 forbid(
-  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /\b(?:updateWorkContract|writeWorkHandle)\s*\(/,
   'keep WorkContract/WorkHandle persistence policy out of the MCP transport',
 );
 forbid(
-  'src/runtime/gateway/mcp/execution-tools.ts',
+  'adapters/mcp/runtime-gateway/execution-tools.ts',
   /\bcreateWorkContract\s*\(/,
   'route compatibility work preparation through canonical Work admission authority',
 );
 forbid(
-  'src/cli/mcp/legacy-tool-service.ts',
+  'adapters/mcp/tool-mapping/legacy-tool-service.ts',
   /\bcreateWorkContract\s*\(/,
   'keep the legacy MCP surface as translation over canonical Work admission authority',
 );
@@ -668,7 +680,7 @@ forbid(
 requireText('scripts/smoke-schedule-engine.ts', 'listHandoffItems');
 requireText('scripts/smoke-schedule-engine.ts', 'listExecutionJobs');
 requireText('scripts/smoke-schedule-engine.ts', "operation: 'runtime_maintenance_apply'");
-const server = text('src/cli/mcp/server.ts');
+const server = text('adapters/mcp/server.ts');
 const runtimeCall = server.indexOf('callRuntimeTool(ctx, name, args)');
 const durableCall = server.indexOf('routeDurableMcpCall(ctx, name, args)');
 const legacyCall = server.indexOf('callMultiRepositoryTool(ctx, name, args)');
@@ -689,16 +701,16 @@ if (executionRegion.includes('forceDurable: true') && executionRegion.includes('
   failures.push('Public MCP Work mutations must not force the retired durable ExecutionJob path');
 }
 forbid(
-  'src/runtime/gateway/mcp/router.ts',
+  'adapters/mcp/runtime-gateway/router.ts',
   /\bcreateExecutionJob\b|\bgetExecutionJob\b/,
   'Gateway Router must not retain dormant ExecutionJob creation or lookup paths',
 );
-requireText('src/runtime/gateway/mcp/router.ts', 'executionJobCreationRetired');
-requireText('src/runtime/gateway/mcp/router.ts', "'EXECUTION_JOB_RETIRED'");
-requireText('src/runtime/gateway/mcp/execution-tools.ts', 'isDurableWorkOperation');
-requireText('src/runtime/gateway/mcp/execution-tools.ts', "'work_execute'");
-requireText('src/runtime/gateway/mcp/execution-tools.ts', "'work_validate'");
-requireText('src/runtime/gateway/mcp/execution-tools.ts', "'work_finalize'");
+requireText('adapters/mcp/runtime-gateway/router.ts', 'executionJobCreationRetired');
+requireText('adapters/mcp/runtime-gateway/router.ts', "'EXECUTION_JOB_RETIRED'");
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'isDurableWorkOperation');
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "'work_execute'");
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "'work_validate'");
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "'work_finalize'");
 requireText('src/runtime/execution/workers/executor.ts', 'executeWork(runtimeContext');
 requireText('src/runtime/execution/workers/executor.ts', 'validateWork(runtimeContext');
 requireText('src/runtime/execution/workers/executor.ts', 'finalizeWork(runtimeContext');
@@ -708,9 +720,9 @@ forbid(
   'Execution Worker must invoke control-plane Work application services directly, never MCP transport',
 );
 requireText('src/runtime/execution/workers/executor.ts', '__from_durable_worker');
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'managedProcessOperationDigest');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'managedProcessOperationDigest');
 forbid(
-  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /\bcreateExecutionJob\b/,
   'Runtime MCP tools must not retain dormant ExecutionJob creation paths',
 );
@@ -725,12 +737,12 @@ forbid(
   'Local Bridge HTTP creation routes must return retirement handoffs without dormant Job submission or dispatch code',
 );
 forbid(
-  'src/cli/mcp/repository-tools.ts',
+  'adapters/mcp/tool-mapping/repository-tools.ts',
   /\bsubmitLocalBridgeJob\b|\bexecuteLocalBridgeJob\b|\bwaitForRepositoryCommandHandoff\b/,
   'Repository command MCP fallback must use Process Runtime or an external-Controller handoff, never Local Bridge Jobs',
 );
 forbid(
-  'src/cli/mcp/legacy-tool-service.ts',
+  'adapters/mcp/tool-mapping/legacy-tool-service.ts',
   /\bsubmitLocalBridgeJob\b|\bexecuteLocalBridgeJob\b|\bacceptTaskJob\b|\bdispatchAcceptedTaskJob\b|\bstartTaskJob\b|\blegacy_agent_run\b/,
   'Legacy MCP compatibility may read or cancel historical Jobs and Runs but must not create or dispatch new ones',
 );
@@ -771,24 +783,24 @@ forbid(
   'Local Bridge HTTP must not call Agent Run create/start/retry write boundaries',
 );
 forbid(
-  'src/cli/mcp/legacy-tool-service.ts',
+  'adapters/mcp/tool-mapping/legacy-tool-service.ts',
   /\bretryAgentJob\b/,
   'Legacy MCP must not call Agent Run retry',
 );
-forbid('src/runtime/gateway/mcp/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
+forbid('adapters/mcp/runtime-gateway/router.ts', /Use process_get \/ process_wait \/ process_logs/, 'Gateway follow-up instructions must use an always-exposed neutral Work facade');
 requireMatch(
-  'src/runtime/gateway/mcp/router.ts',
+  'adapters/mcp/runtime-gateway/router.ts',
   /const DIRECT_REPOSITORY_TOOLS = new Set\(\[[\s\S]*?'repository_list'[\s\S]*?'repository_get'[\s\S]*?'repository_workbench'[\s\S]*?\]\);/,
   'declare DIRECT_REPOSITORY_TOOLS with repository_list, repository_get, and repository_workbench',
 );
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', "case 'controller_context'");
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', "case 'local_bridge_status'");
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'readAgentExecutableReadinessSnapshot');
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'connectorExposedTools');
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'currentCallableTools');
-forbid('src/runtime/gateway/mcp/runtime-tools.ts', /inspectAgentExecutableReadiness|resolveAgentExecutable|writeAgentExecutableReadinessSnapshot/, 'Gateway readiness must only read the Daemon-produced Agent executable snapshot');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "case 'controller_context'");
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "case 'local_bridge_status'");
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'readAgentExecutableReadinessSnapshot');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'connectorExposedTools');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'currentCallableTools');
+forbid('adapters/mcp/runtime-gateway/runtime-tools.ts', /inspectAgentExecutableReadiness|resolveAgentExecutable|writeAgentExecutableReadinessSnapshot/, 'Gateway readiness must only read the Daemon-produced Agent executable snapshot');
 forbidBetween(
-  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
   "case 'repository_runtime_snapshot':",
   "case 'runtime_performance_diagnostics':",
   /rebuildRepositoryProjection\s*\(/,
@@ -802,9 +814,9 @@ forbid(
 );
 requireText('src/runtime/projections/controller-context.ts', 'controllerContextProjectionPayloadMatchesSourceIdentity');
 requireText('src/runtime/projections/controller-context.ts', 'sourceIdentityMatches');
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', 'CONTEXT_PROJECTION_SOURCE_MISMATCH');
-forbid('src/runtime/gateway/mcp/router.ts', /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"]controller_context['"][\s\S]*?\);/, 'controller_context must use a materialized projection or Durable Job, never the legacy Gateway path');
-forbid('src/runtime/gateway/mcp/router.ts', /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"](?:local_bridge_status|get_local_job|get_local_job_output)['"][\s\S]*?\);/, 'Local Bridge observations must use bounded snapshots, never reconciliation in the Gateway');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'CONTEXT_PROJECTION_SOURCE_MISMATCH');
+forbid('adapters/mcp/runtime-gateway/router.ts', /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"]controller_context['"][\s\S]*?\);/, 'controller_context must use a materialized projection or Durable Job, never the legacy Gateway path');
+forbid('adapters/mcp/runtime-gateway/router.ts', /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"](?:local_bridge_status|get_local_job|get_local_job_output)['"][\s\S]*?\);/, 'Local Bridge observations must use bounded snapshots, never reconciliation in the Gateway');
 requireText('src/runtime/execution/jobs/types.ts', 'requestId: string');
 requireText('src/runtime/execution/jobs/types.ts', 'semanticKey: string');
 requireText('src/runtime/execution/jobs/types.ts', 'admissionTimeoutMs: number');
@@ -816,7 +828,7 @@ requireText('src/runtime/control-plane/facade/operation-digest.ts', 'operationId
 requireText('src/runtime/control-plane/facade/operation-digest.ts', 'resultRef');
 requireText('src/runtime/control-plane/facade/operation-digest.ts', 'nextActions');
 requireText('src/runtime/control-plane/facade/operation-digest.ts', 'admissionTimeoutMs');
-forbid('src/runtime/gateway/mcp/router.ts', /Math\.min\(\s*typeof args\.timeout_ms[\s\S]{0,140}?,\s*120_000\s*\)/, 'Agent parent timeout must never silently truncate timeout_ms to 120 seconds');
+forbid('adapters/mcp/runtime-gateway/router.ts', /Math\.min\(\s*typeof args\.timeout_ms[\s\S]{0,140}?,\s*120_000\s*\)/, 'Agent parent timeout must never silently truncate timeout_ms to 120 seconds');
 requireText('src/runtime/execution/jobs/store.ts', "'active.json'");
 requireText('src/runtime/execution/jobs/store.ts', "'recent.json'");
 requireText('src/runtime/execution/jobs/store.ts', "'requests'");
@@ -890,10 +902,10 @@ forbidBetween(
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occurrences.json'");
 requireText('src/runtime/projections/git-status-sampler.ts', 'writeRepositoryGitStatusSample');
 requireText('src/runtime/projections/git-status-sampler.ts', 'readRepositoryGitStatusSample');
-requireText('src/cli/mcp/repository-tools.ts', 'readRepositoryGitStatusSample');
-requireText('src/cli/mcp/repository-tools.ts', 'args.refresh === true');
+requireText('adapters/mcp/tool-mapping/repository-tools.ts', 'readRepositoryGitStatusSample');
+requireText('adapters/mcp/tool-mapping/repository-tools.ts', 'args.refresh === true');
 forbidBetween(
-  'src/cli/mcp/repository-tools.ts',
+  'adapters/mcp/tool-mapping/repository-tools.ts',
   "case 'repository_git_status':",
   "case 'repository_git_diff':",
   /repositoryGitStatus\s*\(/,
@@ -902,35 +914,35 @@ forbidBetween(
 requireText('src/runtime/control-plane/execution/session-store.ts', 'lastValidatedAt: now');
 requireText('src/runtime/control-plane/execution/validation.ts', 'warnings.push');
 requireText('src/runtime/control-plane/execution/work-handle-store.ts', "failed: ['validating', 'editing', 'committed', 'merged', 'cleaned', 'failed_terminal_cleanup']");
-requireText('src/runtime/gateway/mcp/execution-tools.ts', "from '../../control-plane/execution/work-finalization-service'");
-requireText('src/runtime/gateway/mcp/execution-tools.ts', "from '../../control-plane/execution/work-preparation-service'");
-requireText('src/runtime/gateway/mcp/execution-tools.ts', "from '../../control-plane/execution/work-operation-service'");
-requireText('src/runtime/gateway/mcp/execution-tools.ts', 'Compatibility exports: implementation authority lives in control-plane execution.');
-requireText('src/runtime/gateway/mcp/execution-tools.ts', 'resetFinalizationStagesForRequest,');
-requireText('src/runtime/gateway/mcp/execution-tools.ts', 'selectDefaultWorkValidationChecks');
-requireText('src/runtime/gateway/mcp/runtime-tools.ts', "callExecutionTool(ctx, 'work_finalize'");
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "from '../../../src/runtime/control-plane/execution/work-finalization-service'");
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "from '../../../src/runtime/control-plane/execution/work-preparation-service'");
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "from '../../../src/runtime/control-plane/execution/work-operation-service'");
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'Compatibility exports: implementation authority lives in control-plane execution.');
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'resetFinalizationStagesForRequest,');
+requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'selectDefaultWorkValidationChecks');
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "callExecutionTool(ctx, 'work_finalize'");
 forbid(
-  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /repositoryGit(?:Commit|FinishWorkflow|MergeBranch|DeleteBranch|RebaseOnto)\s*\(/,
   'rh_work facade finalization must delegate to the canonical Work finalization application service instead of performing Git delivery itself',
 );
 forbid(
-  'src/runtime/gateway/mcp/execution-tools.ts',
+  'adapters/mcp/runtime-gateway/execution-tools.ts',
   /function\s+finalizeWork\s*\(/,
   'MCP execution transport must delegate Work finalization to the control-plane application service',
 );
 forbid(
-  'src/runtime/gateway/mcp/execution-tools.ts',
+  'adapters/mcp/runtime-gateway/execution-tools.ts',
   /function\s+(?:prepareWork|adoptExistingWorkHead)\s*\(/,
   'MCP execution transport must delegate Work preparation/adoption to the control-plane application service',
 );
 forbid(
-  'src/runtime/gateway/mcp/execution-tools.ts',
+  'adapters/mcp/runtime-gateway/execution-tools.ts',
   /function\s+(?:executeWork|validateWork)\s*\(/,
   'MCP execution transport must delegate Work execute/validate operations to the control-plane application service',
 );
 forbid(
-  'src/runtime/gateway/mcp/execution-tools.ts',
+  'adapters/mcp/runtime-gateway/execution-tools.ts',
   /(?:ensureManagedWorkspace|admitPreparedRepositoryWorkContract)\s*\(/,
   'MCP execution transport must not own managed-workspace or WorkContract preparation admission',
 );
@@ -952,20 +964,21 @@ requireText('packages/kernel/scheduler/domain/schedule.ts', "'dependency-checkpo
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'saveScheduleDecision');
 requireText('packages/kernel/scheduler/application/settlement.ts', 'backoffMinutes');
 requireText('src/runtime/release/release-gate.ts', 'releaseReady');
-requireText('src/cli/mcp/transports/http.ts', "'/ready'");
-requireText('src/cli/mcp/transports/http.ts', "'/repos/:repoId/health'");
+requireText('adapters/mcp/transports/http.ts', "'/ready'");
+requireText('adapters/mcp/transports/http.ts', "'/repos/:repoId/health'");
 requireText('src/runtime/control-plane/governance/external-effects.ts', 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED');
 requireText('src/runtime/control-plane/governance/external-effects.ts', 'AUTOMATED_REQUIREMENT_REQUIRES_CANDIDATE');
-requireText('src/cli/mcp/tools.ts', "export * from './legacy-tool-service'");
+requireText('adapters/mcp/tool-mapping/tools.ts', "export * from './legacy-tool-service'");
+requireText('src/cli/mcp/tools.ts', '@deprecated Kernel V2 compatibility shim');
 
 for (const path of [
-  'src/runtime/gateway/mcp/router.ts',
-  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/router.ts',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
   'src/runtime/control-plane/repo-actor/actor.ts',
   'src/runtime/workflow/schedules/engine.ts',
   'src/runtime/workflow/schedules/work-continuation.ts',
-  'src/cli/mcp/transports/http.ts',
+  'adapters/mcp/transports/http.ts',
 ]) {
   forbid(path, /\b(?:spawnSync|execSync|execFileSync)\s*\(/, 'the non-blocking Gateway/Controller hot-path rule');
 }
@@ -978,7 +991,42 @@ requireText('docs/architecture/CURRENT.md', '## State ownership');
 requireText('docs/architecture/CURRENT.md', '## Runtime and MCP boundary');
 requireText('docs/architecture/CURRENT.md', '## Testing and verification');
 requireText('plans/README.md', 'not the runtime execution queue');
-if (text('src/cli/mcp/tools.ts').split(/\r?\n/).length > 40) failures.push('src/cli/mcp/tools.ts must remain a thin compatibility facade');
+if (text('src/cli/mcp/tools.ts').split(/\r?\n/).length > 6) failures.push('src/cli/mcp/tools.ts must remain a thin compatibility facade');
+if (text('src/cli/mcp/legacy-tool-service.ts').split(/\r?\n/).length > 6) failures.push('src/cli/mcp/legacy-tool-service.ts must remain a thin compatibility facade');
+if (text('src/cli/mcp/repository-tools.ts').split(/\r?\n/).length > 6) failures.push('src/cli/mcp/repository-tools.ts must remain a thin compatibility facade');
+for (const path of sourceFiles('packages/kernel')) {
+  forbid(path, /(?:from\s+['\"]|import\s*\(\s*['\"])[^'\"]*(?:adapters\/mcp|src\/cli\/mcp|runtime\/gateway\/mcp)/, 'Kernel modules must never depend on MCP adapters or retired MCP gateway paths');
+  forbid(path, /@modelcontextprotocol\//, 'Kernel modules must remain independent of MCP SDK transport contracts');
+}
+for (const path of [
+  'src/runtime/gateway/mcp/execution-tools.ts',
+  'src/runtime/gateway/mcp/legacy-ios-tool-adapter.ts',
+  'src/runtime/gateway/mcp/persisted-check-process.ts',
+  'src/runtime/gateway/mcp/process-tools.ts',
+  'src/runtime/gateway/mcp/router.ts',
+  'src/runtime/gateway/mcp/runtime-tool-definitions.ts',
+  'src/runtime/gateway/mcp/runtime-tools.ts',
+  'src/runtime/gateway/mcp/work-validation-reconciler.ts',
+]) requireText(path, '@deprecated Kernel V2 compatibility shim');
+for (const path of [
+  'src/cli/mcp/access-tools.ts',
+  'src/cli/mcp/legacy-context.ts',
+  'src/cli/mcp/legacy-tool-service.ts',
+  'src/cli/mcp/multi-repository.ts',
+  'src/cli/mcp/repository-tools.ts',
+  'src/cli/mcp/server.ts',
+  'src/cli/mcp/tools.ts',
+  'src/cli/mcp/toolset.ts',
+]) requireText(path, '@deprecated Kernel V2 compatibility shim');
+requireText('src/runtime/control-plane/execution/work-execution-support.ts', 'packages/protocols/mcp/execution-context');
+requireText('src/runtime/control-plane/execution/work-preparation-service.ts', 'packages/protocols/mcp/execution-context');
+requireText('src/runtime/control-plane/execution/work-operation-service.ts', 'packages/protocols/mcp/execution-context');
+requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'packages/protocols/mcp/execution-context');
+for (const path of [
+  'adapters/mcp/transports/http.ts',
+  'adapters/mcp/transports/session-registry.ts',
+  'adapters/mcp/transports/stdio.ts',
+]) forbid(path, /recordWorkCompletionReceipt|transitionWorkContractPhase|releaseControllerSessionWithAuthority|recordWorkImplementationReview/, 'MCP transport/session lifecycle must never terminalize Work or Controller authority');
 
 if (failures.length) {
   console.error('[runtime-architecture] FAILED');

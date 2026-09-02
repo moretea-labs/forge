@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { isAbsolute, relative, resolve } from 'path';
-import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
+import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
 import { repositoryGitStatus, repositoryGitDiff } from '../../../cli/repositories/structured-git';
 import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
 import { listControllerChecks } from '../../../cli/controller/check-runner';
@@ -38,7 +38,7 @@ function authorizationRisk(command: RepositoryCommandValue, classification: Retu
   return 'workspace_write';
 }
 
-export async function executeWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+export async function executeWork(ctx: McpExecutionContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const session = requireSession(ctx, args);
   const handle = workForSession(ctx, session, args);
   assertWorkControllerOwnership(ctx, session, handle, args);
@@ -213,7 +213,7 @@ export function selectDefaultWorkValidationChecks(
   });
 }
 
-export async function validateWork(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+export async function validateWork(ctx: McpExecutionContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const session = requireSession(ctx, args);
   const handle = workForSession(ctx, session, args, {
     reconcileValidation: false,

@@ -1,3 +1,2 @@
-// Compatibility import path. Persisted check execution belongs to Process Runtime
-// so Scheduler reconciliation can advance validation without depending on Gateway.
-export * from '../../execution/process-runtime/persisted-check';
+/** @deprecated Kernel V2 compatibility shim. MCP gateway mapping authority lives in adapters/mcp. */
+export * from '../../../../adapters/mcp/runtime-gateway/persisted-check-process';

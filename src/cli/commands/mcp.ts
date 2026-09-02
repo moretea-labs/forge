@@ -1,10 +1,10 @@
 import { Command } from 'commander';
 import { isAbsolute, relative } from 'path';
-import { createMcpToolContext } from '../mcp/server';
-import { startMcpHttp } from '../mcp/transports/http';
-import { startMcpStdio } from '../mcp/transports/stdio';
-import { callMcpTool } from '../mcp/tools';
-import { callAccessTool } from '../mcp/access-tools';
+import { createMcpToolContext } from '../../../adapters/mcp/server';
+import { startMcpHttp } from '../../../adapters/mcp/transports/http';
+import { startMcpStdio } from '../../../adapters/mcp/transports/stdio';
+import { callMcpTool } from '../../../adapters/mcp/tool-mapping/tools';
+import { callAccessTool } from '../../../adapters/mcp/tool-mapping/access-tools';
 import { assertControllerLifecycleOwner } from '../controller/lifecycle-authority';
 import { bindInheritedRuntimeWriteClaimFromEnvironment } from '../../runtime/root/write-fence';
 import {

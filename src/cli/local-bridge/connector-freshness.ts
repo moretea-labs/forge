@@ -19,7 +19,7 @@ import {
   loadMcpLocalConfig,
   loadMcpServiceLocalConfig,
 } from '../mcp/auth';
-import { PREFERRED_FACADE_TOOL_NAMES, DEFAULT_CONTROLLER_TOOL_NAMES } from '../mcp/toolset-names';
+import { PREFERRED_FACADE_TOOL_NAMES, DEFAULT_CONTROLLER_TOOL_NAMES } from '../../../adapters/mcp/toolset-names';
 import { resolveRepoPreferredControllerHome } from '../repositories/controller-home';
 import type { PlainStatusTone } from './console-view-models';
 

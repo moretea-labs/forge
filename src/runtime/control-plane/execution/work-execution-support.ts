@@ -1,4 +1,4 @@
-import type { MultiRepositoryMcpToolContext } from '../../../cli/mcp/multi-repository';
+import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
 import { getRepository, listRepositories, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { reconcileWorkValidation } from './work-validation-reconciler';
 import { assertControllerOwnershipAuthority, claimControllerSession, controllerSessionPrincipalId, getControllerSession, releaseControllerSessionWithAuthority, resumeControllerSession } from '../../../../packages/kernel/controller/api/index';
@@ -15,7 +15,7 @@ import { writeControllerResult } from '../../evidence/result-store';
 
 const MAX_INLINE_RESULT_BYTES = 64 * 1024;
 
-export function makeBoundedWorkResult(ctx: MultiRepositoryMcpToolContext, session: ExecutionSessionContext, repoId: string, workIdValue: string | undefined, kind: 'inspection' | 'command' | 'validation' | 'finalization' | 'generic', value: Record<string, unknown>): Record<string, unknown> {
+export function makeBoundedWorkResult(ctx: McpExecutionContext, session: ExecutionSessionContext, repoId: string, workIdValue: string | undefined, kind: 'inspection' | 'command' | 'validation' | 'finalization' | 'generic', value: Record<string, unknown>): Record<string, unknown> {
   const serialized = JSON.stringify(value);
   if (Buffer.byteLength(serialized, 'utf8') <= MAX_INLINE_RESULT_BYTES) return value;
   const started = performance.now();
@@ -30,11 +30,11 @@ export function makeBoundedWorkResult(ctx: MultiRepositoryMcpToolContext, sessio
   };
 }
 
-export function principalFor(ctx: MultiRepositoryMcpToolContext): string {
+export function principalFor(ctx: McpExecutionContext): string {
   return ctx.principalId?.trim() || `controller-issued:${ctx.controllerInstanceId ?? currentControllerInstanceId()}`;
 }
 
-export function identityFor(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): SessionIdentity {
+export function identityFor(ctx: McpExecutionContext, args: Record<string, unknown>): SessionIdentity {
   return {
     sessionId: typeof args.session_id === 'string' && args.session_id.trim() ? args.session_id.trim() : ctx.sessionId,
     principalId: principalFor(ctx),
@@ -42,7 +42,7 @@ export function identityFor(ctx: MultiRepositoryMcpToolContext, args: Record<str
   };
 }
 
-export function requireSession(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): ExecutionSessionContext {
+export function requireSession(ctx: McpExecutionContext, args: Record<string, unknown>): ExecutionSessionContext {
   return requireExecutionSession(ctx.controllerHome, identityFor(ctx, args));
 }
 
@@ -120,7 +120,7 @@ export function selectWorkFinalizationTarget(
 }
 
 export function workReturnCheckoutId(
-  ctx: MultiRepositoryMcpToolContext,
+  ctx: McpExecutionContext,
   handle: Pick<WorkHandleState, 'repositoryId' | 'sourceCheckoutId' | 'checkoutId'>,
   fallbackCheckoutId?: string,
 ): string | undefined {
@@ -129,7 +129,7 @@ export function workReturnCheckoutId(
   return target.activeCheckoutId ?? repository.activeCheckoutId ?? fallbackCheckoutId;
 }
 
-export function contractFor(ctx: MultiRepositoryMcpToolContext, handle: WorkHandleState) {
+export function contractFor(ctx: McpExecutionContext, handle: WorkHandleState) {
   // WorkContract is the semantic lifecycle authority. Legacy WorkHandles can
   // predate the explicit workContractId binding, but their exact workId is the
   // same stable authority key inside the same repository. Falling back only to
@@ -140,7 +140,7 @@ export function contractFor(ctx: MultiRepositoryMcpToolContext, handle: WorkHand
 }
 
 export function findWorkHandle(
-  ctx: MultiRepositoryMcpToolContext,
+  ctx: McpExecutionContext,
   session: ExecutionSessionContext,
   args: Record<string, unknown>,
 ): WorkHandleState {
@@ -178,7 +178,7 @@ export function findWorkHandle(
 }
 
 function currentControllerClaimAuthorizesTerminalCleanup(
-  ctx: MultiRepositoryMcpToolContext,
+  ctx: McpExecutionContext,
   session: ExecutionSessionContext,
   handle: WorkHandleState,
 ): boolean {
@@ -191,7 +191,7 @@ function currentControllerClaimAuthorizesTerminalCleanup(
 }
 
 export function workForSession(
-  ctx: MultiRepositoryMcpToolContext,
+  ctx: McpExecutionContext,
   session: ExecutionSessionContext,
   args: Record<string, unknown>,
   options: { reconcileValidation?: boolean; allowClaimedTerminalCleanup?: boolean } = {},
@@ -219,7 +219,7 @@ export function workForSession(
 }
 
 export function assertWorkControllerOwnership(
-  ctx: MultiRepositoryMcpToolContext,
+  ctx: McpExecutionContext,
   session: ExecutionSessionContext,
   handle: WorkHandleState,
   args: Record<string, unknown>,
@@ -273,7 +273,7 @@ export function assertWorkControllerOwnership(
 }
 
 export function releasePreparedWorkOwnership(
-  ctx: MultiRepositoryMcpToolContext,
+  ctx: McpExecutionContext,
   handle: WorkHandleState,
 ): 'released' | 'already_released' {
   const workIdValue = handle.workContractId ?? handle.workId;
@@ -313,7 +313,7 @@ export function releasePreparedWorkOwnership(
 }
 
 export function terminalCleanupOutcome(
-  ctx: MultiRepositoryMcpToolContext,
+  ctx: McpExecutionContext,
   handle: WorkHandleState,
 ): WorkTerminalOutcome | undefined {
   if (handle.cleanupReceipt) return handle.cleanupReceipt.terminalOutcome;
@@ -337,7 +337,7 @@ export function terminalCleanupOutcome(
 }
 
 export async function reconcileTerminalCleanup(
-  ctx: MultiRepositoryMcpToolContext,
+  ctx: McpExecutionContext,
   session: ExecutionSessionContext,
   handle: WorkHandleState,
   args: Record<string, unknown>,

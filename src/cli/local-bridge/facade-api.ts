@@ -9,9 +9,9 @@ import {
 import {
   persistControllerAccessMode,
   resolveControllerAccessState,
-} from '../mcp/access-mode';
+} from '../../../adapters/mcp/access-mode';
 import { listControllerChecks } from '../controller/check-runner';
-import { createMcpToolContext, type MultiRepositoryMcpToolContext } from '../mcp/multi-repository';
+import { createMcpToolContext, type MultiRepositoryMcpToolContext } from '../../../adapters/mcp/multi-repository';
 import { readSchedulerHealthSnapshot } from '../../runtime/control-plane/global-scheduler/scheduler';
 import { observeRuntimeStatus } from '../../runtime/root/status';
 import { readForgeRuntimeStatus } from '../../runtime/control-plane/runtime-status-client';
@@ -58,7 +58,7 @@ import {
   EXPECTED_FACADE_TOOLS,
   type ConnectorFreshnessReport,
 } from './connector-freshness';
-import { controllerExposedToolNames } from '../mcp/toolset';
+import { controllerExposedToolNames } from '../../../adapters/mcp/toolset';
 import {
   statusLabelForPhase,
   type UserFacingErrorClass,
