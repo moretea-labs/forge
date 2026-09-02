@@ -458,6 +458,8 @@ requireText('packages/kernel/controller/ports/controller-host.ts', 'resume(bindi
 requireText('packages/kernel/controller/infrastructure/controller-session-store.ts', 'claimControllerSession');
 requireText('packages/kernel/controller/infrastructure/controller-session-store.ts', 'releaseControllerSessionWithAuthority');
 requireText('src/runtime/control-plane/facade/controller-session-store.ts', '@deprecated Kernel V2 compatibility shim');
+forbid('packages/kernel/controller/index.ts', /infrastructure\//, 'Kernel module root must expose only its public API');
+forbid('packages/kernel/controller/application/controller-service.ts', /export\s+\*\s+from\s+['"]\.\.\/infrastructure\//, 'Controller application façade must not wildcard-export infrastructure');
 // B4 Scheduler continuation authority: Schedule owns occurrence state only;
 // continuation resolves exact Work + retained ControllerSession + opaque ControllerBinding
 // and dispatches exclusively through ControllerHost.resume.
@@ -465,6 +467,9 @@ requireText('packages/kernel/scheduler/domain/schedule.ts', 'export interface Re
 requireText('packages/kernel/scheduler/domain/schedule.ts', 'export interface ScheduleOccurrence');
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occurrences.json'");
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'saveScheduleDecision');
+requireText('packages/kernel/scheduler/application/schedule-service.ts', 'createSchedule');
+requireText('packages/kernel/scheduler/api/index.ts', "../application/schedule-service");
+forbid('packages/kernel/scheduler/api/index.ts', /\.\.\/infrastructure\//, 'Scheduler public API must expose application/domain surfaces, not infrastructure stores');
 requireText('packages/kernel/scheduler/application/eligibility.ts', 'evaluateScheduleTriggerEligibility');
 requireText('packages/kernel/scheduler/application/eligibility.ts', 'evaluateScheduleOccurrenceAdmission');
 requireText('packages/kernel/scheduler/application/eligibility.ts', 'scheduleTriggerWindowKey');
@@ -490,6 +495,8 @@ requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleOccurre
 requireText('src/runtime/workflow/schedules/engine.ts', 'controller_session_id');
 requireText('src/runtime/workflow/schedules/engine.ts', 'controller_binding_id');
 requireText('src/runtime/workflow/schedules/store.ts', '@deprecated Kernel V2 compatibility shim');
+requireText('src/runtime/workflow/schedules/store.ts', 'packages/kernel/scheduler/api/index');
+forbid('src/runtime/workflow/schedules/store.ts', /scheduler\/infrastructure\//, 'legacy Schedule shim must route through the Kernel Scheduler public API');
 requireText('src/runtime/workflow/schedules/types.ts', '@deprecated Kernel V2 compatibility shim');
 for (const path of sourceFiles('packages/kernel/scheduler')) {
   forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*adapters\//, 'Kernel Scheduler must not import provider adapters');
