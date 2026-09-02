@@ -48,6 +48,10 @@ export function ensureRepositoryWorkHandle(input: {
   if (!registeredCheckout) throw new Error(`WORK_CHECKOUT_NOT_REGISTERED: ${contract.checkoutId}`);
   const status = repositoryGitStatus(checkout);
   if (!status.branch) throw new Error(`WORKTREE_DETACHED: ${contract.checkoutId} has no branch`);
+  const sourceCheckoutId = registeredRepository.activeCheckoutId;
+  const sourceCheckout = selectRepositoryCheckout(registeredRepository, sourceCheckoutId, { allowArchived: true });
+  const sourceStatus = repositoryGitStatus(sourceCheckout);
+  if (!sourceStatus.branch) throw new Error(`WORK_DELIVERY_TARGET_DETACHED: source checkout ${sourceCheckoutId} has no branch`);
   const at = new Date().toISOString();
   const managedWorktree = registeredCheckout.worktree === true
     && Boolean(contract.worktreeRef)
@@ -63,7 +67,8 @@ export function ensureRepositoryWorkHandle(input: {
     checkoutId: contract.checkoutId,
     worktreePath: checkout.canonicalRoot,
     branch: status.branch,
-    sourceCheckoutId: registeredRepository.activeCheckoutId,
+    sourceCheckoutId,
+    deliveryTargetBranch: sourceStatus.branch,
     managedWorktree,
     workContractId: contract.workId,
     baseCommit: contract.baseRevision ?? status.head ?? undefined,

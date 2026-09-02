@@ -28,7 +28,7 @@ import {
 } from '../../../../packages/kernel/work/api/index';
 import { effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from './verification-evidence';
 import { completeWorkWithReceipt } from './work-completion-authority';
-import { adoptWorkHandleSuccessorCandidate, markWorkHandleFailed, readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle } from './work-handle-store';
+import { adoptWorkHandleSuccessorCandidate, markWorkHandleFailed, readWorkHandle, resolveWorkDeliveryTargetBranch, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle } from './work-handle-store';
 import type { WorkFinalizationStages, WorkHandleState } from './work-handle-store';
 import { findWorkPathScopeViolation } from './work-path-scope';
 import type { WorkRemoteDeliveryReceipt } from './work-remote-delivery';
@@ -720,9 +720,11 @@ function completionReceiptForFinalizedWork(
 ): CompletionReceipt {
   const repository = getRepository(handle.repositoryId, ctx.controllerHome, { includeRemoved: true });
   const target = selectWorkFinalizationTarget(repository, handle);
-  const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
-    ? args.target_branch.trim()
-    : repository.defaultBranch || 'main';
+  const targetBranch = resolveWorkDeliveryTargetBranch(
+    handle,
+    repository.defaultBranch,
+    typeof args.target_branch === 'string' ? args.target_branch : undefined,
+  );
   const targetRevision = gitRevision(target.canonicalRoot, targetBranch);
   if (!targetRevision) throw new Error(`WORK_COMPLETION_RECEIPT_TARGET_REQUIRED: target branch ${targetBranch} is unavailable`);
   const noChange = args.completion_outcome === 'completed_no_change';
@@ -814,9 +816,11 @@ export function inspectCleanupOnlyMergedHead(
 
   const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
   const target = selectWorkFinalizationTarget(repository, current);
-  const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
-    ? args.target_branch.trim()
-    : repository.defaultBranch || 'main';
+  const targetBranch = resolveWorkDeliveryTargetBranch(
+    current,
+    repository.defaultBranch,
+    typeof args.target_branch === 'string' ? args.target_branch : undefined,
+  );
   const branchHeadResult = spawnSync('git', ['-C', target.canonicalRoot, 'rev-parse', '--verify', `refs/heads/${current.branch}`], {
     encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
   });
@@ -885,9 +889,11 @@ function failedCleanupOnlyHead(
   if (!expectedHead) return undefined;
   const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
   const target = selectWorkFinalizationTarget(repository, current);
-  const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
-    ? args.target_branch.trim()
-    : repository.defaultBranch || 'main';
+  const targetBranch = resolveWorkDeliveryTargetBranch(
+    current,
+    repository.defaultBranch,
+    typeof args.target_branch === 'string' ? args.target_branch : undefined,
+  );
   const merged = spawnSync('git', ['-C', target.canonicalRoot, 'merge-base', '--is-ancestor', expectedHead, targetBranch], {
     encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
   });
@@ -1242,7 +1248,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
     const worktree = selectRepositoryCheckout(repository, current.checkoutId, { allowArchived: true });
     const target = selectWorkFinalizationTarget(repository, current);
-    const targetBranch = explicitTargetBranch ?? target.defaultBranch ?? 'main';
+    const targetBranch = resolveWorkDeliveryTargetBranch(current, target.defaultBranch, explicitTargetBranch);
     const contract = contractFor(ctx, current);
     const adoption = inspectManagedWorkSuccessorAdoption({
       root: worktree.canonicalRoot,
@@ -1298,7 +1304,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
     const worktree = selectRepositoryCheckout(repository, current.checkoutId, { allowArchived: true });
     const target = selectWorkFinalizationTarget(repository, current);
-    const targetBranch = explicitTargetBranch ?? repository.defaultBranch ?? 'main';
+    const targetBranch = resolveWorkDeliveryTargetBranch(current, repository.defaultBranch, explicitTargetBranch);
     const contract = contractFor(ctx, current);
     const advance = inspectDirectCanonicalTargetAdvanceReconciliation({
       root: target.canonicalRoot,
@@ -1777,7 +1783,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
   if (wants.merge && current.finalization.merge === 'pending' && current.finalization.commit === 'done') {
     const repository = getRepository(current.repositoryId, ctx.controllerHome);
     const target = selectWorkFinalizationTarget(repository, current);
-    const targetBranch = explicitTargetBranch ?? repository.defaultBranch ?? 'main';
+    const targetBranch = resolveWorkDeliveryTargetBranch(current, repository.defaultBranch, explicitTargetBranch);
     const directTarget = inspectDirectTargetDelivery(
       target.canonicalRoot,
       current.worktreePath,
@@ -1819,7 +1825,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     });
     const target = selectWorkFinalizationTarget(getRepository(current.repositoryId, ctx.controllerHome), current);
     const deleteAfterWorktreeCleanup = current.managedWorktree && deleteBranchRequested;
-    const targetBranch = explicitTargetBranch ?? target.defaultBranch ?? 'main';
+    const targetBranch = resolveWorkDeliveryTargetBranch(current, target.defaultBranch, explicitTargetBranch);
     const activeMergeHead = retryStage === 'merge' ? gitRevision(target.canonicalRoot, 'MERGE_HEAD') : undefined;
     if (!activeMergeHead && current.managedWorktree && current.expectedHead) {
       const targetHead = gitRevision(target.canonicalRoot, targetBranch);
@@ -2130,7 +2136,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
             }
             return repositoryGitFinishWorkflow(ctx.controllerHome, target, {
               featureBranch: current.branch,
-              targetBranch: explicitTargetBranch,
+              targetBranch,
               deleteBranch: !deleteAfterWorktreeCleanup && deleteBranchRequested,
               noFf: args.no_ff === true,
               preserveDirtyTargetPaths,
@@ -2172,7 +2178,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
   if (remoteDeliveryRequired && requestedOutcome !== 'completed_no_change') {
     const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
     const target = selectWorkFinalizationTarget(repository, current);
-    const targetBranch = explicitTargetBranch ?? repository.defaultBranch ?? 'main';
+    const targetBranch = resolveWorkDeliveryTargetBranch(current, repository.defaultBranch, explicitTargetBranch);
     const targetRevision = gitRevision(target.canonicalRoot, targetBranch);
     if (!targetRevision) throw new Error(`WORK_REMOTE_DELIVERY_TARGET_REQUIRED: target branch ${targetBranch} is unavailable`);
     const authorityRepository = selectRepositoryCheckout(repository, current.checkoutId, { allowArchived: true });

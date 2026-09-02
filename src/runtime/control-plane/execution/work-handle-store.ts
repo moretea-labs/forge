@@ -147,6 +147,8 @@ export interface WorkHandleState {
   worktreePath: string;
   branch: string;
   sourceCheckoutId?: string;
+  /** Canonical branch this repository-change Work is authorized to deliver into. Absent only for legacy handles. */
+  deliveryTargetBranch?: string;
   goalId?: string;
   delegationVersion?: number;
   managedWorktree: boolean;
@@ -188,6 +190,24 @@ export function workDeliveryBaseRevision(
   handle: Pick<WorkHandleState, 'baseCommit' | 'deliveryBaseCommit'>,
 ): string | undefined {
   return handle.deliveryBaseCommit?.trim() || handle.baseCommit?.trim() || undefined;
+}
+
+export function resolveWorkDeliveryTargetBranch(
+  handle: Pick<WorkHandleState, 'workId' | 'deliveryTargetBranch'>,
+  repositoryDefaultBranch?: string,
+  explicitTargetBranch?: string,
+): string {
+  const bound = handle.deliveryTargetBranch?.trim();
+  const explicit = explicitTargetBranch?.trim();
+  if (bound) {
+    if (explicit && explicit !== bound) {
+      throw new Error(
+        `WORK_DELIVERY_TARGET_BRANCH_MISMATCH: work ${handle.workId} is bound to ${bound}; omit target_branch or use ${bound}, not ${explicit}`,
+      );
+    }
+    return bound;
+  }
+  return explicit || repositoryDefaultBranch?.trim() || 'main';
 }
 
 function workHandlePath(controllerHome: string, handle: Pick<WorkHandleState, 'repositoryId' | 'workId'>): string {

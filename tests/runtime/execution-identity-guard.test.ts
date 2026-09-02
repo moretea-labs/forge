@@ -22,9 +22,11 @@ import {
   resolveLegacyWorkContractIdentity,
   ExecutionIdentityError,
 } from '../../src/runtime/control-plane/execution/execution-identity';
-import { adoptWorkHandleSuccessorCandidate, writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { adoptWorkHandleSuccessorCandidate, resolveWorkDeliveryTargetBranch, writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { inspectManagedWorkSuccessorAdoption } from '../../src/runtime/control-plane/execution/work-finalization-service';
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
+import { ensureRepositoryWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-authority';
+import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { spawnManagedProcess } from '../../src/runtime/execution/process-runtime';
 
 const roots: string[] = [];
@@ -719,5 +721,52 @@ describe('managed Work successor authority', () => {
     });
     expect(outOfScope).toMatchObject({ adoptable: false, reason: 'scope_violation' });
     expect(outOfScope.detail).toContain('outside.txt');
+  });
+});
+
+
+describe('repository Work delivery target authority', () => {
+  test('materializes the exact non-default source branch as the durable delivery target', () => {
+    const fx = dualRepoFixture();
+    const branch = 'kernel-v2/architecture';
+    const checkout = spawnSync('git', ['-C', fx.repoARoot, 'checkout', '-b', branch], { encoding: 'utf8' });
+    expect(checkout.status).toBe(0);
+    const workId = 'work-non-default-delivery-target';
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoA.repoId }, {
+      workId,
+      repoId: fx.repoA.repoId,
+      checkoutId: fx.repoA.activeCheckoutId,
+      baseRevision: fx.headA,
+      mode: 'goal_workloop',
+      objective: 'Preserve non-default source delivery branch.',
+      acceptanceCriteria: ['Delivery target remains exact.'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'repository_change',
+      status: 'running',
+      phase: 'implementation',
+    });
+    const handle = ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome,
+      repository: fx.repoA,
+      workId,
+      identity: { sessionId: 'session-target-binding', principalId: 'principal-target-binding' },
+    });
+    expect(handle?.deliveryTargetBranch).toBe(branch);
+  });
+
+  test('uses the bound target, accepts an explicit match, rejects explicit rebinding, and preserves legacy fallback', () => {
+    const repository = { defaultBranch: 'main' };
+    const bound = { workId: 'work-bound-target', deliveryTargetBranch: 'kernel-v2/architecture' };
+    expect(resolveWorkDeliveryTargetBranch(bound, repository.defaultBranch)).toBe('kernel-v2/architecture');
+    expect(resolveWorkDeliveryTargetBranch(bound, repository.defaultBranch, 'kernel-v2/architecture')).toBe('kernel-v2/architecture');
+    expect(() => resolveWorkDeliveryTargetBranch(bound, repository.defaultBranch, 'main')).toThrow(
+      /WORK_DELIVERY_TARGET_BRANCH_MISMATCH.*kernel-v2\/architecture.*main/,
+    );
+    expect(resolveWorkDeliveryTargetBranch({ workId: 'legacy-work' }, repository.defaultBranch)).toBe('main');
+    expect(resolveWorkDeliveryTargetBranch({ workId: 'legacy-work' }, repository.defaultBranch, 'release/legacy')).toBe('release/legacy');
   });
 });

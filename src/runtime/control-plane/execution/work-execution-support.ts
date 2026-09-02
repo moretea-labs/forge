@@ -49,7 +49,7 @@ export function requireSession(ctx: McpExecutionContext, args: Record<string, un
 export function compactHandle(handle: WorkHandleState): Record<string, unknown> {
   return {
     workId: handle.workId, sessionId: handle.sessionId, repoId: handle.repositoryId, checkoutId: handle.checkoutId,
-    worktreePath: handle.worktreePath, branch: handle.branch, sourceCheckoutId: handle.sourceCheckoutId, goalId: handle.goalId, delegationVersion: handle.delegationVersion,
+    worktreePath: handle.worktreePath, branch: handle.branch, sourceCheckoutId: handle.sourceCheckoutId, deliveryTargetBranch: handle.deliveryTargetBranch, goalId: handle.goalId, delegationVersion: handle.delegationVersion,
     workContractId: handle.workContractId, baseCommit: handle.baseCommit, deliveryBaseCommit: handle.deliveryBaseCommit, expectedHead: handle.expectedHead,
     permissionSnapshotVersion: handle.permissionSnapshotVersion, state: handle.state, managedWorktree: handle.managedWorktree,
     createdAt: handle.createdAt, updatedAt: handle.updatedAt, finalization: handle.finalization,

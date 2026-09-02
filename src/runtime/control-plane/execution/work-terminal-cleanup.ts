@@ -33,6 +33,7 @@ import { getProcessRecord, listProcessRecords } from '../../execution/process-ru
 import {
   listWorkHandles,
   readWorkHandle,
+  resolveWorkDeliveryTargetBranch,
   transitionWorkHandle,
   writeWorkHandle,
   type WorkCleanupReceipt,
@@ -482,7 +483,10 @@ export function recoverTerminalWorkHandle(
 
   const head = git(worktreePath, ['rev-parse', 'HEAD']);
   if (!head.ok || !head.stdout) return undefined;
-  const targetBranch = repository.defaultBranch || 'main';
+  const receiptTargetBranch = contract.completionReceipt && isRepositoryCompletionReceipt(contract.completionReceipt)
+    ? contract.completionReceipt.targetBranch?.trim()
+    : undefined;
+  const targetBranch = receiptTargetBranch || repository.defaultBranch || 'main';
   const targetExists = branchExists(repository.canonicalRoot, targetBranch);
   const contained = targetExists
     ? git(repository.canonicalRoot, ['merge-base', '--is-ancestor', head.stdout, `refs/heads/${targetBranch}`]).ok
@@ -499,6 +503,7 @@ export function recoverTerminalWorkHandle(
     repositoryId,
     checkoutId,
     sourceCheckoutId: repository.activeCheckoutId,
+    ...(receiptTargetBranch ? { deliveryTargetBranch: receiptTargetBranch } : {}),
     worktreePath,
     branch,
     managedWorktree: true,
@@ -585,7 +590,7 @@ function reconcileLegacyTerminalBranchDrift(
 
 export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Promise<TerminalWorkCleanupResult> {
   const repository = getRepository(input.handle.repositoryId, input.controllerHome, { includeRemoved: true });
-  const targetBranch = input.targetBranch?.trim() || repository.defaultBranch || 'main';
+  const targetBranch = resolveWorkDeliveryTargetBranch(input.handle, repository.defaultBranch, input.targetBranch);
   const deleteBranch = input.deleteBranch !== false;
   let current = input.handle;
   const landed = current.state === 'merged' || current.finalization.merge === 'done';
@@ -950,7 +955,7 @@ export async function reconcileTerminalWorkCleanups(
       }
       report.attempted += 1;
       try {
-        const targetBranch = repository.defaultBranch || 'main';
+        const targetBranch = resolveWorkDeliveryTargetBranch(originalHandle, repository.defaultBranch);
         const drift = reconcileLegacyTerminalBranchDrift(controllerHome, repository, originalHandle, targetBranch);
         if (drift.blocker) {
           report.blocked.push({ workId: originalHandle.workId, reason: drift.blocker });
