@@ -10,7 +10,7 @@ import { executeReadOnlyDiagnostic, isReadOnlyDiagnosticTool } from '../../runti
 import { readRepositoryProjection } from '../../runtime/projections/materialized-view';
 import { listOccurrences, listSchedules } from '../../../packages/kernel/scheduler/api/index';
 import { observeRuntimeStatus } from '../../runtime/root/status';
-import { readMcpServiceBearerToken } from '../mcp/auth';
+import { readMcpServiceBearerToken } from '../../../adapters/mcp/auth';
 import { publishRuntimeRelease } from '../../runtime/root/release-store';
 import { installForgeRuntimeService } from '../../runtime/root/service';
 import { activateScheduledPackageRuntimeServiceFromPath, installPackageRuntimeService, readPackageRuntimeActivationReceipt } from '../../runtime/root/package-runtime-service';

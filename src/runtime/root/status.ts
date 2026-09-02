@@ -41,6 +41,8 @@ function validSnapshot(value: unknown): value is RuntimeStatusSnapshot {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const snapshot = value as RuntimeStatusSnapshot;
   return snapshot.schemaVersion === 1
+    && typeof snapshot.forgeInstanceId === 'string'
+    && snapshot.forgeInstanceId.length > 0
     && typeof snapshot.runtimeInstanceId === 'string'
     && snapshot.runtimeInstanceId.length > 0
     && Number.isInteger(snapshot.pid)

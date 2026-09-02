@@ -4,13 +4,13 @@ import { existsSync } from 'fs';
 import { hostname } from 'os';
 import { isAbsolute, join, resolve } from 'path';
 import { Command } from 'commander';
-import { readMcpServiceOAuthPassphrase } from '../mcp/auth';
+import { readMcpServiceOAuthPassphrase } from '../../../adapters/mcp/auth';
 import {
   openAiSecureTunnelConnectArgs,
   openAiSecureTunnelStatusArgs,
   parseOpenAiSecureTunnelRuntimeStatus,
   type OpenAiSecureTunnelRuntimeObservation,
-} from '../mcp/openai-secure-tunnel';
+} from '../../../adapters/mcp/tunnels/openai-secure-tunnel';
 import {
   resolveControllerHome,
   rollbackStoppedControllerHomeAuthorityRelocation,

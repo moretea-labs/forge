@@ -88,6 +88,9 @@ export interface CanonicalRuntimeConfig {
 
 export interface RuntimeStatusSnapshot {
   schemaVersion: 1;
+  /** Stable installed Forge identity. Independent of Runtime process and MCP endpoint. */
+  forgeInstanceId: string;
+  /** Ephemeral Runtime process/fencing identity. */
   runtimeInstanceId: string;
   pid: number;
   releaseId: string;

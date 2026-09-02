@@ -2,7 +2,7 @@ import {
   loadMcpServiceLocalConfig,
   loadMcpServiceRuntimeState,
   writeMcpServiceRuntimeState,
-} from '../../cli/mcp/auth';
+} from '../../../adapters/mcp/auth';
 import { startLocalBridgeServer } from '../../cli/local-bridge/server';
 import { readRuntimeGeneration } from '../control-plane/runtime-generation';
 

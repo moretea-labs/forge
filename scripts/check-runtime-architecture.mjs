@@ -1028,6 +1028,65 @@ for (const path of [
   'adapters/mcp/transports/stdio.ts',
 ]) forbid(path, /recordWorkCompletionReceipt|transitionWorkContractPhase|releaseControllerSessionWithAuthority|recordWorkImplementationReview/, 'MCP transport/session lifecycle must never terminalize Work or Controller authority');
 
+// Kernel V2 B6: semantic Forge identity is independent of Runtime processes,
+// transport sessions, OAuth credentials, tunnel ids, and endpoint rotation.
+for (const path of [
+  'packages/kernel/identity/domain/types.ts',
+  'packages/kernel/identity/application/identity-service.ts',
+  'packages/kernel/identity/infrastructure/identity-store.ts',
+  'packages/kernel/identity/api/index.ts',
+]) text(path);
+for (const symbol of ['ForgeInstanceIdentity', 'Principal', 'CredentialReference', 'CapabilityGrant', 'ConnectionIdentity']) {
+  requireText('packages/kernel/identity/domain/types.ts', `interface ${symbol}`);
+}
+requireText('packages/kernel/identity/application/identity-service.ts', 'export function connectionIdentity');
+requireText('packages/kernel/identity/infrastructure/identity-store.ts', "'identity', 'forge-instance.json'");
+requireText('packages/kernel/identity/infrastructure/identity-store.ts', 'linkSync(temporary, path)');
+forbid(
+  'packages/kernel/identity/domain/types.ts',
+  /\b(?:tunnelId|mcpServerUrl|endpointUrl|runtimeApiKey|accessToken|refreshToken|oauthToken|bearerToken)\b/,
+  'Kernel identity contracts must contain semantic ids or credential references, never transport endpoint/tunnel/token material',
+);
+forbidBetween(
+  'packages/kernel/identity/application/identity-service.ts',
+  'const semanticKey = [',
+  "].join('\\u0000')",
+  /\b(?:endpoint|url|tunnel|pid|process|session)\b/i,
+  'ConnectionIdentity semantic key must remain independent of endpoint, tunnel, process, and session identity',
+);
+forbidBetween(
+  'packages/kernel/identity/infrastructure/identity-store.ts',
+  'const identity: ForgeInstanceIdentity = {',
+  '};',
+  /\b(?:pid|process|endpoint|url|tunnel|token)\b/i,
+  'ForgeInstanceIdentity creation must remain independent of process and adapter transport/auth metadata',
+);
+for (const path of [
+  'src/cli/mcp/auth.ts',
+  'src/cli/mcp/setup.ts',
+  'src/cli/mcp/openai-secure-tunnel.ts',
+]) {
+  requireText(path, '@deprecated Kernel V2 compatibility shim');
+  if (text(path).split(/\r?\n/).length > 6) failures.push(`${path} must remain a thin B6 compatibility facade`);
+}
+requireText('adapters/mcp/auth.ts', 'forgeInstanceId?: string');
+requireText('adapters/mcp/setup.ts', 'ensureForgeInstanceIdentity');
+requireText('adapters/mcp/setup.ts', 'MCP_FORGE_INSTANCE_ID_MISMATCH');
+requireText('src/runtime/root/types.ts', 'forgeInstanceId: string');
+requireText('src/runtime/root/types.ts', 'runtimeInstanceId: string');
+requireText('src/runtime/root/runtime.ts', 'readonly forgeInstanceId: string');
+requireText('src/runtime/root/runtime.ts', 'ensureForgeInstanceIdentity');
+requireText('src/runtime/root/entry.ts', 'forgeInstanceId: runtime.forgeInstanceId');
+requireText('adapters/mcp/transports/http.ts', 'forgeInstanceId: forgeInstance.instanceId');
+requireText('adapters/mcp/transports/http.ts', 'controllerInstanceId: process.env.FORGE_MCP_INSTANCE_ID');
+forbid('adapters/mcp/transports/http.ts', /\{\s*instanceId:\s*process\.env\.FORGE_MCP_INSTANCE_ID/, 'MCP process identity must not be exposed as semantic Forge instanceId');
+requireText('adapters/mcp/transports/http.ts', "adapterId: 'mcp-http'");
+requireText('adapters/mcp/transports/session-registry.ts', 'connectionId: string');
+requireText('adapters/mcp/transports/session-registry.ts', 'reservation.connectionId !== input.connectionId');
+requireText('adapters/mcp/tunnels/openai-secure-tunnel.ts', 'tunnelMatches: boolean');
+requireText('adapters/mcp/tunnels/openai-secure-tunnel.ts', 'credentialReference(config.runtimeApiKeyRef');
+forbid('adapters/mcp/tunnels/openai-secure-tunnel.ts', /\bidentityMatches\b/, 'tunnel binding match must not masquerade as Forge semantic identity');
+
 if (failures.length) {
   console.error('[runtime-architecture] FAILED');
   for (const failure of failures) console.error(`- ${failure}`);

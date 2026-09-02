@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { statSync } from 'fs';
+import { ensureForgeInstanceIdentity } from '../../../packages/kernel/identity/api/index';
 import { dirname } from 'path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -51,6 +52,7 @@ export interface CanonicalRuntimeDependencies {
   stopLightweightProcesses(controllerHome: string): Promise<number>;
   stopContextReadHelpers(): Promise<void>;
   computeToolSurfaceFingerprint: typeof runtimeGatewayToolSurfaceFingerprint;
+  ensureForgeInstanceIdentity: typeof ensureForgeInstanceIdentity;
 }
 
 async function defaultMcpProbe(endpoint: string, authToken: string): Promise<void> {
@@ -101,9 +103,11 @@ const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   stopLightweightProcesses: cancelAllLightweightProcesses,
   stopContextReadHelpers: closeCodeGraphReadProviderSessions,
   computeToolSurfaceFingerprint: runtimeGatewayToolSurfaceFingerprint,
+  ensureForgeInstanceIdentity,
 };
 
 export class CanonicalForgeRuntime {
+  readonly forgeInstanceId: string;
   readonly runtimeInstanceId: string;
   private readonly readinessState = new RuntimeReadinessState();
   private readonly dependencies: CanonicalRuntimeDependencies;
@@ -141,6 +145,10 @@ export class CanonicalForgeRuntime {
       throw new Error('RUNTIME_CONFIG_INVALID: port');
     }
     if (!config.authToken.trim()) throw new Error('RUNTIME_CONFIG_REQUIRED: authToken');
+    this.forgeInstanceId = this.dependencies.ensureForgeInstanceIdentity({
+      controllerHome: config.controllerHome,
+      preferredInstanceId: process.env.FORGE_INSTANCE_ID?.trim(),
+    }).instanceId;
   }
 
   readiness(): RuntimeReadiness {
@@ -152,6 +160,7 @@ export class CanonicalForgeRuntime {
     try {
       writeRuntimeStatusSnapshot(this.config.controllerHome, {
         schemaVersion: 1,
+        forgeInstanceId: this.forgeInstanceId,
         runtimeInstanceId: this.runtimeInstanceId,
         pid: this.ownership.record.pid,
         releaseId: this.release.releaseId,

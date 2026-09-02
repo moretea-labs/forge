@@ -7,7 +7,7 @@ import { registerRepository } from '../src/cli/repositories/registry';
 import { readForgeRuntimeStatus } from '../src/runtime/control-plane/runtime-status-client';
 import { FORGE_TOOL_SURFACE } from '../src/cli/controller/runtime-config';
 import { CORE_CONTROLLER_TOOL_NAMES } from '../src/cli/mcp/toolset';
-import { writeMcpServiceLocalConfig } from '../src/cli/mcp/auth';
+import { writeMcpServiceLocalConfig } from '../adapters/mcp/auth';
 import { buildMcpToolDefinitions } from '../src/cli/mcp/tools';
 import { runtimePolicy } from '../src/cli/mcp/multi-repository';
 import { resolveControllerToolsetSelection } from '../src/cli/mcp/toolset-selection';

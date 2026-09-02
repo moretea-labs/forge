@@ -1,4 +1,4 @@
-import type { McpLocalConfig } from '../../src/cli/mcp/auth';
+import type { McpLocalConfig } from './auth';
 import type { McpToolset } from './types';
 
 export interface ControllerToolsetSelection {

@@ -21,7 +21,7 @@ import {
   MAX_AGENT_TIMEOUT_MS,
   normalizeAgentTimeoutMs,
 } from "../controller/runtime-config";
-import { loadMcpLocalConfig, loadMcpServiceLocalConfig } from "../mcp/auth";
+import { loadMcpLocalConfig, loadMcpServiceLocalConfig } from "../../../adapters/mcp/auth";
 import type { ControllerTask } from "../controller/types";
 import { taskExecutionPolicy } from "../controller/execution-policy";
 import { tryAppendControllerWorklogEvent } from "../controller/worklog";

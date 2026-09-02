@@ -18,7 +18,7 @@ import {
   openAiSecureTunnelStatusArgs,
   parseOpenAiSecureTunnelRuntimeStatus,
   type OpenAiSecureTunnelRuntimeObservation,
-} from '../../cli/mcp/openai-secure-tunnel';
+} from '../../../adapters/mcp/tunnels/openai-secure-tunnel';
 import {
   renderPackageRuntimeSystemdUserService,
   writePackageRuntimeSystemdUserService,
@@ -970,7 +970,7 @@ async function observeOpenAiTunnelRuntime(
     args = openAiSecureTunnelStatusArgs(configured.alias);
   } catch (error) {
     return {
-      ok: false, running: false, healthy: false, ready: false, identityMatches: false, endpointMatches: false,
+      ok: false, running: false, healthy: false, ready: false, tunnelMatches: false, endpointMatches: false,
       alias: configured.alias, tunnelId: configured.tunnelId,
       detail: error instanceof Error ? error.message : 'OpenAI tunnel runtime configuration is invalid',
     };
@@ -978,7 +978,7 @@ async function observeOpenAiTunnelRuntime(
   const status = await runCommand('tunnel-client', args, 15_000);
   if (!status.stdout.trim()) {
     return {
-      ok: false, running: false, healthy: false, ready: false, identityMatches: false, endpointMatches: false,
+      ok: false, running: false, healthy: false, ready: false, tunnelMatches: false, endpointMatches: false,
       alias: configured.alias, tunnelId: configured.tunnelId,
       detail: status.stderr.trim() || 'OpenAI tunnel runtime status is unavailable',
     };
@@ -1005,7 +1005,7 @@ async function ensureOpenAiTunnelRuntimeStarted(
   const serviceTarget = `tunnel-client:${configured.alias}`;
   const observed = await observeOpenAiTunnelRuntime(configured, runCommand);
   if (observed.ok) return { ok: true, attempted: false, noOp: true, detail: observed.detail, serviceLabel, serviceTarget };
-  if (observed.observedTunnelId && !observed.identityMatches) {
+  if (observed.observedTunnelId && !observed.tunnelMatches) {
     return { ok: false, attempted: false, noOp: true, detail: `OpenAI tunnel alias ${configured.alias} is already bound to a different tunnel id`, serviceLabel, serviceTarget };
   }
   if (observed.profilePath && !observed.endpointMatches) {
@@ -3022,7 +3022,7 @@ export async function repairPublicTunnel(config: RecoveryConfig, dependencies: P
     serviceLabel = configured.alias;
     serviceTarget = `tunnel-client:${configured.alias}`;
     const observed = await observeOpenAiRecoveryTunnel(config, runCommand);
-    if (observed?.observedTunnelId && !observed.identityMatches) {
+    if (observed?.observedTunnelId && !observed.tunnelMatches) {
       return { ok: false, attempted: false, noOp: true, detail: `OpenAI tunnel alias ${configured.alias} is already bound to a different tunnel id`, serviceLabel, serviceTarget, verify: initial, localVerify };
     }
     if (observed?.profilePath && !observed.endpointMatches) {
@@ -3054,7 +3054,7 @@ export async function repairPublicTunnel(config: RecoveryConfig, dependencies: P
       }
     } else {
       const observed = await observeOpenAiRecoveryTunnel(config, runCommand);
-      if (observed?.observedTunnelId && !observed.identityMatches) {
+      if (observed?.observedTunnelId && !observed.tunnelMatches) {
         const detail = `OpenAI tunnel alias ${configured.alias} changed ownership to ${observed.observedTunnelId}; refusing to repoint it`;
         audit(config, 'public_tunnel_restart_failed', { serviceLabel, serviceTarget, detail });
         return { ok: false, attempted: false, noOp: true, detail, serviceLabel, serviceTarget, verify: before, localVerify: localBefore };

@@ -121,7 +121,7 @@ import { applyStuckStateMigration, inspectStuckControllerStates } from "../contr
 import { getMcpPolicy } from "../../../adapters/mcp/policy";
 import type { MultiRepositoryMcpToolContext } from "../../../adapters/mcp/multi-repository";
 import { createMcpToolContext as createControllerMcpToolContext } from "../../../adapters/mcp/server";
-import { loadMcpLocalConfig, loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from "../mcp/auth";
+import { loadMcpLocalConfig, loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from "../../../adapters/mcp/auth";
 import { loadRepositoryRegistry, registerRepository, removeRepository, resolveRepositorySelection } from "../repositories/registry";
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../repositories/controller-home";
 import { ensureRepositoryRuntimeStorage } from "../repositories/runtime-storage";

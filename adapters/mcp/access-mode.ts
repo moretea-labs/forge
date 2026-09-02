@@ -5,7 +5,7 @@ import {
   mcpLocalConfigPath,
   type McpLocalConfig,
   writeMcpServiceLocalConfig,
-} from '../../src/cli/mcp/auth';
+} from './auth';
 import type { McpToolset } from './types';
 import {
   migrateControllerToolsetConfig,

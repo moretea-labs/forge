@@ -29,7 +29,7 @@ import {
   readMcpServiceOAuthPassphrase,
   type McpLocalConfig,
   type McpHttpAuthMode,
-} from '../../../src/cli/mcp/auth';
+} from '../auth';
 import { createMcpOAuthProvider, McpOAuthTokenStore } from '../oauth';
 import { resolveMcpRepoRoot } from '../repo';
 import { buildMcpToolDefinitions } from '../tool-mapping/tools';
@@ -54,6 +54,13 @@ import {
   repositoryIdentity,
 } from '../../../src/cli/controller/runtime-config';
 import { McpSessionRegistry, type McpSessionRoute } from './session-registry';
+import {
+  connectionIdentity,
+  ensureForgeInstanceIdentity,
+  principal,
+  type ForgeInstanceIdentity,
+  type Principal,
+} from '../../../packages/kernel/identity/api/index';
 
 export interface McpHttpOptions extends McpServerOptions {
   host?: string;
@@ -80,10 +87,16 @@ function bearerFromRequest(req: Request): string | null {
   return match ? match[1].trim() : null;
 }
 
-function principalFromRequest(req: Request): string {
+function principalIdentityFromRequest(req: Request): Principal {
   const auth = (req as unknown as { auth?: { clientId?: string } }).auth;
-  if (auth?.clientId?.trim()) return `oauth-client:${auth.clientId.trim()}`;
-  return bearerFromRequest(req) ? 'mcp-bearer-client' : 'controller-http-client';
+  if (auth?.clientId?.trim()) return principal(`oauth-client:${auth.clientId.trim()}`, 'oauth_client', 'mcp-oauth');
+  return bearerFromRequest(req)
+    ? principal('mcp-bearer-client', 'bearer_client', 'mcp-bearer')
+    : principal('controller-http-client', 'controller', 'mcp-http');
+}
+
+function principalFromRequest(req: Request): string {
+  return principalIdentityFromRequest(req).principalId;
 }
 
 export function isAuthorizedMcpHttpRequest(req: Request, expectedToken: string | null): boolean {
@@ -701,6 +714,7 @@ async function handleMcpPost(
   registry: HttpSessionRegistry,
   stats: McpRuntimeStats,
   route: McpSessionRoute,
+  forgeInstance: ForgeInstanceIdentity,
   currentToolSurfaceFingerprint: () => string | undefined,
   resolveRuntimeSchema?: (context: McpToolContext) => Promise<CanonicalRuntimeToolSchema | undefined>,
   sharedRuntimeProxy?: CanonicalRuntimeProxy,
@@ -747,10 +761,17 @@ async function handleMcpPost(
     let reservationId: string | undefined;
     let initializedSessionId: string | undefined;
     try {
-      const principalId = principalFromRequest(req);
+      const principalIdentity = principalIdentityFromRequest(req);
+      const principalId = principalIdentity.principalId;
+      const connection = connectionIdentity({
+        instance: forgeInstance,
+        adapterId: 'mcp-http',
+        principal: principalIdentity,
+      });
       const clientIdentity = initializeClientIdentity(req, body, route, principalId);
       reservationId = await registry.reserveForInitialize({
         principalId,
+        connectionId: connection.connectionId,
         route,
         ...(principalId === 'mcp-bearer-client' ? { enforcePrincipalCapacity: false } : {}),
         ...(sessionId ? { supersedeSessionId: sessionId } : {}),
@@ -785,6 +806,7 @@ async function handleMcpPost(
             toolContext: sessionContext,
             route,
             principalId,
+            connectionId: connection.connectionId,
             clientIdentity,
             toolSurfaceFingerprint: runtimeSchema?.fingerprint ?? currentToolSurfaceFingerprint(),
             toolNames: runtimeSchema?.toolNames,
@@ -937,7 +959,15 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   const host = opts.host ?? '127.0.0.1';
   const port = opts.port ?? 8765;
   const controllerHome = resolveControllerHome(opts.controllerHome);
+  const forgeInstance = ensureForgeInstanceIdentity({
+    controllerHome,
+    preferredInstanceId: process.env.FORGE_INSTANCE_ID?.trim(),
+  });
   const serviceConfig = loadMcpServiceLocalConfig(controllerHome);
+  const configuredForgeInstanceId = serviceConfig?.identity?.forgeInstanceId?.trim();
+  if (configuredForgeInstanceId && configuredForgeInstanceId !== forgeInstance.instanceId) {
+    throw new Error(`MCP_FORGE_INSTANCE_ID_MISMATCH: config=${configuredForgeInstanceId} kernel=${forgeInstance.instanceId}`);
+  }
   const profile = opts.profile ?? serviceConfig?.profile ?? 'controller';
   // A controller Gateway can serve registered repositories without selecting
   // one at startup. Do not turn its launchd working directory into an
@@ -1075,8 +1105,9 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     res.json({
       status: 'ok',
       server: 'forge-mcp',
+      forgeInstanceId: forgeInstance.instanceId,
       ...(process.env.FORGE_MCP_INSTANCE_ID
-        ? { instanceId: process.env.FORGE_MCP_INSTANCE_ID }
+        ? { controllerInstanceId: process.env.FORGE_MCP_INSTANCE_ID }
         : {}),
       version: forgeVersion,
       profile: toolContext.policy.profile,
@@ -1321,7 +1352,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   // Primary MCP path: OAuth (or bearer when --auth bearer). Unchanged for ChatGPT.
   app.use('/mcp', setMcpResponseHeaders);
   app.post('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy).catch((error: unknown) => {
+    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
@@ -1339,7 +1370,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   // Legacy Grok OAuth resource. New Grok connectors should use canonical /mcp.
   app.use('/mcp-grok', setMcpResponseHeaders);
   app.post('/mcp-grok', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok'), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-grok', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy).catch((error: unknown) => {
+    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-grok', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
@@ -1357,7 +1388,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   // Bearer-only MCP path for clients that can send Authorization headers. Never advertises OAuth resource_metadata.
   app.use('/mcp-bearer', setMcpResponseHeaders);
   app.post('/mcp-bearer', requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-bearer', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy).catch((error: unknown) => {
+    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-bearer', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });

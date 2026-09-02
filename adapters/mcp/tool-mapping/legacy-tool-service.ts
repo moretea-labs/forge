@@ -148,7 +148,7 @@ import type {
   ThinkingLevel,
 } from "../../../src/cli/chatgpt-browser/types";
 import { hashMcpInput, tryWriteMcpAuditEntry } from "../audit";
-import { loadMcpRuntimeState } from "../../../src/cli/mcp/auth";
+import { loadMcpRuntimeState } from "../auth";
 import { resolveLocalBridgeSurface, summarizeRecentJobs } from "../../../src/runtime/shared/local-bridge-surface";
 import { resolveRepoPreferredControllerHome } from "../../../src/cli/repositories/controller-home";
 import { resolveRepositorySelection } from '../../../src/cli/repositories/registry';

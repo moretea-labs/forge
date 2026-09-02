@@ -16,7 +16,7 @@ import { fileURLToPath } from 'url';
 import { Command } from 'commander';
 import { runDoctor, type CheckStatus, type DoctorReport } from './doctor';
 import { runStatus, type StatusReport } from './status';
-import { runMcpSetupChatgpt } from '../mcp/setup';
+import { runMcpSetupChatgpt } from '../../../adapters/mcp/setup';
 import { resolveControllerHome } from '../repositories/controller-home';
 import {
   configureSetupProfile,

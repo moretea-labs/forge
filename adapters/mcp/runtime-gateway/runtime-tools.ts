@@ -101,7 +101,7 @@ import {
   recordControllerContextRead,
   writeControllerContextProjection,
 } from '../../../src/runtime/projections/controller-context';
-import { loadMcpRuntimeState } from '../../../src/cli/mcp/auth';
+import { loadMcpRuntimeState } from '../auth';
 import {
   FORGE_MCP_SCHEMA_VERSION,
   FORGE_TOOL_SURFACE,

@@ -52,7 +52,7 @@ import {
 import { buildRuntimeMaintenanceStatus } from '../../runtime/recovery';
 import { applySafePatch } from '../repositories/safe-patch';
 import { withControllerLock } from '../repositories/locks';
-import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from '../mcp/auth';
+import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from '../../../adapters/mcp/auth';
 import {
   buildLocalConnectorStatusForRepo,
   EXPECTED_FACADE_TOOLS,

@@ -13,7 +13,7 @@ import {
   runMcpSetupChatgpt,
   runMcpSetupCodex,
   runMcpSetupClaude,
-} from '../mcp/setup';
+} from '../../../adapters/mcp/setup';
 
 export interface McpServeOptions {
   repo?: string;

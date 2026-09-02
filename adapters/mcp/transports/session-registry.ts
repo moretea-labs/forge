@@ -32,6 +32,8 @@ export interface ManagedMcpSession<
   toolContext: TContext;
   route: McpSessionRoute;
   principalId: string;
+  /** Stable semantic connection identity; independent of MCP transport session id. */
+  connectionId: string;
   clientIdentity: string;
   toolSurfaceFingerprint?: string;
   /** Exact tool names returned by the Canonical Runtime at initialize time. */
@@ -99,6 +101,7 @@ interface RegisterMcpSession<TTransport extends ClosableMcpTransport, TContext> 
   toolContext: TContext;
   route: McpSessionRoute;
   principalId: string;
+  connectionId: string;
   clientIdentity: string;
   toolSurfaceFingerprint?: string;
   toolNames?: string[];
@@ -109,6 +112,7 @@ interface RegisterMcpSession<TTransport extends ClosableMcpTransport, TContext> 
 
 interface InitializeCapacityRequest {
   principalId: string;
+  connectionId: string;
   route: McpSessionRoute;
   maximumSessionsForPrincipal?: number;
   enforcePrincipalCapacity?: boolean;
@@ -117,6 +121,7 @@ interface InitializeCapacityRequest {
 
 interface InitializeReservation {
   principalId: string;
+  connectionId: string;
   route: McpSessionRoute;
   createdAt: number;
 }
@@ -369,6 +374,7 @@ export class McpSessionRegistry<
       const reservationId = `initialize-${++this.nextReservationId}`;
       this.initializeReservations.set(reservationId, {
         principalId: request.principalId,
+        connectionId: request.connectionId,
         route: request.route,
         createdAt: this.now(),
       });
@@ -383,6 +389,7 @@ export class McpSessionRegistry<
     const reservation = this.initializeReservations.get(reservationId);
     if (!reservation
       || reservation.principalId !== input.principalId
+      || reservation.connectionId !== input.connectionId
       || reservation.route !== input.route) {
       throw new Error('MCP_INITIALIZE_RESERVATION_INVALID');
     }

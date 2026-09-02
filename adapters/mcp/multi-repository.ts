@@ -1,4 +1,4 @@
-import { loadMcpLocalConfig, loadMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
+import { loadMcpLocalConfig, loadMcpServiceLocalConfig } from './auth';
 import { getMcpPolicy, parseMcpProfile } from './policy';
 import { buildMcpToolDefinitions, callMcpTool, type CallToolResult, type McpToolContext, type McpToolDefinition } from './tool-mapping/tools';
 import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_TIMEOUT_MS, normalizeAgentTimeoutMs } from '../../src/cli/controller/runtime-config';
