@@ -403,8 +403,8 @@ export function eventDrivenContinuationSchedule(
     ?? workSchedules.at(-1);
   return createWorkContinuationSchedule(controllerHome, repoId, {
     workId: input.workId,
-    continuationPrompt: `Resume exact Work ${input.workId}. Mechanical blocker changed: ${input.reason}`,
-    scheduleName: `Event continuation for ${input.workId}`,
+    continuationPrompt: `继续精确 Work ${input.workId}。机械阻塞条件已变化：${input.reason}`,
+    scheduleName: `事件续跑 ${input.workId}`,
     triggerType: 'repository-event',
     eventName: input.eventName,
     maxFailures: existing?.policy.maxFailures,

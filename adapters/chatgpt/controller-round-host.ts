@@ -13,32 +13,32 @@ export function buildChatgptControllerRoundPrompt(
 ): string {
   const snapshot = readControllerRoundContextSnapshot(options, record);
   const requirementLine = snapshot.requirement
-    ? `Requirement ${snapshot.requirement.requirementId}: state=${snapshot.requirement.state}; outcome=${snapshot.requirement.outcomeStatement}`
-    : `No durable Requirement is bound; semantic relay scope is ${snapshot.relayScopeId}.`;
+    ? `Requirement ${snapshot.requirement.requirementId}：state=${snapshot.requirement.state}；outcome=${snapshot.requirement.outcomeStatement}`
+    : `当前未绑定 durable Requirement；语义 relay scope 为 ${snapshot.relayScopeId}。`;
   const workLines = snapshot.works.length > 0
-    ? snapshot.works.map((work) => `- ${work.workId}: status=${work.status}; phase=${work.phase}; updated=${work.updatedAt}; objective=${work.objective}`).join('\n')
-    : '- no linked Work snapshot found';
+    ? snapshot.works.map((work) => `- ${work.workId}：status=${work.status}；phase=${work.phase}；updated=${work.updatedAt}；objective=${work.objective}`).join('\n')
+    : '- 未找到关联 Work 快照';
   const handoffLines = snapshot.handoffs.length > 0
-    ? snapshot.handoffs.map((handoff) => `- ${handoff.id}: status=${handoff.status}; work=${handoff.workId ?? 'repo'}; ${handoff.title}; reason=${handoff.reason}`).join('\n')
-    : '- no active linked Handoff';
+    ? snapshot.handoffs.map((handoff) => `- ${handoff.id}：status=${handoff.status}；work=${handoff.workId ?? 'repo'}；${handoff.title}；reason=${handoff.reason}`).join('\n')
+    : '- 当前没有 active linked Handoff';
   return [
-    `Continue Forge Requirement/Goal relay ${snapshot.relayScopeId} in repo ${snapshot.repoId}.`,
-    'This is a new ChatGPT controller round. First reread the latest Forge Requirement/Work/Handoff state; the snapshot below is only a launch hint.',
+    `继续 Forge Requirement/Goal relay ${snapshot.relayScopeId}，repo=${snapshot.repoId}。`,
+    '这是新的 ChatGPT controller round。第一步必须重新读取最新 Forge Requirement/Work/Handoff 状态；下面的快照只用于启动提示，不能代替 durable state。',
     requirementLine,
-    `Linked Work snapshot:\n${workLines}`,
-    `Active Handoff snapshot:\n${handoffLines}`,
+    `关联 Work 快照：\n${workLines}`,
+    `Active Handoff 快照：\n${handoffLines}`,
     promptOptions.exactOriginWork
-      ? `This is a Work-bound scheduled round. Claim and advance only origin Work ${snapshot.originWorkId}. Do not select, start, delegate, or resume a sibling Work, create another schedule, or widen scope. If this Work cannot safely advance after one bounded diagnostic or repair attempt, record the exact evidence, submit wait or wait_for_user, release ownership, and end the round.`
-      : `Previous relay origin Work: ${snapshot.originWorkId}. Do not assume the next action must continue that Work; select, start, or claim the appropriate Work from the latest semantic state.`,
-    `Mechanical relay budget: round=${snapshot.round.count}/${snapshot.round.maxRounds}; repeated_state=${snapshot.round.repeatedStateCount}/${snapshot.round.maxRepeatedState}; consecutive_failures=${snapshot.round.consecutiveFailures}/${snapshot.round.maxFailures}.`,
+      ? `这是 Work-bound scheduled round。只允许 claim 并推进 origin Work ${snapshot.originWorkId}。不得选择、启动、delegate、resume sibling Work，不得新建 schedule，也不得扩大 scope。如果经过一次有界诊断或修复后仍无法安全推进，记录精确证据，提交 wait 或带 active Handoff 的 wait_for_user，释放 ownership，然后结束本轮。`
+      : `上一轮 relay 的 origin Work 是 ${snapshot.originWorkId}。不要假设下一步必须继续该 Work；必须依据最新 semantic state 选择、启动或 claim 正确的 Work。`,
+    `机械 relay 预算：round=${snapshot.round.count}/${snapshot.round.maxRounds}；repeated_state=${snapshot.round.repeatedStateCount}/${snapshot.round.maxRepeatedState}；consecutive_failures=${snapshot.round.consecutiveFailures}/${snapshot.round.maxFailures}。`,
     record.authorityId
-      ? `This round's durable controller authority is controller_authority_id=${record.authorityId}. Pass this exact controller_authority_id together with relay_scope_id=${record.relayScopeId} on controller_claim, continue, verify, review, finalize, stop, and controller_release. If this client schema omits either field, the first claim must use MCP compatibility capability controller.round:controller_claim:${record.authorityId}:${record.relayScopeId}; later lifecycle calls use controller.round:<operation>:${record.authorityId}:${record.relayScopeId}. Never substitute a transport session id or another Work/conversation authority.`
-      : 'This is a legacy relay record without a controller authority capability; use only the already-claimed controller lineage until the round is explicitly recovered.',
+      ? `本轮 durable controller authority 为 controller_authority_id=${record.authorityId}。在 controller_claim、continue、verify、review、finalize、stop、controller_release 中，必须同时传入这个完全相同的 controller_authority_id 与 relay_scope_id=${record.relayScopeId}。如果当前 frozen client schema 缺少其中任一字段，第一次 claim 必须使用 MCP compatibility capability controller.round:controller_claim:${record.authorityId}:${record.relayScopeId}；后续 lifecycle 调用使用 controller.round:<operation>:${record.authorityId}:${record.relayScopeId}。绝不能用 transport session id 或其他 Work/conversation authority 替代。`
+      : '这是没有 controller authority capability 的 legacy relay record；只能沿用已经 claim 的 controller lineage，直到显式恢复本轮。',
     ...(snapshot.recoveryReason
-      ? ['The previous ChatGPT round did not submit an explicit disposition before its liveness grace elapsed. Reread durable state and close this round explicitly.']
+      ? ['上一轮 ChatGPT 在 liveness grace 到期前没有提交显式 disposition。必须重新读取 durable state，并显式关闭本轮。']
       : []),
-    `If the Requirement/Goal needs another controller round, submit continue_immediately with relay_scope_id=${record.relayScopeId} before releasing Work. Otherwise use wait, wait_for_user with an active Handoff, or goal_complete. Frozen MCP clients may use controller.disposition:<disposition>:${record.relayScopeId}.`,
-    'Forge must not infer the semantic next step. Existing Work ownership, Handoff authority, and external-effect authorization remain authoritative.',
+    `如果 Requirement/Goal 需要下一个 controller round，在释放 Work 前提交 continue_immediately，并带 relay_scope_id=${record.relayScopeId}。否则使用 wait、带 active Handoff 的 wait_for_user，或 goal_complete。Frozen MCP client 可使用 controller.disposition:<disposition>:${record.relayScopeId}。`,
+    'Forge 不得自行推断 semantic next step。现有 Work ownership、Handoff authority 与 external-effect authorization 始终是权威。',
   ].join('\n');
 }
 

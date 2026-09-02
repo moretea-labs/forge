@@ -857,10 +857,12 @@ describe('scheduled external Controller wake', () => {
     expect(opened).toMatchObject({ status: 'dispatching', lifecycleStage: 'dispatching' });
     const scheduledPrompt = buildChatgptControllerRoundPrompt(store, opened, { exactOriginWork: true });
 
-    expect(scheduledPrompt).toContain(`Claim and advance only origin Work ${workId}.`);
+    expect(scheduledPrompt).toContain(`只允许 claim 并推进 origin Work ${workId}。`);
     expect(scheduledPrompt).toContain(`controller.round:controller_claim:${opened.authorityId}:${opened.relayScopeId}`);
-    expect(scheduledPrompt).toContain('Do not select, start, delegate, or resume a sibling Work');
-    expect(scheduledPrompt).not.toContain('select, start, or claim the appropriate Work');
+    expect(scheduledPrompt).toContain('这是新的 ChatGPT controller round。');
+    expect(scheduledPrompt).not.toContain('This is a new ChatGPT controller round.');
+    expect(scheduledPrompt).toContain('不得选择、启动、delegate、resume sibling Work');
+    expect(scheduledPrompt).not.toContain('选择、启动或 claim 正确的 Work');
     const dispatched = finishControllerRoundRelayDispatch(store, {
       workId,
       ok: true,
