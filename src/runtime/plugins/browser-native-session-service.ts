@@ -7,7 +7,7 @@ import {
   type MacOsBrowserProduct,
 } from './browser-macos-bridge';
 import { listSavedBrowserSessions, removeBrowserSession } from './browser-session-store';
-import type { BrowserSessionInventoryItem, BrowserSessionState } from './browser-session-types';
+import type { BrowserSessionInventoryItem, BrowserSessionState } from '../../../packages/protocols/browser/index';
 
 export interface NativeOwnedSessionInspection {
   items: Map<string, BrowserSessionInventoryItem>;

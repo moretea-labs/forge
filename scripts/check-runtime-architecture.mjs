@@ -1275,6 +1275,25 @@ requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_OB
 requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_INPUT_CAPABILITY');
 requireText('src/runtime/plugins/desktop-operator-registration.ts', 'COMPUTER_CAPTURE_CAPABILITY');
 
+// C0 Browser runtime authority: contracts and provider selection belong to plugin-runtime/protocols.
+requireText('packages/plugin-runtime/browser/runtime-contract.ts', 'export interface BrowserTransaction');
+requireText('packages/plugin-runtime/browser/provider-registry.ts', 'export class BrowserProviderRegistry');
+requireText('packages/plugin-runtime/browser/provider-registry.ts', 'export class BrowserProviderSelectionError');
+forbid('packages/plugin-runtime/browser/provider-registry.ts', /AssistantPluginError|src\/runtime|adapters\//, 'Browser provider selection must remain provider-neutral inside plugin-runtime');
+requireText('packages/protocols/browser/session.ts', 'export interface BrowserSessionState');
+for (const path of [
+  'src/runtime/plugins/browser-runtime-contract.ts',
+  'src/runtime/plugins/browser-provider-registry.ts',
+  'src/runtime/plugins/browser-session-types.ts',
+]) {
+  requireText(path, '@deprecated C0 compatibility shim');
+  if (text(path).split(/\r?\n/).length > 6) failures.push(`${path} must remain a thin C0 compatibility facade`);
+}
+for (const path of sourceFiles('src/runtime/plugins')) {
+  if (['src/runtime/plugins/browser-runtime-contract.ts', 'src/runtime/plugins/browser-provider-registry.ts', 'src/runtime/plugins/browser-session-types.ts'].includes(path)) continue;
+  forbid(path, /from\s+['"]\.\/browser-(?:runtime-contract|provider-registry|session-types)['"]/, 'active Browser runtime code must consume plugin-runtime/protocol Browser contracts, not retired local owners');
+}
+
 if (failures.length) {
   console.error('[runtime-architecture] FAILED');
   for (const failure of failures) console.error(`- ${failure}`);

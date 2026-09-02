@@ -12,7 +12,7 @@ import {
 
 const BROWSER_STATE_ROOT = '.forge/browser';
 
-import type { BrowserSessionState } from './browser-session-types';
+import type { BrowserSessionState } from '../../../packages/protocols/browser/index';
 
 /**
  * Repository-local browser paths remain compatibility storage only. During

@@ -8,7 +8,7 @@ import {
   DEFAULT_BROWSER_SESSION_LIST_LIMIT,
   MAX_BROWSER_SESSION_LIST_LIMIT,
 } from './browser-session-authority';
-import { MAX_BROWSER_CDP_ENDPOINT_CANDIDATES } from './browser-runtime-contract';
+import { MAX_BROWSER_CDP_ENDPOINT_CANDIDATES } from '../../../packages/plugin-runtime/browser/runtime-contract';
 
 export function browserPermissions(ready: boolean): AssistantPluginPermissionScope[] {
   return [

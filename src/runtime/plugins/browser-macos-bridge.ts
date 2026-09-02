@@ -9,7 +9,7 @@ import {
   type BrowserAutomationTrustedInput,
 } from './browser-automation-service';
 import { AssistantPluginError } from './errors';
-import type { BrowserNativeAttachAttempt, BrowserNativeProduct } from './browser-session-types';
+import type { BrowserNativeAttachAttempt, BrowserNativeProduct } from '../../../packages/protocols/browser/index';
 
 const RECORD_SEPARATOR = String.fromCharCode(30);
 const DEFAULT_NATIVE_TIMEOUT_MS = 5_000;

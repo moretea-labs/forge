@@ -15,8 +15,8 @@ import {
   browserPermissions,
 } from './browser-manifest-surface';
 import { executeBrowserActionThroughNode, shouldUseBrowserNodeBridge } from './browser-node-bridge';
-import { BrowserProviderUnavailableBeforeActionError } from './browser-provider-registry';
-import { MAX_BROWSER_CDP_ENDPOINT_CANDIDATES } from './browser-runtime-contract';
+import { BrowserProviderUnavailableBeforeActionError } from '../../../packages/plugin-runtime/browser/provider-registry';
+import { MAX_BROWSER_CDP_ENDPOINT_CANDIDATES } from '../../../packages/plugin-runtime/browser/runtime-contract';
 import {
   ALL_BROWSER_PROVIDER_CAPABILITIES,
   browserActionCanReplayAfterDispatch as canReplayBrowserActionAfterDispatch,
@@ -87,7 +87,7 @@ import type {
   BrowserTabMatchReason,
   BrowserTabResumeState,
   CdpAttachAttempt,
-} from './browser-session-types';
+} from '../../../packages/protocols/browser/index';
 
 const BROWSER_PLUGIN_ID = 'browser';
 const CONFIG_ROOT = '.forge/plugins';
