@@ -7,6 +7,12 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(SCRIPT_DIR, '..', '..', '..');
 const PACKAGE_HELPERS_ROOT = join(PACKAGE_ROOT, 'assets', 'templates', 'helpers');
 const PACKAGE_CONTRACT = join(PACKAGE_ROOT, 'assets', 'workflow-contract.v1.json');
+const HELPER_OUTPUT_REDACTIONS = [
+  {
+    pattern: /(\b(?:proxy-)?authorization\s*[:=]\s*)(?:bearer|basic)\s+[^\s,;]+/gi,
+    replacement: '$1[redacted]',
+  },
+] as const;
 
 export type HelperSource = 'env' | 'repo-pin' | 'package' | 'repo-fallback';
 
@@ -149,6 +155,7 @@ export function runHelper(opts: RunHelperOptions): RunHelperResult {
     stdio: opts.stdio ?? 'inherit',
     timeoutMs: opts.timeoutMs,
     maxOutputBytes: opts.maxOutputBytes,
+    redactions: HELPER_OUTPUT_REDACTIONS,
   });
 
   if (child.error) {
