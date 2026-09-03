@@ -252,7 +252,7 @@ export async function openWslWindowsBridgeTarget(
   const browser = options.browserBinding;
   const executable = browser?.executable ?? legacyChrome;
   if (!executable) {
-    throw new Error('CHATGPT_BRIDGE_BROWSER_UNAVAILABLE: no Windows Chromium profile with the current Forge bridge extension is available');
+    throw new Error('CHATGPT_BRIDGE_USER_ACTION_REQUIRED: no enabled Windows Chromium profile with the current Forge bridge extension is available');
   }
   const args = browser
     ? [`--profile-directory=${browser.profileDirectory}`, '--new-tab', parsed.toString()]

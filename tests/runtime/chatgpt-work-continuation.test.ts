@@ -247,7 +247,7 @@ describe('ChatGPT Work conversation binding', () => {
       chromeExecutables: ['/missing/chrome.exe'],
       fileExists: () => false,
       launch,
-    })).rejects.toThrow('CHATGPT_BRIDGE_BROWSER_UNAVAILABLE');
+    })).rejects.toThrow('CHATGPT_BRIDGE_USER_ACTION_REQUIRED');
     await expect(openWslWindowsBridgeTarget('https://example.com/', {
       platform: 'linux',
       wslDistroName: 'UbuntuDev',
