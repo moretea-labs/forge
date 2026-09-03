@@ -8,21 +8,23 @@ import { resolveControllerHome, controllerSystemRoot } from '../repositories/con
 import { withControllerLock, type ControllerLockKey } from '../repositories/locks';
 import { installExternalPluginRegistration, listExternalPluginRegistrations, type ExternalPluginRegistration, type ExternalPluginRegistrationInput } from '../../runtime/plugins/external-registration';
 import { createDesktopOperatorRegistrationInput } from '../../runtime/plugins/desktop-operator-registration';
-import { controllerPluginRepository, getAssistantPluginManifest, syncAssistantPluginRegistry } from '../../runtime/plugins/store';
+import { getControllerPluginManifest, syncControllerPluginRegistry } from '../../runtime/plugins/store';
+import { assertExternalPluginRepositoryTrusted, assertFirstPartyPluginRepositoryTrusted, readControllerPluginTrustPolicy, trustExternalPluginRepository, untrustExternalPluginRepository } from '../../runtime/plugins/catalog-trust';
 
 export interface RegistryEntry { id:string; name:string; version:string; description:string; repository:string; ref:string; installer:string; providerVersion?:string; protocolVersion?:string; platforms:NodeJS.Platform[]; semanticCapabilities?:string[]; }
 interface Registry { schemaVersion:1; plugins:RegistryEntry[]; }
-interface CliOptions { json?:boolean; controllerHome?:string; refresh?:boolean; }
+interface CliOptions { json?:boolean; controllerHome?:string; refresh?:boolean; catalog?:string; }
 const packageRoot=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const registryPath=join(packageRoot,'assets','plugin-registry.v1.json');
+const trustPolicyPath=join(packageRoot,'assets','plugin-trust-policy.v1.json');
 
-function registry():Registry{
-  const value=JSON.parse(readFileSync(registryPath,'utf8')) as Registry;
+function registryFromPath(path:string,trustRepository:(repository:string)=>string):Registry{
+  const value=JSON.parse(readFileSync(path,'utf8')) as Registry;
   if(value.schemaVersion!==1||!Array.isArray(value.plugins))throw new Error('PLUGIN_CATALOG_INVALID');
   const ids=new Set<string>();
   for(const plugin of value.plugins){
     if(!/^[a-z][a-z0-9_]{1,63}$/.test(plugin.id)||ids.has(plugin.id))throw new Error(`PLUGIN_CATALOG_INVALID_ID: ${plugin.id}`);
-    if(!plugin.repository.startsWith('https://github.com/moretea-labs/')||!plugin.repository.endsWith('.git'))throw new Error(`PLUGIN_CATALOG_UNTRUSTED_REPOSITORY: ${plugin.id}`);
+    plugin.repository=trustRepository(plugin.repository);
     if(!/^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(plugin.ref))throw new Error(`PLUGIN_CATALOG_UNPINNED_REF: ${plugin.id}`);
     if(plugin.installer!=='forge-plugin-install.mjs')throw new Error(`PLUGIN_CATALOG_INSTALLER_INVALID: ${plugin.id}`);
     if(plugin.providerVersion!==undefined&&!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(plugin.providerVersion))throw new Error(`PLUGIN_CATALOG_PROVIDER_VERSION_INVALID: ${plugin.id}`);
@@ -32,6 +34,8 @@ function registry():Registry{
   }
   return value;
 }
+function registry():Registry{return registryFromPath(registryPath,repository=>assertFirstPartyPluginRepositoryTrusted(repository,trustPolicyPath));}
+function trustedExternalRegistry(path:string,controllerHome:string):Registry{return registryFromPath(resolve(path),repository=>assertExternalPluginRepositoryTrusted(controllerHome,repository));}
 function within(root:string,relative:string):string{const target=resolve(root,relative);const base=`${resolve(root)}${sep}`;if(target!==resolve(root)&&!target.startsWith(base))throw new Error('PLUGIN_INSTALL_PATH_ESCAPE');return target;}
 export function pluginCatalogCompatibility(entry:RegistryEntry,platform:NodeJS.Platform=process.platform):{compatible:boolean;reason?:string}{
   if(!entry.platforms.includes(platform))return{compatible:false,reason:`unsupported platform: ${platform}`};
@@ -40,6 +44,7 @@ export function pluginCatalogCompatibility(entry:RegistryEntry,platform:NodeJS.P
 }
 export function officialPluginCatalogItems(platform:NodeJS.Platform=process.platform){return registry().plugins.map(entry=>({...entry,...pluginCatalogCompatibility(entry,platform)}));}
 export function officialPluginCatalogEntry(pluginId:string):RegistryEntry|undefined{return registry().plugins.find(entry=>entry.id===pluginId);}
+export function trustedExternalPluginCatalogEntry(pluginId:string,catalogPath:string,controllerHome:string):RegistryEntry|undefined{return trustedExternalRegistry(catalogPath,controllerHome).plugins.find(entry=>entry.id===pluginId);}
 export function officialPluginLifecycleLockKey(pluginId:string):ControllerLockKey{return{scope:'global',resource:`external-plugin:${pluginId}`};}
 export function withOfficialPluginLifecycleLock<T>(controllerHome:string,pluginId:string,operation:()=>T):T{
   return withControllerLock(controllerHome,officialPluginLifecycleLockKey(pluginId),`official-plugin-lifecycle:${pluginId}:${process.pid}`,operation);
@@ -47,8 +52,7 @@ export function withOfficialPluginLifecycleLock<T>(controllerHome:string,pluginI
 export function externalPluginListItem(controllerHome:string,registration:ExternalPluginRegistration){
   const base={pluginId:registration.pluginId,version:registration.pluginVersion,provider:registration.provider,enabled:registration.enabled,scope:registration.scope,transport:registration.transport.kind};
   if(registration.scope==='repository')return{...base,healthScope:'repository_context_required' as const};
-  const repository=controllerPluginRepository(controllerHome);
-  try{return{...base,health:getAssistantPluginManifest(controllerHome,repository,registration.pluginId).health};}
+  try{return{...base,health:getControllerPluginManifest(controllerHome,registration.pluginId).health};}
   catch(error){return{...base,health:{state:'error',message:error instanceof Error?error.message:String(error)}};}
 }
 function run(command:string,args:string[],cwd:string,timeoutMs=120000):string{
@@ -103,7 +107,7 @@ function install(entry:RegistryEntry,controllerHome:string):Record<string,unknow
     // useful diagnostics, but must not strand a verified package when that
     // helper field is stale.
     const installed=installExternalPluginRegistration(controllerHome,registrationFrom(result,entry,{packageIdentityVerified:true}));
-    const repository=controllerPluginRepository(controllerHome);syncAssistantPluginRegistry(controllerHome,repository);const plugin=getAssistantPluginManifest(controllerHome,repository,entry.id);
+    syncControllerPluginRegistry(controllerHome);const plugin=getControllerPluginManifest(controllerHome,entry.id);
     if(backed)rmSync(backup,{recursive:true,force:true});
     return{pluginId:entry.id,version:entry.version,packageRoot:finalRoot,registrationRevision:installed.revision,enabled:plugin.enabled,health:plugin.health,nextSteps:installerNextSteps(result)};
   }catch(error){rmSync(stage,{recursive:true,force:true});if(backed&&existsSync(finalRoot))rmSync(finalRoot,{recursive:true,force:true});if(backed&&existsSync(backup))renameSync(backup,finalRoot);throw error;}
@@ -113,10 +117,20 @@ export function installOfficialPlugin(pluginId:string,controllerHome:string):Rec
   if(!entry)throw new Error(`PLUGIN_NOT_IN_OFFICIAL_CATALOG: ${pluginId}`);
   return withOfficialPluginLifecycleLock(controllerHome,pluginId,()=>install(entry,controllerHome));
 }
+export function installTrustedExternalPlugin(pluginId:string,catalogPath:string,controllerHome:string):Record<string,unknown>{
+  const entry=trustedExternalPluginCatalogEntry(pluginId,catalogPath,controllerHome);
+  if(!entry)throw new Error(`PLUGIN_NOT_IN_TRUSTED_CATALOG: ${pluginId}`);
+  return withOfficialPluginLifecycleLock(controllerHome,pluginId,()=>install(entry,controllerHome));
+}
+
 export function buildPluginCommand():Command{
   const root=new Command('plugin').description('Discover and install trusted Forge plugins');
   root.command('catalog').description('List official plugins').option('--json','Output JSON').action((o:CliOptions)=>{const items=officialPluginCatalogItems();if(o.json)console.log(JSON.stringify({schemaVersion:1,platform:process.platform,plugins:items},null,2));else items.forEach(x=>console.log(`${x.id}\t${x.version}\t${x.compatible?'compatible':`incompatible (${x.reason})`}\t${x.name}`));});
-  root.command('list').description('List installed external plugins').option('--json','Output JSON').option('--controller-home <path>','Override Controller Home').option('--refresh','Probe controller-scoped providers').action((o:CliOptions)=>{const home=resolveControllerHome(o.controllerHome),repo=controllerPluginRepository(home);if(o.refresh)syncAssistantPluginRegistry(home,repo);const items=listExternalPluginRegistrations(home).map(r=>externalPluginListItem(home,r));if(o.json)console.log(JSON.stringify({schemaVersion:1,plugins:items},null,2));else if(!items.length)console.log('No external Forge plugins installed.');else items.forEach(x=>console.log(`${x.pluginId}\t${x.version}\t${x.enabled?'enabled':'disabled'}\t${'healthScope' in x?'repository-context-required':((x.health as {state?:string})?.state??'unknown')}`));});
-  root.command('install <plugin-id>').description('Install/update an official plugin from a pinned public release').option('--json','Output JSON').option('--controller-home <path>','Override Controller Home').action((id:string,o:CliOptions)=>{const entry=officialPluginCatalogEntry(id);if(!entry)throw new Error(`PLUGIN_NOT_IN_OFFICIAL_CATALOG: ${id}`);const result=installOfficialPlugin(id,resolveControllerHome(o.controllerHome));if(o.json)console.log(JSON.stringify(result,null,2));else{console.log(`Installed ${entry.name} ${entry.version} (${(result.health as {state?:string})?.state??'unknown'}).`);for(const step of (result.nextSteps as string[]|undefined)??[])console.log(`- ${step}`);}});
+  root.command('list').description('List installed external plugins').option('--json','Output JSON').option('--controller-home <path>','Override Controller Home').option('--refresh','Probe controller-scoped providers').action((o:CliOptions)=>{const home=resolveControllerHome(o.controllerHome);if(o.refresh)syncControllerPluginRegistry(home);const items=listExternalPluginRegistrations(home).map(r=>externalPluginListItem(home,r));if(o.json)console.log(JSON.stringify({schemaVersion:1,plugins:items},null,2));else if(!items.length)console.log('No external Forge plugins installed.');else items.forEach(x=>console.log(`${x.pluginId}\t${x.version}\t${x.enabled?'enabled':'disabled'}\t${'healthScope' in x?'repository-context-required':((x.health as {state?:string})?.state??'unknown')}`));});
+  const trust=root.command('trust').description('Manage exact third-party plugin repository trust in Controller Home');
+  trust.command('list').option('--json','Output JSON').option('--controller-home <path>','Override Controller Home').action((o:CliOptions)=>{const policy=readControllerPluginTrustPolicy(resolveControllerHome(o.controllerHome));if(o.json)console.log(JSON.stringify(policy,null,2));else policy.trustedRepositories.forEach(repository=>console.log(repository));});
+  trust.command('add <repository-url>').option('--controller-home <path>','Override Controller Home').action((repository:string,o:CliOptions)=>{const policy=trustExternalPluginRepository(resolveControllerHome(o.controllerHome),repository);console.log(`Trusted exact plugin repository: ${policy.trustedRepositories.find(entry=>entry===new URL(repository).toString())??repository}`);});
+  trust.command('remove <repository-url>').option('--controller-home <path>','Override Controller Home').action((repository:string,o:CliOptions)=>{untrustExternalPluginRepository(resolveControllerHome(o.controllerHome),repository);console.log(`Removed plugin repository trust: ${repository}`);});
+  root.command('install <plugin-id>').description('Install/update a pinned plugin from the first-party catalog or an explicitly trusted external catalog').option('--json','Output JSON').option('--controller-home <path>','Override Controller Home').option('--catalog <path>','External catalog file; every repository must already be explicitly trusted').action((id:string,o:CliOptions)=>{const home=resolveControllerHome(o.controllerHome);const entry=o.catalog?trustedExternalPluginCatalogEntry(id,o.catalog,home):officialPluginCatalogEntry(id);if(!entry)throw new Error(o.catalog?`PLUGIN_NOT_IN_TRUSTED_CATALOG: ${id}`:`PLUGIN_NOT_IN_OFFICIAL_CATALOG: ${id}`);const result=o.catalog?installTrustedExternalPlugin(id,o.catalog,home):installOfficialPlugin(id,home);if(o.json)console.log(JSON.stringify(result,null,2));else{console.log(`Installed ${entry.name} ${entry.version} (${(result.health as {state?:string})?.state??'unknown'}).`);for(const step of (result.nextSteps as string[]|undefined)??[])console.log(`- ${step}`);}});
   return root;
 }

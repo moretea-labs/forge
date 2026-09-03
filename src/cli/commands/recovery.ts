@@ -60,6 +60,7 @@ import {
 import { configureCodegraph, ensureCodegraph } from '../tools/codegraph';
 import { isProcessAlive } from '../../runtime/shared/process-tree';
 import { systemdUserServicePid, systemdUserUnitName, systemdUserUnitPath } from '../controller/systemd-user';
+import { installWindowsHostRecoveryPlugin } from '../../runtime/plugins/windows-host-recovery-install';
 
 function output(value: unknown, json = true): void {
   console.log(json ? JSON.stringify(value, null, 2) : String(value));
@@ -852,6 +853,28 @@ export function buildRecoveryCommand(): Command {
       };
       rollbackStoppedControllerHomeAuthorityRelocation(relocation);
       output({ status: 'rolled_back', relocation });
+    });
+
+  command.command('windows-host-register')
+    .description('Register the Windows-host Recovery provider using discovered or explicitly bound host paths')
+    .option('--controller-home <path>', 'Override Controller Home')
+    .option('--rescue-root <path>', 'Override the local Recovery helper root')
+    .option('--recovery-script-host <path>', 'Host-visible path to ForgeRecovery.ps1')
+    .option('--recovery-script-windows <path>', 'Windows path to ForgeRecovery.ps1')
+    .option('--powershell-host <path>', 'Host-visible path to powershell.exe')
+    .option('--powershell-windows <path>', 'Windows path to powershell.exe')
+    .option('--disabled', 'Register the provider disabled')
+    .action((opts) => {
+      const result = installWindowsHostRecoveryPlugin({
+        controllerHome: resolveControllerHome(opts.controllerHome),
+        rescueRoot: opts.rescueRoot,
+        recoveryScriptHostPath: opts.recoveryScriptHost,
+        recoveryScriptWindowsPath: opts.recoveryScriptWindows,
+        powershellHostPath: opts.powershellHost,
+        powershellWindowsPath: opts.powershellWindows,
+        enabled: opts.disabled !== true,
+      });
+      output({ status: 'registered', ...result });
     });
 
   command.command('install')

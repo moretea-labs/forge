@@ -155,6 +155,62 @@ function inertScheduler() {
 }
 
 describe('canonical single Runtime', () => {
+  test('materialized package Runtime needs no repository overlay while development Runtime still does', async () => {
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-package-no-repo' });
+    writeFileSync(fixture.manifestPath, JSON.stringify({
+      schemaVersion: 1,
+      releaseId: 'release-package-no-repo',
+      artifactIdentity: 'sha256:package-no-repo',
+      entrypoint: 'forge-runtime',
+      arguments: [],
+      configurationSchemaVersion: 1,
+      controllerHome: resolve(fixture.controllerHome),
+      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+      workerProtocolVersion: 1,
+      sourceCommit: 'source-package-no-repo',
+      releaseRevision: 'release-package-no-repo',
+      cleanWorkspace: true,
+      createdAt: '2026-09-03T00:00:00.000Z',
+    }), 'utf8');
+    const { repositoryRoot: _repositoryRoot, ...packageConfig } = fixture.config;
+    let localBridgeInput: { controllerHome: string; repositoryRoot?: string } | undefined;
+    const runtime = new CanonicalForgeRuntime(packageConfig, {
+      collectRuntimeSourceIdentity: (root) => ({
+        repoId: 'release:package-no-repo',
+        checkoutId: 'release:package-no-repo',
+        repoRoot: root,
+        canonicalRoot: root,
+        branch: null,
+        commit: 'source-package-no-repo',
+        releaseRevision: 'release-package-no-repo',
+        defaultBranch: 'main',
+        defaultBranchCommit: 'source-package-no-repo',
+        dirty: false,
+        observedAt: '2026-09-03T00:00:00.000Z',
+      }),
+      startScheduler: () => inertScheduler(),
+      startLocalBridge: async (input) => { localBridgeInput = input; return undefined; },
+      startTransport: async () => ({ endpoint: 'http://127.0.0.1:9876/mcp', host: '127.0.0.1', port: 9876, close: async () => undefined }),
+      runMcpProbe: async () => undefined,
+      stopLightweightProcesses: async () => 0,
+      stopContextReadHelpers: async () => undefined,
+      computeToolSurfaceFingerprint: () => 'test-fingerprint',
+    });
+    cleanups.push(() => runtime.stop('TEST_CLEANUP'));
+    await runtime.start();
+    expect(runtime.readiness().ready).toBe(true);
+    expect(localBridgeInput).toEqual({ controllerHome: fixture.controllerHome, repositoryRoot: undefined });
+
+    const development = createFixture({ runtimeInstanceId: 'runtime-development-no-repo' });
+    const { repositoryRoot: _developmentRepositoryRoot, ...developmentConfig } = development.config;
+    const developmentRuntime = new CanonicalForgeRuntime(developmentConfig, {
+      startScheduler: () => inertScheduler(),
+      startTransport: async () => ({ endpoint: 'http://127.0.0.1:9877/mcp', host: '127.0.0.1', port: 9877, close: async () => undefined }),
+      runMcpProbe: async () => undefined,
+    });
+    await expect(developmentRuntime.start()).rejects.toThrow('repositoryRoot is required only for non-materialized development Runtime');
+  });
+
   test('readiness exposes one boolean while module observations remain diagnostic evidence', () => {
     const state = new RuntimeReadinessState(() => '2026-08-05T00:00:00.000Z');
     const starting = state.snapshot();

@@ -89,6 +89,37 @@ export function controllerPluginRepository(controllerHome: string): RepositoryRe
   };
 }
 
+/**
+ * Controller-scoped product facade. The synthetic RepositoryRecord remains an
+ * internal storage/projection compatibility shape only; callers need no repo.
+ */
+export function readControllerStoredPluginManifest(controllerHome: string, pluginId: string): AssistantPluginManifest | undefined {
+  return readStoredAssistantPluginManifest(controllerHome, controllerPluginRepository(controllerHome), pluginId);
+}
+
+export function listControllerPluginManifests(
+  controllerHome: string,
+  options: { preferStored?: boolean; forceRefresh?: boolean } = {},
+): AssistantPluginManifest[] {
+  return listAssistantPluginManifests(controllerHome, controllerPluginRepository(controllerHome), options);
+}
+
+export function getControllerPluginManifest(controllerHome: string, pluginId: string): AssistantPluginManifest {
+  return getAssistantPluginManifest(controllerHome, controllerPluginRepository(controllerHome), pluginId);
+}
+
+export function syncControllerPluginRegistry(controllerHome: string) {
+  return syncAssistantPluginRegistry(controllerHome, controllerPluginRepository(controllerHome));
+}
+
+export function syncControllerPluginManifest(controllerHome: string, pluginId: string) {
+  return syncAssistantPluginManifest(controllerHome, controllerPluginRepository(controllerHome), pluginId);
+}
+
+export function removeControllerPluginManifestProjection(controllerHome: string, pluginId: string) {
+  return removeAssistantPluginManifestProjection(controllerHome, controllerPluginRepository(controllerHome), pluginId);
+}
+
 function adapterMatchesRepository(adapter: AssistantPluginAdapter, repository: RepositoryRecord): boolean {
   const scope = adapter.scope ?? 'repository';
   if (scope === 'controller_with_repository_overlay') return true;
@@ -1361,6 +1392,17 @@ export async function submitAssistantPluginAction(
     } satisfies PluginActionRequestIndex);
     throw error;
   }
+}
+
+export async function executeControllerScopedPluginAction(
+  input: Omit<AssistantPluginActionExecutionInput, 'repoId' | 'repoRoot'>,
+): Promise<Record<string, unknown>> {
+  const repository = controllerPluginRepository(input.controllerHome);
+  return executeAssistantPluginAction({
+    ...input,
+    repoId: repository.repoId,
+    repoRoot: repository.canonicalRoot,
+  });
 }
 
 export async function executeAssistantPluginAction(

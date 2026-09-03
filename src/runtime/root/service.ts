@@ -3,17 +3,13 @@ import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync
 import { homedir } from 'os';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
-import {
-  bootstrapLaunchAgentWithRetryV2,
-  bootoutLaunchAgentWithRetryV2,
-  installLaunchAgent,
-  retireConflictingForgeLaunchAgents,
-} from '../../cli/controller/launch-agents';
+import { createPlatformServiceManagerHost } from '../platform/service-manager';
 
 export interface ForgeRuntimeServiceConfig {
   schemaVersion: 1;
   controllerHome: string;
-  repositoryRoot: string;
+  /** Optional default repository overlay for development/embedded repository UI. */
+  repositoryRoot?: string;
   host: string;
   port: number;
   authTokenFile: string;
@@ -65,16 +61,16 @@ export function forgeRuntimeServicePaths(controllerHome: string): ForgeRuntimeSe
 export function validateForgeRuntimeServiceConfig(input: ForgeRuntimeServiceConfig): ForgeRuntimeServiceConfig {
   if (input.schemaVersion !== 1) throw new Error('FORGE_RUNTIME_SERVICE_CONFIG_VERSION_UNSUPPORTED');
   const controllerHome = resolve(input.controllerHome);
-  const repositoryRoot = resolve(input.repositoryRoot);
+  const repositoryRoot = input.repositoryRoot?.trim() ? resolve(input.repositoryRoot) : undefined;
   const authTokenFile = resolve(input.authTokenFile);
   if (!input.host.trim()) throw new Error('FORGE_RUNTIME_SERVICE_HOST_REQUIRED');
   if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65_535) throw new Error('FORGE_RUNTIME_SERVICE_PORT_INVALID');
-  if (!existsSync(repositoryRoot)) throw new Error(`FORGE_RUNTIME_SERVICE_REPOSITORY_MISSING: ${repositoryRoot}`);
+  if (repositoryRoot && !existsSync(repositoryRoot)) throw new Error(`FORGE_RUNTIME_SERVICE_REPOSITORY_MISSING: ${repositoryRoot}`);
   if (!existsSync(authTokenFile)) throw new Error(`FORGE_RUNTIME_SERVICE_AUTH_TOKEN_MISSING: ${authTokenFile}`);
   return {
     ...input,
     controllerHome,
-    repositoryRoot,
+    ...(repositoryRoot ? { repositoryRoot } : {}),
     host: input.host.trim(),
     authTokenFile,
     ...(input.exclusiveWorkId?.trim() ? { exclusiveWorkId: input.exclusiveWorkId.trim() } : {}),
@@ -165,7 +161,7 @@ function legacyBrowserAutomationLaunchAgentPaths(controllerHome: string, account
 async function retireLegacyBrowserAutomationLaunchAgent(controllerHome: string): Promise<void> {
   const legacy = legacyBrowserAutomationLaunchAgentPaths(controllerHome);
   if (!existsSync(legacy.installedPlistPath)) return;
-  const result = await bootoutLaunchAgentWithRetryV2({ label: legacy.label, plistPath: legacy.installedPlistPath });
+  const result = await createPlatformServiceManagerHost({ platform: 'darwin' }).bootoutLaunchd({ label: legacy.label, plistPath: legacy.installedPlistPath });
   if (!result.ok) throw new Error(`FORGE_BROWSER_AUTOMATION_LEGACY_RETIRE_FAILED: ${result.diagnostics.join('; ')}`);
   rmSync(legacy.installedPlistPath, { force: true });
 }
@@ -189,7 +185,7 @@ export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLa
   return {
     args: [
       '--controller-home', home,
-      '--repo', config.repositoryRoot,
+      ...(config.repositoryRoot ? ['--repo', config.repositoryRoot] : []),
       '--release-manifest', active.manifestPath,
       '--host', config.host,
       '--port', String(config.port),
@@ -353,14 +349,15 @@ export async function installForgeRuntimeService(input: { config: ForgeRuntimeSe
     bootstrapRunnerPath: input.runnerPath,
   });
   await retireLegacyBrowserAutomationLaunchAgent(config.controllerHome);
-  await retireConflictingForgeLaunchAgents({
+  const serviceHost = createPlatformServiceManagerHost({ platform: 'darwin' });
+  await serviceHost.retireConflictingLaunchd({
     desiredLabel: paths.label,
     labelPrefix: 'com.moretea.forge.runtime.',
     port: config.port,
     requiredArguments: ['--controller-home'],
   });
-  installLaunchAgent(paths.sourcePlistPath, paths.label);
-  const result = await bootstrapLaunchAgentWithRetryV2({ label: paths.label, plistPath: paths.installedPlistPath });
+  serviceHost.installLaunchd(paths.sourcePlistPath, paths.label);
+  const result = await serviceHost.bootstrapLaunchd({ label: paths.label, plistPath: paths.installedPlistPath });
   if (!result.ok) throw new Error(`FORGE_RUNTIME_SERVICE_BOOTSTRAP_FAILED: ${result.diagnostics.join('; ')}`);
   return paths;
 }
@@ -368,7 +365,7 @@ export async function installForgeRuntimeService(input: { config: ForgeRuntimeSe
 export async function uninstallForgeRuntimeService(controllerHome: string): Promise<ForgeRuntimeServicePaths> {
   if (process.platform !== 'darwin') throw new Error('FORGE_RUNTIME_SERVICE_PLATFORM_UNSUPPORTED: launchd requires macOS');
   const paths = forgeRuntimeServicePaths(controllerHome);
-  const result = await bootoutLaunchAgentWithRetryV2({ label: paths.label, plistPath: paths.installedPlistPath });
+  const result = await createPlatformServiceManagerHost({ platform: 'darwin' }).bootoutLaunchd({ label: paths.label, plistPath: paths.installedPlistPath });
   if (!result.ok) throw new Error(`FORGE_RUNTIME_SERVICE_BOOTOUT_FAILED: ${result.diagnostics.join('; ')}`);
   rmSync(paths.installedPlistPath, { force: true });
 

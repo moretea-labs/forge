@@ -1021,7 +1021,8 @@ function assertCompatibilityTransactionSource(
   request: LinuxControllerHomeMigrationRequest,
   source: { canonicalSourceRoot: string; sourceRevision: string },
 ): void {
-  if (resolve(request.runtimeConfig.repositoryRoot) !== source.canonicalSourceRoot) {
+  const repositoryRoot = request.runtimeConfig.repositoryRoot?.trim();
+  if (!repositoryRoot || resolve(repositoryRoot) !== source.canonicalSourceRoot) {
     throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_AUTHORITY_MISMATCH');
   }
 }

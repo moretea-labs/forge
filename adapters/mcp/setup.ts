@@ -26,6 +26,7 @@ import { ensureControllerHome, ensureRepoPreferredControllerHome } from "../../s
 import { accessModeForLegacyToolset } from "./access-mode";
 import { migrateControllerToolsetConfig } from "./toolset-selection";
 import { ensureForgeInstanceIdentity, normalizeConfiguredForgeInstanceId } from "../../packages/kernel/identity/api/index";
+import { discoverExecutable } from "../../src/runtime/platform/executable-discovery";
 
 export interface McpSetupResult {
   status: "ok";
@@ -645,7 +646,8 @@ export function runMcpDoctor(opts: {
   const missingTools = REQUIRED_CODEX_TOOLS.filter(
     (tool) => !codexConfig.includes(`"${tool}"`),
   );
-  const codexCommand = Bun.which("codex");
+  const codexResolution = discoverExecutable({ id: "codex", candidates: ["codex"] });
+  const codexCommand = codexResolution.status === "ready" ? codexResolution.executable : undefined;
   const report = {
     status: existsSync(join(repoRoot, ".ai", "harness", "policy.json"))
       ? "ready_local"

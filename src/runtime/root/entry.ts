@@ -6,7 +6,7 @@ import { CanonicalForgeRuntime } from './runtime';
 
 interface CliOptions {
   controllerHome: string;
-  repo: string;
+  repo?: string;
   releaseManifest: string;
   host: string;
   port: string;
@@ -24,7 +24,7 @@ export async function runCanonicalRuntimeCli(argv = process.argv): Promise<void>
   const command = new Command('forge-runtime')
     .description('Run the canonical single Forge Runtime root process')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
-    .requiredOption('--repo <path>', 'Explicit repository root')
+    .option('--repo <path>', 'Optional default repository root for development/repository UI')
     .requiredOption('--release-manifest <path>', 'Complete immutable release manifest')
     .requiredOption('--host <host>', 'MCP listener host')
     .requiredOption('--port <port>', 'MCP listener port')
@@ -36,7 +36,7 @@ export async function runCanonicalRuntimeCli(argv = process.argv): Promise<void>
   if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('RUNTIME_CONFIG_INVALID: port');
   const runtime = new CanonicalForgeRuntime({
     controllerHome: resolve(options.controllerHome),
-    repositoryRoot: resolve(options.repo),
+    ...(options.repo?.trim() ? { repositoryRoot: resolve(options.repo) } : {}),
     releaseManifestPath: resolve(options.releaseManifest),
     host: options.host,
     port,

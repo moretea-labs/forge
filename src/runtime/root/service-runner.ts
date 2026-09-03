@@ -25,7 +25,7 @@ export function resolveForgeRuntimeServiceCommand(controllerHome: string, config
     executable,
     args: [
       '--controller-home', home,
-      '--repo', config.repositoryRoot,
+      ...(config.repositoryRoot ? ['--repo', config.repositoryRoot] : []),
       '--release-manifest', authority.active.manifestPath,
       '--host', config.host,
       '--port', String(config.port),

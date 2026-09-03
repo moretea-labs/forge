@@ -266,7 +266,7 @@ describe('Forge Runtime service', () => {
   });
 
   test('does not duplicate a systemd process-group shutdown signal', async () => {
-    if (process.platform === 'win32') return;
+    if (process.platform !== 'linux') return;
     const fx = fixture(), packageRoot = join(fx.root, 'package-systemd-signal');
     for (const dir of ['src/runtime/root', 'src/runtime/shared', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
     writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
@@ -813,11 +813,14 @@ describe('Forge Runtime service', () => {
       writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), 'export async function load(url, context, nextLoad) { return nextLoad(url, context); }\n');
       writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(99);\n');
       const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'package-systemd-unit' });
-      writeForgeRuntimeServiceConfig({ schemaVersion: 1, controllerHome: fx.home, repositoryRoot: release.packageRoot, host: '127.0.0.1', port: 8765, authTokenFile: fx.token });
+      writeForgeRuntimeServiceConfig({ schemaVersion: 1, controllerHome: fx.home, host: '127.0.0.1', port: 8765, authTokenFile: fx.token });
       const path = writePackageRuntimeSystemdUserService(fx.home);
-      expect(readFileSync(path, 'utf8')).toBe(renderPackageRuntimeSystemdUserService(fx.home));
-      expect(readFileSync(path, 'utf8')).toContain(release.releaseId);
-      expect(readFileSync(path, 'utf8')).toContain(release.entrypointPath);
+      const unit = readFileSync(path, 'utf8');
+      expect(unit).toBe(renderPackageRuntimeSystemdUserService(fx.home));
+      expect(unit).toContain(release.releaseId);
+      expect(unit).toContain(release.entrypointPath);
+      expect(unit).not.toContain(' --repo ');
+      expect(unit).not.toContain(`\"--repo\"`);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -846,5 +849,13 @@ describe('Forge Runtime service', () => {
     expect(config.repositoryRoot).toBe(fx.repo);
     expect(config.authTokenFile).toBe(fx.token);
     expect(config.exclusiveWorkId).toBe('work-test');
+    const packageConfig = validateForgeRuntimeServiceConfig({
+      schemaVersion: 1,
+      controllerHome: fx.home,
+      host: '127.0.0.1',
+      port: 8765,
+      authTokenFile: fx.token,
+    });
+    expect(packageConfig.repositoryRoot).toBeUndefined();
   });
 });

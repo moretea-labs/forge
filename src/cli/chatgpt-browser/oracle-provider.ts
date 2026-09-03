@@ -3,6 +3,7 @@ import { accessSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, r
 import { tmpdir } from 'os';
 import { isAbsolute, join, resolve } from 'path';
 import type { BrowserConsultInput, BrowserImportedArtifact, PromptBundle } from './types';
+import { discoverExecutable } from '../../runtime/platform/executable-discovery';
 
 export interface OracleProviderResult {
   status: 'completed' | 'recoverable' | 'failed';
@@ -64,7 +65,8 @@ function resolveConfiguredOracleBin(value: string, repoRoot: string): string | u
   if (!hasPathSeparator) {
     const repoRelative = join(repoRoot, value);
     if (existsSync(repoRelative)) return repoRelative;
-    return Bun.which(value) ?? undefined;
+    const discovered = discoverExecutable({ id: 'oracle', candidates: [value] });
+    return discovered.status === 'ready' ? discovered.executable : undefined;
   }
   const candidate = isAbsolute(value) ? value : resolve(repoRoot, value);
   return existsSync(candidate) ? candidate : undefined;
@@ -98,8 +100,8 @@ export function resolveOracleBin(input: Pick<BrowserConsultInput, 'repoRoot' | '
   }
   const repoLocal = join(input.repoRoot, 'node_modules', '.bin', 'oracle');
   if (existsSync(repoLocal)) return { binary: repoLocal, source: 'node_modules/.bin' };
-  const onPath = Bun.which('oracle');
-  if (onPath) return { binary: onPath, source: 'PATH' };
+  const onPath = discoverExecutable({ id: 'oracle', candidates: ['oracle'] });
+  if (onPath.status === 'ready' && onPath.executable) return { binary: onPath.executable, source: 'PATH' };
   return {
     source: 'missing',
     error: {

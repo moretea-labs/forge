@@ -1,5 +1,5 @@
 import { runBridgeProvider } from '../../src/cli/chatgpt-browser/bridge-provider';
-import { controllerPluginRepository } from '../../src/runtime/plugins/store';
+import { controllerSystemRoot } from '../../src/cli/repositories/controller-home';
 import {
   classifyChatgptProviderFailure,
   type ChatgptProviderDeliveryHost,
@@ -10,9 +10,7 @@ export function createChatgptWslBridgeDeliveryHost(): ChatgptProviderDeliveryHos
   return {
     async dispatch(input) {
       try {
-        const repository = controllerPluginRepository(input.controllerHome);
-        const bridgeRoot = repository.canonicalRoot ?? repository.localRoot;
-        if (!bridgeRoot) throw new Error('CHATGPT_CONTROLLER_BROWSER_ROOT_UNAVAILABLE');
+        const bridgeRoot = controllerSystemRoot(input.controllerHome);
         const bridged = await runBridgeProvider({
           repoRoot: bridgeRoot,
           prompt: input.prompt,

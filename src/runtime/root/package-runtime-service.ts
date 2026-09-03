@@ -1,17 +1,9 @@
 import { randomUUID } from 'crypto';
-import { spawn } from 'child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { setTimeout as sleep } from 'timers/promises';
 import { dirname, join, resolve } from 'path';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
-import {
-  installSystemdUserUnit,
-  renderSystemdUserUnit,
-  writeSystemdUserUnit,
-  type SystemdUserUnitInput,
-  systemdUserAvailable as sharedSystemdUserAvailable,
-  systemdUserInstallCommands,
-} from '../../cli/controller/systemd-user';
+import { createPlatformServiceManagerHost, probeSystemdUserAvailable, type PlatformServiceManagerHost, type PlatformServiceManagerKind, type SystemdUserUnitInput } from '../platform/service-manager';
 import { RUNTIME_WRITE_CLAIM_ENV } from './write-fence';
 import {
   activeRuntimeEntrypoint,
@@ -27,14 +19,8 @@ import { materializePackageRuntimeRelease, type PackageRuntimeRelease } from './
 import { readRuntimeReleaseAuthority, revertInitialRuntimeReleasePublication, rollbackRuntimeRelease } from './release-store';
 import { loadMcpServiceLocalConfig } from '../../../adapters/mcp/auth';
 import { ensurePackageConnectorService, type PackageConnectorServiceResult } from './package-connector-service';
-import {
-  bootstrapLaunchAgentWithRetryV2,
-  currentUserLaunchdDomain,
-  installLaunchAgent,
-  launchAgentPath,
-} from '../../cli/controller/launch-agents';
 
-export type PackageRuntimeServiceMode = 'launchd' | 'systemd-user' | 'portable';
+export type PackageRuntimeServiceMode = PlatformServiceManagerKind;
 
 export type PackageRuntimeActivationStatus = 'activation_scheduled' | 'activated' | 'failed+rollback';
 
@@ -137,11 +123,11 @@ export function renderForgeRuntimeSystemdUserUnit(input: {
   args: string[];
   environment: Record<string, string>;
 }): string {
-  return renderSystemdUserUnit({ ...input, description: input.description ?? 'Forge Runtime' });
+  return createPlatformServiceManagerHost({ platform: 'linux', systemdUserAvailable: true }).renderSystemdUserUnit({ ...input, description: input.description ?? 'Forge Runtime' });
 }
 
 export function systemdUserAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
-  return sharedSystemdUserAvailable(env);
+  return probeSystemdUserAvailable(env);
 }
 
 function cleanRuntimeInstallerEnvironment(env: NodeJS.ProcessEnv, releaseEnvironment: Record<string, string>): NodeJS.ProcessEnv {
@@ -156,7 +142,7 @@ function cleanRuntimeInstallerEnvironment(env: NodeJS.ProcessEnv, releaseEnviron
 }
 
 export function systemdRuntimeInstallCommands(unitName: string): string[][] {
-  return systemdUserInstallCommands(unitName);
+  return createPlatformServiceManagerHost({ platform: 'linux', systemdUserAvailable: true }).systemdUserInstallCommands(unitName);
 }
 
 export function packageRuntimeSystemdUserUnitInput(controllerHome: string): SystemdUserUnitInput {
@@ -167,22 +153,22 @@ export function packageRuntimeSystemdUserUnitInput(controllerHome: string): Syst
 }
 
 export function renderPackageRuntimeSystemdUserService(controllerHome: string): string {
-  return renderSystemdUserUnit(packageRuntimeSystemdUserUnitInput(controllerHome));
+  return createPlatformServiceManagerHost({ platform: 'linux', systemdUserAvailable: true }).renderSystemdUserUnit(packageRuntimeSystemdUserUnitInput(controllerHome));
 }
 
 export function writePackageRuntimeSystemdUserService(
   controllerHome: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return writeSystemdUserUnit(
+  return createPlatformServiceManagerHost({ platform: 'linux', env, systemdUserAvailable: true }).writeSystemdUserUnit(
     forgeRuntimeServicePaths(controllerHome).label,
     packageRuntimeSystemdUserUnitInput(controllerHome),
     env,
   );
 }
 
-function installSystemdUserService(controllerHome: string, env: NodeJS.ProcessEnv): string {
-  return installSystemdUserUnit({
+function installSystemdUserService(controllerHome: string, env: NodeJS.ProcessEnv, host: PlatformServiceManagerHost): string {
+  return host.installSystemdUserUnit({
     unitName: forgeRuntimeServicePaths(controllerHome).label,
     unit: packageRuntimeSystemdUserUnitInput(controllerHome),
     env,
@@ -190,28 +176,21 @@ function installSystemdUserService(controllerHome: string, env: NodeJS.ProcessEn
   });
 }
 
-function startPortableRuntime(controllerHome: string, env: NodeJS.ProcessEnv): number {
+function startPortableRuntime(controllerHome: string, env: NodeJS.ProcessEnv, host: PlatformServiceManagerHost): number {
   const entrypoint = activeRuntimeEntrypoint(controllerHome);
   const launch = activeRuntimeLaunchSpec(controllerHome);
   if (!entrypoint || !launch) throw new Error('FORGE_PACKAGE_RUNTIME_LAUNCH_SPEC_MISSING');
   const paths = forgeRuntimeServicePaths(controllerHome);
-  mkdirSync(join(paths.serviceRoot, 'logs'), { recursive: true, mode: 0o700 });
-  const stdout = openSync(paths.stdoutPath, 'a', 0o600);
-  const stderr = openSync(paths.stderrPath, 'a', 0o600);
-  try {
-    const child = spawn(entrypoint, launch.args, {
-      detached: true,
-      stdio: ['ignore', stdout, stderr],
-      env: cleanRuntimeInstallerEnvironment(env, launch.environment),
-    });
-    if (!child.pid) throw new Error('FORGE_PORTABLE_RUNTIME_START_FAILED: child pid unavailable');
-    child.unref();
-    atomicWrite(join(paths.serviceRoot, 'portable.json'), `${JSON.stringify({ schemaVersion: 1, pid: child.pid, startedAt: new Date().toISOString() }, null, 2)}\n`);
-    return child.pid;
-  } finally {
-    closeSync(stdout);
-    closeSync(stderr);
-  }
+  const pid = host.startDetached({
+    executable: entrypoint,
+    args: launch.args,
+    environment: cleanRuntimeInstallerEnvironment(env, launch.environment),
+    stdoutPath: paths.stdoutPath,
+    stderrPath: paths.stderrPath,
+    errorCode: 'FORGE_PORTABLE_RUNTIME_START_FAILED',
+  });
+  atomicWrite(join(paths.serviceRoot, 'portable.json'), `${JSON.stringify({ schemaVersion: 1, pid, startedAt: new Date().toISOString() }, null, 2)}\n`);
+  return pid;
 }
 
 
@@ -319,9 +298,10 @@ export function renderPackageRuntimeActivationLaunchAgent(request: PackageRuntim
 
 async function scheduleDarwinPackageRuntimeActivation(request: PackageRuntimeActivationRequest): Promise<{ label: string; servicePath: string }> {
   if (process.platform !== 'darwin') throw new Error('FORGE_PACKAGE_RUNTIME_ACTIVATION_HELPER_PLATFORM_UNSUPPORTED');
+  const host = createPlatformServiceManagerHost({ platform: 'darwin' });
   atomicWrite(request.helperSourcePlistPath, renderPackageRuntimeActivationLaunchAgent(request), 0o600);
-  installLaunchAgent(request.helperSourcePlistPath, request.helperLabel);
-  const result = await bootstrapLaunchAgentWithRetryV2({ label: request.helperLabel, plistPath: request.helperInstalledPlistPath });
+  host.installLaunchd(request.helperSourcePlistPath, request.helperLabel);
+  const result = await host.bootstrapLaunchd({ label: request.helperLabel, plistPath: request.helperInstalledPlistPath });
   if (!result.ok) throw new Error(`FORGE_PACKAGE_RUNTIME_ACTIVATION_HELPER_BOOTSTRAP_FAILED: ${result.diagnostics.join('; ')}`);
   return { label: request.helperLabel, servicePath: request.helperInstalledPlistPath };
 }
@@ -344,13 +324,7 @@ async function waitForInstallerExit(pid: number): Promise<void> {
 async function cleanupActivationHelper(request: PackageRuntimeActivationRequest): Promise<void> {
   rmSync(request.helperSourcePlistPath, { force: true });
   rmSync(request.helperInstalledPlistPath, { force: true });
-  if (process.platform !== 'darwin') return;
-  const child = spawn('/bin/launchctl', ['bootout', `${currentUserLaunchdDomain()}/${request.helperLabel}`], {
-    detached: true,
-    stdio: 'ignore',
-    env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
-  });
-  child.unref();
+  createPlatformServiceManagerHost({ platform: process.platform }).detachLaunchdBootout(request.helperLabel);
 }
 
 async function rollbackPackageRuntimeActivation(
@@ -385,9 +359,12 @@ async function rollbackPackageRuntimeActivation(
   if (request.priorAuthorityPresent && request.priorConfigBytes !== undefined) {
     try {
       const priorConfig = readForgeRuntimeServiceConfig(servicePaths.configPath);
+      const restoredAuthority = readRuntimeReleaseAuthority(request.controllerHome);
+      if (!restoredAuthority) throw new Error('FORGE_PACKAGE_RUNTIME_ROLLBACK_RELEASE_AUTHORITY_MISSING');
+      const restoredReleaseRoot = dirname(resolve(restoredAuthority.active.manifestPath));
       await installDarwinService({
         config: priorConfig,
-        runnerPath: join(priorConfig.repositoryRoot, 'bin', 'forge-runtime-service.mjs'),
+        runnerPath: join(restoredReleaseRoot, 'package', 'bin', 'forge-runtime-service.mjs'),
         nodeExecutable: request.nodeExecutable,
       });
     } catch (error) {
@@ -491,7 +468,6 @@ export async function installPackageRuntimeService(
   const config: ForgeRuntimeServiceConfig = {
     schemaVersion: 1,
     controllerHome,
-    repositoryRoot: release.packageRoot,
     host: options.host ?? '127.0.0.1',
     port: options.port ?? 8765,
     authTokenFile: options.authTokenFile,
@@ -501,13 +477,15 @@ export async function installPackageRuntimeService(
   syncForgeRuntimeActiveEntrypoint(controllerHome);
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
+  const serviceHost = createPlatformServiceManagerHost({ platform, env, forcePortable: options.forcePortable });
+  const serviceManager = serviceHost.selection;
   const installDarwinService = dependencies.installDarwinService ?? installForgeRuntimeService;
   const explicitInjectedInline = Boolean(dependencies.installDarwinService && !dependencies.scheduleDarwinActivation && !dependencies.activationMode);
   const activationMode = dependencies.activationMode ?? (explicitInjectedInline ? 'inline' : 'detached');
   const connectorEndpoint = loadMcpServiceLocalConfig(controllerHome)?.chatgpt?.localEndpoint;
 
   let base: PackageRuntimeServiceInstallResult;
-  if (!options.forcePortable && platform === 'darwin' && activationMode === 'detached') {
+  if (serviceManager.kind === 'launchd' && activationMode === 'detached') {
     const paths = activationPaths(controllerHome, operationId);
     const helperLabel = `com.moretea.forge.runtime-activation.${operationId.replace(/[^A-Za-z0-9.-]+/g, '-').slice(-48)}`;
     const createdAt = new Date().toISOString();
@@ -529,7 +507,7 @@ export async function installPackageRuntimeService(
       receiptPath: paths.receiptPath,
       helperLabel,
       helperSourcePlistPath: paths.helperSourcePlistPath,
-      helperInstalledPlistPath: launchAgentPath(helperLabel),
+      helperInstalledPlistPath: serviceHost.launchdInstalledPath(helperLabel),
       createdAt,
     };
     writeActivationRequest(request);
@@ -569,14 +547,14 @@ export async function installPackageRuntimeService(
     };
   } else {
     try {
-      if (!options.forcePortable && platform === 'darwin') {
+      if (serviceManager.kind === 'launchd') {
         const paths = await installDarwinService({ config, runnerPath: join(release.packageRoot, 'bin', 'forge-runtime-service.mjs'), nodeExecutable: process.execPath });
         base = { status: 'activated', mode: 'launchd', persistent: true, controllerHome, release, servicePath: paths.installedPlistPath, warnings: [] };
-      } else if (!options.forcePortable && platform === 'linux' && systemdUserAvailable(env)) {
-        const unitPath = installSystemdUserService(controllerHome, env);
+      } else if (serviceManager.kind === 'systemd-user') {
+        const unitPath = installSystemdUserService(controllerHome, env, serviceHost);
         base = { status: 'activated', mode: 'systemd-user', persistent: true, controllerHome, release, servicePath: unitPath, warnings: [] };
       } else {
-        const pid = startPortableRuntime(controllerHome, env);
+        const pid = startPortableRuntime(controllerHome, env, serviceHost);
         base = {
           status: 'activated', mode: 'portable', persistent: false, controllerHome, release, pid,
           warnings: [platform === 'win32'

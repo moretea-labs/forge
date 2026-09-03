@@ -192,12 +192,8 @@ export function runBrowserSetup(repoRoot: string, opts: BrowserSetupOptions = {}
     '.ai/harness/chatgpt/sessions/',
   ];
   let updated = false;
-  if (existsSync(gitignorePath)) {
-    const current = Bun.file(gitignorePath);
-    // Bun.file().text() is async; keep setup sync by deferring .gitignore
-    // mutation to the CLI command implementation if needed in a later phase.
-    void current;
-  }
+  // Setup intentionally reports recommended ignore entries without mutating the repository.
+  void gitignorePath;
   const lines = [
     `[forge chatgpt] Session root: ${sessionRoot}`,
     '[forge chatgpt] Local browser config remains uncommitted.',

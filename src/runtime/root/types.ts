@@ -76,7 +76,8 @@ export interface RuntimeReleaseManifest {
 
 export interface CanonicalRuntimeConfig {
   controllerHome: string;
-  repositoryRoot: string;
+  /** Optional real repository overlay. Packaged Runtime authority is Controller Home + release, not a repository. */
+  repositoryRoot?: string;
   releaseManifestPath: string;
   host: string;
   port: number;

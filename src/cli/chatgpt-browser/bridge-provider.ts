@@ -5,6 +5,8 @@ import { writeChatgptBridgeExtension, CHATGPT_BRIDGE_DEFAULT_PORT } from './brid
 import { DEFAULT_CHATGPT_URL, ensureBridgeToken, readBrowserBinding } from './binding';
 import { openNativeBrowserPage } from './native-provider';
 import { join } from 'path';
+import { discoverWslWindowsHostEnvironment, hostPathToWindowsPath, windowsPathToHostPath, type WindowsHostEnvironment } from '../../runtime/platform/windows-host-discovery';
+import { serveFetchHttp, type FetchHttpServer } from '../../runtime/platform/fetch-http-server';
 import type { BrowserConsultInput, BrowserSessionStatus, PromptBundle } from './types';
 
 export interface BridgeProviderResult {
@@ -79,7 +81,7 @@ async function readJson(request: Request): Promise<any> {
 }
 
 async function sleep(ms: number): Promise<void> {
-  await Bun.sleep(ms);
+  await new Promise<void>((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
 function validStatus(value: unknown): BrowserSessionStatus {
@@ -129,20 +131,27 @@ function bridgePort(): number {
 
 export interface WslWindowsBridgeBrowserCandidate {
   executable: string;
-  profileRelativeRoot: string;
+  /** Absolute host-visible profile root. Preferred for discovered providers. */
+  profileRoot?: string;
+  /** Compatibility fallback relative to the discovered Windows user profile. */
+  profileRelativeRoot?: string;
   controlled?: boolean;
   supportsUnpackedExtensionLaunch?: boolean;
 }
 
-const WSL_WINDOWS_CONTROLLED_PROFILE_ROOT = 'AppData/Local/Forge/ChatGPT Bridge/User Data';
+const WSL_WINDOWS_CONTROLLED_PROFILE_ROOT = 'Forge/ChatGPT Bridge/User Data';
 
-const WSL_WINDOWS_BRIDGE_BROWSER_CANDIDATES: readonly WslWindowsBridgeBrowserCandidate[] = [
-  { executable: '/mnt/c/Program Files/CentBrowser/Application/chrome.exe', profileRelativeRoot: WSL_WINDOWS_CONTROLLED_PROFILE_ROOT, controlled: true, supportsUnpackedExtensionLaunch: true },
-  { executable: '/mnt/c/Program Files (x86)/CentBrowser/Application/chrome.exe', profileRelativeRoot: WSL_WINDOWS_CONTROLLED_PROFILE_ROOT, controlled: true, supportsUnpackedExtensionLaunch: true },
-  { executable: '/mnt/c/Program Files/CentBrowser/Application/chrome.exe', profileRelativeRoot: 'AppData/Local/CentBrowser/User Data', supportsUnpackedExtensionLaunch: true },
-  { executable: '/mnt/c/Program Files (x86)/CentBrowser/Application/chrome.exe', profileRelativeRoot: 'AppData/Local/CentBrowser/User Data', supportsUnpackedExtensionLaunch: true },
-  { executable: '/mnt/c/Program Files/Google/Chrome/Application/chrome.exe', profileRelativeRoot: 'AppData/Local/Google/Chrome/User Data' },
-  { executable: '/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe', profileRelativeRoot: 'AppData/Local/Google/Chrome/User Data' },
+interface WslWindowsBrowserProductFallback {
+  productId: string;
+  executableRelativePath: string;
+  profileRelativeToLocalAppData?: string;
+  supportsUnpackedExtensionLaunch?: boolean;
+}
+
+/** Bounded adapter fallbacks only. Host discovery and explicit provider registration take precedence. */
+const WSL_WINDOWS_BROWSER_PRODUCT_FALLBACKS: readonly WslWindowsBrowserProductFallback[] = [
+  { productId: 'centbrowser', executableRelativePath: 'CentBrowser/Application/chrome.exe', profileRelativeToLocalAppData: 'CentBrowser/User Data', supportsUnpackedExtensionLaunch: true },
+  { productId: 'google-chrome', executableRelativePath: 'Google/Chrome/Application/chrome.exe', profileRelativeToLocalAppData: 'Google/Chrome/User Data' },
 ] as const;
 
 export interface WslWindowsBridgeBrowserBinding {
@@ -161,30 +170,9 @@ interface WslWindowsBridgeLaunchOptions {
   browserBinding?: WslWindowsBridgeBrowserBinding;
   fileExists?: typeof existsSync;
   launch?: typeof spawn;
-}
-
-function windowsPathToWslPath(value: string): string | undefined {
-  if (value.startsWith('/')) return value;
-  const normalized = value.replace(/\\/g, '/');
-  const match = /^([A-Za-z]):\/(.*)$/.exec(normalized);
-  if (!match) return undefined;
-  return `/mnt/${match[1]!.toLowerCase()}/${match[2]}`;
-}
-
-function installedBridgeExtensionPath(setting: any, bridgeUrl: string, token: string): string | undefined {
-  if (setting?.state === 0 || setting?.disable_reasons !== undefined) return undefined;
-  const rawPath = setting?.path ?? setting?.path_safe ?? setting?.location_path;
-  if (typeof rawPath !== 'string') return undefined;
-  const extensionDir = windowsPathToWslPath(rawPath);
-  if (!extensionDir) return undefined;
-  const contentScript = join(extensionDir, 'content-script.js');
-  if (!existsSync(contentScript)) return undefined;
-  try {
-    const source = readFileSync(contentScript, 'utf8');
-    return source.includes(bridgeUrl) && source.includes(token) ? extensionDir : undefined;
-  } catch {
-    return undefined;
-  }
+  hostEnvironment?: WindowsHostEnvironment;
+  hostDiscovery?: () => WindowsHostEnvironment | undefined;
+  toWindowsPath?: (value: string) => string | undefined;
 }
 
 function bridgeProfileDirectories(profileRoot: string): string[] {
@@ -200,17 +188,52 @@ function bridgeProfileDirectories(profileRoot: string): string[] {
   }
 }
 
+function hostBrowserCandidates(host: WindowsHostEnvironment): WslWindowsBridgeBrowserCandidate[] {
+  const candidates: WslWindowsBridgeBrowserCandidate[] = [];
+  for (const fallback of WSL_WINDOWS_BROWSER_PRODUCT_FALLBACKS) {
+    for (const programFiles of host.programFiles) {
+      candidates.push({
+        executable: join(programFiles, fallback.executableRelativePath),
+        ...(host.localAppData && fallback.profileRelativeToLocalAppData ? { profileRoot: join(host.localAppData, fallback.profileRelativeToLocalAppData) } : {}),
+        ...(fallback.supportsUnpackedExtensionLaunch ? { supportsUnpackedExtensionLaunch: true } : {}),
+      });
+    }
+  }
+  return candidates;
+}
+
+function resolvedWslHost(options: { hostEnvironment?: WindowsHostEnvironment; hostDiscovery?: () => WindowsHostEnvironment | undefined } = {}): WindowsHostEnvironment | undefined {
+  return options.hostEnvironment ?? options.hostDiscovery?.() ?? discoverWslWindowsHostEnvironment();
+}
+
+function installedBridgeExtensionPath(setting: any, bridgeUrl: string, token: string, host?: WindowsHostEnvironment): string | undefined {
+  if (setting?.state === 0 || setting?.disable_reasons !== undefined) return undefined;
+  const rawPath = setting?.path ?? setting?.path_safe ?? setting?.location_path;
+  if (typeof rawPath !== 'string') return undefined;
+  const extensionDir = rawPath.startsWith('/') ? rawPath : host ? windowsPathToHostPath(rawPath, host.driveMounts) : undefined;
+  if (!extensionDir) return undefined;
+  const contentScript = join(extensionDir, 'content-script.js');
+  if (!existsSync(contentScript)) return undefined;
+  try {
+    const source = readFileSync(contentScript, 'utf8');
+    return source.includes(bridgeUrl) && source.includes(token) ? extensionDir : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function findInstalledWslWindowsBridgeBrowser(
   bridgeUrl: string,
   token: string,
-  options: { userName?: string; userRoot?: string; candidates?: readonly WslWindowsBridgeBrowserCandidate[] } = {},
+  options: { userName?: string; userRoot?: string; candidates?: readonly WslWindowsBridgeBrowserCandidate[]; hostEnvironment?: WindowsHostEnvironment; hostDiscovery?: () => WindowsHostEnvironment | undefined } = {},
 ): WslWindowsBridgeBrowserBinding | undefined {
-  const userName = (options.userName ?? process.env.USER ?? '').trim();
-  if (!userName) return undefined;
-  const userRoot = options.userRoot ?? `/mnt/c/Users/${userName}`;
-  for (const candidate of options.candidates ?? WSL_WINDOWS_BRIDGE_BROWSER_CANDIDATES) {
+  const host = resolvedWslHost(options);
+  const userRoot = options.userRoot ?? host?.userProfile;
+  const candidates = options.candidates ?? (host ? hostBrowserCandidates(host) : []);
+  for (const candidate of candidates) {
     if (!existsSync(candidate.executable)) continue;
-    const profileRoot = join(userRoot, candidate.profileRelativeRoot);
+    const profileRoot = candidate.profileRoot ?? (userRoot && candidate.profileRelativeRoot ? join(userRoot, candidate.profileRelativeRoot) : undefined);
+    if (!profileRoot) continue;
     for (const profileDirectory of bridgeProfileDirectories(profileRoot)) {
       for (const fileName of ['Preferences', 'Secure Preferences']) {
         const statePath = join(profileRoot, profileDirectory, fileName);
@@ -219,7 +242,7 @@ export function findInstalledWslWindowsBridgeBrowser(
           const state = JSON.parse(readFileSync(statePath, 'utf8')) as any;
           const settings = state?.extensions?.settings ?? {};
           for (const setting of Object.values(settings)) {
-            const extensionDir = installedBridgeExtensionPath(setting, bridgeUrl, token);
+            const extensionDir = installedBridgeExtensionPath(setting, bridgeUrl, token, host);
             if (extensionDir) return {
               executable: candidate.executable,
               profileDirectory,
@@ -263,31 +286,21 @@ export function chatgptBridgeUrl(): string {
   return `http://127.0.0.1:${bridgePort()}`;
 }
 
-function wslPathToWindowsPath(value: string): string | undefined {
-  const match = /^\/mnt\/([a-zA-Z])\/(.*)$/.exec(value);
-  if (!match) return undefined;
-  return `${match[1]!.toUpperCase()}:\\${match[2]!.replace(/\//g, '\\')}`;
-}
-
-function wslWindowsUserRoot(options: { userName?: string; userRoot?: string } = {}): string | undefined {
-  if (options.userRoot) return options.userRoot;
-  const userName = (options.userName ?? process.env.USER ?? '').trim();
-  return userName ? `/mnt/c/Users/${userName}` : undefined;
-}
 
 export function observeWslWindowsBridgeBrowser(
   repoRoot: string,
-  options: { userName?: string; userRoot?: string; candidates?: readonly WslWindowsBridgeBrowserCandidate[]; fileExists?: typeof existsSync; platform?: NodeJS.Platform; wslDistroName?: string; osRelease?: string } = {},
+  options: { userName?: string; userRoot?: string; candidates?: readonly WslWindowsBridgeBrowserCandidate[]; fileExists?: typeof existsSync; platform?: NodeJS.Platform; wslDistroName?: string; osRelease?: string; hostEnvironment?: WindowsHostEnvironment; hostDiscovery?: () => WindowsHostEnvironment | undefined } = {},
 ): WslWindowsBridgeBrowserReadiness {
   if (!isWslWindowsRuntime(options.platform, options.wslDistroName, options.osRelease)) return { required: false, ready: true, automatic: false, summary: 'Windows bridge browser is not required outside WSL2.' };
+  const host = resolvedWslHost(options);
   const current = readBrowserBinding(repoRoot).binding;
   const bridgeUrl = chatgptBridgeUrl();
   if (current?.bridgeToken) {
-    const binding = findInstalledWslWindowsBridgeBrowser(bridgeUrl, current.bridgeToken, options);
+    const binding = findInstalledWslWindowsBridgeBrowser(bridgeUrl, current.bridgeToken, { ...options, ...(host ? { hostEnvironment: host } : {}) });
     if (binding) return { required: true, ready: true, automatic: binding.loadExtensionOnLaunch === true, binding, summary: 'A Windows Chromium profile with the current Forge ChatGPT bridge is available.' };
   }
   const fileExists = options.fileExists ?? existsSync;
-  const candidates = options.candidates ?? WSL_WINDOWS_BRIDGE_BROWSER_CANDIDATES;
+  const candidates = options.candidates ?? (host ? hostBrowserCandidates(host) : []);
   const automatic = candidates.some((candidate) => candidate.supportsUnpackedExtensionLaunch === true && fileExists(candidate.executable));
   return {
     required: true,
@@ -295,7 +308,9 @@ export function observeWslWindowsBridgeBrowser(
     automatic,
     summary: automatic
       ? 'Forge can provision a dedicated Windows Chromium profile with the ChatGPT bridge extension without modifying the user browser profile.'
-      : 'No supported automatic Windows Chromium bridge transport is installed. Install a supported controlled Chromium runtime or load the Forge bridge extension in a dedicated browser profile.',
+      : host
+        ? 'No supported automatic Windows Chromium bridge transport was discovered. Register an extension-capable Chromium provider or load the Forge bridge extension in a dedicated browser profile.'
+        : 'Windows host discovery is unavailable from WSL. Configure an explicit Windows host/browser binding before using the ChatGPT bridge.',
   };
 }
 
@@ -314,24 +329,28 @@ export async function bootstrapWslWindowsBridgeBrowser(
     toWindowsPath?: (value: string) => string | undefined;
     bridgeToken?: () => string;
     writeExtension?: typeof writeChatgptBridgeExtension;
+    hostEnvironment?: WindowsHostEnvironment;
+    hostDiscovery?: () => WindowsHostEnvironment | undefined;
   } = {},
 ): Promise<WslWindowsBridgeBrowserBinding> {
   if (!isWslWindowsRuntime(options.platform, options.wslDistroName, options.osRelease)) throw new Error('CHATGPT_BRIDGE_BOOTSTRAP_WSL_REQUIRED');
   const fileExists = options.fileExists ?? existsSync;
-  const candidates = options.candidates ?? WSL_WINDOWS_BRIDGE_BROWSER_CANDIDATES;
+  const host = resolvedWslHost(options);
+  const candidates = options.candidates ?? (host ? hostBrowserCandidates(host) : []);
   const executable = Array.from(new Set(candidates
     .filter((candidate) => candidate.supportsUnpackedExtensionLaunch === true)
     .map((candidate) => candidate.executable)))
     .find((candidate) => fileExists(candidate));
   if (!executable) throw new Error('CHATGPT_BRIDGE_USER_ACTION_REQUIRED: no supported controlled Windows Chromium runtime is installed');
-  const userRoot = wslWindowsUserRoot(options);
-  if (!userRoot) throw new Error('CHATGPT_BRIDGE_WINDOWS_USER_REQUIRED');
-  const controlledRoot = options.controlledRoot ?? join(userRoot, 'AppData/Local/Forge/ChatGPT Bridge');
+  const userRoot = options.userRoot ?? host?.userProfile;
+  const localAppData = host?.localAppData;
+  if (!userRoot && !localAppData) throw new Error('CHATGPT_BRIDGE_WINDOWS_HOST_DISCOVERY_REQUIRED');
+  const controlledRoot = options.controlledRoot ?? join(localAppData ?? userRoot!, WSL_WINDOWS_CONTROLLED_PROFILE_ROOT.replace('/User Data', ''));
   const userDataDir = join(controlledRoot, 'User Data');
   const bridgeUrl = chatgptBridgeUrl();
   const token = (options.bridgeToken ?? (() => ensureBridgeToken(repoRoot)))();
   const extension = (options.writeExtension ?? writeChatgptBridgeExtension)(controlledRoot, bridgeUrl, token);
-  const toWindowsPath = options.toWindowsPath ?? wslPathToWindowsPath;
+  const toWindowsPath = options.toWindowsPath ?? ((value: string) => host ? hostPathToWindowsPath(value, host.driveMounts) : undefined);
   const windowsUserDataDir = toWindowsPath(userDataDir);
   const windowsExtensionDir = toWindowsPath(extension.extensionDir);
   if (!windowsUserDataDir || !windowsExtensionDir) throw new Error('CHATGPT_BRIDGE_WINDOWS_PATH_TRANSLATION_FAILED');
@@ -370,10 +389,12 @@ export async function openWslWindowsBridgeTarget(
   if (!executable) {
     throw new Error('CHATGPT_BRIDGE_USER_ACTION_REQUIRED: no enabled Windows Chromium profile with the current Forge bridge extension is available');
   }
+  const host = resolvedWslHost(options);
+  const toWindowsPath = options.toWindowsPath ?? ((value: string) => host ? hostPathToWindowsPath(value, host.driveMounts) : undefined);
   const args = browser
     ? [
-        ...(browser.userDataDir ? [`--user-data-dir=${wslPathToWindowsPath(browser.userDataDir) ?? browser.userDataDir}`] : []),
-        ...(browser.loadExtensionOnLaunch ? [`--load-extension=${wslPathToWindowsPath(browser.extensionDir) ?? browser.extensionDir}`] : []),
+        ...(browser.userDataDir ? [`--user-data-dir=${toWindowsPath(browser.userDataDir) ?? browser.userDataDir}`] : []),
+        ...(browser.loadExtensionOnLaunch ? [`--load-extension=${toWindowsPath(browser.extensionDir) ?? browser.extensionDir}`] : []),
         `--profile-directory=${browser.profileDirectory}`,
         '--new-tab',
         parsed.toString(),
@@ -440,9 +461,9 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
     started: false,
   };
 
-  let server: ReturnType<typeof Bun.serve> | undefined;
+  let server: FetchHttpServer | undefined;
   try {
-    server = Bun.serve({
+    server = await serveFetchHttp({
       hostname: host,
       port,
       async fetch(request) {
@@ -627,6 +648,6 @@ export async function runBridgeProvider(input: BrowserConsultInput, bundle: Prom
       },
     };
   } finally {
-    server.stop(true);
+    server?.stop(true);
   }
 }

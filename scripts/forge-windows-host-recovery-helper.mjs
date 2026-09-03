@@ -5,7 +5,7 @@ import { spawnSync } from 'child_process';
 import { pathToFileURL } from 'url';
 
 export const PLUGIN_ID = 'windows_host_recovery';
-export const PLUGIN_VERSION = '0.1.3';
+export const PLUGIN_VERSION = '0.1.4';
 export const PROTOCOL_VERSION = 1;
 export const CAPABILITIES = [
   'windows_host.identity.v1',
@@ -23,9 +23,6 @@ export const ACTIONS = [
   'forge_cloud_verify', 'full_recover',
 ];
 
-const WINDOWS_SCRIPT = 'C:\\ProgramData\\ForgeRecovery\\ForgeRecovery.ps1';
-const WSL_SCRIPT = '/mnt/c/ProgramData/ForgeRecovery/ForgeRecovery.ps1';
-const POWERSHELL = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
 const READONLY_ACTIONS = new Set([
   'host_status', 'task_status', 'wsl_status', 'forge_source_status', 'controller_status',
   'runtime_status', 'connector_status', 'recovery_status', 'tunnel_status', 'forge_cloud_verify',
@@ -47,7 +44,13 @@ function parseConfig(raw) {
   if (!/^[a-f0-9]{64}$/.test(expectedScriptSha256)) {
     throw providerError('WINDOWS_RECOVERY_CONFIG_INVALID', 'Expected Recovery script digest is invalid.');
   }
-  return { schemaVersion: 1, expectedScriptSha256 };
+  const deployment = raw.deployment;
+  const required = ['recoveryScriptHostPath', 'recoveryScriptWindowsPath', 'powershellHostPath', 'powershellWindowsPath', 'rescueRoot'];
+  if (!deployment || deployment.schemaVersion !== 1 || required.some((key) => typeof deployment[key] !== 'string' || !deployment[key].trim())) {
+    throw providerError('WINDOWS_RECOVERY_DEPLOYMENT_BINDING_INVALID', 'Windows host Recovery deployment binding is missing or invalid.');
+  }
+  return { schemaVersion: 1, expectedScriptSha256, deployment };
+
 }
 
 function sha256(path) {
@@ -55,9 +58,10 @@ function sha256(path) {
 }
 
 function assertTrustedAssets(config) {
-  if (!existsSync(POWERSHELL)) throw providerError('WINDOWS_RECOVERY_POWERSHELL_MISSING', 'Canonical Windows PowerShell executable is unavailable.');
-  if (!existsSync(WSL_SCRIPT)) throw providerError('WINDOWS_RECOVERY_SCRIPT_MISSING', 'Installed ForgeRecovery.ps1 is unavailable.');
-  const actual = sha256(WSL_SCRIPT);
+  const { powershellHostPath, recoveryScriptHostPath } = config.deployment;
+  if (!existsSync(powershellHostPath)) throw providerError('WINDOWS_RECOVERY_POWERSHELL_MISSING', 'Bound Windows PowerShell executable is unavailable.');
+  if (!existsSync(recoveryScriptHostPath)) throw providerError('WINDOWS_RECOVERY_SCRIPT_MISSING', 'Bound ForgeRecovery.ps1 is unavailable.');
+  const actual = sha256(recoveryScriptHostPath);
   if (actual !== config.expectedScriptSha256) {
     throw providerError('WINDOWS_RECOVERY_SCRIPT_IDENTITY_MISMATCH', 'Installed ForgeRecovery.ps1 does not match the registered immutable identity.', false, { expected: config.expectedScriptSha256, actual });
   }
@@ -77,8 +81,8 @@ export function executeAction(actionId, input, configInput) {
   }
   const config = parseConfig(configInput);
   const scriptSha256 = assertTrustedAssets(config);
-  const result = spawnSync(POWERSHELL, [
-    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', WINDOWS_SCRIPT, actionId,
+  const result = spawnSync(config.deployment.powershellHostPath, [
+    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', config.deployment.recoveryScriptWindowsPath, actionId,
   ], {
     encoding: 'utf8', env: minimalEnv(), timeout: actionId === 'full_recover' ? 120_000 : 30_000,
     maxBuffer: 256 * 1024, shell: false, windowsHide: true,
@@ -106,7 +110,7 @@ export async function handleRequest(request, config = loadConfig()) {
   }
   if (request.actionId === 'health') {
     const scriptSha256 = assertTrustedAssets(config);
-    return { state: 'ready', powershellPath: POWERSHELL, recoveryScriptPath: WSL_SCRIPT, scriptSha256, warnings: [] };
+    return { state: 'ready', powershellPath: config.deployment.powershellHostPath, recoveryScriptPath: config.deployment.recoveryScriptHostPath, deployment: config.deployment, scriptSha256, warnings: [] };
   }
   return executeAction(request.actionId, request.input, config);
 }

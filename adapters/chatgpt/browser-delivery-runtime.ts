@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
-import { buildBrowserPluginManifest, executeBrowserPluginAction } from '../../src/runtime/plugins/browser-adapter';
-import { controllerPluginRepository } from '../../src/runtime/plugins/store';
+import { buildBrowserPluginManifest } from '../../src/runtime/plugins/browser-adapter';
+import { executeControllerScopedPluginAction } from '../../src/runtime/plugins/store';
+import { controllerSystemRoot } from '../../src/cli/repositories/controller-home';
 import {
   CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN,
   DEFAULT_CHATGPT_AUTOMATION_MODEL,
@@ -50,13 +51,8 @@ async function controllerBrowserAction(
   args: Record<string, unknown>,
   timeoutMs?: number,
 ): Promise<Record<string, unknown>> {
-  const repository = controllerPluginRepository(controllerHome);
-  const repoRoot = repository.canonicalRoot ?? repository.localRoot;
-  if (!repoRoot) throw new Error('CHATGPT_CONTROLLER_BROWSER_ROOT_UNAVAILABLE');
-  return executeBrowserPluginAction({
+  return executeControllerScopedPluginAction({
     controllerHome,
-    repoId: repository.repoId,
-    repoRoot,
     pluginId: 'browser',
     actionId,
     requestId: requestId(workId, actionId),
@@ -67,9 +63,7 @@ async function controllerBrowserAction(
 }
 
 export async function ensureControllerChatgptBrowser(controllerHome: string, workId: string): Promise<void> {
-  const repository = controllerPluginRepository(controllerHome);
-  const repoRoot = repository.canonicalRoot ?? repository.localRoot;
-  if (!repoRoot) throw new Error('CHATGPT_CONTROLLER_BROWSER_ROOT_UNAVAILABLE');
+  const repoRoot = controllerSystemRoot(controllerHome);
   // Browser configure is not a read: it persists configuration and closes managed
   // contexts. Scheduled continuations must not disturb an already-enabled provider
   // merely to prove it is available. Only enable it when the persisted authority is

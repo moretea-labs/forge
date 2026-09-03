@@ -1,10 +1,9 @@
-import { spawnSync } from 'child_process';
-import { existsSync } from 'fs';
+import { spawn } from 'child_process';
 import { createServer } from 'net';
-import { homedir } from 'os';
-import { join, resolve } from 'path';
+import { resolve } from 'path';
 import { pathToFileURL } from 'url';
 import type { BrowserConsultInput, NativeBrowserChannel, PromptBundle } from './types';
+import { describeNativeBrowserProduct, discoverNativeBrowserProduct } from '../../runtime/platform/browser-product-discovery';
 
 export interface NativeProviderResult {
   status: 'completed' | 'failed' | 'incomplete_capture';
@@ -46,25 +45,6 @@ const SEND_BUTTON_SELECTORS = [
 const ASSISTANT_SELECTOR = '[data-message-author-role="assistant"]';
 const STABLE_CAPTURE_MS = 5000;
 
-const CHANNEL_APPS: Record<NativeBrowserChannel, { appName: string; executable: string }> = {
-  chrome: {
-    appName: 'Google Chrome',
-    executable: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  },
-  'chrome-beta': {
-    appName: 'Google Chrome Beta',
-    executable: '/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta',
-  },
-  'chrome-dev': {
-    appName: 'Google Chrome Dev',
-    executable: '/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev',
-  },
-  'chrome-canary': {
-    appName: 'Google Chrome Canary',
-    executable: '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
-  },
-};
-
 interface CdpConnection {
   send(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<any>;
   close(): void;
@@ -72,10 +52,6 @@ interface CdpConnection {
 
 function browserChannel(input?: NativeBrowserChannel): NativeBrowserChannel {
   return input ?? 'chrome';
-}
-
-function chromeExecutable(channel: NativeBrowserChannel): string {
-  return CHANNEL_APPS[channel].executable;
 }
 
 function chromeProfileArgs(profileDir: string, profileDirectory?: string): string[] {
@@ -90,41 +66,13 @@ function normalizeComparablePath(path: string): string {
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
-function defaultChromeUserDataDir(channel: NativeBrowserChannel): string | undefined {
-  if (process.platform === 'darwin') {
-    const base = join(homedir(), 'Library/Application Support/Google');
-    if (channel === 'chrome') return join(base, 'Chrome');
-    if (channel === 'chrome-beta') return join(base, 'Chrome Beta');
-    if (channel === 'chrome-dev') return join(base, 'Chrome Dev');
-    return join(base, 'Chrome Canary');
-  }
-
-  if (process.platform === 'win32') {
-    const base = join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData/Local'), 'Google');
-    if (channel === 'chrome') return join(base, 'Chrome/User Data');
-    if (channel === 'chrome-beta') return join(base, 'Chrome Beta/User Data');
-    if (channel === 'chrome-dev') return join(base, 'Chrome Dev/User Data');
-    return join(base, 'Chrome SxS/User Data');
-  }
-
-  if (process.platform === 'linux') {
-    const base = process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config');
-    if (channel === 'chrome') return join(base, 'google-chrome');
-    if (channel === 'chrome-beta') return join(base, 'google-chrome-beta');
-    if (channel === 'chrome-dev') return join(base, 'google-chrome-unstable');
-    return join(base, 'google-chrome-unstable');
-  }
-
-  return undefined;
-}
-
 export function nativeDebuggingBlockedByDefaultProfile(profileDir: string, channel: NativeBrowserChannel): boolean {
-  const defaultDir = defaultChromeUserDataDir(channel);
+  const defaultDir = describeNativeBrowserProduct({ channel })?.defaultUserDataDir;
   return defaultDir !== undefined && normalizeComparablePath(profileDir) === normalizeComparablePath(defaultDir);
 }
 
 function defaultProfileCdpBlockedError(channel: NativeBrowserChannel, profileDir: string, profileDirectory?: string): NonNullable<NativeProviderResult['error']> {
-  const app = CHANNEL_APPS[channel].appName;
+  const app = describeNativeBrowserProduct({ channel })?.appName ?? channel;
   return {
     code: 'NATIVE_DEFAULT_PROFILE_CDP_BLOCKED',
     message: `${app} blocks remote debugging against the default Chrome data directory: ${profileDir}${profileDirectory ? ` (${profileDirectory})` : ''}`,
@@ -133,7 +81,7 @@ function defaultProfileCdpBlockedError(channel: NativeBrowserChannel, profileDir
 }
 
 export async function nativeProviderAvailable(): Promise<boolean> {
-  return process.platform === 'darwin' && existsSync(chromeExecutable('chrome'));
+  return discoverNativeBrowserProduct({ channel: 'chrome' }) !== undefined;
 }
 
 function conversationUrl(url: string): string | undefined {
@@ -175,7 +123,7 @@ async function waitForCdp(port: number, timeoutMs: number): Promise<{ webSocketD
     } catch (_error) {
       // Chrome may need a moment to expose the DevTools endpoint.
     }
-    await Bun.sleep(250);
+    await new Promise<void>((resolveSleep) => setTimeout(resolveSleep, 250));
   }
   throw new Error(`Chrome CDP endpoint did not become ready on port ${port}`);
 }
@@ -220,30 +168,22 @@ function connectCdp(webSocketUrl: string): Promise<CdpConnection> {
 }
 
 export function openNativeBrowserPage(channel: NativeBrowserChannel, profileDir: string, url: string, profileDirectory?: string): void {
-  const app = CHANNEL_APPS[channel];
-  if (!existsSync(app.executable)) throw new Error(`${app.appName} is not installed at ${app.executable}`);
+  const product = discoverNativeBrowserProduct({ channel });
+  if (!product) throw new Error(`Browser provider ${channel} is not installed or registered on this host`);
   const args = [
-    '-na',
-    app.appName,
-    '--args',
     ...chromeProfileArgs(profileDir, profileDirectory),
     '--no-first-run',
     '--no-default-browser-check',
     url.startsWith('/') ? pathToFileURL(url).toString() : url,
   ];
-  const result = spawnSync('open', args, { encoding: 'utf-8' });
-  if (result.status !== 0) {
-    throw new Error((result.stderr || result.stdout || `failed to open ${app.appName}`).trim());
-  }
+  const child = spawn(product.executable, args, { detached: true, stdio: 'ignore' });
+  child.once('error', () => undefined);
+  child.unref();
 }
-
 async function launchChrome(channel: NativeBrowserChannel, profileDir: string, port: number, headless: boolean, url = 'about:blank', profileDirectory?: string): Promise<void> {
-  const app = CHANNEL_APPS[channel];
-  if (!existsSync(app.executable)) throw new Error(`${app.appName} is not installed at ${app.executable}`);
+  const product = discoverNativeBrowserProduct({ channel });
+  if (!product) throw new Error(`Browser provider ${channel} is not installed or registered on this host`);
   const args = [
-    '-na',
-    app.appName,
-    '--args',
     `--remote-debugging-port=${port}`,
     '--remote-allow-origins=*',
     ...chromeProfileArgs(profileDir, profileDirectory),
@@ -252,12 +192,13 @@ async function launchChrome(channel: NativeBrowserChannel, profileDir: string, p
     ...(headless ? ['--headless=new'] : []),
     url,
   ];
-  const result = spawnSync('open', args, { encoding: 'utf-8' });
-  if (result.status !== 0) {
-    throw new Error((result.stderr || result.stdout || `failed to open ${app.appName}`).trim());
-  }
+  const child = spawn(product.executable, args, { detached: true, stdio: 'ignore' });
+  await new Promise<void>((resolveLaunch, rejectLaunch) => {
+    child.once('spawn', resolveLaunch);
+    child.once('error', rejectLaunch);
+  });
+  child.unref();
 }
-
 function browserEval(body: string): string {
   return `(() => { try { ${body} } catch (error) { return { ok: false, error: String(error), url: location.href, title: document.title }; } })()`;
 }
@@ -276,7 +217,7 @@ async function waitFor<T>(deadlineMs: number, fn: () => Promise<T>, accept: (val
   while (Date.now() < deadline) {
     const value = await fn();
     if (accept(value)) return value;
-    await Bun.sleep(500);
+    await new Promise<void>((resolveSleep) => setTimeout(resolveSleep, 500));
   }
   return null;
 }
@@ -356,7 +297,7 @@ export async function checkNativeChatgptSession(input: {
       error: {
         code: 'NATIVE_SESSION_CHECK_FAILED',
         message: error instanceof Error ? error.message : String(error),
-        recovery: `Verify Google Chrome is installed for channel "${channel}", close other Chrome windows using this profile, then retry.`,
+        recovery: `Verify a Chromium provider is installed or configure FORGE_BROWSER_EXECUTABLE for channel "${channel}", close other browser windows using this profile, then retry.`,
       },
     };
   } finally {
@@ -417,7 +358,7 @@ async function waitForStableAssistantText(connection: CdpConnection, sessionId: 
         return { text, stable: true };
       }
     }
-    await Bun.sleep(500);
+    await new Promise<void>((resolveSleep) => setTimeout(resolveSleep, 500));
   }
   return { text: latest, stable: false };
 }
@@ -539,7 +480,7 @@ export async function runNativeProvider(input: BrowserConsultInput, bundle: Prom
       error: {
         code: 'NATIVE_PROVIDER_FAILED',
         message: error instanceof Error ? error.message : String(error),
-        recovery: `Verify Google Chrome is installed for channel "${channel}", close other Chrome windows using this profile, then retry.`,
+        recovery: `Verify a Chromium provider is installed or configure FORGE_BROWSER_EXECUTABLE for channel "${channel}", close other browser windows using this profile, then retry.`,
       },
     };
   } finally {

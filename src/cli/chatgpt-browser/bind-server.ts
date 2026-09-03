@@ -13,6 +13,7 @@ import {
   openNativeBrowserPage,
 } from './native-provider';
 import type { NativeBrowserChannel } from './types';
+import { serveFetchHttp } from '../../runtime/platform/fetch-http-server';
 
 export interface BrowserBindServerOptions {
   profileDir?: string;
@@ -349,7 +350,7 @@ export async function startBrowserBindServer(repoRoot: string, opts: BrowserBind
     };
   }
 
-  const server = Bun.serve({
+  const server = await serveFetchHttp({
     hostname: host,
     port,
     async fetch(request) {

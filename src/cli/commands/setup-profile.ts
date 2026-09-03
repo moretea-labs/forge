@@ -6,6 +6,8 @@ import { resolveControllerHome } from '../repositories/controller-home';
 import { observeRuntimeStatus } from '../../runtime/root/status';
 import { dirname, join, resolve } from 'path';
 import { openAiSecureTunnelStatusArgs, parseOpenAiSecureTunnelRuntimeStatus, tunnelRuntimeProfileTargetsEndpoint } from '../../../adapters/mcp/tunnels/openai-secure-tunnel';
+import { discoverExecutable, type ExecutableDiscoveryResult } from '../../runtime/platform/executable-discovery';
+import { resolvePlatformServiceManager, type PlatformServiceManagerKind } from '../../runtime/platform/service-manager';
 
 export type SetupControllerKind = 'chatgpt' | 'codex' | 'claude' | 'mcp';
 export type SetupTunnelProvider = 'auto' | 'openai' | 'cloudflare' | 'tailscale' | 'existing' | 'none';
@@ -29,7 +31,7 @@ export interface SetupPlatformSnapshot {
   platform: NodeJS.Platform;
   arch: string;
   environment: 'macos' | 'linux' | 'wsl2' | 'windows' | 'other';
-  serviceManager: 'launchd' | 'systemd-user' | 'windows-preview' | 'foreground';
+  serviceManager: PlatformServiceManagerKind;
   commands: {
     brew: boolean;
     cloudflared: boolean;
@@ -38,6 +40,7 @@ export interface SetupPlatformSnapshot {
     systemctl: boolean;
     winget: boolean;
   };
+  prerequisites?: Record<string, ExecutableDiscoveryResult>;
 }
 
 export interface SetupProfileOptions {
@@ -184,11 +187,9 @@ export function setupNeedsRemoteAccess(profile: SetupProfile | undefined): boole
   return Boolean(profile?.controllers.some((entry) => entry === 'chatgpt' || entry === 'mcp'));
 }
 
-function commandExists(command: string, platform = process.platform): boolean {
-  const probe = platform === 'win32'
-    ? spawnSync('where.exe', [command], { stdio: 'ignore' })
-    : spawnSync('sh', ['-lc', `command -v ${command}`], { stdio: 'ignore' });
-  return probe.status === 0;
+
+function commandExists(command: string, platform = process.platform, env: NodeJS.ProcessEnv = process.env): boolean {
+  return discoverExecutable({ id: command, candidates: [command], platform, env }).status === 'ready';
 }
 
 function isWsl(env: NodeJS.ProcessEnv): boolean {
@@ -200,20 +201,30 @@ export function detectSetupPlatform(options: { platform?: NodeJS.Platform; arch?
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
   const wsl = platform === 'linux' && isWsl(env);
-  const systemctl = platform === 'linux' && commandExists('systemctl', platform);
+  const prerequisites = Object.fromEntries([
+    ['brew', discoverExecutable({ id: 'brew', candidates: ['brew'], platform, env, supportedPlatforms: ['darwin'], recovery: 'Install Homebrew only when a selected provider requires it.' })],
+    ['cloudflared', discoverExecutable({ id: 'cloudflared', candidates: ['cloudflared'], platform, env, recovery: 'Install cloudflared or choose another tunnel provider.' })],
+    ['tailscale', discoverExecutable({ id: 'tailscale', candidates: ['tailscale'], platform, env, recovery: 'Install Tailscale or choose another tunnel provider.' })],
+    ['tunnelClient', discoverExecutable({ id: 'tunnel-client', candidates: ['tunnel-client'], platform, env, recovery: 'Install the selected tunnel client or configure an existing HTTPS endpoint.' })],
+    ['systemctl', discoverExecutable({ id: 'systemctl', candidates: ['systemctl'], platform, env, supportedPlatforms: ['linux'], recovery: 'Use portable service mode when systemd-user is unavailable.' })],
+    ['winget', discoverExecutable({ id: 'winget', candidates: ['winget'], platform, env, supportedPlatforms: ['win32'], recovery: 'Install prerequisites manually or provide an explicit executable path.' })],
+  ]);
+  const systemctl = prerequisites.systemctl?.status === 'ready';
+  const serviceManager = resolvePlatformServiceManager({ platform, systemdUserAvailable: systemctl });
   return {
     platform,
     arch: options.arch ?? process.arch,
     environment: platform === 'darwin' ? 'macos' : platform === 'linux' ? (wsl ? 'wsl2' : 'linux') : platform === 'win32' ? 'windows' : 'other',
-    serviceManager: platform === 'darwin' ? 'launchd' : platform === 'linux' && systemctl ? 'systemd-user' : platform === 'win32' ? 'windows-preview' : 'foreground',
+    serviceManager: serviceManager.kind,
     commands: {
-      brew: platform === 'darwin' && commandExists('brew', platform),
-      cloudflared: commandExists('cloudflared', platform),
-      tailscale: commandExists('tailscale', platform),
-      tunnelClient: commandExists('tunnel-client', platform),
+      brew: prerequisites.brew?.status === 'ready',
+      cloudflared: prerequisites.cloudflared?.status === 'ready',
+      tailscale: prerequisites.tailscale?.status === 'ready',
+      tunnelClient: prerequisites.tunnelClient?.status === 'ready',
       systemctl,
-      winget: platform === 'win32' && commandExists('winget', platform),
+      winget: prerequisites.winget?.status === 'ready',
     },
+    prerequisites,
   };
 }
 

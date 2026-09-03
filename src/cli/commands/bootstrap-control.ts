@@ -1,4 +1,4 @@
-import { resolveControllerHome } from '../repositories/controller-home';
+import { resolveControllerHome, controllerSystemRoot } from '../repositories/controller-home';
 import {
   createBootstrapControlApi,
   type BootstrapControlApi,
@@ -26,7 +26,7 @@ import {
   type SetupProfileOptions,
   type TunnelGuidance,
 } from './setup-profile';
-import { controllerPluginRepository, listAssistantPluginManifests } from '../../runtime/plugins/store';
+import { listControllerPluginManifests } from '../../runtime/plugins/store';
 import { officialPluginCatalogItems } from './plugin';
 import { bootstrapWslWindowsBridgeBrowser, observeWslWindowsBridgeBrowser } from '../chatgpt-browser/bridge-provider';
 
@@ -54,20 +54,14 @@ export interface SetupBootstrapOptions extends SetupProfileOptions {
   dependencies?: Partial<SetupBootstrapDependencies>;
 }
 
-function setupBridgeRoot(controllerHome: string): string | undefined {
-  try {
-    const repository = controllerPluginRepository(controllerHome);
-    return repository.canonicalRoot ?? repository.localRoot;
-  } catch {
-    return undefined;
-  }
+function setupBridgeRoot(controllerHome: string): string {
+  return controllerSystemRoot(controllerHome);
 }
 
 const DEFAULT_DEPENDENCIES: SetupBootstrapDependencies = {
   capabilities: (intents, options) => {
     if (intents.length === 0) return [];
-    const repository = controllerPluginRepository(options.controllerHome);
-    const installedManifests = listAssistantPluginManifests(options.controllerHome, repository, { preferStored: true });
+    const installedManifests = listControllerPluginManifests(options.controllerHome, { preferStored: true });
     const catalog = officialPluginCatalogItems(options.platform.platform);
     return resolveBootstrapCapabilityProviders({ capabilityIntents: intents, installedManifests, catalog });
   },
@@ -76,9 +70,6 @@ const DEFAULT_DEPENDENCIES: SetupBootstrapDependencies = {
       return { required: false, ready: true, automatic: false, summary: 'Windows ChatGPT bridge browser is not required for this setup.' };
     }
     const bridgeRoot = setupBridgeRoot(options.controllerHome);
-    if (!bridgeRoot) {
-      return { required: true, ready: false, automatic: false, summary: 'Forge cannot resolve the controller-system repository used by the WSL ChatGPT bridge.' };
-    }
     const readiness = observeWslWindowsBridgeBrowser(bridgeRoot, { platform: 'linux', wslDistroName: 'ForgeSetup' });
     return { required: readiness.required, ready: readiness.ready, automatic: readiness.automatic, summary: readiness.summary };
   },

@@ -5,10 +5,9 @@ import { Command } from 'commander';
 import { resolveControllerHome, controllerSystemRoot } from '../repositories/controller-home';
 import { getExternalPluginRegistration, removeExternalPluginRegistration } from '../../runtime/plugins/external-registration';
 import {
-  controllerPluginRepository,
-  readStoredAssistantPluginManifest,
-  removeAssistantPluginManifestProjection,
-  syncAssistantPluginManifest,
+  readControllerStoredPluginManifest,
+  removeControllerPluginManifestProjection,
+  syncControllerPluginManifest,
 } from '../../runtime/plugins/store';
 import {
   installOfficialPlugin,
@@ -91,8 +90,7 @@ function unavailableHealth(state: string, message: string): ComputerProviderHeal
 function providerHealth(controllerHome: string): ComputerProviderHealth {
   const registration = getExternalPluginRegistration(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID);
   if (!registration) return unavailableHealth('not_installed', 'Computer macOS provider is not installed.');
-  const repository = controllerPluginRepository(controllerHome);
-  const stored = readStoredAssistantPluginManifest(controllerHome, repository, COMPUTER_PROVIDER_PLUGIN_ID);
+  const stored = readControllerStoredPluginManifest(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID);
   if (!stored) {
     return unavailableHealth('unprobed', 'Computer provider health has not been recorded yet; run forge computer doctor.');
   }
@@ -155,7 +153,7 @@ export function runComputerUpdate(options: { controllerHome?: string } = {}) {
 export function runComputerDoctor(options: { controllerHome?: string } = {}): ComputerDoctorReport {
   const controllerHome = resolveControllerHome(options.controllerHome);
   if (getExternalPluginRegistration(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID)) {
-    syncAssistantPluginManifest(controllerHome, controllerPluginRepository(controllerHome), COMPUTER_PROVIDER_PLUGIN_ID);
+    syncControllerPluginManifest(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID);
   }
   const status = readComputerStatus({ controllerHome });
   const checks: ComputerDoctorReport['checks'] = [];
@@ -240,7 +238,7 @@ export function runComputerUninstall(options: { controllerHome?: string; purge?:
       removeExternalPluginRegistration(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID, { expectedRevision: registration.revision });
     }
     rmSync(packageRoot, { recursive: true, force: true });
-    removeAssistantPluginManifestProjection(controllerHome, controllerPluginRepository(controllerHome), COMPUTER_PROVIDER_PLUGIN_ID);
+    removeControllerPluginManifestProjection(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID);
     return { removed: true, purged: options.purge === true };
   });
 }

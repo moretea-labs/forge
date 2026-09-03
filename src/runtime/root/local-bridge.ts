@@ -18,13 +18,16 @@ export interface RuntimeLocalBridgeHandle {
  */
 export async function startConfiguredRuntimeLocalBridge(input: {
   controllerHome: string;
-  repositoryRoot: string;
+  repositoryRoot?: string;
 }): Promise<RuntimeLocalBridgeHandle | undefined> {
   const config = loadMcpServiceLocalConfig(input.controllerHome);
   const local = config?.localController;
   if (local?.enabled !== true || local.mode === 'disabled' || local.mode === 'remote' || local.mode === 'standalone') {
     return undefined;
   }
+  // Embedded Local Bridge remains repository-oriented today. Do not invent a
+  // package/source directory as a fake repository merely to start the Runtime.
+  if (!input.repositoryRoot?.trim()) return undefined;
 
   const startedAt = new Date().toISOString();
   const handle = await startLocalBridgeServer({

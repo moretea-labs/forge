@@ -325,14 +325,15 @@ describe('ChatGPT Work conversation binding', () => {
       browserBinding: {
         executable: '/mnt/c/Program Files/CentBrowser/Application/chrome.exe',
         profileDirectory: 'Default',
-        userDataDir: '/mnt/c/Users/tester/AppData/Local/Forge/ChatGPT Bridge/User Data',
-        extensionDir: '/mnt/c/Users/tester/AppData/Local/Forge/ChatGPT Bridge/bridge-extension',
+        userDataDir: '/windows/d/Users/WindowsOwner/AppData/Local/Forge/ChatGPT Bridge/User Data',
+        extensionDir: '/windows/d/Users/WindowsOwner/AppData/Local/Forge/ChatGPT Bridge/bridge-extension',
         loadExtensionOnLaunch: true,
       },
+      toWindowsPath: (path) => path.replace('/windows/d/', 'D:\\').replaceAll('/', '\\'),
     });
     expect(launches[0]?.args).toEqual([
-      '--user-data-dir=C:\\Users\\tester\\AppData\\Local\\Forge\\ChatGPT Bridge\\User Data',
-      '--load-extension=C:\\Users\\tester\\AppData\\Local\\Forge\\ChatGPT Bridge\\bridge-extension',
+      '--user-data-dir=D:\\Users\\WindowsOwner\\AppData\\Local\\Forge\\ChatGPT Bridge\\User Data',
+      '--load-extension=D:\\Users\\WindowsOwner\\AppData\\Local\\Forge\\ChatGPT Bridge\\bridge-extension',
       '--profile-directory=Default', '--new-tab', 'https://chatgpt.com/c/controlled-round',
     ]);
   });

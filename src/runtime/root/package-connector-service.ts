@@ -1,11 +1,10 @@
 import { createHash } from 'crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
-import { spawn, spawnSync } from 'child_process';
-import { bootstrapLaunchAgentWithRetryV2, installLaunchAgent, launchAgentPath, retireConflictingForgeLaunchAgents } from '../../cli/controller/launch-agents';
 import { loadMcpServiceLocalConfig } from '../../cli/mcp/auth';
 import type { PackageRuntimeRelease } from './package-runtime-release';
+import { createPlatformServiceManagerHost, platformLaunchdInstalledPath, type PlatformServiceManagerHost, type SystemdUserUnitInput } from '../platform/service-manager';
 
 export interface PackageConnectorServicePaths {
   label: string;
@@ -64,7 +63,7 @@ export function packageConnectorServicePaths(controllerHome: string, accountHome
     label,
     serviceRoot,
     sourcePlistPath: join(serviceRoot, `${label}.plist`),
-    installedPlistPath: launchAgentPath(label, accountHome),
+    installedPlistPath: platformLaunchdInstalledPath(label, accountHome),
     stdoutPath: join(serviceRoot, 'logs', 'stdout.log'),
     stderrPath: join(serviceRoot, 'logs', 'stderr.log'),
     authorityPath: join(serviceRoot, 'authority.json'),
@@ -202,13 +201,23 @@ export function renderPackageConnectorLaunchAgent(input: { paths: PackageConnect
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${xml(input.paths.label)}</string>\n  <key>ProgramArguments</key>\n  <array>\n${args.map((arg) => `    <string>${xml(arg)}</string>`).join('\n')}\n  </array>\n  <key>EnvironmentVariables</key>\n  <dict>\n${environmentXml}\n  </dict>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <dict><key>SuccessfulExit</key><false/></dict>\n  <key>ThrottleInterval</key><integer>5</integer>\n  <key>StandardOutPath</key><string>${xml(input.paths.stdoutPath)}</string>\n  <key>StandardErrorPath</key><string>${xml(input.paths.stderrPath)}</string>\n</dict>\n</plist>\n`;
 }
 
-export function renderPackageConnectorSystemdUserUnit(input: { launch: ReturnType<typeof packageConnectorLaunchSpec> }): string {
-  const quote = (value: string) => `"${value.replaceAll('%', '%%').replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
-  const env = Object.entries(input.launch.environment).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `Environment=${quote(`${k}=${v}`)}`);
+export function packageConnectorSystemdUserUnitInput(input: { launch: ReturnType<typeof packageConnectorLaunchSpec> }): SystemdUserUnitInput {
   const description = input.launch.authMode === 'oauth'
     ? 'Forge ChatGPT OAuth Gateway'
     : 'Forge ChatGPT Secure Tunnel Connector';
-  return ['[Unit]', `Description=${description}`, 'After=network-online.target', '', '[Service]', 'Type=simple', `ExecStart=${[input.launch.executable, ...input.launch.args].map(quote).join(' ')}`, ...env, 'Restart=on-failure', 'RestartSec=5', '', '[Install]', 'WantedBy=default.target', ''].join('\n');
+  return {
+    description,
+    executable: input.launch.executable,
+    args: input.launch.args,
+    environment: input.launch.environment,
+    restart: 'on-failure',
+    restartSec: 5,
+  };
+}
+
+export function renderPackageConnectorSystemdUserUnit(input: { launch: ReturnType<typeof packageConnectorLaunchSpec> }): string {
+  return createPlatformServiceManagerHost({ platform: 'linux', systemdUserAvailable: true })
+    .renderSystemdUserUnit(packageConnectorSystemdUserUnitInput(input));
 }
 
 /** A rewritten user unit needs an explicit restart; enable --now preserves an already-running old process. */
@@ -256,35 +265,31 @@ export function packageConnectorServiceMatchesRelease(input: {
   }
 }
 
-function installSystemd(paths: PackageConnectorServicePaths, launch: ReturnType<typeof packageConnectorLaunchSpec>, env: NodeJS.ProcessEnv): string {
-  const unitName = `${paths.label}.service`;
-  const unitPath = join(env.HOME ?? homedir(), '.config', 'systemd', 'user', unitName);
-  atomicWrite(unitPath, renderPackageConnectorSystemdUserUnit({ launch }), 0o644);
-  for (const args of packageConnectorSystemdInstallCommands(unitName)) {
-    const result = spawnSync('systemctl', args, { encoding: 'utf8', env, timeout: 30_000 });
-    if (result.status !== 0) throw new Error(`FORGE_PACKAGE_CONNECTOR_SYSTEMD_INSTALL_FAILED: ${(result.stderr || result.stdout || '').trim()}`);
-  }
-  return unitPath;
+function installSystemd(paths: PackageConnectorServicePaths, launch: ReturnType<typeof packageConnectorLaunchSpec>, env: NodeJS.ProcessEnv, host: PlatformServiceManagerHost): string {
+  return host.installSystemdUserUnit({
+    unitName: `${paths.label}.service`,
+    unit: packageConnectorSystemdUserUnitInput({ launch }),
+    env,
+    errorPrefix: 'FORGE_PACKAGE_CONNECTOR_SYSTEMD_INSTALL_FAILED',
+  });
 }
 
-function startPortable(paths: PackageConnectorServicePaths, launch: ReturnType<typeof packageConnectorLaunchSpec>, env: NodeJS.ProcessEnv): number {
-  mkdirSync(join(paths.serviceRoot, 'logs'), { recursive: true, mode: 0o700 });
-  const stdout = openSync(paths.stdoutPath, 'a', 0o600), stderr = openSync(paths.stderrPath, 'a', 0o600);
+function startPortable(paths: PackageConnectorServicePaths, launch: ReturnType<typeof packageConnectorLaunchSpec>, env: NodeJS.ProcessEnv, host: PlatformServiceManagerHost): number {
   // A connector is not the Canonical Runtime writer. Never let a transient
-  // installer/worker write claim escape into this long-lived process; the claim
-  // would become stale as soon as its parent exits. Keep only the explicit
-  // Controller Home and lifecycle-role marker from launch.environment.
+  // installer/worker write claim escape into this long-lived process.
   const childEnv = { ...env };
   for (const key of [
     'FORGE_RUNTIME_INSTANCE_ID', 'FORGE_RUNTIME_OWNER_PID', 'FORGE_RELEASE_AUTHORITY_REVISION',
     'FORGE_RELEASE_FENCING_TOKEN', 'FORGE_RELEASE_ID', 'FORGE_ARTIFACT_IDENTITY', 'FORGE_WORKER_PROTOCOL_VERSION',
   ]) delete childEnv[key];
-  try {
-    const child = spawn(launch.executable, launch.args, { detached: true, stdio: ['ignore', stdout, stderr], env: { ...childEnv, ...launch.environment } });
-    if (!child.pid) throw new Error('FORGE_PACKAGE_CONNECTOR_START_FAILED');
-    child.unref();
-    return child.pid;
-  } finally { closeSync(stdout); closeSync(stderr); }
+  return host.startDetached({
+    executable: launch.executable,
+    args: launch.args,
+    environment: { ...childEnv, ...launch.environment },
+    stdoutPath: paths.stdoutPath,
+    stderrPath: paths.stderrPath,
+    errorCode: 'FORGE_PACKAGE_CONNECTOR_START_FAILED',
+  });
 }
 
 export async function installPackageConnectorService(input: { release: PackageConnectorReleaseBinding; controllerHome: string; endpoint: string; executable?: string; platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; forcePortable?: boolean; probeEndpoint?: (endpoint: string) => Promise<boolean> }): Promise<PackageConnectorServiceResult> {
@@ -297,8 +302,10 @@ export async function installPackageConnectorService(input: { release: PackageCo
     executable: input.executable,
   });
   const platform = input.platform ?? process.platform, env = input.env ?? process.env;
-  if (!input.forcePortable && platform === 'darwin') {
-    await retireConflictingForgeLaunchAgents({
+  const serviceHost = createPlatformServiceManagerHost({ platform, env, forcePortable: input.forcePortable });
+  const serviceManager = serviceHost.selection;
+  if (serviceManager.kind === 'launchd') {
+    await serviceHost.retireConflictingLaunchd({
       accountHome: env.HOME,
       desiredLabel: paths.label,
       labelPrefix: 'com.moretea.forge.mcp-gateway',
@@ -306,8 +313,8 @@ export async function installPackageConnectorService(input: { release: PackageCo
       requiredArguments: ['mcp', 'serve', '--auth', launch.authMode],
     });
     atomicWrite(paths.sourcePlistPath, renderPackageConnectorLaunchAgent({ paths, launch }), 0o600);
-    installLaunchAgent(paths.sourcePlistPath, paths.label);
-    const result = await bootstrapLaunchAgentWithRetryV2({ label: paths.label, plistPath: paths.installedPlistPath });
+    serviceHost.installLaunchd(paths.sourcePlistPath, paths.label);
+    const result = await serviceHost.bootstrapLaunchd({ label: paths.label, plistPath: paths.installedPlistPath });
     if (!result.ok) throw new Error(`FORGE_PACKAGE_CONNECTOR_LAUNCHD_INSTALL_FAILED: ${result.diagnostics.join('; ')}`);
     const endpointReady = await waitForPackageConnectorEndpointReady(input.endpoint, { probeEndpoint: input.probeEndpoint });
     if (!endpointReady) throw new Error(`FORGE_PACKAGE_CONNECTOR_ENDPOINT_NOT_READY: ${input.endpoint}`);
@@ -315,15 +322,12 @@ export async function installPackageConnectorService(input: { release: PackageCo
     writePackageConnectorServiceAuthority({ release: input.release, controllerHome: input.controllerHome, result: installed });
     return installed;
   }
-  if (!input.forcePortable && platform === 'linux') {
-    const probe = spawnSync('systemctl', ['--user', 'show-environment'], { encoding: 'utf8', env, timeout: 30_000 });
-    if (probe.status === 0) {
-      const installed = { endpoint: input.endpoint, mode: 'systemd-user' as const, persistent: true, servicePath: installSystemd(paths, launch, env), releaseId: input.release.releaseId, releaseRoot: input.release.releaseRoot };
-      writePackageConnectorServiceAuthority({ release: input.release, controllerHome: input.controllerHome, result: installed });
-      return installed;
-    }
+  if (serviceManager.kind === 'systemd-user') {
+    const installed = { endpoint: input.endpoint, mode: 'systemd-user' as const, persistent: true, servicePath: installSystemd(paths, launch, env, serviceHost), releaseId: input.release.releaseId, releaseRoot: input.release.releaseRoot };
+    writePackageConnectorServiceAuthority({ release: input.release, controllerHome: input.controllerHome, result: installed });
+    return installed;
   }
-  const portable = { endpoint: input.endpoint, mode: 'portable' as const, persistent: false, pid: startPortable(paths, launch, env), releaseId: input.release.releaseId, releaseRoot: input.release.releaseRoot };
+  const portable = { endpoint: input.endpoint, mode: 'portable' as const, persistent: false, pid: startPortable(paths, launch, env, serviceHost), releaseId: input.release.releaseId, releaseRoot: input.release.releaseRoot };
   writePackageConnectorServiceAuthority({ release: input.release, controllerHome: input.controllerHome, result: portable });
   return portable;
 }
@@ -344,7 +348,8 @@ export async function ensurePackageConnectorService(input: {
   if (!input.refresh && !input.forcePortable && platform === 'darwin') {
     const paths = packageConnectorServicePaths(input.controllerHome, input.env?.HOME);
     const port = Number(new URL(input.endpoint).port);
-    await retireConflictingForgeLaunchAgents({
+    const serviceHost = createPlatformServiceManagerHost({ platform, env: input.env });
+    await serviceHost.retireConflictingLaunchd({
       accountHome: input.env?.HOME,
       desiredLabel: paths.label,
       labelPrefix: 'com.moretea.forge.mcp-gateway',

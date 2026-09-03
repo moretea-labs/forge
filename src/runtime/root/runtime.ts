@@ -45,7 +45,7 @@ export interface CanonicalRuntimeDependencies {
   acquireOwnership(controllerHome: string, runtimeInstanceId: string): RuntimeOwnershipHandle;
   inspectDatabase(controllerHome: string): ControlPlaneDatabaseInspection;
   startScheduler(controllerHome: string, timeoutMs?: number): RuntimeSchedulerHandle;
-  startLocalBridge(input: { controllerHome: string; repositoryRoot: string }): Promise<RuntimeLocalBridgeHandle | undefined>;
+  startLocalBridge(input: { controllerHome: string; repositoryRoot?: string }): Promise<RuntimeLocalBridgeHandle | undefined>;
   startTransport(options: Parameters<typeof startRuntimeMcpTransport>[0]): Promise<RuntimeMcpTransportHandle>;
   runMcpProbe(endpoint: string, authToken: string): Promise<void>;
   collectRuntimeSourceIdentity: typeof collectRuntimeSourceIdentity;
@@ -134,11 +134,12 @@ export class CanonicalForgeRuntime {
     this.runtimeInstanceId = config.runtimeInstanceId?.trim() || `runtime_${randomUUID().replaceAll('-', '')}`;
     this.dependencies = { ...DEFAULT_DEPENDENCIES, ...dependencies };
     if (!config.controllerHome.trim()) throw new Error('RUNTIME_CONFIG_REQUIRED: controllerHome');
-    if (!config.repositoryRoot.trim()) throw new Error('RUNTIME_CONFIG_REQUIRED: repositoryRoot');
-    try {
-      if (!statSync(config.repositoryRoot).isDirectory()) throw new Error('not a directory');
-    } catch {
-      throw new Error('RUNTIME_CONFIG_INVALID: repositoryRoot must be an existing directory');
+    if (config.repositoryRoot?.trim()) {
+      try {
+        if (!statSync(config.repositoryRoot).isDirectory()) throw new Error('not a directory');
+      } catch {
+        throw new Error('RUNTIME_CONFIG_INVALID: repositoryRoot must be an existing directory');
+      }
     }
     if (!config.releaseManifestPath.trim()) throw new Error('RUNTIME_CONFIG_REQUIRED: releaseManifestPath');
     if (!config.host.trim()) throw new Error('RUNTIME_CONFIG_REQUIRED: host');
@@ -241,9 +242,13 @@ export class CanonicalForgeRuntime {
       // the release manifest and must snapshot that release directory. Source/
       // fixture manifests without source identity keep the historical explicit
       // repositoryRoot behavior so development-mode Runtime drift remains live.
-      const runtimeSourceRoot = this.release.sourceCommit && this.release.releaseRevision
+      const materializedRelease = Boolean(this.release.sourceCommit && this.release.releaseRevision);
+      const runtimeSourceRoot = materializedRelease
         ? dirname(this.config.releaseManifestPath)
         : this.config.repositoryRoot;
+      if (!runtimeSourceRoot) {
+        throw new Error('RUNTIME_CONFIG_REQUIRED: repositoryRoot is required only for non-materialized development Runtime');
+      }
       const runtimeSource = this.dependencies.collectRuntimeSourceIdentity(runtimeSourceRoot);
       this.dependencies.rotateRuntimeGeneration(this.config.controllerHome, runtimeSource);
 

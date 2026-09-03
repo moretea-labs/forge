@@ -7,6 +7,7 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, renameSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
+import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 import {
   createIndependentHostRescueConfig,
@@ -14,6 +15,8 @@ import {
   renderIndependentHostRescueSystemdUnit,
   renderWindowsHostRescueConfig,
 } from '../src/runtime/standalone-recovery/independent-host-rescue';
+import { discoverWslWindowsHostEnvironment } from '../src/runtime/platform/windows-host-discovery';
+import { resolveWindowsRecoveryDeployment } from '../src/runtime/platform/windows-recovery-deployment';
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -43,17 +46,25 @@ function command(command: string, args: string[]): void {
   }
 }
 
-const sourceRoot = resolve(process.cwd());
+const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const home = homedir();
 const rescueRoot = resolve(option('--rescue-root') ?? join(home, '.forge-recovery'));
-const windowsRoot = resolve(option('--windows-root') ?? '/mnt/c/ProgramData/ForgeRecovery');
+const host = discoverWslWindowsHostEnvironment();
+const discoveredWindowsRoot = host?.programData ? join(host.programData, 'ForgeRecovery') : undefined;
+const windowsRootOption = option('--windows-root');
+const windowsRoot = resolve(windowsRootOption ?? discoveredWindowsRoot ?? (() => { throw new Error('HOST_RESCUE_WINDOWS_ROOT_DISCOVERY_REQUIRED: provide --windows-root when Windows ProgramData cannot be discovered'); })());
+const deployment = resolveWindowsRecoveryDeployment({
+  rescueRoot,
+  host,
+  recoveryScriptHostPath: join(windowsRoot, 'ForgeRecovery.ps1'),
+  recoveryScriptWindowsPath: option('--recovery-script-windows'),
+  powershellHostPath: option('--powershell-host'),
+  powershellWindowsPath: option('--powershell-windows'),
+});
 const controllerHome = resolve(option('--controller-home') ?? join(home, '.forge', 'controller'));
 const tunnelClient = resolve(option('--tunnel-client') ?? join(home, '.local', 'bin', 'tunnel-client'));
 const stageOnly = process.argv.includes('--stage-only');
 const installWindowsLogonTask = process.argv.includes('--install-windows-logon-task');
-if (!existsSync(join(sourceRoot, '.git'))) throw new Error('HOST_RESCUE_SOURCE_ROOT_NOT_GIT');
-if (rescueRoot !== resolve(home, '.forge-recovery')) throw new Error('HOST_RESCUE_ROOT_CANONICAL_REQUIRED');
-if (windowsRoot !== resolve('/mnt/c/ProgramData/ForgeRecovery')) throw new Error('HOST_RESCUE_WINDOWS_ROOT_CANONICAL_REQUIRED');
 
 const config = createIndependentHostRescueConfig({
   wslDistro: option('--distro') ?? process.env.WSL_DISTRO_NAME ?? '',
@@ -84,9 +95,9 @@ if (!stageOnly) {
 }
 let windowsLogonTask: { name: string; installed: boolean; error?: string } | undefined;
 if (installWindowsLogonTask) {
-  const scriptPath = 'C:\\ProgramData\\ForgeRecovery\\ForgeRecovery.ps1';
+  const scriptPath = deployment.recoveryScriptWindowsPath;
   const taskName = 'Forge Independent Recovery WSL';
-  const powershell = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
+  const powershell = deployment.powershellHostPath;
   try {
     command(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, 'task_install']);
     windowsLogonTask = { name: taskName, installed: true };
@@ -106,6 +117,7 @@ process.stdout.write(`${JSON.stringify({
   status: stageOnly ? 'staged' : 'installed',
   rescueRoot,
   windowsRoot,
+  deployment,
   controllerHome: config.controllerHome,
   units: { runtime: config.runtimeUnit, connector: config.connectorUnit, recovery: config.recoveryUnit },
   tunnel: { alias: config.tunnelAlias, id: config.tunnelId, localMcpUrl: config.localMcpUrl },

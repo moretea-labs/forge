@@ -2,7 +2,7 @@ import type { ExternalPluginRegistrationInput } from './external-registration';
 import type { AssistantPluginActionDescriptor } from './types';
 
 export const WINDOWS_HOST_RECOVERY_PLUGIN_ID = 'windows_host_recovery';
-export const WINDOWS_HOST_RECOVERY_PLUGIN_VERSION = '0.1.3';
+export const WINDOWS_HOST_RECOVERY_PLUGIN_VERSION = '0.1.4';
 export const WINDOWS_HOST_RECOVERY_PROTOCOL_VERSION = '1.0';
 export const WINDOWS_HOST_RECOVERY_CAPABILITIES = [
   'windows_host.identity.v1',
