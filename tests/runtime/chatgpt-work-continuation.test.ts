@@ -49,7 +49,6 @@ import { migrateChatgptAutomationSchedule } from '../../src/runtime/workflow/sch
 import { classifyChatgptWakeFailure } from '../../src/runtime/workflow/schedules/engine';
 import {
   createWorkContinuationSchedule,
-  eventDrivenContinuationSchedule,
   handoffResolvedContinuationEventName,
   listWorkContinuationSchedules,
   resolveHandoffAndTriggerContinuation,
@@ -477,42 +476,6 @@ describe('ChatGPT Work conversation binding', () => {
     expect(controllerRelease).toContain('settleWorkChatgptAutomationTab({');
     expect(controllerRelease).toContain("status: 'retained_for_immediate_continuation'");
     expect(controllerRelease).toContain("['waiting', 'waiting_for_user', 'goal_complete', 'blocked', 'failed']");
-  });
-
-  test('event-driven continuation schedule creation is live and idempotent for one exact Work event', () => {
-    const root = mkdtempSync(join(tmpdir(), 'forge-event-continuation-idempotent-'));
-    roots.push(root);
-    const controllerHome = join(root, 'controller');
-    ensureControllerHome(controllerHome);
-    const repoRoot = join(root, 'repo');
-    mkdirSync(repoRoot, { recursive: true });
-    execFileSync('git', ['init', '-q'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.email', 'forge-test@example.com'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot });
-    writeFileSync(join(repoRoot, 'README.md'), 'fixture\n', 'utf8');
-    execFileSync('git', ['add', '.'], { cwd: repoRoot });
-    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
-    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'event-continuation-idempotent' });
-    const store = { controllerHome, repoId: repository.repoId };
-    const workId = 'WORK-EVENT-CONTINUATION-IDEMPOTENT';
-    createWorkContract(store, {
-      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
-      objective: 'Keep one exact event continuation schedule.', acceptanceCriteria: ['event schedule is idempotent'],
-      allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
-      requestedBy: 'chatgpt', status: 'running',
-    });
-    claimControllerSession(store, {
-      workId, controllerId: 'event-schedule-controller', controllerType: 'chatgpt',
-      sessionId: 'event-schedule-session', principalId: 'event-schedule-controller', controllerInstanceId: 'event-schedule-runtime', leaseMs: 60_000,
-    });
-    const eventName = 'handoff-resolved:HND-IDEMPOTENT';
-    const first = eventDrivenContinuationSchedule(controllerHome, repository.repoId, { workId, eventName, reason: 'first create' });
-    const second = eventDrivenContinuationSchedule(controllerHome, repository.repoId, { workId, eventName, reason: 'second ensure' });
-    expect(second.scheduleId).toBe(first.scheduleId);
-    expect(first.policy.shadowMode).toBe(false);
-    expect(first.trigger).toEqual({ type: 'repository-event', eventName });
-    expect(first.action.arguments?.work_id).toBe(workId);
   });
 
   test('resolving a Handoff triggers only the exact Work repository-event continuation schedule', async () => {

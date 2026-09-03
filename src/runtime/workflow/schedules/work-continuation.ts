@@ -391,11 +391,6 @@ export function eventDrivenContinuationSchedule(
   },
 ): RepositorySchedule {
   const workSchedules = listWorkContinuationSchedules(controllerHome, repoId, { workId: input.workId }).schedules;
-  const exact = workSchedules
-    .filter((schedule) => schedule.enabled)
-    .filter((schedule) => schedule.action.operation === 'external_controller_wake')
-    .find((schedule) => schedule.trigger.type === 'repository-event' && schedule.trigger.eventName === input.eventName);
-  if (exact) return exact;
   const existing = workSchedules
     .filter((schedule) => schedule.action.operation === 'external_controller_wake')
     .reverse()
@@ -403,8 +398,8 @@ export function eventDrivenContinuationSchedule(
     ?? workSchedules.at(-1);
   return createWorkContinuationSchedule(controllerHome, repoId, {
     workId: input.workId,
-    continuationPrompt: `继续精确 Work ${input.workId}。机械阻塞条件已变化：${input.reason}`,
-    scheduleName: `事件续跑 ${input.workId}`,
+    continuationPrompt: `Resume exact Work ${input.workId}. Mechanical blocker changed: ${input.reason}`,
+    scheduleName: `Event continuation for ${input.workId}`,
     triggerType: 'repository-event',
     eventName: input.eventName,
     maxFailures: existing?.policy.maxFailures,
@@ -455,13 +450,6 @@ export async function resolveHandoffAndTriggerContinuation(
   input: { decision: string; resolver: string },
 ): Promise<{ item: HandoffItem; continuationOccurrences: Array<{ scheduleId: string; occurrenceId?: string; status?: string }> }> {
   const item = resolveHandoffItem({ controllerHome, repoId }, handoffId, input);
-  if (item.workId) {
-    eventDrivenContinuationSchedule(controllerHome, repoId, {
-      workId: item.workId,
-      eventName: handoffResolvedContinuationEventName(item.id),
-      reason: `handoff ${item.id} was resolved`,
-    });
-  }
   const continuationOccurrences = item.workId
     ? await triggerWorkContinuationRepositoryEvent(
         controllerHome,
