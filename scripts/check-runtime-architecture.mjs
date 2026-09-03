@@ -1211,9 +1211,6 @@ for (const edge of dependencyEdges(b7ProductionGraph)) {
   if (to === 'src/runtime/plugins/macos-capability-broker.ts' && from !== to) {
     failures.push(`Deprecated macOS capability broker is compatibility/test-only and must have no production consumers: ${edge}`);
   }
-  if (to === 'adapters/browser/sqlite-session-authority.ts' && from !== to) {
-    failures.push(`Deprecated Browser SQLite session-authority shim is compatibility-only and must have no production consumers: ${edge}`);
-  }
 }
 for (const compositionPath of [
   'src/runtime/root/scheduled-controller-composition.ts',
@@ -1475,7 +1472,7 @@ forbid('packages/plugin-runtime/browser/session-persistence.ts', /sqlite|control
 requireText('adapters/browser/session-authority.ts', 'createBrowserSessionAuthority');
 requireText('adapters/browser/session-authority.ts', "current?.value.status === 'tombstoned'");
 forbid('adapters/browser/session-authority.ts', /src\/runtime\/|sqlite-store|readControlPlaneRecord|listControlPlaneRecords|withControlPlaneTransaction/, 'Browser session authority adapter must consume the injected persistence port rather than Runtime control-plane storage');
-requireText('adapters/browser/sqlite-session-authority.ts', '@deprecated C0 compatibility shim');
+requireMissing('adapters/browser/sqlite-session-authority.ts');
 requireText('src/runtime/root/browser-session-persistence.ts', 'createRuntimeBrowserSessionPersistence');
 requireText('src/runtime/root/browser-session-composition.ts', 'createBrowserSessionAuthority(createRuntimeBrowserSessionPersistence())');
 requireText('src/runtime/plugins/browser-session-authority.ts', '@deprecated C0 compatibility shim');
