@@ -23,6 +23,7 @@ export const CHECK_COMPLETION_GRACE_ACTION = 'observed_check' as const;
 export const CHECK_COMPLETION_GRACE_MAX_MS = 250;
 const SCHEMA_VERSION = 1;
 const SIGNAL_ID = 'process_check.terminal_mechanical' as const;
+const CHECK_COMPLETION_GRACE_MAX_SAMPLES = OPERATIONAL_TARGET_DEFINITIONS[CHECK_COMPLETION_GRACE_TARGET].activationThreshold.maxSamples;
 
 type ProcessRecordLoader = typeof getProcessRecord;
 export interface OperationalPriorStoreDependencies {
@@ -59,17 +60,61 @@ function recordKey(checkId: string, environmentFingerprint: string): string {
     .slice(0, 32);
 }
 
+function boundedText(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= 256;
+}
+
+function validInstant(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+}
+
 function validRecord(value: unknown): value is CheckCompletionGracePriorRecord {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Partial<CheckCompletionGracePriorRecord>;
-  return record.schemaVersion === 1
-    && record.targetId === CHECK_COMPLETION_GRACE_TARGET
-    && record.actionId === CHECK_COMPLETION_GRACE_ACTION
-    && typeof record.repoId === 'string' && record.repoId.length > 0
-    && typeof record.checkId === 'string' && record.checkId.length > 0
-    && typeof record.environmentFingerprint === 'string' && record.environmentFingerprint.length > 0
-    && Array.isArray(record.support)
-    && Boolean(record.prior && typeof record.prior === 'object');
+  if (record.schemaVersion !== 1
+    || record.targetId !== CHECK_COMPLETION_GRACE_TARGET
+    || record.actionId !== CHECK_COMPLETION_GRACE_ACTION
+    || !boundedText(record.repoId)
+    || !boundedText(record.checkId)
+    || !boundedText(record.environmentFingerprint)
+    || !validInstant(record.updatedAt)
+    || !Array.isArray(record.support)
+    || record.support.length > CHECK_COMPLETION_GRACE_MAX_SAMPLES
+    || record.support.some((entry) => !entry
+      || !boundedText(entry.processId)
+      || !boundedText(entry.receiptId)
+      || !validInstant(entry.finishedAt))) return false;
+
+  const prior = record.prior;
+  if (!prior || typeof prior !== 'object'
+    || prior.schemaVersion !== 1
+    || prior.mode !== 'shadow'
+    || prior.targetId !== CHECK_COMPLETION_GRACE_TARGET
+    || prior.actionId !== CHECK_COMPLETION_GRACE_ACTION
+    || prior.metricId !== 'latency_ms'
+    || prior.scope?.schemaVersion !== 1
+    || prior.scope.kind !== 'project'
+    || prior.scope.id !== record.repoId
+    || prior.compatibility?.operation !== `check:${record.checkId}`
+    || prior.compatibility.environment !== record.environmentFingerprint
+    || !Number.isFinite(prior.estimate)
+    || !Number.isInteger(prior.sampleCount)
+    || prior.sampleCount < 1
+    || prior.sampleCount > CHECK_COMPLETION_GRACE_MAX_SAMPLES
+    || !Number.isInteger(prior.distinctEvidenceCount)
+    || prior.distinctEvidenceCount < 1
+    || prior.distinctEvidenceCount > prior.sampleCount
+    || !validInstant(prior.latestObservedAt)
+    || !validInstant(prior.replayHorizonEndsAt)
+    || !Array.isArray(prior.supportEvidenceRefs)
+    || prior.supportEvidenceRefs.length !== prior.sampleCount
+    || prior.supportEvidenceRefs.some((entry) => !boundedText(entry))
+    || !Array.isArray(prior.sourceObservationIds)
+    || prior.sourceObservationIds.length !== prior.sampleCount
+    || prior.sourceObservationIds.some((entry) => !boundedText(entry))
+    || (prior.readiness !== 'insufficient_samples' && prior.readiness !== 'shadow_candidate')
+    || record.support.length !== prior.sampleCount) return false;
+  return true;
 }
 
 function retainedUntil(finishedAt: string): string | undefined {
@@ -124,7 +169,7 @@ function replayFromProcesses(input: {
     }));
     support.push({ processId, receiptId: receipt.receiptId, finishedAt: receipt.finishedAt });
   }
-  const maxSamples = OPERATIONAL_TARGET_DEFINITIONS[CHECK_COMPLETION_GRACE_TARGET].activationThreshold.maxSamples;
+  const maxSamples = CHECK_COMPLETION_GRACE_MAX_SAMPLES;
   const ordered = support
     .map((entry, index) => ({ entry, observation: observations[index]! }))
     .sort((a, b) => a.entry.finishedAt.localeCompare(b.entry.finishedAt) || a.entry.processId.localeCompare(b.entry.processId))

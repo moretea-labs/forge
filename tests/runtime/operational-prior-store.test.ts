@@ -125,6 +125,36 @@ describe('Stage7F bounded operational Memory', () => {
     expect(resolveCheckCompletionGraceWaitMs({ controllerHome: home, repoId: 'repo-fixture', checkId: 'package:check:type', environmentFingerprint: 'env-a' }, deps(records))).toBeUndefined();
   });
 
+  test('oversized or internally inconsistent derived support fails open before replaying Process evidence', () => {
+    const home = controllerHome();
+    const records = new Map<string, any>([['p1', processRecord({ id: 'p1', durationMs: 80 })]]);
+    ingestCheckCompletionGraceProcess({ controllerHome: home, repoId: 'repo-fixture', processId: 'p1' }, deps(records));
+    const stored = listControlPlaneRecords<any>(home, { namespace: OPERATIONAL_MEMORY_NAMESPACE, scope: 'repo-fixture' })[0];
+    const originalSupport = stored.value.support[0];
+    writeControlPlaneRecord(home, {
+      namespace: OPERATIONAL_MEMORY_NAMESPACE,
+      scope: 'repo-fixture',
+      key: stored.key,
+      schemaVersion: 1,
+      value: {
+        ...stored.value,
+        support: Array.from({ length: 33 }, (_, index) => ({ ...originalSupport, processId: `oversized-${index}` })),
+      },
+      action: 'test_oversized_corruption',
+    });
+    let loads = 0;
+    const guardedDeps = {
+      ...deps(records),
+      loadProcessRecord: (_controllerHome: string, _repoId: string, processId: string) => {
+        loads += 1;
+        return records.get(processId);
+      },
+    };
+    expect(resolveCheckCompletionGraceWaitMs({ controllerHome: home, repoId: 'repo-fixture', checkId: 'package:check:type', environmentFingerprint: 'env-a' }, guardedDeps)).toBeUndefined();
+    expect(loads).toBe(0);
+    expect(listControlPlaneRecords(home, { namespace: OPERATIONAL_MEMORY_NAMESPACE, scope: 'repo-fixture' })).toHaveLength(0);
+  });
+
   test('raw failed Process receipts do not become latency learning evidence', () => {
     const home = controllerHome();
     const records = new Map<string, any>([['failed', processRecord({ id: 'failed', durationMs: 20, status: 'failed' })]]);
