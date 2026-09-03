@@ -29,6 +29,13 @@ describe('handoff and facade contracts', () => {
     expect(allowedFacadeOperations('rh_work')).toContain('controller_disposition');
   });
 
+  test('keeps direct Work authority recovery discoverable on the frozen rh_work schema', () => {
+    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
+    const properties = rhWork?.inputSchema.properties as Record<string, { description?: string; enum?: string[] }> | undefined;
+    expect(properties).toHaveProperty('controller_authority_id');
+    expect(properties?.capability_id?.description).toContain('controller.authority.recover:<workId>');
+  });
+
   test('exposes explicit Requirement bootstrap through rh_work without expanding the tool surface', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
