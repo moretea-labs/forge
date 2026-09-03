@@ -10,6 +10,7 @@ import {
   resolveCheckCompletionGraceWaitMs,
 } from '../../src/runtime/control-plane/persistence/operational-prior-store';
 import {
+  ControlPlaneConflictError,
   deleteControlPlaneRecord,
   listControlPlaneRecords,
   readControlPlaneRecord,
@@ -182,6 +183,81 @@ describe('Stage7F bounded operational Memory', () => {
   test('explicit interactive wait remains authoritative over any learned completion grace', () => {
     expect(durationAwareInteractiveWaitMs(['bun', 'test'], 0, CHECK_COMPLETION_GRACE_MAX_MS)).toBe(0);
     expect(durationAwareInteractiveWaitMs(['bun', 'test'], 73, CHECK_COMPLETION_GRACE_MAX_MS)).toBe(73);
+  });
+
+  test('revision-fenced deletion cannot remove a newer concurrent Controller record', () => {
+    const home = controllerHome();
+    const first = writeControlPlaneRecord(home, { namespace: 'fixture', scope: 'repo', key: 'key', schemaVersion: 1, value: { value: 1 } });
+    const newer = writeControlPlaneRecord(home, { namespace: 'fixture', scope: 'repo', key: 'key', schemaVersion: 1, value: { value: 2 }, expectedRevision: first.revision });
+    expect(() => deleteControlPlaneRecord(home, {
+      namespace: 'fixture', scope: 'repo', key: 'key', action: 'fixture_stale_delete', expectedRevision: first.revision,
+    })).toThrow(ControlPlaneConflictError);
+    expect(readControlPlaneRecord<{ value: number }>(home, 'fixture', 'repo', 'key')).toMatchObject({ revision: newer.revision, value: { value: 2 } });
+  });
+
+  test('operational Memory materialization does not overwrite a newer concurrent refresh', () => {
+    const home = controllerHome();
+    const records = new Map<string, any>([
+      ['p1', processRecord({ id: 'p1', durationMs: 80 })],
+      ['p2', processRecord({ id: 'p2', durationMs: 120 })],
+    ]);
+    expect(ingestCheckCompletionGraceProcess({ controllerHome: home, repoId: 'repo-fixture', processId: 'p1' }, deps(records))).toMatchObject({ stored: true, sampleCount: 1 });
+    const [stored] = listControlPlaneRecords<any>(home, { namespace: OPERATIONAL_MEMORY_NAMESPACE, scope: 'repo-fixture' });
+    expect(stored).toBeDefined();
+    let refreshed = false;
+    const racingDeps = {
+      ...deps(records),
+      loadProcessRecord: (_controllerHome: string, _repoId: string, processId: string) => {
+        if (!refreshed && processId === 'p1') {
+          refreshed = true;
+          writeControlPlaneRecord(home, {
+            namespace: OPERATIONAL_MEMORY_NAMESPACE,
+            scope: 'repo-fixture',
+            key: stored!.key,
+            schemaVersion: stored!.schemaVersion,
+            value: stored!.value,
+            action: 'test_concurrent_refresh',
+            expectedRevision: stored!.revision,
+          });
+        }
+        return records.get(processId);
+      },
+    };
+    expect(() => ingestCheckCompletionGraceProcess({ controllerHome: home, repoId: 'repo-fixture', processId: 'p2' }, racingDeps)).toThrow(ControlPlaneConflictError);
+    const preserved = readControlPlaneRecord<any>(home, OPERATIONAL_MEMORY_NAMESPACE, 'repo-fixture', stored!.key);
+    expect(preserved).toMatchObject({ revision: stored!.revision + 1, value: stored!.value });
+  });
+
+  test('operational Memory invalidation cannot delete a newer concurrent replacement', () => {
+    const home = controllerHome();
+    const records = new Map<string, any>([['p1', processRecord({ id: 'p1', durationMs: 80 })]]);
+    expect(ingestCheckCompletionGraceProcess({ controllerHome: home, repoId: 'repo-fixture', processId: 'p1' }, deps(records))).toMatchObject({ stored: true, sampleCount: 1 });
+    const [stored] = listControlPlaneRecords<any>(home, { namespace: OPERATIONAL_MEMORY_NAMESPACE, scope: 'repo-fixture' });
+    expect(stored).toBeDefined();
+    let replaced = false;
+    const racingDeps = {
+      ...deps(new Map()),
+      loadProcessRecord: () => {
+        if (!replaced) {
+          replaced = true;
+          writeControlPlaneRecord(home, {
+            namespace: OPERATIONAL_MEMORY_NAMESPACE,
+            scope: 'repo-fixture',
+            key: stored!.key,
+            schemaVersion: stored!.schemaVersion,
+            value: stored!.value,
+            action: 'test_concurrent_replacement',
+            expectedRevision: stored!.revision,
+          });
+        }
+        return undefined;
+      },
+    };
+    expect(resolveCheckCompletionGraceWaitMs({
+      controllerHome: home, repoId: 'repo-fixture', checkId: 'package:check:type', environmentFingerprint: 'env-a',
+    }, racingDeps)).toBeUndefined();
+    const preserved = readControlPlaneRecord<any>(home, OPERATIONAL_MEMORY_NAMESPACE, 'repo-fixture', stored!.key);
+    expect(preserved).toMatchObject({ revision: stored!.revision + 1, value: stored!.value });
   });
 
   test('generic Controller record deletion preserves monotonic audit revision across recreation', () => {

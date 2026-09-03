@@ -183,12 +183,20 @@ function replayFromProcesses(input: {
   return { replayGap: false, prior, support: ordered.map((item) => item.entry) };
 }
 
-function deleteRecord(controllerHome: string, repoId: string, checkId: string, environmentFingerprint: string, action: string): void {
+function deleteRecord(
+  controllerHome: string,
+  repoId: string,
+  checkId: string,
+  environmentFingerprint: string,
+  action: string,
+  expectedRevision: number,
+): void {
   deleteControlPlaneRecord(controllerHome, {
     namespace: OPERATIONAL_MEMORY_NAMESPACE,
     scope: repoId,
     key: recordKey(checkId, environmentFingerprint),
     action,
+    expectedRevision,
   });
 }
 
@@ -224,8 +232,10 @@ export function ingestCheckCompletionGraceProcess(input: {
     environmentFingerprint,
     asOf,
   }, deps);
-  if (replay.replayGap) {
-    deleteRecord(input.controllerHome, input.repoId, checkId, environmentFingerprint, 'operational_memory_replay_gap');
+  let expectedRevision = existing?.revision ?? null;
+  if (replay.replayGap && existing) {
+    deleteRecord(input.controllerHome, input.repoId, checkId, environmentFingerprint, 'operational_memory_replay_gap', existing.revision);
+    expectedRevision = null;
     replay = replayFromProcesses({
       controllerHome: input.controllerHome,
       repoId: input.repoId,
@@ -258,6 +268,7 @@ export function ingestCheckCompletionGraceProcess(input: {
       schemaVersion: SCHEMA_VERSION,
       value,
       action: 'operational_memory_replay_materialize',
+      expectedRevision,
     });
   }
   return { stored: true, readiness: replay.prior.readiness, sampleCount: replay.prior.sampleCount };
@@ -277,7 +288,7 @@ function resolveCheckCompletionGraceWaitMsUnsafe(input: {
     || stored.value.checkId !== input.checkId
     || stored.value.environmentFingerprint !== input.environmentFingerprint
     || stored.value.support.some((entry) => !entry || typeof entry.processId !== 'string' || typeof entry.receiptId !== 'string' || typeof entry.finishedAt !== 'string')) {
-    deleteRecord(input.controllerHome, input.repoId, input.checkId, input.environmentFingerprint, 'operational_memory_invalid_record');
+    deleteRecord(input.controllerHome, input.repoId, input.checkId, input.environmentFingerprint, 'operational_memory_invalid_record', stored.revision);
     return undefined;
   }
   const asOf = nowIso(deps);
@@ -290,7 +301,7 @@ function resolveCheckCompletionGraceWaitMsUnsafe(input: {
     asOf,
   }, deps);
   if (replay.replayGap || !replay.prior) {
-    deleteRecord(input.controllerHome, input.repoId, input.checkId, input.environmentFingerprint, 'operational_memory_replay_gap');
+    deleteRecord(input.controllerHome, input.repoId, input.checkId, input.environmentFingerprint, 'operational_memory_replay_gap', stored.revision);
     return undefined;
   }
   const retainedEvidenceRefs = new Set(replay.prior.supportEvidenceRefs);

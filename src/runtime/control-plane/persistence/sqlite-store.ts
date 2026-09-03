@@ -384,9 +384,12 @@ export function writeControlPlaneRecord<T>(
 
 export function deleteControlPlaneRecordWithinTransaction(
   database: SqliteDatabase,
-  input: { namespace: string; scope: string; key: string; action?: string },
+  input: { namespace: string; scope: string; key: string; action?: string; expectedRevision?: number },
 ): boolean {
   const existing = selectRecord(database, input.namespace, input.scope, input.key);
+  if (input.expectedRevision !== undefined && existing?.revision !== input.expectedRevision) {
+    throw new ControlPlaneConflictError(input.namespace, input.scope, input.key, input.expectedRevision, existing?.revision);
+  }
   if (!existing) return false;
   const revision = existing.revision + 1;
   const at = now();
@@ -403,7 +406,7 @@ export function deleteControlPlaneRecordWithinTransaction(
 
 export function deleteControlPlaneRecord(
   controllerHome: string,
-  input: { namespace: string; scope: string; key: string; action?: string },
+  input: { namespace: string; scope: string; key: string; action?: string; expectedRevision?: number },
 ): boolean {
   return withControlPlaneTransaction(controllerHome, (database) =>
     deleteControlPlaneRecordWithinTransaction(database, input));
