@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findWindowsIncompatiblePaths } from "./windows-paths.mjs";
+import { findPortabilityBindings, portabilityBindingDetectorSelfCheck } from "./portability-bindings.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const failures = [];
@@ -70,16 +71,13 @@ const productTextPaths = trackedPaths.filter((entry) =>
   || entry === "install.sh"
   || entry === "install.ps1"
 );
-const personalBindingPatterns = [
-  { label: "macOS personal absolute path", pattern: /\/Users\/[A-Za-z0-9._-]+\// },
-  { label: "Linux personal absolute path", pattern: /\/home\/[A-Za-z0-9._-]+\// },
-  { label: "Windows personal absolute path", pattern: /[A-Za-z]:\\Users\\[A-Za-z0-9._-]+\\/ },
-  { label: "WSL personal Windows path", pattern: /\/mnt\/[a-z]\/Users\/[A-Za-z0-9._-]+\//i },
-];
+for (const failure of portabilityBindingDetectorSelfCheck()) {
+  failures.push(`portability binding detector self-check failed: ${failure}`);
+}
 for (const path of productTextPaths) {
   const content = text(path);
-  for (const { label, pattern } of personalBindingPatterns) {
-    if (pattern.test(content)) failures.push(`${path} contains ${label}; use host discovery/configuration instead`);
+  for (const finding of findPortabilityBindings(path, content)) {
+    failures.push(`${finding.path} contains ${finding.label}; use host discovery/configuration instead`);
   }
 }
 
