@@ -23,5 +23,7 @@ export interface BrowserSessionPersistenceTransaction {
 export interface BrowserSessionPersistencePort {
   read<T>(controllerHome: string, namespace: string, scope: string, key: string): BrowserSessionPersistenceRecord<T> | undefined;
   list<T>(controllerHome: string, input: { namespace: string; scope?: string; limit?: number }): BrowserSessionPersistenceRecord<T>[];
+  /** Internal authority scan. Unlike public list surfaces, this must not truncate durable facts. */
+  listAll<T>(controllerHome: string, input: { namespace: string; scope?: string }): BrowserSessionPersistenceRecord<T>[];
   transaction<T>(controllerHome: string, operation: (transaction: BrowserSessionPersistenceTransaction) => T): T;
 }

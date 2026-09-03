@@ -3,6 +3,7 @@ import type {
   BrowserSessionPersistenceTransaction,
 } from '../../../packages/plugin-runtime/browser/session-persistence';
 import {
+  listAllControlPlaneRecords,
   listControlPlaneRecords,
   readControlPlaneRecord,
   readControlPlaneRecordWithinTransaction,
@@ -14,6 +15,7 @@ export function createRuntimeBrowserSessionPersistence(): BrowserSessionPersiste
   return {
     read: (controllerHome, namespace, scope, key) => readControlPlaneRecord(controllerHome, namespace, scope, key),
     list: (controllerHome, input) => listControlPlaneRecords(controllerHome, input),
+    listAll: (controllerHome, input) => listAllControlPlaneRecords(controllerHome, input),
     transaction: (controllerHome, operation) => withControlPlaneTransaction(controllerHome, (database) => {
       const transaction: BrowserSessionPersistenceTransaction = {
         read: (namespace, scope, key) => readControlPlaneRecordWithinTransaction(database, namespace, scope, key),

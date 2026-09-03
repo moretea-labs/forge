@@ -488,6 +488,36 @@ export function listControlPlaneRecords<T>(
   }
 }
 
+/**
+ * Internal correctness surface for authorities that must observe every durable
+ * fact in a namespace/scope. User-facing and diagnostic list APIs should keep
+ * using listControlPlaneRecords so their output remains bounded.
+ */
+export function listAllControlPlaneRecords<T>(
+  controllerHome: string,
+  input: { namespace: string; scope?: string },
+): ControlPlaneRecord<T>[] {
+  const database = openDatabaseForRead(controllerHome);
+  try {
+    const rows = input.scope === undefined
+      ? database.prepare(`
+          SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
+          FROM control_plane_records
+          WHERE namespace = ?
+          ORDER BY updated_at ASC, record_key ASC
+        `).all(input.namespace)
+      : database.prepare(`
+          SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
+          FROM control_plane_records
+          WHERE namespace = ? AND scope = ?
+          ORDER BY updated_at ASC, record_key ASC
+        `).all(input.namespace, input.scope);
+    return (rows as StoredRecordRow[]).map((row) => rowToRecord<T>(row));
+  } finally {
+    database.close();
+  }
+}
+
 function inspectOpenDatabase(database: SqliteDatabase, path: string): ControlPlaneDatabaseInspection {
   assertDatabaseIntegrity(database, path);
   const schemaVersion = assertSupportedSchema(database, path, true)!;

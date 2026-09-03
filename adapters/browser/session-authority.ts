@@ -14,7 +14,6 @@ import type { BrowserSessionPersistencePort } from '../../packages/plugin-runtim
 const SESSION_NAMESPACE = 'browser_session';
 const SESSION_SCOPE = 'controller';
 const IMPORT_NAMESPACE = 'browser_session_legacy_import';
-const MAX_AUTHORITY_RECORDS = 5_000;
 
 interface BrowserSessionAuthorityEntry<T extends BrowserSessionAuthoritySession = BrowserSessionAuthoritySession> {
   schemaVersion: 1;
@@ -166,10 +165,9 @@ function authorityEntries(
   persistence: BrowserSessionPersistencePort,
   controllerHome: string,
 ): BrowserSessionAuthorityEntry[] {
-  return persistence.list<BrowserSessionAuthorityEntry>(controllerHome, {
+  return persistence.listAll<BrowserSessionAuthorityEntry>(controllerHome, {
     namespace: SESSION_NAMESPACE,
     scope: SESSION_SCOPE,
-    limit: MAX_AUTHORITY_RECORDS,
   }).map((record) => record.value);
 }
 
@@ -277,10 +275,9 @@ export function tombstoneBrowserSession(
   sessionId: string,
 ): boolean {
   ensureLegacyBrowserSessionsImported(persistence, controllerHome, repoId, repoRoot);
-  const record = persistence.list<BrowserSessionAuthorityEntry>(controllerHome, {
+  const record = persistence.listAll<BrowserSessionAuthorityEntry>(controllerHome, {
     namespace: SESSION_NAMESPACE,
     scope: SESSION_SCOPE,
-    limit: MAX_AUTHORITY_RECORDS,
   }).find((candidate) => {
     const entry = candidate.value;
     return entry.status === 'active' && visibleToRepository(entry, repoId)

@@ -18,10 +18,15 @@ import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 import {
   ensureLegacyBrowserSessionsImported,
   findBrowserSession,
+  listAllBrowserSessionsForRepository,
   listBrowserSessions,
   saveBrowserSession,
   tombstoneBrowserSession,
 } from '../../src/runtime/plugins/browser-session-authority';
+import {
+  withControlPlaneTransaction,
+  writeControlPlaneRecordWithinTransaction,
+} from '../../src/runtime/control-plane/persistence/sqlite-store';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -146,6 +151,38 @@ describe('browser session controller authority', () => {
     expect(second.sessions.map((entry) => entry.sessionId)).toEqual(['one']);
     expect(second.nextCursor).toBeUndefined();
   });
+  test('authoritative scans retain sessions beyond the bounded 5000-record diagnostic limit', () => {
+    const { controllerHome, repoA } = fixture();
+    const updatedAt = '2026-08-24T01:00:00.000Z';
+    withControlPlaneTransaction(controllerHome, (database) => {
+      for (let index = 0; index <= 5_000; index += 1) {
+        const sessionId = `bulk-${String(index).padStart(5, '0')}`;
+        writeControlPlaneRecordWithinTransaction(database, {
+          namespace: 'browser_session',
+          scope: 'controller',
+          key: `bulk-record-${String(index).padStart(5, '0')}`,
+          schemaVersion: 1,
+          expectedRevision: null,
+          action: 'test_seed',
+          value: {
+            schemaVersion: 1,
+            status: 'active',
+            session: session(sessionId, updatedAt),
+            aliases: [sessionId],
+            repositoryIds: ['repo-a'],
+          },
+        });
+      }
+    });
+
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'bulk-05000')?.sessionId).toBe('bulk-05000');
+    expect(listAllBrowserSessionsForRepository(controllerHome, 'repo-a', repoA)).toHaveLength(5_001);
+    const bounded = listBrowserSessions(controllerHome, 'repo-a', repoA, { limit: 10_000 });
+    expect(bounded.sessions).toHaveLength(200);
+    expect(bounded.totalCount).toBe(5_001);
+    expect(bounded.nextCursor).toBeTruthy();
+  });
+
   test('browser adapter lists central authority with bounded pagination and authorization sees migrated sessions', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
