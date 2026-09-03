@@ -95,6 +95,18 @@ describe('Stage7F bounded operational Memory', () => {
     expect(listControlPlaneRecords(home, { namespace: OPERATIONAL_MEMORY_NAMESPACE, scope: 'repo-fixture' })).toHaveLength(0);
   });
 
+  test('hard-invalidates when a retained Process id resolves to a different completion receipt', () => {
+    const home = controllerHome();
+    const records = new Map<string, any>(['p1','p2','p3'].map((id, index) => [id, processRecord({ id, durationMs: 100 + index * 10 })]));
+    for (const id of records.keys()) ingestCheckCompletionGraceProcess({ controllerHome: home, repoId: 'repo-fixture', processId: id }, deps(records));
+    expect(resolveCheckCompletionGraceWaitMs({ controllerHome: home, repoId: 'repo-fixture', checkId: 'package:check:type', environmentFingerprint: 'env-a' }, deps(records))).toBe(CHECK_COMPLETION_GRACE_MAX_MS);
+
+    records.set('p2', processRecord({ id: 'p2', durationMs: 220 }));
+
+    expect(resolveCheckCompletionGraceWaitMs({ controllerHome: home, repoId: 'repo-fixture', checkId: 'package:check:type', environmentFingerprint: 'env-a' }, deps(records))).toBeUndefined();
+    expect(listControlPlaneRecords(home, { namespace: OPERATIONAL_MEMORY_NAMESPACE, scope: 'repo-fixture' })).toHaveLength(0);
+  });
+
   test('drop-and-rebuild reproduces the same bounded consumer decision from retained authoritative Process evidence', () => {
     const home = controllerHome();
     const records = new Map<string, any>(['p1','p2','p3'].map((id, index) => [id, processRecord({ id, durationMs: 90 + index * 20 })]));

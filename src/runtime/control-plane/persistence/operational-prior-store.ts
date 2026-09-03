@@ -127,6 +127,7 @@ function replayFromProcesses(input: {
   controllerHome: string;
   repoId: string;
   processIds: readonly string[];
+  expectedSupport?: readonly CheckCompletionGraceSupport[];
   checkId: string;
   environmentFingerprint: string;
   asOf: string;
@@ -138,6 +139,7 @@ function replayFromProcesses(input: {
   const load = deps.loadProcessRecord ?? getProcessRecord;
   const observations: OperationalObservation[] = [];
   const support: CheckCompletionGraceSupport[] = [];
+  const expectedSupport = new Map((input.expectedSupport ?? []).map((entry) => [entry.processId, entry] as const));
   const seen = new Set<string>();
   for (const processId of input.processIds) {
     if (!processId || seen.has(processId)) continue;
@@ -154,6 +156,10 @@ function replayFromProcesses(input: {
       return { replayGap: true, support: [] };
     }
     if (receipt.checkId !== input.checkId || receipt.checkEnvironmentFingerprint !== input.environmentFingerprint) {
+      return { replayGap: true, support: [] };
+    }
+    const expected = expectedSupport.get(processId);
+    if (expected && (receipt.receiptId !== expected.receiptId || receipt.finishedAt !== expected.finishedAt)) {
       return { replayGap: true, support: [] };
     }
     const until = retainedUntil(receipt.finishedAt);
@@ -228,6 +234,7 @@ export function ingestCheckCompletionGraceProcess(input: {
     controllerHome: input.controllerHome,
     repoId: input.repoId,
     processIds: [...previousIds, input.processId],
+    expectedSupport: existing && validRecord(existing.value) ? existing.value.support : undefined,
     checkId,
     environmentFingerprint,
     asOf,
@@ -296,6 +303,7 @@ function resolveCheckCompletionGraceWaitMsUnsafe(input: {
     controllerHome: input.controllerHome,
     repoId: input.repoId,
     processIds: stored.value.support.map((entry) => entry.processId),
+    expectedSupport: stored.value.support,
     checkId: input.checkId,
     environmentFingerprint: input.environmentFingerprint,
     asOf,
