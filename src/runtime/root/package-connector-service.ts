@@ -171,7 +171,10 @@ export function packageConnectorLaunchSpec(input: { release: PackageConnectorRel
   const packageRoot = resolve(input.release.packageRoot);
   const cliEntry = join(packageRoot, 'src', 'cli', 'index.ts');
   const nodeLoader = join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs');
-  const isBun = Boolean(process.versions.bun) || /(?:^|[/\\-])bun(?:$|[/\\]|\.exe$)/i.test(basename(executable));
+  const executableName = basename(executable);
+  const executableIsCurrentProcess = resolve(executable) === resolve(process.execPath);
+  const isBun = /(?:^|[/\\-])bun(?:$|[/\\]|\.exe$)/i.test(executableName)
+    || (executableIsCurrentProcess && Boolean(process.versions.bun));
   const instanceId = loadMcpServiceLocalConfig(input.controllerHome)?.identity?.forgeInstanceId?.trim();
   const authMode = packageConnectorAuthMode(input.controllerHome);
   const cliArgs = [

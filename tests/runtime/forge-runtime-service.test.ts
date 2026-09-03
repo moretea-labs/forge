@@ -566,6 +566,11 @@ describe('Forge Runtime service', () => {
     const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'connector-test' });
     const launch = packageConnectorLaunchSpec({ release, controllerHome: fx.home, endpoint: 'http://127.0.0.1:8767/mcp', executable: '/usr/local/bin/node' });
     expect(launch.port).toBe(8767);
+    expect(launch.args.slice(0, 3)).toEqual([
+      '--loader',
+      join(release.packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'),
+      join(release.packageRoot, 'src', 'cli', 'index.ts'),
+    ]);
     expect(launch.args.join(' ')).toContain('mcp serve');
     expect(launch.args).not.toContain('--repo');
     expect(launch.args.join(' ')).toContain('--port 8767');
@@ -580,6 +585,32 @@ describe('Forge Runtime service', () => {
     const unit = renderPackageConnectorSystemdUserUnit({ launch });
     expect(unit).toContain('Restart=on-failure');
     expect(unit).toContain('8767');
+  });
+
+  test('uses the actual Connector executable identity instead of inheriting the installer runtime kind', () => {
+    const fx = fixture(), packageRoot = join(fx.root, 'package');
+    for (const dir of ['src/cli', 'src/runtime/shared', 'bin', 'assets', 'scripts']) mkdirSync(join(packageRoot, dir), { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
+    writeFileSync(join(packageRoot, 'bin', 'forge-runtime.mjs'), 'process.exit(0);\n');
+    writeFileSync(join(packageRoot, 'src', 'cli', 'index.ts'), '');
+    writeFileSync(join(packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'), '');
+    const release = materializePackageRuntimeRelease({ controllerHome: fx.home, packageRoot, operationId: 'connector-executable-identity-test' });
+    const endpoint = 'http://127.0.0.1:8767/mcp';
+    const cliEntry = join(release.packageRoot, 'src', 'cli', 'index.ts');
+    const loader = join(release.packageRoot, 'src', 'runtime', 'shared', 'node-ts-loader.mjs');
+
+    const explicitNode = packageConnectorLaunchSpec({ release, controllerHome: fx.home, endpoint, executable: '/usr/local/bin/node' });
+    expect(explicitNode.args.slice(0, 3)).toEqual(['--loader', loader, cliEntry]);
+
+    const explicitBun = packageConnectorLaunchSpec({ release, controllerHome: fx.home, endpoint, executable: '/usr/local/bin/bun' });
+    expect(explicitBun.args[0]).toBe(cliEntry);
+    expect(explicitBun.args).not.toContain('--loader');
+
+    if (process.versions.bun) {
+      const currentBun = packageConnectorLaunchSpec({ release, controllerHome: fx.home, endpoint, executable: process.execPath });
+      expect(currentBun.args[0]).toBe(cliEntry);
+      expect(currentBun.args).not.toContain('--loader');
+    }
   });
 
   test('uses no local MCP auth only when an instance explicitly selects Secure Tunnel auth', () => {
