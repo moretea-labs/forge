@@ -2905,63 +2905,71 @@ export async function activateRuntimeRelease(
       audit(config, 'runtime_release_activation_commit_mismatch', { serviceTarget: service.target, operationId });
       return { ok: false, attempted: true, detail, serviceTarget: service.target, verify: await verifyLocal(config) } satisfies RuntimeReleaseActivationResult;
     }
+    // The Connector is independently supervised, but its executable is part of
+    // this immutable Runtime release. Rebind it immediately after publishing
+    // authority and before starting the candidate: full Runtime verification
+    // includes the Connector and must never observe a stale previous release.
+    const candidateConnectorBinding = await repairConnectorBinding(config);
     let storageMigration: ControllerHomeStorageMigration | undefined;
-    const activated = await rebindStartAndVerifyPrimaryRuntime({
-      config,
-      service,
-      runCommand,
-      now,
-      wait,
-      verifyLocal,
-      timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
-      successDetail: 'requested Runtime release started and passed whole-Runtime verification',
-      beforeStart: () => {
-        storageMigration = migrateStoppedRepoLocalControllerHomeStorage(config.controllerHome, platform);
-        if (storageMigration.migrated) {
-          audit(config, 'runtime_controller_home_noindex_migrated', {
-            serviceTarget: service.target,
-            operationId,
-            logicalHome: storageMigration.logicalHome,
-            physicalHome: storageMigration.physicalHome,
-          });
-        }
-      },
-    });
-    let after = activated.verify;
     let activationFailureDetail: string | undefined;
-    if (activated.ok && after.releases.active?.revision === candidate.manifest.releaseId) {
-      const connectorBinding = await repairConnectorBinding(config);
-      if (connectorBinding.ok) {
-        audit(config, 'runtime_release_activation_succeeded', {
-          serviceTarget: service.target,
-          operationId,
-          requestId: lockRequestId,
-          activeRevision: after.releases.active?.revision,
-          expectedAuthorityRevision: guard.expectedAuthorityRevision,
-          expectedActiveReleaseId: guard.expectedActiveReleaseId,
-          controllerHomeStorageMigrated: storageMigration?.migrated === true,
-          connectorBindingRepaired: connectorBinding.attempted,
-        });
-        return {
-          ok: true,
-          attempted: true,
-          detail: storageMigration?.migrated
-            ? 'requested Runtime release activated, Controller Home migrated to .noindex storage, persistent Connector rebound, and whole-Runtime verification passed'
-            : 'requested Runtime release activated, persistent Connector rebound, and whole-Runtime verification passed',
-          serviceTarget: service.target,
-          operationId,
-          verify: after,
-        } satisfies RuntimeReleaseActivationResult;
-      }
-      activationFailureDetail = `persistent Connector binding failed after Runtime activation: ${connectorBinding.detail}`;
+    let activated: PrimaryRuntimeRebindStartResult;
+    if (!candidateConnectorBinding.ok) {
+      const detail = `persistent Connector binding failed before Runtime activation: ${candidateConnectorBinding.detail}`;
+      activationFailureDetail = detail;
       audit(config, 'runtime_release_activation_connector_binding_failed', {
         serviceTarget: service.target,
         operationId,
         requestId: lockRequestId,
-        detail: connectorBinding.detail,
+        detail: candidateConnectorBinding.detail,
+      });
+      activated = { ok: false, detail, verify: await verifyLocal(config) };
+    } else {
+      activated = await rebindStartAndVerifyPrimaryRuntime({
+        config,
+        service,
+        runCommand,
+        now,
+        wait,
+        verifyLocal,
+        timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
+        successDetail: 'requested Runtime release started and passed whole-Runtime verification',
+        beforeStart: () => {
+          storageMigration = migrateStoppedRepoLocalControllerHomeStorage(config.controllerHome, platform);
+          if (storageMigration.migrated) {
+            audit(config, 'runtime_controller_home_noindex_migrated', {
+              serviceTarget: service.target,
+              operationId,
+              logicalHome: storageMigration.logicalHome,
+              physicalHome: storageMigration.physicalHome,
+            });
+          }
+        },
       });
     }
-    if (!activated.ok) {
+    let after = activated.verify;
+    if (activated.ok && after.releases.active?.revision === candidate.manifest.releaseId) {
+      audit(config, 'runtime_release_activation_succeeded', {
+        serviceTarget: service.target,
+        operationId,
+        requestId: lockRequestId,
+        activeRevision: after.releases.active?.revision,
+        expectedAuthorityRevision: guard.expectedAuthorityRevision,
+        expectedActiveReleaseId: guard.expectedActiveReleaseId,
+        controllerHomeStorageMigrated: storageMigration?.migrated === true,
+        connectorBindingRepaired: candidateConnectorBinding.attempted,
+      });
+      return {
+        ok: true,
+        attempted: true,
+        detail: storageMigration?.migrated
+          ? 'requested Runtime release activated, Controller Home migrated to .noindex storage, persistent Connector rebound, and whole-Runtime verification passed'
+          : 'requested Runtime release activated, persistent Connector rebound, and whole-Runtime verification passed',
+        serviceTarget: service.target,
+        operationId,
+        verify: after,
+      } satisfies RuntimeReleaseActivationResult;
+    }
+    if (!activated.ok && !activationFailureDetail) {
       activationFailureDetail = activated.detail;
       const auditAction = /^primary Runtime (launchd|systemd-user) contract rebuild failed/.test(activated.detail)
         ? 'runtime_release_activation_service_contract_failed'

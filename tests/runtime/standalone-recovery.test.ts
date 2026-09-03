@@ -2196,6 +2196,7 @@ describe('standalone recovery on canonical Runtime', () => {
       let serviceActive = true;
       let connectorBindings = 0;
       const commands: string[][] = [];
+      const activationOrder: string[] = [];
       const config = createRecoveryConfig(home, { primaryRuntimeService: { platform: 'systemd-user', postRestartVerifyTimeoutMs: 10_000 } });
       const result = await activateRuntimeRelease(config, candidate.path, {
         platform: 'linux',
@@ -2204,7 +2205,10 @@ describe('standalone recovery on canonical Runtime', () => {
           commands.push([name, ...args]);
           if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
           if (name === 'systemctl' && args[0] === '--user' && args[1] === 'stop') serviceActive = false;
-          if (name === 'systemctl' && args[0] === '--user' && args[1] === 'start') serviceActive = true;
+          if (name === 'systemctl' && args[0] === '--user' && args[1] === 'start') {
+            activationOrder.push('runtime-start');
+            serviceActive = true;
+          }
           if (name === 'systemctl' && args[0] === '--user' && args[1] === 'show') {
             return { ok: true, status: 0, stdout: serviceActive ? 'active\n' : 'inactive\n', stderr: '' };
           }
@@ -2213,6 +2217,7 @@ describe('standalone recovery on canonical Runtime', () => {
         runtimeRunning: () => false,
         repairPrimaryConnectorBinding: async () => {
           connectorBindings += 1;
+          activationOrder.push('connector-bind');
           return { ok: true, attempted: true, detail: 'candidate Connector binding refreshed' };
         },
         verifyLocal: async () => {
@@ -2236,6 +2241,7 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(commands).toContainEqual(['systemctl', '--user', 'start', unitName]);
       expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);
       expect(connectorBindings).toBe(1);
+      expect(activationOrder).toEqual(['connector-bind', 'runtime-start']);
       const reboundUnit = readFileSync(unitPath, 'utf8');
       expect(reboundUnit).toBe(renderPackageRuntimeSystemdUserService(home));
       expect(reboundUnit).toContain(join(home, 'runtime', 'releases', 'release-b', 'forge-runtime'));

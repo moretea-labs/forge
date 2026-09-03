@@ -103,6 +103,14 @@
 - Prevention rule: Define Runtime health from Runtime liveness, readiness, staleness, and the active local Gateway only. Connector failures use their own bounded recovery path and must not clear Runtime health or trigger Runtime rollback accounting.
 - Where to apply next time: `src/runtime/standalone-recovery/core.ts` (`watchdogTick`) and `tests/runtime/standalone-recovery.test.ts`.
 
+## Secure Tunnel Connector authentication must match before Runtime verification
+
+- Date: 2026-09-04
+- Triggered by correction: A WSL Secure Tunnel Connector persisted an obsolete `--auth oauth` service contract while its local MCP configuration required `auth:none`. The local OAuth challenge appeared as repeated Cloud 401s, and candidate Runtime activation verified before repairing the Connector binding, so it rolled back without correcting the drift.
+- Mistake pattern: Treating a Connector's 401 as healthy for an unauthenticated local MCP, and delaying its immutable release binding until after whole-Runtime verification.
+- Prevention rule: For `auth:none`, a local OAuth `401` is a failed readiness probe. After publishing Runtime authority, bind the Connector to that candidate release before starting or verifying the candidate; on any failure, roll back the complete Runtime and Connector binding together.
+- Where to apply next time: `src/runtime/root/package-connector-service.ts`, `src/runtime/standalone-recovery/core.ts`, and Secure Tunnel recovery/activation tests.
+
 ## A running cloud VM is not a healthy Forge execution node
 - Date: 2026-08-26
 - Triggered by correction: The Google Cloud `forge-cloud` e2-micro remained `RUNNING`, but Forge_Cloud calls alternated between Secure Tunnel HTTP 404/429, direct SSH and IAP SSH failed, and serial logs showed repeated WARP main-loop watchdog hangs, QUIC idle timeout, NTP timeout, and journald watchdog restarts.
