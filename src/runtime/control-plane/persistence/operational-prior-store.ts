@@ -321,15 +321,31 @@ export function resolveCheckCompletionGraceWaitMs(input: {
 }
 
 export function dropOperationalMemoryNamespace(controllerHome: string, repoId: string): number {
-  const records = listControlPlaneRecords(controllerHome, { namespace: OPERATIONAL_MEMORY_NAMESPACE, scope: repoId, limit: 5_000 });
   let deleted = 0;
-  for (const record of records) {
-    if (deleteControlPlaneRecord(controllerHome, {
+  for (;;) {
+    const records = listControlPlaneRecords(controllerHome, {
       namespace: OPERATIONAL_MEMORY_NAMESPACE,
       scope: repoId,
-      key: record.key,
-      action: 'operational_memory_drop',
-    })) deleted += 1;
+      limit: 5_000,
+    });
+    if (records.length === 0) return deleted;
+
+    let deletedThisPage = 0;
+    for (const record of records) {
+      if (deleteControlPlaneRecord(controllerHome, {
+        namespace: OPERATIONAL_MEMORY_NAMESPACE,
+        scope: repoId,
+        key: record.key,
+        action: 'operational_memory_drop',
+      })) {
+        deleted += 1;
+        deletedThisPage += 1;
+      }
+    }
+
+    // Avoid an infinite retry loop if SQLite reports a stable record that cannot
+    // be deleted. Successfully deleted pages are re-listed until the namespace
+    // is exhausted, so records beyond the bounded list window are not stranded.
+    if (deletedThisPage === 0) return deleted;
   }
-  return deleted;
 }

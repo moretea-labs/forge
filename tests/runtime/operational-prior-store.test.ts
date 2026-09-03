@@ -105,6 +105,23 @@ describe('Stage7F bounded operational Memory', () => {
     expect(resolveCheckCompletionGraceWaitMs({ controllerHome: home, repoId: 'repo-fixture', checkId: 'package:check:type', environmentFingerprint: 'env-a' }, deps(records))).toBe(before);
   });
 
+  test('drop removes the full operational memory namespace beyond one bounded list page', () => {
+    const home = controllerHome();
+    for (let index = 0; index < 5_001; index += 1) {
+      writeControlPlaneRecord(home, {
+        namespace: OPERATIONAL_MEMORY_NAMESPACE,
+        scope: 'repo-fixture',
+        key: `bulk-${String(index).padStart(4, '0')}`,
+        schemaVersion: 1,
+        value: { index },
+        action: 'test_bulk_seed',
+      });
+    }
+
+    expect(dropOperationalMemoryNamespace(home, 'repo-fixture')).toBe(5_001);
+    expect(listControlPlaneRecords(home, { namespace: OPERATIONAL_MEMORY_NAMESPACE, scope: 'repo-fixture', limit: 5_000 })).toHaveLength(0);
+  });
+
   test('deduplicated receipt ingestion does not rewrite the same derived SQLite record', () => {
     const home = controllerHome();
     const records = new Map<string, any>([['p1', processRecord({ id: 'p1', durationMs: 80 })]]);
