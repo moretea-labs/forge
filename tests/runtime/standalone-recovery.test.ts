@@ -75,7 +75,7 @@ import {
   recoveryControllerHomeOwnerLabels,
   scheduleRecoveryControllerHomeMigration,
 } from '../../src/runtime/standalone-recovery/controller-home-migration';
-import { ensureMcpControllerHomeOAuthPassphrase } from '../../src/cli/mcp/auth';
+import { ensureMcpControllerHomeOAuthPassphrase, writeMcpServiceLocalConfig } from '../../src/cli/mcp/auth';
 import { inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, recoverySystemdUserUnitInput, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 
 const roots: string[] = [];
@@ -1548,6 +1548,54 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(connector.requests.some((request) => request.method === 'POST' && request.url === '/mcp')).toBe(true);
     expect(connector.requests.some((request) => request.method === 'GET' && request.url === '/ready')).toBe(false);
     expect(publicGateway.requests.some((request) => request.method === 'GET' && request.url === '/transport-ready')).toBe(false);
+  });
+
+  test('fails closed when a Secure Tunnel Connector unexpectedly returns an OAuth challenge', async () => {
+    const home = controllerHome();
+    const activeManifest = manifest(home, 'release-secure-tunnel-auth-drift', 'artifact-secure-tunnel-auth-drift');
+    ensureActiveRuntimeRelease(home, activeManifest);
+    const runtime = await runtimeServer({ challengeUnauthenticatedMcp: true });
+    const publicGateway = await runtimeServer({ challengeUnauthenticatedMcp: true });
+    const connector = await legacyConnectorTransportServer();
+    writeMainToken(home);
+    writeMcpServiceLocalConfig(home, { auth: { mode: 'none' }, chatgpt: {} });
+    startObservedRuntime(
+      home,
+      runtime.endpoint,
+      'release-secure-tunnel-auth-drift',
+      'artifact-secure-tunnel-auth-drift',
+      new Date(Date.now() - 120_000).toISOString(),
+    );
+    const config = createRecoveryConfig(home, {
+      publicMcpUrl: publicGateway.endpoint,
+      primaryConnectorService: {
+        platform: 'launchd',
+        label: 'com.moretea.forge.mcp-gateway',
+        localMcpUrl: connector.endpoint,
+        minimumFailures: 1,
+        minimumFailureDurationMs: 0,
+      },
+    });
+
+    const verified = await verifyStableRuntime(config, undefined, { probeMcpProtocol: false });
+    expect(verified.ok).toBe(false);
+    expect(verified.probes.primary_connector_ready).toMatchObject({
+      ok: false,
+      status: 401,
+      detail: 'legacy-mcp HTTP 401 unexpected OAuth challenge for unauthenticated Connector',
+    });
+    expect(verified.probes.primary_connector_local).toMatchObject({
+      ok: false,
+      status: 401,
+      detail: 'HTTP 401 unexpected OAuth challenge for unauthenticated Connector',
+    });
+
+    const tick = await watchdogTick(config, {
+      failures: 0,
+      rollbackUsed: false,
+      lastFullVerifyAt: Date.now(),
+    });
+    expect(tick.decision.action).toBe('restart_primary_connector');
   });
 
   test('keeps legacy Connector MCP transport failures fail-closed', async () => {

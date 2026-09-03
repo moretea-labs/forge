@@ -34,7 +34,7 @@ import {
   type RuntimeReleaseAuthority,
 } from '../root/release-store';
 import type { RuntimeReleaseManifest } from '../root/types';
-import { ensurePackageConnectorService, packageConnectorServicePaths, type PackageConnectorReleaseBinding } from '../root/package-connector-service';
+import { ensurePackageConnectorService, packageConnectorAuthMode, packageConnectorServicePaths, type PackageConnectorReleaseBinding } from '../root/package-connector-service';
 import { createRecoveryHttpTransport, type RecoveryHttpTransport } from './http-transport';
 import { observeRecoveryWatchdogHealth } from './watchdog-heartbeat';
 import { RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
@@ -785,7 +785,11 @@ async function probe(transport: RecoveryHttpTransport, url: string, timeoutMs = 
   } finally { clearTimeout(timer); }
 }
 
-async function probeExternalMcp(transport: RecoveryHttpTransport, url: string): Promise<{ ok: boolean; detail: string; status?: number }> {
+async function probeExternalMcp(
+  transport: RecoveryHttpTransport,
+  url: string,
+  options: { acceptOAuthChallenge?: boolean } = {},
+): Promise<{ ok: boolean; detail: string; status?: number }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort('RECOVERY_HTTP_TIMEOUT'), 4_000);
   try {
@@ -806,8 +810,13 @@ async function probeExternalMcp(transport: RecoveryHttpTransport, url: string): 
       signal: controller.signal,
     });
     const challenge = response.headers['www-authenticate'] ?? '';
-    const ok = response.ok || (response.status === 401 && /\bBearer\b/i.test(challenge));
-    return { ok, detail: ok && response.status === 401 ? 'HTTP 401 OAuth challenge' : `HTTP ${response.status}`, status: response.status };
+    const oauthChallenge = response.status === 401 && /\bBearer\b/i.test(challenge);
+    const acceptsOAuthChallenge = options.acceptOAuthChallenge ?? true;
+    const ok = response.ok || (acceptsOAuthChallenge && oauthChallenge);
+    const detail = oauthChallenge
+      ? acceptsOAuthChallenge ? 'HTTP 401 OAuth challenge' : 'HTTP 401 unexpected OAuth challenge for unauthenticated Connector'
+      : `HTTP ${response.status}`;
+    return { ok, detail, status: response.status };
   } catch (error) {
     return { ok: false, detail: error instanceof Error ? error.message.slice(0, 180) : 'request failed' };
   } finally { clearTimeout(timer); }
@@ -824,6 +833,7 @@ function publicGatewayReadinessEndpoint(endpoint: string): string {
 async function probePublicGatewayReadiness(
   transport: RecoveryHttpTransport,
   endpoint: string,
+  options: { acceptOAuthChallenge?: boolean } = {},
 ): Promise<{ ok: boolean; detail: string; status?: number; value?: unknown }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort('RECOVERY_HTTP_TIMEOUT'), 4_000);
@@ -844,7 +854,7 @@ async function probePublicGatewayReadiness(
       // initialize response or the expected OAuth Bearer challenge proves the
       // legacy Connector transport is reachable without weakening 5xx/timeout
       // failure handling.
-      const legacy = await probeExternalMcp(transport, endpoint);
+      const legacy = await probeExternalMcp(transport, endpoint, options);
       return { ...legacy, detail: `legacy-mcp ${legacy.detail}` };
     }
     let sessionCapacity: unknown;
@@ -1192,7 +1202,9 @@ export async function verifyStableRuntime(
   if (config.publicMcpUrl) {
     probes.external_mcp_http = await probeExternalMcp(transport, config.publicMcpUrl);
     const connectorReadinessEndpoint = config.primaryConnectorService?.localMcpUrl?.trim() || config.publicMcpUrl;
-    probes.primary_connector_ready = await probePublicGatewayReadiness(transport, connectorReadinessEndpoint);
+    probes.primary_connector_ready = await probePublicGatewayReadiness(transport, connectorReadinessEndpoint, {
+      acceptOAuthChallenge: packageConnectorAuthMode(config.controllerHome) === 'oauth',
+    });
   }
   const primaryTunnel = configuredPrimaryPublicTunnel(config);
   if (primaryTunnel?.platform === 'openai-secure-tunnel') {
@@ -1961,7 +1973,9 @@ async function probePrimaryConnectorLocal(
 ): Promise<{ ok: boolean; detail: string; status?: number } | undefined> {
   const localMcpUrl = config.primaryConnectorService?.localMcpUrl?.trim();
   if (!localMcpUrl) return undefined;
-  return probeExternalMcp(transport, localMcpUrl);
+  return probeExternalMcp(transport, localMcpUrl, {
+    acceptOAuthChallenge: packageConnectorAuthMode(config.controllerHome) === 'oauth',
+  });
 }
 
 function activePackageConnectorReleaseBinding(config: RecoveryConfig): PackageConnectorReleaseBinding | undefined {

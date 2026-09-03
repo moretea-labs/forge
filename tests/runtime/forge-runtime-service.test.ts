@@ -653,6 +653,8 @@ describe('Forge Runtime service', () => {
   test('classifies only expected MCP/OAuth connector responses as healthy', () => {
     expect(packageConnectorEndpointStatusHealthy(200)).toBe(true);
     expect(packageConnectorEndpointStatusHealthy(401)).toBe(true);
+    expect(packageConnectorEndpointStatusHealthy(200, 'none')).toBe(true);
+    expect(packageConnectorEndpointStatusHealthy(401, 'none')).toBe(false);
     expect(packageConnectorEndpointStatusHealthy(404)).toBe(false);
     expect(packageConnectorEndpointStatusHealthy(500)).toBe(false);
     expect(packageConnectorEndpointStatusHealthy(502)).toBe(false);

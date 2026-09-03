@@ -103,20 +103,20 @@ function writePackageConnectorServiceAuthority(input: { release: PackageConnecto
   atomicWrite(paths.authorityPath, `${JSON.stringify(authority, null, 2)}\n`);
 }
 
-export function packageConnectorEndpointStatusHealthy(status: number): boolean {
-  // The Connector is healthy when Secure Tunnel mode answers directly (200)
-  // or public OAuth mode returns the expected unauthenticated challenge (401).
-  // Treating every received HTTP status as healthy masks upstream 5xx failures that are often
-  // surfaced remotely as 502 and prevents the persistent service from healing.
-  return status === 200 || status === 401;
+export function packageConnectorEndpointStatusHealthy(status: number, authMode: PackageConnectorAuthMode = 'oauth'): boolean {
+  // A Secure Tunnel owns external authentication and therefore its loopback
+  // Connector must answer directly. Accepting an OAuth challenge in `none`
+  // mode hides a stale service unit that was rewritten by an older lifecycle
+  // path, then makes every tunneled request fail remotely with 401.
+  return status === 200 || (authMode === 'oauth' && status === 401);
 }
 
-async function defaultConnectorEndpointProbe(endpoint: string): Promise<boolean> {
+async function defaultConnectorEndpointProbe(endpoint: string, authMode: PackageConnectorAuthMode): Promise<boolean> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 1_500);
   try {
     const response = await fetch(endpoint, { method: 'GET', redirect: 'manual', signal: controller.signal });
-    return packageConnectorEndpointStatusHealthy(response.status);
+    return packageConnectorEndpointStatusHealthy(response.status, authMode);
   } catch {
     return false;
   } finally {
@@ -129,6 +129,7 @@ export async function waitForPackageConnectorEndpointReady(
   options: {
     timeoutMs?: number;
     pollIntervalMs?: number;
+    authMode?: PackageConnectorAuthMode;
     probeEndpoint?: (endpoint: string) => Promise<boolean>;
     wait?: (ms: number) => Promise<void>;
     now?: () => number;
@@ -136,7 +137,8 @@ export async function waitForPackageConnectorEndpointReady(
 ): Promise<boolean> {
   const timeoutMs = Math.max(0, options.timeoutMs ?? 15_000);
   const pollIntervalMs = Math.max(10, options.pollIntervalMs ?? 100);
-  const probeEndpoint = options.probeEndpoint ?? defaultConnectorEndpointProbe;
+  const authMode = options.authMode ?? 'oauth';
+  const probeEndpoint = options.probeEndpoint ?? ((candidateEndpoint) => defaultConnectorEndpointProbe(candidateEndpoint, authMode));
   const wait = options.wait ?? ((ms: number) => new Promise<void>((resolveWait) => setTimeout(resolveWait, ms)));
   const now = options.now ?? Date.now;
   const deadline = now() + timeoutMs;
@@ -319,7 +321,7 @@ export async function installPackageConnectorService(input: { release: PackageCo
     serviceHost.installLaunchd(paths.sourcePlistPath, paths.label);
     const result = await serviceHost.bootstrapLaunchd({ label: paths.label, plistPath: paths.installedPlistPath });
     if (!result.ok) throw new Error(`FORGE_PACKAGE_CONNECTOR_LAUNCHD_INSTALL_FAILED: ${result.diagnostics.join('; ')}`);
-    const endpointReady = await waitForPackageConnectorEndpointReady(input.endpoint, { probeEndpoint: input.probeEndpoint });
+    const endpointReady = await waitForPackageConnectorEndpointReady(input.endpoint, { authMode: launch.authMode, probeEndpoint: input.probeEndpoint });
     if (!endpointReady) throw new Error(`FORGE_PACKAGE_CONNECTOR_ENDPOINT_NOT_READY: ${input.endpoint}`);
     const installed = { endpoint: input.endpoint, mode: 'launchd' as const, persistent: true, servicePath: paths.installedPlistPath, releaseId: input.release.releaseId, releaseRoot: input.release.releaseRoot };
     writePackageConnectorServiceAuthority({ release: input.release, controllerHome: input.controllerHome, result: installed });
@@ -376,7 +378,7 @@ export async function ensurePackageConnectorService(input: {
         env: input.env,
         executable: input.executable,
       })
-      && await (input.probeEndpoint ?? defaultConnectorEndpointProbe)(input.endpoint)
+      && await (input.probeEndpoint ?? ((candidateEndpoint) => defaultConnectorEndpointProbe(candidateEndpoint, authMode)))(input.endpoint)
     ) {
       return {
         endpoint: authority.endpoint,
