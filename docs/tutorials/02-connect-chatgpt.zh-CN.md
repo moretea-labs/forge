@@ -74,7 +74,7 @@ tunnel-client runtimes status forge --json
 
 #### 地址到底变成什么？
 
-使用 Secure Tunnel 后，不再需要给 Forge 准备一个公网 `/mcp` 地址。ChatGPT App 选择 `tunnel_id`；本机 `tunnel-client` 把命令转发到 Forge 的 **loopback OAuth Gateway**（默认 `127.0.0.1:8767/mcp`），再由 Gateway 代理到内部 bearer-only Runtime（默认 `127.0.0.1:8765/mcp`）。如果改过端口，以 `forge mcp setup chatgpt --user-level` 输出的 OAuth endpoint 为准。
+使用 Secure Tunnel 后，不再需要给 Forge 准备公网 `/mcp` 地址。ChatGPT App 选择 `tunnel_id`；本机 `tunnel-client` 把命令转发到 Forge 的 **loopback Secure Tunnel Connector**（默认 `127.0.0.1:8767/mcp`），再由 Connector 代理到内部 bearer-only Runtime（默认 `127.0.0.1:8765/mcp`）。这个 Connector 以 OpenAI tunnel/workspace 作为外层授权边界，本地使用 `auth=none`；它不是浏览器可访问的 OAuth authorization server，而且必须保持 loopback-only。`forge setup next` 会自动保持 transport 与 auth mode 一致。
 
 App/connector 身份及 Forge 工具 schema 与网络传输层是两件事。Cloudflare/HTTPS 切到 Secure Tunnel 改变的是网络路径，不会生成另一套 19-tool Forge schema。同一个 App 已连接且 schema 没变化时，单纯切换网络不要求新开会话；新会话主要用于隔离 A/B 或排查客户端缓存。
 
@@ -87,7 +87,7 @@ forge setup configure --controller chatgpt --tunnel cloudflare
 forge setup next
 ```
 
-setup 会检测当前平台与 `cloudflared`。macOS 有 Homebrew 时可直接给出安装命令；Linux/WSL2 与 Windows 会给对应的官方安装路径，不会假设所有机器都是 Mac。
+setup 会检测当前平台与 `cloudflared`。macOS 有 Homebrew 时可直接给出安装命令；Linux/WSL2 与 Windows 会给对应的官方安装路径，不会假设所有机器都是 Mac。公网 tunnel 必须终止在 loopback OAuth Connector（通常是 `8767`），绝不能直接暴露 bearer-only Runtime。
 
 named tunnel 建好后，只记录最终 `/mcp` URL：
 
@@ -107,7 +107,7 @@ forge setup configure --controller chatgpt --tunnel tailscale
 forge setup next
 ```
 
-Forge 检查当前平台的 Tailscale CLI 并引导 Funnel；获得最终 HTTPS `/mcp` URL 后再记录。
+Forge 检查当前平台的 Tailscale CLI 并引导 Funnel；Funnel 暴露的是 loopback OAuth Connector（通常是 `8767`），绝不能直接暴露 bearer-only Runtime。获得最终 HTTPS `/mcp` URL 后再记录。
 
 ### D. 已有 HTTPS 或暂缓远程连接
 

@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { closeSetupSession, openSetupSession, readSetupSession, type InitHookReport } from '../../src/cli/commands/init-hook';
-import { configureSetupProfile, resolveTunnelGuidance, type SetupPlatformSnapshot } from '../../src/cli/commands/setup-profile';
+import { configureSetupProfile, resolveTunnelGuidance, setupConnectorAuthMode, type SetupPlatformSnapshot } from '../../src/cli/commands/setup-profile';
 import { runMcpSetupChatgpt } from '../../src/cli/mcp/setup';
 
 const platform: SetupPlatformSnapshot = { platform: 'linux', arch: 'x64', environment: 'linux', serviceManager: 'systemd-user', commands: { brew: false, cloudflared: false, tailscale: false, tunnelClient: false, systemctl: true, winget: false } };
@@ -47,9 +47,10 @@ describe('Forge setup session', () => {
       });
       expect(session.nextAction).toMatchObject({
         id: 'controller.chatgpt.configure',
-        command: `forge mcp setup chatgpt --user-level --controller-home ${JSON.stringify(controllerHome)}`,
+        command: `forge mcp setup chatgpt --user-level --controller-home ${JSON.stringify(controllerHome)} --connector-auth none --clear-endpoint`,
       });
       expect(session.nextAction?.command).not.toBe('forge mcp setup chatgpt --user-level');
+      expect(session.nextAction?.command).not.toBe('forge setup next');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
@@ -89,13 +90,33 @@ describe('Forge setup session', () => {
   });
 
 
-  test('ChatGPT setup records a distinct loopback OAuth endpoint for remote connectors', () => {
-    const root = temp('forge-setup-oauth-endpoint-'); try {
+  test('ChatGPT setup records a distinct loopback Connector endpoint for remote transports', () => {
+    const root = temp('forge-setup-connector-endpoint-'); try {
       const controllerHome = join(root, 'controller');
       runMcpSetupChatgpt({ controllerHome, userLevel: true, port: '8765', localControllerPort: '8766' });
       const localConfig = JSON.parse(require('fs').readFileSync(join(controllerHome, 'mcp', 'mcp.local.json'), 'utf8'));
       expect(localConfig.server).toMatchObject({ host: '127.0.0.1', port: 8765 });
+      expect(localConfig.auth.mode).toBe('oauth');
       expect(localConfig.chatgpt.localEndpoint).toBe('http://127.0.0.1:8767/mcp');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test('maps Secure Tunnel to transport authority and restores OAuth when switching back to HTTPS', () => {
+    const root = temp('forge-setup-connector-auth-'); try {
+      const controllerHome = join(root, 'controller');
+      const staleEndpoint = 'https://old.example.com/mcp';
+      runMcpSetupChatgpt({ controllerHome, userLevel: true, endpoint: staleEndpoint });
+      runMcpSetupChatgpt({ controllerHome, userLevel: true, connectorAuthMode: 'none', clearEndpoint: true });
+      let localConfig = JSON.parse(require('fs').readFileSync(join(controllerHome, 'mcp', 'mcp.local.json'), 'utf8'));
+      expect(localConfig.auth.mode).toBe('none');
+      expect(localConfig.chatgpt.endpoint).toBeUndefined();
+      expect(setupConnectorAuthMode(configureSetupProfile({ setupRoot: root, controller: 'chatgpt', tunnel: 'openai', tunnelId: 'tunnel_0123456789abcdef0123456789abcdef' }))).toBe('none');
+      expect(setupConnectorAuthMode(configureSetupProfile({ setupRoot: root, controller: 'chatgpt', tunnel: 'existing', endpoint: 'https://forge.example.com/mcp' }))).toBe('oauth');
+      runMcpSetupChatgpt({ controllerHome, userLevel: true, endpoint: 'https://forge.example.com/mcp', connectorAuthMode: 'oauth' });
+      localConfig = JSON.parse(require('fs').readFileSync(join(controllerHome, 'mcp', 'mcp.local.json'), 'utf8'));
+      expect(localConfig.auth.mode).toBe('oauth');
+      expect(localConfig.chatgpt.endpoint).toBe('https://forge.example.com/mcp');
+      expect(() => runMcpSetupChatgpt({ controllerHome, userLevel: true, connectorAuthMode: 'invalid' })).toThrow('invalid connector auth');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
@@ -132,7 +153,7 @@ describe('Forge setup session', () => {
     const root = temp('forge-setup-openai-alias-');
     try {
       const tunnelId = 'tunnel_0123456789abcdef0123456789abcdef', controllerHome = join(root, 'controller'), localEndpoint = 'http://127.0.0.1:8767/mcp';
-      runMcpSetupChatgpt({ controllerHome, userLevel: true });
+      runMcpSetupChatgpt({ controllerHome, userLevel: true, connectorAuthMode: 'none' });
       const binDir = join(root, 'bin'), tunnelClient = join(binDir, 'tunnel-client'), correctProfile = join(root, 'correct.yaml'), wrongProfile = join(root, 'wrong.yaml');
       mkdirSync(binDir, { recursive: true }); writeFileSync(correctProfile, `mcp:\n  server_url: ${localEndpoint}\n`); writeFileSync(wrongProfile, 'mcp:\n  server_url: http://127.0.0.1:9999/mcp\n');
       writeFileSync(tunnelClient, `#!/bin/sh
@@ -164,7 +185,7 @@ exit 1
     try {
       const tunnelId = 'tunnel_0123456789abcdef0123456789abcdef';
       const controllerHome = join(root, 'controller');
-      runMcpSetupChatgpt({ controllerHome, userLevel: true });
+      runMcpSetupChatgpt({ controllerHome, userLevel: true, connectorAuthMode: 'none' });
       const binDir = join(root, 'bin');
       mkdirSync(binDir, { recursive: true });
       const tunnelClient = join(binDir, 'tunnel-client');

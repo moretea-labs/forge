@@ -76,7 +76,7 @@ Forge reports this provider ready only when `tunnel-client` reports the managed 
 
 #### What address changes?
 
-With Secure Tunnel there is no public Forge `/mcp` address to paste. The ChatGPT App selects the `tunnel_id`; `tunnel-client` forwards commands to Forge's **loopback OAuth Gateway** (default `127.0.0.1:8767/mcp`), which proxies to the internal bearer-only Runtime (default `127.0.0.1:8765/mcp`). If you customize ports, use the OAuth endpoint printed by `forge mcp setup chatgpt --user-level`.
+With Secure Tunnel there is no public Forge `/mcp` address to paste. The ChatGPT App selects the `tunnel_id`; `tunnel-client` forwards commands to Forge's **loopback Secure Tunnel Connector** (default `127.0.0.1:8767/mcp`), which proxies to the internal bearer-only Runtime (default `127.0.0.1:8765/mcp`). The Connector uses the OpenAI tunnel/workspace as its outer authorization boundary (`auth=none` locally); it is not a browser-facing OAuth authorization server and must remain loopback-only. `forge setup next` keeps this transport-specific auth mode aligned automatically.
 
 The App/connector identity and Forge tool schema are separate from the transport. Switching from Cloudflare/HTTPS to Secure Tunnel changes the network path, not the 19-tool Forge schema. A fresh chat is useful for isolated A/B testing, but it is not required merely because transport changed when the same App is already connected.
 
@@ -89,7 +89,7 @@ forge setup configure --controller chatgpt --tunnel cloudflare
 forge setup next
 ```
 
-Setup detects `cloudflared` and the current platform. On macOS it can suggest Homebrew when present; Linux/WSL2 and Windows receive their platform-specific official installation path. After creating a stable named tunnel, record only the resulting `/mcp` URL:
+Setup detects `cloudflared` and the current platform. On macOS it can suggest Homebrew when present; Linux/WSL2 and Windows receive their platform-specific official installation path. The public tunnel must terminate at the loopback OAuth Connector (normally port `8767`), never the bearer-only Runtime. After creating a stable named tunnel, record only the resulting `/mcp` URL:
 
 ```bash
 forge setup configure \
@@ -107,7 +107,7 @@ forge setup configure --controller chatgpt --tunnel tailscale
 forge setup next
 ```
 
-Forge detects the Tailscale CLI and guides Funnel setup for the current platform. Record the final HTTPS `/mcp` URL when available.
+Forge detects the Tailscale CLI and guides Funnel setup for the current platform. Funnel exposes the loopback OAuth Connector (normally port `8767`), never the bearer-only Runtime. Record the final HTTPS `/mcp` URL when available.
 
 ### D. Existing HTTPS endpoint or defer
 

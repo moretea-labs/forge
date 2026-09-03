@@ -90,7 +90,7 @@ setup 进度保存在用户级 Forge 目录，可以退出终端后继续。根�
 forge runtime service install-package
 ```
 
-对 ChatGPT，package 安装会同时维护两个本地服务边界：内部 bearer-only Canonical Runtime，以及供 Secure Tunnel/HTTPS connector 使用的 loopback OAuth Gateway。不要把 tunnel 直接指向内部 Runtime 端口，以 setup 输出的本地 OAuth endpoint 为准。
+对 ChatGPT，package 安装会同时维护两个本地服务边界：内部 bearer-only Canonical Runtime，以及独立的 loopback ChatGPT Connector。OpenAI Secure MCP Tunnel 在这个 Connector 上使用 tunnel/workspace authority，公网 HTTPS provider 则在这里使用 OAuth。绝不能把 tunnel 直接指向内部 Runtime 端口。
 
 旧的 `forge runtime service install --repo ...` 会构建 Git/source immutable Runtime，属于**高级维护路径**；Standalone Recovery 同样不是普通用户初始化的前置条件。
 

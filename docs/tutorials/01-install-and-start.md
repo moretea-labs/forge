@@ -90,7 +90,7 @@ The normal Runtime action is:
 forge runtime service install-package
 ```
 
-For ChatGPT setups this installs two local service boundaries together: the bearer-only Canonical Runtime and a separate loopback OAuth Gateway used by Secure Tunnel or HTTPS connectors. Users should follow the OAuth endpoint printed by setup instead of tunneling directly to the internal Runtime port.
+For ChatGPT setups this installs two local service boundaries together: the bearer-only Canonical Runtime and a separate loopback ChatGPT Connector. OpenAI Secure MCP Tunnel uses tunnel/workspace authority at that Connector, while public HTTPS providers use OAuth there. Never tunnel directly to the internal Runtime port.
 
 The older `forge runtime service install --repo ...` path builds an immutable Git/source Runtime and is an **advanced maintainer path**, not normal onboarding. Standalone Recovery is likewise optional advanced infrastructure.
 

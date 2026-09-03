@@ -25,7 +25,7 @@ export interface McpLocalConfig {
   chatgpt?: {
     serverName?: string;
     endpoint?: string;
-    /** Loopback OAuth MCP endpoint used by ChatGPT tunnels/connectors. */
+    /** Loopback ChatGPT Connector endpoint. Authorization is transport-specific: Secure Tunnel authority or public HTTPS OAuth. */
     localEndpoint?: string;
   };
   profile?: string;

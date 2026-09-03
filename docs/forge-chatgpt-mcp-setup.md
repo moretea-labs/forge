@@ -18,7 +18,7 @@ forge setup next
 The corresponding low-level commands are:
 
 ```bash
-forge mcp setup chatgpt --user-level
+forge mcp setup chatgpt --user-level --connector-auth none --clear-endpoint
 forge runtime service install-package
 forge runtime status --json
 ```
@@ -27,11 +27,13 @@ The Package Runtime does not require a Forge Git checkout, Bun compilation, Code
 
 ## Local boundaries
 
-Forge MCP remains loopback-only, normally at:
+The bearer-only Canonical Runtime remains loopback-only, normally at:
 
 ```text
 http://127.0.0.1:8765/mcp
 ```
+
+ChatGPT uses a separate loopback Connector (normally `127.0.0.1:8767/mcp`). With OpenAI Secure MCP Tunnel the Connector uses tunnel/workspace authority (`auth=none` locally) and must remain loopback-only. Public HTTPS providers expose this Connector with OAuth; they must never expose the bearer-only Runtime directly.
 
 The local Utility Console uses a separate loopback port (normally 8766). Never expose the Utility Console to the internet.
 
@@ -47,7 +49,7 @@ The setup profile owns the connection choice. Supported paths are:
 4. **Existing HTTPS** — user-managed reverse proxy/tunnel ending in `/mcp`.
 5. **None** — local setup only; remote connectivity can be configured later.
 
-For OpenAI Secure MCP Tunnel, setup uses the official supervised runtime surface and considers it ready only when `tunnel-client runtimes status forge --json` reports the runtime running, healthy, and ready.
+For OpenAI Secure MCP Tunnel, setup uses the official supervised runtime surface and considers it ready only when the local Connector is configured for Secure Tunnel authority and `tunnel-client runtimes status forge --json` reports the runtime running, healthy, and ready. The loopback Connector is not a browser-facing OAuth authorization server.
 
 For public HTTPS paths, the configured connector URL is:
 

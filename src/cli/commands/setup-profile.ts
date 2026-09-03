@@ -187,6 +187,20 @@ export function setupNeedsRemoteAccess(profile: SetupProfile | undefined): boole
   return Boolean(profile?.controllers.some((entry) => entry === 'chatgpt' || entry === 'mcp'));
 }
 
+export type SetupConnectorAuthMode = 'oauth' | 'none';
+
+export function setupConnectorAuthMode(profile: SetupProfile | undefined): SetupConnectorAuthMode {
+  const provider = profile?.tunnel.provider === 'auto' ? 'openai' : profile?.tunnel.provider;
+  return provider === 'openai' ? 'none' : 'oauth';
+}
+
+function chatgptConnectorRepairCommand(profile: SetupProfile, controllerHome: string): string {
+  const endpoint = profile.tunnel.endpoint
+    ? ` --endpoint ${profile.tunnel.endpoint}`
+    : ' --clear-endpoint';
+  return `forge mcp setup chatgpt --user-level --controller-home ${JSON.stringify(controllerHome)} --connector-auth ${setupConnectorAuthMode(profile)}${endpoint}`;
+}
+
 
 function commandExists(command: string, platform = process.platform, env: NodeJS.ProcessEnv = process.env): boolean {
   return discoverExecutable({ id: command, candidates: [command], platform, env }).status === 'ready';
@@ -283,14 +297,14 @@ export function resolveControllerGuidance(
         && Number.isInteger(localConfig.server?.port);
       const connectorReady = controller !== 'chatgpt' || isLoopbackMcpEndpoint(localConfig?.chatgpt?.localEndpoint);
       const endpointReady = !profile.tunnel.endpoint || localConfig?.chatgpt?.endpoint === profile.tunnel.endpoint;
-      if (!localReady || !connectorReady || !endpointReady) {
-        const endpoint = profile.tunnel.endpoint ? ` --endpoint ${profile.tunnel.endpoint}` : '';
+      const authReady = localConfig?.auth?.mode === setupConnectorAuthMode(profile);
+      if (!localReady || !connectorReady || !endpointReady || !authReady) {
         return {
           controller,
           ready: false,
           title: controller === 'chatgpt' ? 'Configure the ChatGPT controller endpoint' : 'Configure the remote MCP controller endpoint',
-          detail: 'Create or refresh the Forge OAuth/MCP configuration in the selected Controller Home. This does not install Codex or Claude and does not require a repository.',
-          command: `forge mcp setup chatgpt --user-level --controller-home ${JSON.stringify(controllerHome)}${endpoint}`,
+          detail: 'Create or refresh the transport-aware Forge MCP configuration in the selected Controller Home. Secure Tunnel uses tunnel authority at the loopback Connector; public HTTPS connectors retain OAuth.',
+          command: chatgptConnectorRepairCommand(profile, controllerHome),
         };
       }
       continue;
@@ -362,9 +376,6 @@ export function resolveTunnelGuidance(
   if (!profile || !setupNeedsRemoteAccess(profile)) {
     return { provider: 'none', ready: true, title: 'Remote controller connection', detail: 'Not required by the configured local controller set.' };
   }
-  if (profile.tunnel.endpoint) {
-    return { provider: profile.tunnel.provider, ready: true, title: 'HTTPS endpoint configured', detail: `Configured: ${profile.tunnel.endpoint}. Live connector reachability is verified in the ChatGPT connection step.` };
-  }
   let provider = profile.tunnel.provider;
   if (provider === 'auto') {
     // ChatGPT's private outbound path is the default. Do not silently choose a
@@ -372,6 +383,21 @@ export function resolveTunnelGuidance(
     // be installed; users without Secure Tunnel access can explicitly select a
     // fallback provider.
     provider = 'openai';
+  }
+  const controllerHome = resolveControllerHome(options.controllerHome);
+  const localConfig = loadMcpServiceLocalConfig(controllerHome);
+  const expectedAuthMode = setupConnectorAuthMode(profile);
+  if (profile.tunnel.endpoint) {
+    if (localConfig && localConfig.auth?.mode !== expectedAuthMode) {
+      return {
+        provider,
+        ready: false,
+        title: 'Restore the public HTTPS Connector OAuth boundary',
+        detail: 'Public HTTPS MCP transport must terminate at the OAuth-protected Connector rather than the bearer-only Runtime.',
+        command: chatgptConnectorRepairCommand(profile, controllerHome),
+      };
+    }
+    return { provider, ready: true, title: 'HTTPS endpoint configured', detail: `Configured: ${profile.tunnel.endpoint}. Live connector reachability is verified in the ChatGPT connection step.` };
   }
   if (provider === 'openai') {
     if (!profile.tunnel.tunnelId) {
@@ -387,13 +413,21 @@ export function resolveTunnelGuidance(
         detail: 'Install the supported tunnel-client binary from OpenAI Platform Tunnels or the official openai/tunnel-client release. The runtime API key remains an environment/file reference owned by tunnel-client; Forge does not store it.',
       };
     }
-    const localConfig = loadMcpServiceLocalConfig(resolveControllerHome(options.controllerHome));
+    if (localConfig && localConfig.auth?.mode !== expectedAuthMode) {
+      return {
+        provider,
+        ready: false,
+        title: 'Align the Secure Tunnel Connector authorization boundary',
+        detail: 'OpenAI Secure MCP Tunnel must terminate at a loopback Connector using tunnel/workspace authority, not a loopback browser OAuth issuer.',
+        command: chatgptConnectorRepairCommand(profile, controllerHome),
+      };
+    }
     const localEndpoint = localConfig?.chatgpt?.localEndpoint;
     if (!isLoopbackMcpEndpoint(localEndpoint)) {
       return {
-        provider, ready: false, title: 'Prepare the local ChatGPT OAuth endpoint',
-        detail: 'Secure Tunnel must terminate at Forge’s loopback OAuth Gateway, not the bearer-only Canonical Runtime. Refresh the user-level ChatGPT MCP configuration first.',
-        command: `forge mcp setup chatgpt --user-level --controller-home ${JSON.stringify(resolveControllerHome(options.controllerHome))}`,
+        provider, ready: false, title: 'Prepare the local ChatGPT Secure Tunnel Connector',
+        detail: 'Secure Tunnel must terminate at Forge’s loopback transport-authorized Connector, not the bearer-only Canonical Runtime and not a browser-facing loopback OAuth issuer. Refresh the user-level ChatGPT MCP configuration first.',
+        command: chatgptConnectorRepairCommand(profile, controllerHome),
       };
     }
     const preferredAlias = 'forge';
@@ -464,7 +498,7 @@ export function resolveTunnelGuidance(
     }
     return {
       provider, ready: false, title: 'Create a stable Cloudflare Tunnel',
-      detail: 'Authenticate cloudflared, create/route a named tunnel to 127.0.0.1:8765, then record its HTTPS /mcp URL.',
+      detail: 'Authenticate cloudflared, create/route a named tunnel to the loopback OAuth Connector (normally 127.0.0.1:8767), then record its HTTPS /mcp URL. Never expose the bearer-only Canonical Runtime directly.',
       command: 'cloudflared tunnel login',
     };
   }
@@ -480,8 +514,8 @@ export function resolveTunnelGuidance(
   }
   return {
     provider: 'tailscale', ready: false, title: 'Enable Tailscale Funnel',
-    detail: 'Expose only the local Forge MCP service and then record the generated HTTPS /mcp URL.',
-    command: 'tailscale funnel --bg 8765',
+    detail: 'Expose only the loopback OAuth Connector and then record the generated HTTPS /mcp URL. Never expose the bearer-only Canonical Runtime directly.',
+    command: 'tailscale funnel --bg 8767',
   };
 }
 

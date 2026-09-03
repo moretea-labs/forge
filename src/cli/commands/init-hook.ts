@@ -25,6 +25,7 @@ import {
   detectSetupPlatform,
   formatSetupProfile,
   readSetupProfile,
+  setupConnectorAuthMode,
   setupHostTarget,
   type SetupHostTarget,
   type SetupPlatformSnapshot,
@@ -846,9 +847,14 @@ function collectOption(value: string, previous: string[] = []): string[] {
   return [...previous, value];
 }
 
-function syncExplicitRemoteControllerEndpoint(profile: SetupProfile | undefined, endpoint: string | undefined): void {
-  if (!profile || !endpoint || !profile.controllers.some((controller) => controller === 'chatgpt' || controller === 'mcp')) return;
-  runMcpSetupChatgpt({ userLevel: true, endpoint });
+function syncRemoteControllerTransport(profile: SetupProfile | undefined): void {
+  if (!profile || !profile.controllers.some((controller) => controller === 'chatgpt' || controller === 'mcp')) return;
+  runMcpSetupChatgpt({
+    userLevel: true,
+    ...(profile.tunnel.endpoint ? { endpoint: profile.tunnel.endpoint } : {}),
+    clearEndpoint: !profile.tunnel.endpoint,
+    connectorAuthMode: setupConnectorAuthMode(profile),
+  });
 }
 
 function setupCycle(rawOpts: SetupCycleRawOptions, surface: string): void {
@@ -863,8 +869,8 @@ function setupCycle(rawOpts: SetupCycleRawOptions, surface: string): void {
         endpoint: rawOpts.endpoint,
         tunnelId: rawOpts.tunnelId,
       });
-      syncExplicitRemoteControllerEndpoint(profile, rawOpts.endpoint);
     }
+    syncRemoteControllerTransport(profile);
     const session = openSetupSession({
       profile,
       target: setupTarget(rawOpts.target, surface) ?? setupHostTarget(profile),
@@ -926,7 +932,7 @@ export function buildSetupCommand(): Command {
           endpoint: rawOpts.endpoint,
           tunnelId: rawOpts.tunnelId,
         });
-        syncExplicitRemoteControllerEndpoint(profile, rawOpts.endpoint);
+        syncRemoteControllerTransport(profile);
         console.log(rawOpts.json ? JSON.stringify(profile, null, 2) : `${formatSetupProfile(profile)}\n\nNext: forge setup next`);
       } catch (error) {
         console.error(error instanceof Error ? error.message : String(error));

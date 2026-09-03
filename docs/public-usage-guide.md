@@ -18,7 +18,7 @@ forge setup next
 
 ## 2. Follow setup until the selected path is usable
 
-For ChatGPT, `--tunnel auto` prefers OpenAI Secure MCP Tunnel and does not silently switch to a public ingress provider just because one is installed. The packaged setup keeps the bearer-only Canonical Runtime private and manages a separate loopback OAuth Gateway for the ChatGPT App. Cloudflare Tunnel, Tailscale Funnel, an existing HTTPS `/mcp` endpoint, or deferred remote access are explicit alternatives. Existing users update with `npm install -g @moretea-labs/forge@latest`, then `forge setup next`.
+For ChatGPT, `--tunnel auto` prefers OpenAI Secure MCP Tunnel and does not silently switch to a public ingress provider just because one is installed. The packaged setup keeps the bearer-only Canonical Runtime private and manages a separate loopback ChatGPT Connector: Secure Tunnel uses tunnel/workspace authority there, while public HTTPS providers use OAuth there. Cloudflare Tunnel, Tailscale Funnel, an existing HTTPS `/mcp` endpoint, or deferred remote access are explicit alternatives. Existing users update with `npm install -g @moretea-labs/forge@latest`, then `forge setup next`.
 
 The normal package Runtime is `forge runtime service install-package`. Source immutable Runtime and Standalone Recovery are advanced maintainer paths.
 

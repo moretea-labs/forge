@@ -104,9 +104,9 @@ function writePackageConnectorServiceAuthority(input: { release: PackageConnecto
 }
 
 export function packageConnectorEndpointStatusHealthy(status: number): boolean {
-  // The OAuth-protected MCP endpoint is healthy when it either answers directly
-  // or returns the expected unauthenticated Bearer challenge. Treating every
-  // received HTTP status as healthy masks upstream 5xx failures that are often
+  // The Connector is healthy when Secure Tunnel mode answers directly (200)
+  // or public OAuth mode returns the expected unauthenticated challenge (401).
+  // Treating every received HTTP status as healthy masks upstream 5xx failures that are often
   // surfaced remotely as 502 and prevents the persistent service from healing.
   return status === 200 || status === 401;
 }
