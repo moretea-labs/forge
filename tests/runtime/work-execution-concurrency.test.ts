@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -14,9 +14,10 @@ import {
   recordWorkExecutionConcurrencyWait,
   reconcileWorkExecutionConcurrencyWaits,
 } from '../../src/runtime/control-plane/concurrency/work-execution-concurrency';
+import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import type { ManagedProcessRecord, ProcessResourceClaim } from '../../src/runtime/execution/process-runtime/types';
-import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
+import { acquireExecutionLeases, listActiveLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 
 const roots: string[] = [];
 function tempHome(): string {
@@ -167,6 +168,44 @@ describe('Work execution concurrency', () => {
     // same Plan step even before it owns a Process.
     expect(sameWork).toMatchObject({ compatible: false, hardBlocked: false, wait: { blockingWorkId: second.workId } });
     expect(sameWork.wait?.blockingWorkId).not.toBe(first.workId);
+  });
+
+  test('keeps every active Lease authoritative beyond the former 5000-entry scan boundary', () => {
+    const home = tempHome(), repoId = 'repo-lease-authority';
+    const root = join(repositoryControllerRoot(home, repoId), 'leases', 'active');
+    mkdirSync(root, { recursive: true });
+    const now = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const resourceKey = `integration:${repoId}:kernel-v2`;
+    for (let index = 0; index < 5_001; index += 1) {
+      const leaseId = `LEASE-boundary-${String(index).padStart(5, '0')}`;
+      writeFileSync(join(root, `${leaseId}.json`), JSON.stringify({
+        schemaVersion: 1,
+        leaseId,
+        repoId,
+        resourceKey,
+        mode: 'exclusive',
+        ownerJobId: `process:blocker-${index}`,
+        fencingToken: index + 1,
+        acquiredAt: now,
+        heartbeatAt: now,
+        expiresAt,
+        visibility: 'ephemeral',
+      }));
+    }
+
+    expect(listActiveLeases(home, repoId)).toHaveLength(5_001);
+    const acquisition = acquireExecutionLeases(home, repoId, 'process:candidate', [
+      { resourceKey, mode: 'exclusive', repoId },
+    ], {
+      ttlMs: 30_000,
+      visibility: 'ephemeral',
+      notifyScheduler: false,
+      invalidateProjection: false,
+      emitRuntimeEvent: false,
+    });
+    expect(acquisition.acquired).toBe(false);
+    expect(acquisition.blockers).toHaveLength(5_001);
   });
 
   test('keeps the Lease store authoritative while Scheduler reconciliation clears a resolved Work wait projection', () => {

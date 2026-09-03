@@ -142,7 +142,7 @@ export function resetLeaseSideEffectMetrics(): void {
 export function listActiveLeases(controllerHome: string, repoId: string): ExecutionLease[] {
   try {
     const leases: ExecutionLease[] = [];
-    for (const name of readdirSync(activeRoot(controllerHome, repoId)).filter((entry) => entry.endsWith('.json')).slice(0, 5000)) {
+    for (const name of readdirSync(activeRoot(controllerHome, repoId)).filter((entry) => entry.endsWith('.json'))) {
       const path = join(activeRoot(controllerHome, repoId), name);
       try {
         const lease = readJsonFile<ExecutionLease>(path);
