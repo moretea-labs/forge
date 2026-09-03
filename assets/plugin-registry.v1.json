@@ -13,6 +13,12 @@
       "protocolVersion": "1.0",
       "platforms": [
         "darwin"
+      ],
+      "semanticCapabilities": [
+        "computer.observe.v1",
+        "computer.input.v1",
+        "computer.capture.v1",
+        "computer.browser_automation.v1"
       ]
     },
     {

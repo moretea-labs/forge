@@ -834,6 +834,7 @@ interface SetupCycleRawOptions {
   target?: string;
   controller?: string;
   addController?: string[];
+  capability?: string[];
   tunnel?: string;
   endpoint?: string;
   tunnelId?: string;
@@ -853,10 +854,11 @@ function syncExplicitRemoteControllerEndpoint(profile: SetupProfile | undefined,
 function setupCycle(rawOpts: SetupCycleRawOptions, surface: string): void {
   try {
     let profile = readSetupProfile();
-    if (rawOpts.controller || rawOpts.addController?.length || rawOpts.tunnel || rawOpts.endpoint || rawOpts.tunnelId) {
+    if (rawOpts.controller || rawOpts.addController?.length || rawOpts.capability?.length || rawOpts.tunnel || rawOpts.endpoint || rawOpts.tunnelId) {
       profile = configureSetupProfile({
         controller: rawOpts.controller,
         addControllers: rawOpts.addController,
+        capabilities: rawOpts.capability,
         tunnel: rawOpts.tunnel,
         endpoint: rawOpts.endpoint,
         tunnelId: rawOpts.tunnelId,
@@ -880,6 +882,7 @@ function addSetupSelectionOptions(command: Command): Command {
   return command
     .option('--controller <controller>', 'Primary external controller: chatgpt|codex|claude|mcp')
     .option('--add-controller <controller>', 'Also configure another external controller entry (repeatable)', collectOption, [])
+    .option('--capability <capability-id>', 'Require a provider-neutral semantic capability (repeatable)', collectOption, [])
     .option('--tunnel <provider>', 'Remote connection: auto|openai|cloudflare|tailscale|existing|none')
     .option('--tunnel-id <id>', 'OpenAI Secure MCP Tunnel id (non-secret tunnel_...)')
     .option('--endpoint <url>', 'Existing/stable public HTTPS URL ending in /mcp')
@@ -908,15 +911,17 @@ export function buildSetupCommand(): Command {
     .description('Choose the primary external controller, optional additional controllers, and public access provider')
     .requiredOption('--controller <controller>', 'Primary external controller: chatgpt|codex|claude|mcp')
     .option('--add-controller <controller>', 'Also configure another external controller entry (repeatable)', collectOption, [])
+    .option('--capability <capability-id>', 'Require a provider-neutral semantic capability (repeatable)', collectOption, [])
     .option('--tunnel <provider>', 'Remote connection: auto|openai|cloudflare|tailscale|existing|none')
     .option('--tunnel-id <id>', 'OpenAI Secure MCP Tunnel id (non-secret tunnel_...)')
     .option('--endpoint <url>', 'Existing/stable public HTTPS URL ending in /mcp')
     .option('--json', 'Output JSON instead of human-readable text')
-    .action((rawOpts: { controller: string; addController?: string[]; tunnel?: string; tunnelId?: string; endpoint?: string; json?: boolean }) => {
+    .action((rawOpts: { controller: string; addController?: string[]; capability?: string[]; tunnel?: string; tunnelId?: string; endpoint?: string; json?: boolean }) => {
       try {
         const profile = configureSetupProfile({
           controller: rawOpts.controller,
           addControllers: rawOpts.addController,
+          capabilities: rawOpts.capability,
           tunnel: rawOpts.tunnel,
           endpoint: rawOpts.endpoint,
           tunnelId: rawOpts.tunnelId,

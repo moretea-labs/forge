@@ -13,6 +13,13 @@ describe('official plugin catalog', () => {
     });
   });
 
+  test('advertises provider-neutral Computer capabilities for Desktop Operator bootstrap resolution', () => {
+    const desktop = officialPluginCatalogItems('darwin').find((entry) => entry.id === 'desktop_operator');
+    expect(desktop?.semanticCapabilities).toEqual([
+      'computer.observe.v1', 'computer.input.v1', 'computer.capture.v1', 'computer.browser_automation.v1',
+    ]);
+  });
+
   test('requires the Desktop Operator provider identity to match the catalog release', () => {
     const desktop = officialPluginCatalogItems('darwin').find((entry) => entry.id === 'desktop_operator');
     expect(desktop).toMatchObject({

@@ -2,7 +2,9 @@ import { resolveControllerHome } from '../repositories/controller-home';
 import {
   reconcileBootstrapSnapshot,
   type BootstrapAction,
+  resolveBootstrapCapabilityProviders,
   type BootstrapBlocker,
+  type BootstrapCapabilityProviderResolution,
   type BootstrapDesiredState,
   type BootstrapEvaluation,
   type BootstrapObservation,
@@ -23,8 +25,11 @@ import {
   type SetupProfileOptions,
   type TunnelGuidance,
 } from './setup-profile';
+import { controllerPluginRepository, listAssistantPluginManifests } from '../../runtime/plugins/store';
+import { officialPluginCatalogItems } from './plugin';
 
 export interface SetupBootstrapDependencies {
+  capabilities(intents: readonly string[], options: { controllerHome: string; platform: SetupPlatformSnapshot }): BootstrapCapabilityProviderResolution[];
   controller(profile: SetupProfile | undefined, options: { controllerHome?: string; home?: string }): ControllerGuidance | undefined;
   runtime(profile: SetupProfile | undefined, options: { controllerHome?: string }): RuntimeGuidance | undefined;
   tunnel(profile: SetupProfile | undefined, platform: SetupPlatformSnapshot, options: { controllerHome?: string; env?: NodeJS.ProcessEnv }): TunnelGuidance;
@@ -40,6 +45,13 @@ export interface SetupBootstrapOptions extends SetupProfileOptions {
 }
 
 const DEFAULT_DEPENDENCIES: SetupBootstrapDependencies = {
+  capabilities: (intents, options) => {
+    if (intents.length === 0) return [];
+    const repository = controllerPluginRepository(options.controllerHome);
+    const installedManifests = listAssistantPluginManifests(options.controllerHome, repository, { preferStored: true });
+    const catalog = officialPluginCatalogItems(options.platform.platform);
+    return resolveBootstrapCapabilityProviders({ capabilityIntents: intents, installedManifests, catalog });
+  },
   controller: resolveControllerGuidance,
   runtime: resolveRuntimeGuidance,
   tunnel: resolveTunnelGuidance,
@@ -65,7 +77,7 @@ function desiredState(profile: SetupProfile | undefined, capabilities: readonly 
       ...(profile?.tunnel.endpoint ? { endpoint: profile.tunnel.endpoint } : {}),
       ...(profile?.tunnel.tunnelId ? { tunnelId: profile.tunnel.tunnelId } : {}),
     },
-    capabilityIntents: [...capabilities],
+    capabilityIntents: [...new Set([...(profile?.capabilityIntents ?? []), ...capabilities])],
   };
 }
 
@@ -209,7 +221,50 @@ export function observeSetupBootstrap(options: SetupBootstrapOptions = {}): Boot
     steps.push(step({ id: 'connectivity', label: 'Controller transport', state: 'blocked', dependsOn: ['runtime'], observation: connectivityObservation, blocker, action }));
   }
 
-  return { desired: desiredState(profile, options.capabilities), observations, steps, blockers, actions };
+  const desired = desiredState(profile, options.capabilities);
+  for (const resolution of dependencies.capabilities(desired.capabilityIntents, { controllerHome, platform })) {
+    const safeCapabilityId = resolution.capabilityId.replace(/[^a-zA-Z0-9_.-]+/g, '-');
+    const observation: BootstrapObservation = {
+      id: `capability.${safeCapabilityId}`,
+      component: 'plugin',
+      status: resolution.status === 'ready' ? 'ready' : resolution.status === 'unsupported' ? 'unsupported' : 'degraded',
+      summary: resolution.summary,
+      ...(resolution.providerId ? { provider: resolution.providerId } : {}),
+      ...(resolution.status === 'ready' ? {} : { reasonCodes: [`CAPABILITY_${resolution.status.toUpperCase()}`] }),
+      observedAt,
+    };
+    observations.push(observation);
+    const stepId = `capability.${safeCapabilityId}`;
+    if (resolution.status === 'ready') {
+      steps.push(step({ id: stepId, label: `Capability ${resolution.capabilityId}`, state: 'ready', dependsOn: ['connectivity'], observation }));
+      continue;
+    }
+    if (resolution.status === 'unsupported' || !resolution.providerId) {
+      const blocker: BootstrapBlocker = {
+        code: `BOOTSTRAP_CAPABILITY_${safeCapabilityId.toUpperCase().replaceAll('.', '_').replaceAll('-', '_')}_UNSUPPORTED`,
+        kind: 'unsupported',
+        stepId,
+        summary: resolution.summary,
+        actionIds: [],
+      };
+      blockers.push(blocker);
+      steps.push(step({ id: stepId, label: `Capability ${resolution.capabilityId}`, state: 'blocked', dependsOn: ['connectivity'], observation, blocker }));
+      continue;
+    }
+    const action: BootstrapAction = {
+      id: `capability.${safeCapabilityId}.${resolution.status === 'installable' ? 'install' : 'repair'}`,
+      kind: resolution.status === 'installable' ? 'install' : 'repair',
+      owner: 'forge',
+      summary: `${resolution.status === 'installable' ? 'Install' : 'Repair'} ${resolution.providerName ?? resolution.providerId} for ${resolution.capabilityId}.`,
+      command: `forge plugin install ${resolution.providerId} --controller-home ${JSON.stringify(controllerHome)}`,
+      verification: 'forge setup next',
+    };
+    const blocker = blockerFor(stepId, `BOOTSTRAP_CAPABILITY_${safeCapabilityId.toUpperCase().replaceAll('.', '_').replaceAll('-', '_')}_${resolution.status.toUpperCase()}`, action, resolution.summary);
+    actions.push(action); blockers.push(blocker);
+    steps.push(step({ id: stepId, label: `Capability ${resolution.capabilityId}`, state: 'blocked', dependsOn: ['connectivity'], observation, blocker, action }));
+  }
+
+  return { desired, observations, steps, blockers, actions };
 }
 
 export function refreshSetupBootstrap(options: SetupBootstrapOptions = {}): BootstrapSnapshot {

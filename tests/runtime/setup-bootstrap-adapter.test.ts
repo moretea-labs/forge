@@ -49,4 +49,22 @@ describe('Stage4 setup bootstrap adapter', () => {
       expect(JSON.stringify(snapshot)).not.toContain('CONTROL_PLANE_API_KEY');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+  test('turns capability intent into provider-neutral install and unsupported lifecycle steps', () => {
+    const base = {
+      profile: { ...profile, capabilityIntents: ['computer.observe.v1', 'knowledge.telepathy.v9'] }, platform, controllerHome: '/tmp/forge-bootstrap-capabilities',
+      dependencies: {
+        controller: () => undefined,
+        runtime: () => ({ ready: true, title: 'Runtime', detail: 'ready' }),
+        tunnel: () => ({ provider: 'openai' as const, ready: true, title: 'Tunnel', detail: 'ready' }),
+        capabilities: () => [
+          { capabilityId: 'computer.observe.v1', status: 'installable' as const, providerId: 'desktop_operator', providerName: 'Desktop Operator', summary: 'Desktop Operator can provide computer.observe.v1.' },
+          { capabilityId: 'knowledge.telepathy.v9', status: 'unsupported' as const, summary: 'No provider.' },
+        ],
+      },
+    };
+    const evaluation = observeSetupBootstrap(base);
+    expect(evaluation.actions.find((entry) => entry.id === 'capability.computer.observe.v1.install')).toMatchObject({ owner: 'forge', command: expect.stringContaining('forge plugin install desktop_operator') });
+    expect(evaluation.blockers.find((entry) => entry.stepId === 'capability.knowledge.telepathy.v9')).toMatchObject({ kind: 'unsupported', actionIds: [] });
+  });
+
 });

@@ -10,7 +10,7 @@ import { installExternalPluginRegistration, listExternalPluginRegistrations, typ
 import { createDesktopOperatorRegistrationInput } from '../../runtime/plugins/desktop-operator-registration';
 import { controllerPluginRepository, getAssistantPluginManifest, syncAssistantPluginRegistry } from '../../runtime/plugins/store';
 
-export interface RegistryEntry { id:string; name:string; version:string; description:string; repository:string; ref:string; installer:string; providerVersion?:string; protocolVersion?:string; platforms:NodeJS.Platform[]; }
+export interface RegistryEntry { id:string; name:string; version:string; description:string; repository:string; ref:string; installer:string; providerVersion?:string; protocolVersion?:string; platforms:NodeJS.Platform[]; semanticCapabilities?:string[]; }
 interface Registry { schemaVersion:1; plugins:RegistryEntry[]; }
 interface CliOptions { json?:boolean; controllerHome?:string; refresh?:boolean; }
 const packageRoot=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
@@ -27,6 +27,7 @@ function registry():Registry{
     if(plugin.installer!=='forge-plugin-install.mjs')throw new Error(`PLUGIN_CATALOG_INSTALLER_INVALID: ${plugin.id}`);
     if(plugin.providerVersion!==undefined&&!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(plugin.providerVersion))throw new Error(`PLUGIN_CATALOG_PROVIDER_VERSION_INVALID: ${plugin.id}`);
     if(plugin.protocolVersion!==undefined&&!/^\d+\.\d+$/.test(plugin.protocolVersion))throw new Error(`PLUGIN_CATALOG_PROTOCOL_VERSION_INVALID: ${plugin.id}`);
+    if(plugin.semanticCapabilities!==undefined&&(!Array.isArray(plugin.semanticCapabilities)||plugin.semanticCapabilities.some(capability=>!/^[-a-z0-9_.]{3,128}$/.test(capability))))throw new Error(`PLUGIN_CATALOG_SEMANTIC_CAPABILITY_INVALID: ${plugin.id}`);
     ids.add(plugin.id);
   }
   return value;

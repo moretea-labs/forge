@@ -15,6 +15,7 @@ export interface SetupProfile {
   schemaVersion: 1;
   primaryController: SetupControllerKind;
   controllers: SetupControllerKind[];
+  capabilityIntents?: string[];
   tunnel: {
     provider: SetupTunnelProvider;
     endpoint?: string;
@@ -51,6 +52,7 @@ export interface ConfigureSetupProfileOptions extends SetupProfileOptions {
   tunnel?: string;
   endpoint?: string;
   tunnelId?: string;
+  capabilities?: string[];
 }
 
 export interface TunnelGuidance {
@@ -91,6 +93,12 @@ function normalizeTunnel(value: string | undefined): SetupTunnelProvider | undef
   return normalized as SetupTunnelProvider;
 }
 
+function normalizeCapabilityIntent(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!/^[-a-z0-9_.]{3,128}$/.test(normalized)) throw new Error(`invalid capability intent "${value}"`);
+  return normalized;
+}
+
 function normalizeTunnelId(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
@@ -116,7 +124,8 @@ export function readSetupProfile(options: SetupProfileOptions = {}): SetupProfil
     const controllers = Array.isArray(value.controllers)
       ? value.controllers.filter((entry): entry is SetupControllerKind => CONTROLLERS.includes(entry))
       : [];
-    return { ...value, controllers: Array.from(new Set([value.primaryController, ...controllers])) };
+    const capabilityIntents = Array.isArray(value.capabilityIntents) ? value.capabilityIntents.filter((entry): entry is string => typeof entry === 'string').map(normalizeCapabilityIntent) : [];
+    return { ...value, controllers: Array.from(new Set([value.primaryController, ...controllers])), capabilityIntents: Array.from(new Set(capabilityIntents)).sort() };
   } catch {
     return undefined;
   }
@@ -129,6 +138,7 @@ export function configureSetupProfile(options: ConfigureSetupProfileOptions): Se
     ?? 'chatgpt';
   const additions = (options.addControllers ?? []).map((entry) => normalizeController(entry, 'forge setup configure --add-controller')!);
   const controllers = Array.from(new Set([primaryController, ...(previous?.controllers ?? []), ...additions]));
+  const capabilityIntents = Array.from(new Set([...(previous?.capabilityIntents ?? []), ...(options.capabilities ?? []).map(normalizeCapabilityIntent)])).sort();
   const provider = normalizeTunnel(options.tunnel)
     ?? previous?.tunnel.provider
     ?? (controllers.some((entry) => entry === 'chatgpt' || entry === 'mcp') ? 'auto' : 'none');
@@ -147,6 +157,7 @@ export function configureSetupProfile(options: ConfigureSetupProfileOptions): Se
     schemaVersion: 1,
     primaryController,
     controllers,
+    capabilityIntents,
     tunnel: { provider, ...(endpoint ? { endpoint } : {}), ...(tunnelId ? { tunnelId } : {}) },
     createdAt: previous?.createdAt ?? now,
     updatedAt: now,
