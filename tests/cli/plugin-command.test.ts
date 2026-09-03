@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
+import { execFileSync } from 'child_process';
+import { pathToFileURL } from 'url';
 import { tmpdir } from 'os';
-import { externalPluginListItem, installerNextSteps, officialPluginCatalogItems, pluginCatalogCompatibility, registrationFrom, trustedExternalPluginCatalogEntry } from '../../src/cli/commands/plugin';
+import { externalPluginListItem, installTrustedExternalPlugin, installerNextSteps, officialPluginCatalogItems, pluginCatalogCompatibility, registrationFrom, trustedExternalPluginCatalogEntry } from '../../src/cli/commands/plugin';
 import { assertExternalPluginRepositoryTrusted, assertFirstPartyPluginRepositoryTrusted, trustExternalPluginRepository, untrustExternalPluginRepository } from '../../src/runtime/plugins/catalog-trust';
+import { getExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 
 describe('official plugin catalog', () => {
   test('includes the pinned Forge Figma Bridge release', () => {
@@ -96,6 +99,86 @@ describe('official plugin catalog', () => {
       expect(() => trustedExternalPluginCatalogEntry('portable_plugin', catalogPath, home)).toThrow(/PLUGIN_EXTERNAL_REPOSITORY_TRUST_REQUIRED/);
     } finally {
       rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('installs an explicitly trusted third-party catalog package without source changes', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-plugin-install-home-'));
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'forge-plugin-install-fixture-'));
+    const packageRepo = join(fixtureRoot, 'portable-plugin.git');
+    const repository = 'https://plugins.example.test/portable-plugin.git';
+    const catalogPath = join(fixtureRoot, 'catalog.json');
+    const commandSourcePath = resolve(import.meta.dir, '../../src/cli/commands/plugin.ts');
+    const commandSourceBefore = readFileSync(commandSourcePath, 'utf8');
+    const previousGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    const gitConfigPath = join(fixtureRoot, 'gitconfig');
+    try {
+      mkdirSync(packageRepo, { recursive: true });
+      execFileSync('git', ['init', '-q'], { cwd: packageRepo });
+      execFileSync('git', ['config', 'user.email', 'portable-fixture@example.invalid'], { cwd: packageRepo });
+      execFileSync('git', ['config', 'user.name', 'Portable Fixture'], { cwd: packageRepo });
+      writeFileSync(join(packageRepo, 'forge-plugin.json'), JSON.stringify({ id: 'portable_plugin', version: '1.0.0' }));
+      writeFileSync(join(packageRepo, 'provider.mjs'), `
+let raw = '';
+for await (const chunk of process.stdin) raw += chunk;
+const request = JSON.parse(raw.trim());
+console.log(JSON.stringify({ schemaVersion: 1, type: 'handshake', protocolVersion: 1, pluginId: 'portable_plugin', helperVersion: '1.0.0', capabilities: [] }));
+const result = request.actionId === 'manifest'
+  ? { id: 'portable_plugin', name: 'Portable Plugin', version: '1.0.0', protocolVersion: '1.0', mode: 'managed_cli', scope: 'controller', provider: 'fixture-vendor', capabilities: [], actions: [] }
+  : request.actionId === 'health' ? { state: 'ready' } : {};
+console.log(JSON.stringify({ schemaVersion: 1, type: 'result', requestId: request.requestId, ok: true, result }));
+`.trimStart());
+      writeFileSync(join(packageRepo, 'forge-plugin-install.mjs'), `
+import { fileURLToPath } from 'url';
+console.log(JSON.stringify({
+  schemaVersion: 1,
+  registration: {
+    pluginId: 'portable_plugin',
+    displayName: 'Portable Plugin',
+    provider: 'fixture-vendor',
+    pluginVersion: '1.0.0',
+    protocolVersion: '1.0',
+    scope: 'controller',
+    enabled: true,
+    transport: {
+      kind: 'managed_cli_json',
+      runtimeExecutable: process.execPath,
+      helperPath: fileURLToPath(new URL('./provider.mjs', import.meta.url)),
+      healthTimeoutMs: 2_000,
+      actionTimeoutMs: 2_000,
+    },
+    permissions: [],
+    capabilities: [],
+    actions: [],
+  },
+}));
+`.trimStart());
+      execFileSync('git', ['add', '.'], { cwd: packageRepo });
+      execFileSync('git', ['commit', '-qm', 'portable plugin fixture'], { cwd: packageRepo });
+      execFileSync('git', ['tag', 'v1.0.0'], { cwd: packageRepo });
+
+      writeFileSync(catalogPath, JSON.stringify({ schemaVersion: 1, plugins: [{
+        id: 'portable_plugin', name: 'Portable Plugin', version: '1.0.0', description: 'trusted fixture', repository,
+        ref: 'v1.0.0', installer: 'forge-plugin-install.mjs', platforms: [process.platform],
+      }] }));
+
+      expect(() => installTrustedExternalPlugin('portable_plugin', catalogPath, home)).toThrow(/PLUGIN_EXTERNAL_REPOSITORY_TRUST_REQUIRED/);
+      trustExternalPluginRepository(home, repository);
+      writeFileSync(gitConfigPath, `[url "${pathToFileURL(`${fixtureRoot}/`).toString()}"]\n  insteadOf = https://plugins.example.test/\n`);
+      process.env.GIT_CONFIG_GLOBAL = gitConfigPath;
+
+      const installed = installTrustedExternalPlugin('portable_plugin', catalogPath, home);
+      expect(installed).toMatchObject({ pluginId: 'portable_plugin', version: '1.0.0', enabled: true, health: { state: 'ready', ready: true } });
+      expect(getExternalPluginRegistration(home, 'portable_plugin')).toMatchObject({
+        pluginId: 'portable_plugin', provider: 'fixture-vendor', pluginVersion: '1.0.0', enabled: true,
+        transport: { kind: 'managed_cli_json' },
+      });
+      expect(readFileSync(commandSourcePath, 'utf8')).toBe(commandSourceBefore);
+    } finally {
+      if (previousGitConfigGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+      else process.env.GIT_CONFIG_GLOBAL = previousGitConfigGlobal;
+      rmSync(home, { recursive: true, force: true });
+      rmSync(fixtureRoot, { recursive: true, force: true });
     }
   });
 

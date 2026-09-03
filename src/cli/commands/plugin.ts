@@ -56,7 +56,7 @@ export function externalPluginListItem(controllerHome:string,registration:Extern
   catch(error){return{...base,health:{state:'error',message:error instanceof Error?error.message:String(error)}};}
 }
 function run(command:string,args:string[],cwd:string,timeoutMs=120000):string{
-  const result=spawnSync(command,args,{cwd,encoding:'utf8',timeout:timeoutMs,maxBuffer:32*1024*1024,shell:false,windowsHide:true});
+  const result=spawnSync(command,args,{cwd,encoding:'utf8',env:process.env,timeout:timeoutMs,maxBuffer:32*1024*1024,shell:false,windowsHide:true});
   if(result.error)throw new Error(`PLUGIN_INSTALL_COMMAND_FAILED: ${result.error.message}`);
   if(result.status!==0)throw new Error(`PLUGIN_INSTALL_COMMAND_FAILED: ${command} exited ${result.status}: ${String(result.stderr||result.stdout).slice(-4000)}`);
   return String(result.stdout??'');
