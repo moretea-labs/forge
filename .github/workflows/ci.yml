@@ -40,3 +40,6 @@ jobs:
         env:
           TEST_BASE_REF: origin/${{ github.base_ref || 'main' }}
         run: bun run check:main
+
+      - name: Verify packaged clean-install portability
+        run: npm run check:portable-package

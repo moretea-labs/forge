@@ -156,7 +156,8 @@
     "test:node-smoke": "node --test tests/node/*.test.mjs",
     "check:ci:portable": "FORGE_ALLOW_NODE_ONLY=1 bash scripts/check-ci.sh",
     "dev:controller-ui": "vite --config src/cli/local-bridge/frontend/vite.config.ts",
-    "prepack": "node scripts/sync-generated-authority.mjs --check"
+    "prepack": "node scripts/sync-generated-authority.mjs --check",
+    "check:portable-package": "node --test tests/node/*.test.mjs && bash scripts/check-tarball-install-smoke.sh"
   },
   "devDependencies": {
     "@colbymchenry/codegraph": "1.0.1",
