@@ -29,11 +29,11 @@ export interface PackageRuntimeRelease {
   authority: RuntimeReleaseAuthority;
 }
 
-// A package Runtime is an immutable, independently launchable release.  Its
-// TypeScript entrypoints import production modules at runtime, so retaining
-// only source files creates a release that passes staging but cannot start
-// after the installed package moves or disappears.
-const PACKAGE_RUNTIME_ROOTS = ['src', 'bin', 'assets', 'scripts', 'node_modules'] as const;
+// A package Runtime is an immutable, independently launchable release. Its
+// TypeScript entrypoints import both `src/` and the top-level modular-monolith
+// roots at runtime, so retaining only `src/` creates a release that passes
+// staging but cannot start after the installed package moves or disappears.
+const PACKAGE_RUNTIME_ROOTS = ['src', 'adapters', 'packages', 'bin', 'assets', 'scripts', 'node_modules'] as const;
 const PACKAGE_RUNTIME_FILES = ['package.json'] as const;
 const PACKAGE_RUNTIME_STAGING_RESERVE_BYTES = 256 * 1024 * 1024;
 

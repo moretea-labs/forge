@@ -111,6 +111,14 @@
 - Prevention rule: For `auth:none`, a local OAuth `401` is a failed readiness probe. After publishing Runtime authority, bind the Connector to that candidate release before starting or verifying the candidate; on any failure, roll back the complete Runtime and Connector binding together.
 - Where to apply next time: `src/runtime/root/package-connector-service.ts`, `src/runtime/standalone-recovery/core.ts`, and Secure Tunnel recovery/activation tests.
 
+## Immutable package releases must contain every production module root
+
+- Date: 2026-09-04
+- Triggered by correction: A staged WSL Runtime snapshot included `src/` but omitted the top-level `adapters/` and `packages/` module roots. The Connector correctly used `auth:none`, then crashed because its production MCP entrypoint could no longer resolve those modules.
+- Mistake pattern: Defining a Runtime package surface by directory convention without including all production import roots.
+- Prevention rule: Package release snapshots must include `src/`, `adapters/`, `packages/`, and declared launcher/dependency roots. The snapshot test must run after the source tree is removed and exercise imports from each top-level production module root.
+- Where to apply next time: `src/runtime/root/package-runtime-release.ts` and `tests/runtime/package-runtime-release.test.ts`.
+
 ## A running cloud VM is not a healthy Forge execution node
 - Date: 2026-08-26
 - Triggered by correction: The Google Cloud `forge-cloud` e2-micro remained `RUNNING`, but Forge_Cloud calls alternated between Secure Tunnel HTTP 404/429, direct SSH and IAP SSH failed, and serial logs showed repeated WARP main-loop watchdog hangs, QUIC idle timeout, NTP timeout, and journald watchdog restarts.
