@@ -51,7 +51,7 @@ function readyClosure(sourceRevision = 'revision-a'): ContextClosureReceipt {
     receiptId: '',
     sourceRevision,
     generatedAt: recordedAt,
-    contextPackSchemaVersion: 10,
+    contextPackSchemaVersion: 11,
     repository: { branch: 'kernel-v2/architecture', dirty: false, activeWorkIds: [] },
     projectContractStatus: 'missing',
     guidance: { status: 'none', paths: [] },

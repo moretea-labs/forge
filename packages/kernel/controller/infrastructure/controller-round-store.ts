@@ -201,6 +201,17 @@ function mechanicalStateFingerprint(
       dispatchState: entry.dispatchState,
       evidenceState: entry.evidenceState,
       completionOutcome: entry.completionOutcome,
+      executionConcurrency: entry.executionConcurrency ? {
+        status: entry.executionConcurrency.status,
+        source: entry.executionConcurrency.source,
+        blockerCode: entry.executionConcurrency.blockerCode,
+        blockingWorkId: entry.executionConcurrency.blockingWorkId,
+        semanticScopeKeys: entry.executionConcurrency.semanticScopeKeys,
+        resourceKeys: entry.executionConcurrency.resourceKeys,
+        leaseRepoId: entry.executionConcurrency.leaseRepoId,
+        resourceIntents: entry.executionConcurrency.resourceIntents,
+        wakeTrigger: entry.executionConcurrency.wakeTrigger,
+      } : undefined,
     }))
     .sort((left, right) => left.workId.localeCompare(right.workId));
   const linkedWorkIds = new Set(works.map((entry) => entry.workId));

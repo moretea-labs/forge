@@ -810,6 +810,22 @@ export function buildControllerContextPack(
     .filter((file) => file.reasons.includes("explicit-known-path"))
     .map((file) => file.path);
   const materializedExactKnownSet = new Set(materializedExactKnownPaths);
+  const omittedCandidateCount = rankedCandidates.filter((entry) => !inspectedSet.has(entry.path)).length;
+  const exactKnownFilesFullyMaterialized = scopedExactKnownFileSearch
+    && exactKnownFiles.length > 0
+    && exactKnownFiles.every((path) => files.some((file) => file.path === path
+      && file.snippets.some((snippet) => snippet.materialization === "complete_file" && !snippet.truncated)));
+  // `search.truncated` records that lexical hit collection reached a result cap.
+  // That is not automatically an evidence gap. For an exact-known implementation
+  // scope, if every requested file is fully materialized and there are no omitted
+  // or denied candidates, the cap only discarded redundant hit lines.
+  const evidenceSearchTruncated = searchTruncated
+    && !(exactKnownFilesFullyMaterialized
+      && omittedCandidateCount === 0
+      && policyDeniedFiles === 0
+      && deniedPaths.length === 0
+      && skippedLargeFiles === 0
+      && skippedBinaryFiles === 0);
   const unresolvedRelationships = Array.from(new Set([
     ...coverageGaps,
     ...expansionSignals,
@@ -819,7 +835,7 @@ export function buildControllerContextPack(
   const readinessReasonCodes = Array.from(new Set([
     ...(files.length === 0 ? ["raw_source_unavailable"] : []),
     ...(rawSnippetTruncated ? ["raw_source_truncated"] : []),
-    ...(searchTruncated ? ["retrieval_truncated"] : []),
+    ...(evidenceSearchTruncated ? ["retrieval_truncated"] : []),
     ...(structuralMode === "required" && !structuralContext.requiredSatisfied ? ["required_structural_context_unsatisfied"] : []),
     ...(structuralContext.status === "stale" ? ["structural_context_stale"] : []),
     ...(structuralContext.status === "unavailable" || structuralContext.status === "degraded" ? ["structural_provider_degraded"] : []),
@@ -853,8 +869,8 @@ export function buildControllerContextPack(
     },
     semantic: { status: "not_requested", reasonCodes: ["semantic_navigation_not_requested"] },
     retrieval: {
-      searchTruncated,
-      omittedCandidateCount: rankedCandidates.filter((entry) => !inspectedSet.has(entry.path)).length,
+      searchTruncated: evidenceSearchTruncated,
+      omittedCandidateCount,
       policyDeniedCandidateCount: policyDeniedFiles + deniedPaths.length,
       likelyRelatedNotInspectedCount: likelyRelatedNotInspected.length,
     },
@@ -895,6 +911,7 @@ export function buildControllerContextPack(
       skippedLargeFiles,
       skippedBinaryFiles,
       truncated: searchTruncated,
+      evidenceTruncated: evidenceSearchTruncated,
       cacheHit: lexicalCacheHit,
     },
     instructionContext,
@@ -920,6 +937,7 @@ export function buildControllerContextPack(
         largeFiles: skippedLargeFiles,
         binaryFiles: skippedBinaryFiles,
         searchTruncated,
+        evidenceTruncated: evidenceSearchTruncated,
         structuralTruncated: structuralContext.truncated,
       },
       materialization: {

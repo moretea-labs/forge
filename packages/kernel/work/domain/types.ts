@@ -15,6 +15,28 @@ export interface EvidenceRef {
   summary?: string;
   detailLevel?: FacadeDetailLevel;
 }
+export interface WorkExecutionConcurrencyProjection {
+  schemaVersion: 1;
+  /** Projection only. Process Runtime leases and Controller ownership remain execution authority. */
+  status: 'waiting' | 'invalid';
+  source: 'work_compatibility' | 'resource_lease' | 'scheduler_capacity';
+  attemptId?: string;
+  blockerCode: string;
+  blockingWorkId?: string;
+  semanticScopeKeys: string[];
+  resourceKeys: string[];
+  /** Node-local resource authority scope used only to re-evaluate the wake condition. */
+  leaseRepoId?: string;
+  resourceIntents: Array<{ resourceKey: string; mode: 'read' | 'write' | 'exclusive' }>;
+  wakeTrigger:
+    | { kind: 'work_terminal'; workId: string }
+    | { kind: 'resource_release'; resourceKeys: string[] }
+    | { kind: 'controller_release'; workId: string }
+    | { kind: 'scheduler_capacity'; capacityKey: string }
+    | { kind: 'work_contract_change'; workId: string };
+  recordedAt: string;
+}
+
 export interface SuggestedNextAction {
   label: string;
   tool: 'rh_access' | 'rh_status' | 'rh_inbox' | 'rh_context' | 'rh_work';
@@ -375,6 +397,8 @@ export interface WorkContract {
   risk: WorkRisk;
   /** Versioned engineering-governance requirements and exact source-bound evidence state for this Work. */
   engineeringContext?: EngineeringContextReceipt;
+  /** Actionable concurrency wait projection. Absence means no currently known semantic/resource blocker. */
+  executionConcurrency?: WorkExecutionConcurrencyProjection;
   /** Technical phase; Requirement owns the user lifecycle. */
   phase: WorkPhase;
   /** Work-owned phase checkpoints. Task/Run/Process records may contribute evidence but cannot write this map directly. */

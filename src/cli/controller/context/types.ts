@@ -3,7 +3,7 @@ import type { CodeGraphIndexMetadata, CodeGraphNodeSummary, CodeGraphReadProvide
 import type { queryCodeGraphReadProvider, queryCodeGraphReadProviderAsync } from '../../../runtime/context/codegraph-read-provider';
 import type { MaterializedSourceSnippet } from './source-materializer';
 
-export const CONTEXT_PACK_SCHEMA_VERSION = 10;
+export const CONTEXT_PACK_SCHEMA_VERSION = 11;
 export type StructuralContextMode = 'off' | 'auto' | 'required';
 export type ControllerContextRetrievalMode = 'implementation' | 'plan' | 'debug' | 'review';
 export type ControllerEvidenceReadinessStatus = 'ready' | 'degraded' | 'insufficient';
@@ -113,7 +113,10 @@ export interface ControllerContextPackProjection {
     policyDeniedFiles: number;
     skippedLargeFiles: number;
     skippedBinaryFiles: number;
+    /** Raw lexical/discovery result cap was reached. This may be harmless when exact-known files were fully materialized. */
     truncated: boolean;
+    /** True only when truncation can hide material source evidence. */
+    evidenceTruncated: boolean;
     cacheHit: boolean;
   };
   instructionContext: {
@@ -233,7 +236,10 @@ export interface ControllerContextPackProjection {
       policyDeniedFiles: number;
       largeFiles: number;
       binaryFiles: number;
+      /** Raw result cap signal retained for diagnostics. */
       searchTruncated: boolean;
+      /** Whether the raw cap actually omitted material evidence. */
+      evidenceTruncated: boolean;
       structuralTruncated: boolean;
     };
     materialization: { completeFiles: number; symbols: number; fallbackWindows: number };

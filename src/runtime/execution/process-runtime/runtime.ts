@@ -57,6 +57,12 @@ import {
 import { assertExecutionIdentity } from '../../control-plane/execution/execution-identity';
 import { settleWorkHandleExpectedHeadAfterRepositoryCommand } from '../../control-plane/execution/work-head-settlement';
 import {
+  clearWorkExecutionConcurrencyWaitForAttempt,
+  evaluateManagedProcessWorkCompatibility,
+  executionConcurrencyWaitProjection,
+  recordWorkExecutionConcurrencyWait,
+} from '../../control-plane/concurrency/work-execution-concurrency';
+import {
   DEFAULT_INTERACTIVE_WAIT_MS,
   DEFAULT_MAX_OUTPUT_BYTES,
   DEFAULT_PROCESS_TIMEOUT_MS,
@@ -489,7 +495,7 @@ export function releaseProcessLeasesOnce(
       repoId,
       processId,
       expectedRefs,
-      { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+      { visibility: 'ephemeral', notifyScheduler: Boolean(record.workId), invalidateProjection: false, emitRuntimeEvent: false },
     );
   } catch (error) {
     // Exact-set or token mismatch remains pending and retryable. Failed cleanup
@@ -1077,6 +1083,7 @@ function recordToHandle(
       : completed ? safeProcessText(safeRecord.stderrTail || persistedStderr || '') : undefined,
     stdoutTail: safeRecord.stdoutTail ? safeProcessText(safeRecord.stdoutTail) : undefined,
     stderrTail: safeRecord.stderrTail ? safeProcessText(safeRecord.stderrTail) : undefined,
+    concurrencyWait: safeRecord.concurrencyWait,
     durableSideEffects: {
       executionJobCount: 0,
       localJobCount: 0,
@@ -1288,6 +1295,61 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     return recordToHandle(completed!, { completed: true });
   }
 
+  const leaseWaitMs = Math.max(
+    0,
+    Math.min(Math.trunc(input.leaseWaitMs ?? 0), 30_000),
+  );
+  let compatibility = evaluateManagedProcessWorkCompatibility({
+    controllerHome: input.controllerHome,
+    repoId: input.repoId,
+    processId,
+    workId: input.workId,
+    resourceClaims,
+    checkExecution: input.checkExecution,
+    origin: input.origin,
+  });
+  if (!compatibility.compatible && !compatibility.hardBlocked && leaseWaitMs > 0) {
+    const semanticDeadline = Date.now() + leaseWaitMs;
+    while (!compatibility.compatible && !compatibility.hardBlocked && Date.now() < semanticDeadline) {
+      if (input.signal?.aborted) break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+      compatibility = evaluateManagedProcessWorkCompatibility({
+        controllerHome: input.controllerHome,
+        repoId: input.repoId,
+        processId,
+        workId: input.workId,
+        resourceClaims,
+        checkExecution: input.checkExecution,
+        origin: input.origin,
+      });
+    }
+  }
+  if (!compatibility.compatible && compatibility.wait) {
+    recordWorkExecutionConcurrencyWait({
+      controllerHome: input.controllerHome,
+      repoId: input.repoId,
+      workId: input.workId,
+      attemptId: processId,
+      wait: compatibility.wait,
+      resourceClaims,
+      leaseRepoId: input.repoId,
+    });
+    updateProcessRecord(input.controllerHome, input.repoId, processId, { concurrencyWait: compatibility.wait });
+    const code = compatibility.hardBlocked ? 'PROCESS_WORK_COMPATIBILITY_INVALID' : 'PROCESS_WORK_COMPATIBILITY_WAIT';
+    completeProcessFromEvidence(input.controllerHome, input.repoId, processId, fenceToken, {
+      status: 'failed',
+      exitCode: 1,
+      errorMessage: `${code}: ${compatibility.wait.blockerCode}`,
+      exitReceiptPath,
+    }, { authority: 'durable_pre_spawn_abandonment' });
+    const blocked = getProcessRecord(input.controllerHome, input.repoId, processId)!;
+    return recordToHandle(blocked, {
+      completed: true,
+      stdout: '',
+      stderr: blocked.error?.message ?? `${code}: ${compatibility.wait.blockerCode}`,
+    });
+  }
+
   // Acquire real execution leases BEFORE spawning the runner. Fail closed on conflict.
   let leaseRefs: ProcessLeaseRef[] = [];
   if (resourceClaims.length > 0) {
@@ -1348,10 +1410,6 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     // Minimal bounded queue behavior: when the caller opts in, wait for
     // conflicting leases to release instead of failing immediately. The Lease
     // store remains the single conflict authority; this loop only polls it.
-    const leaseWaitMs = Math.max(
-      0,
-      Math.min(Math.trunc(input.leaseWaitMs ?? 0), 30_000),
-    );
     if (!acquisition.acquired && leaseWaitMs > 0) {
       const leaseDeadline = Date.now() + leaseWaitMs;
       while (!acquisition.acquired && Date.now() < leaseDeadline) {
@@ -1373,6 +1431,31 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       }
     }
     if (!acquisition.acquired) {
+      const resourceKeys = [...new Set(acquisition.blockers.map((blocker) => blocker.resourceKey))].sort();
+      const blockingWorkId = acquisition.blockers
+        .map((blocker) => blocker.ownerJobId.startsWith('process:')
+          ? getProcessRecord(input.controllerHome, input.repoId, blocker.ownerJobId.slice('process:'.length))?.workId
+          : undefined)
+        .find((value): value is string => Boolean(value));
+      const wait = executionConcurrencyWaitProjection({
+        source: 'resource_lease',
+        blockerCode: 'resource_claim_conflict',
+        disposition: 'wait',
+        blockingWorkId,
+        semanticScopeKeys: [],
+        resourceKeys,
+        wakeTrigger: { kind: 'resource_release', resourceKeys },
+      });
+      recordWorkExecutionConcurrencyWait({
+        controllerHome: input.controllerHome,
+        repoId: input.repoId,
+        workId: input.workId,
+        attemptId: processId,
+        wait,
+        resourceClaims,
+        leaseRepoId: input.repoId,
+    });
+      updateProcessRecord(input.controllerHome, input.repoId, processId, { concurrencyWait: wait });
       const blockers = acquisition.blockers
         .map((b) => `${b.resourceKey}@${b.ownerJobId}`)
         .join(', ');
@@ -1398,7 +1481,8 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       checkoutId: lease.checkoutId,
       workId: lease.workId,
     }));
-    updateProcessRecord(input.controllerHome, input.repoId, processId, { leaseRefs });
+    clearWorkExecutionConcurrencyWaitForAttempt({ controllerHome: input.controllerHome, repoId: input.repoId, workId: input.workId, attemptId: processId });
+    updateProcessRecord(input.controllerHome, input.repoId, processId, { leaseRefs, concurrencyWait: undefined });
   }
 
   const descriptor: ProcessCommandDescriptor = {

@@ -14,7 +14,7 @@ afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, f
 
 function pack(sourceRevision: string, files: string[], tests: string[] = []) {
   return {
-    schemaVersion: 10,
+    schemaVersion: 11,
     generatedAt: '2026-09-03T00:00:00.000Z',
     git: { branch: 'kernel-v2/architecture', dirty: false },
     instructionContext: { status: 'ready' as const, contracts: [{ path: 'AGENTS.md' }] },

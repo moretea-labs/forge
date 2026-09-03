@@ -6,6 +6,23 @@
 
 import type { ResolvedExecutionIdentity } from '../../control-plane/execution/execution-identity';
 
+export interface ExecutionConcurrencyWaitProjection {
+  schemaVersion: 1;
+  source: 'work_compatibility' | 'resource_lease' | 'scheduler_capacity';
+  blockerCode: string;
+  disposition: 'wait' | 'invalid';
+  blockingWorkId?: string;
+  semanticScopeKeys: string[];
+  resourceKeys: string[];
+  wakeTrigger:
+    | { kind: 'work_terminal'; workId: string }
+    | { kind: 'resource_release'; resourceKeys: string[] }
+    | { kind: 'controller_release'; workId: string }
+    | { kind: 'scheduler_capacity'; capacityKey: string }
+    | { kind: 'work_contract_change'; workId: string };
+  observedAt: string;
+}
+
 export type ProcessRuntimeStatus =
   | 'starting'
   | 'running'
@@ -185,6 +202,8 @@ export interface ManagedProcessRecord {
   command: ProcessCommandSpec;
   identity?: ProcessIdentityRecord;
   resourceClaims: ProcessResourceClaim[];
+  /** Actionable semantic/resource wait projection; never an execution lease authority. */
+  concurrencyWait?: ExecutionConcurrencyWaitProjection;
   /** Real execution leases acquired before spawn; released exactly once on terminal. */
   leaseRefs?: ProcessLeaseRef[];
   /** Durable terminal cleanup phase; pending remains retryable after controller restart. */
@@ -322,6 +341,7 @@ export interface ProcessHandle {
   stderr?: string;
   stdoutTail?: string;
   stderrTail?: string;
+  concurrencyWait?: ExecutionConcurrencyWaitProjection;
   durableSideEffects: {
     executionJobCount: number;
     localJobCount: number;

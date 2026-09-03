@@ -49,6 +49,7 @@ import {
 } from './projection-refresh';
 import { createSchedulerWorkerStderrCapture } from './worker-stderr';
 import { persistSchedulerWorkerAttachment } from './worker-attachment';
+import { reconcileWorkExecutionConcurrencyWaits } from '../concurrency/work-execution-concurrency';
 import {
   cleanupSchedulerWorkerProcesses,
   registerSchedulerWorkerProcess,
@@ -464,6 +465,9 @@ export class GlobalScheduler {
     }
     if (now - this.lastReconcile >= 5_000) {
       await reconcileExecutionJobsAsync(this.controllerHome);
+      for (const repository of repositories) {
+        reconcileWorkExecutionConcurrencyWaits({ controllerHome: this.controllerHome, repoId: repository.repoId });
+      }
       await runSchedulerValidationReconciliation({
         controllerHome: this.controllerHome,
         repositories,
