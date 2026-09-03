@@ -5,6 +5,8 @@ import type { BootstrapAction, BootstrapEvaluation, BootstrapSnapshot } from './
 
 export interface BootstrapControlAdapter {
   observe(): Promise<BootstrapEvaluation> | BootstrapEvaluation;
+  /** Optional synchronous observation for product surfaces that are intentionally synchronous. */
+  observeSync?(): BootstrapEvaluation;
   perform?(action: BootstrapAction): Promise<void> | void;
 }
 
@@ -22,6 +24,7 @@ export function readBootstrapControlState(controllerHome: string): BootstrapSnap
 export interface BootstrapControlApi {
   read(): BootstrapSnapshot | undefined;
   refresh(): Promise<BootstrapSnapshot>;
+  refreshSync(): BootstrapSnapshot;
   act(actionId: string): Promise<BootstrapSnapshot>;
 }
 
@@ -31,13 +34,16 @@ export function createBootstrapControlApi(input: {
   now?: () => Date;
 }): BootstrapControlApi {
   const controllerHome = resolveControllerHome(input.controllerHome);
-  const refresh = async (): Promise<BootstrapSnapshot> => {
-    const evaluation = await input.adapter.observe();
-    return reconcileBootstrapSnapshot({ controllerHome, evaluation, now: input.now });
+  const persist = (evaluation: BootstrapEvaluation): BootstrapSnapshot => reconcileBootstrapSnapshot({ controllerHome, evaluation, now: input.now });
+  const refresh = async (): Promise<BootstrapSnapshot> => persist(await input.adapter.observe());
+  const refreshSync = (): BootstrapSnapshot => {
+    if (!input.adapter.observeSync) throw new Error('BOOTSTRAP_SYNC_OBSERVER_UNAVAILABLE');
+    return persist(input.adapter.observeSync());
   };
   return {
     read: () => readBootstrapSnapshot(controllerHome),
     refresh,
+    refreshSync,
     act: async (actionId: string) => {
       const snapshot = await refresh();
       const action = snapshot.actions.find((entry) => entry.id === actionId);

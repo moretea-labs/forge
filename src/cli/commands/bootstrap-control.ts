@@ -1,6 +1,7 @@
 import { resolveControllerHome } from '../repositories/controller-home';
 import {
-  reconcileBootstrapSnapshot,
+  createBootstrapControlApi,
+  type BootstrapControlApi,
   type BootstrapAction,
   resolveBootstrapCapabilityProviders,
   type BootstrapBlocker,
@@ -27,9 +28,18 @@ import {
 } from './setup-profile';
 import { controllerPluginRepository, listAssistantPluginManifests } from '../../runtime/plugins/store';
 import { officialPluginCatalogItems } from './plugin';
+import { bootstrapWslWindowsBridgeBrowser, observeWslWindowsBridgeBrowser } from '../chatgpt-browser/bridge-provider';
+
+export interface SetupBridgeGuidance {
+  required: boolean;
+  ready: boolean;
+  automatic: boolean;
+  summary: string;
+}
 
 export interface SetupBootstrapDependencies {
   capabilities(intents: readonly string[], options: { controllerHome: string; platform: SetupPlatformSnapshot }): BootstrapCapabilityProviderResolution[];
+  bridge(profile: SetupProfile | undefined, platform: SetupPlatformSnapshot, options: { controllerHome: string }): SetupBridgeGuidance;
   controller(profile: SetupProfile | undefined, options: { controllerHome?: string; home?: string }): ControllerGuidance | undefined;
   runtime(profile: SetupProfile | undefined, options: { controllerHome?: string }): RuntimeGuidance | undefined;
   tunnel(profile: SetupProfile | undefined, platform: SetupPlatformSnapshot, options: { controllerHome?: string; env?: NodeJS.ProcessEnv }): TunnelGuidance;
@@ -44,6 +54,15 @@ export interface SetupBootstrapOptions extends SetupProfileOptions {
   dependencies?: Partial<SetupBootstrapDependencies>;
 }
 
+function setupBridgeRoot(controllerHome: string): string | undefined {
+  try {
+    const repository = controllerPluginRepository(controllerHome);
+    return repository.canonicalRoot ?? repository.localRoot;
+  } catch {
+    return undefined;
+  }
+}
+
 const DEFAULT_DEPENDENCIES: SetupBootstrapDependencies = {
   capabilities: (intents, options) => {
     if (intents.length === 0) return [];
@@ -51,6 +70,17 @@ const DEFAULT_DEPENDENCIES: SetupBootstrapDependencies = {
     const installedManifests = listAssistantPluginManifests(options.controllerHome, repository, { preferStored: true });
     const catalog = officialPluginCatalogItems(options.platform.platform);
     return resolveBootstrapCapabilityProviders({ capabilityIntents: intents, installedManifests, catalog });
+  },
+  bridge: (profile, platform, options) => {
+    if (!profile?.controllers.includes('chatgpt') || platform.environment !== 'wsl2') {
+      return { required: false, ready: true, automatic: false, summary: 'Windows ChatGPT bridge browser is not required for this setup.' };
+    }
+    const bridgeRoot = setupBridgeRoot(options.controllerHome);
+    if (!bridgeRoot) {
+      return { required: true, ready: false, automatic: false, summary: 'Forge cannot resolve the controller-system repository used by the WSL ChatGPT bridge.' };
+    }
+    const readiness = observeWslWindowsBridgeBrowser(bridgeRoot, { platform: 'linux', wslDistroName: 'ForgeSetup' });
+    return { required: readiness.required, ready: readiness.ready, automatic: readiness.automatic, summary: readiness.summary };
   },
   controller: resolveControllerGuidance,
   runtime: resolveRuntimeGuidance,
@@ -221,6 +251,26 @@ export function observeSetupBootstrap(options: SetupBootstrapOptions = {}): Boot
     steps.push(step({ id: 'connectivity', label: 'Controller transport', state: 'blocked', dependsOn: ['runtime'], observation: connectivityObservation, blocker, action }));
   }
 
+  const bridgeGuidance = dependencies.bridge(profile, platform, { controllerHome });
+  const bridgeObservation: BootstrapObservation = !bridgeGuidance.required
+    ? { id: 'provider.chatgpt.wsl-bridge', component: 'provider', status: 'ready', summary: bridgeGuidance.summary, observedAt }
+    : bridgeGuidance.ready
+      ? { id: 'provider.chatgpt.wsl-bridge', component: 'provider', status: 'ready', summary: bridgeGuidance.summary, provider: 'controlled-windows-chromium', observedAt }
+      : { id: 'provider.chatgpt.wsl-bridge', component: 'provider', status: 'missing', summary: bridgeGuidance.summary, provider: 'controlled-windows-chromium', reasonCodes: ['CHATGPT_WSL_BRIDGE_BROWSER_NOT_READY'], observedAt };
+  observations.push(bridgeObservation);
+  if (!bridgeGuidance.required) {
+    steps.push(step({ id: 'chatgpt-wsl-bridge', label: 'WSL ChatGPT bridge browser', state: 'skipped', dependsOn: ['connectivity'], observation: bridgeObservation }));
+  } else if (bridgeGuidance.ready) {
+    steps.push(step({ id: 'chatgpt-wsl-bridge', label: 'WSL ChatGPT bridge browser', state: 'ready', dependsOn: ['connectivity'], observation: bridgeObservation }));
+  } else {
+    const action: BootstrapAction = bridgeGuidance.automatic
+      ? { id: 'chatgpt.bridge.bootstrap', kind: 'install', owner: 'forge', summary: bridgeGuidance.summary, command: 'forge setup bridge-browser', verification: 'forge setup next' }
+      : { id: 'chatgpt.bridge.user-action', kind: 'install', owner: 'user', summary: bridgeGuidance.summary, verification: 'forge setup next' };
+    const blocker = blockerFor('chatgpt-wsl-bridge', 'BOOTSTRAP_CHATGPT_WSL_BRIDGE_BROWSER_NOT_READY', action, bridgeGuidance.summary);
+    actions.push(action); blockers.push(blocker);
+    steps.push(step({ id: 'chatgpt-wsl-bridge', label: 'WSL ChatGPT bridge browser', state: 'blocked', dependsOn: ['connectivity'], observation: bridgeObservation, blocker, action }));
+  }
+
   const desired = desiredState(profile, options.capabilities);
   for (const resolution of dependencies.capabilities(desired.capabilityIntents, { controllerHome, platform })) {
     const safeCapabilityId = resolution.capabilityId.replace(/[^a-zA-Z0-9_.-]+/g, '-');
@@ -267,7 +317,27 @@ export function observeSetupBootstrap(options: SetupBootstrapOptions = {}): Boot
   return { desired, observations, steps, blockers, actions };
 }
 
-export function refreshSetupBootstrap(options: SetupBootstrapOptions = {}): BootstrapSnapshot {
+export function createSetupBootstrapControlApi(options: SetupBootstrapOptions = {}): BootstrapControlApi {
   const controllerHome = resolveControllerHome(options.controllerHome);
-  return reconcileBootstrapSnapshot({ controllerHome, evaluation: observeSetupBootstrap(options), now: options.now });
+  const observe = (): BootstrapEvaluation => observeSetupBootstrap({ ...options, controllerHome });
+  return createBootstrapControlApi({
+    controllerHome,
+    now: options.now,
+    adapter: {
+      observe,
+      observeSync: observe,
+      perform: async (action) => {
+        if (action.id !== 'chatgpt.bridge.bootstrap') throw new Error(`BOOTSTRAP_ACTION_EXECUTOR_UNSUPPORTED: ${action.id}`);
+        const platform = options.platform ?? detectSetupPlatform({ env: options.env });
+        if (platform.environment !== 'wsl2') throw new Error('CHATGPT_BRIDGE_BOOTSTRAP_WSL_REQUIRED');
+        const bridgeRoot = setupBridgeRoot(controllerHome);
+        if (!bridgeRoot) throw new Error('CHATGPT_CONTROLLER_BROWSER_ROOT_UNAVAILABLE');
+        await bootstrapWslWindowsBridgeBrowser(bridgeRoot, { platform: 'linux', wslDistroName: 'ForgeSetup' });
+      },
+    },
+  });
+}
+
+export function refreshSetupBootstrap(options: SetupBootstrapOptions = {}): BootstrapSnapshot {
+  return createSetupBootstrapControlApi(options).refreshSync();
 }

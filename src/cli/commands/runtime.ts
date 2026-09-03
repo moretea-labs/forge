@@ -11,6 +11,7 @@ import { readRepositoryProjection } from '../../runtime/projections/materialized
 import { listOccurrences, listSchedules } from '../../../packages/kernel/scheduler/api/index';
 import { observeRuntimeStatus } from '../../runtime/root/status';
 import { readMcpServiceBearerToken } from '../../../adapters/mcp/auth';
+import { createSetupBootstrapControlApi } from './bootstrap-control';
 import { publishRuntimeRelease } from '../../runtime/root/release-store';
 import { installForgeRuntimeService } from '../../runtime/root/service';
 import { activateScheduledPackageRuntimeServiceFromPath, installPackageRuntimeService, readPackageRuntimeActivationReceipt } from '../../runtime/root/package-runtime-service';
@@ -81,6 +82,7 @@ export function buildRuntimeCommand(): Command {
         forcePortable: opts.portable === true,
         refreshConnector: opts.refreshConnector === true,
       });
+      const bootstrap = await createSetupBootstrapControlApi({ controllerHome: home }).refresh();
       output({
         status: result.status,
         mode: result.mode,
@@ -99,6 +101,7 @@ export function buildRuntimeCommand(): Command {
         connector: result.connector,
         activation: result.activation,
         warnings: result.warnings,
+        bootstrap: { status: bootstrap.status, revision: bootstrap.revision, blockers: bootstrap.blockers, actions: bootstrap.actions },
         next: result.activation
           ? `forge runtime service activation-status --receipt ${result.activation.receiptPath}`
           : `forge runtime status --controller-home ${home}`,

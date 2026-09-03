@@ -18,7 +18,7 @@ import { runDoctor, type CheckStatus, type DoctorReport } from './doctor';
 import { runStatus, type StatusReport } from './status';
 import { runMcpSetupChatgpt } from '../../../adapters/mcp/setup';
 import { resolveControllerHome } from '../repositories/controller-home';
-import { refreshSetupBootstrap } from './bootstrap-control';
+import { createSetupBootstrapControlApi } from './bootstrap-control';
 import type { BootstrapSnapshot } from '../../runtime/control-plane/bootstrap';
 import {
   configureSetupProfile,
@@ -767,9 +767,9 @@ export function openSetupSession(options: SetupSessionOptions = {}): SetupSessio
   const target = options.target ?? setupHostTarget(profile);
   const report = options.report ?? runInitHook({ ...options, target });
   const controllerHome = resolveControllerHome(options.controllerHome);
-  const bootstrap = refreshSetupBootstrap({
+  const bootstrap = createSetupBootstrapControlApi({
     setupRoot: options.setupRoot, env: options.env, now: options.now, controllerHome, accountHome: options.accountHome, profile, platform,
-  });
+  }).refreshSync();
   const nextAction = bootstrapNextAction(bootstrap) ?? report.agent_actions[0];
   const now = (options.now ?? (() => new Date()))().toISOString();
   const reuse = previous && previous.status !== 'closed';
@@ -928,6 +928,26 @@ export function buildSetupCommand(): Command {
         });
         syncExplicitRemoteControllerEndpoint(profile, rawOpts.endpoint);
         console.log(rawOpts.json ? JSON.stringify(profile, null, 2) : `${formatSetupProfile(profile)}\n\nNext: forge setup next`);
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exitCode = 2;
+      }
+    });
+
+  command
+    .command('bridge-browser')
+    .description('Provision or repair the dedicated WSL Windows Chromium profile used by the ChatGPT bridge')
+    .option('--json', 'Output JSON instead of human-readable text')
+    .action(async (rawOpts: { json?: boolean }) => {
+      try {
+        const profile = readSetupProfile();
+        const api = createSetupBootstrapControlApi({ profile });
+        const snapshot = await api.act('chatgpt.bridge.bootstrap');
+        if (rawOpts.json) console.log(JSON.stringify(snapshot, null, 2));
+        else console.log(snapshot.status === 'ready'
+          ? 'Forge WSL ChatGPT bridge browser is ready.'
+          : `${snapshot.blockers.find((entry) => entry.stepId === 'chatgpt-wsl-bridge')?.summary ?? 'Dedicated bridge browser was provisioned. Complete any visible ChatGPT login step, then run forge setup next.'}\nNext: forge setup next`);
+        process.exitCode = snapshot.status === 'ready' ? 0 : 1;
       } catch (error) {
         console.error(error instanceof Error ? error.message : String(error));
         process.exitCode = 2;

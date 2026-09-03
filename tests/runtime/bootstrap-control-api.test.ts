@@ -54,6 +54,19 @@ describe('V2 product bootstrap Control API', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  test('supports the same bounded Control API from synchronous product surfaces without inventing a second snapshot path', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-bootstrap-sync-control-'));
+    try {
+      const evaluation = blockedEvaluation();
+      const api = createBootstrapControlApi({ controllerHome: root, adapter: { observe: () => evaluation, observeSync: () => evaluation } });
+      const first = api.refreshSync();
+      expect(first.status).toBe('blocked');
+      expect(api.read()).toEqual(first);
+      const asyncOnly = createBootstrapControlApi({ controllerHome: join(root, 'async-only'), adapter: { observe: () => evaluation } });
+      expect(() => asyncOnly.refreshSync()).toThrow('BOOTSTRAP_SYNC_OBSERVER_UNAVAILABLE');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   test('fences user-only actions and lets Forge-owned repair advance the same lifecycle to ready', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-bootstrap-action-'));
     try {

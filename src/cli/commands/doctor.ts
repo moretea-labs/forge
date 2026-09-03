@@ -16,6 +16,8 @@ import { CLI_VERSION } from './status';
 import { runSecurityScan, type SecurityScanReport } from './security';
 import { isOptIn, resolveHooksDir, resolveRepoRoot } from '../hook/runtime';
 import { ROUTES } from '../hook/route-registry';
+import { resolveControllerHome } from '../repositories/controller-home';
+import { createSetupBootstrapControlApi } from './bootstrap-control';
 
 const TRUST_STATE_LINE = /^\[hooks\.state\."[^"]+\/\.codex\/hooks\.json:/;
 const PACKAGE_NAME = '@moretea-labs/forge';
@@ -384,6 +386,20 @@ function checkSecurityConfig(report: SecurityScanReport): DoctorCheckResult {
   };
 }
 
+function checkBootstrapLifecycle(): DoctorCheckResult {
+  const id = 'bootstrap-lifecycle';
+  const describe = 'V2 instance bootstrap lifecycle';
+  const snapshot = createSetupBootstrapControlApi({ controllerHome: resolveControllerHome() }).read();
+  if (!snapshot) return { id, describe, status: 'warn', detail: 'bootstrap lifecycle has not started; remediation=forge setup' };
+  if (snapshot.status === 'ready') return { id, describe, status: 'ok', detail: `bootstrap revision ${snapshot.revision} is ready` };
+  const fatal = snapshot.blockers.some((blocker) => blocker.kind === 'failed' || blocker.kind === 'unsupported');
+  const first = snapshot.blockers[0];
+  return {
+    id, describe, status: fatal ? 'fail' : 'warn',
+    detail: `${snapshot.status}; revision=${snapshot.revision}; ${first?.summary ?? 'setup is incomplete'}; remediation=${first?.actionIds[0] ?? 'forge setup next'}`,
+  };
+}
+
 function checkHookScriptDrift(cwd: string): DoctorCheckResult {
   const id = 'repo-hook-scripts';
   const describe = 'Active hook runtime scripts match the route registry';
@@ -452,6 +468,7 @@ export function runDoctor(cwd: string = process.cwd()): DoctorReport {
   checks.push(checkCodegraphIndex(codegraphProbe));
   checks.push(checkSecurityConfig(securityReport));
   checks.push(checkHookScriptDrift(cwd));
+  checks.push(checkBootstrapLifecycle());
   for (const plugin of REGISTERED_CHECKS) {
     const r = plugin.run();
     checks.push({ id: plugin.id, describe: plugin.describe, ...r });

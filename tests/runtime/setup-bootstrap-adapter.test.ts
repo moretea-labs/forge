@@ -11,7 +11,7 @@ const profile: SetupProfile = { schemaVersion: 1, primaryController: 'chatgpt', 
 describe('Stage4 setup bootstrap adapter', () => {
   test('turns a missing setup profile into one Forge-owned resumable action', () => {
     const evaluation = observeSetupBootstrap({ setupRoot: '/definitely/missing/forge-setup', controllerHome: '/tmp/forge-bootstrap-missing', platform, now: () => new Date('2026-09-03T00:00:00.000Z') });
-    expect(evaluation.steps.map((entry) => [entry.id, entry.state])).toEqual([['profile', 'blocked'], ['controller', 'pending'], ['runtime', 'pending'], ['connectivity', 'pending']]);
+    expect(evaluation.steps.map((entry) => [entry.id, entry.state])).toEqual([['profile', 'blocked'], ['controller', 'pending'], ['runtime', 'pending'], ['connectivity', 'pending'], ['chatgpt-wsl-bridge', 'skipped']]);
     expect(evaluation.actions[0]?.owner).toBe('forge');
     expect(evaluation.actions[0]?.command).toBe('forge setup configure --controller chatgpt');
   });
@@ -49,6 +49,38 @@ describe('Stage4 setup bootstrap adapter', () => {
       expect(JSON.stringify(snapshot)).not.toContain('CONTROL_PLANE_API_KEY');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+  test('projects WSL ChatGPT bridge readiness into one resumable controlled-browser bootstrap step', () => {
+    const wslPlatform: SetupPlatformSnapshot = { ...platform, environment: 'wsl2' };
+    const common = {
+      profile, platform: wslPlatform, controllerHome: '/tmp/forge-bootstrap-wsl-bridge',
+      dependencies: {
+        controller: () => undefined,
+        runtime: () => ({ ready: true, title: 'Runtime', detail: 'ready' }),
+        tunnel: () => ({ provider: 'openai' as const, ready: true, title: 'Tunnel', detail: 'ready' }),
+      },
+    };
+    const automatic = observeSetupBootstrap({ ...common, dependencies: {
+      ...common.dependencies,
+      bridge: () => ({ required: true, ready: false, automatic: true, summary: 'Dedicated controlled Chromium can be provisioned.' }),
+    } });
+    expect(automatic.steps.find((entry) => entry.id === 'chatgpt-wsl-bridge')).toMatchObject({ state: 'blocked', actionIds: ['chatgpt.bridge.bootstrap'] });
+    expect(automatic.actions.find((entry) => entry.id === 'chatgpt.bridge.bootstrap')).toMatchObject({ owner: 'forge', command: 'forge setup bridge-browser' });
+
+    const manual = observeSetupBootstrap({ ...common, dependencies: {
+      ...common.dependencies,
+      bridge: () => ({ required: true, ready: false, automatic: false, summary: 'Install a supported controlled Chromium runtime or enable the bridge in a dedicated profile.' }),
+    } });
+    expect(manual.actions.find((entry) => entry.id === 'chatgpt.bridge.user-action')).toMatchObject({ owner: 'user' });
+    expect(manual.blockers.find((entry) => entry.stepId === 'chatgpt-wsl-bridge')?.kind).toBe('user_action');
+
+    const ready = observeSetupBootstrap({ ...common, dependencies: {
+      ...common.dependencies,
+      bridge: () => ({ required: true, ready: true, automatic: true, summary: 'Dedicated Forge bridge profile ready.' }),
+    } });
+    expect(ready.steps.find((entry) => entry.id === 'chatgpt-wsl-bridge')?.state).toBe('ready');
+    expect(ready.actions.some((entry) => entry.id.startsWith('chatgpt.bridge.'))).toBe(false);
+  });
+
   test('turns capability intent into provider-neutral install and unsupported lifecycle steps', () => {
     const base = {
       profile: { ...profile, capabilityIntents: ['computer.observe.v1', 'knowledge.telepathy.v9'] }, platform, controllerHome: '/tmp/forge-bootstrap-capabilities',

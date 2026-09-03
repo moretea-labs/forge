@@ -18,7 +18,7 @@ import {
 import { classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { createWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { chatgptBridgeTargetMatchesPage, findInstalledWslWindowsBridgeBrowser, isWslWindowsRuntime, openWslWindowsBridgeTarget } from '../../src/cli/chatgpt-browser/bridge-provider';
+import { bootstrapWslWindowsBridgeBrowser, chatgptBridgeTargetMatchesPage, findInstalledWslWindowsBridgeBrowser, isWslWindowsRuntime, observeWslWindowsBridgeBrowser, openWslWindowsBridgeTarget } from '../../src/cli/chatgpt-browser/bridge-provider';
 import { writeChatgptBridgeExtension } from '../../src/cli/chatgpt-browser/bridge-extension';
 import { ensureBridgeToken, readBrowserBinding } from '../../src/cli/chatgpt-browser/binding';
 import {
@@ -261,6 +261,80 @@ describe('ChatGPT Work conversation binding', () => {
       fileExists: () => true,
       launch,
     })).rejects.toThrow('CHATGPT_BRIDGE_TARGET_INVALID');
+  });
+
+  test('classifies only extension-capable controlled Chromium as automatic WSL bridge bootstrap', () => {
+    const controlled = observeWslWindowsBridgeBrowser('/unused', {
+      platform: 'linux', wslDistroName: 'UbuntuDev', userName: 'tester', userRoot: '/mnt/c/Users/tester',
+      candidates: [{ executable: '/cent/chrome.exe', profileRelativeRoot: 'AppData/Local/Forge/ChatGPT Bridge/User Data', controlled: true, supportsUnpackedExtensionLaunch: true }],
+      fileExists: (path) => path === '/cent/chrome.exe',
+    });
+    expect(controlled).toMatchObject({ required: true, ready: false, automatic: true });
+
+    const chromeOnly = observeWslWindowsBridgeBrowser('/unused', {
+      platform: 'linux', wslDistroName: 'UbuntuDev', userName: 'tester', userRoot: '/mnt/c/Users/tester',
+      candidates: [{ executable: '/chrome/chrome.exe', profileRelativeRoot: 'AppData/Local/Google/Chrome/User Data' }],
+      fileExists: (path) => path === '/chrome/chrome.exe',
+    });
+    expect(chromeOnly).toMatchObject({ required: true, ready: false, automatic: false });
+  });
+
+  test('bootstraps WSL bridge into a dedicated Forge Chromium profile without touching the user profile', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-wsl-controlled-bootstrap-'));
+    roots.push(root);
+    const launches: Array<{ executable: string; args: readonly string[] }> = [];
+    const launch = ((executable: string, args: readonly string[]) => {
+      launches.push({ executable, args });
+      const child: any = {
+        once(event: string, listener: (value?: any) => void) { if (event === 'spawn') queueMicrotask(() => listener()); return child; },
+        unref() { return child; },
+      };
+      return child;
+    }) as typeof import('child_process').spawn;
+    const controlledRoot = join(root, 'Forge', 'ChatGPT Bridge');
+    const binding = await bootstrapWslWindowsBridgeBrowser(root, {
+      platform: 'linux', wslDistroName: 'UbuntuDev', userName: 'tester', userRoot: root, controlledRoot,
+      candidates: [{ executable: '/cent/chrome.exe', profileRelativeRoot: 'ignored', controlled: true, supportsUnpackedExtensionLaunch: true }],
+      fileExists: (path) => path === '/cent/chrome.exe',
+      launch, bridgeToken: () => 'stage4-test-bridge-token',
+      toWindowsPath: (path) => `C:\\ForgeTest\\${path.split('/').filter(Boolean).at(-1)}`,
+    });
+    expect(binding).toMatchObject({ executable: '/cent/chrome.exe', profileDirectory: 'Default', userDataDir: join(controlledRoot, 'User Data'), loadExtensionOnLaunch: true });
+    expect(binding.extensionDir.startsWith(controlledRoot)).toBe(true);
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.args).toEqual([
+      '--user-data-dir=C:\\ForgeTest\\User Data',
+      expect.stringContaining('--load-extension=C:\\ForgeTest\\bridge-extension'),
+      '--new-window',
+      'https://chatgpt.com/',
+    ]);
+  });
+
+  test('relaunches a controlled WSL bridge binding with its dedicated user-data and extension arguments', async () => {
+    const launches: Array<{ executable: string; args: readonly string[] }> = [];
+    const launch = ((executable: string, args: readonly string[]) => {
+      launches.push({ executable, args });
+      const child: any = {
+        once(event: string, listener: (value?: any) => void) { if (event === 'spawn') queueMicrotask(() => listener()); return child; },
+        unref() { return child; },
+      };
+      return child;
+    }) as typeof import('child_process').spawn;
+    await openWslWindowsBridgeTarget('https://chatgpt.com/c/controlled-round', {
+      platform: 'linux', wslDistroName: 'UbuntuDev', launch,
+      browserBinding: {
+        executable: '/mnt/c/Program Files/CentBrowser/Application/chrome.exe',
+        profileDirectory: 'Default',
+        userDataDir: '/mnt/c/Users/tester/AppData/Local/Forge/ChatGPT Bridge/User Data',
+        extensionDir: '/mnt/c/Users/tester/AppData/Local/Forge/ChatGPT Bridge/bridge-extension',
+        loadExtensionOnLaunch: true,
+      },
+    });
+    expect(launches[0]?.args).toEqual([
+      '--user-data-dir=C:\\Users\\tester\\AppData\\Local\\Forge\\ChatGPT Bridge\\User Data',
+      '--load-extension=C:\\Users\\tester\\AppData\\Local\\Forge\\ChatGPT Bridge\\bridge-extension',
+      '--profile-directory=Default', '--new-tab', 'https://chatgpt.com/c/controlled-round',
+    ]);
   });
 
   test('uses a stable per-Work browser session and migrates away from the legacy global tab', () => {

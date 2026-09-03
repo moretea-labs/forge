@@ -165,6 +165,8 @@ Within one migration slice, gather facts in batches, decide ownership once, impl
 - `toolset=full` is an explicit compatibility profile and may contain historical definitions; current default schema construction must not depend on those legacy definitions.
 - Current schemas/handlers should live with their owning module. Legacy compatibility may delegate but must not independently own current business rules. Shared transport contracts and tool definitions belong in neutral contract/definition modules so the dependency direction remains transport -> application/domain authority rather than transport implementations importing one another.
 - Work-attributed verification is an application service, not an MCP/Local Bridge implementation detail: all Work verification resolves the Work checkout/check registry, runs through Process Runtime, validates terminal receipt identity, and records Work evidence through the same `work-verification-service.ts`.
+- Product bootstrap has one instance-level desired/observed lifecycle authority behind the Bootstrap Control API. CLI setup, Local Bridge readiness, packaged Runtime install/upgrade/repair projection, and doctor observation consume that same authority rather than persisting parallel setup state. Browser/tunnel/provider implementations remain adapters beneath this API.
+- WSL ChatGPT browser bootstrap may create only a dedicated Forge-controlled Chromium profile when the runtime explicitly supports unpacked-extension startup. Ordinary user Chrome profiles are observational/existing-capability surfaces only; unsupported automatic extension loading must fail closed with a resumable user action.
 
 ### Controller facade and handoff boundary
 

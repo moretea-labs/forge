@@ -14,7 +14,7 @@ import { listControllerChecks } from '../controller/check-runner';
 import { createMcpToolContext, type MultiRepositoryMcpToolContext } from '../../../adapters/mcp/multi-repository';
 import { readSchedulerHealthSnapshot } from '../../runtime/control-plane/global-scheduler/scheduler';
 import { observeRuntimeStatus } from '../../runtime/root/status';
-import { readBootstrapControlState } from '../../runtime/control-plane/bootstrap';
+import { createSetupBootstrapControlApi } from '../commands/bootstrap-control';
 import type { BootstrapSnapshot } from '../../runtime/control-plane/bootstrap';
 import { readForgeRuntimeStatus } from '../../runtime/control-plane/runtime-status-client';
 import { evaluateActiveRuntimeSourceDrift, readRuntimeGeneration } from '../../runtime/control-plane/runtime-generation';
@@ -709,7 +709,7 @@ export async function buildSystemReadiness(
   opts: { connectorToolNames?: readonly string[] | null } = {},
 ): Promise<SystemReadinessViewModel> {
   const runtime = observeRuntimeStatus(ctx.controllerHome);
-  const bootstrap = readBootstrapControlState(ctx.controllerHome);
+  const bootstrap = await createSetupBootstrapControlApi({ controllerHome: ctx.controllerHome }).refresh();
   const runtimeHealth = undefined;
   const freshness = await evaluateConsoleConnectorFreshness(ctx, {
     connectorToolNames: opts.connectorToolNames,
