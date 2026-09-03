@@ -7,11 +7,11 @@ import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { getRepository, reconcileRepositoryCheckouts, registerRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
-import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
-import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch, getControllerRoundRelay } from '../../src/runtime/control-plane/facade/controller-round-relay';
+import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch, getControllerRoundRelay, readControllerRoundSemanticStateFingerprint, submitControllerRoundDisposition } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { ensureRepositoryWorkHandle, reconcileRepositoryWorkHandlePlacement } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { ensureRunningRepositoryWorkCheckout } from '../../src/runtime/control-plane/execution/retained-work-resume';
 import { cleanupTerminalWork } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
@@ -996,6 +996,99 @@ describe('rh_work terminalization authority', () => {
     expect(replay.reused).toBe(true);
     expect(replay.dispatch.status).toBe('wait_for_user');
     expect(resumeCalls).toBe(1);
+  }, 15_000);
+
+  test('semantic wait suppresses unchanged scheduled provider dispatch and wakes once after semantic state changes', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-scheduled-semantic-wait';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: 'principal-semantic-wait',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-semantic-wait',
+      principalId: 'principal-semantic-wait',
+      controllerInstanceId: 'runtime-semantic-wait',
+      leaseMs: 60_000,
+    });
+    const adapter = upsertChatgptControllerBinding(store, {
+      workId,
+      sessionId: owner.sessionId,
+      title: 'semantic wait target',
+      model: 'gpt-5.6',
+      reasoning: 'high',
+      tabPolicy: 'auto',
+    });
+    bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: adapter.binding });
+    const { schedule } = createWorkContinuationSchedule(fx.controllerHome, fx.repository.repoId, {
+      workId, scheduleMode: 'continuation', controllerType: 'chatgpt', triggerType: 'manual', shadowMode: false,
+    });
+    const relayScopeId = `goal:${workId}`;
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      relayScopeId,
+      bindingId: adapter.binding.bindingId,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true, bindingId: adapter.binding.bindingId, providerDispatchReceiptId: 'dispatch-before-wait' });
+    expect(acknowledgeControllerRoundClaim(store, { workId, session: owner })?.status).toBe('claimed');
+    const waiting = submitControllerRoundDisposition(store, {
+      workId,
+      relayScopeId,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+      disposition: 'wait',
+    });
+    expect(waiting.status).toBe('waiting');
+    const baselineFingerprint = readControllerRoundSemanticStateFingerprint(store, workId);
+    expect(baselineFingerprint).toBe(waiting.stateFingerprint);
+
+    // Persistence churn alone must not wake a semantic wait.
+    updateWorkContract(store, workId, {});
+    expect(readControllerRoundSemanticStateFingerprint(store, workId)).toBe(baselineFingerprint);
+    let resumeCalls = 0;
+    const host = {
+      resume: async () => {
+        resumeCalls += 1;
+        return { accepted: true, dispatchId: `dispatch-${resumeCalls}` };
+      },
+    };
+    const unchanged = await resumeScheduledControllerContinuation(store, {
+      scheduleId: schedule.scheduleId,
+      occurrenceId: 'occ-semantic-wait-unchanged',
+      workId,
+      controllerBindingId: adapter.binding.bindingId,
+      relayScopeId,
+    }, host);
+    expect(unchanged.dispatch).toMatchObject({ status: 'semantic_wait', workId, relayScopeId });
+    expect(resumeCalls).toBe(0);
+    expect(getControllerRoundRelay(store, workId)?.status).toBe('waiting');
+
+    // A meaningful Work state change opens exactly one successor round.
+    updateWorkContract(store, workId, { evidenceState: 'partial' });
+    expect(readControllerRoundSemanticStateFingerprint(store, workId)).not.toBe(baselineFingerprint);
+    const changed = await resumeScheduledControllerContinuation(store, {
+      scheduleId: schedule.scheduleId,
+      occurrenceId: 'occ-semantic-wait-changed',
+      workId,
+      controllerBindingId: adapter.binding.bindingId,
+      relayScopeId,
+    }, host);
+    expect(changed.dispatch).toMatchObject({ status: 'dispatched', hostDispatchId: 'dispatch-1' });
+    expect(resumeCalls).toBe(1);
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'dispatched', providerDispatchReceiptId: 'dispatch-1' });
   }, 15_000);
 
   test('Work-bound controller capability survives execution-session invalidation and transport rotation without collapsing same-principal conversations', async () => {

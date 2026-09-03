@@ -201,23 +201,42 @@ function mechanicalStateFingerprint(
       dispatchState: entry.dispatchState,
       evidenceState: entry.evidenceState,
       completionOutcome: entry.completionOutcome,
-      updatedAt: entry.updatedAt,
     }))
     .sort((left, right) => left.workId.localeCompare(right.workId));
   const linkedWorkIds = new Set(works.map((entry) => entry.workId));
   const handoffs = listHandoffItems({ controllerHome: options.controllerHome, repoId: options.repoId, status: 'active', limit: 100 })
     .filter((handoff) => !handoff.workId || linkedWorkIds.has(handoff.workId))
-    .map((handoff) => ({ id: handoff.id, status: handoff.status, updatedAt: handoff.updatedAt }));
+    .map((handoff) => ({
+      id: handoff.id,
+      workId: handoff.workId,
+      status: handoff.status,
+      severity: handoff.severity,
+      title: handoff.title,
+      reason: handoff.reason,
+      creationReason: handoff.creationReason,
+      blockingDecision: handoff.blockingDecision,
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
   return createHash('sha256').update(JSON.stringify({
     requirement: requirement ? {
       requirementId: requirement.requirementId,
       state: requirement.state,
       revision: requirement.revision,
-      updatedAt: requirement.updatedAt,
     } : undefined,
     works,
     handoffs,
   })).digest('hex');
+}
+
+/** Current semantic state identity for one existing ControllerRound lineage. Volatile persistence timestamps are intentionally excluded. */
+export function readControllerRoundSemanticStateFingerprint(
+  options: ControllerRoundRelayStoreOptions,
+  workId: string,
+): string | undefined {
+  const work = getWorkContract(options, workId);
+  const current = readRelayRecord(options, workId)?.value;
+  if (!work || !current) return undefined;
+  return mechanicalStateFingerprint(options, work, current.requirementId, current.relayScopeId);
 }
 
 function resolveRequirementId(

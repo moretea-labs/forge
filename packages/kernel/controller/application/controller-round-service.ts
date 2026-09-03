@@ -8,6 +8,7 @@ export {
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
   readControllerRoundContextSnapshot,
+  readControllerRoundSemanticStateFingerprint,
   reconcileControllerRoundAfterAbandonedRelease,
   submitControllerRoundDisposition,
   type BeginInitialControllerRoundDispatchInput,

@@ -3,6 +3,7 @@ export type ScheduledContinuationDispatchStatus =
   | 'dispatching'
   | 'dispatched'
   | 'wait_for_user'
+  | 'semantic_wait'
   | 'rejected'
   | 'outcome_unknown';
 

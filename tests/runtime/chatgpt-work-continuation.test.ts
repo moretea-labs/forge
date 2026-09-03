@@ -69,6 +69,14 @@ describe('ChatGPT provider delivery classification', () => {
 });
 
 describe('ChatGPT Work conversation binding', () => {
+  test('ChatGPT round prompt keeps other-host Skill wording non-gating without weakening repository constraints', () => {
+    const source = readFileSync(join(process.cwd(), 'adapters/chatgpt/controller-round-host.ts'), 'utf8');
+    expect(source).toContain('仓库中的工程、验收、安全和权限约束始终有效');
+    expect(source).toContain('其他 Controller host/runtime');
+    expect(source).toContain('不是 ChatGPT 当前 round 的硬 capability gate');
+    expect(source).toContain('不得仅为了满足该 host wording 而 delegate');
+  });
+
   test('pins ChatGPT automation Browser actions to native Chrome attach without global transport mutation', () => {
     expect(chatgptBrowserActionArgs('open_page', { session_id: 'session-a', url: 'https://chatgpt.com/' })).toMatchObject({
       session_id: 'session-a', browser_mode: 'attach_preferred', cdp_attach_fallback: 'fail_closed',

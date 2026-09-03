@@ -3,6 +3,7 @@ import {
   controllerSessionPrincipalId,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
+  readControllerRoundSemanticStateFingerprint,
   getControllerWorkBinding,
   getRetainedControllerSession,
   type ControllerHost,
@@ -37,7 +38,7 @@ export async function resumeScheduledControllerContinuation(
       || previous.workId !== input.workId
       || previous.controllerBindingId !== input.controllerBindingId
     ) throw new Error(`SCHEDULE_CONTINUATION_OCCURRENCE_IDENTITY_CONFLICT: ${input.occurrenceId}`);
-    if (previous.status === 'dispatched' || previous.status === 'wait_for_user' || previous.status === 'rejected') return { dispatch: previous, reused: true };
+    if (previous.status === 'dispatched' || previous.status === 'wait_for_user' || previous.status === 'semantic_wait' || previous.status === 'rejected') return { dispatch: previous, reused: true };
     if (previous.status === 'outcome_unknown') throw new Error(`SCHEDULE_CONTINUATION_OUTCOME_UNKNOWN: ${input.occurrenceId}`);
     if (previous.status === 'dispatching') throw new Error(`SCHEDULE_CONTINUATION_ALREADY_DISPATCHING: ${input.occurrenceId}`);
   }
@@ -61,6 +62,24 @@ export async function resumeScheduledControllerContinuation(
   const canonicalRelayScopeId = requestedRelayScopeId
     ?? (work.requirementId ? `requirement:${work.requirementId}` : `goal:${work.workId}`);
 
+  // A semantic `wait` is quiescent, not a request to periodically reread the same
+  // state. Suppress unchanged schedule/manual wakes before a provider host is even
+  // selected. A new occurrence may proceed only after Kernel semantic state changes.
+  const waitingRelay = getControllerRoundRelay(options, work.workId);
+  if (waitingRelay?.status === 'waiting' && waitingRelay.relayScopeId === canonicalRelayScopeId) {
+    const currentFingerprint = readControllerRoundSemanticStateFingerprint(options, work.workId);
+    if (currentFingerprint && currentFingerprint === waitingRelay.stateFingerprint) {
+      const quiesced = updateScheduledContinuationDispatch(options, input.occurrenceId, 'scheduler_continuation_semantic_wait', (current, at) => current ?? ({
+        schemaVersion: 1, repoId: options.repoId, scheduleId: input.scheduleId, occurrenceId: input.occurrenceId,
+        workId: work.workId, controllerSessionId: session.sessionId, controllerBindingId: bindingRecord.binding.bindingId,
+        relayScopeId: canonicalRelayScopeId, status: 'semantic_wait',
+        reason: `Controller semantic wait remains unchanged for ${canonicalRelayScopeId}; provider dispatch suppressed.`,
+        createdAt: at, updatedAt: at,
+      }));
+      return { dispatch: quiesced, reused: Boolean(previous) };
+    }
+  }
+
   // Reserve the exact occurrence before creating a ControllerRound. If Forge dies
   // after the round write but before the authority is copied back here, the next
   // attempt can safely adopt only the exact still-dispatching round for this
@@ -70,7 +89,7 @@ export async function resumeScheduledControllerContinuation(
     workId: work.workId, controllerSessionId: session.sessionId, controllerBindingId: bindingRecord.binding.bindingId,
     relayScopeId: canonicalRelayScopeId, status: 'prepared', createdAt: at, updatedAt: at,
   }));
-  if (prepared.status === 'dispatched' || prepared.status === 'wait_for_user' || prepared.status === 'rejected') return { dispatch: prepared, reused: true };
+  if (prepared.status === 'dispatched' || prepared.status === 'wait_for_user' || prepared.status === 'semantic_wait' || prepared.status === 'rejected') return { dispatch: prepared, reused: true };
   if (prepared.status === 'outcome_unknown') throw new Error(`SCHEDULE_CONTINUATION_OUTCOME_UNKNOWN: ${input.occurrenceId}`);
   if (prepared.status === 'dispatching') throw new Error(`SCHEDULE_CONTINUATION_ALREADY_DISPATCHING: ${input.occurrenceId}`);
 

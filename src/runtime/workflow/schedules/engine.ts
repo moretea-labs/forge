@@ -403,6 +403,18 @@ async function executeExternalControllerWake(
       },
       host,
     );
+    if (resumed.dispatch.status === 'semantic_wait') {
+      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
+        lastTriggeredAt: timestamp,
+        lastOccurrenceId: occurrence.occurrenceId,
+      }));
+      return saveOccurrence(controllerHome, {
+        ...wakeDecision,
+        status: 'skipped',
+        decision: 'nothing_to_do',
+        reason: resumed.dispatch.reason ?? `Work ${workId} remains in unchanged semantic wait; provider dispatch suppressed.`,
+      });
+    }
     if (resumed.dispatch.status === 'rejected') {
       throw new Error(resumed.dispatch.reason ?? 'CONTROLLER_HOST_RESUME_REJECTED');
 
