@@ -15,6 +15,7 @@ import { acknowledgeControllerRoundClaim, beginInitialControllerRoundDispatch, f
 import { ensureRepositoryWorkHandle, reconcileRepositoryWorkHandlePlacement } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { ensureRunningRepositoryWorkCheckout } from '../../src/runtime/control-plane/execution/retained-work-resume';
 import { cleanupTerminalWork } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
+import { inspectCleanupOnlyMergedHead } from '../../src/runtime/control-plane/execution/work-finalization-service';
 
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { resolveExplicitClaimedRepositoryWork } from '../../src/runtime/control-plane/execution/repository-work-attribution';
@@ -2446,6 +2447,44 @@ describe('rh_work terminalization authority', () => {
       completionReceipt: { source: 'remote_effect', authority: 'repository_process', processId, receiptId: processId },
     });
     expect(existsSync(workspace.root!)).toBe(false);
+  }, 20_000);
+
+  test('cleanup-only reconciliation rejects a non-cancelled branch that advanced beyond the Work expectedHead', () => {
+    const fx = fixture();
+    const workId = 'work-cleanup-rejects-advanced-branch';
+    const branch = 'work/cleanup-rejects-advanced-branch';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, { requestId: workId, title: 'Cleanup Exact Head', branchName: branch });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const expectedHead = workspace.baseRevision!;
+    const now = new Date().toISOString();
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, baseRevision: expectedHead,
+      mode: 'goal_workloop', objective: 'Keep cleanup authority bound to the exact Work revision.',
+      acceptanceCriteria: ['Cleanup cannot adopt a later same-named branch HEAD.'], allowedPaths: ['src/**'], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', workKind: 'repository_change', status: 'running', phase: 'cleanup', worktreeRef: workspace.root,
+    });
+    const handle = writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1, workId, sessionId: 'transport-cleanup-exact-head', principalId: 'principal-cleanup-exact-head', repositoryId: repository.repoId,
+      checkoutId: workspace.checkoutId!, worktreePath: workspace.root!, branch, sourceCheckoutId: repository.activeCheckoutId, workContractId: workId,
+      baseCommit: expectedHead, deliveryBaseCommit: expectedHead, expectedHead, permissionSnapshotVersion: 1, state: 'merged', managedWorktree: true,
+      createdAt: now, updatedAt: now,
+      finalization: { validation: 'done', commit: 'skipped', merge: 'done', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+    });
+
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const ready = "advanced";\n');
+    execFileSync('git', ['add', 'src/index.ts'], { cwd: workspace.root! });
+    execFileSync('git', ['commit', '-m', 'advance branch after durable work head'], { cwd: workspace.root! });
+    const advancedHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf-8' }).trim();
+    expect(advancedHead).not.toBe(expectedHead);
+    execFileSync('git', ['merge', '--ff-only', branch], { cwd: fx.repoRoot });
+
+    expect(inspectCleanupOnlyMergedHead(
+      ctx(fx.controllerHome, repository, 'principal-cleanup-exact-head', 'transport-cleanup-exact-head', 'runtime-cleanup-exact-head'),
+      handle,
+      { cleanup: true, commit: false, merge: false },
+    )).toBeUndefined();
+    expect(existsSync(workspace.root!)).toBe(true);
   }, 20_000);
 
   test('no-change finalization proves target reachability before removing a managed worktree', async () => {

@@ -918,7 +918,11 @@ export function inspectCleanupOnlyMergedHead(
     encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
   });
   if (currentBranch.status !== 0 || String(currentBranch.stdout ?? '').trim() !== current.branch) return undefined;
-  if (current.expectedHead && currentHead !== current.expectedHead && cancelledContract) return undefined;
+  // Cleanup reconciliation proves the exact Work-owned revision, regardless of
+  // terminal contract status. A same-named branch may be advanced later by a
+  // different controller or manual Git operation; reachability from the target
+  // is not authority to adopt that newer HEAD as this Work's delivery.
+  if (current.expectedHead && currentHead !== current.expectedHead) return undefined;
   return { currentHead, cancelledContract, worktreeMissing: false };
 }
 
