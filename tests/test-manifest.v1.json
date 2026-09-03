@@ -749,6 +749,82 @@
     "tests/workflow-state-lock.test.ts": {
       "module": "workflow",
       "resource": "temp-isolated"
+    },
+    "tests/runtime/bootstrap-capability-provider.test.ts": {
+      "module": "controller",
+      "resource": "pure"
+    },
+    "tests/runtime/bootstrap-control-api.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/bootstrap-local-bridge-readiness.test.ts": {
+      "module": "controller",
+      "resource": "pure"
+    },
+    "tests/runtime/browser-product-discovery.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
+    "tests/runtime/computer-interaction-target.test.ts": {
+      "module": "browser",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/context-closure.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/context-pack-readiness.test.ts": {
+      "module": "controller",
+      "resource": "git-worktree"
+    },
+    "tests/runtime/context-plane.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/engineering-design-gate.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/engineering-work-profile.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/executable-discovery.test.ts": {
+      "module": "process-runtime",
+      "resource": "pure"
+    },
+    "tests/runtime/fetch-http-server.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/operational-prior-shadow.test.ts": {
+      "module": "controller",
+      "resource": "pure"
+    },
+    "tests/runtime/operational-prior-store.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/platform-service-manager.test.ts": {
+      "module": "process-runtime",
+      "resource": "pure"
+    },
+    "tests/runtime/setup-bootstrap-adapter.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/windows-host-discovery.test.ts": {
+      "module": "process-runtime",
+      "resource": "pure"
+    },
+    "tests/runtime/work-execution-concurrency.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workspace-semantic-sync.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
     }
   }
 }
