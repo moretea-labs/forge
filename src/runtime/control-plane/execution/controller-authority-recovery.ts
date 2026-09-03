@@ -65,18 +65,10 @@ export function recoverDirectControllerAuthority(input: {
     throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RUNTIME_REQUIRED: ${workId}; caller must be served by the live canonical Runtime.`);
   }
 
-  const authority = mintControllerSessionAuthority();
-  const session = bindControllerSessionToCurrentRuntime(store, {
-    workId,
-    controllerId: input.identity.controllerId,
-    controllerType: input.identity.controllerType,
-    sessionId: input.identity.sessionId,
-    authorityDigest: authority.authorityDigest,
-    principalId: input.identity.principalId,
-    controllerInstanceId: input.identity.controllerInstanceId,
-    currentRuntimeInstanceId: input.runtime.runtimeInstanceId,
-    leaseMs: input.leaseMs ?? 3_600_000,
-  });
+  // Validate and materialize the replacement transport binding before rotating
+  // the durable Work-bound controller capability. An invalidated or otherwise
+  // unusable ExecutionSession must fail with zero ControllerSession mutation;
+  // recovery is not allowed to strand a Work behind a freshly rotated secret.
   const permissionSnapshotVersion = currentPermissionSnapshotVersion(input.controllerHome, input.repoId);
   const executionSession = startExecutionSession(input.controllerHome, {
     sessionId: input.identity.sessionId,
@@ -94,6 +86,19 @@ export function recoverDirectControllerAuthority(input: {
     activeWorkId: work.workId,
     permissionSnapshotVersion,
     lastValidatedAt: new Date().toISOString(),
+  });
+
+  const authority = mintControllerSessionAuthority();
+  const session = bindControllerSessionToCurrentRuntime(store, {
+    workId,
+    controllerId: input.identity.controllerId,
+    controllerType: input.identity.controllerType,
+    sessionId: executionSession.sessionId,
+    authorityDigest: authority.authorityDigest,
+    principalId: input.identity.principalId,
+    controllerInstanceId: input.identity.controllerInstanceId,
+    currentRuntimeInstanceId: input.runtime.runtimeInstanceId,
+    leaseMs: input.leaseMs ?? 3_600_000,
   });
   return {
     session,

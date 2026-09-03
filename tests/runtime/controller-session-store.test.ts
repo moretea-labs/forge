@@ -5,10 +5,13 @@ import { join } from 'path';
 import {
   bindControllerSessionToCurrentRuntime,
   claimControllerSession,
+  controllerSessionAuthorityMatches,
   controllerSessionBlocksRecovery,
   getControllerSession,
+  mintControllerSessionAuthority,
   resumeControllerSession,
 } from '../../src/runtime/control-plane/facade/controller-session-store';
+import { recoverDirectControllerAuthority } from '../../src/runtime/control-plane/execution/controller-authority-recovery';
 import { invalidateExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 
@@ -166,6 +169,81 @@ describe('controller Work ownership fencing', () => {
       ...claimInput('session-a', 'principal-a', 'instance-a'),
       expectedClaimGeneration: 999,
     })).toThrow(/WORK_CLAIM_GENERATION_MISMATCH/);
+  });
+
+  test('direct authority recovery fails before mutating durable ownership when the replacement ExecutionSession is invalidated', () => {
+    const home = controllerHome();
+    const store = { controllerHome: home, repoId: 'repo-a' };
+    createWorkContract(store, {
+      workId: 'work-owner', repoId: 'repo-a', mode: 'goal_workloop', objective: 'preserve authority on recovery failure',
+      acceptanceCriteria: ['failed recovery does not rotate durable authority'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+    });
+    startExecutionSession(home, { sessionId: 'session-old', principalId: 'principal-a', controllerInstanceId: 'instance-a' });
+    const originalAuthority = mintControllerSessionAuthority();
+    const claimed = claimControllerSession(store, {
+      ...claimInput('session-old', 'principal-a', 'instance-a'),
+      authorityDigest: originalAuthority.authorityDigest,
+    });
+    invalidateExecutionSession(home, 'session-old', 'mcp_transport_capacity_eviction');
+    const before = getControllerSession(store, 'work-owner')!;
+
+    expect(() => recoverDirectControllerAuthority({
+      controllerHome: home,
+      repoId: 'repo-a',
+      workId: 'work-owner',
+      requestedBy: 'user',
+      identity: {
+        controllerId: 'principal-a', controllerType: 'chatgpt', sessionId: 'session-old',
+        principalId: 'principal-a', controllerInstanceId: 'instance-a',
+      },
+      runtime: { running: true, runtimeInstanceId: 'instance-a' },
+    })).toThrow(/SESSION_INVALIDATED: mcp_transport_capacity_eviction/);
+
+    const after = getControllerSession(store, 'work-owner')!;
+    expect(after).toEqual(before);
+    expect(after.authorityDigest).toBe(originalAuthority.authorityDigest);
+    expect(after.sessionId).toBe(claimed.sessionId);
+    expect(after.claimGeneration).toBe(claimed.claimGeneration);
+  });
+
+  test('direct authority recovery validates a fresh ExecutionSession before rotating only the opaque capability', () => {
+    const home = controllerHome();
+    const store = { controllerHome: home, repoId: 'repo-a' };
+    createWorkContract(store, {
+      workId: 'work-owner', repoId: 'repo-a', mode: 'goal_workloop', objective: 'recover direct controller authority',
+      acceptanceCriteria: ['same semantic owner survives transport loss'], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+    });
+    startExecutionSession(home, { sessionId: 'session-old', principalId: 'principal-a', controllerInstanceId: 'instance-a' });
+    const originalAuthority = mintControllerSessionAuthority();
+    const claimed = claimControllerSession(store, {
+      ...claimInput('session-old', 'principal-a', 'instance-a'),
+      authorityDigest: originalAuthority.authorityDigest,
+    });
+    invalidateExecutionSession(home, 'session-old', 'mcp_transport_capacity_eviction');
+
+    const recovered = recoverDirectControllerAuthority({
+      controllerHome: home,
+      repoId: 'repo-a',
+      workId: 'work-owner',
+      requestedBy: 'user',
+      identity: {
+        controllerId: 'principal-a', controllerType: 'chatgpt', sessionId: 'session-recovery',
+        principalId: 'principal-a', controllerInstanceId: 'instance-a',
+      },
+      runtime: { running: true, runtimeInstanceId: 'instance-a' },
+    });
+
+    expect(recovered.authorityRecovered).toBe(true);
+    expect(recovered.controllerAuthorityCarrier).toBe('controller_authority_id_or_session_id_compat');
+    expect(recovered.controllerAuthorityId).toMatch(/^ctrl_[a-f0-9]{32}$/);
+    expect(recovered.session).toMatchObject({
+      workId: 'work-owner', controllerId: 'principal-a', principalId: 'principal-a',
+      sessionId: 'session-recovery', controllerInstanceId: 'instance-a', claimGeneration: claimed.claimGeneration,
+    });
+    expect(recovered.session.authorityDigest).not.toBe(originalAuthority.authorityDigest);
+    expect(controllerSessionAuthorityMatches(recovered.session, recovered.controllerAuthorityId)).toBe(true);
   });
 
   test('allows an explicitly authorized stale recovery to rotate controller ownership after the recovery grace', () => {
