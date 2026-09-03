@@ -18,14 +18,13 @@ import { runDoctor, type CheckStatus, type DoctorReport } from './doctor';
 import { runStatus, type StatusReport } from './status';
 import { runMcpSetupChatgpt } from '../../../adapters/mcp/setup';
 import { resolveControllerHome } from '../repositories/controller-home';
+import { refreshSetupBootstrap } from './bootstrap-control';
+import type { BootstrapSnapshot } from '../../runtime/control-plane/bootstrap';
 import {
   configureSetupProfile,
   detectSetupPlatform,
   formatSetupProfile,
   readSetupProfile,
-  resolveControllerGuidance,
-  resolveRuntimeGuidance,
-  resolveTunnelGuidance,
   setupHostTarget,
   type SetupHostTarget,
   type SetupPlatformSnapshot,
@@ -686,6 +685,8 @@ export interface SetupSession {
   closedAt?: string;
   lastReport: InitHookReport;
   nextAction?: InitHookAction;
+  /** Compatibility projection now backed by the instance-level V2 bootstrap authority. */
+  bootstrap?: BootstrapSnapshot;
 }
 
 export interface SetupSessionOptions extends InitHookOptions {
@@ -733,55 +734,29 @@ function setupStatus(report: InitHookReport, nextAction?: InitHookAction): Setup
   return 'open';
 }
 
-function profileNextAction(profile: SetupProfile | undefined, platform: SetupPlatformSnapshot, options: { controllerHome?: string; accountHome?: string } = {}): InitHookAction | undefined {
-  if (!profile) {
-    return {
-      id: 'controller.select',
-      status: 'needs_agent',
-      reason: 'Choose the external controller that will act as Forge’s brain. ChatGPT is recommended; Codex, Claude, or another MCP client can be primary instead.',
-      requires_agent: true,
-      risk: 'Writes only the local Forge setup profile. It does not install or authenticate third-party software.',
-      command: 'forge setup configure --controller chatgpt',
-      verification: 'forge setup next',
-    };
-  }
-  const controller = resolveControllerGuidance(profile, { controllerHome: options.controllerHome, home: options.accountHome });
-  if (controller && !controller.ready) {
-    return {
-      id: `controller.${controller.controller}.configure`,
-      status: 'needs_agent',
-      reason: `${controller.title}: ${controller.detail}`,
-      requires_agent: true,
-      risk: 'Configures only the explicitly selected external controller entry. Unselected Codex/Claude providers remain untouched.',
-      ...(controller.command ? { command: controller.command } : {}),
-      verification: 'forge setup next',
-    };
-  }
-  const runtime = resolveRuntimeGuidance(profile, { controllerHome: options.controllerHome });
-  if (runtime && !runtime.ready) {
-    return {
-      id: 'runtime.package.install',
-      status: 'needs_agent',
-      reason: `${runtime.title}: ${runtime.detail}`,
-      requires_agent: true,
-      risk: 'Installs or diagnoses the user-level Forge Runtime only. Standalone Recovery and source-release activation are not part of normal setup.',
-      ...(runtime.command ? { command: runtime.command } : {}),
-      verification: 'forge setup next',
-    };
-  }
-  const tunnel = resolveTunnelGuidance(profile, platform, { controllerHome: options.controllerHome });
-  if (!tunnel.ready) {
-    return {
-      id: `tunnel.${tunnel.provider}.configure`,
-      status: 'needs_agent',
-      reason: `${tunnel.title}: ${tunnel.detail}`,
-      requires_agent: true,
-      risk: 'Remote connectivity is provider-owned. Forge keeps its MCP listener on loopback; credentials, authentication, and account changes remain explicit.',
-      ...(tunnel.command ? { command: tunnel.command } : {}),
-      verification: 'forge setup next',
-    };
-  }
-  return undefined;
+function bootstrapNextAction(snapshot: BootstrapSnapshot): InitHookAction | undefined {
+  const stateById = new Map(snapshot.steps.map((entry) => [entry.id, entry.state]));
+  const dependenciesReady = (entry: BootstrapSnapshot['steps'][number]): boolean => entry.dependsOn.every((dependency) => {
+    const state = stateById.get(dependency);
+    return state === 'ready' || state === 'skipped';
+  });
+  const step = snapshot.steps.find((entry) => entry.state === 'blocked' && entry.actionIds.length > 0 && dependenciesReady(entry))
+    ?? snapshot.steps.find((entry) => entry.state === 'pending' && entry.actionIds.length > 0 && dependenciesReady(entry));
+  const actionId = step?.actionIds[0];
+  if (!actionId) return undefined;
+  const action = snapshot.actions.find((entry) => entry.id === actionId);
+  if (!action) return undefined;
+  return {
+    id: action.id,
+    status: 'needs_agent',
+    reason: action.owner === 'user' ? `User action required: ${action.summary}` : action.summary,
+    requires_agent: true,
+    risk: action.risk ?? (action.owner === 'user'
+      ? 'This action crosses a user/account boundary and cannot be completed silently by Forge.'
+      : 'This action is scoped to the local Forge bootstrap lifecycle.'),
+    ...(action.command ? { command: action.command } : {}),
+    verification: action.verification ?? 'forge setup next',
+  };
 }
 
 export function openSetupSession(options: SetupSessionOptions = {}): SetupSession {
@@ -792,7 +767,10 @@ export function openSetupSession(options: SetupSessionOptions = {}): SetupSessio
   const target = options.target ?? setupHostTarget(profile);
   const report = options.report ?? runInitHook({ ...options, target });
   const controllerHome = resolveControllerHome(options.controllerHome);
-  const nextAction = profileNextAction(profile, platform, { controllerHome, accountHome: options.accountHome }) ?? report.agent_actions[0];
+  const bootstrap = refreshSetupBootstrap({
+    setupRoot: options.setupRoot, env: options.env, now: options.now, controllerHome, accountHome: options.accountHome, profile, platform,
+  });
+  const nextAction = bootstrapNextAction(bootstrap) ?? report.agent_actions[0];
   const now = (options.now ?? (() => new Date()))().toISOString();
   const reuse = previous && previous.status !== 'closed';
   return writeSetupSessionAt(path, {
@@ -806,6 +784,7 @@ export function openSetupSession(options: SetupSessionOptions = {}): SetupSessio
     createdAt: reuse ? previous.createdAt : now,
     updatedAt: now,
     lastReport: report,
+    bootstrap,
     ...(nextAction ? { nextAction } : {}),
   });
 }

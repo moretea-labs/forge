@@ -14,6 +14,8 @@ import { listControllerChecks } from '../controller/check-runner';
 import { createMcpToolContext, type MultiRepositoryMcpToolContext } from '../../../adapters/mcp/multi-repository';
 import { readSchedulerHealthSnapshot } from '../../runtime/control-plane/global-scheduler/scheduler';
 import { observeRuntimeStatus } from '../../runtime/root/status';
+import { readBootstrapControlState } from '../../runtime/control-plane/bootstrap';
+import type { BootstrapSnapshot } from '../../runtime/control-plane/bootstrap';
 import { readForgeRuntimeStatus } from '../../runtime/control-plane/runtime-status-client';
 import { evaluateActiveRuntimeSourceDrift, readRuntimeGeneration } from '../../runtime/control-plane/runtime-generation';
 import {
@@ -690,11 +692,24 @@ export async function evaluateConsoleConnectorFreshness(
   });
 }
 
+export function classifyBootstrapReadiness(input: {
+  bootstrap?: BootstrapSnapshot;
+  runtimeReady: boolean;
+  repositoryEnabled: boolean;
+}): SystemReadinessViewModel['state'] {
+  const fatalBootstrap = input.bootstrap?.blockers.some((blocker) => blocker.kind === 'failed' || blocker.kind === 'unsupported') === true;
+  if (fatalBootstrap) return 'blocked';
+  if (input.bootstrap?.status === 'ready' && !input.runtimeReady) return 'blocked';
+  if (!input.bootstrap || input.bootstrap.status !== 'ready' || !input.repositoryEnabled) return 'needs_setup';
+  return 'ready';
+}
+
 export async function buildSystemReadiness(
   ctx: ConsoleFacadeContext,
   opts: { connectorToolNames?: readonly string[] | null } = {},
 ): Promise<SystemReadinessViewModel> {
   const runtime = observeRuntimeStatus(ctx.controllerHome);
+  const bootstrap = readBootstrapControlState(ctx.controllerHome);
   const runtimeHealth = undefined;
   const freshness = await evaluateConsoleConnectorFreshness(ctx, {
     connectorToolNames: opts.connectorToolNames,
@@ -704,6 +719,15 @@ export async function buildSystemReadiness(
   const checks = listControllerChecks(ctx.repository.canonicalRoot);
   const automation = buildAutomationReadinessSection(ctx);
   const sections: SystemReadinessViewModel['sections'] = [
+    {
+      id: 'bootstrap',
+      title: 'Forge 设置',
+      statusLabel: bootstrap?.status === 'ready' ? '就绪' : bootstrap?.status === 'blocked' ? '需要处理' : '未完成',
+      tone: bootstrap?.status === 'ready' ? 'green' : bootstrap ? 'amber' : 'amber',
+      detail: bootstrap?.status === 'ready'
+        ? `Bootstrap revision ${bootstrap.revision} 已就绪。`
+        : bootstrap?.blockers[0]?.summary ?? '尚未建立实例级 bootstrap 状态，请运行 forge setup。',
+    },
     {
       id: 'controller',
       title: '控制器',
@@ -752,9 +776,11 @@ export async function buildSystemReadiness(
     },
     automation,
   ];
-  const blocked = !runtime.ready;
-  const needsSetup = ctx.repository.enabled === false;
-  const state: SystemReadinessViewModel['state'] = blocked ? 'blocked' : needsSetup ? 'needs_setup' : 'ready';
+  const state = classifyBootstrapReadiness({
+    bootstrap,
+    runtimeReady: runtime.ready,
+    repositoryEnabled: ctx.repository.enabled !== false,
+  });
   return {
     state,
     label: state === 'ready' ? '就绪' : state === 'needs_setup' ? '需要设置' : '暂不可用',
@@ -762,7 +788,7 @@ export async function buildSystemReadiness(
     description: state === 'ready'
       ? '你可以输入自然语言任务，或先处理待决定事项。'
       : state === 'needs_setup'
-        ? '请先选择或注册一个可用仓库。'
+        ? (bootstrap?.blockers[0]?.summary ?? '请先完成 Forge 实例设置，并选择或注册一个可用仓库。')
         : '请先查看系统状态并尝试诊断/修复。',
     connectorLabel: freshness.connectorLabel,
     connectorTone: freshness.connectorTone,
