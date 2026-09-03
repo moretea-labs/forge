@@ -39,6 +39,19 @@ export function stableRemoteRepoId(canonicalRemote: string): string {
   return `repo_${digest(`remote\0${canonicalRemote}`).slice(0, 24)}`;
 }
 
+/** Portable Project identity: stable across ForgeInstance/repository registrations for the same canonical remote. */
+export function stablePortableProjectId(canonicalRemote: string): string {
+  const normalized = normalizeRemoteUrl(canonicalRemote);
+  if (!normalized) throw new Error('PROJECT_REMOTE_IDENTITY_REQUIRED');
+  return `project_${digest(`project\0${normalized}`).slice(0, 24)}`;
+}
+
+export function portableProjectSourceFingerprint(canonicalRemote: string): string {
+  const normalized = normalizeRemoteUrl(canonicalRemote);
+  if (!normalized) throw new Error('PROJECT_REMOTE_IDENTITY_REQUIRED');
+  return digest(`project-source\0${normalized}`);
+}
+
 export function newLocalRepoId(): string {
   return `repo_local_${randomUUID().replace(/-/g, '')}`;
 }
