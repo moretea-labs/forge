@@ -14,7 +14,7 @@ export type {
   SuggestedNextAction,
   PolicyDecision,
 } from '../../../../packages/kernel/work/domain/types';
-import { decideRoute, type ExplicitTaskMode, type RouteDecision, type RoutePolicyInput } from '../routing/route-policy';
+import { applyRouteContextHints, decideRoute, type ExplicitTaskMode, type RouteContextHints, type RouteDecision, type RoutePolicyInput } from '../routing/route-policy';
 
 export const EXECUTION_MODES = ['direct_control', 'goal_workloop', 'handoff_only'] as const;
 const _executionModesTypeCheck: readonly ExecutionMode[] = EXECUTION_MODES;
@@ -350,6 +350,8 @@ export interface ExecutionModeSelectionInput {
   secretAccess?: boolean;
   mutation?: boolean;
   risk?: CapabilityRisk;
+  /** Advisory Context Plane routing hints. Explicit request fields still win. */
+  contextRouteHints?: RouteContextHints;
   /** Migration/testing escape hatch: adapters must return this exact policy decision. */
   routePolicyInput?: RoutePolicyInput;
 }
@@ -369,7 +371,7 @@ export function selectExecutionMode(input: ExecutionModeSelectionInput): Executi
   const missingContractFields: string[] = [];
   if (!input.scopeClear) missingContractFields.push('scopeSummary', 'acceptanceCriteria', 'allowedPaths');
   if (input.objective !== undefined && input.objective.trim().length === 0) missingContractFields.push('objective');
-  const routeDecision = decideRoute(input.routePolicyInput ?? {
+  const baseRoutePolicyInput: RoutePolicyInput = input.routePolicyInput ?? {
     intent: {
       objective: input.objective ?? (input.scopeClear ? 'bounded repository work' : ''),
       scopeClear: input.scopeClear,
@@ -407,7 +409,8 @@ export function selectExecutionMode(input: ExecutionModeSelectionInput): Executi
     recovery: {
       required: input.requiresRecovery,
     },
-  });
+  };
+  const routeDecision = decideRoute(applyRouteContextHints(baseRoutePolicyInput, input.contextRouteHints));
   return {
     mode: routeDecision.executionMode,
     reason: routeDecision.reasons.map((reason) => reason.message).join(' '),

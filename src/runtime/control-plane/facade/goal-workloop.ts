@@ -67,6 +67,7 @@ import type {
 } from './types';
 import { selectExecutionMode } from './types';
 import { resolveWorkspaceAdmissionConstraint } from '../routing/workspace-admission';
+import { resolveContextPlane, type ContextScope } from '../../context/context-plane';
 
 export type GoalWorkloopOperation = 'start' | 'continue' | 'verify' | 'review' | 'finalize' | 'stop';
 
@@ -380,8 +381,21 @@ export function routeWorkStart(
       data: { executionStarted: false, workContractCreated: false, workKind: effectiveWorkKind },
     });
   }
+  const contextScopes: ContextScope[] = [];
+  if (input.requirementId?.trim()) contextScopes.push({ schemaVersion: 1, kind: 'requirement', id: input.requirementId.trim() });
+  if (input.planId?.trim()) contextScopes.push({ schemaVersion: 1, kind: 'plan', id: input.planId.trim() });
+  if (input.relatedWorkId?.trim()) contextScopes.push({ schemaVersion: 1, kind: 'work', id: input.relatedWorkId.trim() });
+  const resolvedContext = ctx.workStore.controllerHome
+    ? resolveContextPlane({
+        controllerHome: ctx.workStore.controllerHome,
+        scopes: contextScopes,
+        intent: input.modeInput.routePolicyInput?.intent.taskIntent ?? 'implementation',
+        now: nowIso(ctx),
+      })
+    : undefined;
   const effectiveModeInput: ExecutionModeSelectionInput = {
     ...input.modeInput,
+    contextRouteHints: input.modeInput.contextRouteHints ?? resolvedContext?.routeHints,
     objective: input.objective,
     knownPaths: input.allowedPaths,
     workspacePlacement: placementConstraint.workspaceMode,

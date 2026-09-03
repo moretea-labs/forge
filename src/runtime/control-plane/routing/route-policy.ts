@@ -14,6 +14,12 @@ export interface RouteReason {
   message: string;
 }
 
+export interface RouteContextHints {
+  preferredProviderId?: string;
+  allowedProviderIds?: readonly string[];
+  forbiddenProviderIds?: readonly string[];
+}
+
 export interface RouteProviderSnapshot {
   providerId: string;
   kind: 'direct_edit' | 'local_cli' | 'remote_api' | 'cloud_agent' | 'handoff_only';
@@ -111,6 +117,19 @@ function canonical(value: unknown): unknown {
 
 export function routePolicyInputFingerprint(input: RoutePolicyInput): string {
   return createHash('sha256').update(JSON.stringify(canonical(input))).digest('hex');
+}
+
+export function applyRouteContextHints(input: RoutePolicyInput, hints: RouteContextHints | undefined): RoutePolicyInput {
+  if (!hints) return input;
+  return {
+    ...input,
+    intent: {
+      ...input.intent,
+      preferredProviderId: input.intent.preferredProviderId ?? hints.preferredProviderId,
+      allowedProviderIds: input.intent.allowedProviderIds ?? hints.allowedProviderIds,
+      forbiddenProviderIds: input.intent.forbiddenProviderIds ?? hints.forbiddenProviderIds,
+    },
+  };
 }
 
 function ready(provider: RouteProviderSnapshot, required: readonly string[]): boolean {
