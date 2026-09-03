@@ -133,6 +133,15 @@ describe('Stage7F bounded operational Memory', () => {
 
     expect(dropOperationalMemoryNamespace(home, 'repo-fixture')).toBe(5_001);
     expect(listControlPlaneRecords(home, { namespace: OPERATIONAL_MEMORY_NAMESPACE, scope: 'repo-fixture', limit: 5_000 })).toHaveLength(0);
+    const recreated = writeControlPlaneRecord(home, {
+      namespace: OPERATIONAL_MEMORY_NAMESPACE,
+      scope: 'repo-fixture',
+      key: 'bulk-0000',
+      schemaVersion: 1,
+      value: { index: 0, recreated: true },
+      action: 'test_bulk_recreate',
+    });
+    expect(recreated.revision).toBe(3);
   });
 
   test('deduplicated receipt ingestion does not rewrite the same derived SQLite record', () => {

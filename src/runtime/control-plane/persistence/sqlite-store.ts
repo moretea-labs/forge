@@ -412,6 +412,42 @@ export function deleteControlPlaneRecord(
     deleteControlPlaneRecordWithinTransaction(database, input));
 }
 
+export function deleteControlPlaneRecordsWithinTransaction(
+  database: SqliteDatabase,
+  input: { namespace: string; scope: string; action?: string },
+): number {
+  const rows = database.prepare(`
+    SELECT record_key, revision
+    FROM control_plane_records
+    WHERE namespace = ? AND scope = ?
+    ORDER BY record_key ASC
+  `).all(input.namespace, input.scope) as Array<{ record_key: string; revision: number }>;
+  if (rows.length === 0) return 0;
+
+  const at = now();
+  const remove = database.prepare(`
+    DELETE FROM control_plane_records
+    WHERE namespace = ? AND scope = ? AND record_key = ?
+  `);
+  const audit = database.prepare(`
+    INSERT INTO control_plane_audit (namespace, scope, record_key, action, revision, occurred_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  for (const row of rows) {
+    remove.run(input.namespace, input.scope, row.record_key);
+    audit.run(input.namespace, input.scope, row.record_key, input.action ?? 'delete_scope', row.revision + 1, at);
+  }
+  return rows.length;
+}
+
+export function deleteControlPlaneRecords(
+  controllerHome: string,
+  input: { namespace: string; scope: string; action?: string },
+): number {
+  return withControlPlaneTransaction(controllerHome, (database) =>
+    deleteControlPlaneRecordsWithinTransaction(database, input));
+}
+
 export class ControlPlaneConflictError extends Error {
   readonly expectedRevision: number | null;
   readonly actualRevision: number | undefined;
