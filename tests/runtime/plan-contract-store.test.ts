@@ -340,6 +340,16 @@ test('atomically replans one active Plan-bound Work by widening only its allowed
     constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
   });
   claimPlanStepForWork(options, { planId: 'plan-scope-r1', stepId: 'stage-7c', workId: 'work-stage-7c', sourceRevision: 'revision-a' });
+  // Historical SQLite rows can predate the first-class review checkpoint. The
+  // atomic replan reads raw rows inside one transaction, so it must canonicalize
+  // that legacy payload before applying current Work semantic validation.
+  const legacyRow = readControlPlaneRecord<any>(home, 'work_contract', options.repoId, 'work-stage-7c')!;
+  const legacyWork = structuredClone(legacyRow.value);
+  delete legacyWork.phaseEvidence.review;
+  writeControlPlaneRecord(home, {
+    namespace: 'work_contract', scope: options.repoId, key: 'work-stage-7c', schemaVersion: 2,
+    value: legacyWork, action: 'fixture_legacy_work_without_review_phase', expectedRevision: legacyRow.revision,
+  });
 
   const replanned = replanActivePlanBoundWorkScope(options, {
     planId: 'plan-scope-r1', stepId: 'stage-7c', workId: 'work-stage-7c', successorPlanId: 'plan-scope-r2', sourceRevision: 'revision-b',
@@ -350,6 +360,7 @@ test('atomically replans one active Plan-bound Work by widening only its allowed
   expect(replanned.successor).toMatchObject({ planId: 'plan-scope-r2', status: 'executing', sourceRevision: 'revision-b', supersedes: ['plan-scope-r1'] });
   expect(replanned.successor.steps[0]).toMatchObject({ status: 'executing', workId: 'work-stage-7c', allowedPaths: ['src/runtime/control-plane/**', 'src/runtime/context/**'], checks: ['package:check:type'], acceptanceCriteria: ['same semantic outcome'] });
   expect(getWorkContract(options, 'work-stage-7c')).toMatchObject({ workId: 'work-stage-7c', planId: 'plan-scope-r2', planStepId: 'stage-7c', planSourceRevision: 'revision-b', allowedPaths: ['src/runtime/control-plane/**', 'src/runtime/context/**'], checks: ['package:check:type'], requirementId: 'REQ-scope-replan' });
+  expect(getWorkContract(options, 'work-stage-7c')?.phaseEvidence.review).toBeDefined();
   expect(listPlanContracts({ ...options, status: 'active' }).map((plan) => plan.planId)).toEqual(['plan-scope-r2']);
 });
 

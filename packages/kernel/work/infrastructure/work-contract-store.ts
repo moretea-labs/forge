@@ -998,15 +998,16 @@ export function rebindPlanBoundWorkContract(
     reason: string;
   },
 ): WorkContract {
-  if (isTerminalWorkContractStatus(current.status) || current.completionReceipt || current.completionOutcome) {
-    throw new Error(`WORK_PLAN_REBIND_TERMINAL: ${current.workId}`);
+  const canonicalCurrent = normalizeWorkContractStore({ schemaVersion: 2, updatedAt: current.updatedAt, contracts: [current] }).contracts[0]!;
+  if (isTerminalWorkContractStatus(canonicalCurrent.status) || canonicalCurrent.completionReceipt || canonicalCurrent.completionOutcome) {
+    throw new Error(`WORK_PLAN_REBIND_TERMINAL: ${canonicalCurrent.workId}`);
   }
-  if (current.planId !== input.predecessorPlanId || current.planStepId !== input.planStepId) {
-    throw new Error(`WORK_PLAN_REBIND_SOURCE_MISMATCH: ${current.workId}`);
+  if (canonicalCurrent.planId !== input.predecessorPlanId || canonicalCurrent.planStepId !== input.planStepId) {
+    throw new Error(`WORK_PLAN_REBIND_SOURCE_MISMATCH: ${canonicalCurrent.workId}`);
   }
   const successorPlanId = sanitizeFileComponent(input.successorPlanId);
   const planStepId = sanitizeFileComponent(input.planStepId);
-  if (!successorPlanId || successorPlanId === 'unknown' || successorPlanId === current.planId) {
+  if (!successorPlanId || successorPlanId === 'unknown' || successorPlanId === canonicalCurrent.planId) {
     throw new Error('WORK_PLAN_REBIND_SUCCESSOR_INVALID');
   }
   const planSourceRevision = input.planSourceRevision.trim();
@@ -1014,25 +1015,25 @@ export function rebindPlanBoundWorkContract(
   const allowedPaths = [...new Set(input.allowedPaths.map((value) => value.trim()).filter(Boolean))].slice(0, 50);
   const forbiddenPaths = [...new Set(input.forbiddenPaths.map((value) => value.trim()).filter(Boolean))].slice(0, 50);
   const checks = [...new Set(input.checks.map((value) => value.trim()).filter(Boolean))].slice(0, 30);
-  for (const path of current.allowedPaths) {
+  for (const path of canonicalCurrent.allowedPaths) {
     if (!allowedPaths.includes(path)) throw new Error(`WORK_PLAN_REBIND_SCOPE_NARROWING_FORBIDDEN: ${path}`);
   }
-  if (JSON.stringify(forbiddenPaths) !== JSON.stringify(current.forbiddenPaths)) {
+  if (JSON.stringify(forbiddenPaths) !== JSON.stringify(canonicalCurrent.forbiddenPaths)) {
     throw new Error('WORK_PLAN_REBIND_FORBIDDEN_SCOPE_CHANGE');
   }
-  if (JSON.stringify(checks) !== JSON.stringify(current.checks)) {
+  if (JSON.stringify(checks) !== JSON.stringify(canonicalCurrent.checks)) {
     throw new Error('WORK_PLAN_REBIND_CHECK_CHANGE');
   }
   const evidenceRefs = [{
     title: 'Plan-bound Work scope replanned',
-    summary: `${current.planId} -> ${successorPlanId}: ${input.reason.trim().slice(0, 1_000)}`,
+    summary: `${canonicalCurrent.planId} -> ${successorPlanId}: ${input.reason.trim().slice(0, 1_000)}`,
     detailLevel: 'summary' as const,
-  }, ...current.evidenceRefs].slice(0, current.evidencePolicy.maxEvidenceRefs);
+  }, ...canonicalCurrent.evidenceRefs].slice(0, canonicalCurrent.evidencePolicy.maxEvidenceRefs);
   const next = validateWorkSemantics({
-    ...current,
+    ...canonicalCurrent,
     scopeRef: semanticScopeRefForWork({
-      workId: current.workId,
-      requirementId: current.requirementId,
+      workId: canonicalCurrent.workId,
+      requirementId: canonicalCurrent.requirementId,
       planId: successorPlanId,
       planStepId,
     }),
@@ -1045,7 +1046,7 @@ export function rebindPlanBoundWorkContract(
     evidenceRefs,
     updatedAt: input.recordedAt,
   });
-  return validateWorkSemanticTransition(current, next);
+  return validateWorkSemanticTransition(canonicalCurrent, next);
 }
 
 export function updateWorkContract(
