@@ -6,7 +6,7 @@
 
 | 平台 | 状态 | 普通用户路径 |
 | --- | --- | --- |
-| macOS | 支持 | Package 安装、主控优先 setup、launchd Package Runtime、仓库/普通目录、MCP、Browser/Desktop 与插件。 |
+| macOS | 支持 | Package 安装、主控优先 setup、launchd Package Runtime、仓库/普通目录、MCP、插件与统一 `Computer` 产品。Browser 语义内置；原生 Desktop 语义需要已注册的 macOS Computer provider。 |
 | 现代 Linux | 支持 | Package 安装、主控优先 setup、优先 `systemd --user` 的 Package Runtime、仓库/普通目录、MCP 与可移植 Provider。 |
 | Windows + WSL2 | 支持且为 Windows 推荐路径 | Forge Runtime 在 WSL2 内按 Linux 方式运行；Windows 仍可承载 ChatGPT/浏览器客户端。 |
 | Windows 原生 | 预览 | Package 安装、setup、portable Runtime/MCP、仓库注册/读取和可移植能力；暂不宣称重启后 Runtime 自动持久化和所有外部 Provider 组合都完整。 |
@@ -21,7 +21,7 @@
 
 **Git 只在启用仓库/软件开发能力时才需要。** 普通 package 用户不要求 Bun、Forge 源码 checkout、CodeGraph、Codex、Claude、Standalone Recovery、Cloudflare、Tailscale 或 OpenAI tunnel-client。
 
-按能力才出现的依赖包括：Git 仓库操作；明确选择的 Codex/Claude 主控或执行入口；GitHub CLI；Browser/Desktop 平台依赖；Google/Apple 等账号凭证；以及远程主控连接本机 MCP 时选择的 tunnel/provider。
+按能力才出现的依赖包括：Git 仓库操作；明确选择的 Codex/Claude 主控或执行入口；GitHub CLI；Computer Browser/Desktop provider 平台依赖；Google/Apple 等账号凭证；以及远程主控连接本机 MCP 时选择的 tunnel/provider。
 
 ## 各平台 Runtime owner
 

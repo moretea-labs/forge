@@ -1,6 +1,12 @@
 import { homedir } from 'os';
 import { join, resolve } from 'path';
-import { COMPUTER_BROWSER_AUTOMATION_CAPABILITY } from '../../packages/protocols/computer/index';
+import {
+  COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
+  COMPUTER_CAPTURE_CAPABILITY,
+  COMPUTER_INPUT_CAPABILITY,
+  COMPUTER_OBSERVE_CAPABILITY,
+  type ComputerRuntimeProviderCapabilityId,
+} from '../../packages/protocols/computer/index';
 import {
   ComputerProviderError,
   type ComputerProviderRegistrationLookup,
@@ -22,6 +28,7 @@ export interface DesktopOperatorComputerEndpoint {
   actionTimeoutMs: number;
   maxResponseBytes: number;
   registrationRevision?: number;
+  capabilityIds: ComputerRuntimeProviderCapabilityId[];
 }
 
 export type DesktopOperatorLegacyFallbackMode = 'disabled' | 'unregistered_v0_2';
@@ -43,12 +50,11 @@ export function resetDesktopOperatorComputerSocketPathForTest(): void {
   testSocketPath = undefined;
 }
 
-function registeredEndpoint(
+function readRegisteredProvider(
   lookupRegistration: ComputerProviderRegistrationLookup,
-): DesktopOperatorComputerEndpoint | undefined {
-  let registration: ComputerProviderRegistrationSnapshot | undefined;
+): ComputerProviderRegistrationSnapshot | undefined {
   try {
-    registration = lookupRegistration(DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID);
+    return lookupRegistration(DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID);
   } catch (error) {
     throw new ComputerProviderError(
       'PLUGIN_COMPUTER_PROVIDER_REGISTRATION_INVALID',
@@ -56,14 +62,11 @@ function registeredEndpoint(
       { retryable: false, details: { providerPluginId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID, cause: error instanceof Error ? error.message : String(error) } },
     );
   }
-  if (!registration) return undefined;
-  if (!registration.enabled) {
-    throw new ComputerProviderError(
-      'PLUGIN_COMPUTER_PROVIDER_DISABLED',
-      'Forge Desktop Operator is registered but disabled. Enable or reinstall the Computer provider instead of bypassing its registration.',
-      { retryable: false, details: { providerPluginId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID, registrationRevision: registration.revision } },
-    );
-  }
+}
+
+function declaredComputerCapabilities(
+  registration: ComputerProviderRegistrationSnapshot,
+): ComputerRuntimeProviderCapabilityId[] {
   if (registration.providerPluginId !== DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID
     || registration.protocolVersion !== DESKTOP_OPERATOR_PROVIDER_PROTOCOL_VERSION) {
     throw new ComputerProviderError(
@@ -81,28 +84,49 @@ function registeredEndpoint(
       },
     );
   }
+  const capabilityIds = new Set(registration.capabilityIds);
+  const recognized = [
+    COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
+    COMPUTER_OBSERVE_CAPABILITY,
+    COMPUTER_INPUT_CAPABILITY,
+    COMPUTER_CAPTURE_CAPABILITY,
+  ].filter((capability): capability is ComputerRuntimeProviderCapabilityId => capabilityIds.has(capability));
+  const legacyRegistrationCompatible = LEGACY_REGISTRATION_CAPABILITIES.every((capability) => capabilityIds.has(capability));
+  if (recognized.length === 0 && !legacyRegistrationCompatible) {
+    throw new ComputerProviderError(
+      'PLUGIN_COMPUTER_PROVIDER_CAPABILITY_UNDECLARED',
+      'Forge Desktop Operator registration does not declare a supported Computer capability or the bounded legacy Desktop capability set required for compatibility.',
+      {
+        retryable: false,
+        details: {
+          supportedComputerCapabilities: [COMPUTER_BROWSER_AUTOMATION_CAPABILITY, COMPUTER_OBSERVE_CAPABILITY, COMPUTER_INPUT_CAPABILITY, COMPUTER_CAPTURE_CAPABILITY],
+          legacyRequiredCapabilities: [...LEGACY_REGISTRATION_CAPABILITIES],
+          registrationRevision: registration.revision,
+        },
+      },
+    );
+  }
+  return recognized.length > 0 ? recognized : [COMPUTER_BROWSER_AUTOMATION_CAPABILITY];
+}
+
+function registeredEndpoint(
+  lookupRegistration: ComputerProviderRegistrationLookup,
+): DesktopOperatorComputerEndpoint | undefined {
+  const registration = readRegisteredProvider(lookupRegistration);
+  if (!registration) return undefined;
+  const capabilityIds = declaredComputerCapabilities(registration);
+  if (!registration.enabled) {
+    throw new ComputerProviderError(
+      'PLUGIN_COMPUTER_PROVIDER_DISABLED',
+      'Forge Desktop Operator is registered but disabled. Enable or reinstall the Computer provider instead of bypassing its registration.',
+      { retryable: false, details: { providerPluginId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID, registrationRevision: registration.revision } },
+    );
+  }
   if (registration.transport.kind !== 'unix_socket_jsonl' || !registration.transport.socketPath) {
     throw new ComputerProviderError(
       'PLUGIN_COMPUTER_PROVIDER_TRANSPORT_UNSUPPORTED',
       'Forge Desktop Operator registration must use the trusted Unix-socket transport.',
       { retryable: false, details: { transportKind: registration.transport.kind, registrationRevision: registration.revision } },
-    );
-  }
-  const capabilityIds = new Set(registration.capabilityIds);
-  const declaresComputerCapability = capabilityIds.has(COMPUTER_BROWSER_AUTOMATION_CAPABILITY);
-  const legacyRegistrationCompatible = LEGACY_REGISTRATION_CAPABILITIES.every((capability) => capabilityIds.has(capability));
-  if (!declaresComputerCapability && !legacyRegistrationCompatible) {
-    throw new ComputerProviderError(
-      'PLUGIN_COMPUTER_PROVIDER_CAPABILITY_UNDECLARED',
-      'Forge Desktop Operator registration does not declare the Computer browser capability or the bounded legacy Desktop capability set required for compatibility.',
-      {
-        retryable: false,
-        details: {
-          requiredCapability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
-          legacyRequiredCapabilities: [...LEGACY_REGISTRATION_CAPABILITIES],
-          registrationRevision: registration.revision,
-        },
-      },
     );
   }
   return {
@@ -112,6 +136,7 @@ function registeredEndpoint(
     actionTimeoutMs: registration.transport.actionTimeoutMs ?? 30_000,
     maxResponseBytes: registration.transport.maxResponseBytes ?? DESKTOP_OPERATOR_MAX_RESPONSE_BYTES,
     registrationRevision: registration.revision,
+    capabilityIds,
   };
 }
 
@@ -125,6 +150,7 @@ export function resolveDesktopOperatorComputerEndpoint(
       healthTimeoutMs: 2_000,
       actionTimeoutMs: 30_000,
       maxResponseBytes: DESKTOP_OPERATOR_MAX_RESPONSE_BYTES,
+      capabilityIds: [COMPUTER_BROWSER_AUTOMATION_CAPABILITY],
     };
   }
   if (options.lookupRegistration) {
@@ -150,5 +176,22 @@ export function resolveDesktopOperatorComputerEndpoint(
     healthTimeoutMs: 2_000,
     actionTimeoutMs: 30_000,
     maxResponseBytes: DESKTOP_OPERATOR_MAX_RESPONSE_BYTES,
+    capabilityIds: [COMPUTER_BROWSER_AUTOMATION_CAPABILITY],
   };
+}
+
+export function desktopOperatorComputerProviderCapabilities(
+  options: DesktopOperatorComputerProviderOptions = {},
+): ComputerRuntimeProviderCapabilityId[] {
+  if (testSocketPath) return [COMPUTER_BROWSER_AUTOMATION_CAPABILITY];
+  if (options.lookupRegistration) {
+    const registration = readRegisteredProvider(options.lookupRegistration);
+    if (registration) return declaredComputerCapabilities(registration);
+  }
+  if (options.legacyFallback === 'unregistered_v0_2') return [COMPUTER_BROWSER_AUTOMATION_CAPABILITY];
+  throw new ComputerProviderError(
+    'PLUGIN_COMPUTER_PROVIDER_REGISTRATION_REQUIRED',
+    'Computer provider registration is required before capabilities can be declared.',
+    { retryable: false, details: { providerPluginId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID } },
+  );
 }

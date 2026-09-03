@@ -57,6 +57,8 @@ export interface ExternalPluginRegistration {
   protocolVersion: string;
   scope: AssistantPluginScope;
   enabled: boolean;
+  /** Product registrations appear in normal plugin listings; provider registrations are internal implementation bindings. */
+  exposure?: 'product' | 'provider';
   transport: ExternalPluginTransport;
   lifecycle?: ExternalPluginLifecycle;
   permissions: AssistantPluginPermissionScope[];
@@ -77,6 +79,8 @@ export interface ExternalPluginRegistrationInput {
   protocolVersion: string;
   scope: AssistantPluginScope;
   enabled?: boolean;
+  /** Defaults to product for backward compatibility with schema-v1 registrations. */
+  exposure?: 'product' | 'provider';
   transport: ExternalPluginTransport;
   lifecycle?: ExternalPluginLifecycle;
   permissions: AssistantPluginPermissionScope[];
@@ -228,6 +232,9 @@ function normalizeRegistrationInput(input: ExternalPluginRegistrationInput): Omi
   const protocolVersion = normalizedString(input.protocolVersion, 'protocol_version', 32);
   if (!PROTOCOL_VERSION_PATTERN.test(protocolVersion)) throw new Error(`EXTERNAL_PLUGIN_PROTOCOL_VERSION_INVALID: ${protocolVersion}`);
   if (!['controller', 'repository'].includes(input.scope)) throw new Error(`EXTERNAL_PLUGIN_SCOPE_INVALID: ${String(input.scope)}`);
+  if (input.exposure !== undefined && !['product', 'provider'].includes(input.exposure)) {
+    throw new Error(`EXTERNAL_PLUGIN_EXPOSURE_INVALID: ${String(input.exposure)}`);
+  }
   return {
     schemaVersion: EXTERNAL_REGISTRATION_SCHEMA_VERSION,
     pluginId,
@@ -238,6 +245,7 @@ function normalizeRegistrationInput(input: ExternalPluginRegistrationInput): Omi
     protocolVersion,
     scope: input.scope,
     enabled: input.enabled !== false,
+    ...(input.exposure !== undefined ? { exposure: input.exposure } : {}),
     transport: normalizedTransport(input.transport),
     lifecycle: normalizedLifecycle(input.lifecycle),
     permissions: structuredClone(input.permissions),

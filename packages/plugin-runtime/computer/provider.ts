@@ -1,14 +1,14 @@
 import type {
-  ComputerBrowserAutomationRequest,
+  ComputerExecutionRequest,
   ComputerRuntimeProviderCapabilityId,
 } from '../../protocols/computer/index';
 
-/** Concrete OS/browser implementations live in adapters. Plugin Runtime owns dispatch only. */
+/** Concrete OS/browser implementations live in adapters. Plugin Runtime owns typed dispatch only. */
 export interface ComputerProvider {
   providerId: string;
   capabilities: readonly ComputerRuntimeProviderCapabilityId[];
-  executeBrowserAutomation(
-    request: ComputerBrowserAutomationRequest,
+  execute(
+    request: ComputerExecutionRequest,
     timeoutMs: number,
   ): Promise<Record<string, unknown>>;
 }

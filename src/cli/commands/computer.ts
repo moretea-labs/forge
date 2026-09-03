@@ -2,7 +2,15 @@ import { spawnSync } from 'child_process';
 import { existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { Command } from 'commander';
+import {
+  COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
+  COMPUTER_CAPTURE_CAPABILITY,
+  COMPUTER_INPUT_CAPABILITY,
+  COMPUTER_OBSERVE_CAPABILITY,
+  type ComputerCapabilityId,
+} from '../../../packages/protocols/computer/index';
 import { resolveControllerHome, controllerSystemRoot } from '../repositories/controller-home';
+import { discoverPreferredNativeBrowserProduct } from '../../runtime/platform/browser-product-discovery';
 import { getExternalPluginRegistration, removeExternalPluginRegistration } from '../../runtime/plugins/external-registration';
 import {
   readControllerStoredPluginManifest,
@@ -48,13 +56,26 @@ export interface ComputerProviderStatus {
   health: ComputerProviderHealth;
 }
 
+export type ComputerCapabilityState = 'ready' | 'missing' | 'degraded' | 'unsupported';
+
+export interface ComputerCapabilityStatus {
+  capabilityId: ComputerCapabilityId;
+  provider: 'browser' | 'desktop_operator';
+  supported: boolean;
+  ready: boolean;
+  state: ComputerCapabilityState;
+  reason?: string;
+}
+
 export interface ComputerStatusReport {
   schemaVersion: 1;
   product: typeof COMPUTER_PRODUCT_ID;
   platform: NodeJS.Platform;
   supported: boolean;
+  partial: boolean;
   installed: boolean;
   ready: boolean;
+  capabilities: ComputerCapabilityStatus[];
   provider: ComputerProviderStatus;
   compatibilityReason?: string;
 }
@@ -105,10 +126,66 @@ function providerHealth(controllerHome: string): ComputerProviderHealth {
   };
 }
 
-export function readComputerStatus(options: { controllerHome?: string } = {}): ComputerStatusReport {
+function browserCapabilityStatus(input: {
+  platform: NodeJS.Platform;
+  compatibility: ReturnType<typeof pluginCatalogCompatibility>;
+  registration: ReturnType<typeof getExternalPluginRegistration>;
+  health: ComputerProviderHealth;
+  env?: NodeJS.ProcessEnv;
+  fileExists?: (path: string) => boolean;
+}): ComputerCapabilityStatus {
+  const supported = input.platform === 'darwin' || input.platform === 'linux' || input.platform === 'win32';
+  if (!supported) return { capabilityId: COMPUTER_BROWSER_AUTOMATION_CAPABILITY, provider: 'browser', supported: false, ready: false, state: 'unsupported', reason: `Browser Computer capability is unsupported on ${input.platform}.` };
+
+  const nativeDeclaresBrowser = input.registration?.capabilities.some((capability) => capability.capabilityId === COMPUTER_BROWSER_AUTOMATION_CAPABILITY) === true;
+  if (input.compatibility.compatible && input.registration?.enabled && input.health.ready && nativeDeclaresBrowser) {
+    return { capabilityId: COMPUTER_BROWSER_AUTOMATION_CAPABILITY, provider: 'desktop_operator', supported: true, ready: true, state: 'ready' };
+  }
+
+  const discoveredBrowser = discoverPreferredNativeBrowserProduct({
+    platform: input.platform,
+    env: input.env,
+    fileExists: input.fileExists,
+  });
+  return {
+    capabilityId: COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
+    provider: 'browser',
+    supported: true,
+    ready: false,
+    state: 'missing',
+    reason: discoveredBrowser
+      ? `Discovered ${discoveredBrowser.appName}, but no generic Computer Browser provider readiness proof is bound yet.`
+      : 'No ready Computer Browser provider is bound; run forge computer setup or forge setup to discover and configure one.',
+  };
+}
+
+function desktopCapabilityStatus(
+  capabilityId: typeof COMPUTER_OBSERVE_CAPABILITY | typeof COMPUTER_INPUT_CAPABILITY | typeof COMPUTER_CAPTURE_CAPABILITY,
+  compatibility: ReturnType<typeof pluginCatalogCompatibility>,
+  registration: ReturnType<typeof getExternalPluginRegistration>,
+  health: ComputerProviderHealth,
+): ComputerCapabilityStatus {
+  if (!compatibility.compatible) return { capabilityId, provider: 'desktop_operator', supported: false, ready: false, state: 'unsupported', reason: compatibility.reason };
+  if (!registration) return { capabilityId, provider: 'desktop_operator', supported: true, ready: false, state: 'missing', reason: 'Native Computer provider is not installed.' };
+  const declared = registration.capabilities.some((capability) => capability.capabilityId === capabilityId);
+  const ready = registration.enabled && health.ready && declared;
+  return {
+    capabilityId,
+    provider: 'desktop_operator',
+    supported: true,
+    ready,
+    state: ready ? 'ready' : 'degraded',
+    reason: ready ? undefined : (!declared
+      ? `Installed native Computer provider does not declare ${capabilityId}.`
+      : (health.errors[0] ?? health.warnings[0] ?? `Native Computer provider health is ${health.state}.`)),
+  };
+}
+
+export function readComputerStatus(options: { controllerHome?: string; platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv; fileExists?: (path: string) => boolean } = {}): ComputerStatusReport {
   const controllerHome = resolveControllerHome(options.controllerHome);
+  const platform = options.platform ?? process.platform;
   const entry = catalogEntry();
-  const compatibility = pluginCatalogCompatibility(entry, process.platform);
+  const compatibility = pluginCatalogCompatibility(entry, platform);
   const registration = getExternalPluginRegistration(controllerHome, COMPUTER_PROVIDER_PLUGIN_ID);
   const health = providerHealth(controllerHome);
   const installedVersion = registration?.pluginVersion;
@@ -125,13 +202,22 @@ export function readComputerStatus(options: { controllerHome?: string } = {}): C
     lifecycle: registration?.lifecycle?.kind,
     health,
   };
+  const capabilities = [
+    browserCapabilityStatus({ platform, compatibility, registration, health, env: options.env, fileExists: options.fileExists }),
+    desktopCapabilityStatus(COMPUTER_OBSERVE_CAPABILITY, compatibility, registration, health),
+    desktopCapabilityStatus(COMPUTER_INPUT_CAPABILITY, compatibility, registration, health),
+    desktopCapabilityStatus(COMPUTER_CAPTURE_CAPABILITY, compatibility, registration, health),
+  ];
+  const supportedCapabilities = capabilities.filter((capability) => capability.supported);
   return {
     schemaVersion: 1,
     product: COMPUTER_PRODUCT_ID,
-    platform: process.platform,
-    supported: compatibility.compatible,
+    platform,
+    supported: supportedCapabilities.length > 0,
+    partial: supportedCapabilities.length > 0 && supportedCapabilities.length < capabilities.length,
     installed: Boolean(registration),
-    ready: Boolean(compatibility.compatible && registration?.enabled && health.ready),
+    ready: capabilities.every((capability) => capability.ready),
+    capabilities,
     provider,
     compatibilityReason: compatibility.reason,
   };
@@ -159,17 +245,25 @@ export function runComputerDoctor(options: { controllerHome?: string } = {}): Co
   const checks: ComputerDoctorReport['checks'] = [];
   checks.push({
     id: 'platform',
-    state: status.supported ? 'pass' : 'fail',
-    message: status.supported
-      ? `Computer provider is supported on ${status.platform}.`
-      : (status.compatibilityReason ?? `Computer provider is unsupported on ${status.platform}.`),
+    state: status.partial ? 'warn' : (status.supported ? 'pass' : 'fail'),
+    message: status.partial
+      ? `Computer has partial capability support on ${status.platform}; capability details are reported individually.`
+      : (status.supported ? `Computer capabilities are supported on ${status.platform}.` : `Computer is unsupported on ${status.platform}.`),
   });
+  for (const capability of status.capabilities) {
+    checks.push({
+      id: `capability:${capability.capabilityId}`,
+      state: capability.ready ? 'pass' : (capability.supported ? 'fail' : 'warn'),
+      message: capability.ready ? `${capability.capabilityId} is ready.` : (capability.reason ?? `${capability.capabilityId} is ${capability.state}.`),
+    });
+  }
+  const nativeProviderSupported = status.capabilities.some((capability) => capability.provider === 'desktop_operator' && capability.supported);
   checks.push({
     id: 'installed',
-    state: status.installed ? 'pass' : 'fail',
-    message: status.installed
-      ? `Computer macOS provider ${status.provider.installedVersion ?? 'unknown'} is installed.`
-      : 'Computer macOS provider is not installed.',
+    state: nativeProviderSupported ? (status.installed ? 'pass' : 'fail') : 'warn',
+    message: nativeProviderSupported
+      ? (status.installed ? `Native Computer provider ${status.provider.installedVersion ?? 'unknown'} is installed.` : 'Native Computer provider is not installed.')
+      : `Native Desktop Computer provider is not part of the supported capability set on ${status.platform}.`,
   });
   if (status.installed) {
     checks.push({
@@ -245,10 +339,11 @@ export function runComputerUninstall(options: { controllerHome?: string; purge?:
 
 export function formatComputerStatus(report: ComputerStatusReport): string {
   const lines = [
-    `Computer: ${report.ready ? 'ready' : (report.installed ? report.provider.health.state : 'not installed')}`,
-    `macOS provider: Forge Desktop Operator ${report.provider.installedVersion ?? 'not installed'}${report.provider.updateAvailable ? ` (pinned ${report.provider.catalogVersion})` : ''}`,
-    `service: ${report.provider.health.state}`,
-    `protocol: ${report.provider.protocolVersion ?? 'n/a'}`,
+    `Computer: ${report.ready ? 'ready' : (report.partial ? 'partial' : 'not ready')}`,
+    ...report.capabilities.map((capability) => `capability ${capability.capabilityId}: ${capability.state}`),
+    `native provider: Forge Desktop Operator ${report.provider.installedVersion ?? 'not installed'}${report.provider.updateAvailable ? ` (pinned ${report.provider.catalogVersion})` : ''}`,
+    `native service: ${report.provider.health.state}`,
+    `native protocol: ${report.provider.protocolVersion ?? 'n/a'}`,
     'provider release: independent',
   ];
   if (report.provider.health.errors[0]) lines.push(`error: ${report.provider.health.errors[0]}`);

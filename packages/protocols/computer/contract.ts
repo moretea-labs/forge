@@ -12,12 +12,8 @@ export type ComputerCapabilityId =
   | typeof COMPUTER_INPUT_CAPABILITY
   | typeof COMPUTER_CAPTURE_CAPABILITY;
 
-/**
- * Capabilities with a typed request DTO and execution method in the plugin-runtime provider registry.
- * Observe/input/capture remain provider-neutral semantic capabilities exposed by typed plugin actions
- * until their dedicated Computer protocol requests are defined.
- */
-export type ComputerRuntimeProviderCapabilityId = typeof COMPUTER_BROWSER_AUTOMATION_CAPABILITY;
+/** Every public Computer capability is dispatched through the same typed provider registry. */
+export type ComputerRuntimeProviderCapabilityId = ComputerCapabilityId;
 
 /** Runtime advertisement used to negotiate one provider-neutral Computer capability. */
 export interface ComputerCapabilityAdvertisement {
@@ -61,3 +57,43 @@ export type ComputerBrowserAutomationRequest =
   | { action: 'activate'; product: ComputerBrowserProduct; ref?: ComputerBrowserTabRef }
   | { action: 'trusted_input'; product: ComputerBrowserProduct; ref: ComputerBrowserTabRef; input: ComputerTrustedInput }
   | { action: 'capture_region'; region: ComputerCaptureRegion };
+
+export interface ComputerSemanticSelector {
+  ref?: string;
+  role?: string;
+  title?: string;
+  identifier?: string;
+}
+
+export interface ComputerObserveRequest {
+  capability: typeof COMPUTER_OBSERVE_CAPABILITY;
+  action: 'observe';
+  interactionId: string;
+  maxDepth?: number;
+  maxNodes?: number;
+  includeValues?: boolean;
+  includeActions?: boolean;
+  includeWindows?: boolean;
+  rootSelector?: ComputerSemanticSelector;
+}
+
+export type ComputerInputRequest =
+  | { capability: typeof COMPUTER_INPUT_CAPABILITY; action: 'press'; interactionId: string; selector: ComputerSemanticSelector; semanticAction?: 'press' | 'show_menu' | 'pick' | 'open' | 'confirm' | 'scroll_down_page' | 'scroll_up_page' }
+  | { capability: typeof COMPUTER_INPUT_CAPABILITY; action: 'type_text'; interactionId: string; selector: ComputerSemanticSelector; text: string; replace?: boolean }
+  | { capability: typeof COMPUTER_INPUT_CAPABILITY; action: 'key'; interactionId: string; keys: string[] }
+  | { capability: typeof COMPUTER_INPUT_CAPABILITY; action: 'open_url'; url: string };
+
+export interface ComputerCaptureRequest {
+  capability: typeof COMPUTER_CAPTURE_CAPABILITY;
+  action: 'screenshot';
+  scope?: 'display' | 'window';
+  interactionId?: string;
+  windowId?: number;
+  label?: string;
+}
+
+export type ComputerExecutionRequest =
+  | { capability: typeof COMPUTER_BROWSER_AUTOMATION_CAPABILITY; request: ComputerBrowserAutomationRequest }
+  | ComputerObserveRequest
+  | ComputerInputRequest
+  | ComputerCaptureRequest;

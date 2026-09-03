@@ -42,7 +42,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(enabled = true) {
+function fixture(enabled = true, exposure?: 'product' | 'provider') {
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-external-store-'));
   roots.push(controllerHome);
   const socketPath = join(controllerHome, 'missing-desktop.sock');
@@ -55,6 +55,7 @@ function fixture(enabled = true) {
     protocolVersion: '1.0',
     scope: 'controller',
     enabled,
+    ...(exposure ? { exposure } : {}),
     transport: { kind: 'unix_socket_jsonl', socketPath, healthTimeoutMs: 100, actionTimeoutMs: 500 },
     permissions: [{ scope: 'desktop.observe', mode: 'read', description: 'Observe desktop.', granted: true, required: true }],
     capabilities: [{ capabilityId: 'desktop-observe', title: 'Desktop observe', description: 'Observe desktop.', scopes: ['desktop.observe'], actions: ['desktop_status'] }],
@@ -486,6 +487,15 @@ describe('external plugin store integration', () => {
       health: { ready: false, probed: true },
     });
     expect(assistantPluginScope('desktop_operator', fx.controllerHome)).toBe('controller');
+  });
+
+  test('keeps provider-only registrations exactly addressable but out of the normal product list', () => {
+    const fx = fixture(true, 'provider');
+    const manifests = listAssistantPluginManifests(fx.controllerHome, fx.repository, { forceRefresh: true });
+    expect(manifests.some((manifest) => manifest.pluginId === 'desktop_operator')).toBe(false);
+    expect(manifests.some((manifest) => manifest.pluginId === 'computer')).toBe(true);
+    expect(assistantPluginScope('desktop_operator', fx.controllerHome)).toBe('controller');
+    expect(getAssistantPluginManifest(fx.controllerHome, fx.repository, 'desktop_operator').pluginId).toBe('desktop_operator');
   });
 
   test('get uses the same external adapter registration rather than a second manifest authority', () => {

@@ -43,8 +43,10 @@ function resolvePluginAdapter(controllerHome: string, pluginId: string): Assista
 }
 
 function listPluginAdapters(controllerHome: string): AssistantPluginAdapter[] {
-  const external = listExternalPluginAdapters(controllerHome).filter((adapter) => !PLUGIN_ADAPTERS.has(adapter.pluginId));
-  return [...PLUGIN_ADAPTERS.values(), ...external];
+  const firstParty = [...PLUGIN_ADAPTERS.values()].filter((adapter) => adapter.exposure !== 'internal');
+  const external = listExternalPluginAdapters(controllerHome)
+    .filter((adapter) => !PLUGIN_ADAPTERS.has(adapter.pluginId) && adapter.exposure !== 'internal');
+  return [...firstParty, ...external];
 }
 
 export function assistantPluginScope(pluginId: string, controllerHome?: string): AssistantPluginAdapter['scope'] | undefined {

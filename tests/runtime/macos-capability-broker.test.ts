@@ -8,7 +8,13 @@ import {
   resetMacOsCapabilityBrokerSocketPathForTest,
   setMacOsCapabilityBrokerSocketPathForTest,
 } from '../../src/runtime/plugins/macos-capability-broker';
-import { createDesktopOperatorComputerProvider } from '../../adapters/computer/desktop-operator-provider';
+import { createDesktopOperatorComputerProvider, desktopOperatorActionForComputerRequest } from '../../adapters/computer/desktop-operator-provider';
+import {
+  COMPUTER_BROWSER_AUTOMATION_CAPABILITY,
+  COMPUTER_CAPTURE_CAPABILITY,
+  COMPUTER_INPUT_CAPABILITY,
+  COMPUTER_OBSERVE_CAPABILITY,
+} from '../../packages/protocols/computer/index';
 import { computerProviderRegistrationSnapshot } from '../../packages/plugin-runtime/computer/index';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
 import { getExternalPluginRegistration, installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
@@ -200,7 +206,7 @@ describe('macOS capability broker handshake', () => {
     }));
 
     const provider = createDesktopOperatorComputerProvider({ lookupRegistration: registrationLookup(controllerHome) });
-    const result = await provider.executeBrowserAutomation({ action: 'list_tabs', product: 'chrome' }, 2_000);
+    const result = await provider.execute({ capability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY, request: { action: 'list_tabs', product: 'chrome' } }, 2_000);
     expect(result).toMatchObject({ acceptedAction: 'list_tabs', value: 'ok' });
     expect(calls).toEqual(['handshake', 'macos_browser_automation']);
   });
@@ -218,7 +224,37 @@ describe('macOS capability broker handshake', () => {
     }));
 
     const provider = createDesktopOperatorComputerProvider({ lookupRegistration: registrationLookup(controllerHome) });
-    await expect(provider.executeBrowserAutomation({ action: 'list_tabs', product: 'chrome' }, 2_000))
+    await expect(provider.execute({ capability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY, request: { action: 'list_tabs', product: 'chrome' } }, 2_000))
       .rejects.toThrow('PLUGIN_COMPUTER_PROVIDER_DISABLED');
+  });
+
+  test('maps typed Computer desktop semantics onto the existing Desktop Operator action contract', () => {
+    expect(desktopOperatorActionForComputerRequest({
+      capability: COMPUTER_OBSERVE_CAPABILITY,
+      action: 'observe',
+      interactionId: 'interaction-1',
+      maxDepth: 4,
+      rootSelector: { role: 'AXButton', title: 'Continue' },
+    })).toEqual({
+      actionId: 'desktop_observe',
+      args: { interaction_id: 'interaction-1', max_depth: 4, root_selector: { role: 'AXButton', title: 'Continue' } },
+    });
+    expect(desktopOperatorActionForComputerRequest({
+      capability: COMPUTER_INPUT_CAPABILITY,
+      action: 'type_text',
+      interactionId: 'interaction-1',
+      selector: { identifier: 'prompt' },
+      text: 'hello',
+      replace: true,
+    })).toEqual({
+      actionId: 'desktop_type_text',
+      args: { interaction_id: 'interaction-1', selector: { identifier: 'prompt' }, text: 'hello', replace: true },
+    });
+    expect(desktopOperatorActionForComputerRequest({
+      capability: COMPUTER_CAPTURE_CAPABILITY,
+      action: 'screenshot',
+      scope: 'window',
+      windowId: 42,
+    })).toEqual({ actionId: 'desktop_screenshot', args: { scope: 'window', window_id: 42 } });
   });
 });

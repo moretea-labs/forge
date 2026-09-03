@@ -25,7 +25,7 @@ const SELECTOR_SCHEMA = {
   additionalProperties: false,
 };
 
-function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
+export function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
   return [
     {
       actionId: 'desktop_status',
@@ -397,6 +397,7 @@ export function createDesktopOperatorRegistrationInput(
     protocolVersion: options.protocolVersion ?? '1.0',
     scope: 'controller',
     enabled: options.enabled !== false,
+    exposure: 'provider',
     transport: {
       kind: 'unix_socket_jsonl',
       socketPath: options.socketPath,

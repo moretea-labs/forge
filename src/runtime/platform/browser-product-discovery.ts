@@ -108,3 +108,67 @@ export function discoverNativeBrowserProduct(input: {
   if (!executable) return undefined;
   return { channel: input.channel, appName: fallback.appName, executable, source: 'fallback', defaultUserDataDir: explicitUserDataDir || fallback.defaultUserDataDir };
 }
+
+export type SupportedNativeBrowserProductId = 'chrome' | 'vivaldi';
+
+export interface SupportedNativeBrowserProduct extends NativeBrowserProduct {
+  product: SupportedNativeBrowserProductId;
+}
+
+function discoverVivaldiProduct(input: {
+  platform: NodeJS.Platform;
+  env: NodeJS.ProcessEnv;
+  fileExists: (path: string) => boolean;
+}): SupportedNativeBrowserProduct | undefined {
+  const { platform, env, fileExists } = input;
+  let pathNames: string[] = [];
+  let executableFallbacks: string[] = [];
+  let defaultUserDataDir: string | undefined;
+  if (platform === 'darwin') {
+    pathNames = ['vivaldi'];
+    executableFallbacks = ['/Applications/Vivaldi.app/Contents/MacOS/Vivaldi'];
+    defaultUserDataDir = join(env.HOME ?? homedir(), 'Library', 'Application Support', 'Vivaldi');
+  } else if (platform === 'win32') {
+    pathNames = ['vivaldi.exe', 'vivaldi'];
+    const localAppData = env.LOCALAPPDATA?.trim() || windowsPath.join(env.USERPROFILE?.trim() || homedir(), 'AppData', 'Local');
+    const roots = [localAppData, env.ProgramFiles, env['ProgramFiles(x86)']].map((value) => value?.trim()).filter((value): value is string => Boolean(value));
+    executableFallbacks = roots.map((root) => windowsPath.join(root, 'Vivaldi', 'Application', 'vivaldi.exe'));
+    defaultUserDataDir = windowsPath.join(localAppData, 'Vivaldi', 'User Data');
+  } else if (platform === 'linux') {
+    pathNames = ['vivaldi', 'vivaldi-stable'];
+    defaultUserDataDir = join(env.XDG_CONFIG_HOME?.trim() || join(env.HOME ?? homedir(), '.config'), 'vivaldi');
+  } else {
+    return undefined;
+  }
+  const onPath = discoverExecutable({ id: 'browser:vivaldi', candidates: pathNames, platform, env, fileExists });
+  if (onPath.status === 'ready' && onPath.executable) {
+    return { product: 'vivaldi', channel: 'chrome', appName: 'Vivaldi', executable: onPath.executable, source: 'path', defaultUserDataDir };
+  }
+  const executable = executableFallbacks.find((candidate) => fileExists(candidate));
+  return executable
+    ? { product: 'vivaldi', channel: 'chrome', appName: 'Vivaldi', executable, source: 'fallback', defaultUserDataDir }
+    : undefined;
+}
+
+/** Discover a usable supported Chromium-family product without binding product readiness to one developer browser. */
+export function discoverPreferredNativeBrowserProduct(input: {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  explicitExecutable?: string;
+  explicitUserDataDir?: string;
+  fileExists?: (path: string) => boolean;
+} = {}): SupportedNativeBrowserProduct | undefined {
+  const platform = input.platform ?? process.platform;
+  const env = input.env ?? process.env;
+  const fileExists = input.fileExists ?? existsSync;
+  const channels: NativeBrowserChannel[] = ['chrome', 'chrome-beta', 'chrome-dev', 'chrome-canary'];
+  for (const channel of channels) {
+    const chrome = discoverNativeBrowserProduct({
+      channel, platform, env, fileExists,
+      explicitExecutable: channel === 'chrome' ? input.explicitExecutable : undefined,
+      explicitUserDataDir: input.explicitUserDataDir,
+    });
+    if (chrome) return { ...chrome, product: 'chrome' };
+  }
+  return discoverVivaldiProduct({ platform, env, fileExists });
+}

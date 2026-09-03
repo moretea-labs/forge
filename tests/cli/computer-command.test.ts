@@ -55,7 +55,22 @@ describe('Computer product facade', () => {
         health: { state: 'not_installed', ready: false, probed: false },
       },
     });
-    expect(status.supported).toBe(process.platform === 'darwin');
+    expect(status.supported).toBe(['darwin', 'linux', 'win32'].includes(process.platform));
+    expect(status.ready).toBe(false);
+    expect(status.capabilities).toHaveLength(4);
+  });
+
+  test('reports Linux/WSL as partial Computer support instead of falsely ready or wholly unsupported', () => {
+    const home = controllerHome();
+    const status = readComputerStatus({ controllerHome: home, platform: 'linux', env: {}, fileExists: () => false });
+    expect(status).toMatchObject({ supported: true, partial: true, ready: false });
+    expect(status.capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ capabilityId: 'computer.browser_automation.v1', supported: true, ready: false }),
+      expect.objectContaining({ capabilityId: 'computer.observe.v1', supported: false, state: 'unsupported' }),
+      expect.objectContaining({ capabilityId: 'computer.input.v1', supported: false, state: 'unsupported' }),
+      expect.objectContaining({ capabilityId: 'computer.capture.v1', supported: false, state: 'unsupported' }),
+    ]));
+    expect(formatComputerStatus(status)).toContain('Computer: partial');
   });
 
   test('projects trusted registration and pinned-release drift without making provider identity the product', () => {

@@ -278,6 +278,7 @@ export function createExternalPluginAdapter(
   return {
     pluginId: registration.pluginId,
     scope: registration.scope,
+    exposure: registration.exposure === 'provider' ? 'internal' : 'product',
     resolveAuthorizationContext: (input) => resolveExternalAuthorizationContext(registration, input, dependencies),
     buildManifest(previousRevision = 0, previousUpdatedAt?: string): AssistantPluginManifest {
       const checkedAt = now().toISOString();

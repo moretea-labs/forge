@@ -155,6 +155,7 @@ export interface AssistantPluginActionExecutionInput {
 }
 
 export type AssistantPluginScope = 'repository' | 'controller' | 'controller_with_repository_overlay';
+export type AssistantPluginExposure = 'product' | 'internal';
 
 export interface AssistantPluginBuildContext {
   controllerHome: string;
@@ -166,6 +167,8 @@ export interface AssistantPluginBuildContext {
 export interface AssistantPluginAdapter {
   pluginId: string;
   scope?: AssistantPluginScope;
+  /** Internal adapters remain exactly addressable by trusted composition but are omitted from normal user-facing plugin listings. */
+  exposure?: AssistantPluginExposure;
   buildManifest(previousRevision?: number, previousUpdatedAt?: string, repoRoot?: string, context?: AssistantPluginBuildContext): AssistantPluginManifest;
   /** Resolve an exact stable resource identity for reusable authorization-class actions. */
   resolveAuthorizationContext?(input: AssistantPluginActionExecutionInput): Promise<AssistantPluginAuthorizationContext | undefined>;

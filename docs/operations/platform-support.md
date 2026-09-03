@@ -6,10 +6,10 @@ This document defines the currently claimed Forge user experience. It distinguis
 
 | Platform | Status | Normal user path |
 | --- | --- | --- |
-| macOS | Supported | Package install, controller-first setup, Package Runtime via launchd, repositories, local files, MCP, browser/desktop providers, and plugins. |
-| Modern Linux | Supported | Package install, controller-first setup, Package Runtime via `systemd --user` when available, repositories, local files, MCP, and portable providers. |
-| WSL2 on Windows | Supported and recommended for Windows | Run the Linux Forge Runtime inside WSL2; Windows can host ChatGPT/browser clients. Forge bootstrap can provision a dedicated controlled Chromium profile when an extension-capable supported browser is available. |
-| Native Windows | Preview | Package install, setup, portable Runtime/MCP, repository registration/inspection, and portable capabilities. Automatic reboot-persistent Runtime ownership and every external provider combination are not yet claimed. |
+| macOS | Supported | Package install, controller-first setup, Package Runtime via launchd, repositories, local files, MCP, plugins, and the `Computer` product. Browser semantics are built in; native Desktop semantics require the registered macOS Computer provider. |
+| Modern Linux | Supported | Package install, controller-first setup, Package Runtime via `systemd --user` when available, repositories, local files, MCP, plugins, and portable Browser-side Computer capabilities. Native Desktop Computer capability is not currently claimed. |
+| WSL2 on Windows | Supported and recommended for Windows | Run the Linux Forge Runtime inside WSL2; Windows can host ChatGPT/browser clients. Forge bootstrap can provision a dedicated controlled Chromium profile when an extension-capable supported browser is available. Computer reports partial readiness until a truthful host Desktop provider exists. |
+| Native Windows | Preview | Package install, setup, portable Runtime/MCP, repository registration/inspection, and portable capabilities. Native Desktop Computer capability and automatic reboot-persistent Runtime ownership are not yet claimed. |
 
 For scheduled ChatGPT Controller continuation on WSL2, Forge uses the existing ChatGPT Bridge authority rather than macOS native browser attach. The bridge keeps its capability token in the controller-scoped ChatGPT browser binding, opens the exact ChatGPT target through Windows browser interop, and treats prompt dispatch as complete only after the browser extension reports the postcondition. Forge may automatically provision only a dedicated Forge-controlled Chromium profile when the detected runtime explicitly supports unpacked-extension startup; that profile is separate from the user's ordinary browser profile. Google Chrome is not treated as automatic unpacked-extension bootstrap authority. An already enabled compatible bridge extension in an explicitly selected Chrome profile may be observed and reused, but otherwise setup returns a precise resumable user action instead of mutating or restarting the user's normal Chrome profile. This host bootstrap remains transport state, not a second Browser session authority.
 
@@ -28,7 +28,7 @@ Capability-specific dependencies include:
 - Git for repository adoption, Git operations, worktrees, commits, and source development;
 - Codex or Claude only when explicitly configured as an external controller/execution entry;
 - GitHub CLI for GitHub workflows that require it;
-- browser/OS provider prerequisites for browser or desktop automation;
+- Computer provider prerequisites for Browser or native Desktop interaction; Forge discovers supported Chromium-family products instead of binding readiness to one developer browser/path;
 - Google/Apple/service credentials for their respective plugins;
 - one remote connection provider when a hosted controller must reach the loopback MCP endpoint.
 

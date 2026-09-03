@@ -43,7 +43,7 @@ function unsupported(
   );
 }
 
-function validateIdentity(handshake: Record<string, unknown>): void {
+export function validateDesktopOperatorComputerProviderIdentity(handshake: Record<string, unknown>): void {
   if (handshake.pluginId === DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID
     && handshake.protocolVersion === DESKTOP_OPERATOR_PROVIDER_PROTOCOL_VERSION) return;
   throw new ComputerProviderError(
@@ -135,7 +135,7 @@ export function negotiateDesktopOperatorComputerHandshake(
   handshake: Record<string, unknown>,
   requestedAction?: string,
 ): DesktopOperatorComputerTransportPlan {
-  validateIdentity(handshake);
+  validateDesktopOperatorComputerProviderIdentity(handshake);
   const advertisements = parseComputerAdvertisements(handshake.computerCapabilities);
   const browserAdvertisements = advertisements?.filter(
     (entry) => entry.capabilityId === COMPUTER_BROWSER_AUTOMATION_CAPABILITY,

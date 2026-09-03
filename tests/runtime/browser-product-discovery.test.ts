@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { describeNativeBrowserProduct, discoverNativeBrowserProduct } from '../../src/runtime/platform/browser-product-discovery';
+import { describeNativeBrowserProduct, discoverNativeBrowserProduct, discoverPreferredNativeBrowserProduct } from '../../src/runtime/platform/browser-product-discovery';
 
 describe('native browser product discovery portability', () => {
   test('prefers explicit registration over PATH and bounded OS fallback', () => {
@@ -33,6 +33,16 @@ describe('native browser product discovery portability', () => {
     expect(found).toMatchObject({ executable: fallback, source: 'fallback' });
     expect(describeNativeBrowserProduct({ channel: 'chrome', platform: 'darwin', env: { HOME: '/Users/test' } })?.defaultUserDataDir)
       .toBe('/Users/test/Library/Application Support/Google/Chrome');
+  });
+
+  test('discovers another supported Chromium-family product when Chrome is absent', () => {
+    const vivaldi = '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi';
+    const found = discoverPreferredNativeBrowserProduct({
+      platform: 'darwin',
+      env: { HOME: '/Users/test', PATH: '' },
+      fileExists: (path) => path === vivaldi,
+    });
+    expect(found).toMatchObject({ product: 'vivaldi', appName: 'Vivaldi', executable: vivaldi, source: 'fallback' });
   });
 
   test('derives Windows defaults from host environment instead of a fixed user path', () => {

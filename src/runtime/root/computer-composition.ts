@@ -3,7 +3,7 @@ import {
   ComputerProviderRegistry,
   computerProviderRegistrationSnapshot,
 } from '../../../packages/plugin-runtime/computer/index';
-import type { ComputerBrowserAutomationRequest, ComputerBrowserProduct } from '../../../packages/protocols/computer/index';
+import { COMPUTER_BROWSER_AUTOMATION_CAPABILITY, type ComputerBrowserAutomationRequest, type ComputerBrowserProduct, type ComputerExecutionRequest } from '../../../packages/protocols/computer/index';
 import { DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID } from '../../../adapters/computer/desktop-operator-contract';
 import { createDesktopOperatorComputerProvider } from '../../../adapters/computer/index';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
@@ -12,34 +12,50 @@ import { getExternalPluginRegistration } from '../plugins/external-registration'
 import { AssistantPluginError } from '../plugins/errors';
 import type { AssistantPluginActionExecutionInput } from '../plugins/types';
 
-const computerProviders = new ComputerProviderRegistry();
+let computerProviders: ComputerProviderRegistry | undefined;
+let computerProviderCompositionFingerprint: string | undefined;
 const NATIVE_BROWSER_BUNDLE_IDS: Record<ComputerBrowserProduct, string> = {
   chrome: 'com.google.Chrome',
   vivaldi: 'com.vivaldi.Vivaldi',
 };
-let composed = false;
+function currentDesktopOperatorRegistration() {
+  return getExternalPluginRegistration(resolveControllerHome(), DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID);
+}
 
-function ensureComputerComposition(): void {
-  if (composed) return;
-  computerProviders.register(createDesktopOperatorComputerProvider({
+function computerCompositionFingerprint(): string {
+  const registration = currentDesktopOperatorRegistration();
+  return registration
+    ? `${registration.revision}:${registration.registrationFingerprint}:${registration.enabled ? 'enabled' : 'disabled'}`
+    : 'desktop_operator:unregistered_v0_2';
+}
+
+function ensureComputerComposition(): ComputerProviderRegistry {
+  const fingerprint = computerCompositionFingerprint();
+  if (computerProviders && computerProviderCompositionFingerprint === fingerprint) return computerProviders;
+
+  const registration = currentDesktopOperatorRegistration();
+  const next = new ComputerProviderRegistry();
+  next.register(createDesktopOperatorComputerProvider({
     lookupRegistration: (providerPluginId) => {
-      const registration = getExternalPluginRegistration(resolveControllerHome(), providerPluginId);
-      return registration ? computerProviderRegistrationSnapshot(registration) : undefined;
+      if (providerPluginId !== DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID || !registration) return undefined;
+      return computerProviderRegistrationSnapshot(registration);
     },
-    // Compatibility is a Runtime composition decision, not a hidden adapter default.
+    // Compatibility is an explicit Runtime composition decision, never an adapter fallback.
     // Remove this switch once Desktop Operator 0.2.x support is retired.
     legacyFallback: 'unregistered_v0_2',
   }));
-  composed = true;
+  computerProviders = next;
+  computerProviderCompositionFingerprint = fingerprint;
+  return next;
 }
 
-export async function executeRuntimeComputerBrowserAutomation(
-  request: ComputerBrowserAutomationRequest,
+export async function executeRuntimeComputer(
+  request: ComputerExecutionRequest,
   timeoutMs: number,
 ): Promise<Record<string, unknown>> {
-  ensureComputerComposition();
+  const providers = ensureComputerComposition();
   try {
-    return await computerProviders.executeBrowserAutomation(request, timeoutMs);
+    return await providers.execute(request, timeoutMs);
   } catch (error) {
     if (error instanceof ComputerProviderError) {
       throw new AssistantPluginError(error.code, error.detailMessage, {
@@ -49,6 +65,13 @@ export async function executeRuntimeComputerBrowserAutomation(
     }
     throw error;
   }
+}
+
+export async function executeRuntimeComputerBrowserAutomation(
+  request: ComputerBrowserAutomationRequest,
+  timeoutMs: number,
+): Promise<Record<string, unknown>> {
+  return await executeRuntimeComputer({ capability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY, request }, timeoutMs);
 }
 
 export async function activateRuntimeComputerBrowserApplication(
@@ -80,6 +103,5 @@ export async function activateRuntimeComputerBrowserApplication(
 }
 
 export function runtimeComputerProviderSnapshot(): Array<{ providerId: string; capabilities: string[] }> {
-  ensureComputerComposition();
-  return computerProviders.snapshot();
+  return ensureComputerComposition().snapshot();
 }

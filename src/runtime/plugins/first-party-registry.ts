@@ -1,5 +1,6 @@
 import { appStoreConnectPluginAdapter } from './app-store-connect-adapter';
 import { browserPluginAdapter } from './browser-registration';
+import { computerPluginAdapter } from './computer-registration';
 import { githubPluginAdapter } from './github-adapter';
 import { gmailPluginAdapter } from './gmail-adapter';
 import { googleCalendarPluginAdapter } from './google-calendar-adapter';
@@ -13,6 +14,7 @@ import type { AssistantPluginAdapter } from './types';
 
 const FIRST_PARTY_PLUGIN_ADAPTERS: readonly AssistantPluginAdapter[] = [
   githubPluginAdapter,
+  computerPluginAdapter,
   browserPluginAdapter,
   appStoreConnectPluginAdapter,
   iosPluginAdapter,
