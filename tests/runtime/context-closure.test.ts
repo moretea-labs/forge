@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { buildContextClosureReceipt } from '../../src/runtime/context/context-closure';
+import { buildContextClosureReceipt, validateRuntimeIssuedContextClosureReceipt } from '../../src/runtime/context/context-closure';
 
 const roots: string[] = [];
 function temp(prefix: string): string {
@@ -101,4 +101,21 @@ describe('Context Closure', () => {
     expect(receipt.readiness.reasonCodes).toContain('project_contract.missing');
     expect(receipt.readiness.status).toBe('degraded');
   });
+
+  test('accepts only the exact Context Closure content issued by this Runtime generation', () => {
+    const root = temp('context-closure-issued-');
+    projectContract(root, { projectId: 'issued', skillRefs: ['typescript-engineering'] });
+    const issued = buildContextClosureReceipt({
+      repoRoot: root,
+      query: 'typescript service implementation',
+      pack: pack('revision-issued', ['src/service.ts'], ['tests/service.test.ts']),
+      semanticNavigation: { requested: 0, results: [], errors: [] },
+      semanticProviders: [{ id: 'typescript-language-service', languages: ['typescript'] }],
+    });
+    expect(validateRuntimeIssuedContextClosureReceipt(issued).receiptId).toBe(issued.receiptId);
+
+    const tampered = { ...issued, generatedAt: '2026-09-03T00:00:01.000Z' };
+    expect(() => validateRuntimeIssuedContextClosureReceipt(tampered)).toThrow('CONTEXT_CLOSURE_RECEIPT_NOT_ISSUED_BY_RUNTIME');
+  });
+
 });

@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import {
   createHandoffItem,
   listHandoffItems,
@@ -6,6 +6,8 @@ import {
 } from './handoff-inbox-store';
 import { getControllerSession } from '../../../../packages/kernel/controller/api/index';
 import {
+  applyEngineeringBlockerDisposition,
+  buildEngineeringBlockerDispositionReceipt,
   buildEngineeringContextReceipt,
   engineeringWorkProfileForRisk,
   evaluateEngineeringAdmission,
@@ -153,6 +155,15 @@ export interface GoalWorkloopContinueInput {
   acceptanceEvidence?: GoalWorkloopAcceptanceEvidenceBinding[];
   /** Explicit Controller decision after deterministic acceptance failure; never inferred from note text. */
   acceptanceFailureDecision?: 'repair' | 'rescope';
+  /** Trusted refreshed engineering evidence minted by Runtime composition, never copied from raw caller receipt ids. */
+  verifiedEngineeringEvidence?: EngineeringAdmissionEvidence;
+  /** Semantic Controller blocker classification; Forge derives the permitted action and persists the receipt. */
+  engineeringBlocker?: {
+    blockerId: string;
+    classification: 'same_root_cause' | 'unrelated';
+    rationale: string;
+    semanticScopeKeys?: string[];
+  };
 }
 
 export interface GoalWorkloopVerifyInput {
@@ -257,6 +268,11 @@ function workIdFor(objective: string): string {
     .replace(/^-+|-+$/g, '')
     .slice(0, 32) || 'work';
   return `work-${slug}-${randomUUID().slice(0, 8)}`;
+}
+
+function linkedEngineeringBlockerWorkId(parentWorkId: string, blockerId: string): string {
+  const digest = createHash('sha256').update(`${parentWorkId}\0${blockerId.trim()}`).digest('hex').slice(0, 24);
+  return `work-linked-engineering-blocker-${digest}`;
 }
 
 function handoffIdFor(prefix: string): string {
@@ -1292,6 +1308,122 @@ export function continueGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
           risk: 'readonly',
         },
       ],
+    });
+  }
+
+  if (input.verifiedEngineeringEvidence) {
+    const sourceIdentity = ctx.sourceRevision?.trim()
+      ? { kind: 'revision' as const, revision: ctx.sourceRevision.trim() }
+      : ctx.sourceBaseState === 'unborn'
+        ? { kind: 'unborn' as const }
+        : { kind: 'unknown' as const };
+    let refreshedEngineeringContext;
+    try {
+      refreshedEngineeringContext = buildEngineeringContextReceipt({
+        risk: work.risk,
+        sourceIdentity,
+        evidence: input.verifiedEngineeringEvidence,
+        recordedAt: nowIso(ctx),
+      });
+    } catch (error) {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: error instanceof Error ? error.message : 'ENGINEERING_CONTEXT_INVALID',
+        data: { work: summarizeWorkContract(work), engineeringEvidenceUpdated: false },
+      });
+    }
+    const priorDesign = work.engineeringContext?.evidence.designDecisionReceipt;
+    if (work.engineeringContext?.designState === 'revisit_required' && priorDesign) {
+      const nextDesign = refreshedEngineeringContext.evidence.designDecisionReceipt;
+      if (!nextDesign || nextDesign.supersedesReceiptId !== priorDesign.receiptId) {
+        return buildFacadeResult({
+          status: 'blocked',
+          summary: 'ENGINEERING_DESIGN_SUPERSESSION_REQUIRED: same-root-cause re-entry requires a new design receipt that explicitly supersedes the prior design.',
+          data: { work: summarizeWorkContract(work), priorDesignReceiptId: priorDesign.receiptId },
+        });
+      }
+    }
+    work = updateWorkContract(ctx.workStore, work.workId, { engineeringContext: refreshedEngineeringContext });
+  }
+
+  if (input.engineeringBlocker) {
+    if (!work.engineeringContext || work.engineeringContext.sourceIdentity.kind !== 'revision') {
+      return buildFacadeResult({ status: 'blocked', summary: 'ENGINEERING_BLOCKER_SOURCE_IDENTITY_REQUIRED', data: { work: summarizeWorkContract(work) } });
+    }
+    let blocker;
+    let linkedWork: WorkContract | undefined;
+    try {
+      let linkedWorkId: string | undefined;
+      if (input.engineeringBlocker.classification === 'unrelated') {
+        linkedWorkId = linkedEngineeringBlockerWorkId(work.workId, input.engineeringBlocker.blockerId);
+        linkedWork = getWorkContract(ctx.workStore, linkedWorkId);
+        if (!linkedWork) {
+          const linked = routeWorkStart(ctx, {
+            workId: linkedWorkId,
+            objective: `Resolve unrelated blocker ${input.engineeringBlocker.blockerId}: ${input.engineeringBlocker.rationale}`,
+            acceptanceCriteria: [
+              `Resolve blocker ${input.engineeringBlocker.blockerId} without widening Work ${work.workId}.`,
+              'Return bounded evidence or a precise wake/blocker condition to the owning Controller.',
+            ],
+            allowedPaths: [],
+            initialLikelyPaths: [],
+            forbiddenPaths: [],
+            checks: [],
+            modeInput: {
+              scopeClear: false,
+              mutation: false,
+              requiresInvestigation: true,
+              requiresRecovery: true,
+              requiresParallelism: true,
+            },
+            requestedBy: 'chatgpt',
+            relatedWorkId: work.workId,
+            workRelation: 'parallel',
+            requirementId: work.requirementId,
+            workKind: 'investigation',
+            constraints: { accessMode: work.constraints.accessMode },
+          });
+          linkedWork = getWorkContract(ctx.workStore, linkedWorkId);
+          if (linked.status !== 'ok' || !linkedWork) {
+            return buildFacadeResult({
+              status: 'blocked',
+              summary: `ENGINEERING_LINKED_WORK_ADMISSION_FAILED: ${linked.summary}`,
+              data: { work: summarizeWorkContract(work), linkedWorkId, linkedWorkCreated: false },
+            });
+          }
+        }
+      }
+      blocker = buildEngineeringBlockerDispositionReceipt({
+        sourceRevision: work.engineeringContext.sourceIdentity.revision,
+        blockerId: input.engineeringBlocker.blockerId,
+        classification: input.engineeringBlocker.classification,
+        semanticScopeKeys: input.engineeringBlocker.semanticScopeKeys ?? work.engineeringContext.semanticScope?.keys ?? [],
+        ...(linkedWork ? { linkedWorkId: linkedWork.workId } : {}),
+        rationale: input.engineeringBlocker.rationale,
+        recordedAt: nowIso(ctx),
+      });
+      const nextEngineering = applyEngineeringBlockerDisposition(work.engineeringContext, blocker);
+      work = updateWorkContract(ctx.workStore, work.workId, { engineeringContext: nextEngineering });
+    } catch (error) {
+      return buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'ENGINEERING_BLOCKER_INVALID', data: { work: summarizeWorkContract(work) } });
+    }
+    const returnToDesign = blocker.action === 'return_to_design';
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: returnToDesign
+        ? `Same-root-cause blocker ${blocker.blockerId} requires Product/Design re-entry before further mutation.`
+        : `Unrelated blocker ${blocker.blockerId} is linked to ${blocker.linkedWorkId}; current Work semantic scope is unchanged.`,
+      data: {
+        work: summarizeWorkContract(work),
+        engineeringBlocker: blocker,
+        ...(linkedWork ? { linkedWork: summarizeWorkContract(linkedWork), linkedWorkCreated: true } : {}),
+        nextStep: blocker.action,
+      },
+      suggestedNextActions: returnToDesign
+        ? [{ label: 'Refresh design evidence', tool: 'rh_context', operation: 'get', payload: { work_id: work.workId }, risk: 'readonly' }]
+        : linkedWork
+          ? [{ label: 'Continue linked Work', tool: 'rh_work', operation: 'continue', payload: { work_id: linkedWork.workId }, risk: 'workspace_write' }]
+          : [],
     });
   }
 
@@ -2472,10 +2604,16 @@ export function stopGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopSt
   });
 }
 
+export interface GoalWorkloopTrustedInput {
+  /** Runtime-composed source-bound evidence. This channel is intentionally separate from raw MCP/tool arguments. */
+  verifiedEngineeringEvidence?: EngineeringAdmissionEvidence;
+}
+
 export function runGoalWorkloop(
   ctx: GoalWorkloopContext,
   operation: GoalWorkloopOperation,
   args: Record<string, unknown>,
+  trusted: GoalWorkloopTrustedInput = {},
 ): FacadeResult {
   switch (operation) {
     case 'start':
@@ -2522,6 +2660,7 @@ export function runGoalWorkloop(
         requirementId: typeof args.requirement_id === 'string' ? args.requirement_id : undefined,
         planId: typeof args.plan_id === 'string' ? args.plan_id : undefined,
         planStepId: typeof args.plan_step_id === 'string' ? args.plan_step_id : undefined,
+        verifiedEngineeringEvidence: trusted.verifiedEngineeringEvidence,
         workKind: args.work_kind === 'repository_change'
           || args.work_kind === 'completed_no_change'
           || args.work_kind === 'read_only_review'
@@ -2532,7 +2671,24 @@ export function runGoalWorkloop(
           ? args.work_kind
           : undefined,
       });
-    case 'continue':
+    case 'continue': {
+      let engineeringBlocker: GoalWorkloopContinueInput['engineeringBlocker'];
+      if (args.engineering_blocker !== undefined) {
+        if (!args.engineering_blocker || typeof args.engineering_blocker !== 'object' || Array.isArray(args.engineering_blocker)) {
+          return buildFacadeResult({ status: 'blocked', summary: 'ENGINEERING_BLOCKER_INVALID', data: { workId: String(args.work_id ?? '') } });
+        }
+        const rawBlocker = args.engineering_blocker as Record<string, unknown>;
+        const classification = rawBlocker.classification;
+        if (classification !== 'same_root_cause' && classification !== 'unrelated') {
+          return buildFacadeResult({ status: 'blocked', summary: 'ENGINEERING_BLOCKER_CLASSIFICATION_INVALID', data: { workId: String(args.work_id ?? '') } });
+        }
+        engineeringBlocker = {
+          blockerId: String(rawBlocker.blocker_id ?? ''),
+          classification,
+          rationale: String(rawBlocker.rationale ?? ''),
+          semanticScopeKeys: Array.isArray(rawBlocker.semantic_scope_keys) ? rawBlocker.semantic_scope_keys.map(String) : undefined,
+        };
+      }
       return continueGoalWorkloop(ctx, {
         workId: String(args.work_id ?? ''),
         note: typeof args.note === 'string' ? args.note : undefined,
@@ -2552,7 +2708,10 @@ export function runGoalWorkloop(
         acceptanceFailureDecision: args.acceptance_failure_decision === 'repair' || args.acceptance_failure_decision === 'rescope'
           ? args.acceptance_failure_decision
           : undefined,
+        verifiedEngineeringEvidence: trusted.verifiedEngineeringEvidence,
+        engineeringBlocker,
       });
+    }
     case 'verify':
       return verifyGoalWorkloop(ctx, {
         workId: String(args.work_id ?? ''),

@@ -1,3 +1,12 @@
+import type {
+  DesignDecisionContractReceipt,
+  EngineeringBlockerDispositionReceipt,
+  EngineeringComplexityBudget,
+  EngineeringMutationClass,
+  IndependentCritiqueReceipt,
+  ProductDoDReceipt,
+} from './engineering-design';
+
 export const ENGINEERING_WORK_PROFILE_VERSION = 'engineering-work-profile-v1' as const;
 export const ENGINEERING_RISK_CLASSES = ['low', 'normal', 'high', 'critical'] as const;
 export type EngineeringRiskClass = (typeof ENGINEERING_RISK_CLASSES)[number];
@@ -32,10 +41,18 @@ export interface ProjectEngineeringContractReceipt {
 
 export interface EngineeringAdmissionEvidence {
   projectContractReceipt?: ProjectEngineeringContractReceipt;
+  /** @deprecated Legacy audit-only id; does not satisfy enforced admission. */
   contextClosureReceiptId?: string;
+  contextClosureReceipt?: ContextClosureReceipt;
+  /** @deprecated Legacy audit-only id; does not satisfy enforced admission. */
   productDodReceiptId?: string;
+  /** @deprecated Legacy audit-only id; does not satisfy enforced admission. */
   designDecisionReceiptId?: string;
+  /** @deprecated Legacy audit-only id; does not satisfy enforced admission. */
   independentCritiqueReceiptId?: string;
+  productDodReceipt?: ProductDoDReceipt;
+  designDecisionReceipt?: DesignDecisionContractReceipt;
+  independentCritiqueReceipt?: IndependentCritiqueReceipt;
   semanticToolReceiptIds?: string[];
   validationReceiptIds?: string[];
   journeyReceiptIds?: string[];
@@ -54,9 +71,13 @@ export interface EngineeringContextReceipt {
   projectContractReceipt?: ProjectEngineeringContractReceipt;
   evidence: {
     contextClosureReceiptId?: string;
+    contextClosureReceipt?: ContextClosureReceipt;
     productDodReceiptId?: string;
     designDecisionReceiptId?: string;
     independentCritiqueReceiptId?: string;
+    productDodReceipt?: ProductDoDReceipt;
+    designDecisionReceipt?: DesignDecisionContractReceipt;
+    independentCritiqueReceipt?: IndependentCritiqueReceipt;
     semanticToolReceiptIds: string[];
     validationReceiptIds: string[];
     journeyReceiptIds: string[];
@@ -66,6 +87,10 @@ export interface EngineeringContextReceipt {
     semanticToolsRequired: boolean;
     realJourneyRequired: boolean;
   };
+  semanticScope?: { keys: string[]; mutationClass: EngineeringMutationClass };
+  complexityBudget?: EngineeringComplexityBudget;
+  designState?: 'ready' | 'revisit_required';
+  blockerDispositions?: EngineeringBlockerDispositionReceipt[];
   missingAdmissionEvidence: EngineeringEvidenceKind[];
   missingCompletionEvidence: EngineeringEvidenceKind[];
   recordedAt: string;

@@ -7,6 +7,7 @@ import type { CallToolResult as SdkCallToolResult } from '@modelcontextprotocol/
 import { collectRuntimePerformanceDiagnostics, inferLocalControllerProcess } from '../../../src/runtime/diagnostics/performance';
 import { defaultSemanticProviderRegistry, type SemanticNavigationKind, type SemanticNavigationRequest } from '../../../src/runtime/context/semantic-navigation';
 import { buildContextClosureReceipt } from '../../../src/runtime/context/context-closure';
+import { mintEngineeringAdmissionEvidence } from './engineering-preconditions';
 import type { McpToolDefinition, CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { allControllerToolDefinitions, controllerExposureSnapshot, controllerToolSurfaceStatus } from '../toolset';
@@ -5225,9 +5226,40 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           workBoundProcessEvidenceIds: continuationWorkBoundProcessEvidenceIds,
           semanticAdmissionLocked: semanticAdmissionRequired,
         };
+        let trustedEngineeringEvidence: ReturnType<typeof mintEngineeringAdmissionEvidence> | undefined;
+        if ((operation === 'start' || operation === 'continue') && args.engineering_preconditions !== undefined) {
+          try {
+            const sourceRevision = startContext.sourceRevision?.trim();
+            if (!sourceRevision) throw new Error('ENGINEERING_PRECONDITIONS_SOURCE_REQUIRED');
+            const existingWork = operation === 'continue'
+              ? getWorkContract(store, String(args.work_id ?? '').trim())
+              : undefined;
+            const requirementContext = existingWork
+              ? { objective: existingWork.objective, acceptanceCriteria: existingWork.acceptanceCriteria }
+              : {
+                  objective: String(args.objective ?? ''),
+                  acceptanceCriteria: Array.isArray(args.acceptance_criteria) ? args.acceptance_criteria.map(String) : [],
+                };
+            const verified = mintEngineeringAdmissionEvidence({
+              repoRoot: repository.canonicalRoot,
+              sourceRevision,
+              draft: args.engineering_preconditions,
+              requirementContext,
+              existingProjectContractReceipt: existingWork?.engineeringContext?.projectContractReceipt,
+            });
+            trustedEngineeringEvidence = verified;
+          } catch (error) {
+            const facade = buildFacadeResult({
+              status: 'blocked',
+              summary: error instanceof Error ? error.message : 'ENGINEERING_PRECONDITIONS_INVALID',
+              data: { operation, executionStarted: false, engineeringPreconditionsAccepted: false },
+            });
+            return result(facade as unknown as Record<string, unknown>, true);
+          }
+        }
         const facade = semanticAdmissionRequired
-          ? await withPrimaryWorkAdmissionLockAsync(store, () => runGoalWorkloop(startContext, 'start', args))
-          : runGoalWorkloop(startContext, operation as 'start' | 'continue', args);
+          ? await withPrimaryWorkAdmissionLockAsync(store, () => runGoalWorkloop(startContext, 'start', args, { verifiedEngineeringEvidence: trustedEngineeringEvidence }))
+          : runGoalWorkloop(startContext, operation as 'start' | 'continue', args, { verifiedEngineeringEvidence: trustedEngineeringEvidence });
         const facadeData = facade.data && typeof facade.data === 'object' ? facade.data as Record<string, unknown> : {};
         const facadeWorkId = contextText(contextRecord(facadeData.work).workId, 200);
         if (facade.status === 'ok' && facadeWorkId) {

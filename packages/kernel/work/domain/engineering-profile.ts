@@ -1,4 +1,11 @@
 import type { WorkRisk } from './types';
+import { validateContextClosureReceipt } from './context-closure-receipt';
+import {
+  validateDesignDecisionContractReceipt,
+  validateEngineeringBlockerDispositionReceipt,
+  validateIndependentCritiqueReceipt,
+  validateProductDoDReceipt,
+} from './engineering-design';
 import { validateProjectEngineeringContractReceipt } from './project-engineering-contract';
 import {
   ENGINEERING_WORK_PROFILE_VERSION,
@@ -100,10 +107,10 @@ function ids(values: string[] | undefined): string[] {
 function provided(kind: EngineeringEvidenceKind, receipt: EngineeringContextReceipt): boolean {
   switch (kind) {
     case 'project_contract': return Boolean(receipt.projectContractReceipt);
-    case 'context_closure': return Boolean(receipt.evidence.contextClosureReceiptId);
-    case 'product_dod': return Boolean(receipt.evidence.productDodReceiptId);
-    case 'design_decision': return Boolean(receipt.evidence.designDecisionReceiptId);
-    case 'independent_critique': return Boolean(receipt.evidence.independentCritiqueReceiptId);
+    case 'context_closure': return receipt.evidence.contextClosureReceipt?.readiness.status === 'ready';
+    case 'product_dod': return Boolean(receipt.evidence.productDodReceipt);
+    case 'design_decision': return Boolean(receipt.evidence.designDecisionReceipt) && receipt.designState !== 'revisit_required';
+    case 'independent_critique': return receipt.evidence.independentCritiqueReceipt?.decision === 'approved' && receipt.designState !== 'revisit_required';
     case 'semantic_tools': return receipt.evidence.semanticToolReceiptIds.length > 0;
     case 'focused_validation': return receipt.evidence.validationReceiptIds.length > 0;
     case 'real_journey': return receipt.evidence.journeyReceiptIds.length > 0;
@@ -130,12 +137,32 @@ export function buildEngineeringContextReceipt(input: {
   const projectContractReceipt = evidence.projectContractReceipt
     ? validateProjectEngineeringContractReceipt(evidence.projectContractReceipt)
     : undefined;
-  if (
-    projectContractReceipt
-    && input.sourceIdentity.kind === 'revision'
-    && projectContractReceipt.sourceRevision !== input.sourceIdentity.revision
-  ) {
-    throw new Error('ENGINEERING_PROJECT_CONTRACT_SOURCE_DRIFT');
+  const contextClosureReceipt = evidence.contextClosureReceipt ? validateContextClosureReceipt(evidence.contextClosureReceipt) : undefined;
+  const productDodReceipt = evidence.productDodReceipt ? validateProductDoDReceipt(evidence.productDodReceipt) : undefined;
+  const designDecisionReceipt = evidence.designDecisionReceipt ? validateDesignDecisionContractReceipt(evidence.designDecisionReceipt) : undefined;
+  const independentCritiqueReceipt = evidence.independentCritiqueReceipt ? validateIndependentCritiqueReceipt(evidence.independentCritiqueReceipt) : undefined;
+  const exactRevision = input.sourceIdentity.kind === 'revision' ? input.sourceIdentity.revision : undefined;
+  for (const [kind, sourceRevision] of [
+    ['PROJECT_CONTRACT', projectContractReceipt?.sourceRevision],
+    ['CONTEXT_CLOSURE', contextClosureReceipt?.sourceRevision],
+    ['PRODUCT_DOD', productDodReceipt?.sourceRevision],
+    ['DESIGN_DECISION', designDecisionReceipt?.sourceRevision],
+    ['INDEPENDENT_CRITIQUE', independentCritiqueReceipt?.sourceRevision],
+  ] as const) {
+    if (exactRevision && sourceRevision && sourceRevision !== exactRevision) throw new Error(`ENGINEERING_${kind}_SOURCE_DRIFT`);
+  }
+  if (designDecisionReceipt && productDodReceipt && designDecisionReceipt.productDodReceiptId !== productDodReceipt.receiptId) {
+    throw new Error('ENGINEERING_DESIGN_PRODUCT_DOD_MISMATCH');
+  }
+  if (designDecisionReceipt && contextClosureReceipt && designDecisionReceipt.contextClosureReceiptId !== contextClosureReceipt.receiptId) {
+    throw new Error('ENGINEERING_DESIGN_CONTEXT_MISMATCH');
+  }
+  if (independentCritiqueReceipt) {
+    if (productDodReceipt && independentCritiqueReceipt.productDodReceiptId !== productDodReceipt.receiptId) throw new Error('ENGINEERING_CRITIQUE_PRODUCT_DOD_MISMATCH');
+    if (designDecisionReceipt && independentCritiqueReceipt.designDecisionReceiptId !== designDecisionReceipt.receiptId) throw new Error('ENGINEERING_CRITIQUE_DESIGN_MISMATCH');
+    const contextReceiptId = contextClosureReceipt?.receiptId ?? evidence.contextClosureReceiptId?.trim();
+    if (contextReceiptId && independentCritiqueReceipt.contextClosureReceiptId !== contextReceiptId) throw new Error('ENGINEERING_CRITIQUE_CONTEXT_MISMATCH');
+    if (projectContractReceipt && independentCritiqueReceipt.projectContractDigest !== projectContractReceipt.contentDigest) throw new Error('ENGINEERING_CRITIQUE_PROJECT_CONTRACT_MISMATCH');
   }
   const receipt: EngineeringContextReceipt = {
     schemaVersion: 1,
@@ -144,10 +171,14 @@ export function buildEngineeringContextReceipt(input: {
     sourceIdentity: input.sourceIdentity,
     projectContractReceipt,
     evidence: {
-      contextClosureReceiptId: evidence.contextClosureReceiptId?.trim() || undefined,
-      productDodReceiptId: evidence.productDodReceiptId?.trim() || undefined,
-      designDecisionReceiptId: evidence.designDecisionReceiptId?.trim() || undefined,
-      independentCritiqueReceiptId: evidence.independentCritiqueReceiptId?.trim() || undefined,
+      contextClosureReceiptId: contextClosureReceipt?.receiptId ?? (evidence.contextClosureReceiptId?.trim() || undefined),
+      contextClosureReceipt,
+      productDodReceiptId: productDodReceipt?.receiptId ?? (evidence.productDodReceiptId?.trim() || undefined),
+      designDecisionReceiptId: designDecisionReceipt?.receiptId ?? (evidence.designDecisionReceiptId?.trim() || undefined),
+      independentCritiqueReceiptId: independentCritiqueReceipt?.receiptId ?? (evidence.independentCritiqueReceiptId?.trim() || undefined),
+      productDodReceipt,
+      designDecisionReceipt,
+      independentCritiqueReceipt,
       semanticToolReceiptIds: ids(evidence.semanticToolReceiptIds),
       validationReceiptIds: ids(evidence.validationReceiptIds),
       journeyReceiptIds: ids(evidence.journeyReceiptIds),
@@ -157,6 +188,12 @@ export function buildEngineeringContextReceipt(input: {
       semanticToolsRequired: evidence.conditions?.semanticToolsRequired === true,
       realJourneyRequired: evidence.conditions?.realJourneyRequired === true,
     },
+    ...(designDecisionReceipt ? {
+      semanticScope: { keys: designDecisionReceipt.semanticScopeKeys, mutationClass: designDecisionReceipt.mutationClass },
+      complexityBudget: designDecisionReceipt.complexityBudget,
+      designState: 'ready' as const,
+    } : {}),
+    blockerDispositions: [],
     missingAdmissionEvidence: [],
     missingCompletionEvidence: [],
     recordedAt: input.recordedAt,
@@ -175,8 +212,29 @@ export function evaluateEngineeringAdmission(input: {
   if (input.receipt.sourceIdentity.kind === 'unknown') {
     return { allowed: false, code: 'ENGINEERING_SOURCE_IDENTITY_REQUIRED', missing: input.receipt.missingAdmissionEvidence };
   }
+  if (input.receipt.designState === 'revisit_required') {
+    return { allowed: false, code: 'ENGINEERING_DESIGN_REVISIT_REQUIRED', missing: ['design_decision', 'independent_critique'] };
+  }
   if (input.receipt.missingAdmissionEvidence.length > 0) {
     return { allowed: false, code: 'ENGINEERING_ADMISSION_EVIDENCE_REQUIRED', missing: input.receipt.missingAdmissionEvidence };
   }
   return { allowed: true };
+}
+
+
+export function applyEngineeringBlockerDisposition(
+  receipt: EngineeringContextReceipt,
+  blocker: import('./engineering-design').EngineeringBlockerDispositionReceipt,
+): EngineeringContextReceipt {
+  const validated = validateEngineeringBlockerDispositionReceipt(blocker);
+  if (receipt.sourceIdentity.kind === 'revision' && validated.sourceRevision !== receipt.sourceIdentity.revision) {
+    throw new Error('ENGINEERING_BLOCKER_SOURCE_DRIFT');
+  }
+  const existing = receipt.blockerDispositions ?? [];
+  if (existing.some((entry) => entry.receiptId === validated.receiptId)) return receipt;
+  return {
+    ...receipt,
+    blockerDispositions: [...existing, validated].slice(-64),
+    ...(validated.action === 'return_to_design' ? { designState: 'revisit_required' as const } : {}),
+  };
 }

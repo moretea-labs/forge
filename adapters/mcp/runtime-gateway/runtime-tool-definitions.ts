@@ -177,6 +177,40 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     acceptance_criteria: { type: 'array', items: { type: 'string' } },
     allowed_paths: { type: 'array', items: { type: 'string' } },
     initial_likely_paths: { type: 'array', items: { type: 'string' }, description: 'Non-authoritative first-pass discovery candidates. May expand after investigation; allowed_paths remains a policy fence only.' },
+    engineering_preconditions: {
+      type: 'object',
+      description: 'Semantic precondition draft for start/continue. Context Closure must be the complete rh_context receipt; Product DoD, Design and independent critique are semantic content. Forge validates current source/provenance and mints the durable receipt ids server-side; raw caller-supplied evidence ids are never accepted as admission authority.',
+      properties: {
+        context_closure: { type: 'object' },
+        product_dod: { type: 'object', properties: {
+          user_outcome: { type: 'string' },
+          completion_conditions: { type: 'array', items: { type: 'string' } },
+          non_regression: { type: 'array', items: { type: 'string' } },
+          performance_expectations: { type: 'array', items: { type: 'string' } },
+          non_goals: { type: 'array', items: { type: 'string' } },
+        }, required: ['user_outcome', 'completion_conditions', 'non_regression', 'performance_expectations', 'non_goals'], additionalProperties: false },
+        design_decision: { type: 'object', properties: {
+          semantic_scope_keys: { type: 'array', items: { type: 'string' } },
+          mutation_class: { type: 'string', enum: ['readonly', 'isolated_write', 'integration_write', 'external_effect'] },
+          supersedes_receipt_id: { type: 'string' },
+          decisions: { type: 'object', properties: {
+            ownership: { type: 'string' }, single_writer: { type: 'string' }, transaction: { type: 'string' }, lifecycle: { type: 'string' }, concurrency: { type: 'string' }, persistence: { type: 'string' }, failure: { type: 'string' }, projection_cache: { type: 'string' }, time: { type: 'string' }, performance: { type: 'string' }, compatibility: { type: 'string' },
+          }, required: ['ownership', 'single_writer', 'transaction', 'lifecycle', 'concurrency', 'persistence', 'failure', 'projection_cache', 'time', 'performance', 'compatibility'], additionalProperties: false },
+          complexity_budget: { type: 'object', properties: {
+            added_writers: { type: 'number' }, added_durable_mechanisms: { type: 'number' }, projection_paths: { type: 'number' }, global_invalidations: { type: 'number' }, lifecycle_hooks: { type: 'number' }, synchronous_critical_path_work: { type: 'number' }, notes: { type: 'array', items: { type: 'string' } },
+          }, additionalProperties: false },
+        }, required: ['semantic_scope_keys', 'mutation_class', 'decisions', 'complexity_budget'], additionalProperties: false },
+        independent_critique: { type: 'object', properties: {
+          decision: { type: 'string', enum: ['approved', 'changes_required', 'blocked'] },
+          findings: { type: 'array', items: { type: 'object', properties: { severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'] }, summary: { type: 'string' } }, required: ['severity', 'summary'], additionalProperties: false } },
+        }, required: ['decision', 'findings'], additionalProperties: false },
+      },
+      required: ['context_closure', 'product_dod', 'design_decision', 'independent_critique'],
+      additionalProperties: false,
+    },
+    engineering_blocker: { type: 'object', description: 'Explicit semantic blocker classification for continue. Forge derives return_to_design vs linked_work; free text cannot widen the current Work.', properties: {
+      blocker_id: { type: 'string' }, classification: { type: 'string', enum: ['same_root_cause', 'unrelated'] }, rationale: { type: 'string' }, semantic_scope_keys: { type: 'array', items: { type: 'string' } },
+    }, required: ['blocker_id', 'classification', 'rationale'], additionalProperties: false },
     additional_likely_paths: { type: 'array', items: { type: 'string' }, description: 'Non-authoritative candidates discovered after Work start. Valid for continue; does not widen allowed_paths.' },
     inspected_paths: { type: 'array', items: { type: 'string' }, description: 'Paths actually inspected during progressive discovery. Valid for continue; does not widen allowed_paths.' },
     review_findings: { type: 'array', items: { type: 'string' }, description: 'Concise semantic findings for operation=continue on work_kind=read_only_review. Findings are source-bound durable review evidence and prevent clean completed_no_change finalization until a successor repair/review resolves them.' },

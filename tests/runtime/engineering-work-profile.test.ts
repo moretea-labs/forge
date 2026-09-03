@@ -8,6 +8,7 @@ import {
   evaluateEngineeringAdmission,
 } from '../../packages/kernel/work/domain/engineering-profile';
 import { loadProjectEngineeringContract } from '../../src/runtime/context/project-engineering-contract';
+import { trustedEngineeringEvidence } from '../helpers/engineering-evidence';
 
 const roots: string[] = [];
 function temp(prefix: string): string {
@@ -20,22 +21,7 @@ afterEach(() => {
 });
 
 function highEvidence(sourceRevision = 'revision-a') {
-  return {
-    projectContractReceipt: {
-      schemaVersion: 1 as const,
-      contractPath: '.forge/project-engineering.json',
-      projectId: 'project-a',
-      contractId: 'engineering-a',
-      contractVersion: '1',
-      sourceRevision,
-      contentDigest: 'a'.repeat(64),
-      provenance: { source: 'repository' as const, loadedAt: '2026-09-03T00:00:00.000Z' },
-    },
-    contextClosureReceiptId: 'context-a',
-    productDodReceiptId: 'dod-a',
-    designDecisionReceiptId: 'design-a',
-    independentCritiqueReceiptId: 'critique-a',
-  };
+  return trustedEngineeringEvidence(sourceRevision);
 }
 
 describe('EngineeringWorkProfile and ProjectEngineeringContract', () => {

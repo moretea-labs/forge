@@ -2,8 +2,9 @@ import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
 import { existsSync, readdirSync } from 'fs';
 import { basename, extname, join } from 'path';
-import type {
-  ContextClosureReceipt,
+import {
+  validateContextClosureReceipt,
+  type ContextClosureReceipt,
   ContextClosureSemanticToolResolution,
   ContextClosureSkillResolution,
   ProjectEngineeringContract,
@@ -12,6 +13,8 @@ import { loadProjectEngineeringContract } from './project-engineering-contract';
 
 const MAX_CLOSURE_PATHS = 48;
 const MAX_RECENT_CHANGES = 6;
+const MAX_ISSUED_CONTEXT_CLOSURES = 256;
+const issuedContextClosures = new Map<string, { sourceRevision: string; fullDigest: string }>();
 const MATERIAL_SEMANTIC_INTENT = /\b(architecture|ownership|protocol|cross[- ]?file|refactor|interface|contract|persistence|concurrency|lifecycle|writer|transaction)\b/i;
 
 type ContextPackLike = {
@@ -24,6 +27,34 @@ type ContextPackLike = {
   files: Array<{ path: string }>;
   coverage: { relevantTests: string[]; inspectedFiles: string[] };
 };
+
+function fullReceiptDigest(receipt: ContextClosureReceipt): string {
+  return createHash('sha256').update(JSON.stringify(receipt)).digest('hex');
+}
+
+function recordIssuedContextClosure(receipt: ContextClosureReceipt): ContextClosureReceipt {
+  issuedContextClosures.delete(receipt.receiptId);
+  issuedContextClosures.set(receipt.receiptId, { sourceRevision: receipt.sourceRevision, fullDigest: fullReceiptDigest(receipt) });
+  while (issuedContextClosures.size > MAX_ISSUED_CONTEXT_CLOSURES) {
+    const oldest = issuedContextClosures.keys().next().value as string | undefined;
+    if (!oldest) break;
+    issuedContextClosures.delete(oldest);
+  }
+  return receipt;
+}
+
+/** Runtime-generation provenance fence: content hashes prove integrity; this registry proves rh_context actually issued this exact receipt. */
+export function validateRuntimeIssuedContextClosureReceipt(value: ContextClosureReceipt): ContextClosureReceipt {
+  const receipt = validateContextClosureReceipt(value);
+  const issued = issuedContextClosures.get(receipt.receiptId);
+  if (!issued || issued.sourceRevision !== receipt.sourceRevision || issued.fullDigest !== fullReceiptDigest(receipt)) {
+    throw new Error('CONTEXT_CLOSURE_RECEIPT_NOT_ISSUED_BY_RUNTIME');
+  }
+  // LRU refresh without changing authority semantics.
+  issuedContextClosures.delete(receipt.receiptId);
+  issuedContextClosures.set(receipt.receiptId, issued);
+  return receipt;
+}
 
 type SemanticNavigationLike = {
   requested: number;
@@ -202,7 +233,7 @@ export function buildContextClosureReceipt(input: BuildContextClosureInput): Con
     reasonCodes,
   };
   const receiptId = `context_closure_${createHash('sha256').update(JSON.stringify(core)).digest('hex').slice(0, 32)}`;
-  return {
+  const receipt: ContextClosureReceipt = {
     schemaVersion: 1,
     receiptId,
     sourceRevision,
@@ -233,4 +264,5 @@ export function buildContextClosureReceipt(input: BuildContextClosureInput): Con
     readiness: { status, reasonCodes },
     provenance: { source: 'rh_context', contextGeneratedAt: input.pack.generatedAt },
   };
+  return recordIssuedContextClosure(receipt);
 }

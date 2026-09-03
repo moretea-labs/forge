@@ -11,6 +11,7 @@ import {
   type GoalWorkloopContext,
   type GoalWorkloopOperation,
   type GoalWorkloopStartInput,
+  type GoalWorkloopTrustedInput,
 } from './goal-workloop';
 import { getWorkContract } from '../../../../packages/kernel/work/api/index';
 import type { CapabilityRisk, FacadeResult, WorkContractConstraints, WorkKind } from './types';
@@ -139,12 +140,13 @@ export function runGoalWorkloop(
   ctx: GoalWorkloopContext,
   operation: GoalWorkloopOperation,
   args: Record<string, unknown>,
+  trusted: GoalWorkloopTrustedInput = {},
 ): FacadeResult {
   if (operation !== 'start') {
     const workId = typeof args.work_id === 'string' ? args.work_id : '';
     const existing = workId ? getWorkContract(ctx.workStore, workId) : undefined;
     const mode = resolveMode(ctx, existing?.constraints);
-    return decorateAccessMode(runGoalWorkloopBase(ctx, operation, args), mode);
+    return decorateAccessMode(runGoalWorkloopBase(ctx, operation, args, trusted), mode);
   }
 
   const constraints = constraintsValue(args.constraints);
@@ -194,5 +196,6 @@ export function runGoalWorkloop(
       : undefined,
     planId: typeof args.plan_id === 'string' ? args.plan_id : undefined,
     planStepId: typeof args.plan_step_id === 'string' ? args.plan_step_id : undefined,
+    verifiedEngineeringEvidence: trusted.verifiedEngineeringEvidence,
   });
 }
