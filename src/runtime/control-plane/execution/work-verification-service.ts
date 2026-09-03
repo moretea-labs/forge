@@ -10,6 +10,7 @@ import {
   runPersistedCheckViaProcessRuntime,
 } from '../../execution/process-runtime';
 import { classifyPersistedCheckTerminalEvidence } from '../../execution/process-runtime/check-result';
+import { ingestCheckCompletionGraceProcess } from '../persistence/operational-prior-store';
 import { buildFacadeResult } from '../facade/facade-result';
 import { classifyVerificationOutcome, normalizeCheckIds } from '../facade/check-normalization';
 import { verifyGoalWorkloop } from '../facade/goal-workloop';
@@ -379,6 +380,18 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
       || evidenceState.state !== 'matched'
       || (!receipt.ok && failureClass !== 'acceptance_failure');
     const checkFailed = !receipt.ok && !infrastructureFailed;
+    if (receipt.ok && evidenceState.state === 'matched') {
+      try {
+        ingestCheckCompletionGraceProcess({
+          controllerHome: input.controllerHome,
+          repoId: verificationRepository.repoId,
+          processId: receipt.processId,
+        });
+      } catch {
+        // Operational Memory is a disposable derived optimization. Its failure
+        // must never change Check/Work correctness or lifecycle truth.
+      }
+    }
     const commonVerification = {
       checkId: normalizedCheckId,
       outcome: infrastructureFailed ? 'infrastructure_failure' : receipt.ok ? 'valid_pass' : 'valid_fail',

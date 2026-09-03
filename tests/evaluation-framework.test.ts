@@ -7,6 +7,7 @@ import { loadScenario, parseScenario } from '../evaluation/lib/scenario.ts';
 import { runEvaluation } from '../evaluation/lib/runner.ts';
 import type { EvaluationScenario } from '../evaluation/lib/types.ts';
 import { evaluateOperationalShadowPairs, freezeOperationalShadowProtocol } from '../evaluation/lib/shadow-operational-prior.ts';
+import { evaluateOperationalMemoryActivation, freezeOperationalMemoryActivationProtocol, type OperationalMemoryActivationMeasurement } from '../evaluation/lib/operational-memory-activation.ts';
 
 function git(cwd: string, arguments_: string[]): string {
   return execFileSync('git', arguments_, { cwd, encoding: 'utf8' }).trim();
@@ -162,4 +163,30 @@ describe('Forge evaluation framework', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+  test('freezes Stage7F operational Memory activation gates before held-out results and rejects round-trip or guard regressions', () => {
+    const candidateIdentity = 'tree:stage7f-fixture';
+    const protocol = freezeOperationalMemoryActivationProtocol({ candidateIdentity });
+    const measurement = (overrides: Partial<OperationalMemoryActivationMeasurement> = {}): OperationalMemoryActivationMeasurement => ({
+      toolRoundTrips: 2, firstReturnMs: 150, terminalLatencyMs: 300, completedInOrigin: false,
+      controllerVisibleBytes: 2000, controllerMemoryPayloadBytes: 0, memoryLookupMs: 0, memoryRecordBytes: 0,
+      appliedWaitMs: 100, correctnessPassed: true, ...overrides,
+    });
+    const pairs = [
+      { scenarioId: 'check-grace-eligible-150ms', kind: 'eligible' as const, candidateIdentity, cold: measurement(), active: measurement({ toolRoundTrips: 1, firstReturnMs: 255, terminalLatencyMs: 305, completedInOrigin: true, controllerVisibleBytes: 1000, memoryLookupMs: 3, memoryRecordBytes: 1200, appliedWaitMs: 250, learnedWaitMs: 250 }) },
+      { scenarioId: 'check-grace-eligible-180ms', kind: 'eligible' as const, candidateIdentity, cold: measurement({ terminalLatencyMs: 330 }), active: measurement({ toolRoundTrips: 1, firstReturnMs: 300, terminalLatencyMs: 335, completedInOrigin: true, controllerVisibleBytes: 1000, memoryLookupMs: 4, memoryRecordBytes: 1200, appliedWaitMs: 250, learnedWaitMs: 250 }) },
+      { scenarioId: 'check-grace-guard-400ms', kind: 'guard' as const, candidateIdentity, cold: measurement({ terminalLatencyMs: 500 }), active: measurement({ terminalLatencyMs: 510, memoryLookupMs: 3, memoryRecordBytes: 1200 }) },
+    ];
+    const report = evaluateOperationalMemoryActivation(protocol, pairs);
+    expect(report.passed).toBe(true);
+    expect(report.ratios.eligibleToolRoundTrips).toBe(0.5);
+    const bad = structuredClone(pairs);
+    bad[0].active.toolRoundTrips = 2;
+    bad[0].active.completedInOrigin = false;
+    expect(evaluateOperationalMemoryActivation(protocol, bad).passed).toBe(false);
+    const guardLeak = structuredClone(pairs);
+    guardLeak[2].active.learnedWaitMs = 250;
+    guardLeak[2].active.appliedWaitMs = 250;
+    expect(evaluateOperationalMemoryActivation(protocol, guardLeak).passed).toBe(false);
+  });
+
 });

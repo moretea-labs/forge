@@ -8,6 +8,7 @@
  */
 
 import {
+  controllerCheckEnvironmentFingerprint,
   controllerCheckExecutionIdentity,
   listControllerChecks,
   snapshotControllerCheck,
@@ -15,6 +16,7 @@ import {
   type ControllerCheckSnapshot,
 } from '../../../cli/controller/check-runner';
 import { claimsForCheck, scopeResourceClaims, toProcessClaims } from './resource-claims';
+import { resolveCheckCompletionGraceWaitMs } from '../../control-plane/persistence/operational-prior-store';
 import { spawnManagedProcess, waitForProcess, getProcessHandle } from './runtime';
 import {
   getLightweightProcessHandle,
@@ -157,9 +159,17 @@ export async function runCheckViaProcessRuntime(
   // The wait budget is an interaction preference, not a persistence reason.
   // Ordinary checks stay in memory; only a real durable evidence consumer may
   // allocate Process/Lease state.
+  const learnedCompletionGraceMs = input.interactiveWaitMs === undefined
+    ? resolveCheckCompletionGraceWaitMs({
+        controllerHome: input.controllerHome,
+        repoId: input.repoId,
+        checkId: input.checkId,
+        environmentFingerprint: controllerCheckEnvironmentFingerprint(check),
+      })
+    : undefined;
   const interactiveWaitMs = durationAwareInteractiveWaitMs(
     check.command,
-    input.interactiveWaitMs,
+    input.interactiveWaitMs ?? learnedCompletionGraceMs,
     Math.min(250, DEFAULT_INTERACTIVE_WAIT_MS),
   );
   const timeoutMs = Math.min(

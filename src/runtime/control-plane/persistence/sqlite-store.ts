@@ -272,7 +272,13 @@ function writeRecord<T>(
   existing?: ControlPlaneRecord<T>,
 ): ControlPlaneRecord<T> {
   const at = now();
-  const revision = (existing?.revision ?? 0) + 1;
+  const previousAuditRevision = Number(scalar(database.prepare(`
+    SELECT MAX(revision) AS revision FROM control_plane_audit
+    WHERE namespace = ? AND scope = ? AND record_key = ?
+  `).get(input.namespace, input.scope, input.key)) ?? 0);
+  const revision = existing
+    ? existing.revision + 1
+    : Math.max(0, Number.isSafeInteger(previousAuditRevision) ? previousAuditRevision : 0) + 1;
   const createdAt = existing?.createdAt ?? at;
   database.prepare(`
     INSERT INTO control_plane_records (
@@ -374,6 +380,33 @@ export function writeControlPlaneRecord<T>(
 ): ControlPlaneRecord<T> {
   return withControlPlaneTransaction(controllerHome, (database) =>
     writeControlPlaneRecordWithinTransaction(database, input));
+}
+
+export function deleteControlPlaneRecordWithinTransaction(
+  database: SqliteDatabase,
+  input: { namespace: string; scope: string; key: string; action?: string },
+): boolean {
+  const existing = selectRecord(database, input.namespace, input.scope, input.key);
+  if (!existing) return false;
+  const revision = existing.revision + 1;
+  const at = now();
+  database.prepare(`
+    DELETE FROM control_plane_records
+    WHERE namespace = ? AND scope = ? AND record_key = ?
+  `).run(input.namespace, input.scope, input.key);
+  database.prepare(`
+    INSERT INTO control_plane_audit (namespace, scope, record_key, action, revision, occurred_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(input.namespace, input.scope, input.key, input.action ?? 'delete', revision, at);
+  return true;
+}
+
+export function deleteControlPlaneRecord(
+  controllerHome: string,
+  input: { namespace: string; scope: string; key: string; action?: string },
+): boolean {
+  return withControlPlaneTransaction(controllerHome, (database) =>
+    deleteControlPlaneRecordWithinTransaction(database, input));
 }
 
 export class ControlPlaneConflictError extends Error {

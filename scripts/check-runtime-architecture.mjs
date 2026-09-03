@@ -291,6 +291,7 @@ const required = [
   'packages/kernel/memory/api/index.ts',
   'packages/kernel/memory/index.ts',
   'src/runtime/evidence/operational-shadow.ts',
+  'src/runtime/control-plane/persistence/operational-prior-store.ts',
   'evaluation/lib/shadow-operational-prior.ts',
   'packages/kernel/work/domain/check-receipt.ts',
   'packages/kernel/work/domain/execution-snapshot.ts',
@@ -360,21 +361,38 @@ const required = [
 ];
 for (const path of required) text(path);
 requireAcyclicProductionTypeScript();
-// Stage7E is shadow-only: Kernel Memory stays pure and the typed extractor has no production consumer.
-const stage7eMemoryImports = staticTypeScriptImportRecords(productionTypeScriptFiles());
-for (const { from, specifier } of stage7eMemoryImports) {
+// Stage7F permits exactly one Controller-local derived Memory persistence adapter
+// and one bounded mechanical consumer. Kernel Memory remains pure and there is
+// still no Context/Brain/MCP authority path.
+const stage7fMemoryImports = staticTypeScriptImportRecords(productionTypeScriptFiles());
+const stage7fKernelMemoryConsumers = new Set([
+  'src/runtime/evidence/operational-shadow.ts',
+  'src/runtime/control-plane/persistence/operational-prior-store.ts',
+]);
+const stage7fOperationalStoreConsumers = new Set([
+  'src/runtime/control-plane/execution/work-verification-service.ts',
+  'src/runtime/execution/process-runtime/check-facade.ts',
+]);
+for (const { from, specifier } of stage7fMemoryImports) {
   if (from.startsWith('packages/kernel/memory/') && /(?:src\/runtime|control-plane|sqlite-store|context-plane)/.test(specifier)) {
-    failures.push(`Stage7E shadow Memory must remain Kernel-pure and persistence-free: ${from} -> ${specifier}`);
+    failures.push(`Stage7F Kernel Memory must remain pure and persistence-free: ${from} -> ${specifier}`);
   }
   if (/packages\/kernel\/memory/.test(specifier)
-      && from !== 'src/runtime/evidence/operational-shadow.ts'
+      && !stage7fKernelMemoryConsumers.has(from)
       && !from.startsWith('packages/kernel/memory/')) {
-    failures.push(`Stage7E shadow Memory has an unauthorized production consumer: ${from} -> ${specifier}`);
+    failures.push(`Stage7F Memory has an unauthorized production consumer: ${from} -> ${specifier}`);
   }
-  if (/operational-shadow/.test(specifier)) {
-    failures.push(`Stage7E typed shadow extractor must remain unconnected to production execution: ${from} -> ${specifier}`);
+  if (/operational-shadow/.test(specifier) && from !== 'src/runtime/control-plane/persistence/operational-prior-store.ts') {
+    failures.push(`Stage7F typed operational extractor may feed only the derived persistence adapter: ${from} -> ${specifier}`);
+  }
+  if (/operational-prior-store/.test(specifier) && !stage7fOperationalStoreConsumers.has(from)) {
+    failures.push(`Stage7F operational Memory store has an unauthorized active consumer: ${from} -> ${specifier}`);
   }
 }
+forbid('src/runtime/control-plane/persistence/operational-prior-store.ts', /context-plane|brain|pks|requirement-authority|plan-contract|work-state-machine|approval|authorization/, 'Stage7F operational Memory must remain mechanical derived state only');
+requireText('src/runtime/control-plane/persistence/operational-prior-store.ts', "OPERATIONAL_MEMORY_NAMESPACE = 'operational_memory_prior'");
+requireText('src/runtime/control-plane/persistence/operational-prior-store.ts', 'resolveCheckCompletionGraceWaitMs');
+requireText('src/runtime/execution/process-runtime/check-facade.ts', 'resolveCheckCompletionGraceWaitMs');
 for (const path of sourceFiles('src/runtime/control-plane')) {
   forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])(?:\.\.\/)+gateway\//, 'control-plane domain/application code must not depend on Gateway transport');
 }

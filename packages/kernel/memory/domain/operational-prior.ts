@@ -2,13 +2,13 @@ import type { ScopeKind, ScopeRef } from '../../identity/api/index';
 
 export const OPERATIONAL_SIGNAL_IDS = ['execution_job.terminal_mechanical','process_check.terminal_mechanical'] as const;
 export type OperationalSignalId = (typeof OPERATIONAL_SIGNAL_IDS)[number];
-export const OPERATIONAL_TARGET_IDS = ['mechanical_candidate_ordering'] as const;
+export const OPERATIONAL_TARGET_IDS = ['mechanical_candidate_ordering','check_completion_grace'] as const;
 export type OperationalTargetId = (typeof OPERATIONAL_TARGET_IDS)[number];
-export const OPERATIONAL_ACTION_IDS = ['baseline','candidate'] as const;
+export const OPERATIONAL_ACTION_IDS = ['baseline','candidate','observed_check'] as const;
 export type OperationalActionId = (typeof OPERATIONAL_ACTION_IDS)[number];
 export const OPERATIONAL_METRIC_IDS = ['latency_ms','success_rate'] as const;
 export type OperationalMetricId = (typeof OPERATIONAL_METRIC_IDS)[number];
-export const OPERATIONAL_CONSUMER_IDS = ['shadow_evaluation'] as const;
+export const OPERATIONAL_CONSUMER_IDS = ['shadow_evaluation','run_check_completion_grace'] as const;
 export type OperationalConsumerId = (typeof OPERATIONAL_CONSUMER_IDS)[number];
 export const OPERATIONAL_SOURCE_SCHEMAS = ['execution_job/v1','process_check_receipt/v1'] as const;
 export type OperationalSourceSchema = (typeof OPERATIONAL_SOURCE_SCHEMAS)[number];
@@ -36,14 +36,15 @@ export interface OperationalTargetDefinition {
 const DAY_MS=24*60*60*1000;
 export const OPERATIONAL_SIGNAL_DEFINITIONS:Readonly<Record<OperationalSignalId,OperationalSignalDefinition>>=Object.freeze({
   'execution_job.terminal_mechanical':Object.freeze({schemaVersion:1,signalId:'execution_job.terminal_mechanical',owner:'kernel.memory.shadow',sourceSchema:'execution_job/v1',eventKinds:Object.freeze(['succeeded','failed','timed_out','cancelled','waiting_for_dependency','waiting_for_workspace','waiting_for_heavy_check','waiting_for_integration','waiting_for_release_barrier','waiting_for_approval']),extractorVersion:1,valueType:'number',dataClass:'mechanical_telemetry',maxScopeCardinality:128,maxCompatibilityCardinality:256,retentionHorizonMs:30*DAY_MS,invalidationDimensions:OPERATIONAL_COMPATIBILITY_DIMENSIONS}),
-  'process_check.terminal_mechanical':Object.freeze({schemaVersion:1,signalId:'process_check.terminal_mechanical',owner:'kernel.memory.shadow',sourceSchema:'process_check_receipt/v1',eventKinds:Object.freeze(['passed','failed','timed_out','cancelled']),extractorVersion:1,valueType:'number',dataClass:'mechanical_telemetry',maxScopeCardinality:128,maxCompatibilityCardinality:256,retentionHorizonMs:30*DAY_MS,invalidationDimensions:OPERATIONAL_COMPATIBILITY_DIMENSIONS}),
+  'process_check.terminal_mechanical':Object.freeze({schemaVersion:1,signalId:'process_check.terminal_mechanical',owner:'kernel.memory.shadow',sourceSchema:'process_check_receipt/v1',eventKinds:Object.freeze(['passed','failed','timed_out','cancelled']),extractorVersion:1,valueType:'number',dataClass:'mechanical_telemetry',maxScopeCardinality:128,maxCompatibilityCardinality:256,retentionHorizonMs:7*DAY_MS,invalidationDimensions:OPERATIONAL_COMPATIBILITY_DIMENSIONS}),
 });
 export const OPERATIONAL_METRIC_DEFINITIONS:Readonly<Record<OperationalMetricId,OperationalMetricDefinition>>=Object.freeze({
   latency_ms:Object.freeze({schemaVersion:1,metricId:'latency_ms',direction:'lower_is_better',admissibleOutcomes:['executed_success','executed_failure','timeout'] as const,decayHalfLifeMs:7*DAY_MS}),
   success_rate:Object.freeze({schemaVersion:1,metricId:'success_rate',direction:'higher_is_better',admissibleOutcomes:['executed_success','executed_failure'] as const,decayHalfLifeMs:14*DAY_MS}),
 });
 export const OPERATIONAL_TARGET_DEFINITIONS:Readonly<Record<OperationalTargetId,OperationalTargetDefinition>>=Object.freeze({
-  mechanical_candidate_ordering:Object.freeze({schemaVersion:1,targetId:'mechanical_candidate_ordering',owner:'kernel.memory.shadow',consumerId:'shadow_evaluation',actions:OPERATIONAL_ACTION_IDS,metricIds:OPERATIONAL_METRIC_IDS,applicableScopeKinds:['workspace','project','requirement','plan','plan_step','work'] as const,compatibilityDimensions:OPERATIONAL_COMPATIBILITY_DIMENSIONS,forbiddenDecisions:['semantic_acceptance','lifecycle_transition','approval','authorization','external_effect','product_or_coding_strategy'] as const,activationThreshold:Object.freeze({minSamples:3,minDistinctEvidence:3,maxSamples:64})}),
+  mechanical_candidate_ordering:Object.freeze({schemaVersion:1,targetId:'mechanical_candidate_ordering',owner:'kernel.memory.shadow',consumerId:'shadow_evaluation',actions:['baseline','candidate'] as const,metricIds:OPERATIONAL_METRIC_IDS,applicableScopeKinds:['workspace','project','requirement','plan','plan_step','work'] as const,compatibilityDimensions:OPERATIONAL_COMPATIBILITY_DIMENSIONS,forbiddenDecisions:['semantic_acceptance','lifecycle_transition','approval','authorization','external_effect','product_or_coding_strategy'] as const,activationThreshold:Object.freeze({minSamples:3,minDistinctEvidence:3,maxSamples:64})}),
+  check_completion_grace:Object.freeze({schemaVersion:1,targetId:'check_completion_grace',owner:'kernel.memory.shadow',consumerId:'run_check_completion_grace',actions:['observed_check'] as const,metricIds:['latency_ms'] as const,applicableScopeKinds:['project'] as const,compatibilityDimensions:OPERATIONAL_COMPATIBILITY_DIMENSIONS,forbiddenDecisions:['semantic_acceptance','lifecycle_transition','approval','authorization','external_effect','product_or_coding_strategy'] as const,activationThreshold:Object.freeze({minSamples:3,minDistinctEvidence:3,maxSamples:32})}),
 });
 
 export interface OperationalObservation {

@@ -457,7 +457,7 @@ function validateControllerCheckSnapshot(repoRoot: string, snapshot: ControllerC
 
 const CONTROLLER_CHECK_EXECUTION_IDENTITY_VERSION = 'controller-check-execution-v2';
 
-function checkEnvironmentFingerprint(check: ControllerCheck): string {
+export function controllerCheckEnvironmentFingerprint(check: ControllerCheck): string {
   const env = repositoryChildProcessEnvironment(process.env);
   return createHash('sha256')
     .update(JSON.stringify({
@@ -514,7 +514,7 @@ function buildCheckCacheKey(
   timeoutMs: number,
   revision: string,
   definitionDigest = checkDefinitionDigest(check),
-  environmentFingerprint = checkEnvironmentFingerprint(check),
+  environmentFingerprint = controllerCheckEnvironmentFingerprint(check),
 ): string {
   return createHash('sha256')
     .update(JSON.stringify({
@@ -546,7 +546,7 @@ export function controllerCheckExecutionIdentity(
     : Math.min(check.timeoutMs, boundedTimeout(requestedTimeoutMs));
   const revision = currentControllerCheckRevision(repoRoot);
   const definitionDigest = checkDefinitionDigest(check);
-  const environmentFingerprint = checkEnvironmentFingerprint(check);
+  const environmentFingerprint = controllerCheckEnvironmentFingerprint(check);
   const checkoutClean = checkWorkspaceClean(repoRoot);
   const crossCheckoutReusable = checkoutClean
     && checkEffectsAllowCrossCheckoutReuse(check)

@@ -1,2 +1,2 @@
-/** Stable in-process API for shadow-only operational prior contracts. */
+/** Stable in-process API for closed operational-prior contracts and reducers. */
 export * from '../domain/operational-prior';
