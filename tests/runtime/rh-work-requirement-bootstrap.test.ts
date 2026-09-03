@@ -7,7 +7,8 @@ import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
-import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { claimPlanStepForWork, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 
@@ -122,6 +123,79 @@ describe('rh_work Requirement bootstrap', () => {
     }));
     expect(planned.status).toBe('ok');
     expect(planned.data.planContractCreated).toBe(true);
+  }, 15_000);
+
+  test('atomically replans an active Plan-bound Work scope through rh_work without replacing the Work', async () => {
+    const repoRoot = tempRoot('forge-active-plan-work-replan-repo-');
+    const controllerHome = tempRoot('forge-active-plan-work-replan-home-');
+    const sourceRevision = initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Active Plan Work replan fixture' });
+    const ctx = mcpContext(controllerHome, repository);
+    const store = { controllerHome, repoId: repository.repoId };
+
+    const created = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'PLAN-ACTIVE-SCOPE-R1',
+      scope_key: 'active-scope-replan',
+      source_revision: sourceRevision,
+      objective: 'Deliver one active scope-bound Work.',
+      plan_steps: [{
+        id: 'stage', objective: 'Deliver without replacing Work authority.', dependencies: [],
+        authoritative_files: ['src/index.ts'], allowed_paths: ['src/**'], forbidden_paths: [],
+        check_ids: ['package:check:type'], acceptance_criteria: ['The same Work remains authoritative.'],
+      }],
+    }));
+    expect(created.status).toBe('ok');
+    const approved = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId, operation: 'plan_approve', plan_id: 'PLAN-ACTIVE-SCOPE-R1',
+    }));
+    expect(approved.status).toBe('ok');
+
+    createWorkContract(store, {
+      workId: 'work-active-scope', repoId: repository.repoId, planId: 'PLAN-ACTIVE-SCOPE-R1', planStepId: 'stage', planSourceRevision: sourceRevision,
+      mode: 'goal_workloop', objective: 'Deliver without replacing Work authority.', acceptanceCriteria: ['The same Work remains authoritative.'],
+      allowedPaths: ['src/**'], forbiddenPaths: [], checks: ['package:check:type'], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+    });
+    claimPlanStepForWork(store, { planId: 'PLAN-ACTIVE-SCOPE-R1', stepId: 'stage', workId: 'work-active-scope', sourceRevision });
+
+    const diagnosed = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'repair',
+      plan_id: 'PLAN-ACTIVE-SCOPE-R1',
+      plan_step_id: 'stage',
+      superseded_by: 'PLAN-ACTIVE-SCOPE-R2',
+      source_revision: sourceRevision,
+      allowed_paths: ['src/runtime/context/**'],
+      repair_operation: 'diagnose',
+      dry_run: true,
+    }));
+    expect(diagnosed.status).toBe('ok');
+    expect(diagnosed.summary).toContain('PLAN_WORK_SCOPE_REPLAN_AVAILABLE');
+    expect(diagnosed.data).toMatchObject({ boundWorkId: 'work-active-scope', successorPlanId: 'PLAN-ACTIVE-SCOPE-R2', repaired: false, reusedExistingWork: true });
+    expect(diagnosed.data.requestedAllowedPaths).toEqual(['src/**', 'src/runtime/context/**']);
+
+    const repaired = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'repair',
+      plan_id: 'PLAN-ACTIVE-SCOPE-R1',
+      plan_step_id: 'stage',
+      superseded_by: 'PLAN-ACTIVE-SCOPE-R2',
+      source_revision: sourceRevision,
+      allowed_paths: ['src/runtime/context/**'],
+      repair_operation: 'repair',
+      dry_run: false,
+      reason: 'Current-source evidence proved the active Plan omitted a path required by its own accepted scope.',
+    }));
+    expect(repaired.status).toBe('ok');
+    expect(repaired.data).toMatchObject({ repaired: true, replacementWorkCreated: false, reusedExistingWork: true });
+    expect(repaired.data.predecessor).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R1', status: 'superseded' });
+    expect(repaired.data.successor).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R2', status: 'executing' });
+    expect(repaired.data.work).toMatchObject({ workId: 'work-active-scope', status: 'running' });
+    expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R1')?.supersededBy).toBe('PLAN-ACTIVE-SCOPE-R2');
+    expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R2')?.steps[0]).toMatchObject({ workId: 'work-active-scope', allowedPaths: ['src/**', 'src/runtime/context/**'] });
+    expect(getWorkContract(store, 'work-active-scope')).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R2', allowedPaths: ['src/**', 'src/runtime/context/**'], checks: ['package:check:type'] });
   }, 15_000);
 
   test('repairs a malformed draft Plan in place through rh_work without creating a second authority', async () => {

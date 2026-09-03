@@ -12,6 +12,7 @@ import {
   getPlanContract,
   listPlanContracts,
   repairDraftPlanContract,
+  replanActivePlanBoundWorkScope,
   supersedePlanContract,
 } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import {
@@ -21,6 +22,7 @@ import {
   writeControlPlaneRecord,
 } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { createWorkContract, getWorkContract } from '../../packages/kernel/work/api/index';
 
 const homes: string[] = [];
 
@@ -320,6 +322,60 @@ test('atomically replaces the exact-scope Plan authority during serial replannin
   expect(getPlanContract(options, 'plan-r1')).toMatchObject({ status: 'superseded', supersededBy: 'plan-r2', supersessionReason: 'extend_existing' });
   expect(getPlanContract(options, 'plan-r2')).toMatchObject({ supersedes: ['plan-r1'] });
   expect(listPlanContracts({ ...options, status: 'active' }).map((plan) => plan.planId)).toEqual(['plan-r2']);
+});
+
+test('atomically replans one active Plan-bound Work by widening only its allowed-path authority', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-work-scope-replan-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-plan-work-scope-replan', now: () => '2026-09-03T09:30:00.000Z' };
+  createRequirement({ controllerHome: home }, { requirementId: 'REQ-scope-replan', title: 'Scope replan', outcomeStatement: 'Keep exact Work authority while correcting a frozen Plan path omission.' });
+  createPlanContract(options, {
+    planId: 'plan-scope-r1', repoId: options.repoId, requirementId: 'REQ-scope-replan', scopeKey: 'stage-7c', sourceRevision: 'revision-a', goal: 'Deliver Stage7C',
+    steps: [{ id: 'stage-7c', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: ['src/runtime/control-plane/**'], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['same semantic outcome'] }],
+  });
+  approvePlanContract(options, 'plan-scope-r1');
+  createWorkContract(options, {
+    workId: 'work-stage-7c', repoId: options.repoId, requirementId: 'REQ-scope-replan', planId: 'plan-scope-r1', planStepId: 'stage-7c', planSourceRevision: 'revision-a',
+    mode: 'goal_workloop', objective: 'deliver', acceptanceCriteria: ['same semantic outcome'], allowedPaths: ['src/runtime/control-plane/**'], forbiddenPaths: [], checks: ['package:check:type'],
+    constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+  });
+  claimPlanStepForWork(options, { planId: 'plan-scope-r1', stepId: 'stage-7c', workId: 'work-stage-7c', sourceRevision: 'revision-a' });
+
+  const replanned = replanActivePlanBoundWorkScope(options, {
+    planId: 'plan-scope-r1', stepId: 'stage-7c', workId: 'work-stage-7c', successorPlanId: 'plan-scope-r2', sourceRevision: 'revision-b',
+    allowedPaths: ['src/runtime/control-plane/**', 'src/runtime/context/**'], reason: 'The Plan requires current-source context closure but omitted its runtime context path.',
+  });
+
+  expect(replanned.predecessor).toMatchObject({ status: 'superseded', supersededBy: 'plan-scope-r2' });
+  expect(replanned.successor).toMatchObject({ planId: 'plan-scope-r2', status: 'executing', sourceRevision: 'revision-b', supersedes: ['plan-scope-r1'] });
+  expect(replanned.successor.steps[0]).toMatchObject({ status: 'executing', workId: 'work-stage-7c', allowedPaths: ['src/runtime/control-plane/**', 'src/runtime/context/**'], checks: ['package:check:type'], acceptanceCriteria: ['same semantic outcome'] });
+  expect(getWorkContract(options, 'work-stage-7c')).toMatchObject({ workId: 'work-stage-7c', planId: 'plan-scope-r2', planStepId: 'stage-7c', planSourceRevision: 'revision-b', allowedPaths: ['src/runtime/control-plane/**', 'src/runtime/context/**'], checks: ['package:check:type'], requirementId: 'REQ-scope-replan' });
+  expect(listPlanContracts({ ...options, status: 'active' }).map((plan) => plan.planId)).toEqual(['plan-scope-r2']);
+});
+
+test('active Plan-bound Work scope replan rejects narrowing or changing the Work identity', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-plan-work-scope-replan-fence-'));
+  homes.push(home);
+  const options = { controllerHome: home, repoId: 'repo-plan-work-scope-replan-fence' };
+  createPlanContract(options, {
+    planId: 'plan-fence-r1', repoId: options.repoId, scopeKey: 'stage-fence', sourceRevision: 'revision-a', goal: 'Fence replan authority',
+    steps: [{ id: 'stage', objective: 'deliver', dependencies: [], authoritativeFiles: [], allowedPaths: ['src/a/**', 'src/b/**'], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['unchanged'] }],
+  });
+  approvePlanContract(options, 'plan-fence-r1');
+  createWorkContract(options, {
+    workId: 'work-fence', repoId: options.repoId, planId: 'plan-fence-r1', planStepId: 'stage', planSourceRevision: 'revision-a', mode: 'goal_workloop', objective: 'deliver', acceptanceCriteria: ['unchanged'],
+    allowedPaths: ['src/a/**', 'src/b/**'], forbiddenPaths: [], checks: ['package:check:type'], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+  });
+  claimPlanStepForWork(options, { planId: 'plan-fence-r1', stepId: 'stage', workId: 'work-fence', sourceRevision: 'revision-a' });
+  expect(() => replanActivePlanBoundWorkScope(options, {
+    planId: 'plan-fence-r1', stepId: 'stage', workId: 'work-fence', successorPlanId: 'plan-fence-r2', sourceRevision: 'revision-b', allowedPaths: ['src/a/**', 'src/c/**'], reason: 'attempt narrowing',
+  })).toThrow('PLAN_WORK_REPLAN_SCOPE_NARROWING_FORBIDDEN: src/b/**');
+  expect(() => replanActivePlanBoundWorkScope(options, {
+    planId: 'plan-fence-r1', stepId: 'stage', workId: 'work-other', successorPlanId: 'plan-fence-r2', sourceRevision: 'revision-b', allowedPaths: ['src/a/**', 'src/b/**', 'src/c/**'], reason: 'attempt Work replacement',
+  })).toThrow('PLAN_WORK_REPLAN_STEP_BINDING_MISMATCH');
+  expect(getPlanContract(options, 'plan-fence-r1')?.status).toBe('executing');
+  expect(getPlanContract(options, 'plan-fence-r1')?.supersededBy).toBeUndefined();
+  expect(getPlanContract(options, 'plan-fence-r2')).toBeUndefined();
 });
 
 test('direct supersession records bidirectional Plan lineage and removes the predecessor from current Plans', () => {

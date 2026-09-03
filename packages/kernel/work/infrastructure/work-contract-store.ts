@@ -977,6 +977,77 @@ function updateWorkContractInternal(
   });
 }
 
+
+/**
+ * Build the only permitted in-place Plan rebind for an active Work: the same
+ * Work and Plan step may move to an explicit successor Plan after a scope-only
+ * replan. This is deliberately pure so the Plan store can persist predecessor,
+ * successor, and Work in one SQLite transaction.
+ */
+export function rebindPlanBoundWorkContract(
+  current: WorkContract,
+  input: {
+    predecessorPlanId: string;
+    successorPlanId: string;
+    planStepId: string;
+    planSourceRevision: string;
+    allowedPaths: string[];
+    forbiddenPaths: string[];
+    checks: string[];
+    recordedAt: string;
+    reason: string;
+  },
+): WorkContract {
+  if (isTerminalWorkContractStatus(current.status) || current.completionReceipt || current.completionOutcome) {
+    throw new Error(`WORK_PLAN_REBIND_TERMINAL: ${current.workId}`);
+  }
+  if (current.planId !== input.predecessorPlanId || current.planStepId !== input.planStepId) {
+    throw new Error(`WORK_PLAN_REBIND_SOURCE_MISMATCH: ${current.workId}`);
+  }
+  const successorPlanId = sanitizeFileComponent(input.successorPlanId);
+  const planStepId = sanitizeFileComponent(input.planStepId);
+  if (!successorPlanId || successorPlanId === 'unknown' || successorPlanId === current.planId) {
+    throw new Error('WORK_PLAN_REBIND_SUCCESSOR_INVALID');
+  }
+  const planSourceRevision = input.planSourceRevision.trim();
+  if (!planSourceRevision) throw new Error('WORK_PLAN_REBIND_SOURCE_REVISION_REQUIRED');
+  const allowedPaths = [...new Set(input.allowedPaths.map((value) => value.trim()).filter(Boolean))].slice(0, 50);
+  const forbiddenPaths = [...new Set(input.forbiddenPaths.map((value) => value.trim()).filter(Boolean))].slice(0, 50);
+  const checks = [...new Set(input.checks.map((value) => value.trim()).filter(Boolean))].slice(0, 30);
+  for (const path of current.allowedPaths) {
+    if (!allowedPaths.includes(path)) throw new Error(`WORK_PLAN_REBIND_SCOPE_NARROWING_FORBIDDEN: ${path}`);
+  }
+  if (JSON.stringify(forbiddenPaths) !== JSON.stringify(current.forbiddenPaths)) {
+    throw new Error('WORK_PLAN_REBIND_FORBIDDEN_SCOPE_CHANGE');
+  }
+  if (JSON.stringify(checks) !== JSON.stringify(current.checks)) {
+    throw new Error('WORK_PLAN_REBIND_CHECK_CHANGE');
+  }
+  const evidenceRefs = [{
+    title: 'Plan-bound Work scope replanned',
+    summary: `${current.planId} -> ${successorPlanId}: ${input.reason.trim().slice(0, 1_000)}`,
+    detailLevel: 'summary' as const,
+  }, ...current.evidenceRefs].slice(0, current.evidencePolicy.maxEvidenceRefs);
+  const next = validateWorkSemantics({
+    ...current,
+    scopeRef: semanticScopeRefForWork({
+      workId: current.workId,
+      requirementId: current.requirementId,
+      planId: successorPlanId,
+      planStepId,
+    }),
+    planId: successorPlanId,
+    planStepId,
+    planSourceRevision,
+    allowedPaths,
+    forbiddenPaths,
+    checks,
+    evidenceRefs,
+    updatedAt: input.recordedAt,
+  });
+  return validateWorkSemanticTransition(current, next);
+}
+
 export function updateWorkContract(
   options: WorkContractStoreOptions,
   workId: string,

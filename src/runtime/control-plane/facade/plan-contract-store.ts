@@ -18,6 +18,7 @@ import {
   writeControlPlaneRecordWithinTransaction,
 } from '../persistence/sqlite-store';
 import { readRequirement } from '../persistence/requirement-store';
+import { rebindPlanBoundWorkContract, type WorkContract } from '../../../../packages/kernel/work/api/index';
 import {
   isTerminalPlanContractStatus,
   type EvidenceRef,
@@ -25,7 +26,6 @@ import {
   type PlanContractStatus,
   type PlanContractStore,
   type PlanStep,
-  type WorkContract,
 } from './types';
 
 export interface PlanContractStoreLocation {
@@ -538,6 +538,140 @@ export function supersedePlanContract(options: PlanContractStoreOptions, planId:
     contracts[contracts.findIndex((contract) => contract.planId === successor.planId)] = successorNext;
     writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts });
     return next;
+  });
+}
+
+
+export interface ReplanActivePlanBoundWorkScopeInput {
+  planId: string;
+  stepId: string;
+  workId: string;
+  successorPlanId: string;
+  sourceRevision: string;
+  allowedPaths: string[];
+  reason: string;
+}
+
+export interface ReplanActivePlanBoundWorkScopeResult {
+  predecessor: PlanContract;
+  successor: PlanContract;
+  work: WorkContract;
+}
+
+/**
+ * Atomically replace one executing Plan authority and move its exact active
+ * Work binding to the successor. This repair is intentionally scope-only:
+ * objective, acceptance, checks, forbidden paths, dependencies, and Work
+ * identity remain unchanged; allowed paths may only widen.
+ */
+export function replanActivePlanBoundWorkScope(
+  options: PlanContractStoreOptions,
+  input: ReplanActivePlanBoundWorkScopeInput,
+): ReplanActivePlanBoundWorkScopeResult {
+  if (!sqliteBacked(options)) throw new Error('PLAN_WORK_REPLAN_REQUIRES_CONTROLLER_STORE');
+  const predecessorId = sanitizeFileComponent(input.planId);
+  const successorId = sanitizeFileComponent(input.successorPlanId);
+  const stepId = sanitizeFileComponent(input.stepId);
+  const workId = sanitizeFileComponent(input.workId);
+  const sourceRevision = input.sourceRevision.trim();
+  const reason = input.reason.trim();
+  if (!successorId || successorId === 'unknown' || successorId === predecessorId) throw new Error('PLAN_SUCCESSOR_ID_MUST_CHANGE');
+  if (!sourceRevision) throw new Error('PLAN_WORK_REPLAN_SOURCE_REVISION_REQUIRED');
+  if (!reason) throw new Error('PLAN_WORK_REPLAN_REASON_REQUIRED');
+  const requestedAllowedPaths = [...new Set(input.allowedPaths.map((value) => value.trim()).filter(Boolean))].slice(0, 50);
+
+  return withPlanAdmissionLock(options, () => {
+    const observed = getPlanContract(options, predecessorId);
+    if (!observed) throw new Error(`plan contract not found: ${predecessorId}`);
+    assertRequirementReference(options, observed.requirementId);
+    return withControlPlaneTransaction(options.controllerHome, (database) => {
+      const predecessorRecord = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', options.repoId, predecessorId);
+      if (!predecessorRecord) throw new Error(`plan contract not found: ${predecessorId}`);
+      const predecessor = predecessorRecord.value;
+      if (predecessor.supersededBy || isTerminalPlanContractStatus(predecessor.status)) {
+        throw new Error(`PLAN_WORK_REPLAN_PREDECESSOR_TERMINAL: ${predecessor.planId}:${predecessor.status}`);
+      }
+      if (predecessor.status !== 'executing' && predecessor.status !== 'replanning') {
+        throw new Error(`PLAN_WORK_REPLAN_STATUS_INVALID: ${predecessor.planId}:${predecessor.status}`);
+      }
+      if (readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', options.repoId, successorId)) {
+        throw new Error(`plan contract already exists: ${successorId}`);
+      }
+      const stepIndex = predecessor.steps.findIndex((candidate) => candidate.id === stepId);
+      if (stepIndex < 0) throw new Error(`PLAN_STEP_NOT_FOUND: ${stepId}`);
+      const step = predecessor.steps[stepIndex]!;
+      if (step.status !== 'executing' || step.workId !== workId) {
+        throw new Error(`PLAN_WORK_REPLAN_STEP_BINDING_MISMATCH: ${predecessor.planId}/${stepId}:${step.status}:${step.workId ?? 'none'}`);
+      }
+      for (const path of step.allowedPaths) {
+        if (!requestedAllowedPaths.includes(path)) throw new Error(`PLAN_WORK_REPLAN_SCOPE_NARROWING_FORBIDDEN: ${path}`);
+      }
+      const widened = requestedAllowedPaths.some((path) => !step.allowedPaths.includes(path));
+      if (!widened) throw new Error('PLAN_WORK_REPLAN_SCOPE_NOT_WIDENED');
+      const workRecord = readControlPlaneRecordWithinTransaction<WorkContract>(database, 'work_contract', options.repoId, workId);
+      if (!workRecord) throw new Error(`work contract not found: ${workId}`);
+      const work = workRecord.value;
+      if (work.requirementId !== predecessor.requirementId) throw new Error('PLAN_WORK_REPLAN_REQUIREMENT_MISMATCH');
+      const at = nowIso(options);
+      const steps = [...predecessor.steps];
+      steps[stepIndex] = {
+        ...step,
+        allowedPaths: requestedAllowedPaths,
+        evidenceRefs: [{
+          title: 'scope-only Plan replan',
+          summary: `${predecessor.planId} -> ${successorId}: ${reason}`.slice(0, 2_000),
+          detailLevel: 'summary' as const,
+        }, ...step.evidenceRefs].slice(0, 20),
+      };
+      const successor: PlanContract = {
+        ...predecessor,
+        planId: successorId,
+        sourceRevision,
+        status: 'executing',
+        steps,
+        supersedes: [predecessor.planId],
+        supersededBy: undefined,
+        supersessionReason: undefined,
+        evidenceRefs: [{
+          title: 'active Work scope replanned',
+          summary: `${predecessor.planId}/${stepId} retained exact Work ${workId}; allowed-path authority widened without changing semantic acceptance or machine checks.`.slice(0, 2_000),
+          detailLevel: 'summary' as const,
+        }, ...predecessor.evidenceRefs].slice(0, 20),
+        createdAt: at,
+        updatedAt: at,
+      };
+      const predecessorNext: PlanContract = {
+        ...predecessor,
+        status: 'superseded',
+        supersededBy: successorId,
+        supersessionReason: reason.slice(0, 500),
+        updatedAt: at,
+      };
+      const workNext = rebindPlanBoundWorkContract(work, {
+        predecessorPlanId: predecessor.planId,
+        successorPlanId: successorId,
+        planStepId: stepId,
+        planSourceRevision: sourceRevision,
+        allowedPaths: requestedAllowedPaths,
+        forbiddenPaths: step.forbiddenPaths,
+        checks: step.checks,
+        recordedAt: at,
+        reason,
+      });
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'plan_contract', scope: options.repoId, key: predecessor.planId, schemaVersion: 1,
+        value: predecessorNext, action: 'plan_work_scope_replan_predecessor', expectedRevision: predecessorRecord.revision,
+      });
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'plan_contract', scope: options.repoId, key: successor.planId, schemaVersion: 1,
+        value: successor, action: 'plan_work_scope_replan_successor', expectedRevision: null,
+      });
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'work_contract', scope: options.repoId, key: workNext.workId, schemaVersion: 2,
+        value: workNext, action: 'plan_work_scope_replan_work_rebind', expectedRevision: workRecord.revision,
+      });
+      return { predecessor: predecessorNext, successor, work: workNext };
+    });
   });
 }
 

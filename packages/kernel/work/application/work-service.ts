@@ -2,6 +2,7 @@ import {
   appendWorkEvidence as persistWorkEvidence,
   getWorkContract as readWorkContract,
   recordWorkCompletionReceipt as persistWorkCompletionReceipt,
+  rebindPlanBoundWorkContract as buildPlanBoundWorkRebind,
 } from '../infrastructure/work-contract-store';
 import type { WorkContract } from '../domain/types';
 import type { WorkContractStoreOptions } from '../ports/work-contract-store';
@@ -105,3 +106,15 @@ export type {
   WorkContractStoreLocation,
   WorkContractStoreOptions,
 } from '../infrastructure/work-contract-store';
+
+/**
+ * Public Work application command for constructing a validated scope-only
+ * successor-Plan binding. Persistence remains with the caller so a higher-level
+ * control-plane transaction can atomically update Plan + Work authority.
+ */
+export function rebindPlanBoundWorkContract(
+  current: WorkContract,
+  input: Parameters<typeof buildPlanBoundWorkRebind>[1],
+): WorkContract {
+  return buildPlanBoundWorkRebind(current, input);
+}

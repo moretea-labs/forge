@@ -188,9 +188,11 @@ import {
   resolvePlanAdmission,
   withPrimaryWorkAdmissionLockAsync,
   repairDanglingPlanStepWorkBinding,
+  replanActivePlanBoundWorkScope,
   repairDraftPlanContractAsync,
   completePlanStepForWork,
   summarizePlanContract,
+  summarizeWorkContract,
   supersedePlanContract,
   verifyGoalWorkloop,
   type FacadeTool,
@@ -2484,9 +2486,54 @@ async function runFacadeRepair(
           return result(facade as unknown as Record<string, unknown>, true);
         }
       }
+      const successorPlanId = typeof args.superseded_by === 'string' ? args.superseded_by.trim() : '';
+      const requestedAllowedPaths = Array.isArray(args.allowed_paths)
+        ? [...new Set([...step.allowedPaths, ...args.allowed_paths.map(String).map((value) => value.trim()).filter(Boolean)])]
+        : step.allowedPaths;
+      const scopeReplanRequested = Boolean(successorPlanId) || requestedAllowedPaths.length > step.allowedPaths.length;
+      if (scopeReplanRequested) {
+        const requestedSourceRevision = typeof args.source_revision === 'string' ? args.source_revision.trim() : '';
+        if (!successorPlanId || !requestedSourceRevision || requestedAllowedPaths.length === step.allowedPaths.length) {
+          const facade = buildFacadeResult({
+            status: 'blocked',
+            summary: 'PLAN_WORK_SCOPE_REPLAN_INPUT_REQUIRED: superseded_by, source_revision, and at least one new allowed_paths entry are required for an active Plan-bound Work scope replan.',
+            data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: boundWork.workId, repaired: false, successorPlanId: successorPlanId || undefined, requestedSourceRevision: requestedSourceRevision || undefined, requestedAllowedPaths },
+          });
+          return result(facade as unknown as Record<string, unknown>, true);
+        }
+        if (repairOperation !== 'repair' || dryRun) {
+          const facade = buildFacadeResult({
+            summary: `PLAN_WORK_SCOPE_REPLAN_AVAILABLE: ${planId}/${planStepId} can atomically move exact Work ${boundWork.workId} to successor Plan ${successorPlanId} while widening only allowed-path authority.`,
+            data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: boundWork.workId, successorPlanId, requestedSourceRevision, requestedAllowedPaths, repaired: false, repairRequired: true, reusedExistingWork: true },
+            suggestedNextActions: [{ label: 'Replan exact active Work scope', tool: 'rh_work', operation: 'repair', payload: { plan_id: planId, plan_step_id: planStepId, superseded_by: successorPlanId, source_revision: requestedSourceRevision, allowed_paths: requestedAllowedPaths, repair_operation: 'repair', dry_run: false }, risk: 'workspace_write', confidence: 'high' }],
+          });
+          return result(facade as unknown as Record<string, unknown>);
+        }
+        try {
+          const replanned = replanActivePlanBoundWorkScope(store, {
+            planId,
+            stepId: planStepId,
+            workId: boundWork.workId,
+            successorPlanId,
+            sourceRevision: requestedSourceRevision,
+            allowedPaths: requestedAllowedPaths,
+            reason: typeof args.reason === 'string' && args.reason.trim()
+              ? args.reason.trim()
+              : 'Explicit Controller repair widened a frozen Plan path fence after current-source evidence proved the existing Plan contract omitted a path required by its own acceptance scope.',
+          });
+          const facade = buildFacadeResult({
+            summary: `Replanned ${planId}/${planStepId} to ${replanned.successor.planId} and rebound the same active Work ${replanned.work.workId} atomically; semantic acceptance and checks were not widened.`,
+            data: { operation: repairOperation, dryRun: false, predecessor: summarizePlanContract(replanned.predecessor), successor: summarizePlanContract(replanned.successor), work: summarizeWorkContract(replanned.work), repaired: true, replacementWorkCreated: false, reusedExistingWork: true },
+          });
+          return result(facade as unknown as Record<string, unknown>);
+        } catch (error) {
+          const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'PLAN_WORK_SCOPE_REPLAN_FAILED', data: { operation: repairOperation, dryRun: false, planId, planStepId, boundWorkId: boundWork.workId, successorPlanId, repaired: false } });
+          return result(facade as unknown as Record<string, unknown>, true);
+        }
+      }
       const facade = buildFacadeResult({
         status: 'blocked',
-        summary: `PLAN_STEP_BOUND_WORK_STILL_EXISTS: ${planId}/${planStepId} is bound to active Work ${boundWork.workId}; continue that exact Work instead of repairing or replacing it.`,
+        summary: `PLAN_STEP_BOUND_WORK_STILL_EXISTS: ${planId}/${planStepId} is bound to active Work ${boundWork.workId}; continue that exact Work, or explicitly request a scope-only successor Plan replan instead of replacing the Work.`,
         data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: boundWork.workId, repaired: false, repairRequired: false },
         suggestedNextActions: [{ label: 'Continue existing Work', tool: 'rh_work', operation: 'continue', payload: { work_id: boundWork.workId }, risk: 'readonly', confidence: 'high' }],
       });
