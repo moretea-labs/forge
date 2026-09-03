@@ -382,10 +382,21 @@ export function routeWorkStart(
     });
   }
   const requestedWorkKind = input.workKind ?? (inheritedReadOnlyReview ? 'read_only_review' : undefined);
+  const explicitSourceMutationFence = input.allowedPaths !== undefined
+    && input.allowedPaths.length === 0
+    && (input.forbiddenPaths ?? []).some((value) => {
+      const normalized = value.trim().replace(/\\/g, '/');
+      return normalized === '*' || normalized === '**' || normalized === '**/*';
+    });
   const typedReadOnlyReviewRequested = requestedWorkKind === undefined
-    && (input.modeInput.mutation === false || (input.modeInput.mutation === undefined && input.modeInput.risk === 'readonly'))
-    && input.modeInput.requiresInvestigation === true
-    && input.modeInput.requiresRecovery === true;
+    && (
+      explicitSourceMutationFence
+      || (
+        (input.modeInput.mutation === false || (input.modeInput.mutation === undefined && input.modeInput.risk === 'readonly'))
+        && input.modeInput.requiresInvestigation === true
+        && input.modeInput.requiresRecovery === true
+      )
+    );
   const effectiveWorkKind = requestedWorkKind ?? (typedReadOnlyReviewRequested ? 'read_only_review' : undefined);
   const readOnlyReviewRequested = effectiveWorkKind === 'read_only_review';
   const readOnlyMutationConflict = readOnlyReviewRequested && (

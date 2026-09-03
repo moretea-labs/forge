@@ -2448,6 +2448,117 @@ describe('rh_work terminalization authority', () => {
     expect(existsSync(workspace.root!)).toBe(false);
   }, 20_000);
 
+  test('no-change finalization proves target reachability before removing a managed worktree', async () => {
+    const fx = fixture();
+    const workId = 'work-no-change-target-preflight';
+    const caller = { principalId: 'principal-no-change-preflight', sessionId: 'transport-no-change-preflight', controllerInstanceId: 'runtime-no-change-preflight' };
+    execFileSync('git', ['switch', '--orphan', 'unrelated-target'], { cwd: fx.repoRoot });
+    writeFileSync(join(fx.repoRoot, 'unrelated.txt'), 'unrelated root\n');
+    execFileSync('git', ['add', '.'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'unrelated root'], { cwd: fx.repoRoot });
+    execFileSync('git', ['switch', 'main'], { cwd: fx.repoRoot });
+
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, { requestId: workId, title: 'No Change Target Preflight', branchName: 'work/no-change-target-preflight' });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const now = new Date().toISOString();
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, baseRevision: workspace.baseRevision ?? undefined,
+      mode: 'goal_workloop', objective: 'Prove no-change target before cleanup.', acceptanceCriteria: ['No source delta is delivered only to the intended target.'],
+      allowedPaths: [], forbiddenPaths: ['**'], checks: [], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt',
+      workKind: 'investigation', status: 'running', phase: 'verification', worktreeRef: workspace.root,
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1, workId, sessionId: caller.sessionId, principalId: caller.principalId, repositoryId: repository.repoId,
+      checkoutId: workspace.checkoutId!, worktreePath: workspace.root!, branch: 'work/no-change-target-preflight', sourceCheckoutId: repository.activeCheckoutId,
+      workContractId: workId, baseCommit: workspace.baseRevision ?? undefined, deliveryBaseCommit: workspace.baseRevision ?? undefined,
+      expectedHead: workspace.baseRevision ?? undefined, permissionSnapshotVersion: 1, state: 'prepared', managedWorktree: true, createdAt: now, updatedAt: now,
+      finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+    });
+    claimControllerSession({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId, controllerId: caller.principalId, controllerType: 'chatgpt', sessionId: caller.sessionId, principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+    });
+
+    const finalized = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt', completion_outcome: 'completed_no_change', no_change_evidence: 'Exact source remained unchanged.', cleanup: true, target_branch: 'unrelated-target' },
+    ));
+    expect(finalized.status).not.toBe('ok');
+    expect((finalized.error as { code?: string } | undefined)?.code).toBe('WORK_COMPLETION_RECEIPT_DELIVERY_NOT_PROVEN');
+    expect(existsSync(workspace.root!)).toBe(true);
+    expect(selectRepositoryCheckout(getRepository(repository.repoId, fx.controllerHome), workspace.checkoutId!).activeCheckoutId).toBe(workspace.checkoutId!);
+  }, 20_000);
+
+  test('no-change finalization can settle from retained validation after a prior cleanup already removed the worktree', async () => {
+    const fx = fixture();
+    const workId = 'work-no-change-removed-worktree-retry';
+    const caller = { principalId: 'principal-no-change-retry', sessionId: 'transport-no-change-retry', controllerInstanceId: 'runtime-no-change-retry' };
+    const branch = 'work/no-change-removed-worktree-retry';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, { requestId: workId, title: 'No Change Removed Worktree Retry', branchName: branch });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const base = workspace.baseRevision!;
+    const now = new Date().toISOString();
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, baseRevision: base, mode: 'goal_workloop', objective: 'Recover an already-cleaned no-change delivery.',
+      acceptanceCriteria: ['Existing no-change evidence terminalizes the same Work.'], allowedPaths: [], forbiddenPaths: ['**'], checks: [],
+      constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', workKind: 'investigation', status: 'running', phase: 'delivery', worktreeRef: workspace.root,
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1, workId, sessionId: caller.sessionId, principalId: caller.principalId, repositoryId: repository.repoId,
+      checkoutId: workspace.checkoutId!, worktreePath: workspace.root!, branch, sourceCheckoutId: repository.activeCheckoutId, workContractId: workId,
+      baseCommit: base, deliveryBaseCommit: base, expectedHead: base, permissionSnapshotVersion: 1, state: 'merged', managedWorktree: true,
+      validatedInputFingerprint: 'retained-no-change-validation', createdAt: now, updatedAt: now,
+      finalization: { validation: 'done', commit: 'skipped', merge: 'skipped', branchCleanup: 'pending', worktreeCleanup: 'done' },
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+    });
+    execFileSync('git', ['worktree', 'remove', '--force', workspace.root!], { cwd: fx.repoRoot });
+    setRepositoryCheckoutLifecycle({ controllerHome: fx.controllerHome, repoId: repository.repoId, checkoutId: workspace.checkoutId!, lifecycle: 'removed', reason: 'simulate crash after durable worktree cleanup' });
+    claimControllerSession({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId, controllerId: caller.principalId, controllerType: 'chatgpt', sessionId: caller.sessionId, principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+    });
+
+    const finalized = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt', completion_outcome: 'completed_no_change', no_change_evidence: 'Retained validation proves the exact no-change candidate.', cleanup: true, target_branch: 'main' },
+    ));
+    expect(finalized.status).toBe('ok');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
+      status: 'completed', completionOutcome: 'completed_no_change', completionReceipt: { targetBranch: 'main', sourceRevision: base, changedPaths: [] },
+    });
+    expect(existsSync(workspace.root!)).toBe(false);
+  }, 20_000);
+
+  test('exact rh_work repair does not run broad maintenance against unrelated stale Work', async () => {
+    const fx = fixture();
+    const targetWorkId = 'work-exact-repair-target';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, targetWorkId);
+
+    const staleWorkId = 'work-unrelated-stale-maintenance';
+    const stale = ensureManagedWorkspace(fx.controllerHome, fx.repository, { requestId: staleWorkId, title: 'Unrelated Stale Maintenance', branchName: 'work/unrelated-stale-maintenance' });
+    const oldStore = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId, now: () => '2026-01-01T00:00:00.000Z' };
+    createWorkContract(oldStore, {
+      workId: staleWorkId, repoId: fx.repository.repoId, checkoutId: stale.checkoutId!, baseRevision: stale.baseRevision ?? undefined,
+      mode: 'goal_workloop', objective: 'Unrelated stale cleanup candidate.', acceptanceCriteria: ['Remain untouched by exact repair.'],
+      allowedPaths: ['**'], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', workKind: 'investigation', status: 'ready', worktreeRef: stale.root,
+    });
+    transitionWorkContractPhase(oldStore, staleWorkId, { phase: 'verification', status: 'blocked', state: 'satisfied', summary: 'Implementation accepted.' });
+    transitionWorkContractPhase(oldStore, staleWorkId, { phase: 'delivery', status: 'blocked', state: 'satisfied', summary: 'Verification accepted.' });
+    transitionWorkContractPhase(oldStore, staleWorkId, { phase: 'cleanup', status: 'blocked', summary: 'Only cleanup remains.' });
+
+    const repaired = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-exact-repair', 'transport-exact-repair', 'runtime-exact-repair'),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: targetWorkId, repair_operation: 'repair', dry_run: false, min_age_minutes: 1 },
+    ));
+    expect(repaired.data?.actionId).not.toBe('full_maintenance_pass');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, staleWorkId)?.status).toBe('blocked');
+    expect(existsSync(stale.root!)).toBe(true);
+  }, 20_000);
+
   test('WORK_CHECKOUT_MISMATCH reports both resolved and expected Work checkout identities', () => {
     const fx = fixture();
     const workId = 'work-checkout-mismatch-diagnostic';

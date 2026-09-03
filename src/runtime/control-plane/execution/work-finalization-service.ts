@@ -1619,6 +1619,16 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     && wants.cleanup
     && !wants.commit
     && !wants.merge;
+  const noChangeCleanupReconciliation = requestedOutcome === 'completed_no_change'
+    ? inspectCleanupOnlyMergedHead(ctx, current, args)
+    : undefined;
+  const noChangeRemovedWorktreeRecovery = Boolean(
+    noChangeCleanupReconciliation?.worktreeMissing
+    && current.finalization.worktreeCleanup === 'done'
+    && current.finalization.validation === 'done'
+    && current.validatedInputFingerprint
+    && (current.state === 'merged' || current.state === 'cleaned'),
+  );
   const cleanupReconciliation = requestedOutcome === 'completed_no_change'
     ? undefined
     : inspectCleanupOnlyMergedHead(ctx, current, args);
@@ -1664,6 +1674,11 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
       ...fresh,
       finalization: { ...fresh.finalization, validation: 'done', lastError: undefined },
     }));
+  } else if (noChangeRemovedWorktreeRecovery) {
+    // A prior no-change finalize may have durably recorded validation and physical
+    // worktree cleanup before terminal Work completion. Target containment above
+    // re-proves the exact expected HEAD; do not recreate mutable workspace state
+    // merely to repeat a validation whose fingerprint is already durable.
   } else {
     let validatedRepository: RepositoryRecord;
     try {
@@ -1717,8 +1732,12 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
   }
 
   if (noChangeFastPath) {
-    if (!exactValidationInput?.clean) {
+    if (!exactValidationInput?.clean && !noChangeRemovedWorktreeRecovery) {
       throw new Error('WORK_NO_CHANGE_DIRTY: completed_no_change cannot retain an owned dirty worktree');
+    }
+    const noChangeValidationFingerprint = exactValidationInput?.fingerprint ?? current.validatedInputFingerprint;
+    if (!noChangeValidationFingerprint) {
+      throw new Error('WORK_NO_CHANGE_VALIDATION_AUTHORITY_REQUIRED: completed_no_change requires retained exact validation authority');
     }
     const noChangeFinalization: WorkFinalizationStages = {
       ...current.finalization,
@@ -1734,13 +1753,13 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     if (current.state === 'prepared') {
       current = transact('no-change-validated', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, 'validating', {
         finalization: noChangeFinalization,
-        validatedInputFingerprint: exactValidationInput.fingerprint,
+        validatedInputFingerprint: noChangeValidationFingerprint,
         failureReason: undefined,
       }));
     } else if (current.state === 'editing' || current.state === 'validating' || current.state === 'committed') {
       current = transact('no-change-delivery-integrated', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, 'merged', {
         finalization: noChangeFinalization,
-        validatedInputFingerprint: exactValidationInput.fingerprint,
+        validatedInputFingerprint: noChangeValidationFingerprint,
         failureReason: undefined,
       }));
     }
@@ -2392,6 +2411,20 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     }
   }
 
+  let prevalidatedNoChangeReceipt: CompletionReceipt | undefined;
+  if (requestedOutcome === 'completed_no_change'
+    && current.finalization.validation === 'done'
+    && current.finalization.commit === 'skipped'
+    && current.finalization.merge === 'skipped'
+    && (current.state === 'merged' || current.state === 'cleaned')) {
+    const completionContract = contractFor(ctx, current);
+    if (!completionContract) throw new Error(`WORK_COMPLETION_CONTRACT_MISSING: ${current.workContractId ?? current.workId}`);
+    // Delivery/target identity is semantic completion evidence. Prove it before
+    // deleting any managed worktree or branch so a wrong target remains safely
+    // retryable with the exact workspace intact.
+    prevalidatedNoChangeReceipt = completionReceiptForFinalizedWork(ctx, current, completionContract, args);
+  }
+
   if (wants.cleanup && current.finalization.worktreeCleanup === 'pending') {
     const contract = contractFor(ctx, current);
     if (contract?.constraints.allowCleanup === false) throw new Error('WORK_CLEANUP_NOT_ALLOWED: WorkContract disallows cleanup');
@@ -2400,7 +2433,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     } else {
       const cleanupContract = contractFor(ctx, current);
       if (!cleanupContract) throw new Error(`WORK_IMPLEMENTATION_REVIEW_CONTRACT_REQUIRED: ${current.workId}`);
-      if (cleanupContract.status !== 'cancelled' && cleanupContract.status !== 'failed') {
+      if (cleanupContract.status !== 'cancelled' && cleanupContract.status !== 'failed' && requestedOutcome !== 'completed_no_change') {
         const cleanupRepository = selectRepositoryCheckout(
           getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true }),
           current.checkoutId,
@@ -2431,7 +2464,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     const target = selectWorkFinalizationTarget(getRepository(current.repositoryId, ctx.controllerHome), current);
     const branchCleanupContract = contractFor(ctx, current);
     if (!branchCleanupContract) throw new Error(`WORK_IMPLEMENTATION_REVIEW_CONTRACT_REQUIRED: ${current.workId}`);
-    if (branchCleanupContract.status !== 'cancelled' && branchCleanupContract.status !== 'failed') {
+    if (branchCleanupContract.status !== 'cancelled' && branchCleanupContract.status !== 'failed' && requestedOutcome !== 'completed_no_change') {
       assertPhysicalBranchCleanupImplementationReviewGate({ target, handle: current, contract: branchCleanupContract });
     }
     const deleted = repositoryGitDeleteBranch(ctx.controllerHome, target, { branch: current.branch, force: false, authorizationDecision: gitAuthorization, sessionId: session.sessionId, principalId: session.principalId, workId: current.workId, goalId: current.goalId });
@@ -2469,7 +2502,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
           detailLevel: 'summary',
         });
       }
-      const receipt = completionReceiptForFinalizedWork(ctx, current, completionContract, args);
+      const receipt = prevalidatedNoChangeReceipt ?? completionReceiptForFinalizedWork(ctx, current, completionContract, args);
       const ownerPrincipal = terminalizationOwner.principalId?.trim() || terminalizationOwner.controllerId;
       const ownerInstanceId = terminalizationOwner.controllerInstanceId?.trim() || '';
       const ownerClaimGeneration = terminalizationOwner.claimGeneration;

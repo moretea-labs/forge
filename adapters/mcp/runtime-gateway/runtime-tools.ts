@@ -1417,11 +1417,29 @@ async function finalizeFacadeWorkHandle(
       && handle.expectedHead
       && handle.baseCommit
       && handle.expectedHead !== handle.baseCommit);
+    const retainedNoChangeRecovery = args.completion_outcome === 'completed_no_change'
+      && handle.managedWorktree
+      && handle.finalization.validation === 'done'
+      && handle.finalization.worktreeCleanup === 'done'
+      && Boolean(handle.validatedInputFingerprint)
+      && (handle.state === 'merged' || handle.state === 'cleaned');
     if (
-      !exactChangedHead
+      (!exactChangedHead && !retainedNoChangeRecovery)
       || args.cleanup === false
       || (!message.startsWith('CHECKOUT_NOT_ACTIVE:') && !message.startsWith('checkout not found for '))
     ) throw error;
+    if (retainedNoChangeRecovery) {
+      const noChangeEvidence = typeof args.no_change_evidence === 'string' && args.no_change_evidence.trim()
+        ? args.no_change_evidence.trim()
+        : `Retained exact validation proves Work ${workId} has no repository delta after managed-worktree cleanup.`;
+      return callExecutionTool(ctx, 'work_finalize', {
+        ...common,
+        commit: false,
+        merge: false,
+        completion_outcome: 'completed_no_change',
+        no_change_evidence: noChangeEvidence,
+      });
+    }
     // Physical cleanup can succeed before the Work completion receipt is
     // persisted. Retry through the lower finalizer's exact target-containment
     // reconciliation instead of requiring a checkout that is already gone.
@@ -2373,6 +2391,7 @@ async function runFacadeRepair(
   const elevatedRepair = args.destructive === true || args.remote_write === true || args.remote_effect === true;
   const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
   const planStepId = typeof args.plan_step_id === 'string' ? args.plan_step_id.trim() : '';
+  const exactWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
 
   if (planId && !planStepId) {
     const plan = getPlanContract(store, planId);
@@ -2583,6 +2602,7 @@ async function runFacadeRepair(
     repairOperation === 'repair'
     && !dryRun
     && !elevatedRepair
+    && !exactWorkId
     && maintenanceSnapshot
     && maintenanceSnapshot.candidates.length > 0
   ) {

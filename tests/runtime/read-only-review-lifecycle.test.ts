@@ -193,6 +193,25 @@ describe('recoverable read-only review lifecycle', () => {
     expect(getWorkContract(context.workStore, workId)?.status).not.toBe('completed');
   });
 
+  test('infers read-only review from an explicit all-source mutation fence without requiring a risk hint', () => {
+    const context = reviewContext('read-only-source-fence');
+    const started = routeWorkStart(context, {
+      objective: 'Inspect the exact source and produce architecture evidence without edits.',
+      allowedPaths: [],
+      forbiddenPaths: ['**'],
+      modeInput: { scopeClear: true, requiresInvestigation: true, requiresRecovery: true },
+    });
+    const workId = (started.data as { work?: { workId?: string } }).work?.workId;
+    expect(started.status).toBe('ok');
+    expect(workId).toBeTruthy();
+    expect(getWorkContract(context.workStore, workId!)?.workKind).toBe('read_only_review');
+    expect(getWorkContract(context.workStore, workId!)?.risk).toBe('readonly');
+
+    const continued = continueGoalWorkloop(context, { workId: workId!, inspectedPaths: ['src/runtime/control-plane/facade/goal-workloop.ts'], reviewFindings: [] });
+    expect(continued.status).toBe('ok');
+    expect((continued.data as { nextStep?: string }).nextStep).toBe('finalize');
+  });
+
   test('keeps repository-change implementation gating strict', () => {
     const context = reviewContext('repository-change-strict');
     const started = routeWorkStart(context, {
