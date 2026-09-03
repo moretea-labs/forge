@@ -70,3 +70,63 @@ export interface EngineeringContextReceipt {
   missingCompletionEvidence: EngineeringEvidenceKind[];
   recordedAt: string;
 }
+
+
+export type ContextClosureReadinessStatus = 'ready' | 'degraded' | 'insufficient';
+export type ContextClosureSkillStatus = 'ready' | 'degraded' | 'unavailable' | 'not_required';
+export type ContextClosureSemanticStatus = 'ready' | 'degraded' | 'unavailable' | 'not_required';
+
+export interface ContextClosureSkillResolution {
+  id: string;
+  version?: string;
+  source: 'project_contract';
+  matchedKinds: string[];
+}
+
+export interface ContextClosureSemanticToolResolution {
+  providerId: string;
+  languages: string[];
+  status: 'ready' | 'registered' | 'degraded' | 'unavailable';
+  evidenceCount: number;
+}
+
+/** Exact-source, bounded Context Closure evidence. It is derived from source/runtime facts and is not a new persistence authority. */
+export interface ContextClosureReceipt {
+  schemaVersion: 1;
+  receiptId: string;
+  sourceRevision: string;
+  generatedAt: string;
+  contextPackSchemaVersion: number;
+  repository: {
+    branch: string | null;
+    dirty: boolean;
+    workId?: string;
+    activeWorkIds: string[];
+  };
+  projectContract?: ProjectEngineeringContractReceipt;
+  projectContractStatus: 'ready' | 'missing';
+  guidance: { status: 'none' | 'ready' | 'degraded'; paths: string[] };
+  detected: { languages: string[]; platforms: string[] };
+  skills: {
+    status: ContextClosureSkillStatus;
+    requiredKinds: string[];
+    resolved: ContextClosureSkillResolution[];
+    unresolvedKinds: string[];
+  };
+  semanticTools: {
+    required: boolean;
+    status: ContextClosureSemanticStatus;
+    providers: ContextClosureSemanticToolResolution[];
+    reasonCodes: string[];
+    compilerEvidenceRequired: boolean;
+  };
+  sourceEvidence: {
+    currentPaths: string[];
+    testPaths: string[];
+    recentChanges: Array<{ revision: string; committedAt: string; summary: string }>;
+    rawSourceStatus: 'current' | 'partial' | 'unavailable';
+    structuralStatus: 'disabled' | 'ready' | 'stale' | 'unavailable' | 'degraded';
+  };
+  readiness: { status: ContextClosureReadinessStatus; reasonCodes: string[] };
+  provenance: { source: 'rh_context'; contextGeneratedAt: string };
+}

@@ -6,6 +6,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { CallToolResult as SdkCallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { collectRuntimePerformanceDiagnostics, inferLocalControllerProcess } from '../../../src/runtime/diagnostics/performance';
 import { defaultSemanticProviderRegistry, type SemanticNavigationKind, type SemanticNavigationRequest } from '../../../src/runtime/context/semantic-navigation';
+import { buildContextClosureReceipt } from '../../../src/runtime/context/context-closure';
 import type { McpToolDefinition, CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { allControllerToolDefinitions, controllerExposureSnapshot, controllerToolSurfaceStatus } from '../toolset';
@@ -3389,6 +3390,20 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             unresolvedReasonCodes: Array.from(new Set([...pack.readiness.unresolvedReasonCodes, ...semanticReasonCodes])).slice(0, 80),
             readyForHighConfidenceMutation: readinessStatus === 'ready',
           };
+          const closureWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+          const closureWork = closureWorkId
+            ? getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, closureWorkId)
+            : undefined;
+          const contextClosure = buildContextClosureReceipt({
+            repoRoot: repository.canonicalRoot,
+            query: retrievalQuery,
+            pack: { ...pack, readiness },
+            semanticNavigation,
+            semanticProviders: defaultSemanticProviderRegistry.list(),
+            workId: closureWorkId || undefined,
+            activeWorkIds: closureWork ? [closureWork.workId] : [],
+            includeRecentChanges: retrievalMode !== 'implementation',
+          });
           const warnings = structuralContext === 'required' && !pack.structuralContext.requiredSatisfied
             ? [pack.structuralContext.fallbackReason ?? 'Required structural context is not ready; lexical retrieval results are returned as degraded evidence.']
             : [];
@@ -3405,6 +3420,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               structuralContext: pack.structuralContext,
               impactContext: pack.impactContext,
               semanticNavigation,
+              contextClosure,
               readiness,
               expansion: pack.expansion,
               files: pack.files,
