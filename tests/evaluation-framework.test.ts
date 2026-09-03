@@ -6,6 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import { loadScenario, parseScenario } from '../evaluation/lib/scenario.ts';
 import { runEvaluation } from '../evaluation/lib/runner.ts';
 import type { EvaluationScenario } from '../evaluation/lib/types.ts';
+import { evaluateOperationalShadowPairs, freezeOperationalShadowProtocol } from '../evaluation/lib/shadow-operational-prior.ts';
 
 function git(cwd: string, arguments_: string[]): string {
   return execFileSync('git', arguments_, { cwd, encoding: 'utf8' }).trim();
@@ -108,6 +109,40 @@ describe('Forge evaluation framework', () => {
     const validators = input.validators as Array<Record<string, unknown>>;
     validators[1] = { id: 'empty-change-scope', kind: 'change_precision', type: 'changed_paths' };
     expect(() => parseScenario(input)).toThrow('changed_paths must declare requiredGlobs, forbiddenGlobs, or both');
+  });
+
+  test('evaluates a frozen paired cold-vs-shadow protocol across engineering and non-engineering fixtures', () => {
+    const protocol = freezeOperationalShadowProtocol({ candidateRevision: 'candidate-a', heldOutScenarioIds: ['engineering-check-ordering', 'research-source-ordering'] });
+    const report = evaluateOperationalShadowPairs(protocol, [
+      { scenarioId: 'engineering-check-ordering', domainKind: 'engineering', candidateRevision: 'candidate-a', cold: { controllerVisibleBytes: 4200, contextBytes: 2800, shadowBytes: 0, rhContextEvidenceBytes: 1400, mechanicalRereads: 4, toolRoundTrips: 7, latencyMs: 900, staleNoValueRetrievals: 2, correctnessPassed: true }, shadow: { controllerVisibleBytes: 3500, contextBytes: 2200, shadowBytes: 300, rhContextEvidenceBytes: 1000, mechanicalRereads: 2, toolRoundTrips: 5, latencyMs: 880, staleNoValueRetrievals: 1, correctnessPassed: true } },
+      { scenarioId: 'research-source-ordering', domainKind: 'non_engineering', candidateRevision: 'candidate-a', cold: { controllerVisibleBytes: 3600, contextBytes: 2400, shadowBytes: 0, rhContextEvidenceBytes: 1200, mechanicalRereads: 3, toolRoundTrips: 6, latencyMs: 800, staleNoValueRetrievals: 1, correctnessPassed: true }, shadow: { controllerVisibleBytes: 3200, contextBytes: 2050, shadowBytes: 250, rhContextEvidenceBytes: 900, mechanicalRereads: 2, toolRoundTrips: 5, latencyMs: 820, staleNoValueRetrievals: 1, correctnessPassed: true } },
+    ]);
+    expect(report.coverage).toEqual({ engineering: true, nonEngineering: true });
+    expect(report.correctnessRegressionCount).toBe(0);
+    expect(report.means.shadowPayloadBytes).toBeGreaterThan(0);
+    expect(report.ratios.controllerVisibleBytes).toBeLessThan(1);
+    expect(report.ratios.toolRoundTrips).toBeLessThan(1);
+    expect(report.passed).toBe(true);
+  });
+
+  test('paired shadow evaluation fails closed when any required accounting metric is missing', () => {
+    const protocol = freezeOperationalShadowProtocol({ candidateRevision: 'candidate-a', heldOutScenarioIds: ['engineering', 'non-engineering'] });
+    const base = { controllerVisibleBytes: 1, contextBytes: 1, shadowBytes: 0, rhContextEvidenceBytes: 0, mechanicalRereads: 1, toolRoundTrips: 1, latencyMs: 1, staleNoValueRetrievals: 0, correctnessPassed: true };
+    const first = { scenarioId: 'engineering', domainKind: 'engineering' as const, candidateRevision: 'candidate-a', cold: base, shadow: { ...base, controllerVisibleBytes: undefined } };
+    const second = { scenarioId: 'non-engineering', domainKind: 'non_engineering' as const, candidateRevision: 'candidate-a', cold: base, shadow: base };
+    expect(() => evaluateOperationalShadowPairs(protocol, [first as never, second])).toThrow('controllerVisibleBytes');
+  });
+
+  test('paired shadow evaluation refuses correctness regression even when cost metrics improve', () => {
+    const protocol = freezeOperationalShadowProtocol({ candidateRevision: 'candidate-a', heldOutScenarioIds: ['engineering', 'non-engineering'] });
+    const cold = { controllerVisibleBytes: 100, contextBytes: 80, shadowBytes: 0, rhContextEvidenceBytes: 20, mechanicalRereads: 2, toolRoundTrips: 3, latencyMs: 100, staleNoValueRetrievals: 1, correctnessPassed: true };
+    const improved = { controllerVisibleBytes: 80, contextBytes: 55, shadowBytes: 5, rhContextEvidenceBytes: 20, mechanicalRereads: 1, toolRoundTrips: 2, latencyMs: 90, staleNoValueRetrievals: 0, correctnessPassed: true };
+    const report = evaluateOperationalShadowPairs(protocol, [
+      { scenarioId: 'engineering', domainKind: 'engineering', candidateRevision: 'candidate-a', cold, shadow: { ...improved, correctnessPassed: false } },
+      { scenarioId: 'non-engineering', domainKind: 'non_engineering', candidateRevision: 'candidate-a', cold, shadow: improved },
+    ]);
+    expect(report.correctnessRegressionCount).toBe(1);
+    expect(report.passed).toBe(false);
   });
 
   test('rejects a report path inside the source repository before execution', () => {

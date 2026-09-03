@@ -287,6 +287,11 @@ const required = [
   'packages/kernel/work/domain/implementation-review.ts',
   'packages/kernel/work/domain/state-machine.ts',
   'packages/kernel/identity/domain/scope.ts',
+  'packages/kernel/memory/domain/operational-prior.ts',
+  'packages/kernel/memory/api/index.ts',
+  'packages/kernel/memory/index.ts',
+  'src/runtime/evidence/operational-shadow.ts',
+  'evaluation/lib/shadow-operational-prior.ts',
   'packages/kernel/work/domain/check-receipt.ts',
   'packages/kernel/work/domain/execution-snapshot.ts',
   'packages/kernel/work/domain/repository-completion-receipt.ts',
@@ -355,6 +360,21 @@ const required = [
 ];
 for (const path of required) text(path);
 requireAcyclicProductionTypeScript();
+// Stage7E is shadow-only: Kernel Memory stays pure and the typed extractor has no production consumer.
+const stage7eMemoryImports = staticTypeScriptImportRecords(productionTypeScriptFiles());
+for (const { from, specifier } of stage7eMemoryImports) {
+  if (from.startsWith('packages/kernel/memory/') && /(?:src\/runtime|control-plane|sqlite-store|context-plane)/.test(specifier)) {
+    failures.push(`Stage7E shadow Memory must remain Kernel-pure and persistence-free: ${from} -> ${specifier}`);
+  }
+  if (/packages\/kernel\/memory/.test(specifier)
+      && from !== 'src/runtime/evidence/operational-shadow.ts'
+      && !from.startsWith('packages/kernel/memory/')) {
+    failures.push(`Stage7E shadow Memory has an unauthorized production consumer: ${from} -> ${specifier}`);
+  }
+  if (/operational-shadow/.test(specifier)) {
+    failures.push(`Stage7E typed shadow extractor must remain unconnected to production execution: ${from} -> ${specifier}`);
+  }
+}
 for (const path of sourceFiles('src/runtime/control-plane')) {
   forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])(?:\.\.\/)+gateway\//, 'control-plane domain/application code must not depend on Gateway transport');
 }
