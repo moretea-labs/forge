@@ -6,9 +6,9 @@ import { join } from 'path';
 import { assessWorkMode } from '../../src/cli/controller/work-mode';
 import { applyEditOperations, beginEditSession, finalizeEditSession } from '../../src/cli/editing/edit-session';
 import { getMcpPolicy } from '../../src/cli/mcp/policy';
-import { continueGoalWorkloop, finalizeGoalWorkloop, routeWorkStart, verifyGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
+import { continueGoalWorkloop, finalizeGoalWorkloop, routeWorkStart, runGoalWorkloop, verifyGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { acceptPlanStepEvidence, approvePlanContract, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
-import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, recordWorkScopeEvidence, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { appendWorkEvidence, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, recordWorkScopeEvidence, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { selectExecutionMode } from '../../src/runtime/control-plane/facade/types';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { getHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
@@ -22,6 +22,25 @@ function temp(prefix: string): string {
   roots.push(root);
   return root;
 }
+function highEngineeringEvidence(sourceRevision = 'revision-a') {
+  return {
+    projectContractReceipt: {
+      schemaVersion: 1 as const,
+      contractPath: '.forge/project-engineering.json',
+      projectId: 'forge-test',
+      contractId: 'forge-test-engineering',
+      contractVersion: '1',
+      sourceRevision,
+      contentDigest: 'a'.repeat(64),
+      provenance: { source: 'repository' as const, loadedAt: '2026-09-03T00:00:00.000Z' },
+    },
+    contextClosureReceiptId: 'context-a',
+    productDodReceiptId: 'dod-a',
+    designDecisionReceiptId: 'design-a',
+    independentCritiqueReceiptId: 'critique-a',
+  };
+}
+
 function completeNoChangePlanWork(workStore: { root: string }, workId: string, reviewId: string): void {
   const recordedAt = '2026-09-02T00:00:00.000Z';
   transitionWorkContractPhase(workStore, workId, { status: 'running', phase: 'verification', state: 'satisfied', summary: 'Exact no-change Plan slice verified.' });
@@ -474,6 +493,75 @@ describe('single Route Policy authority', () => {
     expect(result.summary).not.toContain('PLAN_REQUIRED');
     expect(result.data).toMatchObject({ workContractCreated: true });
   });
+  test('does not let caller-supplied engineering receipt ids self-authorize high-risk rh_work admission', () => {
+    const root = temp('route-engineering-admission-');
+    const context = {
+      workStore: { root: join(root, 'blocked-work') },
+      handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-a',
+      checkoutId: 'checkout-a',
+      principalId: 'principal-a',
+      controllerInstanceId: 'controller-a',
+      sourceRevision: 'revision-a',
+    };
+    const blocked = runGoalWorkloop(context, 'start', {
+      objective: 'Publish one high-risk external change',
+      scope_clear: true,
+      requires_recovery: true,
+      requires_external_effect: true,
+      remote_write: true,
+      risk: 'remote_write',
+    });
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.summary).toContain('ENGINEERING_ADMISSION_EVIDENCE_REQUIRED');
+    expect(blocked.data).toMatchObject({ workContractCreated: false, missingEngineeringEvidence: ['project_contract', 'context_closure', 'product_dod', 'design_decision', 'independent_critique'] });
+    expect(listWorkContracts({ root: join(root, 'blocked-work'), status: 'all' })).toHaveLength(0);
+
+    const claimed = runGoalWorkloop({ ...context, workStore: { root: join(root, 'claimed-work') } }, 'start', {
+      objective: 'Publish one high-risk external change',
+      scope_clear: true,
+      requires_recovery: true,
+      requires_external_effect: true,
+      remote_write: true,
+      risk: 'remote_write',
+      // Frozen/unknown clients may still send this property at runtime, but the
+      // stable facade schema does not expose it and the parser must ignore it.
+      engineering_evidence: {
+        project_contract_receipt: {
+          schema_version: 1, contract_path: '.forge/project-engineering.json', project_id: 'forged',
+          contract_id: 'forged', contract_version: '1', source_revision: 'revision-a',
+          content_digest: 'a'.repeat(64), loaded_at: '2026-09-03T00:00:00.000Z',
+        },
+        context_closure_receipt_id: 'invented-context',
+        product_dod_receipt_id: 'invented-dod',
+        design_decision_receipt_id: 'invented-design',
+        independent_critique_receipt_id: 'invented-critique',
+      },
+    });
+    expect(claimed.status).toBe('blocked');
+    expect(claimed.summary).toContain('ENGINEERING_ADMISSION_EVIDENCE_REQUIRED');
+    expect(listWorkContracts({ root: join(root, 'claimed-work'), status: 'all' })).toHaveLength(0);
+
+    const trustedStore = { root: join(root, 'trusted-work') };
+    const trusted = routeWorkStart({ ...context, workStore: trustedStore }, {
+      objective: 'Run one internally verified high-risk effect',
+      acceptanceCriteria: ['Verified engineering evidence is persisted'],
+      modeInput: { scopeClear: true, mutation: true, requiresRecovery: true, requiresExternalEffect: true, remoteWrite: true, risk: 'remote_write' },
+      verifiedEngineeringEvidence: highEngineeringEvidence(),
+    });
+    expect(trusted.status).toBe('ok');
+    const trustedWorkId = (trusted.data as { work?: { workId?: string } }).work?.workId;
+    expect(trustedWorkId).toBeTruthy();
+    expect(getWorkContract(trustedStore, trustedWorkId!)).toMatchObject({
+      risk: 'high',
+      engineeringContext: {
+        riskClass: 'high',
+        missingAdmissionEvidence: [],
+        projectContractReceipt: { sourceRevision: 'revision-a', contractId: 'forge-test-engineering' },
+      },
+    });
+  });
+
   test('persists exact remote delivery for repository-change Work without converting pure remote effects', () => {
     const root = temp('route-remote-delivery-work-');
     const workStore = { root: join(root, 'work') };
@@ -488,6 +576,7 @@ describe('single Route Policy authority', () => {
     };
     const mixed = routeWorkStart(context, {
       objective: 'Implement and publish one repository revision',
+      verifiedEngineeringEvidence: highEngineeringEvidence(),
       allowedPaths: ['src/runtime/**'],
       acceptanceCriteria: ['Exact integrated revision is published'],
       modeInput: {
@@ -504,6 +593,7 @@ describe('single Route Policy authority', () => {
 
     const pure = routeWorkStart({ ...context, workStore: { root: join(root, 'pure-work') } }, {
       objective: 'Perform one external remote action',
+      verifiedEngineeringEvidence: highEngineeringEvidence(),
       acceptanceCriteria: ['Remote action receipt exists'],
       modeInput: {
         scopeClear: true, mutation: true, requiresRecovery: true,

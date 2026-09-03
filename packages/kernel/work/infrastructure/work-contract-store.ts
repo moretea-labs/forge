@@ -121,6 +121,12 @@ export interface WorkContractSummary {
   handoffCount: number;
   evidenceCount: number;
   checkCount: number;
+  engineering?: {
+    profileVersion: string;
+    riskClass: string;
+    missingAdmissionEvidence: string[];
+    missingCompletionEvidence: string[];
+  };
 }
 
 function nowIso(options: WorkContractStoreOptions): string {
@@ -430,6 +436,7 @@ export function createWorkContract(options: WorkContractStoreOptions, input: Cre
       acceptanceCriteria: (input.acceptanceCriteria ?? []).slice(0, 20).map((item) => item.slice(0, 500)),
       constraints: input.constraints ?? { requireHandoffOnAmbiguity: true },
       risk: input.risk ?? 'medium',
+      engineeringContext: input.engineeringContext,
       workKind: input.workKind ?? 'repository_change',
       lifecycleRole: input.lifecycleRole ?? 'primary',
       parentWorkId: input.parentWorkId?.trim() || undefined,
@@ -877,6 +884,14 @@ export function summarizeWorkContract(contract: WorkContract): WorkContractSumma
     handoffCount: contract.handoffRefs.length,
     evidenceCount: contract.evidenceRefs.length,
     checkCount: contract.checkRefs.length,
+    ...(contract.engineeringContext ? {
+      engineering: {
+        profileVersion: contract.engineeringContext.profileVersion,
+        riskClass: contract.engineeringContext.riskClass,
+        missingAdmissionEvidence: contract.engineeringContext.missingAdmissionEvidence,
+        missingCompletionEvidence: contract.engineeringContext.missingCompletionEvidence,
+      },
+    } : {}),
   };
 }
 

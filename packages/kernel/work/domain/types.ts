@@ -3,6 +3,7 @@ import type { ProcessCheckReceiptEvidence } from './check-receipt';
 import type { WorkAccessMode, WorkRouteDecisionSnapshot } from './execution-snapshot';
 import type { RepositoryCompletionReceipt } from './repository-completion-receipt';
 import type { WorkImplementationReviewRecord } from './implementation-review';
+import type { EngineeringContextReceipt } from './engineering-contracts';
 
 /** Work-persisted orchestration metadata is Kernel-owned; facade is a consumer. */
 export type ExecutionMode = 'direct_control' | 'goal_workloop' | 'handoff_only';
@@ -372,6 +373,8 @@ export interface WorkContract {
   constraints: WorkContractConstraints;
   /** Risk is immutable contract input and is projected to legacy Task reads. */
   risk: WorkRisk;
+  /** Versioned engineering-governance requirements and exact source-bound evidence state for this Work. */
+  engineeringContext?: EngineeringContextReceipt;
   /** Technical phase; Requirement owns the user lifecycle. */
   phase: WorkPhase;
   /** Work-owned phase checkpoints. Task/Run/Process records may contribute evidence but cannot write this map directly. */

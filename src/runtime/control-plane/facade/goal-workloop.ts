@@ -6,6 +6,9 @@ import {
 } from './handoff-inbox-store';
 import { getControllerSession } from '../../../../packages/kernel/controller/api/index';
 import {
+  buildEngineeringContextReceipt,
+  engineeringWorkProfileForRisk,
+  evaluateEngineeringAdmission,
   appendVerificationRecord,
   appendWorkEvidence,
   appendWorkHandoffRef,
@@ -19,6 +22,7 @@ import {
   summarizeWorkContract,
   transitionWorkContractPhase,
   updateWorkContract,
+  type EngineeringAdmissionEvidence,
   type WorkContractStoreOptions,
 } from '../../../../packages/kernel/work/api/index';
 import {
@@ -125,6 +129,8 @@ export interface GoalWorkloopStartInput {
   planStepId?: string;
   /** Explicit technical evidence shape chosen by the semantic Controller. Never inferred from objective/check text. */
   workKind?: Extract<WorkKind, 'repository_change' | 'completed_no_change' | 'read_only_review' | 'investigation' | 'local_effect' | 'remote_effect' | 'reconciliation'>;
+  /** Trusted source-bound evidence resolved by Forge evidence authorities before admission. Never populate this field from raw caller-supplied receipt ids. */
+  verifiedEngineeringEvidence?: EngineeringAdmissionEvidence;
 }
 
 export interface GoalWorkloopAcceptanceEvidenceBinding {
@@ -681,6 +687,48 @@ export function startGoalWorkloop(
     ));
   }
   const at = nowIso(ctx);
+  const engineeringRisk = workRiskFor(input);
+  const engineeringProfile = engineeringWorkProfileForRisk(engineeringRisk);
+  const engineeringSourceIdentity = ctx.sourceRevision?.trim()
+    ? { kind: 'revision' as const, revision: ctx.sourceRevision.trim() }
+    : ctx.sourceBaseState === 'unborn'
+      ? { kind: 'unborn' as const }
+      : { kind: 'unknown' as const };
+  let engineeringContext;
+  try {
+    engineeringContext = buildEngineeringContextReceipt({
+      risk: engineeringRisk,
+      sourceIdentity: engineeringSourceIdentity,
+      evidence: input.verifiedEngineeringEvidence,
+      recordedAt: at,
+    });
+  } catch (error) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: error instanceof Error ? error.message : 'ENGINEERING_CONTEXT_INVALID',
+      data: { executionStarted: false, workContractCreated: false, engineeringProfile },
+    });
+  }
+  const engineeringMutation = input.workKind !== 'read_only_review'
+    && (input.modeInput.mutation ?? input.modeInput.risk !== 'readonly');
+  const engineeringAdmission = evaluateEngineeringAdmission({
+    profile: engineeringProfile,
+    receipt: engineeringContext,
+    mutation: engineeringMutation,
+  });
+  if (!engineeringAdmission.allowed) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `${engineeringAdmission.code}: ${engineeringProfile.riskClass} mutation is missing required pre-mutation engineering evidence.`,
+      data: {
+        executionStarted: false,
+        workContractCreated: false,
+        engineeringProfile,
+        engineeringContext,
+        missingEngineeringEvidence: engineeringAdmission.missing,
+      },
+    });
+  }
   const available = ctx.availableChecks ?? [];
   const workspaceMode = placementConstraint.workspaceMode;
   const activeWorks = listWorkContracts({ ...ctx.workStore, status: 'active', limit: 100 })
@@ -1101,7 +1149,8 @@ export function startGoalWorkloop(
       ...canonicalConstraints,
       ...(remoteDeliveryRequired ? { remoteDeliveryRequired: true } : {}),
     },
-    risk: workRiskFor(input),
+    risk: engineeringRisk,
+    engineeringContext,
     // Remote delivery is a risk/effect dimension, not a reason to erase a
     // repository-change Work's semantic identity. Pure external actions with no
     // repository-change signal remain remote_effect and keep plugin receipt semantics.
