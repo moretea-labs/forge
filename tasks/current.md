@@ -1,13 +1,13 @@
 # Current Status Snapshot
 
 <!-- generated-by: forge refresh-current-status v1 -->
-<!-- updated_at: 2026-09-04T07:35:48+0800 -->
+<!-- updated_at: 2026-09-04T07:54:43+0800 -->
 <!-- stale_after: 24h -->
 
 > **Status**: Idle
-> **Updated At**: 2026-09-04T07:35:48+0800
+> **Updated At**: 2026-09-04T07:54:43+0800
 > **Source Branch**: kernel-v2/architecture
-> **Source Commit**: 2cb4970c
+> **Source Commit**: c302a947
 > **Target Branch**: main
 > **Stale After**: 24h
 > **Reason**: manual
@@ -32,15 +32,12 @@ This file is a tracked mainline snapshot derived from repo artifacts. It is not 
 ## Active Work
 
 - (none)
-
 ## Active Sprint
 
 - Sprint: (none)
-
 ## Workstreams
 
 - `tasks/workstreams/controller-runtime/transport-lifecycle/openai-secure-tunnel-compat-20260813.md`: status=, current_slice=, source_plan=
-
 ## Handoff
 
 - Exact Next Step: (none)
@@ -51,13 +48,9 @@ This file is a tracked mainline snapshot derived from repo artifacts. It is not 
 
 ## Git Status
 
-- Summary: 6 changed/untracked path(s)
+- Summary: 2 changed/untracked path(s)
 
 ```
- M src/runtime/root/package-connector-service.ts
- M src/runtime/standalone-recovery/core.ts
- M tests/runtime/forge-runtime-service.test.ts
- M tests/runtime/standalone-recovery.test.ts
 ?? .tmp/
 ?? GPUCache/
 ```
