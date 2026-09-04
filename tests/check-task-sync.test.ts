@@ -14,8 +14,28 @@ import { spawnSync } from "child_process";
 const ROOT = join(import.meta.dir, "..");
 const HELPER = join(ROOT, "assets", "templates", "helpers", "check-task-sync.sh");
 
-function run(cwd: string, args: string[]) {
-  return spawnSync(args[0], args.slice(1), { cwd, encoding: "utf-8" });
+function run(cwd: string, args: string[], env: Record<string, string> = {}) {
+  return spawnSync(args[0], args.slice(1), {
+    cwd,
+    encoding: "utf-8",
+    env: { ...process.env, ...env },
+  });
+}
+
+function currentStatus(updatedAt: string, staleAfter = "24h"): string {
+  return [
+    "# Current Status Snapshot",
+    "",
+    "<!-- generated-by: forge refresh-current-status v1 -->",
+    `<!-- updated_at: ${updatedAt} -->`,
+    `<!-- stale_after: ${staleAfter} -->`,
+    "",
+    "> **Status**: Idle",
+    `> **Updated At**: ${updatedAt}`,
+    "> **Source Commit**: fixture",
+    `> **Stale After**: ${staleAfter}`,
+    "",
+  ].join("\n");
 }
 
 function setupRepo(): string {
@@ -34,6 +54,7 @@ function setupRepo(): string {
   writeFileSync(join(cwd, "src", "app.ts"), "export const value = 1;\n");
   writeFileSync(join(cwd, "tasks", "todos.md"), "# Task Execution Checklist (Primary)\n");
   writeFileSync(join(cwd, "tasks", "lessons.md"), "# Lessons Learned (Self-Improvement Loop)\n");
+  writeFileSync(join(cwd, "tasks", "current.md"), currentStatus("2026-09-01T00:00:00+0000"));
   writeFileSync(join(cwd, "docs", "researches", "README.md"), "# Research Reports\n");
 
   expect(run(cwd, ["git", "add", "."]).status).toBe(0);
@@ -48,7 +69,7 @@ describe("check-task-sync helper", () => {
       writeFileSync(join(cwd, "src", "app.ts"), "export const value = 2;\n");
       const res = run(cwd, ["bash", "scripts/check-task-sync.sh"]);
       expect(res.status).toBe(1);
-      expect(res.stdout).toContain("without tasks/ synchronization");
+      expect(res.stdout).toContain("without a refreshed tasks/current.md projection");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -60,45 +81,47 @@ describe("check-task-sync helper", () => {
       writeFileSync(join(cwd, "src", "new-file.ts"), "export const created = true;\n");
       const res = run(cwd, ["bash", "scripts/check-task-sync.sh"]);
       expect(res.status).toBe(1);
-      expect(res.stdout).toContain("without tasks/ synchronization");
+      expect(res.stdout).toContain("without a refreshed tasks/current.md projection");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
 
-  test("passes when code changes include tasks/todos.md updates", () => {
+  test("fails when code changes only include tasks/todos.md updates", () => {
     const cwd = setupRepo();
     try {
       writeFileSync(join(cwd, "src", "app.ts"), "export const value = 2;\n");
       writeFileSync(join(cwd, "tasks", "todos.md"), "# Task Execution Checklist (Primary)\n- [x] updated\n");
       const res = run(cwd, ["bash", "scripts/check-task-sync.sh"]);
-      expect(res.status).toBe(0);
+      expect(res.status).toBe(1);
+      expect(res.stdout).toContain("without a refreshed tasks/current.md projection");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
 
-  test("passes when untracked repo changes include an untracked tasks file", () => {
+  test("fails when untracked repo changes only include an untracked tasks file", () => {
     const cwd = setupRepo();
     try {
       mkdirSync(join(cwd, "tasks", "contracts"), { recursive: true });
       writeFileSync(join(cwd, "src", "new-file.ts"), "export const created = true;\n");
       writeFileSync(join(cwd, "tasks", "contracts", "new-file.contract.md"), "# Task Contract\n");
       const res = run(cwd, ["bash", "scripts/check-task-sync.sh"]);
-      expect(res.status).toBe(0);
-      expect(res.stdout).toContain("synchronized tasks/ updates");
+      expect(res.status).toBe(1);
+      expect(res.stdout).toContain("without a refreshed tasks/current.md projection");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
 
-  test("passes when code changes include tasks/lessons.md updates", () => {
+  test("fails when code changes only include tasks/lessons.md updates", () => {
     const cwd = setupRepo();
     try {
       writeFileSync(join(cwd, "src", "app.ts"), "export const value = 2;\n");
       writeFileSync(join(cwd, "tasks", "lessons.md"), "# Lessons Learned (Self-Improvement Loop)\n- rule\n");
       const res = run(cwd, ["bash", "scripts/check-task-sync.sh"]);
-      expect(res.status).toBe(0);
+      expect(res.status).toBe(1);
+      expect(res.stdout).toContain("without a refreshed tasks/current.md projection");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -116,14 +139,57 @@ describe("check-task-sync helper", () => {
     }
   });
 
-  test("passes when code changes include docs/researches updates", () => {
+  test("fails when code changes only include docs/researches updates", () => {
     const cwd = setupRepo();
     try {
       writeFileSync(join(cwd, "src", "app.ts"), "export const value = 2;\n");
       writeFileSync(join(cwd, "docs", "researches", "20260612-finding.md"), "# Finding\n");
       const res = run(cwd, ["bash", "scripts/check-task-sync.sh"]);
+      expect(res.status).toBe(1);
+      expect(res.stdout).toContain("without a refreshed tasks/current.md projection");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("passes when code changes include a fresh generated current projection", () => {
+    const cwd = setupRepo();
+    try {
+      writeFileSync(join(cwd, "src", "app.ts"), "export const value = 2;\n");
+      writeFileSync(join(cwd, "tasks", "current.md"), currentStatus("2026-09-04T04:00:00+0000"));
+      const res = run(cwd, ["bash", "scripts/check-task-sync.sh"], {
+        FORGE_CURRENT_STATUS_NOW_EPOCH: String(Date.parse("2026-09-04T04:30:00Z") / 1000),
+      });
       expect(res.status).toBe(0);
-      expect(res.stdout).toContain("synchronized tasks/ updates");
+      expect(res.stdout).toContain("fresh generated tasks/current.md projection");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("fails when the changed current projection is expired", () => {
+    const cwd = setupRepo();
+    try {
+      writeFileSync(join(cwd, "src", "app.ts"), "export const value = 2;\n");
+      writeFileSync(join(cwd, "tasks", "current.md"), currentStatus("2026-09-02T00:00:00+0000"));
+      const res = run(cwd, ["bash", "scripts/check-task-sync.sh"], {
+        FORGE_CURRENT_STATUS_NOW_EPOCH: String(Date.parse("2026-09-04T04:30:00Z") / 1000),
+      });
+      expect(res.status).toBe(1);
+      expect(res.stdout).toContain("tasks/current.md is stale");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("fails closed when the changed current projection has malformed freshness metadata", () => {
+    const cwd = setupRepo();
+    try {
+      writeFileSync(join(cwd, "src", "app.ts"), "export const value = 2;\n");
+      writeFileSync(join(cwd, "tasks", "current.md"), currentStatus("not-a-timestamp", "forever"));
+      const res = run(cwd, ["bash", "scripts/check-task-sync.sh"]);
+      expect(res.status).toBe(1);
+      expect(res.stdout).toContain("invalid Stale After freshness contract");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

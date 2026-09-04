@@ -1,16 +1,16 @@
 # Current Status Snapshot
 
 <!-- generated-by: forge refresh-current-status v1 -->
-<!-- updated_at: 2026-09-04T07:56:49+0800 -->
+<!-- updated_at: 2026-09-04T12:44:31+0800 -->
 <!-- stale_after: 24h -->
 
 > **Status**: Idle
-> **Updated At**: 2026-09-04T07:56:49+0800
+> **Updated At**: 2026-09-04T12:44:31+0800
 > **Source Branch**: kernel-v2/architecture
-> **Source Commit**: aba546b3
+> **Source Commit**: 8540f129
 > **Target Branch**: main
 > **Stale After**: 24h
-> **Reason**: manual
+> **Reason**: issue-135-current-projection-freshness
 > **Derived From**: active-plan, active-sprint, workstreams, handoff, checks, git status
 
 This file is a tracked mainline snapshot derived from repo artifacts. It is not a live lock, not a kanban board, and not an implementation gate. If it is stale, read the source artifacts below.
@@ -51,8 +51,8 @@ This file is a tracked mainline snapshot derived from repo artifacts. It is not 
 - Summary: 2 changed/untracked path(s)
 
 ```
-?? .tmp/
-?? GPUCache/
+ M assets/templates/helpers/check-task-sync.sh
+ M tests/check-task-sync.test.ts
 ```
 
 ## Source Artifacts
