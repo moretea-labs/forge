@@ -28,6 +28,9 @@ import {
 } from '../../runtime/standalone-recovery/installer';
 import {
   RECOVERY_TOOLS,
+  RECOVERY_VERIFIER_OAUTH_CLIENT_ID,
+  RECOVERY_VERIFIER_OAUTH_CLIENT_NAME,
+  RECOVERY_VERIFIER_OAUTH_REDIRECT_URI,
 } from '../../runtime/standalone-recovery/entry';
 import {
   activateRuntimeRelease,
@@ -372,7 +375,15 @@ export interface RecoveryConnectorVerificationResult {
     authorizationMetadata: { ok: boolean; status?: number };
     protectedResourceMetadata: { ok: boolean; status?: number };
     unauthenticatedChallenge: { ok: boolean; status?: number };
-    oauthPkce: { ok: boolean; registrationStatus?: number; authorizationStatus?: number; tokenStatus?: number };
+    oauthPkce: {
+      ok: boolean;
+      registrationStatus?: number;
+      authorizationStatus?: number;
+      tokenStatus?: number;
+      clientOwner?: 'recovery_verifier';
+      clientReused?: boolean;
+      credentialRetirement?: 'shared_recovery_token_not_individually_revocable';
+    };
     mcp: {
       ok: boolean;
       initializeStatus?: number;
@@ -496,12 +507,13 @@ export async function verifyRecoveryConnector(
     failures.push('oauthPkce: MCP OAuth passphrase is not configured.');
   } else {
     try {
-      const redirectUri = 'http://127.0.0.1/forge-recovery-oauth-callback';
+      const redirectUri = RECOVERY_VERIFIER_OAUTH_REDIRECT_URI;
       const registration = await request(`${origin}/recovery/oauth/register`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          client_name: 'Forge Recovery Verification',
+          client_id: RECOVERY_VERIFIER_OAUTH_CLIENT_ID,
+          client_name: RECOVERY_VERIFIER_OAUTH_CLIENT_NAME,
           redirect_uris: [redirectUri],
           grant_types: ['authorization_code'],
           response_types: ['code'],
@@ -510,7 +522,11 @@ export async function verifyRecoveryConnector(
       });
       const registrationBody = await responseJson(registration);
       const clientId = typeof registrationBody.client_id === 'string' ? registrationBody.client_id : '';
-      if (registration.status !== 201 || !clientId) throw new Error(`dynamic registration HTTP ${registration.status}`);
+      const clientOwner = registrationBody.forge_client_owner;
+      const clientReused = registrationBody.forge_client_reused === true;
+      if (registration.status !== 201 || clientId !== RECOVERY_VERIFIER_OAUTH_CLIENT_ID || clientOwner !== 'recovery_verifier') {
+        throw new Error(`dynamic verifier registration HTTP ${registration.status}`);
+      }
 
       const verifier = random(32).toString('base64url');
       const challenge = createHash('sha256').update(verifier).digest('base64url');
@@ -559,6 +575,13 @@ export async function verifyRecoveryConnector(
         registrationStatus: registration.status,
         authorizationStatus: authorization.status,
         tokenStatus: tokenResponse.status,
+        clientOwner: 'recovery_verifier',
+        clientReused,
+        // Recovery MCP currently uses one configured shared bearer token, so
+        // there is no verifier-specific credential that can be revoked without
+        // revoking Recovery itself. The reserved client slot keeps verifier
+        // registration state bounded across success and failure loops.
+        credentialRetirement: 'shared_recovery_token_not_individually_revocable',
       };
 
       const rpc = async (id: number | undefined, method: string, params?: Record<string, unknown>) => {

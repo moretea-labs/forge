@@ -1141,6 +1141,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
         : authMode === 'bearer'
           ? (authToken ? 'required' : 'missing')
           : 'none',
+      ...(oauthProvider ? { oauthAuthorizationCodes: oauthProvider.authorizationCodeDiagnostics() } : {}),
       mcpEndpoint: `${advertisedOrigin}/mcp`,
       // Grok now completes standard OAuth dynamic registration + PKCE on the
       // canonical MCP resource. Keep /mcp-grok below only as a legacy alias.

@@ -229,6 +229,10 @@
       "module": "controller",
       "resource": "fixed-port"
     },
+    "tests/cli/mcp-oauth-state.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
     "tests/cli/mcp-policy.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"

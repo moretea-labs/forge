@@ -718,6 +718,7 @@ describe('mcp http transport', () => {
         expect(await health.json()).toMatchObject({
           status: 'ok',
           auth: 'oauth',
+          oauthAuthorizationCodes: { pending: 0, expired: 0, evicted: 0 },
           mcpEndpoint: `http://127.0.0.1:${port}/mcp`,
           grokEndpoint: `http://127.0.0.1:${port}/mcp`,
           bearerEndpoint: `http://127.0.0.1:${port}/mcp-bearer`,

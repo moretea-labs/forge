@@ -307,6 +307,12 @@ export const RECOVERY_TOOLS = [
 ] as const;
 
 const RECOVERY_OAUTH_SCOPE = 'forge';
+export const RECOVERY_VERIFIER_OAUTH_CLIENT_ID = 'forge-recovery-verifier-v1';
+export const RECOVERY_VERIFIER_OAUTH_CLIENT_NAME = 'Forge Recovery Verification';
+export const RECOVERY_VERIFIER_OAUTH_REDIRECT_URI = 'http://127.0.0.1/forge-recovery-oauth-callback';
+const RECOVERY_OAUTH_CODE_TTL_MS = 10 * 60_000;
+const RECOVERY_MAX_PENDING_OAUTH_CODES = 512;
+const RECOVERY_MAX_PENDING_OAUTH_CODES_PER_CLIENT = 32;
 const RECOVERY_ACCESS_TOKEN_EXPIRES_IN_SECONDS = 10 * 365 * 24 * 60 * 60;
 const TOOL_SECURITY_SCHEMES = [{ type: 'oauth2', scopes: [RECOVERY_OAUTH_SCOPE] }] as const;
 const SUPPORTED_TOKEN_AUTH_METHODS = ['client_secret_basic', 'client_secret_post', 'none'] as const;
@@ -326,8 +332,54 @@ type OAuthClient = {
   clientId: string;
   clientSecret?: string;
   tokenEndpointAuthMethod: TokenAuthMethod;
+  owner: 'recovery_verifier' | 'external';
   createdAt: number;
 };
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+}
+
+export function recoveryOAuthClientRegistrationIdentity(
+  body: Record<string, unknown>,
+  generatedClientId: string = randomUUID(),
+): { clientId: string; owner: 'recovery_verifier' | 'external' } {
+  const requestedClientId = typeof body.client_id === 'string' && body.client_id.trim() ? body.client_id.trim() : '';
+  if (requestedClientId === RECOVERY_VERIFIER_OAUTH_CLIENT_ID) {
+    const validVerifierMetadata = body.client_name === RECOVERY_VERIFIER_OAUTH_CLIENT_NAME
+      && stringArray(body.redirect_uris).includes(RECOVERY_VERIFIER_OAUTH_REDIRECT_URI)
+      && body.token_endpoint_auth_method === 'none'
+      && stringArray(body.grant_types).includes('authorization_code')
+      && stringArray(body.response_types).includes('code');
+    if (!validVerifierMetadata) throw new Error('RECOVERY_OAUTH_VERIFIER_CLIENT_METADATA_INVALID');
+    return { clientId: RECOVERY_VERIFIER_OAUTH_CLIENT_ID, owner: 'recovery_verifier' };
+  }
+  return { clientId: requestedClientId || generatedClientId, owner: 'external' };
+}
+
+function reserveRecoveryOAuthCodeCapacity(
+  codes: Map<string, PendingOAuthCode>,
+  clientId: string,
+  now = Date.now(),
+): void {
+  for (const [code, pending] of codes) {
+    if (now - pending.createdAt > RECOVERY_OAUTH_CODE_TTL_MS) codes.delete(code);
+  }
+  const evictOldest = (predicate: (pending: PendingOAuthCode) => boolean): boolean => {
+    let oldest: { code: string; createdAt: number } | undefined;
+    for (const [code, pending] of codes) {
+      if (!predicate(pending)) continue;
+      if (!oldest || pending.createdAt < oldest.createdAt) oldest = { code, createdAt: pending.createdAt };
+    }
+    return oldest ? codes.delete(oldest.code) : false;
+  };
+  while ([...codes.values()].filter((pending) => pending.clientId === clientId).length >= RECOVERY_MAX_PENDING_OAUTH_CODES_PER_CLIENT) {
+    if (!evictOldest((pending) => pending.clientId === clientId)) break;
+  }
+  while (codes.size >= RECOVERY_MAX_PENDING_OAUTH_CODES) {
+    if (!evictOldest(() => true)) break;
+  }
+}
 
 function readBody(request: IncomingMessage): Promise<string> {
   return new Promise((resolveBody, reject) => {
@@ -667,6 +719,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
         html(response, 401, renderAuthorizeForm(params, 'Invalid passphrase.'));
         return;
       }
+      reserveRecoveryOAuthCodeCapacity(oauthCodes, clientId);
       const code = randomUUID();
       oauthCodes.set(code, {
         clientId,
@@ -692,16 +745,26 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
         const raw = await readBody(request);
         body = raw.trim() ? JSON.parse(raw) as Record<string, unknown> : {};
       } catch { /* tolerate minimal DCR clients */ }
-      const clientId = typeof body.client_id === 'string' && body.client_id ? body.client_id : randomUUID();
+      let registrationIdentity: ReturnType<typeof recoveryOAuthClientRegistrationIdentity>;
+      try {
+        registrationIdentity = recoveryOAuthClientRegistrationIdentity(body);
+      } catch (error) {
+        auditGateway({ oauth: 'register', outcome: 'invalid_client_metadata' });
+        json(response, 400, { error: 'invalid_client_metadata', error_description: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      const { clientId, owner } = registrationIdentity;
+      const reused = oauthClients.has(clientId);
       const clientSecret = randomUUID();
       const authMethod = tokenAuthMethod(body.token_endpoint_auth_method);
       oauthClients.set(clientId, {
         clientId,
         clientSecret: authMethod === 'none' ? undefined : clientSecret,
         tokenEndpointAuthMethod: authMethod,
+        owner,
         createdAt: Date.now(),
       });
-      auditGateway({ oauth: 'register', outcome: 'created', token_endpoint_auth_method: authMethod });
+      auditGateway({ oauth: 'register', outcome: reused ? 'reused' : 'created', client_owner: owner, token_endpoint_auth_method: authMethod });
       json(response, 201, {
         ...body,
         client_id: clientId,
@@ -711,6 +774,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
         token_endpoint_auth_method: authMethod,
         grant_types: ['authorization_code'],
         response_types: ['code'],
+        ...(owner === 'recovery_verifier' ? { forge_client_owner: owner, forge_client_reused: reused } : {}),
       });
       return;
     }
@@ -735,7 +799,7 @@ async function startGateway(config: RecoveryConfig): Promise<void> {
       const redirectUri = params.get('redirect_uri') ?? '';
       const verifier = params.get('code_verifier') ?? '';
       const pending = code ? oauthCodes.get(code) : undefined;
-      if (!code || !pending || pending.clientId !== clientId || pending.redirectUri !== redirectUri || Date.now() - pending.createdAt > 10 * 60_000) {
+      if (!code || !pending || pending.clientId !== clientId || pending.redirectUri !== redirectUri || Date.now() - pending.createdAt > RECOVERY_OAUTH_CODE_TTL_MS) {
         auditGateway({ oauth: 'token', outcome: 'invalid_grant' });
         json(response, 400, { error: 'invalid_grant' });
         return;

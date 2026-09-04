@@ -44,6 +44,10 @@ import {
   RECOVERY_TOOLS,
   recoveryUnauthorizedBody,
   recoveryWwwAuthenticate,
+  recoveryOAuthClientRegistrationIdentity,
+  RECOVERY_VERIFIER_OAUTH_CLIENT_ID,
+  RECOVERY_VERIFIER_OAUTH_CLIENT_NAME,
+  RECOVERY_VERIFIER_OAUTH_REDIRECT_URI,
   resetWatchdogStateForRecoveryRelease,
 } from '../../src/runtime/standalone-recovery/entry';
 import {
@@ -3492,4 +3496,39 @@ describe('standalone recovery on canonical Runtime', () => {
     }, now)).toBe(false);
   });
 
+});
+
+describe('Recovery verifier OAuth registration lifecycle', () => {
+  test('keeps 1000 verifier registrations in one reserved client slot while external clients stay distinct', () => {
+    const verifierBody = {
+      client_id: RECOVERY_VERIFIER_OAUTH_CLIENT_ID,
+      client_name: RECOVERY_VERIFIER_OAUTH_CLIENT_NAME,
+      redirect_uris: [RECOVERY_VERIFIER_OAUTH_REDIRECT_URI],
+      token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code'],
+      response_types: ['code'],
+    };
+    const clients = new Map<string, string>();
+    for (let index = 0; index < 1_000; index += 1) {
+      const identity = recoveryOAuthClientRegistrationIdentity(verifierBody, `unused-${index}`);
+      clients.set(identity.clientId, identity.owner);
+    }
+    expect(clients).toEqual(new Map([[RECOVERY_VERIFIER_OAUTH_CLIENT_ID, 'recovery_verifier']]));
+
+    const externalA = recoveryOAuthClientRegistrationIdentity({ client_name: 'external-a' }, 'external-a-id');
+    const externalB = recoveryOAuthClientRegistrationIdentity({ client_name: 'external-b' }, 'external-b-id');
+    expect(externalA).toEqual({ clientId: 'external-a-id', owner: 'external' });
+    expect(externalB).toEqual({ clientId: 'external-b-id', owner: 'external' });
+  });
+
+  test('rejects attempts to claim the reserved verifier id with different metadata', () => {
+    expect(() => recoveryOAuthClientRegistrationIdentity({
+      client_id: RECOVERY_VERIFIER_OAUTH_CLIENT_ID,
+      client_name: 'not-the-verifier',
+      redirect_uris: [RECOVERY_VERIFIER_OAUTH_REDIRECT_URI],
+      token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code'],
+      response_types: ['code'],
+    })).toThrow('RECOVERY_OAUTH_VERIFIER_CLIENT_METADATA_INVALID');
+  });
 });

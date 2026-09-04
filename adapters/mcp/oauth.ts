@@ -215,6 +215,16 @@ interface PendingAuthorizationCode {
   expiresAt: number;
 }
 
+export interface McpOAuthAuthorizationCodeDiagnostics {
+  pending: number;
+  expired: number;
+  evicted: number;
+}
+
+export interface McpOAuthProvider extends OAuthServerProvider {
+  authorizationCodeDiagnostics(): McpOAuthAuthorizationCodeDiagnostics;
+}
+
 export interface McpOAuthProviderOptions {
   now?: () => number;
   authorizationCodeTtlSeconds?: number;
@@ -229,8 +239,10 @@ const DEFAULT_MAX_PENDING_AUTHORIZATION_CODES_PER_CLIENT = 32;
 export function createMcpOAuthProvider(
   store: McpOAuthTokenStore,
   options: McpOAuthProviderOptions = {},
-): OAuthServerProvider {
+): McpOAuthProvider {
   const authCodes = new Map<string, PendingAuthorizationCode>();
+  let expiredAuthorizationCodes = 0;
+  let evictedAuthorizationCodes = 0;
   const currentTime = options.now ?? nowSeconds;
   const ttlSeconds = Math.max(30, Math.trunc(options.authorizationCodeTtlSeconds ?? DEFAULT_AUTHORIZATION_CODE_TTL_SECONDS));
   const globalLimit = Math.max(8, Math.trunc(options.maxPendingAuthorizationCodes ?? DEFAULT_MAX_PENDING_AUTHORIZATION_CODES));
@@ -240,7 +252,7 @@ export function createMcpOAuthProvider(
 
   const purgeExpiredCodes = (now = currentTime()): void => {
     for (const [code, pending] of authCodes) {
-      if (pending.expiresAt <= now) authCodes.delete(code);
+      if (pending.expiresAt <= now && authCodes.delete(code)) expiredAuthorizationCodes += 1;
     }
   };
 
@@ -251,7 +263,8 @@ export function createMcpOAuthProvider(
       if (!oldest || pending.issuedAt < oldest.issuedAt) oldest = { code, issuedAt: pending.issuedAt };
     }
     if (!oldest) return false;
-    authCodes.delete(oldest.code);
+    if (!authCodes.delete(oldest.code)) return false;
+    evictedAuthorizationCodes += 1;
     return true;
   };
 
@@ -280,6 +293,15 @@ export function createMcpOAuthProvider(
   };
 
   return {
+    authorizationCodeDiagnostics(): McpOAuthAuthorizationCodeDiagnostics {
+      purgeExpiredCodes();
+      return {
+        pending: authCodes.size,
+        expired: expiredAuthorizationCodes,
+        evicted: evictedAuthorizationCodes,
+      };
+    },
+
     get clientsStore(): OAuthRegisteredClientsStore {
       return store;
     },
