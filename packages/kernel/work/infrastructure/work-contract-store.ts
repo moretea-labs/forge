@@ -227,65 +227,64 @@ function sqliteBacked(options: WorkContractStoreOptions): options is WorkContrac
   return Boolean(!options.root && options.controllerHome?.trim() && options.repoId?.trim());
 }
 
+function normalizeWorkContract(legacy: WorkContract): WorkContract {
+  const mappedStatus = ({ pending: 'open', waiting_for_review: 'ready', succeeded: 'completed' } as Record<string, WorkContractStatus>)[String(legacy.status)] ?? legacy.status;
+  // Historical terminal labels without the Work-owned receipt are not
+  // completion authority. Reopen them at delivery so callers can obtain an
+  // exact receipt instead of projecting an unproven success.
+  const status = mappedStatus === 'completed' && !legacy.completionReceipt ? 'ready' : mappedStatus;
+  const phase = legacy.completionReceipt
+    ? 'cleanup'
+    : mappedStatus === 'completed'
+      ? 'delivery'
+      : legacy.phase ?? inferredPhase(status);
+  const legacyDefaults = legacyPhaseEvidence({
+    phase,
+    status,
+    evidenceRefs: legacy.evidenceRefs ?? [],
+    completionReceipt: legacy.completionReceipt,
+    updatedAt: legacy.updatedAt,
+  });
+  const existingPhaseEvidence = legacy.phaseEvidence as Partial<WorkPhaseEvidenceMap> | undefined;
+  const phaseEvidence: WorkPhaseEvidenceMap = existingPhaseEvidence
+    ? {
+        ...legacyDefaults,
+        ...existingPhaseEvidence,
+        review: existingPhaseEvidence.review ?? {
+          ...legacyDefaults.review,
+          ...(phaseIndex(phase) > phaseIndex('review')
+            ? {
+                state: 'skipped' as const,
+                summary: 'Legacy Work advanced beyond first-class implementation review; compatibility-skipped without synthesizing Controller approval.',
+              }
+            : {}),
+        },
+      }
+    : legacyDefaults;
+  return validateWorkSemantics({
+    ...legacy,
+    schemaVersion: legacy.schemaVersion ?? 1,
+    scopeRef: semanticScopeRefForWork(legacy),
+    executionPlacement: executionPlacementForWork(legacy),
+    status,
+    phase,
+    phaseEvidence,
+    risk: legacy.risk ?? 'medium',
+    workKind: legacy.workKind ?? 'repository_change',
+    dispatchState: legacy.dispatchState ?? inferredDispatchState(status),
+    evidenceState: legacy.evidenceState ?? inferredEvidenceState(status),
+    suggestedNextActions: suggestedActionsForStatus(status, legacy.suggestedNextActions ?? []),
+    implementationReviews: legacy.implementationReviews ?? [],
+    reconciliations: legacy.reconciliations ?? [],
+    driver: (legacy.driver as unknown as { preferred?: string } | undefined)?.preferred === 'codex_worker'
+      ? { ...legacy.driver, preferred: 'external_controller', allowWorker: false }
+      : legacy.driver,
+  });
+}
+
 function normalizeWorkContractStore(store: WorkContractStore): WorkContractStore {
   // Read legacy facade records without retaining the old state machine.
-  return {
-    ...store,
-    contracts: store.contracts.map((legacy) => {
-      const mappedStatus = ({ pending: 'open', waiting_for_review: 'ready', succeeded: 'completed' } as Record<string, WorkContractStatus>)[String(legacy.status)] ?? legacy.status;
-      // Historical terminal labels without the Work-owned receipt are not
-      // completion authority. Reopen them at delivery so callers can obtain an
-      // exact receipt instead of projecting an unproven success.
-      const status = mappedStatus === 'completed' && !legacy.completionReceipt ? 'ready' : mappedStatus;
-      const phase = legacy.completionReceipt
-        ? 'cleanup'
-        : mappedStatus === 'completed'
-          ? 'delivery'
-          : legacy.phase ?? inferredPhase(status);
-      const legacyDefaults = legacyPhaseEvidence({
-        phase,
-        status,
-        evidenceRefs: legacy.evidenceRefs ?? [],
-        completionReceipt: legacy.completionReceipt,
-        updatedAt: legacy.updatedAt,
-      });
-      const existingPhaseEvidence = legacy.phaseEvidence as Partial<WorkPhaseEvidenceMap> | undefined;
-      const phaseEvidence: WorkPhaseEvidenceMap = existingPhaseEvidence
-        ? {
-            ...legacyDefaults,
-            ...existingPhaseEvidence,
-            review: existingPhaseEvidence.review ?? {
-              ...legacyDefaults.review,
-              ...(phaseIndex(phase) > phaseIndex('review')
-                ? {
-                    state: 'skipped' as const,
-                    summary: 'Legacy Work advanced beyond first-class implementation review; compatibility-skipped without synthesizing Controller approval.',
-                  }
-                : {}),
-            },
-          }
-        : legacyDefaults;
-      return validateWorkSemantics({
-        ...legacy,
-        schemaVersion: legacy.schemaVersion ?? 1,
-        scopeRef: semanticScopeRefForWork(legacy),
-        executionPlacement: executionPlacementForWork(legacy),
-        status,
-        phase,
-        phaseEvidence,
-        risk: legacy.risk ?? 'medium',
-        workKind: legacy.workKind ?? 'repository_change',
-        dispatchState: legacy.dispatchState ?? inferredDispatchState(status),
-        evidenceState: legacy.evidenceState ?? inferredEvidenceState(status),
-        suggestedNextActions: suggestedActionsForStatus(status, legacy.suggestedNextActions ?? []),
-        implementationReviews: legacy.implementationReviews ?? [],
-        reconciliations: legacy.reconciliations ?? [],
-        driver: (legacy.driver as unknown as { preferred?: string } | undefined)?.preferred === 'codex_worker'
-          ? { ...legacy.driver, preferred: 'external_controller', allowWorker: false }
-          : legacy.driver,
-      });
-    }),
-  };
+  return { ...store, contracts: store.contracts.map(normalizeWorkContract) };
 }
 
 export function readWorkContractStore(options: WorkContractStoreOptions): WorkContractStore {
@@ -808,6 +807,20 @@ function reconcileStaleWorkContractsLocked(
 
 export function getWorkContract(options: WorkContractStoreOptions, workId: string): WorkContract | undefined {
   const sanitizedId = sanitizeFileComponent(workId);
+  if (!sqliteBacked(options)) {
+    return readWorkContractStore(options).contracts.find((contract) => contract.workId === sanitizedId);
+  }
+  const exact = readControlPlaneRecord<WorkContract>(options.controllerHome, 'work_contract', options.repoId, sanitizedId);
+  if (exact) return normalizeWorkContract(exact.value);
+  // Preserve the one-time legacy import path only while this repository has no
+  // per-Work rows. Once any per-Work row exists, absence of this exact key is
+  // authoritative and unrelated rows must never be normalized for an exact get.
+  const hasPerWorkRows = listControlPlaneRecords<WorkContract>(options.controllerHome, {
+    namespace: 'work_contract',
+    scope: options.repoId,
+    limit: 1,
+  }).length > 0;
+  if (hasPerWorkRows) return undefined;
   return readWorkContractStore(options).contracts.find((contract) => contract.workId === sanitizedId);
 }
 

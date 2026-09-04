@@ -6,7 +6,7 @@ import { spawnSync } from 'child_process';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { getRepository, registerRepository } from '../../src/cli/repositories/registry';
 import type { CompletionReceipt } from '../../src/cli/controller/types';
-import { createWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
 import type { WorkContract } from '../../src/runtime/control-plane/facade/types';
 import {
   readWorkHandle,
@@ -321,6 +321,10 @@ describe('terminal Work cleanup', () => {
         },
       },
     });
+
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.handle.workId)?.workId).toBe(fx.handle.workId);
+    expect(() => getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, malformedWorkId))
+      .toThrow('WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: review');
 
     const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 10 });
     expect(report.errors).toContainEqual({
