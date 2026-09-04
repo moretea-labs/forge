@@ -259,6 +259,19 @@ export interface PlanStep {
  * A durable pre-execution decision record. WorkContract remains the unit that
  * owns dispatch, workspace, worker, and verification lifecycle.
  */
+export const PLAN_OBLIGATION_DISPOSITIONS = ['keep', 'change', 'defer', 'drop'] as const;
+export type PlanObligationDispositionKind = (typeof PLAN_OBLIGATION_DISPOSITIONS)[number];
+
+export interface PlanObligationDisposition {
+  predecessorPlanId: string;
+  obligationId: string;
+  disposition: PlanObligationDispositionKind;
+  /** Successor locations such as step:<id>, acceptance:<id>:<index>, resolved_decision:<index>. */
+  successorRefs: string[];
+  /** Required for CHANGE/DEFER/DROP. KEEP may omit it. */
+  rationale?: string;
+}
+
 export interface PlanContract {
   schemaVersion: 1;
   planId: string;
@@ -282,6 +295,8 @@ export interface PlanContract {
   supersededBy?: string;
   /** Bounded durable reason for the supersession edge. */
   supersessionReason?: string;
+  /** Explicit reconciliation of unresolved predecessor obligations. */
+  obligationDispositions?: PlanObligationDisposition[];
   createdAt: string;
   updatedAt: string;
 }

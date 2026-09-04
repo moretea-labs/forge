@@ -4749,6 +4749,13 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 stopConditions: Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : undefined,
                 replanConditions: Array.isArray(args.replan_conditions) ? args.replan_conditions.map(String) : undefined,
                 integrationStrategy: typeof args.integration_strategy === 'string' ? args.integration_strategy : undefined,
+                obligationDispositions: Array.isArray(args.obligation_dispositions) ? args.obligation_dispositions.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry)).map((entry) => ({
+                  predecessorPlanId: String(entry.predecessor_plan_id ?? ''),
+                  obligationId: String(entry.obligation_id ?? ''),
+                  disposition: String(entry.disposition ?? '') as 'keep' | 'change' | 'defer' | 'drop',
+                  successorRefs: Array.isArray(entry.successor_refs) ? entry.successor_refs.map(String) : [],
+                  rationale: typeof entry.rationale === 'string' ? entry.rationale : undefined,
+                })) : undefined,
                 steps: rawSteps.filter((step): step is Record<string, unknown> => Boolean(step) && typeof step === 'object' && !Array.isArray(step)).map((step) => ({
                   id: String(step.id ?? ''),
                   objective: String(step.objective ?? ''),

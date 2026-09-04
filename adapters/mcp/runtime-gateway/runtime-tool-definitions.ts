@@ -152,6 +152,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     stop_conditions: { type: 'array', items: { type: 'string' } },
     replan_conditions: { type: 'array', items: { type: 'string' } },
     integration_strategy: { type: 'string' },
+    obligation_dispositions: { type: 'array', items: { type: 'object' }, description: 'For successor Plans, explicit predecessor obligation reconciliation. Each item carries predecessor_plan_id, obligation_id, disposition keep/change/defer/drop, successor_refs, and rationale for change/defer/drop.' },
     superseded_by: { type: 'string' },
     expected_files: { type: 'number' },
     expected_changed_lines: { type: 'number' },

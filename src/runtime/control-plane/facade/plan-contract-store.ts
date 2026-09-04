@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { mkdirSync } from 'fs';
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../../cli/repositories/controller-home';
@@ -18,13 +19,19 @@ import {
   writeControlPlaneRecordWithinTransaction,
 } from '../persistence/sqlite-store';
 import { readRequirement } from '../persistence/requirement-store';
-import { rebindPlanBoundWorkContract, type WorkContract } from '../../../../packages/kernel/work/api/index';
+import {
+  rebindPlanBoundWorkContract,
+  retirePlanBoundWorkContract,
+  isTerminalWorkContractStatus,
+  type WorkContract,
+} from '../../../../packages/kernel/work/api/index';
 import {
   isTerminalPlanContractStatus,
   type EvidenceRef,
   type PlanContract,
   type PlanContractStatus,
   type PlanContractStore,
+  type PlanObligationDisposition,
   type PlanStep,
 } from './types';
 
@@ -53,6 +60,7 @@ export interface CreatePlanContractInput {
   integrationStrategy?: string;
   steps: Array<Omit<PlanStep, 'status' | 'evidenceRefs'> & Partial<Pick<PlanStep, 'status' | 'evidenceRefs'>>>;
   evidenceRefs?: EvidenceRef[];
+  obligationDispositions?: PlanObligationDisposition[];
 }
 
 export interface AdmitPlanContractInput extends CreatePlanContractInput {
@@ -109,6 +117,106 @@ function normalizeStep(step: CreatePlanContractInput['steps'][number]): PlanStep
     workId: step.workId?.trim() || undefined,
     evidenceRefs: (step.evidenceRefs ?? []).slice(0, 20),
   };
+}
+
+function normalizeObligationDisposition(value: PlanObligationDisposition): PlanObligationDisposition {
+  const disposition = value.disposition;
+  if (!['keep', 'change', 'defer', 'drop'].includes(disposition)) throw new Error(`PLAN_OBLIGATION_DISPOSITION_INVALID: ${String(disposition)}`);
+  return {
+    predecessorPlanId: sanitizeFileComponent(value.predecessorPlanId).slice(0, 160),
+    obligationId: String(value.obligationId ?? '').trim().slice(0, 160),
+    disposition,
+    successorRefs: bounded(value.successorRefs, 20, 240),
+    ...(value.rationale?.trim() ? { rationale: value.rationale.trim().slice(0, 1_000) } : {}),
+  };
+}
+
+export interface PlanObligation {
+  obligationId: string;
+  predecessorPlanId: string;
+  kind: 'step_objective' | 'step_acceptance' | 'non_goal' | 'resolved_decision' | 'stop_condition' | 'replan_condition';
+  sourceRef: string;
+  summary: string;
+}
+
+function planObligationId(planId: string, kind: PlanObligation['kind'], sourceRef: string, summary: string): string {
+  const digest = createHash('sha256').update(JSON.stringify({ planId, kind, sourceRef, summary })).digest('hex').slice(0, 24);
+  return `obl_${digest}`;
+}
+
+export function listUnresolvedPlanObligations(plan: PlanContract): PlanObligation[] {
+  const out: PlanObligation[] = [];
+  const add = (kind: PlanObligation['kind'], sourceRef: string, summary: string) => {
+    const normalized = summary.trim();
+    if (!normalized) return;
+    out.push({ obligationId: planObligationId(plan.planId, kind, sourceRef, normalized), predecessorPlanId: plan.planId, kind, sourceRef, summary: normalized });
+  };
+  for (const step of plan.steps) {
+    if (step.status === 'completed') continue;
+    add('step_objective', `step:${step.id}`, step.objective);
+    step.acceptanceCriteria.forEach((criterion, index) => add('step_acceptance', `step:${step.id}:acceptance:${index}`, criterion));
+  }
+  plan.nonGoals.forEach((value, index) => add('non_goal', `non_goal:${index}`, value));
+  plan.resolvedDecisions.forEach((value, index) => add('resolved_decision', `resolved_decision:${index}`, value));
+  plan.stopConditions.forEach((value, index) => add('stop_condition', `stop_condition:${index}`, value));
+  plan.replanConditions.forEach((value, index) => add('replan_condition', `replan_condition:${index}`, value));
+  return out;
+}
+
+function successorObligationRefs(plan: PlanContract): Set<string> {
+  const refs = new Set<string>(['goal']);
+  for (const step of plan.steps) {
+    refs.add(`step:${step.id}`);
+    step.acceptanceCriteria.forEach((_criterion, index) => refs.add(`step:${step.id}:acceptance:${index}`));
+  }
+  plan.nonGoals.forEach((_value, index) => refs.add(`non_goal:${index}`));
+  plan.resolvedDecisions.forEach((_value, index) => refs.add(`resolved_decision:${index}`));
+  plan.stopConditions.forEach((_value, index) => refs.add(`stop_condition:${index}`));
+  plan.replanConditions.forEach((_value, index) => refs.add(`replan_condition:${index}`));
+  if (plan.integrationStrategy?.trim()) refs.add('integration_strategy');
+  return refs;
+}
+
+function obligationContinuityErrors(plan: PlanContract, allPlans: readonly PlanContract[]): string[] {
+  const errors: string[] = [];
+  const dispositions = plan.obligationDispositions ?? [];
+  const successorRefs = successorObligationRefs(plan);
+  const predecessorObligations = new Map<string, Set<string>>();
+  for (const predecessorId of plan.supersedes ?? []) {
+    const predecessor = allPlans.find((candidate) => candidate.planId === predecessorId);
+    if (!predecessor) {
+      errors.push(`superseded predecessor not found: ${predecessorId}`);
+      continue;
+    }
+    predecessorObligations.set(predecessor.planId, new Set(listUnresolvedPlanObligations(predecessor).map((entry) => entry.obligationId)));
+  }
+
+  const seen = new Set<string>();
+  for (const disposition of dispositions) {
+    const key = `${disposition.predecessorPlanId}:${disposition.obligationId}`;
+    if (seen.has(key)) errors.push(`duplicate obligation disposition ${key}`);
+    seen.add(key);
+    const known = predecessorObligations.get(disposition.predecessorPlanId);
+    if ((plan.supersedes ?? []).includes(disposition.predecessorPlanId) && !known?.has(disposition.obligationId)) {
+      errors.push(`unknown predecessor obligation ${key}`);
+    }
+    if ((disposition.disposition === 'keep' || disposition.disposition === 'change') && disposition.successorRefs.length === 0) {
+      errors.push(`obligation ${key} ${disposition.disposition} requires successor_refs`);
+    }
+    for (const ref of disposition.successorRefs) {
+      if (!successorRefs.has(ref)) errors.push(`obligation ${key} references unknown successor_ref ${ref}`);
+    }
+    if (disposition.disposition !== 'keep' && !disposition.rationale?.trim()) {
+      errors.push(`obligation ${key} ${disposition.disposition} requires rationale`);
+    }
+  }
+  for (const [predecessorId, obligations] of predecessorObligations) {
+    const covered = new Set(dispositions.filter((entry) => entry.predecessorPlanId === predecessorId).map((entry) => entry.obligationId));
+    for (const obligationId of obligations) {
+      if (!covered.has(obligationId)) errors.push(`uncovered predecessor obligation ${predecessorId}:${obligationId}`);
+    }
+  }
+  return [...new Set(errors)];
 }
 
 function updatePlanContract(
@@ -234,6 +342,66 @@ function writePlanContractStore(options: PlanContractStoreOptions, store: PlanCo
   return store;
 }
 
+function writePlanSupersessionWithWorkRetirement(
+  options: PlanContractStoreOptions,
+  store: PlanContractStore,
+  predecessor: PlanContract,
+  successor: PlanContract,
+  at: string,
+): void {
+  if (!sqliteBacked(options)) {
+    writePlanContractStore(options, store);
+    return;
+  }
+
+  // Enumerate candidate Work keys before entering the write transaction. Each
+  // row is re-read under BEGIN IMMEDIATE, so concurrent Work progress either
+  // becomes the value we retire or causes no lost update.
+  const workRecords = listControlPlaneRecords<WorkContract>(options.controllerHome, {
+    namespace: 'work_contract',
+    scope: options.repoId,
+    limit: 5_000,
+  }).filter((record) => record.value.planId === predecessor.planId);
+
+  withControlPlaneTransaction(options.controllerHome, (database) => {
+    for (const plan of [predecessor, successor]) {
+      const current = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', options.repoId, plan.planId);
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'plan_contract',
+        scope: options.repoId,
+        key: plan.planId,
+        schemaVersion: 1,
+        value: plan,
+        action: plan.planId === predecessor.planId ? 'plan_contract_superseded' : 'plan_contract_successor_written',
+        expectedRevision: current?.revision ?? null,
+      });
+    }
+
+    for (const candidate of workRecords) {
+      const current = readControlPlaneRecordWithinTransaction<WorkContract>(database, 'work_contract', options.repoId, candidate.key);
+      if (!current || current.value.planId !== predecessor.planId || isTerminalWorkContractStatus(current.value.status)) continue;
+      // A scope-only replan may atomically rebind an exact Work through the
+      // dedicated replan API. Generic Plan replacement has no such transfer,
+      // so every remaining predecessor-bound Work loses execution authority.
+      const retired = retirePlanBoundWorkContract(current.value, {
+        predecessorPlanId: predecessor.planId,
+        successorPlanId: successor.planId,
+        recordedAt: at,
+        reason: predecessor.supersessionReason ?? 'owning Plan was superseded',
+      });
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'work_contract',
+        scope: options.repoId,
+        key: retired.workId,
+        schemaVersion: 2,
+        value: retired,
+        action: 'work_plan_authority_retired',
+        expectedRevision: current.revision,
+      });
+    }
+  });
+}
+
 function buildPlanContract(input: CreatePlanContractInput, at: string): PlanContract {
   const planId = sanitizeFileComponent(input.planId);
   if (!String(input.planId ?? '').trim() || planId === 'unknown') throw new Error('plan_id is required');
@@ -254,6 +422,7 @@ function buildPlanContract(input: CreatePlanContractInput, at: string): PlanCont
     status: 'draft',
     steps: input.steps.slice(0, 30).map(normalizeStep),
     evidenceRefs: (input.evidenceRefs ?? []).slice(0, 20),
+    obligationDispositions: (input.obligationDispositions ?? []).slice(0, 512).map(normalizeObligationDisposition),
     createdAt: at,
     updatedAt: at,
   };
@@ -316,6 +485,8 @@ function replacePlanContractUnlocked(
   };
   if (successor.planId === predecessor.planId) throw new Error('PLAN_SUCCESSOR_ID_MUST_CHANGE');
   if (successor.repoId !== predecessor.repoId) throw new Error('PLAN_SUCCESSOR_REPOSITORY_MISMATCH');
+  const continuityErrors = obligationContinuityErrors(successor, store.contracts);
+  if (continuityErrors.length > 0) throw new Error(`PLAN_OBLIGATION_CONTINUITY_REQUIRED: ${continuityErrors.join('; ')}`);
   if (store.contracts.some((existing) => existing.planId === successor.planId)) {
     throw new Error(`plan contract already exists: ${successor.planId}`);
   }
@@ -324,14 +495,16 @@ function replacePlanContractUnlocked(
     && existing.scopeKey === successor.scopeKey);
   if (conflictingScope) throw new Error(`PLAN_SCOPE_ALREADY_OWNED: ${successor.scopeKey}:${conflictingScope.planId}`);
   const contracts = [...store.contracts];
-  contracts[predecessorIndex] = {
+  const predecessorNext: PlanContract = {
     ...predecessor,
     status: 'superseded',
     supersededBy: successor.planId,
     supersessionReason: 'extend_existing',
     updatedAt: at,
   };
-  writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts: [successor, ...contracts] });
+  contracts[predecessorIndex] = predecessorNext;
+  const nextStore = { schemaVersion: 1 as const, updatedAt: at, contracts: [successor, ...contracts] };
+  writePlanSupersessionWithWorkRetirement(options, nextStore, predecessorNext, successor, at);
   return successor;
 }
 
@@ -479,6 +652,7 @@ function approvalErrors(plan: PlanContract, allPlans: readonly PlanContract[]): 
   if (allPlans.some((existing) => existing.planId !== plan.planId && existing.scopeKey === plan.scopeKey && scopeIsCommitted(existing.status))) {
     errors.push(`active plan already owns scope_key ${plan.scopeKey}`);
   }
+  errors.push(...obligationContinuityErrors(plan, allPlans));
   return [...new Set(errors)];
 }
 
@@ -519,6 +693,9 @@ export function supersedePlanContract(options: PlanContractStoreOptions, planId:
     if (replacement === current.planId) throw new Error('PLAN_SUCCESSOR_ID_MUST_CHANGE');
     const successor = store.contracts.find((contract) => contract.planId === replacement);
     if (!successor) throw new Error(`PLAN_SUCCESSOR_NOT_FOUND: ${replacement}`);
+    const successorCandidate = { ...successor, supersedes: [...new Set([...(successor.supersedes ?? []), current.planId])] };
+    const continuityErrors = obligationContinuityErrors(successorCandidate, store.contracts);
+    if (continuityErrors.length > 0) throw new Error(`PLAN_OBLIGATION_CONTINUITY_REQUIRED: ${continuityErrors.join('; ')}`);
     const at = nowIso(options);
     const boundedReason = String(reason ?? '').trim().slice(0, 500) || 'explicit_supersession';
     const next = {
@@ -529,18 +706,67 @@ export function supersedePlanContract(options: PlanContractStoreOptions, planId:
       updatedAt: at,
     };
     const successorNext = {
-      ...successor,
-      supersedes: [...new Set([...(successor.supersedes ?? []), current.planId])],
+      ...successorCandidate,
       updatedAt: at,
     };
     const contracts = [...store.contracts];
     contracts[index] = next;
     contracts[contracts.findIndex((contract) => contract.planId === successor.planId)] = successorNext;
-    writePlanContractStore(options, { schemaVersion: 1, updatedAt: at, contracts });
+    const nextStore = { schemaVersion: 1 as const, updatedAt: at, contracts };
+    writePlanSupersessionWithWorkRetirement(options, nextStore, next, successorNext, at);
     return next;
   });
 }
 
+/**
+ * Maintenance reconciliation for historical V2 state created before Plan ->
+ * Work authority retirement was atomic. It terminalizes only non-terminal Work
+ * whose bound Plan is already terminal; it never deletes history and never
+ * touches Work bound to a current Plan.
+ */
+export function retireTerminalPlanBoundWorkAuthorities(options: PlanContractStoreOptions): string[] {
+  if (!sqliteBacked(options)) return [];
+  const terminalPlans = new Map(
+    readPlanContractStore(options).contracts
+      .filter((plan) => isTerminalPlanContractStatus(plan.status))
+      .map((plan) => [plan.planId, plan] as const),
+  );
+  if (terminalPlans.size === 0) return [];
+  const candidates = listControlPlaneRecords<WorkContract>(options.controllerHome, {
+    namespace: 'work_contract',
+    scope: options.repoId,
+    limit: 5_000,
+  }).filter((record) => record.value.planId && terminalPlans.has(record.value.planId) && !isTerminalWorkContractStatus(record.value.status));
+  if (candidates.length === 0) return [];
+  const retired: string[] = [];
+  const at = nowIso(options);
+  withControlPlaneTransaction(options.controllerHome, (database) => {
+    for (const candidate of candidates) {
+      const current = readControlPlaneRecordWithinTransaction<WorkContract>(database, 'work_contract', options.repoId, candidate.key);
+      const planId = current?.value.planId;
+      if (!current || !planId || isTerminalWorkContractStatus(current.value.status)) continue;
+      const plan = terminalPlans.get(planId);
+      if (!plan || !isTerminalPlanContractStatus(plan.status)) continue;
+      const next = retirePlanBoundWorkContract(current.value, {
+        predecessorPlanId: plan.planId,
+        successorPlanId: plan.supersededBy,
+        recordedAt: at,
+        reason: `maintenance reconciliation: owning Plan is ${plan.status}`,
+      });
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'work_contract',
+        scope: options.repoId,
+        key: next.workId,
+        schemaVersion: 2,
+        value: next,
+        action: 'work_terminal_plan_authority_reconciled',
+        expectedRevision: current.revision,
+      });
+      retired.push(next.workId);
+    }
+  });
+  return retired.sort();
+}
 
 export interface ReplanActivePlanBoundWorkScopeInput {
   planId: string;
