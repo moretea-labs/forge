@@ -193,6 +193,11 @@ function hostBrowserCandidates(host: WindowsHostEnvironment): WslWindowsBridgeBr
   for (const fallback of WSL_WINDOWS_BROWSER_PRODUCT_FALLBACKS) {
     for (const programFiles of host.programFiles) {
       const executable = join(programFiles, fallback.executableRelativePath);
+      candidates.push({
+        executable,
+        ...(host.localAppData && fallback.profileRelativeToLocalAppData ? { profileRoot: join(host.localAppData, fallback.profileRelativeToLocalAppData) } : {}),
+        ...(fallback.supportsUnpackedExtensionLaunch ? { supportsUnpackedExtensionLaunch: true } : {}),
+      });
       if (host.localAppData && fallback.supportsUnpackedExtensionLaunch) {
         candidates.push({
           executable,
@@ -201,11 +206,6 @@ function hostBrowserCandidates(host: WindowsHostEnvironment): WslWindowsBridgeBr
           supportsUnpackedExtensionLaunch: true,
         });
       }
-      candidates.push({
-        executable,
-        ...(host.localAppData && fallback.profileRelativeToLocalAppData ? { profileRoot: join(host.localAppData, fallback.profileRelativeToLocalAppData) } : {}),
-        ...(fallback.supportsUnpackedExtensionLaunch ? { supportsUnpackedExtensionLaunch: true } : {}),
-      });
     }
   }
   return candidates;

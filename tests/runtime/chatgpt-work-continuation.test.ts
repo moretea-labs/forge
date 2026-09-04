@@ -221,7 +221,7 @@ describe('ChatGPT Work conversation binding', () => {
     })).toBeUndefined();
   });
 
-  test('prefers the dedicated controlled WSL bridge profile and falls back to the ordinary browser profile', () => {
+  test('prefers an existing user browser profile and falls back to the dedicated controlled WSL bridge profile', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-wsl-controlled-bridge-discovery-'));
     roots.push(root);
     const programFiles = join(root, 'Program Files');
@@ -264,16 +264,16 @@ describe('ChatGPT Work conversation binding', () => {
     expect(findInstalledWslWindowsBridgeBrowser(bridgeUrl, token, { hostEnvironment })).toEqual({
       executable,
       profileDirectory: 'Default',
-      extensionDir: controlledExtension,
-      userDataDir: controlledRoot,
-      loadExtensionOnLaunch: true,
+      extensionDir: ordinaryExtension,
     });
 
-    rmSync(controlledRoot, { recursive: true, force: true });
+    rmSync(ordinaryRoot, { recursive: true, force: true });
     expect(findInstalledWslWindowsBridgeBrowser(bridgeUrl, token, { hostEnvironment })).toEqual({
       executable,
       profileDirectory: 'Default',
-      extensionDir: ordinaryExtension,
+      extensionDir: controlledExtension,
+      userDataDir: controlledRoot,
+      loadExtensionOnLaunch: true,
     });
   });
 
