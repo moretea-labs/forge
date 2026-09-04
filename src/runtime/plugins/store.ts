@@ -102,7 +102,7 @@ export function readControllerStoredPluginManifest(controllerHome: string, plugi
 
 export function listControllerPluginManifests(
   controllerHome: string,
-  options: { preferStored?: boolean; forceRefresh?: boolean } = {},
+  options: ListAssistantPluginManifestsOptions = {},
 ): AssistantPluginManifest[] {
   return listAssistantPluginManifests(controllerHome, controllerPluginRepository(controllerHome), options);
 }
@@ -133,8 +133,9 @@ function cloneCacheValue<T>(value: T): T {
   return structuredClone(value);
 }
 
-function listCacheKey(controllerHome: string, repoId: string, preferStored: boolean): string {
-  return `${controllerHome}::${repoId}::list::${preferStored ? 'stored' : 'live'}`;
+function listCacheKey(controllerHome: string, repoId: string, preferStored: boolean, fallbackToLive: boolean): string {
+  const mode = preferStored ? (fallbackToLive ? 'stored-with-live-fallback' : 'stored-only') : 'live';
+  return `${controllerHome}::${repoId}::list::${mode}`;
 }
 
 function itemCacheKey(controllerHome: string, repoId: string, pluginId: string, preferStored: boolean): string {
@@ -518,9 +519,11 @@ export type ListAssistantPluginManifestsOptions = {
   /**
    * Prefer previously persisted manifests for connector/status hot paths.
    * Live adapter rebuild (including host probes such as Xcode) runs only when
-   * no stored manifest exists, or when forceRefresh is true.
+   * no stored manifest exists, unless fallbackToLive=false, or when forceRefresh is true.
    */
   preferStored?: boolean;
+  /** Materialized projections set this false so a cold summary never synchronously probes providers. */
+  fallbackToLive?: boolean;
   forceRefresh?: boolean;
 };
 
@@ -537,7 +540,8 @@ export function listAssistantPluginManifests(
   options: ListAssistantPluginManifestsOptions = {},
 ): AssistantPluginManifest[] {
   const preferStored = options.preferStored === true && options.forceRefresh !== true;
-  const cacheKey = listCacheKey(controllerHome, repository.repoId, preferStored);
+  const fallbackToLive = options.fallbackToLive !== false || !preferStored;
+  const cacheKey = listCacheKey(controllerHome, repository.repoId, preferStored, fallbackToLive);
   if (options.forceRefresh !== true) {
     // Stored manifests are persisted snapshots. Their freshness is governed by
     // explicit registry/config mutation invalidation, not a wall-clock trust
@@ -554,9 +558,11 @@ export function listAssistantPluginManifests(
       if (preferStored) {
         const stored = readStoredManifest(controllerHome, repository.repoId, pluginId);
         if (stored) return stored;
+        if (!fallbackToLive) return undefined;
       }
       return computeManifest(controllerHome, repository, pluginId);
     })
+    .filter((manifest): manifest is AssistantPluginManifest => Boolean(manifest))
     .sort((left, right) => left.pluginId.localeCompare(right.pluginId));
   primePluginManifestItemCache(controllerHome, repository.repoId, manifests, preferStored);
   return writePluginManifestCache(pluginManifestListCache, cacheKey, manifests);

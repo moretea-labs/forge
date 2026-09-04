@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import { join } from 'path';
@@ -527,6 +527,11 @@ describe('external plugin store integration', () => {
     let fakeNow = realDateNow();
     Date.now = () => fakeNow;
     try {
+      clearAssistantPluginManifestCacheForTest();
+      const storedOnly = listAssistantPluginManifests(controllerHome, repository, { preferStored: true, fallbackToLive: false });
+      expect(storedOnly).toHaveLength(0);
+      expect(existsSync(logPath) ? readFileSync(logPath, 'utf8').trim() : '').toBe('');
+
       clearAssistantPluginManifestCacheForTest();
       listAssistantPluginManifests(controllerHome, repository, { preferStored: true });
       const initialCalls = readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean).length;

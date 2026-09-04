@@ -6186,6 +6186,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           });
           const plugins = listAssistantPluginManifests(ctx.controllerHome, repository, {
             preferStored: true,
+            // Summary context is a materialized read. Missing plugin projections
+            // must not synchronously probe every provider on the request path.
+            fallbackToLive: variant === 'detail',
           }).map((plugin) => ({
             pluginId: plugin.pluginId,
             provider: plugin.provider,
