@@ -144,6 +144,22 @@ try {
   if (JSON.stringify(parsed) !== JSON.stringify(semanticFixture)) {
     failures.push('frozen semantic compatibility round-trip changed the typed payload');
   }
+  const planFixture = {
+    operation: 'plan_create' as const,
+    args: {
+      obligation_dispositions: [{
+        predecessor_plan_id: 'PLAN-R1',
+        obligation_id: 'obl-example',
+        disposition: 'keep' as const,
+        successor_refs: ['step:implementation'],
+      }],
+    },
+  };
+  const planCapability = buildFrozenSemanticCompatibilityCapability(planFixture);
+  const parsedPlan = parseFrozenSemanticCompatibilityCapability('repair', planCapability);
+  if (JSON.stringify(parsedPlan) !== JSON.stringify(planFixture)) {
+    failures.push('frozen Plan successor semantic compatibility changed obligation dispositions');
+  }
   try {
     parseFrozenSemanticCompatibilityCapability('plan_create', capability);
     failures.push('frozen semantic compatibility accepted a non-repair transport operation');

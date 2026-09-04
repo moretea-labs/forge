@@ -8,7 +8,7 @@ import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repo
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { claimPlanStepForWork, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { claimPlanStepForWork, getPlanContract, listUnresolvedPlanObligations } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { buildFrozenSemanticCompatibilityCapability } from '../../adapters/mcp/frozen-client-semantic-compatibility';
@@ -114,6 +114,110 @@ describe('rh_work Requirement bootstrap', () => {
     expect(hiddenScope.status).toBe('blocked');
     expect(hiddenScope.summary).toContain('FROZEN_SEMANTIC_COMPATIBILITY_SCOPE_REQUIRED');
   });
+
+  test('lets a frozen rh_work schema create a canonical Plan successor with complete obligation continuity', async () => {
+    const repoRoot = tempRoot('forge-frozen-plan-successor-repo-');
+    const controllerHome = tempRoot('forge-frozen-plan-successor-home-');
+    const sourceRevision = initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Frozen Plan successor fixture' });
+    const ctx = mcpContext(controllerHome, repository);
+    const requirementId = 'REQ-FROZEN-PLAN-SUCCESSOR';
+    const predecessorPlanId = 'PLAN-FROZEN-PLAN-SUCCESSOR-R1';
+    const successorPlanId = 'PLAN-FROZEN-PLAN-SUCCESSOR-R2';
+    const step = {
+      id: 'governance',
+      objective: 'Preserve Plan obligation continuity.',
+      dependencies: [],
+      authoritative_files: [],
+      allowed_paths: ['src/**'],
+      forbidden_paths: [],
+      check_ids: ['package:check:type'],
+      acceptance_criteria: ['Every predecessor obligation is dispositioned.'],
+    };
+
+    expect(structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'requirement_create',
+      requirement_id: requirementId,
+      requirement_title: 'Frozen Plan successor',
+      requirement_outcome: 'Replan through canonical Plan authority from a frozen client schema.',
+    })).status).toBe('ok');
+    expect(structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_create',
+      plan_id: predecessorPlanId,
+      requirement_id: requirementId,
+      scope_key: 'frozen-plan-successor',
+      source_revision: sourceRevision,
+      objective: 'Predecessor Plan.',
+      plan_steps: [step],
+    })).status).toBe('ok');
+    expect(structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_approve',
+      plan_id: predecessorPlanId,
+    })).status).toBe('ok');
+
+    const predecessor = getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId);
+    expect(predecessor).toBeTruthy();
+    const obligations = listUnresolvedPlanObligations(predecessor!);
+    const validCapability = buildFrozenSemanticCompatibilityCapability({
+      operation: 'plan_create',
+      args: {
+        obligation_dispositions: obligations.map((obligation) => ({
+          predecessor_plan_id: predecessorPlanId,
+          obligation_id: obligation.obligationId,
+          disposition: 'keep' as const,
+          successor_refs: [obligation.sourceRef],
+        })),
+      },
+    });
+    const successorArgs = {
+      repo_id: repository.repoId,
+      operation: 'repair',
+      capability_id: validCapability,
+      plan_id: successorPlanId,
+      requirement_id: requirementId,
+      scope_key: 'frozen-plan-successor',
+      source_revision: sourceRevision,
+      objective: 'Successor Plan.',
+      plan_relation: 'extend',
+      related_plan_id: predecessorPlanId,
+      plan_steps: [step],
+    };
+
+    const incompleteCapability = buildFrozenSemanticCompatibilityCapability({
+      operation: 'plan_create',
+      args: { obligation_dispositions: [] },
+    });
+    const incomplete = structured(await callRuntimeTool(ctx, 'rh_work', {
+      ...successorArgs,
+      plan_id: 'PLAN-FROZEN-PLAN-SUCCESSOR-INCOMPLETE',
+      capability_id: incompleteCapability,
+    }));
+    expect(incomplete.status).toBe('blocked');
+    expect(incomplete.summary).toContain('PLAN_OBLIGATION_CONTINUITY_REQUIRED');
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)?.status).toBe('approved');
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, 'PLAN-FROZEN-PLAN-SUCCESSOR-INCOMPLETE')).toBeUndefined();
+
+    const successor = structured(await callRuntimeTool(ctx, 'rh_work', successorArgs));
+    expect(successor.status).toBe('ok');
+    expect(successor.data.planContractCreated).toBe(true);
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)?.status).toBe('superseded');
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)).toMatchObject({
+      status: 'draft',
+      supersedes: [predecessorPlanId],
+    });
+
+    const conflictingNativeField = structured(await callRuntimeTool(ctx, 'rh_work', {
+      ...successorArgs,
+      plan_id: 'PLAN-FROZEN-PLAN-SUCCESSOR-R3',
+      obligation_dispositions: [],
+    }));
+    expect(conflictingNativeField.status).toBe('blocked');
+    expect(conflictingNativeField.summary).toContain('FROZEN_SEMANTIC_COMPATIBILITY_CONFLICT');
+  }, 15_000);
 
   test('creates Requirement authority idempotently without implying Plan and still permits explicit Plan creation', async () => {
     const repoRoot = tempRoot('forge-requirement-repo-');

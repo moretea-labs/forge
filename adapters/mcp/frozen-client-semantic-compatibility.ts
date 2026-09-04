@@ -2,9 +2,11 @@ const FROZEN_SEMANTIC_COMPATIBILITY_PREFIX = 'semantic.v1:';
 const MAX_FROZEN_SEMANTIC_ENCODED_CHARS = 96 * 1024;
 const MAX_FROZEN_SEMANTIC_DECODED_BYTES = 64 * 1024;
 const MAX_FROZEN_SEMANTIC_ARRAY_ITEMS = 128;
+const MAX_FROZEN_PLAN_OBLIGATION_DISPOSITIONS = 512;
+const MAX_FROZEN_PLAN_SUCCESSOR_REFS = 32;
 const MAX_FROZEN_SEMANTIC_STRING_CHARS = 16 * 1024;
 
-export const FROZEN_SEMANTIC_COMPATIBILITY_OPERATIONS = ['requirement_create'] as const;
+export const FROZEN_SEMANTIC_COMPATIBILITY_OPERATIONS = ['requirement_create', 'plan_create'] as const;
 export type FrozenSemanticCompatibilityOperation = (typeof FROZEN_SEMANTIC_COMPATIBILITY_OPERATIONS)[number];
 
 export interface FrozenRequirementCreateCompatibilityArgs {
@@ -20,7 +22,24 @@ export interface FrozenRequirementCreateCompatibilityEnvelope {
   args: FrozenRequirementCreateCompatibilityArgs;
 }
 
-export type FrozenSemanticCompatibilityEnvelope = FrozenRequirementCreateCompatibilityEnvelope;
+export interface FrozenPlanObligationDispositionCompatibilityArgs {
+  predecessor_plan_id: string;
+  obligation_id: string;
+  disposition: 'keep' | 'change' | 'defer' | 'drop';
+  successor_refs: string[];
+  rationale?: string;
+}
+
+export interface FrozenPlanCreateCompatibilityArgs {
+  obligation_dispositions: FrozenPlanObligationDispositionCompatibilityArgs[];
+}
+
+export interface FrozenPlanCreateCompatibilityEnvelope {
+  operation: 'plan_create';
+  args: FrozenPlanCreateCompatibilityArgs;
+}
+
+export type FrozenSemanticCompatibilityEnvelope = FrozenRequirementCreateCompatibilityEnvelope | FrozenPlanCreateCompatibilityEnvelope;
 
 const REQUIREMENT_CREATE_KEYS = new Set([
   'requirement_title',
@@ -70,6 +89,50 @@ function normalizeRequirementCreateArgs(value: unknown): FrozenRequirementCreate
   };
 }
 
+const PLAN_CREATE_KEYS = new Set(['obligation_dispositions']);
+const PLAN_OBLIGATION_DISPOSITION_KEYS = new Set([
+  'predecessor_plan_id',
+  'obligation_id',
+  'disposition',
+  'successor_refs',
+  'rationale',
+]);
+
+function normalizePlanObligationDisposition(value: unknown, index: number): FrozenPlanObligationDispositionCompatibilityArgs {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`obligation_dispositions[${index}] must be an object`);
+  const entry = value as Record<string, unknown>;
+  assertExactKeys(entry, PLAN_OBLIGATION_DISPOSITION_KEYS, `obligation_dispositions[${index}]`);
+  const disposition = boundedString(entry.disposition, `obligation_dispositions[${index}].disposition`);
+  if (!['keep', 'change', 'defer', 'drop'].includes(disposition)) fail(`obligation_dispositions[${index}].disposition is invalid`);
+  const successorRefs = boundedStringArray(entry.successor_refs, `obligation_dispositions[${index}].successor_refs`) ?? [];
+  if (successorRefs.length > MAX_FROZEN_PLAN_SUCCESSOR_REFS) fail(`obligation_dispositions[${index}].successor_refs exceeds transport bound`);
+  return {
+    predecessor_plan_id: boundedString(entry.predecessor_plan_id, `obligation_dispositions[${index}].predecessor_plan_id`),
+    obligation_id: boundedString(entry.obligation_id, `obligation_dispositions[${index}].obligation_id`),
+    disposition: disposition as FrozenPlanObligationDispositionCompatibilityArgs['disposition'],
+    successor_refs: successorRefs,
+    ...(entry.rationale !== undefined ? { rationale: boundedString(entry.rationale, `obligation_dispositions[${index}].rationale`) } : {}),
+  };
+}
+
+function normalizePlanCreateArgs(value: unknown): FrozenPlanCreateCompatibilityArgs {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('plan_create args must be an object');
+  const args = value as Record<string, unknown>;
+  assertExactKeys(args, PLAN_CREATE_KEYS, 'plan_create args');
+  if (!Array.isArray(args.obligation_dispositions) || args.obligation_dispositions.length > MAX_FROZEN_PLAN_OBLIGATION_DISPOSITIONS) {
+    fail('obligation_dispositions must be a bounded array');
+  }
+  return {
+    obligation_dispositions: args.obligation_dispositions.map(normalizePlanObligationDisposition),
+  };
+}
+
+function normalizeEnvelopeArgs(input: FrozenSemanticCompatibilityEnvelope): FrozenSemanticCompatibilityEnvelope['args'] {
+  if (input.operation === 'requirement_create') return normalizeRequirementCreateArgs(input.args);
+  if (input.operation === 'plan_create') return normalizePlanCreateArgs(input.args);
+  return fail('operation is not allowlisted');
+}
+
 function parsePayload(capabilityId: string): Record<string, unknown> {
   const encoded = capabilityId.slice(FROZEN_SEMANTIC_COMPATIBILITY_PREFIX.length);
   if (!encoded || encoded.length > MAX_FROZEN_SEMANTIC_ENCODED_CHARS || !/^[A-Za-z0-9_-]+$/.test(encoded)) {
@@ -88,7 +151,7 @@ function parsePayload(capabilityId: string): Record<string, unknown> {
 }
 
 export function buildFrozenSemanticCompatibilityCapability(input: FrozenSemanticCompatibilityEnvelope): string {
-  const args = input.operation === 'requirement_create' ? normalizeRequirementCreateArgs(input.args) : fail('operation is not allowlisted');
+  const args = normalizeEnvelopeArgs(input);
   const json = JSON.stringify({ v: 1, op: input.operation, a: args });
   if (Buffer.byteLength(json, 'utf8') > MAX_FROZEN_SEMANTIC_DECODED_BYTES) fail('payload exceeds decoded transport bound');
   const encoded = Buffer.from(json, 'utf8').toString('base64url');
@@ -114,9 +177,17 @@ export function parseFrozenSemanticCompatibilityCapability(
   const payload = parsePayload(normalized);
   assertExactKeys(payload, new Set(['v', 'op', 'a']), 'payload');
   if (payload.v !== 1) fail('unsupported envelope version');
-  if (payload.op !== 'requirement_create') fail('operation is not allowlisted');
-  return {
-    operation: 'requirement_create',
-    args: normalizeRequirementCreateArgs(payload.a),
-  };
+  if (payload.op === 'requirement_create') {
+    return {
+      operation: 'requirement_create',
+      args: normalizeRequirementCreateArgs(payload.a),
+    };
+  }
+  if (payload.op === 'plan_create') {
+    return {
+      operation: 'plan_create',
+      args: normalizePlanCreateArgs(payload.a),
+    };
+  }
+  return fail('operation is not allowlisted');
 }

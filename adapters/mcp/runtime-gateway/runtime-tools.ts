@@ -3964,6 +3964,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         if (frozenPlanObligationDispositions) {
           args.obligation_dispositions = frozenPlanObligationDispositions;
         }
+        if (frozenSemanticOperation?.operation === 'plan_create') {
+          // Frozen semantic compatibility fills only the field absent from the
+          // older schema. Plan identity/scope/source/steps/relation remain native
+          // arguments and canonical Plan admission/continuity stays authoritative.
+          args.obligation_dispositions = frozenSemanticOperation.args.obligation_dispositions;
+        }
         if (frozenImplementationReview) {
           const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
           if (!explicitWorkId || explicitWorkId !== frozenImplementationReview.workId) {
