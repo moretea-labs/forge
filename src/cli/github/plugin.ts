@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
+import { existsSync, readFileSync, rmSync } from "fs";
+import { join } from "path";
 import { getGitHubStatus, publishIssueToGitHub, refreshGitHubIssue, closeGitHubIssue } from "./github";
 import type { ControllerIssue } from "../controller/types";
 import { tryAppendControllerWorklogEvent } from "../controller/worklog";
@@ -104,6 +104,10 @@ function loadLegacyGitHubPluginConfig(repoRoot: string): GitHubPluginConfig | un
   }
 }
 
+function retireLegacyGitHubPluginConfig(repoRoot: string): void {
+  rmSync(join(repoRoot, CONFIG_PATH), { force: true });
+}
+
 function findRepositoryRecord(repoRoot: string): RepositoryRecord | undefined {
   const controllerHome = resolveRepoPreferredControllerHome(repoRoot);
   return listRepositories(controllerHome).find((record) =>
@@ -127,18 +131,18 @@ function configFromRepository(record: RepositoryRecord | undefined): GitHubPlugi
   });
 }
 
-function syncRepositoryGitHubConfig(repoRoot: string, config: GitHubPluginConfig): void {
+function syncRepositoryGitHubConfig(repoRoot: string, config: GitHubPluginConfig): boolean {
   const record = findRepositoryRecord(repoRoot);
-  if (!record) return;
+  if (!record) return false;
   const controllerHome = resolveRepoPreferredControllerHome(repoRoot);
   const current = record.github;
   const repository = config.repository?.trim();
   const effectiveRepository = repository
     || current?.repository
     || (current?.owner && current?.repo ? `${current.owner}/${current.repo}` : undefined);
-  if (!effectiveRepository) return;
+  if (!effectiveRepository) return false;
   const [owner, repo] = effectiveRepository.includes("/") ? effectiveRepository.split("/", 2) : [current?.owner, current?.repo];
-  if (!owner || !repo) return;
+  if (!owner || !repo) return false;
   updateRepository(record.repoId, {
     github: {
       owner,
@@ -156,6 +160,7 @@ function syncRepositoryGitHubConfig(repoRoot: string, config: GitHubPluginConfig
       authenticationCapability: current?.authenticationCapability ?? "unknown",
     },
   }, controllerHome);
+  return true;
 }
 
 export function loadGitHubPluginConfig(repoRoot: string): GitHubPluginConfig {
@@ -173,12 +178,12 @@ export function loadGitHubPluginConfig(repoRoot: string): GitHubPluginConfig {
       projectNumber: legacyConfig.projectNumber ?? registryConfig.projectNumber,
       statusField: legacyConfig.statusField ?? registryConfig.statusField,
     });
-    syncRepositoryGitHubConfig(repoRoot, merged);
+    if (syncRepositoryGitHubConfig(repoRoot, merged)) retireLegacyGitHubPluginConfig(repoRoot);
     return merged;
   }
   if (registryConfig) return registryConfig;
   if (legacyConfig) {
-    syncRepositoryGitHubConfig(repoRoot, legacyConfig);
+    if (syncRepositoryGitHubConfig(repoRoot, legacyConfig)) retireLegacyGitHubPluginConfig(repoRoot);
     return legacyConfig;
   }
   return defaultGitHubPluginConfig();
@@ -224,10 +229,10 @@ export function saveGitHubPluginConfig(
     projectNumber,
     statusField,
   };
-  syncRepositoryGitHubConfig(repoRoot, config);
-  const path = join(repoRoot, CONFIG_PATH);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+  if (!syncRepositoryGitHubConfig(repoRoot, config)) {
+    throw new Error("GITHUB_PLUGIN_REPOSITORY_REGISTRATION_REQUIRED: configure GitHub only after the repository is registered in Controller Home");
+  }
+  retireLegacyGitHubPluginConfig(repoRoot);
   statusCache.set(repoRoot, {
     at: Date.now() - STATUS_CACHE_TTL_MS + CONFIG_STATUS_CACHE_TTL_MS,
     fingerprint: JSON.stringify(config),

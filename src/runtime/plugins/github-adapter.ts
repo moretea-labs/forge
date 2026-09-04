@@ -1,7 +1,6 @@
 import {
   closeIssueWithGitHubPlugin,
   getGitHubPluginStatus,
-  githubPluginConfigPath,
   loadGitHubPluginConfig,
   publishIssueWithGitHubPlugin,
   refreshIssueWithGitHubPlugin,
@@ -295,7 +294,7 @@ export function buildGitHubPluginManifest(previousRevision = 0, previousUpdatedA
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
-      sourceOfTruth: ['repository-registry:github', `repo-local:${githubPluginConfigPath()}`],
+      sourceOfTruth: ['repository-registry:github', 'legacy-import-only:.forge/plugins/github.json'],
     },
     enabled: config.enabled,
     lifecycle: {

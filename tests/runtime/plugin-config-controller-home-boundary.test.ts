@@ -23,15 +23,22 @@ describe('plugin config Controller Home boundary', () => {
     const legacy = join(repoRoot, '.forge', 'plugins');
     mkdirSync(legacy, { recursive: true });
     writeFileSync(join(legacy, 'browser.json'), '{"schemaVersion":1,"enabled":true}\n');
+    writeFileSync(join(legacy, 'google-calendar.json'), '{"schemaVersion":1,"enabled":true}\n');
+    writeFileSync(join(legacy, 'github.json'), '{"schemaVersion":1,"enabled":true}\n');
     const legacyHarness = join(repoRoot, '.repo-harness', 'plugins');
     mkdirSync(legacyHarness, { recursive: true });
     writeFileSync(join(legacyHarness, 'app-store-connect.json'), '{"schemaVersion":1,"enabled":true}\n');
 
     const target = migrateRepositoryPluginConfigLegacyFiles(controllerHome, { repoId: 'repo-a', canonicalRoot: repoRoot });
     expect(readFileSync(join(target, 'browser.json'), 'utf8')).toContain('"enabled":true');
+    expect(readFileSync(join(target, 'google-calendar.json'), 'utf8')).toContain('"enabled":true');
     expect(readFileSync(join(target, 'app-store-connect.json'), 'utf8')).toContain('"enabled":true');
+    expect(readRepositoryPluginConfig({ controllerHome, repoId: 'repo-a', repoRoot }, 'google_calendar')).toMatchObject({ enabled: true });
+    expect(readRepositoryPluginConfig({ controllerHome, repoId: 'repo-a', repoRoot }, 'app_store_connect')).toMatchObject({ enabled: true });
     expect(existsSync(join(repoRoot, '.repo-harness', 'plugins'))).toBe(false);
-    expect(existsSync(join(repoRoot, '.forge', 'plugins'))).toBe(false);
+    expect(existsSync(join(repoRoot, '.forge', 'plugins', 'browser.json'))).toBe(false);
+    expect(existsSync(join(repoRoot, '.forge', 'plugins', 'google-calendar.json'))).toBe(false);
+    expect(existsSync(join(repoRoot, '.forge', 'plugins', 'github.json'))).toBe(true);
   });
 
   test('keeps existing Controller Home config authoritative on migration conflict', () => {

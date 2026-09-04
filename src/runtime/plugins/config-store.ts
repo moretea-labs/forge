@@ -87,7 +87,7 @@ export function readRepositoryPluginConfig<T>(
 }
 
 function retireLegacyPhysicalConfig(repoRoot: string, pluginId: string): void {
-  const fileName = configFileName(pluginId);
+  const fileName = repositoryPluginConfigFileName(pluginId);
   for (const root of legacyConfigRoots(repoRoot)) {
     if (!existsSync(root)) continue;
     try {

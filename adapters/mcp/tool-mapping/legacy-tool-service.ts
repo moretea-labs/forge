@@ -3703,7 +3703,7 @@ export async function callMcpTool(
           projectOwner: args.clear_project === true ? "" : typeof args.project_owner === "string" ? args.project_owner : undefined,
           projectNumber: args.clear_project === true ? null : typeof args.project_number === "number" ? args.project_number : undefined,
         });
-        audit(ctx, name, "ok", args, ".forge/plugins/github.json");
+        audit(ctx, name, "ok", args, "repository-registry:github");
         return textResult(config);
       }
       case "get_issue": {

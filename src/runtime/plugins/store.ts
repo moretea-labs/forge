@@ -7,6 +7,7 @@ import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 import { createFirstPartyPluginAdapterMap } from './first-party-registry';
+import { REPOSITORY_PLUGIN_CONFIG_IDS, repositoryPluginConfigFileName, repositoryPluginConfigPath } from './config-store';
 import { getExternalPluginAdapter, listExternalPluginAdapters } from './external-adapter';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import {
@@ -310,8 +311,17 @@ export function migrateRepositoryPluginConfigLegacyFiles(
       continue;
     }
     if (!stat.isDirectory()) throw new Error(`PLUGIN_CONFIG_LEGACY_PATH_INVALID: ${legacyRoot}`);
-    cpSync(legacyRoot, targetRoot, { recursive: true, force: false, errorOnExist: false });
-    rmSync(legacyRoot, { recursive: true, force: true });
+    for (const pluginId of REPOSITORY_PLUGIN_CONFIG_IDS) {
+      const fileName = repositoryPluginConfigFileName(pluginId);
+      const source = join(legacyRoot, fileName);
+      if (!existsSync(source)) continue;
+      const sourceStat = lstatSync(source);
+      if (sourceStat.isSymbolicLink() || !sourceStat.isFile()) continue;
+      const target = repositoryPluginConfigPath({ controllerHome, repoId: repository.repoId }, pluginId);
+      if (!existsSync(target)) cpSync(source, target, { force: false, errorOnExist: false });
+      rmSync(source, { force: true });
+    }
+    if (readdirSync(legacyRoot).length === 0) rmSync(legacyRoot, { recursive: true, force: true });
   }
   return targetRoot;
 }
