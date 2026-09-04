@@ -368,7 +368,7 @@ describe('repository command execution lifecycle', () => {
     expect(route(['touch', 'marker.txt'])).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
   });
 
-  test('readonly direct execution reuses its pre-execution snapshot instead of taking a redundant post snapshot', async () => {
+  test('readonly direct execution exposes unobserved mutation evidence without taking before/after snapshots', async () => {
     const controllerHome = tempRoot('forge-cmd-read-snapshot-home-');
     const repoRoot = tempRoot('forge-cmd-read-snapshot-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
@@ -377,6 +377,7 @@ describe('repository command execution lifecycle', () => {
       timeoutMs: 10_000,
     });
     expect(result.ok).toBe(true);
+    expect(result.before.mutationEvidence).toBe('readonly_unobserved');
     expect(result.after).toBe(result.before);
     expect(result.repositoryChanged).toBe(false);
     expect(result.changedPaths).toEqual([]);
@@ -423,6 +424,8 @@ describe('repository command execution lifecycle', () => {
       timeoutMs: 10_000,
     });
     expect(result.ok).toBe(true);
+    expect(result.before.mutationEvidence).toBe('observed');
+    expect(result.after?.mutationEvidence).toBe('observed');
     expect(result.repositoryChanged).toBe(true);
     expect(result.changedPaths).toContain('marker.txt');
   });
