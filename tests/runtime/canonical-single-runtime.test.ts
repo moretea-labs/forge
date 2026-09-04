@@ -211,6 +211,50 @@ describe('canonical single Runtime', () => {
     await expect(developmentRuntime.start()).rejects.toThrow('repositoryRoot is required only for non-materialized development Runtime');
   });
 
+  test('package-only release revisions need no source commit or repository overlay', async () => {
+    const fixture = createFixture({ runtimeInstanceId: 'runtime-package-revision-no-repo' });
+    writeFileSync(fixture.manifestPath, JSON.stringify({
+      schemaVersion: 1,
+      releaseId: 'release-package-revision-no-repo',
+      artifactIdentity: 'sha256:package-revision-no-repo',
+      entrypoint: 'forge-runtime',
+      arguments: [],
+      configurationSchemaVersion: 1,
+      controllerHome: resolve(fixture.controllerHome),
+      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+      workerProtocolVersion: 1,
+      releaseRevision: 'package:9.9.9-test:immutable',
+      cleanWorkspace: true,
+      createdAt: '2026-09-04T00:00:00.000Z',
+    }), 'utf8');
+    const { repositoryRoot: _repositoryRoot, ...packageConfig } = fixture.config;
+    const runtime = new CanonicalForgeRuntime(packageConfig, {
+      collectRuntimeSourceIdentity: (root) => ({
+        repoId: 'release:package-revision',
+        checkoutId: 'release:package-revision',
+        repoRoot: root,
+        canonicalRoot: root,
+        branch: null,
+        commit: 'package-revision',
+        releaseRevision: 'package:9.9.9-test:immutable',
+        defaultBranch: 'main',
+        defaultBranchCommit: 'package-revision',
+        dirty: false,
+        observedAt: '2026-09-04T00:00:00.000Z',
+      }),
+      startScheduler: () => inertScheduler(),
+      startLocalBridge: async () => undefined,
+      startTransport: async () => ({ endpoint: 'http://127.0.0.1:9878/mcp', host: '127.0.0.1', port: 9878, close: async () => undefined }),
+      runMcpProbe: async () => undefined,
+      stopLightweightProcesses: async () => 0,
+      stopContextReadHelpers: async () => undefined,
+      computeToolSurfaceFingerprint: () => 'test-fingerprint',
+    });
+    cleanups.push(() => runtime.stop('TEST_CLEANUP'));
+    await runtime.start();
+    expect(runtime.readiness().ready).toBe(true);
+  });
+
   test('readiness exposes one boolean while module observations remain diagnostic evidence', () => {
     const state = new RuntimeReadinessState(() => '2026-08-05T00:00:00.000Z');
     const starting = state.snapshot();

@@ -119,6 +119,14 @@
 - Prevention rule: Package release snapshots must include `src/`, `adapters/`, `packages/`, and declared launcher/dependency roots. The snapshot test must run after the source tree is removed and exercise imports from each top-level production module root.
 - Where to apply next time: `src/runtime/root/package-runtime-release.ts` and `tests/runtime/package-runtime-release.test.ts`.
 
+## Package release identity is materialized Runtime identity
+
+- Date: 2026-09-04
+- Triggered by correction: A package Runtime release had the immutable `releaseRevision` form `package:<version>:<fingerprint>` but no source commit. Runtime treated it as development mode, required an unrelated repository overlay, and entered a restart loop after the package installer correctly omitted that overlay.
+- Mistake pattern: Recognizing immutable Runtime identity only when it originates from a Git source commit.
+- Prevention rule: Treat immutable package revisions and source release revisions as equivalent release identities. Only manifests without either identity require a development `repositoryRoot`.
+- Where to apply next time: `src/runtime/root/runtime.ts` and `tests/runtime/canonical-single-runtime.test.ts`.
+
 ## A running cloud VM is not a healthy Forge execution node
 - Date: 2026-08-26
 - Triggered by correction: The Google Cloud `forge-cloud` e2-micro remained `RUNNING`, but Forge_Cloud calls alternated between Secure Tunnel HTTP 404/429, direct SSH and IAP SSH failed, and serial logs showed repeated WARP main-loop watchdog hangs, QUIC idle timeout, NTP timeout, and journald watchdog restarts.

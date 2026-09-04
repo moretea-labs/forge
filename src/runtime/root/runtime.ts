@@ -238,11 +238,15 @@ export class CanonicalForgeRuntime {
       stage = 'release';
       const releaseAuthority = this.dependencies.ensureReleaseAuthority(this.config.controllerHome, this.config.releaseManifestPath);
       stage = 'source';
-      // A materialized immutable release carries its frozen source identity in
-      // the release manifest and must snapshot that release directory. Source/
-      // fixture manifests without source identity keep the historical explicit
-      // repositoryRoot behavior so development-mode Runtime drift remains live.
-      const materializedRelease = Boolean(this.release.sourceCommit && this.release.releaseRevision);
+      // A materialized immutable release carries either a source revision or a
+      // package release revision and must snapshot that release directory.
+      // Source/fixture manifests without either identity keep the historical
+      // explicit repositoryRoot behavior so development-mode Runtime drift
+      // remains live.
+      const materializedRelease = Boolean(
+        this.release.releaseRevision
+        && (this.release.sourceCommit || this.release.releaseRevision.startsWith('package:')),
+      );
       const runtimeSourceRoot = materializedRelease
         ? dirname(this.config.releaseManifestPath)
         : this.config.repositoryRoot;
