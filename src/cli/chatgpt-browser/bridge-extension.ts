@@ -26,6 +26,7 @@ function forgeAuthHeaders(base) {
 const FORGE_CHATGPT_COMPOSERS = [
   '[data-testid="composer-text-input"]',
   '#prompt-textarea',
+  'textarea[name="prompt"]',
   'textarea[placeholder*="Message"]',
   'div[role="textbox"][contenteditable="true"]',
 ];

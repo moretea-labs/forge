@@ -192,6 +192,15 @@ describe('ChatGPT Work conversation binding', () => {
       .toEqual({ status: 'session_closed' });
   });
 
+  test('renders a language-independent textarea composer selector for localized ChatGPT Web', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-localized-composer-'));
+    roots.push(root);
+    const extension = writeChatgptBridgeExtension(root, 'http://127.0.0.1:17651', 'fixture-token');
+    const source = readFileSync(extension.contentScriptPath, 'utf8');
+    expect(source).toContain('textarea[name=\"prompt\"]');
+    expect(source).toContain('textarea[placeholder*=\"Message\"]');
+  });
+
   test('discovers only an enabled Windows Chromium profile whose installed Forge bridge matches the current capability', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-wsl-bridge-discovery-'));
     roots.push(root);
