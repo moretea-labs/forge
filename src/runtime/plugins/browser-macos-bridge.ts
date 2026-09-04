@@ -1235,10 +1235,13 @@ export class MacOsAppleEventsPage {
 
   private async setChecked(selector: string, checked: boolean): Promise<void> {
     await this.evaluate(selectorSource(selector, `
-      if (!('checked' in element)) throw new Error('Element is not checkable.');
-      element.checked = ${checked};
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
+      if (!('checked' in element) || typeof element.click !== 'function') {
+        throw new Error('Element is not checkable.');
+      }
+      if (element.checked !== ${checked}) element.click();
+      if (element.checked !== ${checked}) {
+        throw new Error('Requested checked state did not persist.');
+      }
       return true;
     `));
   }

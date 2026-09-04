@@ -389,6 +389,40 @@ describe('Browser Runtime V3 routing', () => {
     expect(calls).toEqual(['preferred']);
   });
 
+  test('uses a real idempotent click transition for macOS check and uncheck', async () => {
+    const url = 'https://example.com/react-checkbox';
+    const javaScriptCalls: string[] = [];
+    const metadata = [
+      'false', url, 'React Checkbox', '0', '0', '1200', '800', '7', '9', 'false', 'false',
+    ].join(nativeSeparator);
+
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script, args) => {
+        if (script.includes('execute targetTab javascript')) {
+          javaScriptCalls.push(args[0] ?? '');
+          return JSON.stringify({ ok: true, value: true, page: { url, title: 'React Checkbox' } });
+        }
+        return metadata;
+      },
+    });
+
+    const attached = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    await attached.page.check('#controlled');
+    await attached.page.uncheck('#controlled');
+
+    expect(javaScriptCalls).toHaveLength(2);
+    expect(javaScriptCalls[0]).toContain('element.checked !== true');
+    expect(javaScriptCalls[0]).toContain('element.click()');
+    expect(javaScriptCalls[0]).toContain('Requested checked state did not persist.');
+    expect(javaScriptCalls[0]).not.toContain('element.checked = true');
+    expect(javaScriptCalls[1]).toContain('element.checked !== false');
+    expect(javaScriptCalls[1]).toContain('element.click()');
+    expect(javaScriptCalls[1]).not.toContain('element.checked = false');
+  });
+
   test('reuses one stable native tab handle without metadata or foreground preflight on the warm path', async () => {
     const metadataUrl = 'https://example.com/native-warm';
     const driftUrl = 'https://example.com/native-warm/drifted';
