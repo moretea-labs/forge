@@ -1,16 +1,16 @@
 # Current Status Snapshot
 
 <!-- generated-by: forge refresh-current-status v1 -->
-<!-- updated_at: 2026-09-04T14:36:06+0800 -->
+<!-- updated_at: 2026-09-04T15:25:11+0800 -->
 <!-- stale_after: 24h -->
 
 > **Status**: Idle
-> **Updated At**: 2026-09-04T14:36:06+0800
+> **Updated At**: 2026-09-04T15:25:11+0800
 > **Source Branch**: kernel-v2/architecture
-> **Source Commit**: 18490210
+> **Source Commit**: 8483111e
 > **Target Branch**: main
 > **Stale After**: 24h
-> **Reason**: manual
+> **Reason**: kernel-v2-open-issue-risk-review
 > **Derived From**: active-plan, active-sprint, workstreams, handoff, checks, git status
 
 This file is a tracked mainline snapshot derived from repo artifacts. It is not a live lock, not a kanban board, and not an implementation gate. If it is stale, read the source artifacts below.
@@ -44,25 +44,14 @@ This file is a tracked mainline snapshot derived from repo artifacts. It is not 
 
 ## Checks
 
-- status=(none), source=(none), exit_code=(none), file=.ai/harness/checks/latest.json
+- status=(none), source=(none), file=.ai/harness/checks/latest.json
 
 ## Git Status
 
-- Summary: 2 changed/untracked path(s)
+- Summary: clean
 
 ```
- M docs/forge-ios-development-assistant.md
-?? docs/architecture/decisions/20260904-ios-device-migration-baseline.md
-- Summary: 7 changed/untracked path(s)
-
-```
- M adapters/browser/session-authority.ts
- M docs/operations/controller-browser-plugin.md
- D examples/agent-architecture.md
- D examples/b2b-config.md
- M src/runtime/control-plane/generated-cache-retention.ts
- M tests/runtime/browser-session-authority.test.ts
- M tests/runtime/generated-cache-retention.test.ts
+(none)
 ```
 
 ## Source Artifacts
