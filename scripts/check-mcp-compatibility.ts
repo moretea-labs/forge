@@ -8,6 +8,10 @@ import { runtimeToolDefinitions } from '../src/runtime/gateway/mcp/runtime-tools
 import { executionToolDefinitions } from '../src/runtime/gateway/mcp/execution-tools';
 import { processToolDefinitions } from '../src/runtime/gateway/mcp/process-tools';
 import {
+  buildPlanObligationCompatibilityCapability,
+  parsePlanObligationCompatibilityCapability,
+} from '../adapters/mcp/controller-round-compatibility';
+import {
   ADVANCED_CONTROLLER_TOOL_NAMES,
   CORE_CONTROLLER_TOOL_NAMES,
   DEFAULT_CONTROLLER_TOOL_NAMES,
@@ -81,6 +85,45 @@ for (const name of ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work
 }
 if (fullNames.length < defaultNames.length) {
   failures.push(`full compatibility surface is smaller than default surface: ${fullNames.length} < ${defaultNames.length}`);
+}
+
+const rhWorkDefinition = runtimeToolDefinitions.find((tool) => tool.name === 'rh_work');
+const rhWorkProperties = (rhWorkDefinition?.inputSchema?.properties ?? {}) as Record<string, unknown>;
+if (!('capability_id' in rhWorkProperties)) failures.push('rh_work compatibility carrier capability_id is missing');
+if (!('obligation_dispositions' in rhWorkProperties)) failures.push('rh_work native obligation_dispositions schema is missing');
+
+const planCompatibilityFixture = [
+  {
+    predecessor_plan_id: 'PLAN-predecessor',
+    obligation_id: 'step:p0:acceptance:0',
+    disposition: 'change' as const,
+    successor_refs: ['step:p0:acceptance:0'],
+    rationale: 'successor expands the same obligation',
+  },
+  {
+    predecessor_plan_id: 'PLAN-predecessor',
+    obligation_id: 'step:p1',
+    disposition: 'keep' as const,
+    successor_refs: ['step:p1'],
+  },
+];
+try {
+  const capability = buildPlanObligationCompatibilityCapability(planCompatibilityFixture);
+  const parsed = parsePlanObligationCompatibilityCapability('plan_create', capability);
+  if (JSON.stringify(parsed) !== JSON.stringify(planCompatibilityFixture)) {
+    failures.push('frozen Plan obligation compatibility round-trip changed the typed payload');
+  }
+  if (parsePlanObligationCompatibilityCapability('repair', capability) !== undefined) {
+    failures.push('frozen Plan obligation compatibility must be scoped to plan_create');
+  }
+  try {
+    parsePlanObligationCompatibilityCapability('plan_create', 'plan.obligations.v1:not+base64');
+    failures.push('frozen Plan obligation compatibility accepted malformed payload');
+  } catch {
+    // Expected: malformed frozen-client transport input remains fail-closed.
+  }
+} catch (error) {
+  failures.push(`frozen Plan obligation compatibility failed: ${error instanceof Error ? error.message : String(error)}`);
 }
 
 if (failures.length) {

@@ -245,7 +245,11 @@ import {
   type ControllerRoundRelayRecord,
   type ControllerRoundDisposition,
 } from '../../../packages/kernel/controller/api/index';
-import { parseControllerDispositionCompatibilityCapability, parseControllerRoundCompatibilityCapability } from '../controller-round-compatibility';
+import {
+  parseControllerDispositionCompatibilityCapability,
+  parseControllerRoundCompatibilityCapability,
+  parsePlanObligationCompatibilityCapability,
+} from '../controller-round-compatibility';
 
 export {
   connectorExposedTools,
@@ -3906,6 +3910,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         let frozenImplementationReview: { decision: 'approved' | 'changes_required' | 'blocked'; workId: string } | undefined;
         let frozenControllerDisposition: ReturnType<typeof parseControllerDispositionCompatibilityCapability>;
         let frozenControllerRoundOperation: ReturnType<typeof parseControllerRoundCompatibilityCapability>;
+        let frozenPlanObligationDispositions: ReturnType<typeof parsePlanObligationCompatibilityCapability>;
         try {
           if (requestedOperation === 'repair' && typeof args.capability_id === 'string') {
             const capability = args.capability_id.trim();
@@ -3922,6 +3927,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           }
           frozenControllerDisposition = parseControllerDispositionCompatibilityCapability(requestedOperation, args.capability_id);
           frozenControllerRoundOperation = parseControllerRoundCompatibilityCapability(requestedOperation, args.capability_id);
+          frozenPlanObligationDispositions = parsePlanObligationCompatibilityCapability(requestedOperation, args.capability_id);
+          if (frozenPlanObligationDispositions && Array.isArray(args.obligation_dispositions)) {
+            throw new Error('PLAN_OBLIGATION_COMPATIBILITY_CONFLICT');
+          }
         } catch (error) {
           return result(buildFacadeResult({
             status: 'blocked',
@@ -3932,6 +3941,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         if (frozenControllerRoundOperation) {
           args.relay_scope_id = frozenControllerRoundOperation.relayScopeId;
           args.controller_authority_id = frozenControllerRoundOperation.authorityId;
+        }
+        if (frozenPlanObligationDispositions) {
+          args.obligation_dispositions = frozenPlanObligationDispositions;
         }
         if (frozenImplementationReview) {
           const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
@@ -4540,7 +4552,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         }
 
         const checks = listControllerChecks(repository.canonicalRoot);
-        const workloopSource = gitSnapshot(repository.canonicalRoot);
+        const workloopSource = freshGitIdentity(repository.canonicalRoot);
         const workloopCtx = {
           workStore: store,
           handoffStore: store,
@@ -4552,6 +4564,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           availableChecks: checks,
           sourceRevision: workloopSource.head ?? undefined,
           sourceBaseState: workloopSource.head ? 'revision' as const : 'unborn' as const,
+          workspaceDirty: workloopSource.dirty,
           materializeIsolatedWorkspace: ({ workId, title, baseRef, needsDependencies }: { workId: string; title: string; baseRef?: string; needsDependencies?: boolean }) => {
             const workspace = ensureManagedWorkspace(ctx.controllerHome, repository, {
               requestId: workId,

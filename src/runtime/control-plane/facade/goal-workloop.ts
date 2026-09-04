@@ -91,6 +91,8 @@ export interface GoalWorkloopContext {
   principalId?: string;
   controllerInstanceId?: string;
   workspaceFingerprint?: string;
+  /** Trusted repository observation for placement admission. Never accept this as caller-supplied semantic authority. */
+  workspaceDirty?: boolean;
   /** Stage-insensitive Git-canonical identity of the exact current review candidate. Derived by the trusted repository adapter. */
   implementationReviewWorkspaceFingerprint?: string;
   /** Current net repository paths changed from the Work base plus dirty checkout paths. */
@@ -450,6 +452,7 @@ export function routeWorkStart(
     knownPaths: input.allowedPaths,
     workspacePlacement: placementConstraint.workspaceMode,
     directMainProhibited: placementConstraint.directMainProhibited,
+    workspaceDirty: ctx.workspaceDirty ?? input.modeInput.workspaceDirty,
     mutation: readOnlyReviewRequested ? false : input.modeInput.mutation ?? input.modeInput.risk !== 'readonly',
     risk: readOnlyReviewRequested ? 'readonly' : input.modeInput.risk,
     approvalConfirmed: input.approvalConfirmed === true,
@@ -1150,6 +1153,7 @@ export function startGoalWorkloop(
   const placementConflict = Boolean(workspaceOwner);
   const needsWorktree = executionMode === 'goal_workloop' && (placementConstraint.requireWorktree
     || placementConflict
+    || input.modeInput.workspaceDirty === true
     || input.modeInput.requiresParallelism === true
     || routeDecision.requiresIsolation === true);
   if (!needsWorktree && workspaceOwner) {
@@ -1230,6 +1234,20 @@ export function startGoalWorkloop(
   const remoteDeliveryRequired = resolvedWorkKind === 'repository_change'
     && input.modeInput.requiresExternalEffect === true
     && input.modeInput.remoteWrite === true;
+  const effectiveConstraints: WorkContract['constraints'] = {
+    ...canonicalConstraints,
+    ...(needsWorktree ? { workspaceMode: 'isolated' as const, requireWorktree: true } : {}),
+    ...(remoteDeliveryRequired ? { remoteDeliveryRequired: true } : {}),
+  };
+  const worktreeReason = input.modeInput.workspaceDirty === true
+    ? 'Trusted repository observation found the current checkout dirty; durable Goal Work is isolated so unrelated changes cannot enter Work ownership or verification.'
+    : placementConflict
+      ? 'The selected checkout is already owned by another active Work; this Work requires isolated placement.'
+      : input.modeInput.requiresParallelism === true
+        ? 'Parallel Work requires isolated placement.'
+        : routeDecision.requiresIsolation === true || placementConstraint.requireWorktree
+          ? 'Typed placement or Route Policy requires isolated execution.'
+          : 'Current workspace is the stability-first default; isolation remains opt-in.';
   const work = createWorkContract(ctx.workStore, {
     workId: generatedWorkId,
     repoId: ctx.repoId,
@@ -1244,10 +1262,7 @@ export function startGoalWorkloop(
     mode: executionMode,
     objective: effectiveObjective,
     acceptanceCriteria: effectiveAcceptanceCriteria,
-    constraints: {
-      ...canonicalConstraints,
-      ...(remoteDeliveryRequired ? { remoteDeliveryRequired: true } : {}),
-    },
+    constraints: effectiveConstraints,
     risk: engineeringRisk,
     engineeringContext,
     // Remote delivery is a risk/effect dimension, not a reason to erase a
@@ -1282,9 +1297,7 @@ export function startGoalWorkloop(
     },
     worktreePolicy: {
       required: needsWorktree,
-      reason: needsWorktree
-        ? 'Isolation was explicitly requested or required for parallel execution.'
-        : 'Current workspace is the stability-first default; isolation remains opt-in.',
+      reason: worktreeReason,
     },
     worktreeRef: undefined,
     evidencePolicy: {

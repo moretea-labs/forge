@@ -288,6 +288,10 @@ describe('single Route Policy authority', () => {
   });
 
   test('routeWorkStart canonicalizes typed isolated placement and refuses force_mode Direct downgrade', () => {
+    // Explicit placement behavior remains covered below. Dirty canonical checkout
+    // isolation for durable Goal Work has a separate regression because fast
+    // Direct Control intentionally keeps its existing dirty-workspace semantics.
+
     const root = temp('route-isolated-placement-');
     const context = {
       workStore: { root: join(root, 'work') },
@@ -323,6 +327,47 @@ describe('single Route Policy authority', () => {
     expect(forced.status).toBe('blocked');
     expect(forced.summary).toContain('WORKSPACE_PLACEMENT_DIRECT_CONTROL_FORBIDDEN');
     expect(forced.data).toMatchObject({ executionStarted: false, workContractCreated: false });
+  });
+
+  test('durable Goal Work isolates a trusted dirty canonical checkout without changing fast Direct Control routing', () => {
+    const root = temp('route-dirty-goal-isolation-');
+    const context = {
+      workStore: { root: join(root, 'work') },
+      handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-dirty-goal-isolation',
+      checkoutId: 'checkout-main',
+      principalId: 'principal-a',
+      controllerInstanceId: 'controller-a',
+      sourceRevision: 'revision-a',
+      workspaceDirty: true,
+    };
+    const started = routeWorkStart(context, {
+      objective: 'Run one recoverable repository repair without absorbing unrelated dirty changes',
+      modeInput: {
+        scopeClear: true,
+        mutation: true,
+        requiresRecovery: true,
+        expectedFiles: 1,
+        expectedChangedLines: 5,
+        risk: 'local_repo_write',
+      },
+    });
+    expect(started.status).toBe('ok');
+    expect(started.data).toMatchObject({ workContractCreated: true, worktreeRequired: true });
+    const workId = (started.data as { work?: { workId?: string } }).work?.workId;
+    const stored = getWorkContract(context.workStore, workId!);
+    expect(stored).toMatchObject({
+      mode: 'goal_workloop',
+      constraints: { workspaceMode: 'isolated', requireWorktree: true },
+      worktreePolicy: { required: true },
+    });
+    expect(stored?.routeDecision?.reasons.map((reason) => reason.code)).toContain('dirty_workspace_preserve_existing_changes');
+
+    const direct = decideRoute(sharedInput({
+      intent: { objective: 'Keep a bounded direct mutation on the dirty current checkout', scopeClear: true, mutation: true, explicitMode: 'direct' },
+      workspace: { knownPaths: ['src/example.ts'], dirty: true },
+    }));
+    expect(direct).toMatchObject({ executionMode: 'direct_control', requiresIsolation: false, requiresWork: false });
   });
 
   test('preserves typed isolated placement across an approval handoff replay', () => {
