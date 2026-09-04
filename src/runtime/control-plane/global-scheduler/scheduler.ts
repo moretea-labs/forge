@@ -186,6 +186,7 @@ export class GlobalScheduler {
   private runtimeCleanup = cleanupControllerRuntimeState;
   private terminalWorkCleanup = reconcileTerminalWorkCleanups;
   private processGc = gcTerminalProcesses;
+  private workExecutionConcurrencyReconcile = reconcileWorkExecutionConcurrencyWaits;
   private workValidationReconcile = reconcilePendingWorkValidations;
   private editValidationReconcile = reconcilePendingEditValidations;
   private repositoryList = listRepositories;
@@ -466,7 +467,12 @@ export class GlobalScheduler {
     if (now - this.lastReconcile >= 5_000) {
       await reconcileExecutionJobsAsync(this.controllerHome);
       for (const repository of repositories) {
-        reconcileWorkExecutionConcurrencyWaits({ controllerHome: this.controllerHome, repoId: repository.repoId });
+        try {
+          this.workExecutionConcurrencyReconcile({ controllerHome: this.controllerHome, repoId: repository.repoId });
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          console.error(`[forge concurrency] Work wait reconciliation failed for ${repository.repoId}:`, reason);
+        }
       }
       await runSchedulerValidationReconciliation({
         controllerHome: this.controllerHome,

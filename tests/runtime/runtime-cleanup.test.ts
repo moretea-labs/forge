@@ -663,6 +663,72 @@ describe('runtime cleanup', () => {
     expect(repositoryProjectionIsDirty(home, repositoryB.repoId)).toBe(false);
   });
 
+  test('a Work concurrency reconciliation failure is isolated per repository and does not interrupt the scheduler tick', async () => {
+    const home = controllerHome();
+    const now = Date.now();
+    const makeRepository = (repoId: string): RepositoryRecord => {
+      const root = mkdtempSync(join(tmpdir(), `${repoId}-`));
+      homes.push(root);
+      const at = new Date(now).toISOString();
+      return {
+        schemaVersion: 1,
+        repoId,
+        displayName: repoId,
+        localRoot: root,
+        canonicalRoot: root,
+        activeCheckoutId: 'checkout-main',
+        checkouts: [{
+          checkoutId: 'checkout-main', localRoot: root, canonicalRoot: root, worktree: false,
+          branch: 'main', createdAt: at, updatedAt: at, lastSeenAt: at,
+        }],
+        repositoryType: 'git',
+        enabled: true,
+        createdAt: at,
+        updatedAt: at,
+        lastSeenAt: at,
+        configurationPath: join(root, '.ai', 'harness', 'repository.json'),
+        stateStorageStrategy: 'controller-home',
+      };
+    };
+    const repositoryA = makeRepository('repo-concurrency-invalid');
+    const repositoryB = makeRepository('repo-concurrency-healthy');
+    const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 });
+    const observed: string[] = [];
+    const internal = scheduler as unknown as {
+      repositoryList: () => RepositoryRecord[];
+      lastSourceScanAt: number;
+      lastGitStatusSampleAt: number;
+      runtimeCleanup: () => void;
+      terminalWorkCleanup: () => Promise<void>;
+      processGc: () => { ok: boolean };
+      workExecutionConcurrencyReconcile: (input: { repoId: string }) => { scanned: number; waiting: number; cleared: number; workIds: string[] };
+      workValidationReconcile: () => { errors: unknown[] };
+      editValidationReconcile: () => Promise<{ errors: unknown[] }>;
+    };
+    internal.repositoryList = () => [repositoryA, repositoryB];
+    internal.lastSourceScanAt = now;
+    internal.lastGitStatusSampleAt = now;
+    internal.runtimeCleanup = () => undefined;
+    internal.terminalWorkCleanup = async () => undefined;
+    internal.processGc = () => ({ ok: true });
+    internal.workExecutionConcurrencyReconcile = ({ repoId }) => {
+      observed.push(repoId);
+      if (repoId === repositoryA.repoId) throw new Error('WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: review');
+      return { scanned: 0, waiting: 0, cleared: 0, workIds: [] };
+    };
+    internal.workValidationReconcile = () => ({ errors: [] });
+    internal.editValidationReconcile = async () => ({ errors: [] });
+    activateExclusiveWorkAdmission(home, { allowedWorkId: 'work-exclusive', reason: 'test concurrency reconciliation isolation' });
+    const originalError = console.error;
+    console.error = () => undefined;
+    try {
+      await expect(scheduler.tick()).resolves.toEqual({ activeJobs: 0 });
+    } finally {
+      console.error = originalError;
+    }
+    expect(observed).toEqual([repositoryA.repoId, repositoryB.repoId]);
+  });
+
   test('a cleanup failure does not interrupt the scheduler tick', async () => {
     const home = controllerHome();
     const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 });
