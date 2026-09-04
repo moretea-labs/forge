@@ -480,6 +480,30 @@ describe('controller check provenance and failure classification', () => {
     }
   });
 
+  test('classifies strong transport failures as infrastructure in both sync and async paths without broad text fallback', async () => {
+    const repoRoot = fixture({
+      transport_sync: {
+        command: [process.execPath, '-e', 'console.error("java.net.SocketTimeoutException: Read timed out"); process.exit(1)'],
+      },
+      transport_async: {
+        command: [process.execPath, '-e', 'console.error("getaddrinfo EAI_AGAIN repo.maven.apache.org"); process.exit(1)'],
+      },
+      deterministic_network_word: {
+        command: [process.execPath, '-e', 'console.error("AssertionError: expected network retries to equal 2"); process.exit(1)'],
+      },
+    });
+
+    const syncTransport = runControllerCheck(repoRoot, 'transport_sync');
+    const asyncTransport = await runControllerCheckAsync(repoRoot, 'transport_async');
+    const deterministic = runControllerCheck(repoRoot, 'deterministic_network_word');
+
+    expect(syncTransport.failureClass).toBe('infrastructure_failure');
+    expect(asyncTransport.failureClass).toBe('infrastructure_failure');
+    expect(deterministic.failureClass).toBe('acceptance_failure');
+    expect(readLatestControllerCheckEvidence(repoRoot, 'transport_sync')?.failureClass).toBe('infrastructure_failure');
+    expect(readLatestControllerCheckEvidence(repoRoot, 'transport_async')?.failureClass).toBe('infrastructure_failure');
+  });
+
   test('classifies a named nonzero check as acceptance and a missing runtime as infrastructure', async () => {
     const repoRoot = fixture({
       assertion: { command: [process.execPath, '-e', 'console.error("expected value mismatch"); process.exit(3)'] },

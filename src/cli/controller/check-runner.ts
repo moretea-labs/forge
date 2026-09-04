@@ -340,7 +340,7 @@ export interface ControllerCheckResult {
   validatedRevision?: string;
   /** Original process execution timestamp; retained when a result is served from cache. */
   originalExecutedAt?: string;
-  /** A non-zero check result is acceptance failure; runtime/process defects are infrastructure. */
+  /** Non-zero repository failures are acceptance failures unless bounded infrastructure evidence proves otherwise. */
   failureClass?: 'acceptance_failure' | 'infrastructure_failure';
 }
 
@@ -365,6 +365,30 @@ export interface ControllerCheckEvidence {
   validatedRevision?: string;
   originalExecutedAt?: string;
   failureClass?: 'acceptance_failure' | 'infrastructure_failure';
+}
+
+const STRONG_TRANSPORT_FAILURE_PATTERNS = [
+  /\bjava\.net\.(?:SocketTimeoutException|UnknownHostException|ConnectException|NoRouteToHostException)\b/i,
+  /\b(?:EAI_AGAIN|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH)\b/i,
+  /\bCould not resolve host\b/i,
+  /\b(?:connection|connect|read) timed out\b/i,
+  /\bNetwork is unreachable\b/i,
+  /\b(?:SSLHandshakeException|TLS handshake (?:failed|timeout|timed out)|CERTIFICATE_VERIFY_FAILED)\b/i,
+] as const;
+
+function classifyControllerCheckFailure(input: {
+  ok: boolean;
+  stale?: boolean;
+  timedOut: boolean;
+  runtimeFailure: boolean;
+  stdout: string;
+  stderr: string;
+}): 'acceptance_failure' | 'infrastructure_failure' | undefined {
+  if (input.ok && !input.stale) return undefined;
+  if (input.stale || input.timedOut || input.runtimeFailure) return 'infrastructure_failure';
+  const output = `${input.stdout}\n${input.stderr}`;
+  if (STRONG_TRANSPORT_FAILURE_PATTERNS.some((pattern) => pattern.test(output))) return 'infrastructure_failure';
+  return 'acceptance_failure';
 }
 
 function artifactSlug(id: string): string {
@@ -754,9 +778,14 @@ export function runControllerCheck(repoRoot: string, id: string, requestedTimeou
     cacheHit: false,
     validatedRevision: stale ? completedRevision : revision,
     originalExecutedAt: executedAt,
-    failureClass: stale || result.timedOut || Boolean(result.error) || Boolean(result.signal)
-      ? 'infrastructure_failure' as const
-      : result.ok ? undefined : 'acceptance_failure' as const,
+    failureClass: classifyControllerCheckFailure({
+      ok: result.ok && !stale,
+      stale,
+      timedOut: result.timedOut,
+      runtimeFailure: Boolean(result.error) || Boolean(result.signal),
+      stdout: result.stdout,
+      stderr: [result.stderr, result.error].filter(Boolean).join('\n'),
+    }),
   };
   return {
     ...withoutPath,
@@ -945,9 +974,13 @@ async function executeControllerCheckAsync(
       timeoutMessage || supervised.error || '',
       processTreeError,
     ].filter(Boolean).join('\n')), maxOutputBytes),
-    failureClass: supervised.failureCode
-      ? 'infrastructure_failure' as const
-      : supervised.status === 0 ? undefined : 'acceptance_failure' as const,
+    failureClass: classifyControllerCheckFailure({
+      ok: supervised.status === 0 && !supervised.failureCode,
+      timedOut: supervised.timedOut,
+      runtimeFailure: Boolean(supervised.failureCode) || Boolean(supervised.error),
+      stdout: supervised.stdout,
+      stderr: [supervised.stderr, timeoutMessage, supervised.error, processTreeError].filter(Boolean).join('\n'),
+    }),
   };
 
   const executedAt = new Date().toISOString();
