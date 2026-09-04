@@ -19,7 +19,7 @@ import { processCheckCompletionReceipt } from '../../execution/process-runtime/c
 import { classifyPersistedCheckTerminalEvidence } from '../../execution/process-runtime/check-result';
 import { claimProcessInvocation, getProcessRecord } from '../../execution/process-runtime/store';
 import { runPersistedCheckViaProcessRuntime } from '../../execution/process-runtime/persisted-check';
-import { markWorkValidationPending, projectWorkValidationOutcome } from './work-validation-reconciler';
+import { markWorkValidationCurrentFromReusedEvidence, markWorkValidationPending, projectWorkValidationOutcome } from './work-validation-reconciler';
 import { assertWorkControllerOwnership, compactHandle, contractFor, gitHead, identityFor, makeBoundedWorkResult, reconcileTerminalCleanup, requireSession, terminalCleanupOutcome, workForSession } from './work-execution-support';
 
 function commandInputs(args: Record<string, unknown>): Array<Record<string, unknown>> {
@@ -258,12 +258,21 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
     resumeState: handle.state === 'committed' || handle.state === 'merged' ? handle.state : 'editing',
     processes: {},
   };
+  const available = new Set(listControllerChecks(validated.worktreeRepository.canonicalRoot).map((check) => check.id));
+  const hasReusableExactPass = (checkId: string): boolean => Boolean(contract
+    && available.has(checkId)
+    && [...effectiveVerificationEvidence(contract.checkRefs, {
+      sourceRevision: validationHead,
+      workspaceFingerprint,
+      checkId,
+      requestedChecks,
+    })].reverse().some((entry) => entry.current && entry.record.outcome === 'valid_pass' && Boolean(entry.record.receipt)));
+  const allRequestedChecksReusable = Boolean(contract) && requestedChecks.every(hasReusableExactPass);
   let current = transitionWorkHandle(ctx.controllerHome, handle, 'validating', {
     finalization: { ...handle.finalization, validation: 'pending', lastError: undefined },
     validationRun,
   });
-  markWorkValidationPending(ctx.controllerHome, current);
-  const available = new Set(listControllerChecks(validated.worktreeRepository.canonicalRoot).map((check) => check.id));
+  if (!allRequestedChecksReusable) markWorkValidationPending(ctx.controllerHome, current);
   const checks: Array<Record<string, unknown>> = [];
   for (const [index, checkId] of requestedChecks.entries()) {
     if (!available.has(checkId)) {
@@ -438,6 +447,9 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
     ...(failureSummary ? { failureReason: failureSummary } : { failureReason: undefined }),
   });
   if (completed) {
+    if (passed && allRequestedChecksReusable) {
+      markWorkValidationCurrentFromReusedEvidence(ctx.controllerHome, next);
+    }
     projectWorkValidationOutcome(
       ctx.controllerHome,
       next,

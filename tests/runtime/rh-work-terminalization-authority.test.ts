@@ -2222,8 +2222,14 @@ describe('rh_work terminalization authority', () => {
   }, 15_000);
 
 
-  test('isolated WorkHandle preserves canonical source identity and adopts a Work-attributed clean descendant before finalization', async () => {
+  test('isolated WorkHandle preserves approved review when physical validation only reuses exact current check evidence', async () => {
     const fx = fixture();
+    const checkId = 'package:check:successor-finalize';
+    writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({
+      scripts: { 'check:successor-finalize': 'node -e \"process.exit(0)\"' },
+    }, null, 2) + '\n');
+    execFileSync('git', ['add', 'package.json'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'add successor finalize check'], { cwd: fx.repoRoot });
     const workId = 'work-isolated-unscoped-head-adoption';
     const caller = {
       principalId: 'principal-isolated-unscoped-head',
@@ -2247,7 +2253,7 @@ describe('rh_work terminalization authority', () => {
       acceptanceCriteria: ['The exact clean descendant is delivered.'],
       allowedPaths: [],
       forbiddenPaths: [],
-      checks: [],
+      checks: [checkId],
       constraints: { requireHandoffOnAmbiguity: true },
       requestedBy: 'chatgpt',
       workKind: 'repository_change',
@@ -2305,7 +2311,28 @@ describe('rh_work terminalization authority', () => {
       { repo_id: canonicalRepository.repoId, checkout_id: workspace.checkoutId, operation: 'continue', work_id: workId, requested_by: 'chatgpt' },
     ));
     expect(admitted.status).toBe('ok');
-    expect(admitted.data.nextStep).toBe('review');
+
+    let verified: Record<string, any> | undefined;
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      verified = structured(await callRuntimeTool(
+        ctx(fx.controllerHome, canonicalRepository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+        'rh_work',
+        {
+          repo_id: canonicalRepository.repoId,
+          checkout_id: workspace.checkoutId,
+          operation: 'verify',
+          work_id: workId,
+          check_id: checkId,
+          requested_by: 'chatgpt',
+          request_id: 'successor-finalize-exact-check',
+        },
+      ));
+      if (verified.data?.verification?.completed === true) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(verified?.status).toBe('ok');
+    expect(verified?.data?.verification).toMatchObject({ completed: true, outcome: 'valid_pass' });
+    expect(verified?.data?.nextStep).toBe('review');
 
     const reviewed = structured(await callRuntimeTool(
       ctx(fx.controllerHome, canonicalRepository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
@@ -2313,6 +2340,10 @@ describe('rh_work terminalization authority', () => {
       { repo_id: canonicalRepository.repoId, checkout_id: workspace.checkoutId, operation: 'review', work_id: workId, requested_by: 'chatgpt', review_decision: 'approved', review_rationale: 'Exact verified committed descendant reviewed before delivery.' },
     ));
     expect(reviewed.status).toBe('ok');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: canonicalRepository.repoId }, workId)).toMatchObject({
+      phase: 'delivery',
+      phaseEvidence: { review: { state: 'satisfied' } },
+    });
 
     const finalized = structured(await callRuntimeTool(
       ctx(fx.controllerHome, canonicalRepository, caller.principalId, caller.sessionId, caller.controllerInstanceId),

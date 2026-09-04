@@ -59,6 +59,25 @@ export function markWorkValidationPending(controllerHome: string, handle: WorkHa
 }
 
 /**
+ * Re-bind aggregate validation authority after the physical Work validator has
+ * proved that every requested check is satisfied by an exact-current persisted
+ * valid_pass receipt. This is not a new validation run: no check was executed
+ * and source/workspace/check identity did not change, so an already-approved
+ * implementation review remains authoritative.
+ */
+export function markWorkValidationCurrentFromReusedEvidence(controllerHome: string, handle: WorkHandleState): void {
+  if (handle.finalization.validation !== 'done' || !handle.validatedInputFingerprint) {
+    throw new Error('WORK_REUSED_VALIDATION_AUTHORITY_INCOMPLETE');
+  }
+  const contractId = handle.workContractId;
+  if (!contractId) return;
+  const options = { controllerHome, repoId: handle.repositoryId };
+  const contract = getWorkContract(options, contractId);
+  if (!contract || contract.completionReceipt) return;
+  if (contract.evidenceState !== 'valid') updateWorkContract(options, contractId, { evidenceState: 'valid' });
+}
+
+/**
  * Project durable validation evidence into the Work-owned contract lifecycle.
  * Process and Check records contribute evidence only; they never become a
  * second completion or lifecycle authority.
