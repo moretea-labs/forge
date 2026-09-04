@@ -4,7 +4,7 @@ import type { ChildProcess } from 'child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { resolveBunExecutable } from '../../src/runtime/shared/process-environment';
+import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../src/runtime/shared/process-environment';
 import {
   buildSchedulerWorkerLaunchDescriptor,
   resolveSchedulerWorkerCommand,
@@ -38,6 +38,28 @@ afterEach(() => {
 });
 
 describe('repository child process environment', () => {
+  test('normalizes Windows PATH case variants into one usable canonical PATH', () => {
+    const normalized = repositoryChildProcessEnvironment({
+      Path: 'C:\\Windows\\System32;C:\\Program Files\\Git\\cmd',
+      PATH: '',
+      FORGE_RUNTIME_PRIVATE_TEST: 'must-not-leak',
+    }, 'win32');
+
+    expect(normalized.PATH).toBe('C:\\Windows\\System32;C:\\Program Files\\Git\\cmd');
+    expect(Object.keys(normalized).filter((key) => key.toLowerCase() === 'path')).toEqual(['PATH']);
+    expect(normalized.FORGE_RUNTIME_PRIVATE_TEST).toBeUndefined();
+  });
+
+  test('uses the last non-empty Windows PATH variant as the case-insensitive override', () => {
+    const normalized = repositoryChildProcessEnvironment({
+      PATH: 'C:\\Windows\\System32',
+      Path: 'D:\\tools;C:\\Windows\\System32',
+    }, 'win32');
+
+    expect(normalized.PATH).toBe('D:\\tools;C:\\Windows\\System32');
+    expect(Object.keys(normalized).filter((key) => key.toLowerCase() === 'path')).toEqual(['PATH']);
+  });
+
   test('never treats a compiled Forge Runtime as Bun through FORGE_BUN_EXECUTABLE', () => {
     expect(resolveBunExecutable('/tmp/forge-runtime', {
       FORGE_BUN_EXECUTABLE: '/tmp/forge-runtime',

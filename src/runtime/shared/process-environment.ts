@@ -66,6 +66,7 @@ export function resolveBunExecutable(
 
 export function repositoryChildProcessEnvironment(
   env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
   const sanitized = { ...env };
   for (const key of Object.keys(sanitized)) {
@@ -77,7 +78,19 @@ export function repositoryChildProcessEnvironment(
     }
   }
 
-  const pathEntries = (sanitized.PATH ?? '').split(delimiter).filter(Boolean);
+  if (platform === 'win32') {
+    let inheritedPath: string | undefined;
+    for (const key of Object.keys(sanitized)) {
+      if (key.toLowerCase() !== 'path') continue;
+      const candidate = sanitized[key];
+      if (candidate?.trim()) inheritedPath = candidate;
+      delete sanitized[key];
+    }
+    if (inheritedPath !== undefined) sanitized.PATH = inheritedPath;
+  }
+
+  const pathDelimiter = platform === 'win32' ? ';' : delimiter;
+  const pathEntries = (sanitized.PATH ?? '').split(pathDelimiter).filter(Boolean);
   const bunInstall = sanitized.BUN_INSTALL?.trim();
   const home = sanitized.HOME?.trim() || sanitized.USERPROFILE?.trim();
   const voltaHome = sanitized.VOLTA_HOME?.trim();
@@ -89,9 +102,9 @@ export function repositoryChildProcessEnvironment(
   appendExecutableDirectory(pathEntries, voltaHome ? join(voltaHome, 'bin') : undefined);
   appendExecutableDirectory(pathEntries, pnpmHome);
   appendExecutableDirectory(pathEntries, home ? join(home, '.local', 'bin') : undefined);
-  if (process.platform === 'darwin') appendExecutableDirectory(pathEntries, '/opt/homebrew/bin');
-  if (process.platform !== 'win32') appendExecutableDirectory(pathEntries, '/usr/local/bin');
-  sanitized.PATH = pathEntries.join(delimiter);
+  if (platform === 'darwin') appendExecutableDirectory(pathEntries, '/opt/homebrew/bin');
+  if (platform !== 'win32') appendExecutableDirectory(pathEntries, '/usr/local/bin');
+  sanitized.PATH = pathEntries.join(pathDelimiter);
 
   return sanitized;
 }
