@@ -221,6 +221,62 @@ describe('ChatGPT Work conversation binding', () => {
     })).toBeUndefined();
   });
 
+  test('prefers the dedicated controlled WSL bridge profile and falls back to the ordinary browser profile', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-wsl-controlled-bridge-discovery-'));
+    roots.push(root);
+    const programFiles = join(root, 'Program Files');
+    const localAppData = join(root, 'Users', 'fixture', 'AppData', 'Local');
+    const userProfile = join(root, 'Users', 'fixture');
+    const executable = join(programFiles, 'CentBrowser', 'Application', 'chrome.exe');
+    const controlledRoot = join(localAppData, 'Forge', 'ChatGPT Bridge', 'User Data');
+    const ordinaryRoot = join(localAppData, 'CentBrowser', 'User Data');
+    const controlledExtension = join(root, 'controlled-bridge');
+    const ordinaryExtension = join(root, 'ordinary-bridge');
+    const bridgeUrl = 'http://127.0.0.1:17651';
+    const token = 'bridge-token';
+
+    mkdirSync(join(controlledRoot, 'Default'), { recursive: true });
+    mkdirSync(join(ordinaryRoot, 'Default'), { recursive: true });
+    mkdirSync(controlledExtension, { recursive: true });
+    mkdirSync(ordinaryExtension, { recursive: true });
+    mkdirSync(join(programFiles, 'CentBrowser', 'Application'), { recursive: true });
+    writeFileSync(executable, '', 'utf8');
+    writeFileSync(join(controlledExtension, 'content-script.js'), `const url=${JSON.stringify(bridgeUrl)}; const token=${JSON.stringify(token)};`, 'utf8');
+    writeFileSync(join(ordinaryExtension, 'content-script.js'), `const url=${JSON.stringify(bridgeUrl)}; const token=${JSON.stringify(token)};`, 'utf8');
+    writeFileSync(join(controlledRoot, 'Default', 'Preferences'), JSON.stringify({
+      extensions: { settings: { bridge: { state: 1, path: controlledExtension } } },
+    }), 'utf8');
+    writeFileSync(join(ordinaryRoot, 'Default', 'Preferences'), JSON.stringify({
+      extensions: { settings: { bridge: { state: 1, path: ordinaryExtension } } },
+    }), 'utf8');
+
+    const hostEnvironment = {
+      commandExecutable: join(root, 'Windows', 'System32', 'cmd.exe'),
+      userProfileWindows: 'C:\\Users\\fixture',
+      userProfile,
+      localAppDataWindows: 'C:\\Users\\fixture\\AppData\\Local',
+      localAppData,
+      programFilesWindows: ['C:\\Program Files'],
+      programFiles: [programFiles],
+      driveMounts: { c: root },
+    };
+
+    expect(findInstalledWslWindowsBridgeBrowser(bridgeUrl, token, { hostEnvironment })).toEqual({
+      executable,
+      profileDirectory: 'Default',
+      extensionDir: controlledExtension,
+      userDataDir: controlledRoot,
+      loadExtensionOnLaunch: true,
+    });
+
+    rmSync(controlledRoot, { recursive: true, force: true });
+    expect(findInstalledWslWindowsBridgeBrowser(bridgeUrl, token, { hostEnvironment })).toEqual({
+      executable,
+      profileDirectory: 'Default',
+      extensionDir: ordinaryExtension,
+    });
+  });
+
   test('opens WSL bridge targets with the exact discovered Chromium profile and fails closed otherwise', async () => {
     const launches: Array<{ executable: string; args: readonly string[] }> = [];
     const launch = ((executable: string, args: readonly string[]) => {

@@ -192,8 +192,17 @@ function hostBrowserCandidates(host: WindowsHostEnvironment): WslWindowsBridgeBr
   const candidates: WslWindowsBridgeBrowserCandidate[] = [];
   for (const fallback of WSL_WINDOWS_BROWSER_PRODUCT_FALLBACKS) {
     for (const programFiles of host.programFiles) {
+      const executable = join(programFiles, fallback.executableRelativePath);
+      if (host.localAppData && fallback.supportsUnpackedExtensionLaunch) {
+        candidates.push({
+          executable,
+          profileRoot: join(host.localAppData, WSL_WINDOWS_CONTROLLED_PROFILE_ROOT),
+          controlled: true,
+          supportsUnpackedExtensionLaunch: true,
+        });
+      }
       candidates.push({
-        executable: join(programFiles, fallback.executableRelativePath),
+        executable,
         ...(host.localAppData && fallback.profileRelativeToLocalAppData ? { profileRoot: join(host.localAppData, fallback.profileRelativeToLocalAppData) } : {}),
         ...(fallback.supportsUnpackedExtensionLaunch ? { supportsUnpackedExtensionLaunch: true } : {}),
       });
