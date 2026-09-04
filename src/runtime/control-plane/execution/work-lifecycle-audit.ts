@@ -2,8 +2,14 @@ import { spawnSync } from 'child_process';
 import { existsSync, realpathSync } from 'fs';
 import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
-import { listWorkContracts } from '../../../../packages/kernel/work/api/index';
+import {
+  getWorkContract,
+  listWorkContracts,
+  readActiveWorkCandidates,
+  type WorkContract,
+} from '../../../../packages/kernel/work/api/index';
 import { isTerminalWorkContractStatus } from '../facade/types';
+import { listControlPlaneRecords } from '../persistence/sqlite-store';
 import { listWorkHandles } from './work-handle-store';
 
 export interface WorkLifecycleAttention {
@@ -132,6 +138,59 @@ function attention(code: string, identity: string, message: string): WorkLifecyc
   return { jobId: `lifecycle:${code}:${identity}`, status: code, message };
 }
 
+interface LifecycleWorkSnapshot {
+  contracts: WorkContract[];
+  invalid: Array<{ workId: string; error: string }>;
+}
+
+/**
+ * Keep lifecycle diagnostics available when one historical active Work row is malformed.
+ * Active Work semantics come only from the Kernel row-isolated projection. When that
+ * projection reports corruption, enumerate bounded durable identities and re-read each
+ * remaining row through exact Kernel authority so terminal receipt/cleanup diagnostics
+ * are preserved without reimplementing Work normalization here.
+ */
+function readLifecycleWorkSnapshot(controllerHome: string, repoId: string): LifecycleWorkSnapshot {
+  const store = { controllerHome, repoId };
+  const active = readActiveWorkCandidates({ ...store, limit: 100 });
+  if (active.invalid.length === 0) {
+    return { contracts: listWorkContracts({ ...store, status: 'all', limit: 100 }), invalid: [] };
+  }
+
+  const contractsById = new Map(active.contracts.map((contract) => [contract.workId, contract]));
+  const invalidById = new Map(active.invalid.map((entry) => [entry.workId, { workId: entry.workId, error: entry.error }]));
+  const identities = listControlPlaneRecords<WorkContract>(controllerHome, {
+    namespace: 'work_contract',
+    scope: repoId,
+    limit: 5_000,
+  })
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, 100);
+
+  for (const record of identities) {
+    const workId = record.key;
+    if (contractsById.has(workId) || invalidById.has(workId)) continue;
+    try {
+      const contract = getWorkContract(store, workId);
+      if (contract) contractsById.set(workId, contract);
+    } catch (error) {
+      invalidById.set(workId, {
+        workId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return {
+    contracts: [...contractsById.values()]
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, 100),
+    invalid: [...invalidById.values()]
+      .sort((left, right) => left.workId.localeCompare(right.workId))
+      .slice(0, 100),
+  };
+}
+
 /**
  * Read-only reconciliation across canonical Work, WorkHandle, registry, and Git.
  * It reports contradictions and live Work through the existing Runtime projection;
@@ -141,16 +200,16 @@ export function collectWorkLifecycleAttention(
   controllerHome: string,
   repository: RepositoryRecord,
 ): WorkLifecycleAttention[] {
-  const contracts = listWorkContracts({
-    controllerHome,
-    repoId: repository.repoId,
-    status: 'all',
-    limit: 100,
-  });
+  const workSnapshot = readLifecycleWorkSnapshot(controllerHome, repository.repoId);
+  const contracts = workSnapshot.contracts;
   const handles = listWorkHandles(controllerHome, repository.repoId, 5_000);
   const contractsByWork = new Map(contracts.map((contract) => [contract.workId, contract]));
   const handlesByWork = new Map(handles.map((handle) => [handle.workContractId ?? handle.workId, handle]));
-  const findings: WorkLifecycleAttention[] = [];
+  const findings: WorkLifecycleAttention[] = workSnapshot.invalid.map((entry) => attention(
+    'work_contract_invalid',
+    entry.workId,
+    `Work ${entry.workId} is unreadable by Kernel semantics and is excluded from valid lifecycle authority: ${entry.error.slice(0, 180)}`,
+  ));
   const targetBranch = repository.defaultBranch || 'main';
   const targetReachability = new Map<string, ReadonlySet<string> | undefined>();
   const reachableFrom = (branch: string): ReadonlySet<string> | undefined => {

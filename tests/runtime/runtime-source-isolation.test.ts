@@ -27,6 +27,8 @@ import {
 } from '../../src/runtime/plugins/lightweight-action';
 import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
 import { startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
+import { createWorkContract, type WorkContract } from '../../packages/kernel/work/api/index';
+import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 
 const roots: string[] = [];
 const previousEnv = process.env[CONTROLLER_RUNTIME_SOURCE_ROOT_ENV];
@@ -79,6 +81,46 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
   expect(result).toBeTruthy();
   return (result!.structuredContent
     ?? JSON.parse(result!.content[0] && 'text' in result!.content[0] ? String(result!.content[0].text) : '{}')) as Record<string, unknown>;
+}
+
+function createProjectionWork(
+  controllerHome: string,
+  repository: ReturnType<typeof registerRepository>,
+  workId: string,
+): WorkContract {
+  return createWorkContract({ controllerHome, repoId: repository.repoId }, {
+    workId,
+    repoId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
+    mode: 'goal_workloop',
+    objective: `Project ${workId} through bounded Runtime facade reads.`,
+    acceptanceCriteria: ['Runtime facade reads remain available.'],
+    constraints: { requireHandoffOnAmbiguity: true, workspaceMode: 'isolated', requireWorktree: true },
+    requestedBy: 'chatgpt',
+    status: 'running',
+    allowedPaths: [],
+    forbiddenPaths: [],
+    checks: [],
+  });
+}
+
+function corruptProjectionWork(controllerHome: string, repoId: string, workId: string): void {
+  const record = readControlPlaneRecord<WorkContract>(controllerHome, 'work_contract', repoId, workId)!;
+  writeControlPlaneRecord(controllerHome, {
+    namespace: 'work_contract', scope: repoId, key: workId, schemaVersion: 2,
+    expectedRevision: record.revision, action: 'test_malformed_runtime_facade_projection',
+    value: {
+      ...record.value,
+      phase: 'delivery',
+      phaseEvidence: {
+        ...record.value.phaseEvidence,
+        implementation: { ...record.value.phaseEvidence.implementation, state: 'satisfied' },
+        verification: { ...record.value.phaseEvidence.verification, state: 'satisfied' },
+        review: { ...record.value.phaseEvidence.review, state: 'pending' },
+        delivery: { ...record.value.phaseEvidence.delivery, state: 'active' },
+      },
+    },
+  });
 }
 
 describe('runtime source isolation', () => {
@@ -461,6 +503,109 @@ printf 'BUILD SUCCEEDED\\n'
     if (data.repositoryState?.branch) {
       expect(data.repositoryState.branch).toBe('perf-i18n-global-opt');
     }
+  });
+
+  test('rh_status row-isolates malformed active Work while keeping bounded diagnostics', async () => {
+    const runtimeRoot = tempRoot('forge-runtime-status-invalid-work-');
+    const business = tempRoot('forge-status-invalid-work-');
+    const controllerHome = tempRoot('forge-home-status-invalid-work-');
+    initGitRepo(runtimeRoot, 'status-invalid-work-runtime');
+    initGitRepo(business, 'status-invalid-work');
+    pinRuntimeSource(runtimeRoot);
+    ensureControllerHome(controllerHome);
+    const generation = rotateRuntimeGeneration(controllerHome, collectRuntimeSourceIdentity(runtimeRoot));
+    writeJsonAtomic(join(controllerHome, 'daemon', 'state.json'), {
+      schemaVersion: 1,
+      status: 'ready',
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      gatewaySeparated: true,
+      workerIsolation: true,
+      generation: generation.generation,
+      source: generation.source,
+    });
+    writeFileSync(join(controllerHome, 'daemon', 'controller.pid'), `${process.pid}\n`, 'utf8');
+    writeJsonAtomic(join(controllerHome, 'scheduler', 'state.json'), {
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      loopStartedAt: new Date().toISOString(),
+      lastTickAt: new Date().toISOString(),
+      lastDispatchAt: new Date().toISOString(),
+      lastReconcileAt: new Date().toISOString(),
+      lastRepoDispatch: {},
+    });
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Status Invalid Work' });
+    const valid = createProjectionWork(controllerHome, repository, 'work-status-valid');
+    const malformed = createProjectionWork(controllerHome, repository, 'work-status-malformed');
+    corruptProjectionWork(controllerHome, repository.repoId, malformed.workId);
+
+    const summaryPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
+      repo_id: repository.repoId, operation: 'get', detail_level: 'summary',
+    }));
+    const summary = summaryPayload.data as {
+      controllerSnapshot?: {
+        activeWork?: Array<{ workId?: string }>;
+        invalidActiveWorkCount?: number;
+        invalidActiveWork?: Array<{ workId?: string; error?: string }>;
+      };
+    };
+    expect(summary.controllerSnapshot?.activeWork?.some((entry) => entry.workId === valid.workId)).toBe(true);
+    expect(summary.controllerSnapshot?.invalidActiveWorkCount).toBe(1);
+    expect(summary.controllerSnapshot?.invalidActiveWork?.[0]).toMatchObject({
+      workId: malformed.workId,
+      error: expect.stringContaining('WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: review'),
+    });
+
+    const detailPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
+      repo_id: repository.repoId, operation: 'get', detail_level: 'detail',
+    }));
+    expect(detailPayload.error).toBeUndefined();
+    const detail = detailPayload.data as {
+      activeContractCount?: number;
+      invalidActiveContractCount?: number;
+      invalidActiveContracts?: Array<{ workId?: string; error?: string }>;
+    };
+    expect(detail.activeContractCount).toBe(1);
+    expect(detail.invalidActiveContractCount).toBe(1);
+    expect(detail.invalidActiveContracts?.[0]).toMatchObject({ workId: malformed.workId });
+  });
+
+  test('rh_context row-isolates malformed active Work for repository-wide get/list reads', async () => {
+    const business = tempRoot('forge-context-invalid-work-');
+    const controllerHome = tempRoot('forge-home-context-invalid-work-');
+    initGitRepo(business, 'context-invalid-work');
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Invalid Work' });
+    const valid = createProjectionWork(controllerHome, repository, 'work-context-valid');
+    const malformed = createProjectionWork(controllerHome, repository, 'work-context-malformed');
+    corruptProjectionWork(controllerHome, repository.repoId, malformed.workId);
+
+    const summaryPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId, operation: 'get', detail_level: 'summary',
+    }));
+    const summary = summaryPayload.data as {
+      activeWork?: Array<{ workId?: string }>;
+      invalidActiveWork?: Array<{ workId?: string; error?: string }>;
+      counts?: { invalidActiveWork?: number; invalidActiveWorkShown?: number };
+    };
+    expect(summary.activeWork?.some((entry) => entry.workId === valid.workId)).toBe(true);
+    expect(summary.counts).toMatchObject({ invalidActiveWork: 1, invalidActiveWorkShown: 1 });
+    expect(summary.invalidActiveWork?.[0]).toMatchObject({
+      workId: malformed.workId,
+      error: expect.stringContaining('WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: review'),
+    });
+
+    const detailPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId, operation: 'list', detail_level: 'detail',
+    }));
+    const detail = detailPayload.data as {
+      activeWork?: Array<{ workId?: string }>;
+      invalidActiveWork?: Array<{ workId?: string }>;
+      counts?: { invalidActiveWork?: number };
+    };
+    expect(detail.activeWork?.some((entry) => entry.workId === valid.workId)).toBe(true);
+    expect(detail.counts?.invalidActiveWork).toBe(1);
+    expect(detail.invalidActiveWork?.[0]).toMatchObject({ workId: malformed.workId });
   });
 
   test('rh_context Work summary defers plugin capability and historical process hydration', async () => {

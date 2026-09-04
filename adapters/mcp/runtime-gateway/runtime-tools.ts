@@ -201,6 +201,8 @@ import {
   getWorkContract,
   getWorkContractByRequestId,
   listWorkContracts,
+  readActiveWorkCandidates,
+  type InvalidActiveWorkCandidate,
 } from '../../../packages/kernel/work/api/index';
 import { currentControllerInstanceId, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../../src/runtime/control-plane/execution/session-store';
 import { changedPaths as workChangedPaths, changedPathsFromUnbornBase as workChangedPathsFromUnbornBase } from '../../../src/runtime/control-plane/execution/work-task-receipt';
@@ -270,6 +272,19 @@ function isCurrentRhContextWork(
   if (contract.status === 'running') return true;
   if (contract.status !== 'ready' && contract.status !== 'open' && contract.status !== 'blocked') return false;
   return timestampIsCurrent(contract.updatedAt, cutoffMs);
+}
+
+function summarizeInvalidActiveWorkCandidate(entry: InvalidActiveWorkCandidate) {
+  return {
+    workId: entry.workId,
+    updatedAt: entry.updatedAt,
+    requirementId: entry.requirementId,
+    planId: entry.planId,
+    planStepId: entry.planStepId,
+    semanticScopeKeys: entry.semanticScopeKeys.slice(0, 4),
+    isolation: entry.isolation,
+    error: entry.error.slice(0, 160),
+  };
 }
 
 function rhContextReadSessionId(ctx: MultiRepositoryMcpToolContext): string | undefined {
@@ -2955,7 +2970,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               : 'RUNTIME_SOURCE_SNAPSHOT_STALE');
           const runtimeReadiness = observation.snapshot?.readiness;
           const releaseDiagnostic = runtimeReadiness?.diagnostics.releaseCoherence;
-          const activeWorkSnapshot = listWorkContracts({ ...store, status: 'active', limit: 3 }).map((entry) => ({
+          const activeWorkProjection = readActiveWorkCandidates({ ...store, limit: 3 });
+          const activeWorkSnapshot = activeWorkProjection.contracts.map((entry) => ({
             workId: entry.workId,
             status: entry.status,
             mode: entry.mode,
@@ -3037,6 +3053,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               },
               controllerSnapshot: {
                 activeWork: activeWorkSnapshot,
+                invalidActiveWorkCount: activeWorkProjection.invalid.length,
+                invalidActiveWork: activeWorkProjection.invalid.slice(0, 3).map(summarizeInvalidActiveWorkCandidate),
                 activePlans: activePlanSnapshot,
                 pendingHandoffCount: pendingHandoffSnapshot.length,
                 pendingHandoffs: pendingHandoffSnapshot.slice(0, 3).map((item) => ({
@@ -3172,7 +3190,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const capabilities = listCapabilityDescriptors(manifests);
         markDetailPhase('plugins');
         const pendingHandoffs = listHandoffItems({ ...store, status: 'pending', limit: 20 });
-        const activeContracts = listWorkContracts({ ...store, status: 'active', limit: 200 });
+        const activeWorkProjection = readActiveWorkCandidates({ ...store, limit: 200 });
+        const activeContracts = activeWorkProjection.contracts;
         markDetailPhase('work_state');
         const activePrimaryWork = activeContracts.filter((contract) => (contract.lifecycleRole ?? 'primary') === 'primary');
         const activeExecutionChildren = activeContracts.filter((contract) => contract.lifecycleRole === 'execution_child');
@@ -3224,6 +3243,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             executingPrimaryWorkCount: executingPrimaryWorkIds.size,
             waitingPrimaryWorkCount: Math.max(0, activePrimaryWork.length - executingPrimaryWorkIds.size),
             activeContractCount: activeContracts.length,
+            invalidActiveContractCount: activeWorkProjection.invalid.length,
+            invalidActiveContracts: activeWorkProjection.invalid.slice(0, 10).map(summarizeInvalidActiveWorkCandidate),
             // Summary keeps the stable facade surface only; detail expands to the full registered schema.
             toolSurface: detailLevel === 'detail'
               ? exposure.actualToolNames
@@ -3642,9 +3663,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           });
           return result(facade as unknown as Record<string, unknown>, true);
         }
-        const activeContractScan = operation === 'list' || !workId
-          ? listWorkContracts({ ...store, status: 'active', limit: 20 })
-          : [];
+        const activeWorkProjection = operation === 'list' || !workId
+          ? readActiveWorkCandidates({ ...store, limit: 20 })
+          : { contracts: [], invalid: [] as InvalidActiveWorkCandidate[] };
+        const activeContractScan = activeWorkProjection.contracts;
         const currentCutoffMs = Date.now() - RH_CONTEXT_CURRENT_WINDOW_MS;
         const currentContractScan = isSummary
           ? activeContractScan.filter((contract) => isCurrentRhContextWork(contract, currentCutoffMs))
@@ -3762,6 +3784,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             reconciliationRequired: buildWorkContinuationSnapshot(entry).reconciliationRequired,
             nextSafeAction: buildWorkContinuationSnapshot(entry).nextSafeAction,
           })),
+          invalidActiveWork: activeWorkProjection.invalid.slice(0, 3).map(summarizeInvalidActiveWorkCandidate),
           activeAttention: attention,
           counts: {
             availableChecks: checks.length,
@@ -3769,6 +3792,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             capabilityInventoryDeferred: true,
             activeWork: currentContractScan.length,
             activeWorkShown: activeContracts.length,
+            invalidActiveWork: activeWorkProjection.invalid.length,
+            invalidActiveWorkShown: Math.min(activeWorkProjection.invalid.length, 3),
             storedNonTerminalWork: activeContractScan.length,
             currentWork: currentContractScan.length,
             historicalNonTerminalWork: Math.max(0, activeContractScan.length - currentContractScan.length),
@@ -3825,6 +3850,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             objective: entry.objective.slice(0, 240),
             continuation: buildWorkContinuationSnapshot(entry),
           })),
+          invalidActiveWork: activeWorkProjection.invalid.slice(0, 10).map(summarizeInvalidActiveWorkCandidate),
           recentExecutionJobs: recentJobs.map(summarizeWorkListItem),
           activeAttention: attention,
           counts: {
@@ -3832,6 +3858,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             selectedChecks: selectedChecks.length,
             capabilities: capabilities.length,
             activeWork: activeContracts.length,
+            invalidActiveWork: activeWorkProjection.invalid.length,
             recentExecutionJobs: recentJobs.length,
             activeProcesses: activeProcesses.length,
             recentProcesses: relevantProcesses.length,
