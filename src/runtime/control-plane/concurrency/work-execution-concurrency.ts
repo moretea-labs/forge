@@ -4,7 +4,7 @@ import {
   getWorkContract,
   isTerminalWorkContractStatus,
   listWorkContracts,
-  readWorkExecutionConcurrencyCandidates,
+  readActiveWorkCandidates,
   workExecutionLaneMutates,
   updateWorkContract,
   type WorkExecutionConcurrencyBlocker,
@@ -82,7 +82,7 @@ export interface RuntimeWorkCompatibilityDecision {
 
 function invalidActiveWorkCompatibility(
   candidate: WorkExecutionConcurrencyContract,
-  invalid: ReturnType<typeof readWorkExecutionConcurrencyCandidates>['invalid'],
+  invalid: ReturnType<typeof readActiveWorkCandidates>['invalid'],
 ): ExecutionConcurrencyWaitProjection | undefined {
   if (!workExecutionLaneMutates(candidate.lane)) return undefined;
   for (const current of invalid) {
@@ -161,7 +161,7 @@ export function evaluateManagedProcessWorkCompatibility(input: {
     .map((record) => contractForProcess(input.controllerHome, input.repoId, record))
     .filter((value): value is WorkExecutionConcurrencyContract => Boolean(value));
   const worksWithActiveProcesses = new Set(activeProcessContracts.map((contract) => contract.workId));
-  const activeSnapshot = readWorkExecutionConcurrencyCandidates({
+  const activeSnapshot = readActiveWorkCandidates({
     controllerHome: input.controllerHome,
     repoId: input.repoId,
     limit: 1_000,

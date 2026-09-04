@@ -7,6 +7,7 @@ import {
   createWorkContract,
   evaluateWorkExecutionCompatibility,
   getWorkContract,
+  readActiveWorkCandidates,
   type WorkContract,
 } from '../../packages/kernel/work/api/index';
 import {
@@ -15,6 +16,7 @@ import {
   reconcileWorkExecutionConcurrencyWaits,
 } from '../../src/runtime/control-plane/concurrency/work-execution-concurrency';
 import { repositoryControllerRoot } from '../../src/cli/repositories/controller-home';
+import { routeWorkStart } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import type { ManagedProcessRecord, ProcessResourceClaim } from '../../src/runtime/execution/process-runtime/types';
@@ -106,6 +108,100 @@ describe('Work execution concurrency', () => {
       [leftContract],
     );
     expect(disjointDecision).toEqual({ compatible: true, blockers: [] });
+  });
+
+  test('keeps malformed active rows explicit while allowing disjoint isolated Work admission', () => {
+    const home = tempHome(), repoId = 'repo-invalid-admission';
+    const malformed = work({ controllerHome: home, repoId, workId: 'work-malformed-admission', stepId: 'legacy-step' });
+    const record = readControlPlaneRecord<WorkContract>(home, 'work_contract', repoId, malformed.workId)!;
+    writeControlPlaneRecord(home, {
+      namespace: 'work_contract', scope: repoId, key: malformed.workId, schemaVersion: 2,
+      expectedRevision: record.revision, action: 'test_malformed_goal_work_admission',
+      value: {
+        ...record.value,
+        phase: 'delivery',
+        phaseEvidence: {
+          ...record.value.phaseEvidence,
+          implementation: { ...record.value.phaseEvidence.implementation, state: 'satisfied' },
+          verification: { ...record.value.phaseEvidence.verification, state: 'satisfied' },
+          review: { ...record.value.phaseEvidence.review, state: 'pending' },
+          delivery: { ...record.value.phaseEvidence.delivery, state: 'active' },
+        },
+      },
+    });
+
+    const snapshot = readActiveWorkCandidates({ controllerHome: home, repoId });
+    expect(snapshot.contracts.some((candidate) => candidate.workId === malformed.workId)).toBe(false);
+    expect(snapshot.invalid).toEqual([expect.objectContaining({
+      workId: malformed.workId,
+      planId: 'PLAN-CONCURRENCY',
+      planStepId: 'legacy-step',
+      isolation: 'isolated',
+      error: expect.stringContaining('WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: review'),
+    })]);
+
+    const started = routeWorkStart({
+      workStore: { controllerHome: home, repoId },
+      handoffStore: { root: join(home, 'handoff') },
+      repoId,
+      checkoutId: 'checkout-canonical',
+      principalId: 'principal-admission',
+      controllerInstanceId: 'controller-admission',
+      sourceRevision: 'revision-admission',
+      availableChecks: [],
+    }, {
+      objective: 'Repair an independent adapter capability.',
+      acceptanceCriteria: ['Independent isolated Work starts without accepting malformed legacy authority.'],
+      allowedPaths: ['adapters/mcp/runtime-gateway/runtime-tools.ts'],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true, workspaceMode: 'isolated', requireWorktree: true },
+      workKind: 'repository_change',
+      workRelation: 'new_goal',
+      modeInput: {
+        scopeClear: true,
+        mutation: true,
+        expectedFiles: 1,
+        expectedChangedLines: 20,
+        requiresInvestigation: true,
+        requiresRecovery: true,
+        requiresParallelism: true,
+        risk: 'local_repo_write',
+      },
+    });
+    expect(started.status).toBe('ok');
+    expect(started.data).toMatchObject({ workContractCreated: true });
+
+    const exactInvalid = routeWorkStart({
+      workStore: { controllerHome: home, repoId },
+      handoffStore: { root: join(home, 'handoff-exact') },
+      repoId,
+      checkoutId: 'checkout-canonical',
+      principalId: 'principal-admission',
+      controllerInstanceId: 'controller-admission',
+      sourceRevision: 'revision-admission',
+      availableChecks: [],
+    }, {
+      objective: 'Attempt to reuse malformed authority.',
+      acceptanceCriteria: ['Malformed exact authority is rejected.'],
+      allowedPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true, workspaceMode: 'isolated', requireWorktree: true },
+      workKind: 'repository_change',
+      relatedWorkId: malformed.workId,
+      workRelation: 'parallel',
+      modeInput: {
+        scopeClear: true,
+        mutation: true,
+        expectedFiles: 1,
+        expectedChangedLines: 20,
+        requiresInvestigation: true,
+        requiresRecovery: true,
+        requiresParallelism: true,
+        risk: 'local_repo_write',
+      },
+    });
+    expect(exactInvalid.status).toBe('blocked');
+    expect(exactInvalid.summary).toContain('WORK_RELATED_CONTRACT_INVALID');
   });
 
   test('isolates malformed active sibling Work without weakening semantic-scope fencing', () => {

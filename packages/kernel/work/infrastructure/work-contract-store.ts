@@ -90,17 +90,21 @@ export interface ListWorkContractOptions extends WorkContractStoreOptions {
   detailLevel?: 'summary' | 'detail' | 'raw';
 }
 
-export interface InvalidWorkExecutionConcurrencyCandidate {
+export interface InvalidActiveWorkCandidate {
   workId: string;
   updatedAt: string;
+  checkoutId?: string;
+  requirementId?: string;
+  planId?: string;
+  planStepId?: string;
   semanticScopeKeys: string[];
   isolation: 'shared' | 'isolated';
   error: string;
 }
 
-export interface WorkExecutionConcurrencyCandidateSnapshot {
+export interface ActiveWorkCandidateSnapshot {
   contracts: WorkContract[];
-  invalid: InvalidWorkExecutionConcurrencyCandidate[];
+  invalid: InvalidActiveWorkCandidate[];
 }
 
 export type WorktreeAvailability = 'active' | 'inactive' | 'missing' | 'unknown';
@@ -259,19 +263,34 @@ function normalizeWorkContract(legacy: WorkContract): WorkContract {
     updatedAt: legacy.updatedAt,
   });
   const existingPhaseEvidence = legacy.phaseEvidence as Partial<WorkPhaseEvidenceMap> | undefined;
+  const existingReview = existingPhaseEvidence?.review;
+  const legacyReviewAdvancedPastCheckpoint = Boolean(
+    existingReview
+    && existingReview.source === 'legacy_inferred'
+    && existingReview.state === 'pending'
+    && phaseIndex(phase) > phaseIndex('review'),
+  );
   const phaseEvidence: WorkPhaseEvidenceMap = existingPhaseEvidence
     ? {
         ...legacyDefaults,
         ...existingPhaseEvidence,
-        review: existingPhaseEvidence.review ?? {
-          ...legacyDefaults.review,
-          ...(phaseIndex(phase) > phaseIndex('review')
+        review: existingReview
+          ? legacyReviewAdvancedPastCheckpoint
             ? {
+                ...existingReview,
                 state: 'skipped' as const,
-                summary: 'Legacy Work advanced beyond first-class implementation review; compatibility-skipped without synthesizing Controller approval.',
+                summary: 'Legacy Work advanced beyond first-class implementation review before that checkpoint existed; compatibility-skipped without synthesizing Controller approval.',
               }
-            : {}),
-        },
+            : existingReview
+          : {
+              ...legacyDefaults.review,
+              ...(phaseIndex(phase) > phaseIndex('review')
+                ? {
+                    state: 'skipped' as const,
+                    summary: 'Legacy Work advanced beyond first-class implementation review; compatibility-skipped without synthesizing Controller approval.',
+                  }
+                : {}),
+            },
       }
     : legacyDefaults;
   return validateWorkSemantics({
@@ -701,15 +720,15 @@ function rawWorkMayBeCurrent(contract: WorkContract): boolean {
 }
 
 /**
- * Concurrency-only read model. Canonical aggregate Work reads remain strict.
- * Each SQLite row is normalized independently so one malformed legacy sibling
- * cannot erase otherwise valid active Work authority from Process admission.
- * Invalid active rows are returned explicitly and conservatively by identity,
- * scope and isolation; they are never mutated or silently accepted as Work.
+ * Row-isolated active Work admission projection. Canonical aggregate Work reads
+ * remain strict. Each SQLite row is normalized independently so one malformed
+ * legacy sibling cannot erase otherwise valid Work authority from control-plane
+ * admission. Invalid active rows stay explicit and conservative by identity,
+ * lineage, scope and isolation; they are never mutated or silently accepted.
  */
-export function readWorkExecutionConcurrencyCandidates(
+export function readActiveWorkCandidates(
   options: WorkContractStoreOptions & { limit?: number },
-): WorkExecutionConcurrencyCandidateSnapshot {
+): ActiveWorkCandidateSnapshot {
   const limit = Math.max(1, Math.min(Math.trunc(options.limit ?? 1_000), 1_000));
   if (!sqliteBacked(options)) {
     return { contracts: listWorkContracts({ ...options, status: 'active', limit }), invalid: [] };
@@ -720,7 +739,7 @@ export function readWorkExecutionConcurrencyCandidates(
     limit: 5_000,
   });
   const contracts: WorkContract[] = [];
-  const invalid: InvalidWorkExecutionConcurrencyCandidate[] = [];
+  const invalid: InvalidActiveWorkCandidate[] = [];
   for (const record of records) {
     const raw = record.value;
     if (!rawWorkMayBeCurrent(raw)) continue;
@@ -731,6 +750,10 @@ export function readWorkExecutionConcurrencyCandidates(
       invalid.push({
         workId: raw.workId,
         updatedAt: raw.updatedAt,
+        ...(raw.checkoutId?.trim() ? { checkoutId: raw.checkoutId.trim() } : {}),
+        ...(raw.requirementId?.trim() ? { requirementId: raw.requirementId.trim() } : {}),
+        ...(raw.planId?.trim() ? { planId: raw.planId.trim() } : {}),
+        ...(raw.planStepId?.trim() ? { planStepId: raw.planStepId.trim() } : {}),
         semanticScopeKeys: workExecutionSemanticScopeKeys(raw),
         isolation: workExecutionIsolation(raw),
         error: error instanceof Error ? error.message : String(error),

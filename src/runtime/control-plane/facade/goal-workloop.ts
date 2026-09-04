@@ -18,6 +18,7 @@ import {
   getWorkContract,
   isTerminalWorkContractStatus,
   listWorkContracts,
+  readActiveWorkCandidates,
   recordWorkScopeEvidence,
   recordWorkImplementationReview,
   requestWorkImplementationReview,
@@ -362,7 +363,23 @@ export function routeWorkStart(
   const strategyConflictRequiresApproval = input.constraints?.architectureStrategyChange === true
     || input.constraints?.conflictsWithThinHarnessPolicy === true
     || input.constraints?.changesDefaultExecutionStrategy === true;
-  const relatedLifecycleSource = input.relatedWorkId ? getWorkContract(ctx.workStore, input.relatedWorkId) : undefined;
+  let relatedLifecycleSource: WorkContract | undefined;
+  if (input.relatedWorkId) {
+    try {
+      relatedLifecycleSource = getWorkContract(ctx.workStore, input.relatedWorkId);
+    } catch (error) {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `WORK_RELATED_CONTRACT_INVALID: ${input.relatedWorkId} is malformed and cannot authorize a Work relationship.`,
+        data: {
+          executionStarted: false,
+          workContractCreated: false,
+          invalidWorkId: input.relatedWorkId,
+          invalidWorkError: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
   const inheritedReadOnlyReview = Boolean(
     input.workKind === undefined
     && input.workRelation === 'new_goal'
@@ -510,10 +527,21 @@ export function routeWorkStart(
     // the RouteDecision. The actual repository mutation can pass this Work id
     // to repository_safe_patch_apply / repository_command_execute for evidence
     // attribution while staying on the Direct/Process path.
-    const directOwnershipCandidates = input.relatedWorkId || (input.planId && input.planStepId)
-      ? listWorkContracts({ ...ctx.workStore, status: 'active', limit: 100 })
-          .filter((candidate) => (candidate.lifecycleRole ?? 'primary') === 'primary')
-      : [];
+    const directAdmissionSnapshot = input.relatedWorkId || (input.planId && input.planStepId)
+      ? readActiveWorkCandidates({ ...ctx.workStore, limit: 100 })
+      : { contracts: [], invalid: [] };
+    const invalidDirectOwner = directAdmissionSnapshot.invalid.find((candidate) =>
+      candidate.workId === input.relatedWorkId
+      || (input.planId && input.planStepId && candidate.planId === input.planId && candidate.planStepId === input.planStepId));
+    if (invalidDirectOwner) {
+      return buildFacadeResult({
+        status: 'blocked',
+        summary: `WORK_ADMISSION_INVALID_OWNER: ${invalidDirectOwner.workId} is malformed and cannot be used as Direct Control ownership authority.`,
+        data: { executionStarted: false, workContractCreated: false, invalidWorkId: invalidDirectOwner.workId, invalidWorkError: invalidDirectOwner.error },
+      });
+    }
+    const directOwnershipCandidates = directAdmissionSnapshot.contracts
+      .filter((candidate) => (candidate.lifecycleRole ?? 'primary') === 'primary');
     const directPlan = input.planId && ctx.planStore ? getPlanContract(ctx.planStore, input.planId) : undefined;
     const directPlanStep = directPlan && input.planStepId ? directPlan.steps.find((step) => step.id === input.planStepId) : undefined;
     const directOwner = (input.relatedWorkId
@@ -758,15 +786,26 @@ export function startGoalWorkloop(
   }
   const available = ctx.availableChecks ?? [];
   const workspaceMode = placementConstraint.workspaceMode;
-  const activeWorks = listWorkContracts({ ...ctx.workStore, status: 'active', limit: 100 })
+  const activeAdmissionSnapshot = readActiveWorkCandidates({ ...ctx.workStore, limit: 100 });
+  const activeWorks = activeAdmissionSnapshot.contracts
     .filter((candidate) => (candidate.lifecycleRole ?? 'primary') === 'primary');
+  const invalidRelatedWork = input.relatedWorkId
+    ? activeAdmissionSnapshot.invalid.find((candidate) => candidate.workId === input.relatedWorkId)
+    : undefined;
+  if (invalidRelatedWork) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `WORK_RELATED_CONTRACT_INVALID: ${invalidRelatedWork.workId} is malformed and cannot authorize a Work relationship.`,
+      data: { executionStarted: false, workContractCreated: false, invalidWorkId: invalidRelatedWork.workId, invalidWorkError: invalidRelatedWork.error },
+    });
+  }
+  const relatedLifecycleSource = input.relatedWorkId
+    ? getWorkContract(ctx.workStore, input.relatedWorkId)
+    : undefined;
   const workspaceOwner = ctx.checkoutId
     ? activeWorks.find((candidate) => candidate.checkoutId === ctx.checkoutId
       && candidate.worktreePolicy.required !== true
       && !candidate.worktreeRef)
-    : undefined;
-  const relatedLifecycleSource = input.relatedWorkId
-    ? getWorkContract(ctx.workStore, input.relatedWorkId)
     : undefined;
   const terminalContinuationSource = input.workRelation === 'continue'
     && relatedLifecycleSource
@@ -929,6 +968,39 @@ export function startGoalWorkloop(
   const effectiveForbiddenPaths = planStep?.forbiddenPaths ?? input.forbiddenPaths ?? [];
   const effectiveChecks = planStep?.checks ?? input.checks ?? [];
   const normalized = normalizeCheckIds(effectiveChecks, available);
+  const invalidLineageWork = activeAdmissionSnapshot.invalid.find((candidate) =>
+    (resolvedPlanId && resolvedPlanStepId && candidate.planId === resolvedPlanId && candidate.planStepId === resolvedPlanStepId)
+    || (effectiveRequirementId && candidate.requirementId === effectiveRequirementId));
+  if (invalidLineageWork) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `WORK_ADMISSION_INVALID_SEMANTIC_AUTHORITY: ${invalidLineageWork.workId} is malformed but still claims the requested durable Plan/Requirement lineage. Repair that exact authority before creating a sibling Work.`,
+      data: {
+        executionStarted: false,
+        workContractCreated: false,
+        invalidWorkId: invalidLineageWork.workId,
+        invalidWorkError: invalidLineageWork.error,
+        planId: resolvedPlanId,
+        planStepId: resolvedPlanStepId,
+        requirementId: effectiveRequirementId,
+      },
+    });
+  }
+  const newWorkWillBeIsolated = placementConstraint.requireWorktree
+    || placementConstraint.workspaceMode === 'isolated'
+    || input.modeInput.requiresParallelism === true
+    || routeDecision.requiresIsolation === true;
+  const invalidSharedWorkspaceOwner = !newWorkWillBeIsolated
+    ? activeAdmissionSnapshot.invalid.find((candidate) => candidate.isolation === 'shared'
+      && (!candidate.checkoutId || candidate.checkoutId === ctx.checkoutId))
+    : undefined;
+  if (invalidSharedWorkspaceOwner) {
+    return buildFacadeResult({
+      status: 'blocked',
+      summary: `WORK_ADMISSION_INVALID_WORKSPACE_AUTHORITY: ${invalidSharedWorkspaceOwner.workId} is malformed and may still own the shared checkout; isolated placement or exact authority repair is required.`,
+      data: { executionStarted: false, workContractCreated: false, invalidWorkId: invalidSharedWorkspaceOwner.workId, invalidWorkError: invalidSharedWorkspaceOwner.error },
+    });
+  }
   const boundPlanStepWorks = resolvedPlanId && resolvedPlanStepId
     ? activeWorks.filter((candidate) => candidate.planId === resolvedPlanId && candidate.planStepId === resolvedPlanStepId)
     : [];

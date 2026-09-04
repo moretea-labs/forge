@@ -27,6 +27,7 @@ import {
   type RuntimeStorageRepairPreview,
 } from './local-jobs-repair';
 import { gcTerminalProcesses, type ProcessGcResult } from '../execution/process-runtime/gc';
+import { readWorkHandle, resolveWorkDeliveryTargetBranch } from '../control-plane/execution/work-handle-store';
 
 export type RuntimeMaintenanceActionId =
   | 'local_jobs_reconcile'
@@ -493,6 +494,7 @@ interface StaleWorkSourceInspection {
 
 function inspectStaleWorkRepositorySource(
   repository: RuntimeMaintenanceRepository,
+  controllerHome: string,
   contract: WorkContract,
 ): StaleWorkSourceInspection {
   const recordedPath = contract.worktreeRef?.trim();
@@ -513,11 +515,61 @@ function inspectStaleWorkRepositorySource(
     };
   }
   if (!existsSync(path)) {
+    const handle = readWorkHandle(controllerHome, repository.repoId, contract.workId);
+    const expectedHead = handle?.expectedHead?.trim();
+    if (!handle || handle.checkoutId !== contract.checkoutId || !expectedHead) {
+      return {
+        safeToCancel: false,
+        state: 'source_state_unknown',
+        path,
+        detail: 'Recorded managed worktree path is absent and no identity-matched durable WorkHandle head can prove source preservation; destructive stale-Work cancellation is fenced.',
+      };
+    }
+    const targetBranch = resolveWorkDeliveryTargetBranch(handle, repository.defaultBranch);
+    const head = runProcess('git', ['rev-parse', '--verify', `${expectedHead}^{commit}`], {
+      cwd: repository.canonicalRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 100_000,
+    });
+    const target = runProcess('git', ['rev-parse', '--verify', `refs/heads/${targetBranch}`], {
+      cwd: repository.canonicalRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 100_000,
+    });
+    if (!head.ok || !head.stdout.trim() || !target.ok || !target.stdout.trim()) {
+      return {
+        safeToCancel: false,
+        state: 'source_state_unknown',
+        path,
+        detail: `Recorded managed worktree path is absent and durable source head/target ${targetBranch} could not be resolved; destructive stale-Work cancellation is fenced.`,
+      };
+    }
+    const unique = runProcess('git', ['rev-list', '--count', `${target.stdout.trim()}..${head.stdout.trim()}`], {
+      cwd: repository.canonicalRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 100_000,
+    });
+    if (!unique.ok || !/^\d+$/.test(unique.stdout.trim())) {
+      return {
+        safeToCancel: false,
+        state: 'source_state_unknown',
+        path,
+        detail: 'Durable WorkHandle source head could not be compared with its delivery target; destructive stale-Work cancellation is fenced.',
+      };
+    }
+    if (Number(unique.stdout.trim()) > 0) {
+      return {
+        safeToCancel: false,
+        state: 'unintegrated_commits',
+        path,
+        detail: `Managed worktree is absent, but durable WorkHandle head ${expectedHead} has ${unique.stdout.trim()} commit(s) not reachable from ${targetBranch}; exact source remains preserved in Git and requires explicit adoption or cleanup authority.`,
+      };
+    }
     return {
-      safeToCancel: false,
-      state: 'source_state_unknown',
+      safeToCancel: true,
+      state: 'clean_integrated',
       path,
-      detail: 'Recorded managed worktree path is absent, so maintenance cannot prove that no unique branch/source remains recoverable through Git or checkout metadata; destructive stale-Work cancellation is fenced.',
+      detail: `Managed worktree is absent, but its identity-matched durable WorkHandle head ${expectedHead} is already reachable from ${targetBranch}; no unique source is being discarded.`,
     };
   }
 
@@ -751,7 +803,7 @@ function scanStaleWorkContractCandidates(
       // not maintenance debt. Keep the Work fenced until that authority disappears;
       // if it later becomes unowned, the next scan will surface it as stale.
       if (authorityRefs.length > 0) return [];
-      return [{ contract, ageMinutes, source: inspectStaleWorkRepositorySource(repository, contract) }];
+      return [{ contract, ageMinutes, source: inspectStaleWorkRepositorySource(repository, controllerHome, contract) }];
     })
     .sort((left, right) => right.ageMinutes - left.ageMinutes)
     .slice(0, options.maxCandidates)
@@ -812,7 +864,7 @@ export function applyStaleWorkContractMaintenanceCandidate(
       // Re-probe the live worktree while the canonical ControllerSession fence is
       // held so neither a newer Controller claim nor a late source write can be
       // raced by stale maintenance terminalization.
-      const source = inspectStaleWorkRepositorySource(repository, current);
+      const source = inspectStaleWorkRepositorySource(repository, controllerHome, current);
       if (!source.safeToCancel) {
         return {
           ...candidate,

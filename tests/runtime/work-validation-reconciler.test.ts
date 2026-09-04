@@ -565,4 +565,44 @@ describe('workspace-bound validation identity', () => {
     expect(migrated.implementationReviews).toEqual([]);
     expect(migrated.phaseEvidence.delivery.state).toBe('active');
   });
+
+  test('upgrades a persisted legacy-inferred pending review after the Work already advanced past review', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-work-review-phase-pending-migration-'));
+    roots.push(root);
+    const workId = 'work-legacy-pending-review-phase';
+    createWorkContract({ root }, {
+      workId,
+      repoId: 'repo-legacy-pending-review-phase',
+      mode: 'goal_workloop',
+      objective: 'Read a Work that persisted legacy review evidence before first-class review existed.',
+      acceptanceCriteria: ['Only legacy-inferred pending review evidence is compatibility-upgraded.'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: ['src/**'],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+
+    const storePath = workContractStorePath({ root });
+    const persisted = JSON.parse(readFileSync(storePath, 'utf8')) as { contracts: Array<Record<string, any>> };
+    const legacy = persisted.contracts[0]!;
+    legacy.phase = 'delivery';
+    legacy.phaseEvidence.implementation.state = 'satisfied';
+    legacy.phaseEvidence.verification.state = 'satisfied';
+    legacy.phaseEvidence.review = {
+      ...legacy.phaseEvidence.review,
+      state: 'pending',
+      source: 'legacy_inferred',
+      summary: 'Legacy review remained pending before the review checkpoint existed.',
+    };
+    legacy.phaseEvidence.delivery.state = 'active';
+    legacy.phaseEvidence.cleanup.state = 'pending';
+    writeFileSync(storePath, `${JSON.stringify(persisted, null, 2)}\n`);
+
+    const migrated = getWorkContract({ root }, workId)!;
+    expect(migrated.phaseEvidence.review.state).toBe('skipped');
+    expect(migrated.phaseEvidence.review.source).toBe('legacy_inferred');
+    expect(migrated.phaseEvidence.review.summary).toContain('before that checkpoint existed');
+  });
 });
