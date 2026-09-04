@@ -524,7 +524,7 @@ describe('single Route Policy authority', () => {
     expect(result.summary).not.toContain('PLAN_REQUIRED');
     expect(result.data).toMatchObject({ workContractCreated: true });
   });
-  test('does not let caller-supplied engineering receipt ids self-authorize high-risk rh_work admission', () => {
+  test('does not let caller-supplied engineering receipt ids self-authorize high-risk repository-change admission', () => {
     const root = temp('route-engineering-admission-');
     const context = {
       workStore: { root: join(root, 'blocked-work') },
@@ -536,8 +536,9 @@ describe('single Route Policy authority', () => {
       sourceRevision: 'revision-a',
     };
     const blocked = runGoalWorkloop(context, 'start', {
-      objective: 'Publish one high-risk external change',
+      objective: 'Publish one high-risk repository change with an external delivery effect',
       scope_clear: true,
+      expected_files: 1,
       requires_recovery: true,
       requires_external_effect: true,
       remote_write: true,
@@ -549,8 +550,9 @@ describe('single Route Policy authority', () => {
     expect(listWorkContracts({ root: join(root, 'blocked-work'), status: 'all' })).toHaveLength(0);
 
     const claimed = runGoalWorkloop({ ...context, workStore: { root: join(root, 'claimed-work') } }, 'start', {
-      objective: 'Publish one high-risk external change',
+      objective: 'Publish one high-risk repository change with an external delivery effect',
       scope_clear: true,
+      expected_files: 1,
       requires_recovery: true,
       requires_external_effect: true,
       remote_write: true,
@@ -575,10 +577,11 @@ describe('single Route Policy authority', () => {
 
     const hiddenFieldStore = { root: join(root, 'hidden-field-work') };
     const hiddenField = runGoalWorkloop({ ...context, workStore: hiddenFieldStore }, 'start', {
-      objective: 'Attempt hidden trusted evidence injection',
+      objective: 'Attempt hidden trusted evidence injection for repository change',
       acceptance_criteria: ['Raw args cannot cross the trusted evidence boundary'],
       scope_clear: true,
       mutation: true,
+      expected_files: 1,
       requires_recovery: true,
       requires_external_effect: true,
       remote_write: true,
@@ -591,9 +594,9 @@ describe('single Route Policy authority', () => {
 
     const trustedStore = { root: join(root, 'trusted-work') };
     const trusted = routeWorkStart({ ...context, workStore: trustedStore }, {
-      objective: 'Run one internally verified high-risk effect',
+      objective: 'Run one internally verified high-risk repository change with remote delivery',
       acceptanceCriteria: ['Verified engineering evidence is persisted'],
-      modeInput: { scopeClear: true, mutation: true, requiresRecovery: true, requiresExternalEffect: true, remoteWrite: true, risk: 'remote_write' },
+      modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, requiresRecovery: true, requiresExternalEffect: true, remoteWrite: true, risk: 'remote_write' },
       verifiedEngineeringEvidence: highEngineeringEvidence(),
     });
     expect(trusted.status).toBe('ok');

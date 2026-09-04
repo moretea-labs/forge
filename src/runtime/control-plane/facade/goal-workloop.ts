@@ -294,6 +294,22 @@ function workRiskFor(input: GoalWorkloopStartInput): WorkRisk {
   return 'medium';
 }
 
+function resolvedWorkKindFor(input: GoalWorkloopStartInput): WorkKind {
+  if (input.workKind) return input.workKind;
+  // allowed_paths and discovery hints do not prove repository mutation. External
+  // effects become repository_change only when source-change intent is explicit.
+  const repositoryChangeIntent = (input.modeInput.expectedFiles ?? 0) > 0
+    || (input.modeInput.expectedChangedLines ?? 0) > 0;
+  const typedRecoverableReadOnlyReview = input.modeInput.mutation === false
+    && input.modeInput.requiresInvestigation === true
+    && input.modeInput.requiresRecovery === true;
+  if (typedRecoverableReadOnlyReview) return 'read_only_review';
+  if (input.modeInput.requiresExternalEffect === true && !repositoryChangeIntent) {
+    return input.modeInput.remoteWrite === true ? 'remote_effect' : 'local_effect';
+  }
+  return 'repository_change';
+}
+
 function suggestedForWorkIdentity(workId: string, checks: string[], extras: SuggestedNextAction[] = []): SuggestedNextAction[] {
   const base: SuggestedNextAction[] = [
     {
@@ -745,7 +761,11 @@ export function startGoalWorkloop(
     ));
   }
   const at = nowIso(ctx);
-  const engineeringRisk = workRiskFor(input);
+  const resolvedWorkKind = resolvedWorkKindFor(input);
+  const workRisk = workRiskFor(input);
+  // External-effect risk is governed by authorization/confirmation/receipt
+  // semantics. Engineering admission is specifically for repository mutation.
+  const engineeringRisk: WorkRisk = resolvedWorkKind === 'repository_change' ? workRisk : 'readonly';
   const engineeringProfile = engineeringWorkProfileForRisk(engineeringRisk);
   const engineeringSourceIdentity = ctx.sourceRevision?.trim()
     ? { kind: 'revision' as const, revision: ctx.sourceRevision.trim() }
@@ -767,7 +787,7 @@ export function startGoalWorkloop(
       data: { executionStarted: false, workContractCreated: false, engineeringProfile },
     });
   }
-  const engineeringMutation = input.workKind !== 'read_only_review'
+  const engineeringMutation = resolvedWorkKind === 'repository_change'
     && (input.modeInput.mutation ?? input.modeInput.risk !== 'readonly');
   const engineeringAdmission = evaluateEngineeringAdmission({
     profile: engineeringProfile,
@@ -1212,25 +1232,6 @@ export function startGoalWorkloop(
     normalized.validCheckIds,
     normalized.suggestedNextActions,
   );
-  // allowed_paths and initial_likely_paths are policy/discovery fences, not proof
-  // that this Work owns a repository mutation. External-effect Work therefore
-  // needs either an explicit repository_change semantic choice or concrete
-  // expected source-change evidence before Forge treats it as repository_change.
-  const repositoryChangeIntent = input.workKind === 'repository_change'
-    || (input.modeInput.expectedFiles ?? 0) > 0
-    || (input.modeInput.expectedChangedLines ?? 0) > 0;
-  const typedRecoverableReadOnlyReview = input.workKind === undefined
-    && input.modeInput.mutation === false
-    && input.modeInput.requiresInvestigation === true
-    && input.modeInput.requiresRecovery === true;
-  const resolvedWorkKind = input.workKind ?? (
-    typedRecoverableReadOnlyReview
-      ? 'read_only_review'
-      : input.modeInput.requiresExternalEffect === true
-        && !repositoryChangeIntent
-        ? (input.modeInput.remoteWrite === true ? 'remote_effect' : 'local_effect')
-        : 'repository_change'
-  );
   const remoteDeliveryRequired = resolvedWorkKind === 'repository_change'
     && input.modeInput.requiresExternalEffect === true
     && input.modeInput.remoteWrite === true;
@@ -1263,7 +1264,7 @@ export function startGoalWorkloop(
     objective: effectiveObjective,
     acceptanceCriteria: effectiveAcceptanceCriteria,
     constraints: effectiveConstraints,
-    risk: engineeringRisk,
+    risk: workRisk,
     engineeringContext,
     // Remote delivery is a risk/effect dimension, not a reason to erase a
     // repository-change Work's semantic identity. Pure external actions with no
