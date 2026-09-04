@@ -1,6 +1,7 @@
 import {
   createRequirement,
   readRequirement,
+  updateRequirement,
   type CreateRequirementInput,
   type Requirement,
   type RequirementStoreOptions,
@@ -80,4 +81,53 @@ export function admitRequirement(
     if (!raced) throw error;
     return existingDecision(raced, requested);
   }
+}
+
+
+export interface RequirementContinueResult {
+  requirement: Requirement;
+  resumed: boolean;
+}
+
+/**
+ * Canonical explicit semantic continue for a Requirement that is waiting on
+ * ChatGPT/user judgement. Persistence owns transition legality; this facade
+ * owns the semantic meaning so adapters and launchers never mutate Requirement
+ * state directly.
+ */
+export function continueRequirement(
+  options: RequirementStoreOptions,
+  requirementId: string,
+): RequirementContinueResult {
+  const normalizedId = String(requirementId ?? '').trim();
+  const current = readRequirement(options, normalizedId)?.value;
+  if (!current) throw new Error(`REQUIREMENT_NOT_FOUND: ${normalizedId}`);
+  if (current.state === 'active') return { requirement: current, resumed: false };
+  if (current.state === 'done' || current.state === 'cancelled') {
+    throw new Error(`REQUIREMENT_TERMINAL: ${current.requirementId}:${current.state}`);
+  }
+  if (current.state !== 'waiting_for_user') {
+    throw new Error(`REQUIREMENT_CONTINUE_NOT_WAITING: ${current.requirementId}:${current.state}`);
+  }
+
+  const requirement = updateRequirement(options, {
+    requirementId: current.requirementId,
+    action: 'requirement_semantic_continue',
+    mutate: (latest) => {
+      if (latest.state === 'active') return latest;
+      if (latest.state === 'done' || latest.state === 'cancelled') {
+        throw new Error(`REQUIREMENT_TERMINAL: ${latest.requirementId}:${latest.state}`);
+      }
+      if (latest.state !== 'waiting_for_user') {
+        throw new Error(`REQUIREMENT_CONTINUE_NOT_WAITING: ${latest.requirementId}:${latest.state}`);
+      }
+      return {
+        ...latest,
+        state: 'active',
+        needsAttention: false,
+        attentionSummary: undefined,
+      };
+    },
+  });
+  return { requirement, resumed: true };
 }

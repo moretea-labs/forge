@@ -205,7 +205,7 @@ import {
 import { currentControllerInstanceId, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../../src/runtime/control-plane/execution/session-store';
 import { changedPaths as workChangedPaths, changedPathsFromUnbornBase as workChangedPathsFromUnbornBase } from '../../../src/runtime/control-plane/execution/work-task-receipt';
 import { readRequirement } from '../../../src/runtime/control-plane/persistence/requirement-store';
-import { admitRequirement } from '../../../src/runtime/control-plane/facade/requirement-authority';
+import { admitRequirement, continueRequirement } from '../../../src/runtime/control-plane/facade/requirement-authority';
 import { ensureManagedWorkspace } from '../../../src/runtime/execution/managed-workspace';
 import { materializeRepositoryWorkPlacement } from '../../../src/runtime/control-plane/facade/repository-work-admission';
 import { ensureRunningRepositoryWorkCheckout, reauthorizeRetainedCancelledRepositoryWork } from '../../../src/runtime/control-plane/execution/retained-work-resume';
@@ -4509,6 +4509,38 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             return { checkoutId: workspace.checkoutId, root: workspace.root, baseRevision: workspace.baseRevision, managed: true as const };
           },
         };
+
+        if (operation === 'requirement_continue') {
+          const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
+          if (!requirementId) {
+            return result(buildFacadeResult({
+              status: 'blocked',
+              summary: 'REQUIREMENT_CONTINUE_INPUT_REQUIRED: requirement_id is required.',
+              data: { requirementResumed: false },
+            }) as unknown as Record<string, unknown>, true);
+          }
+          try {
+            const continued = continueRequirement({ controllerHome: ctx.controllerHome }, requirementId);
+            return result(buildFacadeResult({
+              summary: continued.resumed
+                ? `Requirement ${continued.requirement.requirementId} resumed from waiting_for_user to active by explicit semantic continue.`
+                : `REQUIREMENT_ALREADY_ACTIVE: ${continued.requirement.requirementId}. Explicit continue is idempotent.`,
+              data: {
+                requirement: continued.requirement,
+                requirementResumed: continued.resumed,
+                semanticDecision: 'continue',
+              },
+              suggestedNextActions: [],
+            }) as unknown as Record<string, unknown>);
+          } catch (error) {
+            return result(buildFacadeResult({
+              status: 'blocked',
+              summary: error instanceof Error ? error.message : String(error),
+              data: { requirementResumed: false },
+              suggestedNextActions: [],
+            }) as unknown as Record<string, unknown>, true);
+          }
+        }
 
         if (operation === 'requirement_create') {
           const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id : '';

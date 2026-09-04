@@ -9,7 +9,7 @@ import { ensureControllerHome } from '../../src/cli/repositories/controller-home
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { claimPlanStepForWork, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
-import { readRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
 
 const roots: string[] = [];
@@ -123,6 +123,66 @@ describe('rh_work Requirement bootstrap', () => {
     }));
     expect(planned.status).toBe('ok');
     expect(planned.data.planContractCreated).toBe(true);
+  }, 15_000);
+
+  test('explicit requirement_continue resumes waiting_for_user idempotently and never reopens terminal Requirement', async () => {
+    const repoRoot = tempRoot('forge-requirement-continue-repo-');
+    const controllerHome = tempRoot('forge-requirement-continue-home-');
+    initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Requirement continue fixture' });
+    const ctx = mcpContext(controllerHome, repository);
+    const requirementId = 'REQ-SEMANTIC-CONTINUE';
+
+    const created = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'requirement_create',
+      requirement_id: requirementId,
+      requirement_title: 'Semantic continuation',
+      requirement_outcome: 'Resume machine-valid delivery only after an explicit semantic continue.',
+    }));
+    expect(created.status).toBe('ok');
+    updateRequirement({ controllerHome }, {
+      requirementId,
+      action: 'machine_valid_delivery_waits_for_semantics',
+      mutate: (current) => ({ ...current, state: 'waiting_for_user', needsAttention: true, attentionSummary: 'Explicit continue required.' }),
+    });
+
+    const resumed = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'requirement_continue',
+      requirement_id: requirementId,
+      requested_by: 'user',
+    }));
+    expect(resumed.status).toBe('ok');
+    expect(resumed.data.requirementResumed).toBe(true);
+    expect(resumed.data.requirement).toMatchObject({ state: 'active', needsAttention: false });
+    expect(resumed.data.requirement.attentionSummary).toBeUndefined();
+
+    const repeated = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'requirement_continue',
+      requirement_id: requirementId,
+      requested_by: 'user',
+    }));
+    expect(repeated.status).toBe('ok');
+    expect(repeated.data.requirementResumed).toBe(false);
+    expect(repeated.data.requirement.revision).toBe(resumed.data.requirement.revision);
+
+    updateRequirement({ controllerHome }, {
+      requirementId,
+      action: 'semantic_acceptance',
+      mutate: (current) => ({ ...current, state: 'done' }),
+    });
+    const terminal = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'requirement_continue',
+      requirement_id: requirementId,
+      requested_by: 'user',
+    }));
+    expect(terminal.status).toBe('blocked');
+    expect(terminal.summary).toContain(`REQUIREMENT_TERMINAL: ${requirementId}:done`);
+    expect(readRequirement({ controllerHome }, requirementId)?.value.state).toBe('done');
   }, 15_000);
 
   test('atomically replans an active Plan-bound Work scope through rh_work without replacing the Work', async () => {
