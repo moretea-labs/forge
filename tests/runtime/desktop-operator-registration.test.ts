@@ -34,6 +34,7 @@ describe('Desktop Operator trusted external registration', () => {
     expect(input.capabilities.find((capability) => capability.capabilityId === 'computer.browser_automation.v1')?.actions).toEqual([]);
     expect(input.capabilities.find((capability) => capability.capabilityId === 'desktop.interact')?.actions).toEqual([
       'desktop_press',
+      'desktop_pointer_click',
       'desktop_type_text',
       'desktop_key',
       'desktop_open_url',
@@ -44,6 +45,7 @@ describe('Desktop Operator trusted external registration', () => {
       'desktop_session_open',
       'desktop_observe',
       'desktop_press',
+      'desktop_pointer_click',
       'desktop_type_text',
       'desktop_key',
       'desktop_clipboard_read',
@@ -58,7 +60,7 @@ describe('Desktop Operator trusted external registration', () => {
     for (const action of input.actions.filter((action) => action.readOnly)) {
       expect(action.risk).toBe('readonly');
     }
-    for (const action of input.actions.filter((action) => ['desktop_permissions_request', 'desktop_press', 'desktop_type_text', 'desktop_key', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_open_url', 'desktop_batch'].includes(action.actionId))) {
+    for (const action of input.actions.filter((action) => ['desktop_permissions_request', 'desktop_press', 'desktop_pointer_click', 'desktop_type_text', 'desktop_key', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_open_url', 'desktop_batch'].includes(action.actionId))) {
       expect(action.risk).toBe('workspace_write');
       expect(action.confirmation).toBe('authorization');
     }
@@ -69,7 +71,23 @@ describe('Desktop Operator trusted external registration', () => {
     expect(pressSchema?.properties?.coordinate_fallback).toBeUndefined();
     expect(press?.description).toContain('one-page list scrolling');
     expect(press?.description).toContain('pointer/coordinate and raw input fallback are intentionally unavailable');
-    expect(input.actions.find((action) => action.actionId === 'desktop_pointer_click')).toBeUndefined();
+    const pointer = input.actions.find((action) => action.actionId === 'desktop_pointer_click');
+    expect(pointer).toMatchObject({
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      scopes: ['desktop.interact', 'desktop.capture'],
+    });
+    const pointerSchema = pointer?.argumentsSchema as {
+      required?: string[];
+      properties?: Record<string, unknown> & { selector?: { properties?: Record<string, unknown>; required?: string[] } };
+    } | undefined;
+    expect(pointerSchema?.required).toEqual(['interaction_id', 'selector', 'window_id']);
+    expect(pointerSchema?.properties?.selector?.required).toEqual(['ref']);
+    expect(pointerSchema?.properties?.selector?.properties).toEqual({ ref: { type: 'string' } });
+    expect(pointerSchema?.properties?.x).toBeUndefined();
+    expect(pointerSchema?.properties?.y).toBeUndefined();
+    expect(pointerSchema?.properties?.visual_revision).toBeUndefined();
     expect(input.actions.find((action) => action.actionId === 'desktop_foreground_pointer_click')).toBeUndefined();
     const observe = input.actions.find((action) => action.actionId === 'desktop_observe');
     const observeSchema = observe?.argumentsSchema as { properties?: {

@@ -119,12 +119,11 @@ describe('external plugin adapter', () => {
     expect(calls).toHaveLength(1);
   });
 
-  test('tolerates retired Forge-only pointer actions in a legacy Desktop Operator registration', async () => {
+  test('tolerates only the retired Forge-only foreground pointer action in a legacy Desktop Operator registration', async () => {
     const base = registration();
     const legacy = registration({
       actions: [
         ...base.actions,
-        { ...base.actions[0]!, actionId: 'desktop_pointer_click', title: 'Legacy pointer click', readOnly: false, risk: 'workspace_write', confirmation: 'authorization' },
         { ...base.actions[0]!, actionId: 'desktop_foreground_pointer_click', title: 'Legacy foreground pointer click', readOnly: false, risk: 'workspace_write', confirmation: 'authorization' },
       ],
     });
@@ -140,6 +139,25 @@ describe('external plugin adapter', () => {
     });
     expect(result).toEqual({ observed: true });
     expect(calls.map((entry) => entry.method)).toEqual(['manifest', 'execute']);
+  });
+
+  test('requires explicit provider support for the stable desktop_pointer_click action', async () => {
+    const base = registration();
+    const pointerAction = {
+      ...base.actions[0]!,
+      actionId: 'desktop_pointer_click',
+      title: 'Click observed desktop element',
+      readOnly: false,
+      risk: 'workspace_write' as const,
+      confirmation: 'authorization' as const,
+      scopes: ['desktop.interact', 'desktop.capture'],
+    };
+    const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, pointerAction] }), {
+      call: async (options) => options.method === 'manifest' ? providerManifest() : { observed: true },
+    });
+    await expect(adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator', actionId: 'desktop_status', requestId: 'stable-pointer-provider-required', args: {}, origin: { surface: 'mcp' },
+    })).rejects.toThrow('EXTERNAL_PLUGIN_ACTION_MISMATCH');
   });
 
   test('injects and executes registration-bound provider lifecycle without calling a stopped provider', async () => {
@@ -182,6 +200,132 @@ describe('external plugin adapter', () => {
     expect(result).toEqual({ observed: true });
     expect(calls.map((entry) => entry.method)).toEqual(['manifest', 'execute']);
     expect(calls[1]?.params).toEqual({ action: 'desktop_status', arguments: {} });
+  });
+
+  test('executes stable ref-bound pointer fallback only after source-window fencing, verified activation, semantic rebind, and fresh capture', async () => {
+    const base = registration();
+    const pointerAction = {
+      ...base.actions[0]!,
+      actionId: 'desktop_pointer_click',
+      title: 'Click observed desktop element',
+      description: 'Ref-bound pointer fallback owned by Forge.',
+      readOnly: false,
+      risk: 'workspace_write' as const,
+      confirmation: 'authorization' as const,
+      scopes: ['desktop.interact', 'desktop.capture'],
+    };
+    const calls: ExternalUnixSocketCallOptions[] = [];
+    const activationTargets: Array<{ bundleId?: string; appName?: string }> = [];
+    let observeCalls = 0;
+    const windowFrame = { x: 100, y: 100, width: 500, height: 400 };
+    const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, pointerAction] }), {
+      activateAndVerifyFrontmostApplication: async (target) => {
+        activationTargets.push(target);
+        return {
+          activated: true, verified: true, bundleId: 'com.google.Chrome', appName: 'Google Chrome',
+          activationCommand: ['/usr/bin/open', '-b', 'com.google.Chrome'],
+          frontmostQueryCommand: ['/usr/bin/lsappinfo', 'info'],
+        };
+      },
+      call: async (options) => {
+        calls.push(options);
+        if (options.method === 'manifest') {
+          return providerManifest({ actions: ['desktop_status', 'desktop_observe', 'desktop_session_open', 'desktop_screenshot', 'desktop_pointer_click'] });
+        }
+        const params = options.params as { action?: string; arguments?: Record<string, unknown> } | undefined;
+        switch (params?.action) {
+          case 'desktop_status':
+            return { sessions: [{ interactionId: 'desk-source', bundleIdentifier: 'com.google.Chrome', appName: 'Google Chrome' }] };
+          case 'desktop_observe':
+            observeCalls += 1;
+            if (observeCalls === 1) {
+              expect(params.arguments).toEqual({
+                interaction_id: 'desk-source', root_selector: { ref: 'ax-ref-17' }, max_depth: 1, max_nodes: 4,
+                include_values: false, include_actions: false, include_windows: true,
+              });
+              return {
+                snapshot: { root: { ref: 'ax-ref-17', identifier: 'bookmarks.organize', role: 'AXButton', title: 'Organize', enabled: true, frame: { x: 130, y: 140, width: 80, height: 40 } } },
+                windows: [{ windowId: 4159, onScreen: true, frame: windowFrame }],
+              };
+            }
+            expect(params.arguments).toEqual({
+              interaction_id: 'desk-active', root_selector: { identifier: 'bookmarks.organize' }, max_depth: 1, max_nodes: 4,
+              include_values: false, include_actions: false, include_windows: true,
+            });
+            return {
+              snapshot: { root: { identifier: 'bookmarks.organize', role: 'AXButton', title: 'Organize', enabled: true, frame: { x: 150, y: 160, width: 100, height: 50 } } },
+              windows: [{ windowId: 4159, onScreen: true, frame: windowFrame }],
+            };
+          case 'desktop_session_open':
+            expect(params.arguments).toEqual({ bundle_id: 'com.google.Chrome', launch: false, activate: true });
+            return { interactionId: 'desk-active' };
+          case 'desktop_screenshot':
+            expect(params.arguments).toEqual({ interaction_id: 'desk-active', scope: 'window', window_id: 4159, label: 'bookmarks-organize' });
+            return { visual_revision: 8, windowId: 4159, artifactPath: '/tmp/ref-bound.png' };
+          case 'desktop_pointer_click':
+            expect(params.arguments).toEqual({ interaction_id: 'desk-active', window_id: 4159, visual_revision: 8, x: 200, y: 185 });
+            return { clicked: true };
+          default:
+            throw new Error(`unexpected provider action: ${String(params?.action)}`);
+        }
+      },
+    });
+
+    const result = await adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator',
+      actionId: 'desktop_pointer_click', requestId: 'ref-pointer-1',
+      args: { interaction_id: 'desk-source', selector: { ref: 'ax-ref-17' }, window_id: 4159, label: 'bookmarks-organize' },
+      origin: { surface: 'mcp' },
+    });
+
+    expect(activationTargets).toEqual([{ bundleId: 'com.google.Chrome', appName: undefined }]);
+    expect(result).toMatchObject({
+      interactionId: 'desk-active', activationVerified: true, sourceRef: 'ax-ref-17',
+      reboundSelector: { identifier: 'bookmarks.organize' }, windowId: 4159, visualRevision: 8,
+      frame: { x: 150, y: 160, width: 100, height: 50 }, click: { clicked: true },
+    });
+    expect(calls.slice(1).map((entry) => (entry.params as { action?: string } | undefined)?.action)).toEqual([
+      'desktop_status', 'desktop_observe', 'desktop_session_open', 'desktop_observe', 'desktop_screenshot', 'desktop_pointer_click',
+    ]);
+  });
+
+  test('fails closed before activation when a source ref is not fenced to the requested window', async () => {
+    const base = registration();
+    const pointerAction = {
+      ...base.actions[0]!, actionId: 'desktop_pointer_click', title: 'Click observed desktop element',
+      readOnly: false, risk: 'workspace_write' as const, confirmation: 'authorization' as const, scopes: ['desktop.interact', 'desktop.capture'],
+    };
+    const providerActions: string[] = [];
+    const adapter = createExternalPluginAdapter(registration({ actions: [...base.actions, pointerAction] }), {
+      activateAndVerifyFrontmostApplication: async () => {
+        throw new Error('activation must not happen after source-window mismatch');
+      },
+      call: async (options) => {
+        if (options.method === 'manifest') {
+          return providerManifest({ actions: ['desktop_status', 'desktop_observe', 'desktop_session_open', 'desktop_screenshot', 'desktop_pointer_click'] });
+        }
+        const params = options.params as { action?: string } | undefined;
+        providerActions.push(String(params?.action));
+        if (params?.action === 'desktop_status') {
+          return { sessions: [{ interactionId: 'desk-source', bundleIdentifier: 'com.google.Chrome', appName: 'Google Chrome' }] };
+        }
+        if (params?.action === 'desktop_observe') {
+          return {
+            snapshot: { root: { ref: 'ax-ref-other-window', identifier: 'bookmarks.organize', enabled: true, frame: { x: 720, y: 160, width: 80, height: 40 } } },
+            windows: [{ windowId: 4159, onScreen: true, frame: { x: 100, y: 100, width: 500, height: 400 } }],
+          };
+        }
+        throw new Error(`unexpected provider action: ${String(params?.action)}`);
+      },
+    });
+
+    await expect(adapter.executeAction({
+      controllerHome: '/tmp/home', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'desktop_operator',
+      actionId: 'desktop_pointer_click', requestId: 'ref-pointer-window-mismatch',
+      args: { interaction_id: 'desk-source', selector: { ref: 'ax-ref-other-window' }, window_id: 4159 },
+      origin: { surface: 'mcp' },
+    })).rejects.toThrow('DESKTOP_POINTER_WINDOW_MISMATCH');
+    expect(providerActions).toEqual(['desktop_status', 'desktop_observe']);
   });
 
   test('executes Forge-composed foreground pointer interaction through the shared verified activation fallback and a fresh visual revision', async () => {

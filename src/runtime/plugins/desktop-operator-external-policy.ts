@@ -26,7 +26,9 @@ function providerError(code: string, message: string, retryable = false): Assist
 }
 
 export function desktopOperatorAllowsMissingProviderAction(actionId: string): boolean {
-  return actionId === 'desktop_pointer_click' || actionId === 'desktop_foreground_pointer_click';
+  // Only the retired Forge-composed foreground action may be absent from the provider.
+  // The stable public desktop_pointer_click surface requires explicit provider support.
+  return actionId === 'desktop_foreground_pointer_click';
 }
 
 function externalProviderAuthorizationContext(registration: ExternalPluginRegistration): AssistantPluginAuthorizationContext {
@@ -87,6 +89,43 @@ function recordValue(value: unknown): Record<string, unknown> | undefined {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
+}
+
+type DesktopFrame = { x: number; y: number; width: number; height: number };
+
+function desktopObservedRoot(observation: Record<string, unknown>): Record<string, unknown> | undefined {
+  return recordValue(recordValue(observation.snapshot)?.root);
+}
+
+function desktopFrame(value: unknown): DesktopFrame | undefined {
+  const frame = recordValue(value);
+  if (!frame) return undefined;
+  const x = firstNumber(frame, 'x');
+  const y = firstNumber(frame, 'y');
+  const width = firstNumber(frame, 'width');
+  const height = firstNumber(frame, 'height');
+  if (x === undefined || y === undefined || width === undefined || height === undefined || width <= 0 || height <= 0) return undefined;
+  return { x, y, width, height };
+}
+
+function desktopStableSelector(node: Record<string, unknown>): Record<string, string> | undefined {
+  const identifier = firstString(node, 'identifier');
+  if (identifier) return { identifier };
+  const role = firstString(node, 'role');
+  const title = firstString(node, 'title');
+  return role && title ? { role, title } : undefined;
+}
+
+function desktopWindowById(observation: Record<string, unknown>, windowId: number): Record<string, unknown> | undefined {
+  return recordArray(observation.windows).find((window) => firstNumber(window, 'windowId', 'window_id') === windowId);
+}
+
+function frameContainsPoint(frame: DesktopFrame, x: number, y: number): boolean {
+  return x >= frame.x && x <= frame.x + frame.width && y >= frame.y && y <= frame.y + frame.height;
+}
+
+function desktopFrameCenter(frame: DesktopFrame): { x: number; y: number } {
+  return { x: frame.x + frame.width / 2, y: frame.y + frame.height / 2 };
 }
 
 function exactFocusedDesktopWindowId(observation: Record<string, unknown>): number | undefined {
@@ -416,6 +455,160 @@ export async function executeDesktopOperatorPolicyAction(
   input: AssistantPluginActionExecutionInput,
   context: DesktopOperatorExternalPolicyContext,
 ): Promise<DesktopOperatorPolicyExecutionResult> {
+  if (input.actionId === 'desktop_pointer_click') {
+    const sourceInteractionId = typeof input.args.interaction_id === 'string' ? input.args.interaction_id.trim() : '';
+    const requestedWindowId = typeof input.args.window_id === 'number' && Number.isInteger(input.args.window_id) && input.args.window_id > 0
+      ? input.args.window_id
+      : undefined;
+    const selector = recordValue(input.args.selector);
+    const sourceRef = selector ? firstString(selector, 'ref') : '';
+    if (!sourceInteractionId || !requestedWindowId || !sourceRef) {
+      throw providerError('DESKTOP_POINTER_ARGUMENT_INVALID', 'desktop_pointer_click requires interaction_id, selector.ref, and a positive window_id.');
+    }
+
+    const sourceStatus = await context.callProvider(
+      `${input.requestId}:source-status`,
+      'desktop_status',
+      { limit: 500 },
+      input.timeoutMs,
+      input.signal,
+    );
+    const sourceSession = desktopSession(sourceStatus, sourceInteractionId);
+    if (!sourceSession) {
+      throw providerError('DESKTOP_POINTER_SESSION_NOT_FOUND', `Desktop session ${sourceInteractionId} is no longer available.`, true);
+    }
+    const bundleId = firstString(sourceSession, 'bundleIdentifier', 'bundle_id');
+    const appName = firstString(sourceSession, 'appName', 'app_name');
+    if (!bundleId && !appName) {
+      throw providerError('DESKTOP_POINTER_TARGET_UNAVAILABLE', `Desktop session ${sourceInteractionId} has no stable application identity.`);
+    }
+
+    const sourceObservation = await context.callProvider(
+      `${input.requestId}:source-observe`,
+      'desktop_observe',
+      {
+        interaction_id: sourceInteractionId,
+        root_selector: { ref: sourceRef },
+        max_depth: 1,
+        max_nodes: 4,
+        include_values: false,
+        include_actions: false,
+        include_windows: true,
+      },
+      input.timeoutMs,
+      input.signal,
+    );
+    const sourceRoot = desktopObservedRoot(sourceObservation);
+    if (!sourceRoot) {
+      throw providerError('DESKTOP_POINTER_REF_STALE', `Desktop ref ${sourceRef} no longer resolves in session ${sourceInteractionId}.`, true);
+    }
+    const sourceElementFrame = desktopFrame(sourceRoot.frame);
+    if (!sourceElementFrame || sourceRoot.enabled === false) {
+      throw providerError('DESKTOP_POINTER_REF_STALE', `Desktop ref ${sourceRef} no longer resolves to an enabled element with bounded geometry.`, true);
+    }
+    const sourceWindow = desktopWindowById(sourceObservation, requestedWindowId);
+    const sourceWindowFrame = desktopFrame(sourceWindow?.frame);
+    if (!sourceWindow || sourceWindow.onScreen === false || !sourceWindowFrame) {
+      throw providerError('DESKTOP_POINTER_WINDOW_STALE', `Desktop window ${requestedWindowId} is not an on-screen window in source session ${sourceInteractionId}.`, true);
+    }
+    const sourceCenter = desktopFrameCenter(sourceElementFrame);
+    if (!frameContainsPoint(sourceWindowFrame, sourceCenter.x, sourceCenter.y)) {
+      throw providerError('DESKTOP_POINTER_WINDOW_MISMATCH', `Desktop ref ${sourceRef} does not belong to requested source window ${requestedWindowId}.`, true);
+    }
+    const reboundSelector = desktopStableSelector(sourceRoot);
+    if (!reboundSelector) {
+      throw providerError('DESKTOP_POINTER_REBIND_UNAVAILABLE', `Desktop ref ${sourceRef} has no stable identifier or role/title identity for safe foreground rebinding.`);
+    }
+
+    const activation = await openVerifiedDesktopSession(
+      `${input.requestId}:activate`,
+      { ...(bundleId ? { bundle_id: bundleId } : { app_name: appName }), launch: false, activate: true },
+      input.timeoutMs,
+      input.signal,
+      context,
+    );
+    const activationInteractionId = firstString(activation, 'interactionId', 'interaction_id');
+    if (!activationInteractionId) {
+      throw providerError('DESKTOP_ACTIVATION_SESSION_MISSING', 'Desktop Operator activated the application without returning a bound interaction session.', true);
+    }
+
+    const freshObservation = await context.callProvider(
+      `${input.requestId}:fresh-observe`,
+      'desktop_observe',
+      {
+        interaction_id: activationInteractionId,
+        root_selector: reboundSelector,
+        max_depth: 1,
+        max_nodes: 4,
+        include_values: false,
+        include_actions: false,
+        include_windows: true,
+      },
+      input.timeoutMs,
+      input.signal,
+    );
+    const freshRoot = desktopObservedRoot(freshObservation);
+    const freshElementFrame = desktopFrame(freshRoot?.frame);
+    if (!freshRoot || !freshElementFrame || freshRoot.enabled === false) {
+      throw providerError('DESKTOP_POINTER_TARGET_STALE', 'The previously observed desktop element no longer resolves to an enabled element with bounded geometry after activation.', true);
+    }
+    const freshWindow = desktopWindowById(freshObservation, requestedWindowId);
+    const freshWindowFrame = desktopFrame(freshWindow?.frame);
+    if (!freshWindow || freshWindow.onScreen === false || !freshWindowFrame) {
+      throw providerError('DESKTOP_POINTER_WINDOW_STALE', `Desktop window ${requestedWindowId} is no longer on-screen with valid geometry after activation.`, true);
+    }
+    const point = desktopFrameCenter(freshElementFrame);
+    if (!frameContainsPoint(freshWindowFrame, point.x, point.y)) {
+      throw providerError('DESKTOP_POINTER_WINDOW_MISMATCH', `Rebound desktop element ${sourceRef} is no longer inside desktop window ${requestedWindowId}.`, true);
+    }
+
+    const screenshot = await context.callProvider(
+      `${input.requestId}:screenshot`,
+      'desktop_screenshot',
+      {
+        interaction_id: activationInteractionId,
+        scope: 'window',
+        window_id: requestedWindowId,
+        ...(typeof input.args.label === 'string' && input.args.label.trim() ? { label: input.args.label.trim() } : {}),
+      },
+      input.timeoutMs,
+      input.signal,
+    );
+    const visualRevision = firstNumber(screenshot, 'visual_revision', 'visualRevision');
+    const capturedWindowId = firstNumber(screenshot, 'windowId', 'window_id') ?? requestedWindowId;
+    if (!visualRevision || capturedWindowId !== requestedWindowId) {
+      throw providerError('DESKTOP_POINTER_CAPTURE_STALE', `Desktop window ${requestedWindowId} did not produce a matching fresh visual revision.`, true);
+    }
+
+    const click = await context.callProvider(
+      `${input.requestId}:click`,
+      'desktop_pointer_click',
+      {
+        interaction_id: activationInteractionId,
+        window_id: requestedWindowId,
+        visual_revision: visualRevision,
+        x: point.x,
+        y: point.y,
+      },
+      input.timeoutMs,
+      input.signal,
+    );
+    return {
+      handled: true,
+      result: {
+        interactionId: activationInteractionId,
+        activationVerified: true,
+        sourceRef,
+        reboundSelector,
+        windowId: requestedWindowId,
+        visualRevision,
+        frame: freshElementFrame,
+        screenshot,
+        click,
+      },
+    };
+  }
+
   if (input.actionId === 'desktop_foreground_pointer_click') {
     const sourceInteractionId = typeof input.args.interaction_id === 'string' ? input.args.interaction_id.trim() : '';
     const requestedWindowId = typeof input.args.window_id === 'number' && Number.isInteger(input.args.window_id) ? input.args.window_id : undefined;
