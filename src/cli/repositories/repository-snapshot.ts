@@ -5,7 +5,11 @@ import { spawn, spawnSync } from 'child_process';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
 import { commandEnvironment, collectOutput } from './command-process';
 
+export type RepositoryCommandMutationEvidence = 'observed' | 'readonly_unobserved' | 'not_applicable';
+
 export interface RepositoryCommandSnapshot {
+  /** Whether this value contains authoritative mutation evidence for comparison. */
+  mutationEvidence: RepositoryCommandMutationEvidence;
   head: string | null;
   branch: string | null;
   status: string;
@@ -15,8 +19,17 @@ export interface RepositoryCommandSnapshot {
   pathFingerprints: Record<string, string>;
 }
 
+function neutralSnapshot(mutationEvidence: Exclude<RepositoryCommandMutationEvidence, 'observed'>): RepositoryCommandSnapshot {
+  return { mutationEvidence, head: null, branch: null, status: '', dirty: false, refsHash: createHash('sha256').update('').digest('hex'), paths: [], pathFingerprints: {} };
+}
+
 export function emptyWorkspaceSnapshot(): RepositoryCommandSnapshot {
-  return { head: null, branch: null, status: '', dirty: false, refsHash: createHash('sha256').update('').digest('hex'), paths: [], pathFingerprints: {} };
+  return neutralSnapshot('not_applicable');
+}
+
+/** Proven-readonly execution deliberately owns no before/after mutation observation. */
+export function readonlyUnobservedRepositorySnapshot(): RepositoryCommandSnapshot {
+  return neutralSnapshot('readonly_unobserved');
 }
 
 function commandOutput(command: string, args: string[], cwd: string, maxOutputBytes: number): { ok: boolean; stdout: string } {
@@ -54,7 +67,7 @@ function buildSnapshot(root: string, head: string | null, branch: string | null,
     byPath.set(path, [...(byPath.get(path) ?? []), line]);
   }
   const paths = [...byPath.keys()].sort();
-  return { head, branch, status, dirty: paths.length > 0, refsHash: createHash('sha256').update(refs).digest('hex'), paths, pathFingerprints: Object.fromEntries(paths.map((path) => [path, pathFingerprint(root, path, byPath.get(path) ?? [])])) };
+  return { mutationEvidence: 'observed', head, branch, status, dirty: paths.length > 0, refsHash: createHash('sha256').update(refs).digest('hex'), paths, pathFingerprints: Object.fromEntries(paths.map((path) => [path, pathFingerprint(root, path, byPath.get(path) ?? [])])) };
 }
 
 export function repositorySnapshot(root: string): RepositoryCommandSnapshot {
@@ -113,12 +126,20 @@ export async function repositorySnapshotAsync(
     const fingerprint = await computePathFingerprintsAsync({ root, paths, statusByPath: Object.fromEntries(byPath), maxFileBytes: 256 * 1024, maxTotalBytes: 8 * 1024 * 1024, maxPaths: MAX_DIRTY_PATHS }, { signal, timeoutMs: fingerprintTimeoutMs });
     pathFingerprints = fingerprint.pathFingerprints;
   }
-  return { head, branch: branchResult.ok ? branchResult.stdout || null : null, status: statusResult.stdout, dirty: paths.length > 0, refsHash: createHash('sha256').update(refs).digest('hex'), paths, pathFingerprints };
+  return { mutationEvidence: 'observed', head, branch: branchResult.ok ? branchResult.stdout || null : null, status: statusResult.stdout, dirty: paths.length > 0, refsHash: createHash('sha256').update(refs).digest('hex'), paths, pathFingerprints };
+}
+
+function assertMutationEvidenceComparable(before: RepositoryCommandSnapshot, after: RepositoryCommandSnapshot): void {
+  if (before.mutationEvidence === 'readonly_unobserved' || after.mutationEvidence === 'readonly_unobserved') {
+    throw new Error('SNAPSHOT_COMPARISON_UNOBSERVED: readonly execution has no mutation snapshot to compare');
+  }
 }
 
 export function changedSnapshotPaths(before: RepositoryCommandSnapshot, after: RepositoryCommandSnapshot): string[] {
+  assertMutationEvidenceComparable(before, after);
   return [...new Set([...before.paths, ...after.paths])].filter((path) => before.pathFingerprints[path] !== after.pathFingerprints[path]).sort();
 }
 export function snapshotChanged(before: RepositoryCommandSnapshot, after: RepositoryCommandSnapshot): boolean {
+  assertMutationEvidenceComparable(before, after);
   return before.head !== after.head || before.branch !== after.branch || before.refsHash !== after.refsHash || changedSnapshotPaths(before, after).length > 0;
 }

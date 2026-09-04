@@ -27,6 +27,7 @@ import { commandEnvironment, runCanonicalCommand, type RepositoryCommandAsyncHoo
 import {
   changedSnapshotPaths,
   emptyWorkspaceSnapshot,
+  readonlyUnobservedRepositorySnapshot,
   repositorySnapshot,
   repositorySnapshotAsync,
   snapshotChanged,
@@ -286,6 +287,7 @@ async function prepareRepositoryCommandExecutionAsync(
   repository: RepositoryRecord,
   input: ExecuteRepositoryCommandInput,
   controllerHome?: string,
+  mode: 'standard' | 'readonly_direct' = 'standard',
 ): Promise<{
   root: string;
   cwd: string;
@@ -304,15 +306,21 @@ async function prepareRepositoryCommandExecutionAsync(
   const externalGrants = loadExternalFilesystemGrants(root).grants;
   const externalPathUsages = assertCommandPathOperandsStayInRepository(command, cwd, root, externalGrants);
   const classification = classifyRepositoryCommand(command, repository.defaultBranch);
-  // A proven readonly direct/preview lane never compares before/after mutation.
-  // Skip per-path fingerprints there so a large dirty worktree cannot block a
-  // harmless read; write-capable lanes keep the strict fingerprint cap.
+  if (mode === 'readonly_direct' && classification.risk !== 'readonly') {
+    throw new Error(`READONLY_DIRECT_ROUTE_REQUIRED: received ${classification.risk}`);
+  }
+  // The readonly-direct lane has already resolved repository identity, cwd/path
+  // scope, command input and readonly classification. Mutation snapshots are not
+  // authorization authority, so do not launch rev-parse/branch/status/show-ref
+  // merely to prove that a command selected for this lane did not mutate state.
+  // Write-capable lanes keep their complete observed snapshot semantics.
   const before = input.reuseSnapshot ?? (input.allowNonGitWorkspace
     ? emptyWorkspaceSnapshot()
-    : await repositorySnapshotAsync(root, input.signal, {
-        pathFingerprints: !(classification.risk === 'readonly' && controllerHome === undefined),
-        fingerprintTimeoutMs: input.snapshotFingerprintTimeoutMs,
-      }));
+    : mode === 'readonly_direct'
+      ? readonlyUnobservedRepositorySnapshot()
+      : await repositorySnapshotAsync(root, input.signal, {
+          fingerprintTimeoutMs: input.snapshotFingerprintTimeoutMs,
+        }));
   return finalizePreparedExecution(
     repository,
     input,
@@ -449,9 +457,9 @@ export function executeRepositoryCommand(
  *
  * This path exists for short repository reads that must remain available while
  * Runtime writer authority is fenced or rotating. It reuses the exact command
- * input/scope classifier, repository snapshots, bounded async process runner,
- * cancellation, environment allowlist, output caps and redaction, but it never
- * writes command audit state, Process records, Leases, Jobs or receipts.
+ * input/scope classifier, bounded async process runner, cancellation,
+ * environment allowlist, output caps and redaction. It deliberately owns no
+ * mutation snapshot or Controller write state, Process records, Leases, Jobs or receipts.
  */
 export async function executeRepositoryReadOnlyCommandDirect(
   repository: RepositoryRecord,
@@ -461,6 +469,7 @@ export async function executeRepositoryReadOnlyCommandDirect(
     repository,
     { ...input, dryRun: false },
     undefined,
+    'readonly_direct',
   );
   const { root, cwd, command, timeoutMs, maxOutputBytes, before, execution: base, externalPathUsages } = prepared;
   if (base.classification.risk !== 'readonly') {
@@ -490,10 +499,9 @@ export async function executeRepositoryReadOnlyCommandDirect(
 
   const result = await runCanonicalCommand(command, cwd, timeoutMs, maxOutputBytes, { signal });
   // This entry point is reachable only after the bounded classifier has proven
-  // the command readonly. A second full repository snapshot would start four
-  // extra Git processes merely to rediscover the invariant we already used to
-  // select this lane. Keep the captured pre-execution snapshot as both sides of
-  // the receipt; write-capable lanes still take independent before/after snapshots.
+  // the command readonly. Mutation evidence is explicitly unobserved rather than
+  // fabricated: no before/after Git snapshot is taken, while write-capable lanes
+  // still take independent observed before/after snapshots.
   const after = before;
   return {
     ...base,
