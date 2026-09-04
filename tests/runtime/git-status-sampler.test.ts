@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 describe('git status sampler', () => {
-  test('samples only the repository active checkout', () => {
+  test('samples only the repository active checkout', async () => {
     const controllerHome = tempRoot('forge-git-sampler-home-');
     const activeRoot = tempRoot('forge-git-sampler-active-');
     const staleRoot = join(tempRoot('forge-git-sampler-missing-'), 'removed-worktree');
@@ -65,7 +65,7 @@ describe('git status sampler', () => {
       stateStorageStrategy: 'controller-home',
     };
 
-    expect(sampleRepositoryGitStatusForRepositories(controllerHome, [repository])).toEqual({
+    expect(await sampleRepositoryGitStatusForRepositories(controllerHome, [repository])).toEqual({
       sampled: 1,
       failed: [],
     });
