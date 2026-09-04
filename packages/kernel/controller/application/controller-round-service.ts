@@ -10,9 +10,11 @@ export {
   readControllerRoundContextSnapshot,
   readControllerRoundSemanticStateFingerprint,
   reconcileControllerRoundAfterAbandonedRelease,
+  recoverControllerRoundRelayAuthority,
   submitControllerRoundDisposition,
   type BeginInitialControllerRoundDispatchInput,
   type ControllerRoundContextSnapshot,
   type ControllerRoundRelayStoreOptions,
+  type RecoverControllerRoundRelayAuthorityInput,
   type SubmitControllerRoundDispositionInput,
 } from '../infrastructure/controller-round-store';

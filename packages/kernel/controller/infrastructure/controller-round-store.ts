@@ -56,6 +56,12 @@ export interface BeginInitialControllerRoundDispatchInput {
   maxFailures?: number;
 }
 
+export interface RecoverControllerRoundRelayAuthorityInput {
+  workId: string;
+  requestedBy?: string;
+  identity: ControllerRoundRelayIdentity;
+}
+
 /** Legacy ControllerRound rows predate explicit controllerType and were ChatGPT-only. */
 function relayControllerType(record: Pick<ControllerRoundRelayRecord, 'controllerType'>): ControllerType {
   return record.controllerType ?? 'chatgpt';
@@ -930,6 +936,94 @@ export function acknowledgeControllerRoundClaim(
       expectedRevision: current.revision,
     });
     return next;
+  });
+}
+
+/**
+ * Explicitly rekey one exact relay-bound Work after the caller lost the opaque
+ * per-round capability with its MCP/ChatGPT transport. This is not a semantic
+ * continuation and never dispatches a provider: it preserves the current
+ * relay lineage and budgets, rotates only the capability epoch, and leaves the
+ * standard controller_claim path responsible for mechanically acknowledging
+ * the recovered round.
+ */
+export function recoverControllerRoundRelayAuthority(
+  options: ControllerRoundRelayStoreOptions,
+  input: RecoverControllerRoundRelayAuthorityInput,
+): ControllerRoundRelayRecord {
+  const workId = input.workId.trim();
+  if (!workId) throw new Error('WORK_CONTROLLER_AUTHORITY_RECOVERY_WORK_REQUIRED');
+  if (input.requestedBy !== 'user') {
+    throw new Error('WORK_CONTROLLER_AUTHORITY_RECOVERY_USER_REQUIRED: relay authority rekey is an explicit user-directed recovery only.');
+  }
+  const work = getWorkContract(options, workId);
+  if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
+  if (isTerminalWorkContractStatus(work.status)) {
+    throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_TERMINAL: ${workId}:${work.status}`);
+  }
+  const initial = readRelayRecord(options, workId);
+  if (!initial) throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RELAY_REQUIRED: ${workId}`);
+  const expectedType = relayControllerType(initial.value);
+  if (expectedType !== input.identity.controllerType) {
+    throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_CONTROLLER_TYPE_MISMATCH: ${workId}`);
+  }
+  if (initial.value.controllerId !== input.identity.controllerId || initial.value.principalId !== input.identity.principalId) {
+    throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_PRINCIPAL_MISMATCH: ${workId}`);
+  }
+  const recoverableStatuses: readonly ControllerRoundRelayStatus[] = ['pending_release', 'dispatching', 'dispatched', 'claimed', 'failed'];
+  if (!recoverableStatuses.includes(initial.value.status)) {
+    throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RELAY_STATE_INVALID: ${workId}:${initial.value.status}`);
+  }
+
+  return relayLock(options, initial.value.relayScopeId, `controller-relay-explicit-recover:${workId}`, () => {
+    const current = readRelayRecord(options, workId);
+    if (!current) throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RELAY_REQUIRED: ${workId}`);
+    const latest = relayHistory(options, current.value.relayScopeId)[0];
+    if (!latest || latest.originWorkId !== workId || latest.updatedAt !== current.value.updatedAt) {
+      throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RELAY_NOT_CURRENT: ${workId}`);
+    }
+    if (!recoverableStatuses.includes(current.value.status)) {
+      throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RELAY_STATE_INVALID: ${workId}:${current.value.status}`);
+    }
+    if (relayControllerType(current.value) !== input.identity.controllerType
+      || current.value.controllerId !== input.identity.controllerId
+      || current.value.principalId !== input.identity.principalId) {
+      throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_PRINCIPAL_MISMATCH: ${workId}`);
+    }
+    const currentWork = getWorkContract(options, workId);
+    if (!currentWork) throw new Error(`WORK_NOT_FOUND: ${workId}`);
+    if (isTerminalWorkContractStatus(currentWork.status)) {
+      throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_TERMINAL: ${workId}:${currentWork.status}`);
+    }
+    const activeWorks = relevantWork(options, current.value).filter((entry) => !isTerminalWorkContractStatus(entry.status));
+    if (activeWorks.some((entry) => workHasActiveExecution(options.controllerHome, options.repoId, entry.workId))) {
+      throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_EXECUTION: ${workId}`);
+    }
+    if (activeWorks.some((entry) => Boolean(getControllerSession(options, entry.workId)))) {
+      throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_CLAIM: ${workId}`);
+    }
+
+    const at = nowIso(options);
+    const keepsConfirmedDispatch = current.value.status === 'dispatched';
+    const recovered: ControllerRoundRelayRecord = {
+      ...current.value,
+      authorityId: newControllerRoundAuthorityId(),
+      status: keepsConfirmedDispatch ? 'dispatched' : 'dispatching',
+      lifecycleStage: keepsConfirmedDispatch ? 'dispatch_confirmed' : 'dispatching',
+      claimedAt: undefined,
+      nextRecoveryAt: undefined,
+      updatedAt: at,
+    };
+    writeControlPlaneRecord(options.controllerHome, {
+      namespace: NAMESPACE,
+      scope: options.repoId,
+      key: workId,
+      schemaVersion: SCHEMA_VERSION,
+      value: recovered,
+      action: 'controller_round_relay_explicit_authority_recovered',
+      expectedRevision: current.revision,
+    });
+    return recovered;
   });
 }
 

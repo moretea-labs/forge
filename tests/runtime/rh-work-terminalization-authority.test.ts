@@ -1221,6 +1221,107 @@ describe('rh_work terminalization authority', () => {
     expect(getWorkContract(store, workId)?.status).toBe('cancelled');
   }, 15_000);
 
+  test('explicit user recovery rekeys an exact relay-bound failed round without resetting budgets or depending on provider dispatch', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const principalId = 'principal-relay-authority-recovery';
+    const runtimeInstanceId = 'runtime-relay-authority-recovery';
+    const workId = 'work-relay-authority-recovery';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    publishCurrentRuntime(fx.controllerHome, runtimeInstanceId);
+
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: principalId, controllerType: 'chatgpt', principalId, controllerInstanceId: runtimeInstanceId, sessionId: 'transport-relay-recovery-1' },
+      bindingId: 'binding-preserved',
+      maxRounds: 7,
+      maxRepeatedState: 3,
+      maxFailures: 4,
+    });
+    const initialAuthority = String(opened.authorityId ?? '');
+    const failed = finishControllerRoundRelayDispatch(store, { workId, ok: false, error: 'PLUGIN_NOT_FOUND: browser' });
+    expect(failed).toMatchObject({ status: 'failed', roundCount: opened.roundCount, repeatedStateCount: opened.repeatedStateCount, consecutiveFailures: 1, maxRounds: 7, maxRepeatedState: 3, maxFailures: 4, bindingId: 'binding-preserved' });
+
+    const automated = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-relay-recovery-2', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: workId, capability_id: `controller.authority.recover:${workId}`, requested_by: 'chatgpt' },
+    ));
+    expect(automated.status).toBe('blocked');
+    expect(automated.summary).toContain('WORK_CONTROLLER_AUTHORITY_RECOVERY_USER_REQUIRED');
+
+    const recovered = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-relay-recovery-2', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: workId, capability_id: `controller.authority.recover:${workId}`, requested_by: 'user' },
+    ));
+    const recoveredAuthority = String(recovered.data?.controllerAuthorityId ?? '');
+    expect(recovered.status).toBe('ok');
+    expect(recovered.data?.authorityRecovered).toBe(true);
+    expect(recoveredAuthority).toStartWith('cra_');
+    expect(recoveredAuthority).not.toBe(initialAuthority);
+    expect(recovered.data?.relayScopeId).toBe(opened.relayScopeId);
+    expect(recovered.data?.relay).toMatchObject({ status: 'dispatching', relayScopeId: opened.relayScopeId, roundCount: opened.roundCount, repeatedStateCount: opened.repeatedStateCount, consecutiveFailures: 1, maxRounds: 7, maxRepeatedState: 3, maxFailures: 4, bindingId: 'binding-preserved' });
+
+    const staleAuthorityClaim = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-relay-recovery-3', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId, session_id: initialAuthority },
+    ));
+    expect(staleAuthorityClaim.status).toBe('blocked');
+    expect(staleAuthorityClaim.summary).toContain('WORK_CONTROLLER_ROUND_AUTHORITY_MISMATCH');
+
+    const claimed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-relay-recovery-3', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workId, session_id: recoveredAuthority },
+    ));
+    expect(claimed.status).toBe('ok');
+    expect(claimed.data?.relay).toMatchObject({ status: 'claimed', relayScopeId: opened.relayScopeId });
+    expect(claimed.data?.session).toMatchObject({ sessionId: 'transport-relay-recovery-3', principalId });
+
+    const whileActive = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-relay-recovery-4', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: workId, capability_id: `controller.authority.recover:${workId}`, requested_by: 'user' },
+    ));
+    expect(whileActive.status).toBe('blocked');
+    expect(whileActive.summary).toContain('WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_CLAIM');
+  }, 15_000);
+
+  test('frozen rh_work compatibility maps explicit review intent to the canonical implementation-review handler', async () => {
+    const fx = fixture();
+    const principalId = 'principal-frozen-review';
+    const runtimeInstanceId = 'runtime-frozen-review';
+    const workId = 'work-frozen-review';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    publishCurrentRuntime(fx.controllerHome, runtimeInstanceId);
+
+    const mismatched = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-review', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: 'other-work', capability_id: `work.review:approved:${workId}`, reason: 'reviewed exact candidate' },
+    ));
+    expect(mismatched.status).toBe('blocked');
+    expect(mismatched.summary).toContain('WORK_IMPLEMENTATION_REVIEW_SCOPE_MISMATCH');
+
+    const missingRationale = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-review', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: workId, capability_id: `work.review:approved:${workId}` },
+    ));
+    expect(missingRationale.status).toBe('blocked');
+    expect(missingRationale.summary).toContain('WORK_IMPLEMENTATION_REVIEW_RATIONALE_REQUIRED');
+
+    const invalidDecision = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-review', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: workId, capability_id: `work.review:maybe:${workId}`, reason: 'not a valid explicit decision' },
+    ));
+    expect(invalidDecision.status).toBe('blocked');
+    expect(invalidDecision.summary).toContain('WORK_IMPLEMENTATION_REVIEW_COMPATIBILITY_INVALID');
+  }, 15_000);
+
   test('same-principal concurrent ChatGPT conversations cannot claim or stop each other while the owning round survives transport rotation', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };

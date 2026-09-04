@@ -31,7 +31,7 @@ import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../..
 import { buildJobOperationDigest } from '../../../src/runtime/control-plane/facade/operation-digest';
 import { readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, type WorkHandleState } from '../../../src/runtime/control-plane/execution/work-handle-store';
 import { ensureRepositoryWorkHandle, rebindRepositoryWorkHandleControllerIdentity, reconcileRepositoryWorkHandlePlacement } from '../../../src/runtime/control-plane/execution/work-handle-authority';
-import { recoverDirectControllerAuthority } from '../../../src/runtime/control-plane/execution/controller-authority-recovery';
+import { recoverControllerAuthority } from '../../../src/runtime/control-plane/execution/controller-authority-recovery';
 import { recoverTerminalWorkHandle } from '../../../src/runtime/control-plane/execution/work-terminal-cleanup';
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from '../../../src/runtime/control-plane/execution/verification-evidence';
 import { resolveWorkVerificationContext } from '../../../src/runtime/control-plane/execution/work-verification-context';
@@ -3876,9 +3876,23 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const frozenScheduleDeleteId = requestedOperation === 'repair' && typeof args.capability_id === 'string' && args.capability_id.startsWith('schedule.delete:')
           ? args.capability_id.slice('schedule.delete:'.length).trim()
           : '';
+        let frozenImplementationReview: { decision: 'approved' | 'changes_required' | 'blocked'; workId: string } | undefined;
         let frozenControllerDisposition: ReturnType<typeof parseControllerDispositionCompatibilityCapability>;
         let frozenControllerRoundOperation: ReturnType<typeof parseControllerRoundCompatibilityCapability>;
         try {
+          if (requestedOperation === 'repair' && typeof args.capability_id === 'string') {
+            const capability = args.capability_id.trim();
+            const prefix = 'work.review:';
+            if (capability.startsWith(prefix)) {
+              const remainder = capability.slice(prefix.length);
+              const separator = remainder.indexOf(':');
+              if (separator <= 0 || separator === remainder.length - 1) throw new Error('WORK_IMPLEMENTATION_REVIEW_COMPATIBILITY_INVALID');
+              const decision = remainder.slice(0, separator);
+              const workId = remainder.slice(separator + 1).trim();
+              if (!['approved', 'changes_required', 'blocked'].includes(decision) || !workId) throw new Error('WORK_IMPLEMENTATION_REVIEW_COMPATIBILITY_INVALID');
+              frozenImplementationReview = { decision: decision as 'approved' | 'changes_required' | 'blocked', workId };
+            }
+          }
           frozenControllerDisposition = parseControllerDispositionCompatibilityCapability(requestedOperation, args.capability_id);
           frozenControllerRoundOperation = parseControllerRoundCompatibilityCapability(requestedOperation, args.capability_id);
         } catch (error) {
@@ -3892,8 +3906,21 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           args.relay_scope_id = frozenControllerRoundOperation.relayScopeId;
           args.controller_authority_id = frozenControllerRoundOperation.authorityId;
         }
+        if (frozenImplementationReview) {
+          const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+          if (!explicitWorkId || explicitWorkId !== frozenImplementationReview.workId) {
+            return result(buildFacadeResult({
+              status: 'blocked',
+              summary: `WORK_IMPLEMENTATION_REVIEW_SCOPE_MISMATCH: capability targets ${frozenImplementationReview.workId}; exact work_id is required.`,
+              data: { workId: frozenImplementationReview.workId, implementationReviewRecorded: false },
+            }) as unknown as Record<string, unknown>, true);
+          }
+          args.review_decision = frozenImplementationReview.decision;
+          args.review_rationale = typeof args.reason === 'string' ? args.reason : '';
+        }
         const operation = frozenControllerRoundOperation?.operation ?? (frozenControllerDisposition
           ? 'controller_disposition'
+          : frozenImplementationReview ? 'review'
           : frozenScheduleDeleteId ? 'schedule_delete' : requestedOperation);
         if (!allowedFacadeOperations('rh_work').includes(operation)) {
           return invalidFacadeOperation('rh_work', operation);
@@ -4008,38 +4035,38 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             return result(buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'Schedule operation failed.', data: {} }) as unknown as Record<string, unknown>, true);
           }
         }
-        const directAuthorityRecoveryWorkId = operation === 'repair' && typeof args.capability_id === 'string' && args.capability_id.startsWith('controller.authority.recover:')
+        const authorityRecoveryWorkId = operation === 'repair' && typeof args.capability_id === 'string' && args.capability_id.startsWith('controller.authority.recover:')
           ? args.capability_id.slice('controller.authority.recover:'.length).trim()
           : '';
-        if (directAuthorityRecoveryWorkId) {
+        if (authorityRecoveryWorkId) {
           const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-          if (!explicitWorkId || explicitWorkId !== directAuthorityRecoveryWorkId) {
+          if (!explicitWorkId || explicitWorkId !== authorityRecoveryWorkId) {
             return result(buildFacadeResult({
               status: 'blocked',
-              summary: `WORK_CONTROLLER_AUTHORITY_RECOVERY_SCOPE_MISMATCH: capability targets ${directAuthorityRecoveryWorkId}; exact work_id is required.`,
-              data: { workId: directAuthorityRecoveryWorkId, authorityRecovered: false },
+              summary: `WORK_CONTROLLER_AUTHORITY_RECOVERY_SCOPE_MISMATCH: capability targets ${authorityRecoveryWorkId}; exact work_id is required.`,
+              data: { workId: authorityRecoveryWorkId, authorityRecovered: false },
             }) as unknown as Record<string, unknown>, true);
           }
           try {
-            const recovered = recoverDirectControllerAuthority({
+            const recovered = recoverControllerAuthority({
               controllerHome: ctx.controllerHome,
               repoId: repository.repoId,
               repositoryActiveCheckoutId: repository.activeCheckoutId,
-              workId: directAuthorityRecoveryWorkId,
+              workId: authorityRecoveryWorkId,
               requestedBy: typeof args.requested_by === 'string' ? args.requested_by : undefined,
               identity: authenticatedFacadeControllerIdentity(ctx, args, { allowTransportSessionRollover: true }),
               runtime: runtimeIdentitySnapshot(ctx),
               leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
             });
             return result(buildFacadeResult({
-              summary: `Direct controller authority for exact Work ${directAuthorityRecoveryWorkId} was rekeyed onto the current authenticated transport without changing semantic Work ownership.`,
+              summary: `Controller authority for exact Work ${authorityRecoveryWorkId} was recovered without changing semantic Work identity, relay scope, or recovery budgets.`,
               data: recovered,
             }) as unknown as Record<string, unknown>);
           } catch (error) {
             return result(buildFacadeResult({
               status: 'blocked',
-              summary: error instanceof Error ? error.message : 'Direct controller authority recovery failed.',
-              data: { workId: directAuthorityRecoveryWorkId, authorityRecovered: false },
+              summary: error instanceof Error ? error.message : 'Controller authority recovery failed.',
+              data: { workId: authorityRecoveryWorkId, authorityRecovered: false },
             }) as unknown as Record<string, unknown>, true);
           }
         }

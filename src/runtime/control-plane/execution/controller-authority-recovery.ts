@@ -4,6 +4,8 @@ import {
   getControllerRoundRelay,
   getControllerSession,
   mintControllerSessionAuthority,
+  recoverControllerRoundRelayAuthority,
+  type ControllerRoundRelayRecord,
   type ControllerSession,
   type ControllerType,
 } from '../../../../packages/kernel/controller/api/index';
@@ -103,6 +105,54 @@ export function recoverDirectControllerAuthority(input: {
   return {
     session,
     controllerAuthorityId: authority.authorityId,
+    controllerAuthorityCarrier: 'controller_authority_id_or_session_id_compat',
+    authorityRecovered: true,
+  };
+}
+
+export interface RelayControllerAuthorityRecoveryResult {
+  relay: ControllerRoundRelayRecord;
+  controllerAuthorityId: string;
+  relayScopeId: string;
+  controllerAuthorityCarrier: 'controller_authority_id_or_session_id_compat';
+  authorityRecovered: true;
+}
+
+export type ControllerAuthorityRecoveryResult = DirectControllerAuthorityRecoveryResult | RelayControllerAuthorityRecoveryResult;
+
+/** Select the canonical direct or relay recovery transaction for one exact Work. */
+export function recoverControllerAuthority(input: {
+  controllerHome: string;
+  repoId: string;
+  repositoryActiveCheckoutId?: string;
+  workId: string;
+  requestedBy?: string;
+  identity: DirectControllerAuthorityRecoveryIdentity;
+  runtime: { running?: boolean; runtimeInstanceId?: string };
+  leaseMs?: number;
+}): ControllerAuthorityRecoveryResult {
+  const store = { controllerHome: input.controllerHome, repoId: input.repoId };
+  if (!getControllerRoundRelay(store, input.workId.trim())) return recoverDirectControllerAuthority(input);
+  if (!input.runtime.running || !input.runtime.runtimeInstanceId || input.runtime.runtimeInstanceId !== input.identity.controllerInstanceId) {
+    throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RUNTIME_REQUIRED: ${input.workId}; caller must be served by the live canonical Runtime.`);
+  }
+  const relay = recoverControllerRoundRelayAuthority(store, {
+    workId: input.workId,
+    requestedBy: input.requestedBy,
+    identity: {
+      controllerId: input.identity.controllerId,
+      controllerType: input.identity.controllerType,
+      principalId: input.identity.principalId,
+      controllerInstanceId: input.identity.controllerInstanceId,
+      sessionId: input.identity.sessionId,
+    },
+  });
+  const controllerAuthorityId = relay.authorityId?.trim() || '';
+  if (!controllerAuthorityId) throw new Error(`WORK_CONTROLLER_ROUND_AUTHORITY_REQUIRED: ${input.workId}`);
+  return {
+    relay,
+    controllerAuthorityId,
+    relayScopeId: relay.relayScopeId,
     controllerAuthorityCarrier: 'controller_authority_id_or_session_id_compat',
     authorityRecovered: true,
   };
