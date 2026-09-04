@@ -232,7 +232,12 @@ export function evaluateWorkExecutionCompatibility(
         });
         continue;
       }
-      if (candidate.isolation === 'shared' || current.isolation === 'shared') {
+      // A no-target shared mutation lane is physical checkout ownership, not a
+      // repository-wide mutex. A shared canonical checkout and an isolated
+      // checkout may proceed concurrently unless semantic scope or explicit
+      // resource targets already conflicted above. Only two shared checkouts
+      // require the fallback lane serialization.
+      if (candidate.isolation === 'shared' && current.isolation === 'shared') {
         blockers.push({
           code: 'shared_mutation_lane_conflict',
           disposition: 'wait',

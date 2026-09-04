@@ -36,7 +36,9 @@ function work(input: {
   workId: string;
   stepId: string;
   workKind?: WorkContract['workKind'];
+  isolation?: 'shared' | 'isolated';
 }): WorkContract {
+  const isolated = input.isolation !== 'shared';
   return createWorkContract({ controllerHome: input.controllerHome, repoId: input.repoId }, {
     workId: input.workId,
     repoId: input.repoId,
@@ -44,7 +46,10 @@ function work(input: {
     mode: 'goal_workloop',
     objective: `Exercise concurrency semantics for ${input.workId}.`,
     acceptanceCriteria: ['Concurrency semantics are deterministic.'],
-    constraints: { requireHandoffOnAmbiguity: true, workspaceMode: 'isolated', requireWorktree: true },
+    constraints: { requireHandoffOnAmbiguity: true, workspaceMode: isolated ? 'isolated' : 'auto', requireWorktree: isolated },
+    worktreePolicy: isolated
+      ? { required: true, reason: 'Concurrency test isolated fixture.' }
+      : { required: false, reason: 'Concurrency test shared-checkout fixture.' },
     requestedBy: 'chatgpt',
     status: 'running',
     planId: 'PLAN-CONCURRENCY',
@@ -108,6 +113,25 @@ describe('Work execution concurrency', () => {
       [leftContract],
     );
     expect(disjointDecision).toEqual({ compatible: true, blockers: [] });
+  });
+
+  test('prevents shared-versus-isolated mutation-lane cycles while preserving shared checkout serialization', () => {
+    const home = tempHome(), repoId = 'repo-shared-isolated';
+    const sharedA = work({ controllerHome: home, repoId, workId: 'work-shared-a', stepId: 'shared-a', isolation: 'shared' });
+    const sharedB = work({ controllerHome: home, repoId, workId: 'work-shared-b', stepId: 'shared-b', isolation: 'shared' });
+    const isolated = work({ controllerHome: home, repoId, workId: 'work-isolated', stepId: 'isolated' });
+    const sharedAContract = buildWorkExecutionConcurrencyContract(sharedA, { resourceIntents: intent('workspace:shared-a') });
+    const sharedBContract = buildWorkExecutionConcurrencyContract(sharedB, { resourceIntents: intent('workspace:shared-b') });
+    const isolatedContract = buildWorkExecutionConcurrencyContract(isolated, { resourceIntents: intent('workspace:isolated') });
+
+    expect(sharedAContract).toMatchObject({ lane: 'integration_write', isolation: 'shared' });
+    expect(isolatedContract).toMatchObject({ lane: 'isolated_write', isolation: 'isolated' });
+    expect(evaluateWorkExecutionCompatibility(isolatedContract, [sharedAContract])).toEqual({ compatible: true, blockers: [] });
+    expect(evaluateWorkExecutionCompatibility(sharedAContract, [isolatedContract])).toEqual({ compatible: true, blockers: [] });
+    expect(evaluateWorkExecutionCompatibility(sharedBContract, [sharedAContract]).blockers[0]).toMatchObject({
+      code: 'shared_mutation_lane_conflict', blockingWorkId: sharedA.workId,
+      wakeTrigger: { kind: 'work_terminal', workId: sharedA.workId },
+    });
   });
 
   test('keeps malformed active rows explicit while allowing disjoint isolated Work admission', () => {
@@ -310,6 +334,39 @@ describe('Work execution concurrency', () => {
     // same Plan step even before it owns a Process.
     expect(sameWork).toMatchObject({ compatible: false, hardBlocked: false, wait: { blockingWorkId: second.workId } });
     expect(sameWork.wait?.blockingWorkId).not.toBe(first.workId);
+  });
+
+  test('runtime admission does not make disjoint shared and isolated Works wait on each other', () => {
+    const home = tempHome(), repoId = 'repo-runtime-shared-isolated';
+    const shared = work({ controllerHome: home, repoId, workId: 'work-runtime-shared', stepId: 'shared-step', isolation: 'shared' });
+    const isolated = work({ controllerHome: home, repoId, workId: 'work-runtime-isolated', stepId: 'isolated-step' });
+    const sharedClaim: ProcessResourceClaim = {
+      resourceKey: `workspace:${shared.checkoutId}`, mode: 'write', repoId, checkoutId: shared.checkoutId, workId: shared.workId,
+    };
+    const isolatedClaim: ProcessResourceClaim = {
+      resourceKey: `workspace:${isolated.checkoutId}`, mode: 'write', repoId, checkoutId: isolated.checkoutId, workId: isolated.workId,
+    };
+
+    expect(evaluateManagedProcessWorkCompatibility({
+      controllerHome: home, repoId, processId: 'proc-isolated-candidate', workId: isolated.workId, resourceClaims: [isolatedClaim],
+    })).toEqual({ compatible: true, hardBlocked: false });
+    expect(evaluateManagedProcessWorkCompatibility({
+      controllerHome: home, repoId, processId: 'proc-shared-candidate', workId: shared.workId, resourceClaims: [sharedClaim],
+    })).toEqual({ compatible: true, hardBlocked: false });
+
+    const targetClaim: ProcessResourceClaim = {
+      resourceKey: `integration:${repoId}:main`, mode: 'exclusive', repoId, checkoutId: isolated.checkoutId, workId: isolated.workId,
+    };
+    activeProcess({ controllerHome: home, repoId, processId: 'proc-isolated-target-owner', workId: isolated.workId, claim: targetClaim });
+    const conflictingSharedClaim: ProcessResourceClaim = {
+      resourceKey: targetClaim.resourceKey, mode: 'exclusive', repoId, checkoutId: shared.checkoutId, workId: shared.workId,
+    };
+    expect(evaluateManagedProcessWorkCompatibility({
+      controllerHome: home, repoId, processId: 'proc-shared-target-conflict', workId: shared.workId, resourceClaims: [conflictingSharedClaim],
+    })).toMatchObject({
+      compatible: false, hardBlocked: false,
+      wait: { blockerCode: 'integration_target_conflict', blockingWorkId: isolated.workId, wakeTrigger: { kind: 'resource_release' } },
+    });
   });
 
   test('keeps every active Lease authoritative beyond the former 5000-entry scan boundary', () => {
