@@ -20,6 +20,7 @@ import type { ManagedProcessRecord } from '../../src/runtime/execution/process-r
 import { resetFinalizationStagesForRequest, selectDefaultWorkValidationChecks } from '../../src/runtime/gateway/mcp/execution-tools';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 import { cleanupControllerRuntimeState } from '../../src/runtime/control-plane/runtime-cleanup';
+import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 
 const roots: string[] = [];
 
@@ -212,6 +213,133 @@ describe('terminal Work cleanup', () => {
     expect(report.attempted).toBe(0);
     expect(existsSync(retained.worktreePath)).toBe(true);
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, retained.workId)?.terminalResourceDisposition?.mode).toBe('retained_by_request');
+  });
+
+  test('periodic reconciler isolates malformed Work semantics and continues cleaning later terminal Work', async () => {
+    const fx = fixture('malformed-work-isolation');
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: fx.handle.workId,
+      repoId: fx.repository.repoId,
+      mode: 'direct_control',
+      objective: 'Later valid terminal Work must still be cleaned.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'cancelled',
+      phase: 'cleanup',
+    });
+    const validTerminalRecord = readControlPlaneRecord<WorkContract>(
+      fx.controllerHome,
+      'work_contract',
+      fx.repository.repoId,
+      fx.handle.workId,
+    )!;
+    writeControlPlaneRecord(fx.controllerHome, {
+      namespace: 'work_contract',
+      scope: fx.repository.repoId,
+      key: fx.handle.workId,
+      schemaVersion: 2,
+      expectedRevision: validTerminalRecord.revision,
+      action: 'test_valid_terminal_phase_evidence',
+      value: {
+        ...validTerminalRecord.value,
+        phaseEvidence: {
+          ...validTerminalRecord.value.phaseEvidence,
+          implementation: { ...validTerminalRecord.value.phaseEvidence!.implementation, state: 'skipped' },
+          verification: { ...validTerminalRecord.value.phaseEvidence!.verification, state: 'skipped' },
+          review: { ...validTerminalRecord.value.phaseEvidence!.review, state: 'skipped' },
+          delivery: { ...validTerminalRecord.value.phaseEvidence!.delivery, state: 'skipped' },
+        },
+      },
+    });
+
+    const malformedWorkId = 'work-terminal-cleanup-malformed-work-isolation-invalid';
+    const malformedBranch = 'work/terminal-cleanup-malformed-work-isolation-invalid';
+    const malformedWorkspace = ensureManagedWorkspace(fx.controllerHome, getRepository(fx.repository.repoId, fx.controllerHome), {
+      requestId: 'terminal-cleanup-malformed-work-isolation-invalid',
+      title: 'Terminal Cleanup Malformed Work Isolation Invalid',
+      branchName: malformedBranch,
+    });
+    const malformedAt = new Date(Date.now() - 1_000).toISOString();
+    writeWorkHandle(fx.controllerHome, {
+      ...fx.handle,
+      recordRevision: undefined,
+      workId: malformedWorkId,
+      workContractId: malformedWorkId,
+      sessionId: 'session-malformed-work-isolation-invalid',
+      checkoutId: malformedWorkspace.checkoutId!,
+      worktreePath: malformedWorkspace.root!,
+      branch: malformedBranch,
+      baseCommit: malformedWorkspace.baseRevision ?? undefined,
+      expectedHead: malformedWorkspace.baseRevision ?? undefined,
+      createdAt: malformedAt,
+      updatedAt: malformedAt,
+      cleanupReceipt: undefined,
+    });
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: malformedWorkId,
+      repoId: fx.repository.repoId,
+      mode: 'goal_workloop',
+      objective: 'Malformed historical Work must not stall terminal cleanup.',
+      acceptanceCriteria: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'running',
+      phase: 'implementation',
+    });
+    const malformedRecord = readControlPlaneRecord<WorkContract>(
+      fx.controllerHome,
+      'work_contract',
+      fx.repository.repoId,
+      malformedWorkId,
+    )!;
+    const review = malformedRecord.value.phaseEvidence?.review;
+    writeControlPlaneRecord(fx.controllerHome, {
+      namespace: 'work_contract',
+      scope: fx.repository.repoId,
+      key: malformedWorkId,
+      schemaVersion: 2,
+      expectedRevision: malformedRecord.revision,
+      action: 'test_malformed_phase_evidence',
+      value: {
+        ...malformedRecord.value,
+        phase: 'delivery',
+        phaseEvidence: {
+          ...malformedRecord.value.phaseEvidence,
+          implementation: { ...malformedRecord.value.phaseEvidence!.implementation, state: 'satisfied' },
+          verification: { ...malformedRecord.value.phaseEvidence!.verification, state: 'satisfied' },
+          review: {
+            ...(review ?? { source: 'legacy_inferred', summary: 'Legacy review remains pending.', evidenceRefs: [], recordedAt: malformedAt }),
+            state: 'pending',
+          },
+        },
+      },
+    });
+
+    const report = await reconcileTerminalWorkCleanups(fx.controllerHome, { minAgeMs: 0, maxWork: 10 });
+    expect(report.errors).toContainEqual({
+      workId: malformedWorkId,
+      error: 'WORK_PHASE_EVIDENCE_PREVIOUS_NOT_SATISFIED: review',
+    });
+    expect(report.cleaned).toContain(fx.handle.workId);
+    expect(existsSync(malformedWorkspace.root!)).toBe(true);
+    expect(branchExists(fx.repositoryRoot, malformedBranch)).toBe(true);
+    expect(existsSync(fx.workspace.root!)).toBe(false);
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(false);
+    const retainedMalformed = readControlPlaneRecord<WorkContract>(
+      fx.controllerHome,
+      'work_contract',
+      fx.repository.repoId,
+      malformedWorkId,
+    )!;
+    expect(retainedMalformed.value.phase).toBe('delivery');
+    expect(retainedMalformed.value.phaseEvidence?.review?.state).toBe('pending');
   });
 
   test('periodic reconciler closes a stale cancelled managed Work without a caller cleanup request', async () => {

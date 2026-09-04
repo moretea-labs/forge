@@ -942,7 +942,13 @@ export async function reconcileTerminalWorkCleanups(
       const contract = record.value;
       if (knownWorkIds.has(contract.workId) || !isTerminalWorkContractStatus(contract.status)) continue;
       if (!contract.worktreeRef?.trim() || !existsSync(contract.worktreeRef)) continue;
-      const recovered = recoverTerminalWorkHandle(controllerHome, repository.repoId, contract.workId);
+      let recovered: WorkHandleState | undefined;
+      try {
+        recovered = recoverTerminalWorkHandle(controllerHome, repository.repoId, contract.workId);
+      } catch (error) {
+        report.errors.push({ workId: contract.workId, error: error instanceof Error ? error.message : String(error) });
+        continue;
+      }
       if (!recovered) continue;
       handles.push(recovered);
       knownWorkIds.add(recovered.workId);
@@ -951,7 +957,13 @@ export async function reconcileTerminalWorkCleanups(
     handles.sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
     for (const originalHandle of handles) {
       report.scanned += 1;
-      const contract = getWorkContract({ controllerHome, repoId: repository.repoId }, originalHandle.workContractId ?? originalHandle.workId);
+      let contract: WorkContract | undefined;
+      try {
+        contract = getWorkContract({ controllerHome, repoId: repository.repoId }, originalHandle.workContractId ?? originalHandle.workId);
+      } catch (error) {
+        report.errors.push({ workId: originalHandle.workId, error: error instanceof Error ? error.message : String(error) });
+        continue;
+      }
       if (!contract || !isTerminalWorkContractStatus(contract.status)) {
         report.skippedNonTerminal.push(originalHandle.workId);
         continue;
