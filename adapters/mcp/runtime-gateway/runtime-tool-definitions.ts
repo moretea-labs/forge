@@ -15,6 +15,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     repo_id: repoId,
     operation: { type: 'string', enum: ['list', 'get', 'repair'], description: 'Defaults to get.' },
     detail_level: { type: 'string', enum: ['summary', 'detail'], description: 'Defaults to summary.' },
+    include_maintenance: { type: 'boolean', description: 'For detail reads only. Runs the explicit bounded maintenance inspection; defaults to false so status remains a hot read.' },
     repair_operation: { type: 'string', enum: ['diagnose', 'repair', 'verify', 'handoff'] },
     dry_run: { type: 'boolean', description: 'Defaults to true for repair/diagnose.' },
     approval_confirmed: { type: 'boolean' },

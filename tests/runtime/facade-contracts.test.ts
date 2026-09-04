@@ -20,6 +20,12 @@ describe('handoff and facade contracts', () => {
     expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']);
   });
 
+  test('keeps expensive maintenance inspection explicit on rh_status', () => {
+    const rhStatus = runtimeToolDefinitions.find((definition) => definition.name === 'rh_status');
+    const properties = rhStatus?.inputSchema.properties as Record<string, { description?: string }> | undefined;
+    expect(properties?.include_maintenance?.description).toContain('defaults to false');
+  });
+
   test('keeps controller round disposition in the exposed rh_work schema and facade operation contract', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;

@@ -3115,8 +3115,14 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         // semantics and must not promote ordinary work into repair flows.
         const executionReady = readiness.semantics.executionReady;
         let maintenanceHealthy: boolean | null = null;
-        let maintenanceCandidateCount = 0;
-        if (args.detail_level === 'detail') {
+        let maintenanceCandidateCount: number | null = null;
+        let maintenanceObservation: 'not_requested' | 'observed' | 'unavailable' = 'not_requested';
+        // A full maintenance pass traverses runtime storage, retained Work and
+        // temp roots. It is a diagnostic with a dedicated typed tool, not a
+        // prerequisite for an ordinary detailed status read. Do not hide that
+        // cost behind a cross-request cache or represent unobserved debt as
+        // healthy; callers can opt in when that diagnostic changes a decision.
+        if (args.include_maintenance === true) {
           try {
             const maintenance = buildRuntimeMaintenanceStatus(repository, ctx.controllerHome, { maxCandidates: 20 });
             // stale_runtime_temp_entry is non-blocking by design (the executor
@@ -3124,8 +3130,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             const blockingCandidates = maintenance.candidates.filter((candidate) => candidate.kind !== 'stale_runtime_temp_entry');
             maintenanceHealthy = blockingCandidates.length === 0;
             maintenanceCandidateCount = blockingCandidates.length;
+            maintenanceObservation = 'observed';
           } catch {
             maintenanceHealthy = null;
+            maintenanceObservation = 'unavailable';
           }
         }
         markDetailPhase('maintenance');
@@ -3175,6 +3183,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               executionReady,
               maintenanceHealthy,
               maintenanceCandidateCount,
+              maintenanceObservation,
               releaseReady: readiness.semantics.releaseReady,
               executionBlockers: readiness.semantics.reasons.executionReady.map((reason) => reason.code),
               releaseBlockers: readiness.semantics.reasons.releaseReady.map((reason) => reason.code),

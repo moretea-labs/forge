@@ -564,10 +564,62 @@ printf 'BUILD SUCCEEDED\\n'
       activeContractCount?: number;
       invalidActiveContractCount?: number;
       invalidActiveContracts?: Array<{ workId?: string; error?: string }>;
+      readiness?: {
+        diagnostics?: {
+          semantics?: {
+            maintenanceHealthy?: boolean | null;
+            maintenanceCandidateCount?: number | null;
+            maintenanceObservation?: string;
+          };
+        };
+      };
     };
     expect(detail.activeContractCount).toBe(1);
     expect(detail.invalidActiveContractCount).toBe(1);
     expect(detail.invalidActiveContracts?.[0]).toMatchObject({ workId: malformed.workId });
+    expect(detail.readiness?.diagnostics?.semantics).toMatchObject({
+      maintenanceHealthy: null,
+      maintenanceCandidateCount: null,
+      maintenanceObservation: 'not_requested',
+    });
+
+    const maintenanceDetailPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
+      repo_id: repository.repoId, operation: 'get', detail_level: 'detail', include_maintenance: true,
+    }));
+    const maintenanceDetail = maintenanceDetailPayload.data as typeof detail;
+    expect(maintenanceDetail.readiness?.diagnostics?.semantics).toMatchObject({
+      maintenanceObservation: 'unavailable',
+    });
+    expect(maintenanceDetail.readiness?.diagnostics?.semantics?.maintenanceCandidateCount).toBeNull();
+  });
+
+  test('rh_status keeps maintenance diagnostic opt-in on a clean Controller', async () => {
+    const business = tempRoot('forge-status-maintenance-business-');
+    const controllerHome = tempRoot('forge-status-maintenance-home-');
+    initGitRepo(business, 'status-maintenance');
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Status Maintenance' });
+
+    const defaultPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
+      repo_id: repository.repoId, operation: 'get', detail_level: 'detail',
+    }));
+    const defaultData = defaultPayload.data as {
+      readiness?: { diagnostics?: { semantics?: Record<string, unknown> } };
+    };
+    expect(defaultData.readiness?.diagnostics?.semantics).toMatchObject({
+      maintenanceHealthy: null,
+      maintenanceCandidateCount: null,
+      maintenanceObservation: 'not_requested',
+    });
+
+    const observedPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_status', {
+      repo_id: repository.repoId, operation: 'get', detail_level: 'detail', include_maintenance: true,
+    }));
+    const observedData = observedPayload.data as typeof defaultData;
+    expect(observedData.readiness?.diagnostics?.semantics).toMatchObject({
+      maintenanceObservation: 'observed',
+    });
+    expect(typeof observedData.readiness?.diagnostics?.semantics?.maintenanceCandidateCount).toBe('number');
   });
 
   test('rh_context row-isolates malformed active Work for repository-wide get/list reads', async () => {
