@@ -59,6 +59,10 @@ import {
 import { reconcileSchedulerWorkerExit } from './worker-exit-reconciler';
 import { persistSchedulerSpawnedWorkerLifecycle } from './worker-lifecycle-store';
 import {
+  spawnSchedulerPeriodicCleanup,
+  type SchedulerPeriodicCleanupSpawnResult,
+} from './periodic-cleanup-process';
+import {
   buildSchedulerWorkerExitedLifecycle,
   buildSchedulerWorkerSpawnFailureLifecycle,
   buildSchedulerWorkerSpawnedLifecycle,
@@ -156,6 +160,8 @@ export interface SchedulerRuntimeBinding {
   controllerPid?: number;
   runtimeSourceRoot?: string;
   workerEntrypoint?: string;
+  /** Canonical in-process Runtime isolates periodic cleanup from the public event loop. */
+  isolatePeriodicCleanup?: boolean;
   /** Canonical Runtime treats a tick failure as a whole-Runtime failure. */
   fatalOnTickError?: boolean;
 }
@@ -164,10 +170,12 @@ export class GlobalScheduler {
   private readonly controllerHome: string;
   private readonly actors: RepoActorRegistry;
   private readonly children = new Map<string, ChildProcess>();
+  private readonly maintenanceChildren = new Map<string, ChildProcess>();
   private readonly config: SchedulerConfig;
   private readonly controllerPid: number;
   private readonly runtimeSourceRoot?: string;
   private readonly workerEntrypoint?: string;
+  private readonly isolatePeriodicCleanup: boolean;
   private readonly fatalOnTickError: boolean;
   private lastScheduleTick = 0;
   private lastReconcile = 0;
@@ -186,6 +194,7 @@ export class GlobalScheduler {
   private runtimeCleanup = cleanupControllerRuntimeState;
   private terminalWorkCleanup = reconcileTerminalWorkCleanups;
   private processGc = gcTerminalProcesses;
+  private periodicCleanupSpawn = spawnSchedulerPeriodicCleanup;
   private workExecutionConcurrencyReconcile = reconcileWorkExecutionConcurrencyWaits;
   private workValidationReconcile = reconcilePendingWorkValidations;
   private editValidationReconcile = reconcilePendingEditValidations;
@@ -209,6 +218,7 @@ export class GlobalScheduler {
     this.actors = new RepoActorRegistry(controllerHome, { maxConcurrentWorkers: this.config.maxWorkers });
     this.runtimeSourceRoot = runtime.runtimeSourceRoot ? resolve(runtime.runtimeSourceRoot) : undefined;
     this.workerEntrypoint = runtime.workerEntrypoint ? resolve(runtime.workerEntrypoint) : undefined;
+    this.isolatePeriodicCleanup = runtime.isolatePeriodicCleanup === true;
     this.fatalOnTickError = runtime.fatalOnTickError === true;
     const restoredState = restoreSchedulerState(readSchedulerHealthSnapshot(controllerHome));
     this.lastSourceScanAt = restoredState.lastSourceScanAt;
@@ -441,6 +451,48 @@ export class GlobalScheduler {
     };
   }
 
+  private launchPeriodicCleanup(nowMs: number): boolean {
+    const key = 'periodic-runtime-cleanup';
+    const tracked = this.maintenanceChildren.get(key);
+    if (tracked?.pid && this.pidAlive(tracked.pid)) return false;
+    if (tracked) this.maintenanceChildren.delete(key);
+
+    const fence = assertRuntimeMayWrite('cleanup', this.controllerHome);
+    if (!fence.allowed) return false;
+    const writeClaim = getRuntimeWriteClaim();
+    const spawned: SchedulerPeriodicCleanupSpawnResult = this.periodicCleanupSpawn({
+      controllerHome: this.controllerHome,
+      controllerPid: this.controllerPid,
+      nowMs,
+      cleanupIntervalMs: RUNTIME_CLEANUP_INTERVAL_MS,
+      runtimeSourceRoot: this.runtimeSourceRoot,
+      writeClaimEnvironment: writeClaim ? runtimeWriteClaimEnvironment(writeClaim) : {},
+    });
+    if (!spawned.ok) {
+      console.error('[forge cleanup] failed to launch isolated periodic cleanup:', spawned.startupError);
+      return false;
+    }
+    const child = spawned.child;
+    this.maintenanceChildren.set(key, child);
+    const clear = () => {
+      if (this.maintenanceChildren.get(key) === child) this.maintenanceChildren.delete(key);
+    };
+    child.once('error', (error) => {
+      clear();
+      console.error('[forge cleanup] isolated periodic cleanup process failed:', error.message);
+    });
+    child.once('close', (code, signal) => {
+      clear();
+      if (code !== 0) {
+        console.error(
+          '[forge cleanup] isolated periodic cleanup exited unsuccessfully:',
+          `code=${code ?? 'null'} signal=${signal ?? 'none'}`,
+        );
+      }
+    });
+    return true;
+  }
+
   async tick(): Promise<{ activeJobs: number }> {
     const now = Date.now();
     this.lastHeartbeatAt = new Date(now).toISOString();
@@ -450,18 +502,24 @@ export class GlobalScheduler {
     let periodicCleanupRan = false;
     if (now - this.lastCleanupAt >= RUNTIME_CLEANUP_INTERVAL_MS) {
       // Advance the interval before cleanup so a failing pass cannot create a
-      // tight retry loop on every scheduler tick.
+      // tight retry loop on every scheduler tick. Canonical Runtime launches the
+      // synchronous cleanup scanner in a release-fenced child so recursive FS,
+      // process-table and legacy reconciliation work cannot block MCP traffic.
       this.lastCleanupAt = now;
-      await runSchedulerPeriodicCleanup({
-        controllerHome: this.controllerHome,
-        controllerPid: this.controllerPid,
-        nowMs: now,
-        cleanupIntervalMs: RUNTIME_CLEANUP_INTERVAL_MS,
-        repositories,
-        runtimeCleanup: this.runtimeCleanup,
-        terminalWorkCleanup: this.terminalWorkCleanup,
-        processGc: this.processGc,
-      });
+      if (this.isolatePeriodicCleanup) {
+        this.launchPeriodicCleanup(now);
+      } else {
+        await runSchedulerPeriodicCleanup({
+          controllerHome: this.controllerHome,
+          controllerPid: this.controllerPid,
+          nowMs: now,
+          cleanupIntervalMs: RUNTIME_CLEANUP_INTERVAL_MS,
+          repositories,
+          runtimeCleanup: this.runtimeCleanup,
+          terminalWorkCleanup: this.terminalWorkCleanup,
+          processGc: this.processGc,
+        });
+      }
       periodicCleanupRan = true;
     }
     if (now - this.lastReconcile >= 5_000) {
@@ -683,7 +741,10 @@ export class GlobalScheduler {
       }
     } finally {
       clearInterval(heartbeatTimer);
-      await cleanupSchedulerWorkerProcesses(this.children);
+      await Promise.all([
+        cleanupSchedulerWorkerProcesses(this.children),
+        cleanupSchedulerWorkerProcesses(this.maintenanceChildren),
+      ]);
     }
   }
 }

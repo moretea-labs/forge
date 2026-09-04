@@ -8,6 +8,7 @@ import {
   selectSchedulerSourceScanRepositories,
 } from '../../src/runtime/control-plane/global-scheduler/scheduler';
 import { planSchedulerSourceSampling } from '../../src/runtime/control-plane/global-scheduler/source-scan';
+import type { SchedulerPeriodicCleanupSpawnResult } from '../../src/runtime/control-plane/global-scheduler/periodic-cleanup-process';
 import {
   cleanupControllerRuntimeState,
   runtimeCleanupLogPath,
@@ -543,6 +544,42 @@ describe('runtime cleanup', () => {
       shouldSample: true,
       avoidedRepositoryCount: 2,
     });
+  });
+
+  test('canonical scheduler isolates periodic cleanup instead of running synchronous cleanup on the event loop', async () => {
+    const home = controllerHome();
+    const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 }, { isolatePeriodicCleanup: true });
+    let inlineCleanupCalls = 0;
+    let launches = 0;
+    const now = Date.now();
+    const internal = scheduler as unknown as {
+      runtimeCleanup: () => void;
+      periodicCleanupSpawn: () => SchedulerPeriodicCleanupSpawnResult;
+      repositoryList: () => Array<{ repoId: string; enabled: boolean; canonicalRoot: string; removedAt?: string }>;
+      lastSourceScanAt: number;
+      lastGitStatusSampleAt: number;
+      workValidationReconcile: () => { errors: unknown[] };
+      editValidationReconcile: () => Promise<{ errors: unknown[] }>;
+    };
+    internal.runtimeCleanup = () => { inlineCleanupCalls += 1; };
+    internal.periodicCleanupSpawn = () => {
+      launches += 1;
+      return { ok: false, startupError: 'synthetic isolated cleanup launch' };
+    };
+    internal.repositoryList = () => [];
+    internal.lastSourceScanAt = now;
+    internal.lastGitStatusSampleAt = now;
+    internal.workValidationReconcile = () => ({ errors: [] });
+    internal.editValidationReconcile = async () => ({ errors: [] });
+    const originalError = console.error;
+    console.error = () => undefined;
+    try {
+      await expect(scheduler.tick()).resolves.toEqual({ activeJobs: 0 });
+    } finally {
+      console.error = originalError;
+    }
+    expect(launches).toBe(1);
+    expect(inlineCleanupCalls).toBe(0);
   });
 
   test('periodic scheduler cleanup runs Process GC for only one enabled repository', async () => {
