@@ -29,7 +29,7 @@ import { listWorkBoundRepositoryProcessEvidence, listWorkBoundRepositoryRemoteEf
 import { completeRemoteEffectWorkFromProcessReceipt } from '../../../packages/kernel/work/api/index';
 import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../../../src/runtime/execution/process-runtime/command-facade';
 import { buildJobOperationDigest } from '../../../src/runtime/control-plane/facade/operation-digest';
-import { readWorkHandle, transitionWorkHandle, workDeliveryBaseRevision, type WorkHandleState } from '../../../src/runtime/control-plane/execution/work-handle-store';
+import { readWorkHandle, resolveWorkDeliveryTargetBranch, transitionWorkHandle, workDeliveryBaseRevision, type WorkHandleState } from '../../../src/runtime/control-plane/execution/work-handle-store';
 import { ensureRepositoryWorkHandle, rebindRepositoryWorkHandleControllerIdentity, reconcileRepositoryWorkHandlePlacement } from '../../../src/runtime/control-plane/execution/work-handle-authority';
 import { recoverControllerAuthority } from '../../../src/runtime/control-plane/execution/controller-authority-recovery';
 import { recoverTerminalWorkHandle } from '../../../src/runtime/control-plane/execution/work-terminal-cleanup';
@@ -37,6 +37,7 @@ import { commandFingerprint, verificationInputFingerprint, workspaceValidationFi
 import { resolveWorkVerificationContext } from '../../../src/runtime/control-plane/execution/work-verification-context';
 import { executeWorkVerification } from '../../../src/runtime/control-plane/execution/work-verification-service';
 import { implementationReviewContentFingerprint } from '../../../src/runtime/control-plane/execution/implementation-review-content';
+import { reconcileDirectCanonicalTargetAdvanceCommand } from '../../../src/runtime/control-plane/execution/work-finalization-service';
 import { acceptReviewedDirectEditWorkReconciliation, completeReviewedDirectEditWorkAfterCommit, prepareReviewedDirectEditWorkCommit, type ReviewedDirectEditWorkCommitPlan } from '../../../src/runtime/control-plane/execution/direct-edit-work-completion';
 import { readJobEvents } from '../../../src/runtime/evidence/event-ledger';
 import { readExecutionArtifact } from '../../../src/runtime/evidence/artifact-store';
@@ -2775,26 +2776,8 @@ function reconcileTerminalFacadeWorkVerifications(
   const verificationStatus = repositoryGitStatus(verificationRepository);
   const sourceRevision = verificationStatus.head ?? undefined;
   if (!sourceRevision) return { reconciledProcessIds: [], workBoundProcessEvidenceIds: [] };
-  const verificationHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
-  const deliveryBaseRevision = verificationHandle
-    ? workDeliveryBaseRevision(verificationHandle)
-    : workContract.baseRevision;
-  const committedPaths = deliveryBaseRevision
-    ? workChangedPaths(verificationRepository.canonicalRoot, deliveryBaseRevision, sourceRevision)
-    : workContract.repositoryBaseState === 'unborn'
-      ? workChangedPathsFromUnbornBase(verificationRepository.canonicalRoot, sourceRevision)
-      : [];
-  const workspaceChangedPaths = [...new Set([
-    ...committedPaths,
-    ...verificationStatus.staged,
-    ...verificationStatus.unstaged,
-    ...verificationStatus.untracked,
-  ])].sort();
+  let verificationHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
   const workspaceFingerprint = workspaceValidationFingerprint(verificationRepository.canonicalRoot, verificationStatus);
-  const implementationReviewWorkspaceFingerprint = implementationReviewContentFingerprint(
-    verificationRepository.canonicalRoot,
-    workspaceChangedPaths,
-  );
   // Work-bound repository Process evidence remains semantic/result evidence,
   // never a typed check receipt. repository_change may use it only when no
   // checks are declared. local_effect may bind the same exact durable Process
@@ -2892,6 +2875,47 @@ function reconcileTerminalFacadeWorkVerifications(
       // mismatched terminal Process remains non-authoritative and is ignored.
     }
   }
+
+  let deliveryBaseRevision = verificationHandle
+    ? workDeliveryBaseRevision(verificationHandle)
+    : workContract.baseRevision;
+  const latestContract = getWorkContract(store, workId) ?? workContract;
+  if (latestContract.phase === 'review' && verificationHandle && !verificationHandle.managedWorktree && verificationHandle.expectedHead) {
+    const targetBranch = resolveWorkDeliveryTargetBranch(verificationHandle, verificationRepository.defaultBranch);
+    const reconciliation = reconcileDirectCanonicalTargetAdvanceCommand({
+      controllerHome: ctx.controllerHome,
+      repoId: repository.repoId,
+      workId,
+      handle: verificationHandle,
+      root: verificationRepository.canonicalRoot,
+      targetBranch,
+      status: verificationStatus,
+      scope: { allowedPaths: latestContract.allowedPaths, forbiddenPaths: latestContract.forbiddenPaths },
+      checkIds: latestContract.checks,
+      checkRefs: latestContract.checkRefs,
+      evidenceTitle: 'review target advancement reconciled',
+    });
+    if (reconciliation.reconciled) {
+      verificationHandle = reconciliation.handle;
+      deliveryBaseRevision = workDeliveryBaseRevision(verificationHandle);
+    }
+  }
+
+  const committedPaths = deliveryBaseRevision
+    ? workChangedPaths(verificationRepository.canonicalRoot, deliveryBaseRevision, sourceRevision)
+    : workContract.repositoryBaseState === 'unborn'
+      ? workChangedPathsFromUnbornBase(verificationRepository.canonicalRoot, sourceRevision)
+      : [];
+  const workspaceChangedPaths = [...new Set([
+    ...committedPaths,
+    ...verificationStatus.staged,
+    ...verificationStatus.unstaged,
+    ...verificationStatus.untracked,
+  ])].sort();
+  const implementationReviewWorkspaceFingerprint = implementationReviewContentFingerprint(
+    verificationRepository.canonicalRoot,
+    workspaceChangedPaths,
+  );
 
   return { sourceRevision, workspaceFingerprint, implementationReviewWorkspaceFingerprint, workspaceChangedPaths, reconciledProcessIds, workBoundProcessEvidenceIds };
 }

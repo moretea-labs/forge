@@ -688,6 +688,73 @@ export function inspectDirectCanonicalTargetAdvanceReconciliation(input: {
   };
 }
 
+export interface DirectCanonicalTargetAdvanceReconciliationCommandResult {
+  reconciled: boolean;
+  handle: WorkHandleState;
+  inspection: DirectCanonicalTargetAdvanceInspection;
+}
+
+/**
+ * Application command for advancing Direct canonical Work delivery identity.
+ * The pure inspector remains the admission authority; this command is the only
+ * place shared review/finalization callers persist the approved identity move
+ * and its evidence. Gateway callers consume the returned handle and never write
+ * lifecycle/evidence records themselves.
+ */
+export function reconcileDirectCanonicalTargetAdvanceCommand(input: {
+  controllerHome: string;
+  repoId: string;
+  workId: string;
+  handle: WorkHandleState;
+  root: string;
+  targetBranch: string;
+  status: ReturnType<typeof repositoryGitStatus>;
+  scope?: { allowedPaths: string[]; forbiddenPaths: string[] };
+  checkIds: string[];
+  checkRefs: VerificationRecord[];
+  persistHandle?: (patch: { deliveryBaseCommit: string; expectedHead: string; failureReason: undefined }) => WorkHandleState;
+  evidenceTitle?: string;
+}): DirectCanonicalTargetAdvanceReconciliationCommandResult {
+  if (input.handle.repositoryId !== input.repoId) {
+    throw new Error(`WORK_DIRECT_TARGET_ADVANCE_REPOSITORY_MISMATCH: expected ${input.handle.repositoryId}, found ${input.repoId}`);
+  }
+  const boundWorkId = input.handle.workContractId ?? input.handle.workId;
+  if (boundWorkId !== input.workId) {
+    throw new Error(`WORK_DIRECT_TARGET_ADVANCE_IDENTITY_MISMATCH: expected ${boundWorkId}, found ${input.workId}`);
+  }
+  const inspection = inspectDirectCanonicalTargetAdvanceReconciliation({
+    root: input.root,
+    worktreePath: input.handle.worktreePath,
+    managedWorktree: input.handle.managedWorktree,
+    workBranch: input.handle.branch,
+    targetBranch: input.targetBranch,
+    expectedRevision: input.handle.expectedHead,
+    status: input.status,
+    scope: input.scope,
+    checkIds: input.checkIds,
+    checkRefs: input.checkRefs,
+  });
+  if (!inspection.reconcilable || !inspection.targetHead) {
+    return { reconciled: false, handle: input.handle, inspection };
+  }
+
+  const previousHead = input.handle.expectedHead;
+  const patch = {
+    deliveryBaseCommit: inspection.targetHead,
+    expectedHead: inspection.targetHead,
+    failureReason: undefined,
+  } as const;
+  const handle = input.persistHandle
+    ? input.persistHandle(patch)
+    : transitionWorkHandle(input.controllerHome, input.handle, input.handle.state, patch);
+  appendWorkEvidence({ controllerHome: input.controllerHome, repoId: input.repoId }, input.workId, {
+    title: input.evidenceTitle ?? 'direct canonical target advancement reconciled',
+    summary: `Canonical ${input.targetBranch} advanced linearly ${previousHead} -> ${inspection.targetHead}. Delivery identity adopted only the target revision after proving all ${inspection.dirtyPaths.length} dirty path(s) are Work-owned, ${inspection.targetChangedPaths.length} target-only path(s) are disjoint, and fresh exact verification bound [${inspection.freshCheckIds.join(', ')}] to source ${inspection.targetHead} plus workspace ${inspection.workspaceFingerprint?.slice(0, 16) ?? 'unknown'}.`,
+    detailLevel: 'summary',
+  });
+  return { reconciled: true, handle, inspection };
+}
+
 export interface ManagedWorkSuccessorAdoptionInspection {
   adoptable: boolean;
   reason:
@@ -1488,32 +1555,23 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     const target = selectWorkFinalizationTarget(repository, current);
     const targetBranch = resolveWorkDeliveryTargetBranch(current, repository.defaultBranch, explicitTargetBranch);
     const contract = contractFor(ctx, current);
-    const advance = inspectDirectCanonicalTargetAdvanceReconciliation({
+    const reconciliation = reconcileDirectCanonicalTargetAdvanceCommand({
+      controllerHome: ctx.controllerHome,
+      repoId: current.repositoryId,
+      workId: current.workContractId ?? current.workId,
+      handle: current,
       root: target.canonicalRoot,
-      worktreePath: current.worktreePath,
-      managedWorktree: current.managedWorktree,
-      workBranch: current.branch,
       targetBranch,
-      expectedRevision: current.expectedHead,
       status: repositoryGitStatus(worktree),
       scope: contract ? { allowedPaths: contract.allowedPaths, forbiddenPaths: contract.forbiddenPaths } : undefined,
       checkIds: contract?.checks ?? [],
       checkRefs: contract?.checkRefs ?? [],
-    });
-    if (advance.reconcilable && advance.targetHead) {
-      const previousHead = current.expectedHead;
-      current = transact('direct-canonical-target-advance-reconciled', (fresh) => writeWorkHandle(ctx.controllerHome, {
+      persistHandle: (patch) => transact('direct-canonical-target-advance-reconciled', (fresh) => writeWorkHandle(ctx.controllerHome, {
         ...fresh,
-        deliveryBaseCommit: advance.targetHead,
-        expectedHead: advance.targetHead,
-        failureReason: undefined,
-      }));
-      appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
-        title: 'direct canonical target advancement reconciled',
-        summary: `Canonical ${targetBranch} advanced linearly ${previousHead} -> ${advance.targetHead}. ${advance.targetChangedPaths.length} target-only path(s) were disjoint from all ${advance.dirtyPaths.length} positively Work-owned dirty path(s), and fresh exact verification bound [${advance.freshCheckIds.join(', ')}] to source ${advance.targetHead} plus workspace ${advance.workspaceFingerprint?.slice(0, 16) ?? 'unknown'}. Delivery identity advanced without adopting target-only commits or unrelated dirty paths.`,
-        detailLevel: 'summary',
-      });
-    }
+        ...patch,
+      })),
+    });
+    if (reconciliation.reconciled) current = reconciliation.handle;
   }
 
   if (failedCleanupProof) {

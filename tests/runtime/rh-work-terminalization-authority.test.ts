@@ -7,6 +7,7 @@ import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { getRepository, reconcileRepositoryCheckouts, registerRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
+import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
@@ -16,6 +17,8 @@ import { ensureRepositoryWorkHandle, reconcileRepositoryWorkHandlePlacement } fr
 import { ensureRunningRepositoryWorkCheckout } from '../../src/runtime/control-plane/execution/retained-work-resume';
 import { cleanupTerminalWork } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
 import { inspectCleanupOnlyMergedHead } from '../../src/runtime/control-plane/execution/work-finalization-service';
+import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
+import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
 
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { resolveExplicitClaimedRepositoryWork } from '../../src/runtime/control-plane/execution/repository-work-attribution';
@@ -124,6 +127,49 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
   expect(result).toBeTruthy();
   return (result!.structuredContent
     ?? JSON.parse(result!.content[0] && 'text' in result!.content[0] ? String(result!.content[0].text) : '{}')) as Record<string, any>;
+}
+
+function exactVerification(input: {
+  repoId: string;
+  checkoutId: string;
+  sourceRevision: string;
+  workspaceFingerprint: string;
+  checkId: string;
+}): VerificationRecord {
+  const recordedAt = '2026-09-05T00:00:00.000Z';
+  return {
+    checkId: input.checkId,
+    outcome: 'valid_pass',
+    summary: 'fresh exact review reconciliation verification',
+    recordedAt,
+    sourceRevision: input.sourceRevision,
+    workspaceFingerprint: input.workspaceFingerprint,
+    verificationInputFingerprint: verificationInputFingerprint({
+      sourceRevision: input.sourceRevision,
+      workspaceFingerprint: input.workspaceFingerprint,
+      checkId: input.checkId,
+      requestedChecks: [input.checkId],
+    }),
+    receipt: {
+      schemaVersion: 1,
+      receiptId: `receipt-${input.checkId}`,
+      resultDigest: `digest-${input.checkId}`,
+      repoId: input.repoId,
+      checkoutId: input.checkoutId,
+      checkId: input.checkId,
+      processId: `process-${input.checkId}`,
+      status: 'passed',
+      runtimeStatus: 'succeeded',
+      ok: true,
+      exitCode: 0,
+      timedOut: false,
+      cancelled: false,
+      artifactPath: `.ai/harness/checks/${input.checkId}.json`,
+      summary: 'passed',
+      startedAt: recordedAt,
+      finishedAt: recordedAt,
+    },
+  };
 }
 
 describe('rh_work terminalization authority', () => {
@@ -2106,6 +2152,112 @@ describe('rh_work terminalization authority', () => {
       principalId: caller.principalId,
       sessionId: rotatedSessionId,
       controllerInstanceId: caller.controllerInstanceId,
+    });
+  }, 15_000);
+
+  test('review reconciles a verified disjoint canonical target advance before changed-path identity is recorded', async () => {
+    const fx = fixture();
+    const workId = 'work-review-target-advance-reconciliation';
+    const caller = {
+      principalId: 'principal-review-target-advance',
+      sessionId: 'transport-review-target-advance',
+      controllerInstanceId: 'runtime-review-target-advance',
+    };
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const now = new Date().toISOString();
+
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Review only the Work-owned dirty delta after an independent canonical target advance.',
+      acceptanceCriteria: ['Review changed-path identity excludes target-only commits.'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: ['owned.txt'],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      workKind: 'repository_change',
+      status: 'running',
+      phase: 'review',
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      workContractId: workId,
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      repositoryId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      worktreePath: fx.repoRoot,
+      branch: 'main',
+      deliveryTargetBranch: 'main',
+      managedWorktree: false,
+      baseCommit: baseRevision,
+      deliveryBaseCommit: baseRevision,
+      expectedHead: baseRevision,
+      permissionSnapshotVersion: 1,
+      state: 'validating',
+      createdAt: now,
+      updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: { validation: 'done', commit: 'pending', merge: 'skipped', branchCleanup: 'skipped', worktreeCleanup: 'pending' },
+    });
+    claimControllerSession(store, {
+      workId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+
+    writeFileSync(join(fx.repoRoot, 'target-only.txt'), 'independent target advance\n');
+    execFileSync('git', ['add', 'target-only.txt'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'independent target advance'], { cwd: fx.repoRoot });
+    const advancedRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    writeFileSync(join(fx.repoRoot, 'owned.txt'), 'current Work delta\n');
+
+    const currentRepository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const status = repositoryGitStatus(currentRepository);
+    const workspaceFingerprint = workspaceValidationFingerprint(fx.repoRoot, status);
+    const checkId = 'focused-review-target-advance';
+    updateWorkContract(store, workId, {
+      checkRefs: [exactVerification({
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        sourceRevision: advancedRevision,
+        workspaceFingerprint,
+        checkId,
+      })],
+    });
+
+    const reviewed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, currentRepository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'review',
+        work_id: workId,
+        requested_by: 'chatgpt',
+        review_decision: 'approved',
+        review_rationale: 'The exact current verification proves the disjoint target advance can be excluded from Work-owned review paths.',
+      },
+    ));
+
+    expect(reviewed.status).toBe('ok');
+    expect(reviewed.data?.review?.changedPaths).toEqual(['owned.txt']);
+    expect(getWorkContract(store, workId)?.scopeEvidence?.actualChangedPaths).toEqual(['owned.txt']);
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)).toMatchObject({
+      deliveryBaseCommit: advancedRevision,
+      expectedHead: advancedRevision,
     });
   }, 15_000);
 
