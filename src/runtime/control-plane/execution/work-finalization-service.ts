@@ -532,6 +532,26 @@ export function inspectTargetDirtyWorkOwnership(input: {
   };
 }
 
+export interface TargetDirtyPreservationPlan {
+  preserveDirtyTargetPaths: string[];
+  ownership: TargetDirtyWorkOwnershipInspection;
+}
+
+/**
+ * Dirty target content is a Git preservation concern first. Semantic Work
+ * ownership remains useful provenance, but it is not required when the
+ * integration candidate is disjoint. repositoryGitFinishWorkflow owns the
+ * exact overlap fence and fails before target mutation when a preserved path
+ * conflicts with the candidate.
+ */
+export function planTargetDirtyPreservation(input: Parameters<typeof inspectTargetDirtyWorkOwnership>[0]): TargetDirtyPreservationPlan {
+  const ownership = inspectTargetDirtyWorkOwnership(input);
+  return {
+    preserveDirtyTargetPaths: ownership.dirtyPaths,
+    ownership,
+  };
+}
+
 export interface DirectCanonicalTargetAdvanceInspection {
   reconcilable: boolean;
   reason:
@@ -2295,23 +2315,20 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
             ])].sort();
             let preserveDirtyTargetPaths: string[] | undefined;
             if (lockedDirtyPaths.length > 0) {
-              const ownership = inspectTargetDirtyWorkOwnership({
+              const preservation = planTargetDirtyPreservation({
                 dirtyPaths: lockedDirtyPaths,
                 targetCheckoutId: target.activeCheckoutId,
                 currentWorkId: current.workId,
                 activeWorks: listWorkContracts({ controllerHome: ctx.controllerHome, repoId: current.repositoryId, status: 'active', limit: 200 }),
               });
-              if (!ownership.owned) {
-                const detail = [
-                  ownership.unownedPaths.length ? `unowned=[${ownership.unownedPaths.join(', ')}]` : '',
-                  ownership.ambiguousPaths.length ? `ambiguous=[${ownership.ambiguousPaths.join(', ')}]` : '',
-                ].filter(Boolean).join(' ');
-                throw new Error(`WORK_TARGET_DIRTY_OWNERSHIP_REQUIRED: target ${targetBranch} has dirty path(s) that cannot be attributed uniquely to another active Work. ${detail}`.trim());
-              }
-              preserveDirtyTargetPaths = ownership.dirtyPaths;
+              const ownership = preservation.ownership;
+              preserveDirtyTargetPaths = preservation.preserveDirtyTargetPaths;
+              const attribution = ownership.owned
+                ? 'all preserved paths are attributed uniquely to other active Work'
+                : `preserved paths include unattributed or ambiguous content (unowned=${ownership.unownedPaths.length}, ambiguous=${ownership.ambiguousPaths.length})`;
               appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
-                title: 'concurrent target dirty ownership preserved',
-                summary: `Target ${targetBranch} retained ${ownership.dirtyPaths.length} dirty path(s) owned by other active Work while this Work entered only the target-branch mutation critical section.`,
+                title: 'concurrent target dirty content preserved',
+                summary: `Target ${targetBranch} retained ${preserveDirtyTargetPaths.length} dirty path(s) in place; ${attribution}. Git integration remains fail-closed before target mutation if the candidate overlaps any preserved path.`,
                 detailLevel: 'summary',
               });
             }

@@ -12,6 +12,7 @@ import { repositoryGitFinishWorkflow, repositoryGitStatus } from '../../src/cli/
 import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 import { inspectCleanupOnlyMergedHead, inspectDirectCanonicalTargetAdvanceReconciliation, inspectTargetDirtyWorkOwnership, resetFinalizationStagesForRequest } from '../../src/runtime/gateway/mcp/execution-tools';
+import { planTargetDirtyPreservation } from '../../src/runtime/control-plane/execution/work-finalization-service';
 
 const roots: string[] = [];
 
@@ -219,6 +220,24 @@ describe('direct canonical Work target advancement reconciliation', () => {
     })).toMatchObject({ owned: false, ambiguousPaths: ['owned.txt'] });
   });
 
+  test('preserves unowned dirty target paths for Git-level disjointness validation', () => {
+    expect(planTargetDirtyPreservation({
+      dirtyPaths: ['local-pending.txt'],
+      targetCheckoutId: 'checkout-main',
+      currentWorkId: 'work-integrating',
+      activeWorks: [],
+    })).toEqual({
+      preserveDirtyTargetPaths: ['local-pending.txt'],
+      ownership: {
+        owned: false,
+        dirtyPaths: ['local-pending.txt'],
+        owners: {},
+        unownedPaths: ['local-pending.txt'],
+        ambiguousPaths: [],
+      },
+    });
+  });
+
   test('integrates a disjoint feature while preserving another Work-owned dirty main batch in place', () => {
     const fx = fixture('dirty-target-in-place');
     git(fx.repoRoot, ['switch', '-c', 'feature/disjoint']);
@@ -241,6 +260,30 @@ describe('direct canonical Work target advancement reconciliation', () => {
     expect(result.completed).toBe(true);
     expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(featureHead);
     expect(repositoryGitStatus(fx.repository)).toMatchObject({ staged: ['owned.txt'], unstaged: [], untracked: [] });
+    expect(git(fx.repoRoot, ['stash', 'list'])).toBe('');
+  });
+
+  test('integrates a disjoint feature while preserving an untracked local target file in place', () => {
+    const fx = fixture('dirty-target-untracked');
+    git(fx.repoRoot, ['switch', '-c', 'feature/disjoint-untracked']);
+    writeFileSync(join(fx.repoRoot, 'target.txt'), 'feature-target-untracked\n');
+    git(fx.repoRoot, ['add', 'target.txt']);
+    git(fx.repoRoot, ['commit', '-m', 'feature target untracked']);
+    const featureHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    git(fx.repoRoot, ['switch', 'main']);
+    writeFileSync(join(fx.repoRoot, 'local-pending.txt'), 'local pending\n');
+
+    const result = repositoryGitFinishWorkflow(fx.controllerHome, fx.repository, {
+      featureBranch: 'feature/disjoint-untracked',
+      targetBranch: 'main',
+      deleteBranch: false,
+      preserveDirtyTargetPaths: ['local-pending.txt'],
+      authorizationDecision: { decision: 'allow', source: 'policy', reason: 'test-scoped local Git integration' },
+    });
+
+    expect(result.completed).toBe(true);
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(featureHead);
+    expect(repositoryGitStatus(fx.repository)).toMatchObject({ staged: [], unstaged: [], untracked: ['local-pending.txt'] });
     expect(git(fx.repoRoot, ['stash', 'list'])).toBe('');
   });
 
