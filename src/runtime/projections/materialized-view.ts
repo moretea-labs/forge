@@ -163,13 +163,16 @@ function projectionWithExecutionIndexOverlay(
   const activeJobSummaries = activeJobs?.map(executionJobSummary) ?? base.activeJobs;
   const activeJobIds = new Set(activeJobSummaries.map((job) => job.jobId));
   const attentionJobs = recentJobs?.filter((job) => ATTENTION_JOB_STATUSES.has(job.status));
-  const attention = attentionJobs?.map(attentionSummary) ?? base.attention;
+  const materializedLifecycleAttention = base.attention.filter((entry) => entry.jobId.startsWith('lifecycle:'));
+  const materializedCurrentLifecycleAttention = base.currentAttention.filter((entry) => entry.jobId.startsWith('lifecycle:'));
+  const attention = attentionJobs
+    ? attentionJobs.map(attentionSummary)
+    : base.attention.filter((entry) => !entry.jobId.startsWith('lifecycle:'));
   const currentAttention = attentionJobs
-    ?.filter((job) => executionAttentionIsCurrent(job, activeJobIds))
-    .map(attentionSummary)
-    ?? base.currentAttention;
-  const repository = listRepositories(controllerHome, { includeRemoved: true }).find((entry) => entry.repoId === repoId);
-  const lifecycleAttention = repository ? collectWorkLifecycleAttention(controllerHome, repository) : [];
+    ? attentionJobs
+      .filter((job) => executionAttentionIsCurrent(job, activeJobIds))
+      .map(attentionSummary)
+    : base.currentAttention.filter((entry) => !entry.jobId.startsWith('lifecycle:'));
 
   return {
     ...base,
@@ -184,8 +187,11 @@ function projectionWithExecutionIndexOverlay(
     releaseFrozen: projectionLeases
       ? projectionLeases.some((lease) => lease.resourceKey.startsWith('release:'))
       : base.releaseFrozen,
-    currentAttention: [...currentAttention, ...lifecycleAttention].slice(0, 100),
-    attention: [...attention, ...lifecycleAttention].slice(0, 100),
+    // Lifecycle attention is producer-owned materialized state. Hot reads overlay
+    // only lightweight ExecutionJob/Lease indexes and must never synchronously
+    // re-run Git/Work lifecycle reconciliation on the MCP request event loop.
+    currentAttention: [...currentAttention, ...materializedCurrentLifecycleAttention].slice(0, 100),
+    attention: [...attention, ...materializedLifecycleAttention].slice(0, 100),
   };
 }
 

@@ -500,7 +500,7 @@ export class GlobalScheduler {
       this.lastGitStatusSampleAt = now;
       this.lastSourceScanAt = now;
       this.lastSourceScanRepoCount = sourceScanRepositories.length;
-      sampleRepositoryGitStatusForRepositories(this.controllerHome, sourceScanRepositories);
+      await sampleRepositoryGitStatusForRepositories(this.controllerHome, sourceScanRepositories);
     }
     // Dirty projection markers are authoritative maintenance requests. Do not
     // make them wait behind the idle one-repository-per-minute safety scan: only
@@ -511,7 +511,7 @@ export class GlobalScheduler {
     const dirtyRepositoriesToSample = dirtyProjectionRepositories
       .filter((repository) => !alreadySampledRepoIds.has(repository.repoId));
     if (dirtyRepositoriesToSample.length > 0) {
-      sampleRepositoryGitStatusForRepositories(this.controllerHome, dirtyRepositoriesToSample);
+      await sampleRepositoryGitStatusForRepositories(this.controllerHome, dirtyRepositoriesToSample);
     }
     const projectionMaintenanceRepositories = Array.from(new Map(
       [...sourceScanRepositories, ...dirtyProjectionRepositories]
