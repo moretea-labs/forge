@@ -23,6 +23,7 @@ import {
   authoritativeImplementationReviewVerificationEvidence,
   deriveImplementationReviewAcrossCommit,
   latestImplementationReview,
+  implementationReviewChangedPathDigest,
   normalizeImplementationReviewChangedPaths,
   type ImplementationReviewCandidateIdentity,
 } from '../../../../packages/kernel/work/api/index';
@@ -476,6 +477,63 @@ function assertPhysicalBranchCleanupImplementationReviewGate(input: {
     verificationRecords: input.contract.checkRefs,
   });
 }
+
+/**
+ * Re-prove review authority from immutable Git + durable review/check identity
+ * after successful managed-worktree cleanup. This path never recreates a
+ * checkout and never authorizes commit/merge; it only allows a missing semantic
+ * completion receipt to catch up with already-durable physical finalization.
+ */
+function assertCleanedCompletionImplementationReviewGate(input: {
+  target: RepositoryRecord;
+  handle: WorkHandleState;
+  contract: NonNullable<ReturnType<typeof contractFor>>;
+}): void {
+  const deliveryRevision = input.handle.expectedHead ?? input.handle.baseCommit;
+  if (!deliveryRevision) throw new Error('WORK_IMPLEMENTATION_REVIEW_SOURCE_IDENTITY_REQUIRED');
+  const review = latestImplementationReview(input.contract.implementationReviews);
+  if (!review) throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
+  if (review.sourceRevision !== deliveryRevision) {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_STALE: cleaned delivery source revision changed');
+  }
+  const deliveryBase = workDeliveryBaseRevision(input.handle) ?? input.contract.baseRevision;
+  if (!deliveryBase) throw new Error('WORK_IMPLEMENTATION_REVIEW_BASE_REQUIRED');
+  const changedPaths = deliveryRevision === deliveryBase
+    ? []
+    : completionReceiptChangedPaths(input.target.canonicalRoot, deliveryBase, deliveryRevision);
+  const reviewedPaths = normalizeImplementationReviewChangedPaths(review.changedPaths);
+  if (implementationReviewChangedPathDigest(reviewedPaths) !== implementationReviewChangedPathDigest(changedPaths)) {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_STALE: cleaned delivery changed-path identity changed');
+  }
+  const verification = authoritativeImplementationReviewVerificationEvidence({
+    repoId: input.contract.repoId,
+    workId: input.contract.workId,
+    requiredCheckIds: input.contract.checks,
+    records: input.contract.checkRefs,
+    sourceRevision: deliveryRevision,
+    workspaceFingerprint: review.verificationWorkspaceFingerprint,
+  });
+  if (verification.missingCheckIds.length > 0) {
+    throw new Error(`WORK_IMPLEMENTATION_REVIEW_VERIFICATION_REQUIRED: ${verification.missingCheckIds.join(', ')}`);
+  }
+  assertImplementationReviewPreDeliveryBoundary({
+    repoId: input.contract.repoId,
+    workId: input.contract.workId,
+    workKind: input.contract.workKind,
+    reviews: input.contract.implementationReviews,
+    candidate: {
+      sourceRevision: deliveryRevision,
+      workspaceFingerprint: review.workspaceFingerprint,
+      verificationWorkspaceFingerprint: review.verificationWorkspaceFingerprint,
+      changedPaths,
+      verificationEvidence: verification.evidence,
+      architectureEvidence: review.architectureEvidence,
+    },
+    requiredCheckIds: input.contract.checks,
+    verificationRecords: input.contract.checkRefs,
+  });
+}
+
 
 export interface TargetDirtyWorkOwnershipInspection {
   owned: boolean;
@@ -1241,6 +1299,48 @@ export function resetFinalizationStagesForRequest(
   return next;
 }
 
+function completeFinalizedWorkContract(input: {
+  ctx: McpExecutionContext;
+  handle: WorkHandleState;
+  contract: NonNullable<ReturnType<typeof contractFor>>;
+  args: Record<string, unknown>;
+  terminalizationOwner: ReturnType<typeof assertWorkControllerOwnership>;
+  outcome: 'completed_changed' | 'completed_no_change';
+}): CompletionReceipt {
+  const receipt = completionReceiptForFinalizedWork(input.ctx, input.handle, input.contract, input.args);
+  const ownerPrincipal = input.terminalizationOwner.principalId?.trim() || input.terminalizationOwner.controllerId;
+  const ownerInstanceId = input.terminalizationOwner.controllerInstanceId?.trim() || '';
+  const ownerClaimGeneration = input.terminalizationOwner.claimGeneration;
+  if (!ownerInstanceId || typeof ownerClaimGeneration !== 'number' || ownerClaimGeneration < 1) {
+    throw new Error(`WORK_CONTROLLER_TERMINALIZATION_AUTHORITY_INVALID: ${input.contract.workId}`);
+  }
+  const fencedCompletion = withControllerSessionTerminalizationFence(
+    { controllerHome: input.ctx.controllerHome, repoId: input.handle.repositoryId },
+    {
+      workId: input.contract.workId,
+      actor: `work-finalize-completion:${input.terminalizationOwner.controllerId}:${ownerInstanceId}`,
+      authority: {
+        controllerId: input.terminalizationOwner.controllerId,
+        controllerType: input.terminalizationOwner.controllerType,
+        principalId: ownerPrincipal,
+        controllerInstanceId: ownerInstanceId,
+        claimGeneration: ownerClaimGeneration,
+      },
+    },
+    () => completeWorkWithReceipt(
+      { controllerHome: input.ctx.controllerHome, repoId: input.handle.repositoryId },
+      input.contract.workId,
+      receipt,
+      input.outcome,
+      input.outcome === 'completed_no_change' ? 'completed_no_change' : 'repository_change',
+    ),
+  );
+  if (!fencedCompletion.allowed) {
+    throw new Error(`WORK_TERMINALIZATION_AUTHORITY_FENCED: ${input.contract.workId}:${fencedCompletion.reason}`);
+  }
+  return receipt;
+}
+
 function finalizationComplete(stages: WorkFinalizationStages): boolean {
   return stages.validation === 'done'
     && stages.commit !== 'pending'
@@ -1381,6 +1481,44 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
         completed: false,
         cleanupCompleted: true,
         failurePreserved: true,
+      };
+    }
+    if (terminalContract?.status === 'completed' && terminalContract.completionReceipt) {
+      updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
+        activeWorkId: undefined,
+        activeCheckoutId: workReturnCheckoutId(ctx, current, session.activeCheckoutId),
+      });
+      return { idempotent: true, work: compactHandle(current), stages: current.finalization, completed: true };
+    }
+    const cleanedCompletionRecovery = finalizationComplete(current.finalization)
+      && args.cleanup === true
+      && args.commit !== true
+      && args.merge !== true
+      && args.completion_outcome === 'completed_changed'
+      && terminalContract
+      && terminalContract.status !== 'cancelled'
+      && terminalContract.status !== 'failed'
+      && !terminalContract.completionReceipt;
+    if (cleanedCompletionRecovery && terminalContract) {
+      const terminalizationOwner = assertWorkControllerOwnership(ctx, session, current, args);
+      const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
+      const target = selectWorkFinalizationTarget(repository, current);
+      assertCleanedCompletionImplementationReviewGate({ target, handle: current, contract: terminalContract });
+      completeFinalizedWorkContract({
+        ctx, handle: current, contract: terminalContract, args, terminalizationOwner, outcome: 'completed_changed',
+      });
+      releasePreparedWorkOwnership(ctx, current);
+      updateExecutionSession(ctx.controllerHome, identityFor(ctx, args), {
+        activeWorkId: undefined,
+        activeCheckoutId: workReturnCheckoutId(ctx, current, session.activeCheckoutId),
+      });
+      return {
+        idempotent: true,
+        recoveredCompletionReceipt: true,
+        work: compactHandle(current),
+        stages: current.finalization,
+        completed: true,
+        cleanupCompleted: true,
       };
     }
     validateWorkHandle(ctx.controllerHome, current, identityFor(ctx, args), 'none', 'finalize');
@@ -2581,36 +2719,34 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
           detailLevel: 'summary',
         });
       }
-      const receipt = prevalidatedNoChangeReceipt ?? completionReceiptForFinalizedWork(ctx, current, completionContract, args);
-      const ownerPrincipal = terminalizationOwner.principalId?.trim() || terminalizationOwner.controllerId;
-      const ownerInstanceId = terminalizationOwner.controllerInstanceId?.trim() || '';
-      const ownerClaimGeneration = terminalizationOwner.claimGeneration;
-      if (!ownerInstanceId || typeof ownerClaimGeneration !== 'number' || ownerClaimGeneration < 1) {
-        throw new Error(`WORK_CONTROLLER_TERMINALIZATION_AUTHORITY_INVALID: ${workId}`);
-      }
-      const fencedCompletion = withControllerSessionTerminalizationFence(
-        { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
-        {
-          workId,
-          actor: `work-finalize-completion:${terminalizationOwner.controllerId}:${ownerInstanceId}`,
-          authority: {
-            controllerId: terminalizationOwner.controllerId,
-            controllerType: terminalizationOwner.controllerType,
-            principalId: ownerPrincipal,
-            controllerInstanceId: ownerInstanceId,
-            claimGeneration: ownerClaimGeneration,
-          },
-        },
-        () => completeWorkWithReceipt(
+      if (prevalidatedNoChangeReceipt) {
+        const ownerPrincipal = terminalizationOwner.principalId?.trim() || terminalizationOwner.controllerId;
+        const ownerInstanceId = terminalizationOwner.controllerInstanceId?.trim() || '';
+        const ownerClaimGeneration = terminalizationOwner.claimGeneration;
+        if (!ownerInstanceId || typeof ownerClaimGeneration !== 'number' || ownerClaimGeneration < 1) {
+          throw new Error(`WORK_CONTROLLER_TERMINALIZATION_AUTHORITY_INVALID: ${workId}`);
+        }
+        const fencedCompletion = withControllerSessionTerminalizationFence(
           { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
-          workId,
-          receipt,
-          requestedOutcome === 'completed_no_change' ? 'completed_no_change' : 'completed_changed',
-          requestedOutcome === 'completed_no_change' ? 'completed_no_change' : 'repository_change',
-        ),
-      );
-      if (!fencedCompletion.allowed) {
-        throw new Error(`WORK_TERMINALIZATION_AUTHORITY_FENCED: ${workId}:${fencedCompletion.reason}`);
+          {
+            workId,
+            actor: `work-finalize-completion:${terminalizationOwner.controllerId}:${ownerInstanceId}`,
+            authority: {
+              controllerId: terminalizationOwner.controllerId, controllerType: terminalizationOwner.controllerType,
+              principalId: ownerPrincipal, controllerInstanceId: ownerInstanceId, claimGeneration: ownerClaimGeneration,
+            },
+          },
+          () => completeWorkWithReceipt(
+            { controllerHome: ctx.controllerHome, repoId: current.repositoryId }, workId, prevalidatedNoChangeReceipt,
+            'completed_no_change', 'completed_no_change',
+          ),
+        );
+        if (!fencedCompletion.allowed) throw new Error(`WORK_TERMINALIZATION_AUTHORITY_FENCED: ${workId}:${fencedCompletion.reason}`);
+      } else {
+        completeFinalizedWorkContract({
+          ctx, handle: current, contract: completionContract, args, terminalizationOwner,
+          outcome: requestedOutcome === 'completed_no_change' ? 'completed_no_change' : 'completed_changed',
+        });
       }
     }
     // Successful WorkContract completion always ends controller ownership.
