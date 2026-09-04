@@ -17,12 +17,13 @@ function decodeRemoteScript(command: string): string {
   return payload ? Buffer.from(payload, 'base64').toString('utf8') : '';
 }
 
-function fixture(options: { mismatch?: boolean; offline?: boolean; actionExit?: number } = {}) {
+function fixture(options: { mismatch?: boolean; offline?: boolean; actionExit?: number; terminalInitiallyFocused?: boolean; terminalFocusNeverSucceeds?: boolean } = {}) {
   const cliCalls: string[][] = [];
   const desktopCalls: Array<{ action: string; args: Record<string, unknown> }> = [];
   let clipboard = 'private-existing-clipboard';
   let command = '';
   let keySent = false;
+  let terminalFocused = options.terminalInitiallyFocused ?? true;
   const runCli = async (_config: unknown, args: string[]) => {
     cliCalls.push(args);
     if (args[0] === 'device') return { success: true, data: { isUniqueMatch: true, matchedItem: { deviceId: options.mismatch ? 'other' : config.device.id, deviceName: config.device.name, platform: 'windows', isOnline: !options.offline } } };
@@ -31,10 +32,27 @@ function fixture(options: { mismatch?: boolean; offline?: boolean; actionExit?: 
   const desktopCall = async (_config: unknown, _requestId: string, action: string, args: Record<string, unknown>) => {
     desktopCalls.push({ action, args });
     if (action === 'desktop_session_open') return { interaction_id: 'ix-1' };
-    if (action === 'desktop_observe' && !keySent) return { windows: [{ title: 'GREYSON-DESKTOP - 终端' }] };
+    if (action === 'desktop_observe' && !keySent) return {
+      root: {
+        role: 'AXApplication',
+        children: [
+          { role: 'AXWindow', title: 'UU远程', focused: !terminalFocused },
+          { role: 'AXWindow', identifier: 'TerminalWindow', title: '终端 - GREYSON-DESKTOP', focused: terminalFocused },
+        ],
+      },
+      windows: [{ title: '终端 - GREYSON-DESKTOP' }],
+    };
     if (action === 'desktop_clipboard_read') return { text: clipboard };
     if (action === 'desktop_clipboard_write') { clipboard = String(args.text ?? ''); if (clipboard !== 'private-existing-clipboard') command = clipboard; return { ok: true }; }
-    if (action === 'desktop_key') { keySent = true; return { ok: true }; }
+    if (action === 'desktop_key') {
+      const keys = Array.isArray(args.keys) ? args.keys.map(String) : [];
+      if (keys.includes('COMMAND')) {
+        if (!options.terminalFocusNeverSucceeds) terminalFocused = true;
+        return { ok: true };
+      }
+      if (keys.some((key) => key.toUpperCase() === 'RETURN')) keySent = true;
+      return { ok: true };
+    }
     if (action === 'desktop_observe' && keySent) {
       const decoded = decodeRemoteScript(command);
       const begin = decoded.match(/__FORGE_UU_RESCUE_BEGIN_[a-f0-9]+__/)?.[0] ?? '';
@@ -76,6 +94,21 @@ describe('UU Remote rescue helper', () => {
     expect(fx.getClipboard()).toBe('private-existing-clipboard');
     expect(fx.cliCalls.some((args) => args[0] === 'term' && args[1] === 'open' && args[2] === config.device.id)).toBe(true);
     expect(fx.cliCalls.some((args) => args[0] === 'term' && args[1] === 'exit' && args.includes('--clear'))).toBe(true);
+  });
+
+  test('proves the exact remote terminal focused before pasting the command', async () => {
+    const fx = fixture({ terminalInitiallyFocused: false });
+    await executeAction('forge_health', {}, config, { ...fx, requestId: 'focus-1' });
+    const focusIndex = fx.desktopCalls.findIndex((call) => call.action === 'desktop_key' && Array.isArray(call.args.keys) && call.args.keys.includes('COMMAND'));
+    const commandWriteIndex = fx.desktopCalls.findIndex((call) => call.action === 'desktop_clipboard_write' && call.args.text !== 'private-existing-clipboard');
+    expect(focusIndex).toBeGreaterThanOrEqual(0);
+    expect(commandWriteIndex).toBeGreaterThan(focusIndex);
+  });
+
+  test('fails closed before clipboard mutation when exact terminal focus cannot be proven', async () => {
+    const fx = fixture({ terminalInitiallyFocused: false, terminalFocusNeverSucceeds: true });
+    await expect(executeAction('forge_health', {}, config, { ...fx, requestId: 'focus-fail-1' })).rejects.toThrow('proven focused');
+    expect(fx.desktopCalls.some((call) => call.action === 'desktop_clipboard_write')).toBe(false);
   });
 
   test('fails closed on exact-device mismatch before opening the remote terminal', async () => {

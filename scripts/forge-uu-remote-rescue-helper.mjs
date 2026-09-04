@@ -147,19 +147,45 @@ function findStringKey(value, keys) {
   return undefined;
 }
 
-function windowTitles(value) {
-  const titles = [];
-  const visit = (node, inWindows = false) => {
+function accessibilityWindows(value) {
+  const windows = [];
+  const visit = (node) => {
     if (!node || typeof node !== 'object') return;
-    if (Array.isArray(node)) { node.forEach((entry) => visit(entry, inWindows)); return; }
-    for (const [key, nested] of Object.entries(node)) {
-      const nextInWindows = inWindows || key === 'windows';
-      if (nextInWindows && typeof nested === 'string' && /title|name/i.test(key)) titles.push(nested);
-      else visit(nested, nextInWindows);
+    if (Array.isArray(node)) { node.forEach(visit); return; }
+    if (node.role === 'AXWindow') {
+      windows.push({
+        title: typeof node.title === 'string' ? node.title : '',
+        identifier: typeof node.identifier === 'string' ? node.identifier : '',
+        focused: node.focused === true,
+      });
     }
+    Object.values(node).forEach(visit);
   };
   visit(value);
-  return titles;
+  return windows;
+}
+
+function exactTerminalWindows(observation, config) {
+  return accessibilityWindows(observation).filter((window) =>
+    window.title.includes(config.device.name) && TERMINAL_WORD.test(window.title));
+}
+
+async function ensureTerminalWindowFocused(config, requestId, interactionId, initialObservation, deps) {
+  let observation = initialObservation;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const terminals = exactTerminalWindows(observation, config);
+    if (terminals.length > 1) {
+      throw rescueError('UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS', 'More than one exact configured-device UU terminal window is visible; refusing remote input.');
+    }
+    if (terminals.length === 1 && terminals[0].focused) return observation;
+    if (attempt === 5) break;
+    if (terminals.length === 1) {
+      await deps.desktopCall(config, `${requestId}:focus-cycle:${attempt}`, 'desktop_key', { interaction_id: interactionId, keys: ['COMMAND', '`'] });
+    }
+    await deps.sleep(terminals.length === 0 ? 250 : 150);
+    observation = await deps.desktopCall(config, `${requestId}:focus-observe:${attempt}`, 'desktop_observe', { interaction_id: interactionId, max_depth: 8, max_nodes: 1200, include_values: true, include_actions: false, include_windows: true });
+  }
+  throw rescueError('UU_RESCUE_TERMINAL_FOCUS_UNPROVEN', 'The exact configured-device UU terminal window could not be proven focused; refusing remote input.', true);
 }
 
 function markerPair(requestId) {
@@ -254,10 +280,7 @@ async function runTerminalCommand(config, requestId, command, deps) {
     interactionId = findStringKey(opened, ['interaction_id', 'interactionId']);
     if (!interactionId) throw rescueError('UU_RESCUE_TERMINAL_SESSION_UNBOUND', 'Desktop Operator did not return a bound UURemote interaction session.');
     const observed = await deps.desktopCall(config, `${requestId}:preflight`, 'desktop_observe', { interaction_id: interactionId, max_depth: 8, max_nodes: 1200, include_values: true, include_actions: false, include_windows: true });
-    const titles = windowTitles(observed);
-    if (!titles.some((title) => title.includes(config.device.name) || TERMINAL_WORD.test(title))) {
-      throw rescueError('UU_RESCUE_TERMINAL_WINDOW_MISMATCH', 'The bound UURemote session is not an identifiable terminal window for the configured device.');
-    }
+    await ensureTerminalWindowFocused(config, requestId, interactionId, observed, deps);
     const clipboard = await deps.desktopCall(config, `${requestId}:clipboard-read`, 'desktop_clipboard_read', {});
     originalClipboard = findStringKey(clipboard, ['text', 'value']) ?? '';
     clipboardCaptured = true;
