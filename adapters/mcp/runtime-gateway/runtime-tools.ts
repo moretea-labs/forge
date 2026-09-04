@@ -250,6 +250,7 @@ import {
   parseControllerRoundCompatibilityCapability,
   parsePlanObligationCompatibilityCapability,
 } from '../controller-round-compatibility';
+import { parseFrozenSemanticCompatibilityCapability } from '../frozen-client-semantic-compatibility';
 
 export {
   connectorExposedTools,
@@ -3920,6 +3921,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         let frozenControllerDisposition: ReturnType<typeof parseControllerDispositionCompatibilityCapability>;
         let frozenControllerRoundOperation: ReturnType<typeof parseControllerRoundCompatibilityCapability>;
         let frozenPlanObligationDispositions: ReturnType<typeof parsePlanObligationCompatibilityCapability>;
+        let frozenSemanticOperation: ReturnType<typeof parseFrozenSemanticCompatibilityCapability>;
         try {
           if (requestedOperation === 'repair' && typeof args.capability_id === 'string') {
             const capability = args.capability_id.trim();
@@ -3937,8 +3939,16 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           frozenControllerDisposition = parseControllerDispositionCompatibilityCapability(requestedOperation, args.capability_id);
           frozenControllerRoundOperation = parseControllerRoundCompatibilityCapability(requestedOperation, args.capability_id);
           frozenPlanObligationDispositions = parsePlanObligationCompatibilityCapability(requestedOperation, args.capability_id);
+          frozenSemanticOperation = parseFrozenSemanticCompatibilityCapability(requestedOperation, args.capability_id);
           if (frozenPlanObligationDispositions && Array.isArray(args.obligation_dispositions)) {
             throw new Error('PLAN_OBLIGATION_COMPATIBILITY_CONFLICT');
+          }
+          if (frozenSemanticOperation) {
+            const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
+            if (!requirementId) throw new Error('FROZEN_SEMANTIC_COMPATIBILITY_SCOPE_REQUIRED: requirement_id must remain explicit outside the compatibility envelope');
+            for (const key of Object.keys(frozenSemanticOperation.args)) {
+              if (args[key] !== undefined) throw new Error(`FROZEN_SEMANTIC_COMPATIBILITY_CONFLICT: native field ${key} is also present`);
+            }
           }
         } catch (error) {
           return result(buildFacadeResult({
@@ -3966,7 +3976,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           args.review_decision = frozenImplementationReview.decision;
           args.review_rationale = typeof args.reason === 'string' ? args.reason : '';
         }
-        const operation = frozenControllerRoundOperation?.operation ?? (frozenControllerDisposition
+        const operation = frozenSemanticOperation?.operation ?? frozenControllerRoundOperation?.operation ?? (frozenControllerDisposition
           ? 'controller_disposition'
           : frozenImplementationReview ? 'review'
           : frozenScheduleDeleteId ? 'schedule_delete' : requestedOperation);
@@ -4619,9 +4629,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         }
 
         if (operation === 'requirement_create') {
+          const compatibilityArgs = frozenSemanticOperation?.operation === 'requirement_create' ? frozenSemanticOperation.args : undefined;
           const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id : '';
-          const title = typeof args.requirement_title === 'string' ? args.requirement_title : '';
-          const outcomeStatement = typeof args.requirement_outcome === 'string' ? args.requirement_outcome : '';
+          const title = compatibilityArgs?.requirement_title ?? (typeof args.requirement_title === 'string' ? args.requirement_title : '');
+          const outcomeStatement = compatibilityArgs?.requirement_outcome ?? (typeof args.requirement_outcome === 'string' ? args.requirement_outcome : '');
           if (!requirementId.trim() || !title.trim() || !outcomeStatement.trim()) {
             return result(buildFacadeResult({
               status: 'blocked',
@@ -4635,9 +4646,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               requirementId,
               title,
               outcomeStatement,
-              acceptanceCriteria: Array.isArray(args.requirement_acceptance_criteria) ? args.requirement_acceptance_criteria.map(String) : [],
-              requiredDeliveryReferences: Array.isArray(args.requirement_delivery_references) ? args.requirement_delivery_references.map(String) : [],
-              legacyAliases: Array.isArray(args.requirement_legacy_aliases) ? args.requirement_legacy_aliases.map(String) : [],
+              acceptanceCriteria: compatibilityArgs?.requirement_acceptance_criteria
+                ?? (Array.isArray(args.requirement_acceptance_criteria) ? args.requirement_acceptance_criteria.map(String) : []),
+              requiredDeliveryReferences: compatibilityArgs?.requirement_delivery_references
+                ?? (Array.isArray(args.requirement_delivery_references) ? args.requirement_delivery_references.map(String) : []),
+              legacyAliases: compatibilityArgs?.requirement_legacy_aliases
+                ?? (Array.isArray(args.requirement_legacy_aliases) ? args.requirement_legacy_aliases.map(String) : []),
             });
           } catch (error) {
             return result(buildFacadeResult({

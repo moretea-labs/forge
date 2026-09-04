@@ -11,6 +11,7 @@ import { createWorkContract, getWorkContract } from '../../src/runtime/control-p
 import { claimPlanStepForWork, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { buildFrozenSemanticCompatibilityCapability } from '../../adapters/mcp/frozen-client-semantic-compatibility';
 
 const roots: string[] = [];
 
@@ -62,6 +63,58 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 }
 
 describe('rh_work Requirement bootstrap', () => {
+  test('lets a frozen rh_work schema create Requirement authority through a bounded semantic transport envelope', async () => {
+    const repoRoot = tempRoot('forge-frozen-requirement-repo-');
+    const controllerHome = tempRoot('forge-frozen-requirement-home-');
+    initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Frozen Requirement fixture' });
+    const ctx = mcpContext(controllerHome, repository);
+    const capability = buildFrozenSemanticCompatibilityCapability({
+      operation: 'requirement_create',
+      args: {
+        requirement_title: 'Frozen client semantic compatibility',
+        requirement_outcome: 'Establish Requirement authority through the canonical Runtime even when the client schema predates requirement_create.',
+        requirement_acceptance_criteria: ['The compatibility envelope remains transport-only and bounded.'],
+        requirement_delivery_references: ['frozen-client-self-host-proof'],
+      },
+    });
+    const frozenArgs = {
+      repo_id: repository.repoId,
+      operation: 'repair',
+      requirement_id: 'REQ-FROZEN-SEMANTIC-COMPAT',
+      capability_id: capability,
+    };
+
+    const created = structured(await callRuntimeTool(ctx, 'rh_work', frozenArgs));
+    expect(created.status).toBe('ok');
+    expect(created.data.requirementCreated).toBe(true);
+    expect(readRequirement({ controllerHome }, 'REQ-FROZEN-SEMANTIC-COMPAT')?.value).toMatchObject({
+      title: 'Frozen client semantic compatibility',
+      outcomeStatement: 'Establish Requirement authority through the canonical Runtime even when the client schema predates requirement_create.',
+    });
+
+    const retried = structured(await callRuntimeTool(ctx, 'rh_work', frozenArgs));
+    expect(retried.status).toBe('ok');
+    expect(retried.data.requirementCreated).toBe(false);
+    expect(retried.data.admissionDecision).toBe('reuse_existing');
+
+    const nativeConflict = structured(await callRuntimeTool(ctx, 'rh_work', {
+      ...frozenArgs,
+      requirement_title: 'must not override envelope transport',
+    }));
+    expect(nativeConflict.status).toBe('blocked');
+    expect(nativeConflict.summary).toContain('FROZEN_SEMANTIC_COMPATIBILITY_CONFLICT');
+
+    const hiddenScope = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'repair',
+      capability_id: capability,
+    }));
+    expect(hiddenScope.status).toBe('blocked');
+    expect(hiddenScope.summary).toContain('FROZEN_SEMANTIC_COMPATIBILITY_SCOPE_REQUIRED');
+  });
+
   test('creates Requirement authority idempotently without implying Plan and still permits explicit Plan creation', async () => {
     const repoRoot = tempRoot('forge-requirement-repo-');
     const controllerHome = tempRoot('forge-requirement-home-');

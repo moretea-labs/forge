@@ -12,6 +12,10 @@ import {
   parsePlanObligationCompatibilityCapability,
 } from '../adapters/mcp/controller-round-compatibility';
 import {
+  buildFrozenSemanticCompatibilityCapability,
+  parseFrozenSemanticCompatibilityCapability,
+} from '../adapters/mcp/frozen-client-semantic-compatibility';
+import {
   ADVANCED_CONTROLLER_TOOL_NAMES,
   CORE_CONTROLLER_TOOL_NAMES,
   DEFAULT_CONTROLLER_TOOL_NAMES,
@@ -124,6 +128,44 @@ try {
   }
 } catch (error) {
   failures.push(`frozen Plan obligation compatibility failed: ${error instanceof Error ? error.message : String(error)}`);
+}
+
+try {
+  const semanticFixture = {
+    operation: 'requirement_create' as const,
+    args: {
+      requirement_title: 'Frozen semantic compatibility',
+      requirement_outcome: 'Use the canonical Requirement authority through an old rh_work schema.',
+      requirement_acceptance_criteria: ['Compatibility remains transport-only.'],
+    },
+  };
+  const capability = buildFrozenSemanticCompatibilityCapability(semanticFixture);
+  const parsed = parseFrozenSemanticCompatibilityCapability('repair', capability);
+  if (JSON.stringify(parsed) !== JSON.stringify(semanticFixture)) {
+    failures.push('frozen semantic compatibility round-trip changed the typed payload');
+  }
+  try {
+    parseFrozenSemanticCompatibilityCapability('plan_create', capability);
+    failures.push('frozen semantic compatibility accepted a non-repair transport operation');
+  } catch {
+    // Expected: the generic semantic envelope is reachable only through the stable repair transport.
+  }
+  const unknownOperation = `semantic.v1:${Buffer.from(JSON.stringify({ v: 1, op: 'finalize', a: {} }), 'utf8').toString('base64url')}`;
+  try {
+    parseFrozenSemanticCompatibilityCapability('repair', unknownOperation);
+    failures.push('frozen semantic compatibility accepted an operation outside the explicit allowlist');
+  } catch {
+    // Expected: compatibility cannot grow into an arbitrary-operation tunnel.
+  }
+  const unknownField = `semantic.v1:${Buffer.from(JSON.stringify({ v: 1, op: 'requirement_create', a: { requirement_title: 'x', requirement_outcome: 'y', remote_write: true } }), 'utf8').toString('base64url')}`;
+  try {
+    parseFrozenSemanticCompatibilityCapability('repair', unknownField);
+    failures.push('frozen semantic compatibility accepted an unknown operation argument');
+  } catch {
+    // Expected: each allowlisted operation has an exact transport schema.
+  }
+} catch (error) {
+  failures.push(`frozen semantic compatibility failed: ${error instanceof Error ? error.message : String(error)}`);
 }
 
 if (failures.length) {
