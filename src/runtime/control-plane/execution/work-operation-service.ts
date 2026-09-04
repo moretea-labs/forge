@@ -3,7 +3,7 @@ import { isAbsolute, relative, resolve } from 'path';
 import type { McpExecutionContext } from '../../../../packages/protocols/mcp/execution-context';
 import { repositoryGitStatus, repositoryGitDiff } from '../../../cli/repositories/structured-git';
 import { classifyRepositoryCommand } from '../../../cli/repositories/command-classifier';
-import { controllerCheckExecutionIdentity, listControllerChecks } from '../../../cli/controller/check-runner';
+import { listControllerChecks } from '../../../cli/controller/check-runner';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
 import { appendVerificationRecord } from '../../../../packages/kernel/work/api/index';
 import { validateWorkHandle } from './validation';
@@ -226,32 +226,6 @@ export function workValidationCheckSemanticIdentity(input: {
   };
 }
 
-export function workValidationProcessCheckExecutionIsCurrent(
-  repoRoot: string,
-  checkId: string,
-  execution: {
-    checkId: string;
-    cacheKey: string;
-    revision: string;
-    definitionDigest: string;
-    environmentFingerprint: string;
-    timeoutMs: number;
-  } | undefined,
-): boolean {
-  if (!execution || execution.checkId !== checkId) return false;
-  try {
-    const current = controllerCheckExecutionIdentity(repoRoot, checkId, execution.timeoutMs);
-    return current.checkId === execution.checkId
-      && current.cacheKey === execution.cacheKey
-      && current.revision === execution.revision
-      && current.definitionDigest === execution.definitionDigest
-      && current.environmentFingerprint === execution.environmentFingerprint
-      && current.timeoutMs === execution.timeoutMs;
-  } catch {
-    return false;
-  }
-}
-
 export async function validateWork(ctx: McpExecutionContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const session = requireSession(ctx, args);
   const handle = workForSession(ctx, session, args, {
@@ -356,17 +330,12 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
       break;
     }
     if (process?.completed) {
-      const existingRecord = getProcessRecord(ctx.controllerHome, handle.repositoryId, process.processId);
-      if (existingRecord && !workValidationProcessCheckExecutionIsCurrent(
-        validated.worktreeRepository.canonicalRoot,
-        checkId,
-        existingRecord.checkExecution,
-      )) {
-        const { [checkId]: _staleBinding, ...remainingProcesses } = validationRun.processes;
-        validationRun = { ...validationRun, processes: remainingProcesses };
-        current = transitionWorkHandle(ctx.controllerHome, current, 'validating', { validationRun });
-        process = undefined;
-      }
+      // A completed Process may have been executed against an older Work
+      // verification snapshot even when the live checkout looks equivalent.
+      // Re-resolve the current snapshot through Process Runtime so its
+      // content-bound checkExecution authority decides whether the existing
+      // Process is reusable or a distinct execution is required.
+      process = undefined;
     }
     if (!process) {
       const processRequestId = `${validationInvocationId}:check:${index + 1}`;
@@ -417,14 +386,6 @@ export async function validateWork(ctx: McpExecutionContext, args: Record<string
     const record = getProcessRecord(ctx.controllerHome, handle.repositoryId, process.processId);
     if (!record) {
       checks.push({ checkId, ok: false, status: 'infrastructure_failure', summary: `Validation process record is unavailable: ${process.processId}` });
-      break;
-    }
-    if (!workValidationProcessCheckExecutionIsCurrent(
-      validated.worktreeRepository.canonicalRoot,
-      checkId,
-      record.checkExecution,
-    )) {
-      checks.push({ checkId, ok: false, status: 'infrastructure_failure', summary: `Validation process Check execution identity mismatch: ${process.processId}` });
       break;
     }
     const boundCheckExecution = validationRun.processes[checkId]?.checkExecution;
