@@ -41,7 +41,8 @@ import {
   reconcilePendingEditValidations,
   startOrJoinEditValidation,
 } from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
-import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
@@ -1397,6 +1398,90 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
 });
 
 describe('work_validate persisted semantic identity', () => {
+  test('rebinds a content-deduplicated completed Check to the committed HEAD without replaying the Process', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+
+    const started = await callExecutionTool(fx.ctx, 'session_start', {});
+    expect(started?.isError).not.toBe(true);
+    const session = (started?.structuredContent as { session: { sessionId: string } }).session;
+    const prepared = await callExecutionTool(fx.ctx, 'work_prepare', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      request_id: 'prepare-work-validate-postcommit-dedupe',
+      objective: 'Preserve content-bound validation across an equivalent commit.',
+      acceptance_criteria: ['Equivalent committed bytes reuse the Check execution while rebinding verification to the new Git HEAD.'],
+      allowed_paths: ['src/**'],
+      checks: ['slow'],
+      isolation: 'reuse',
+    });
+    expect(prepared?.isError).not.toBe(true);
+    const work = (prepared?.structuredContent as { work: { workId: string } }).work;
+    const preparedHandle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    const workRoot = preparedHandle.worktreePath;
+    writeFileSync(join(workRoot, 'src', 'lib.ts'), 'export const n = 2;\n');
+
+    const first = await callExecutionTool(fx.ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      check_ids: ['slow'],
+      request_id: 'work-validate-postcommit-dedupe-precommit',
+    });
+    expect(first?.isError).not.toBe(true);
+    const firstValidation = (first?.structuredContent as {
+      validation: { checks: Array<{ process?: { processId?: string } }> };
+    }).validation;
+    const processId = firstValidation.checks[0]?.process?.processId;
+    expect(processId).toBeTruthy();
+    await waitForProcess(fx.controllerHome, fx.repository.repoId, processId!, { timeoutMs: 10_000 });
+    const attached = await callExecutionTool(fx.ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      check_ids: ['slow'],
+      request_id: 'work-validate-postcommit-dedupe-precommit',
+    });
+    expect((attached?.structuredContent as { validation: { passed: boolean } }).validation.passed).toBe(true);
+    const originalRecord = getProcessRecord(fx.controllerHome, fx.repository.repoId, processId!)!;
+    const originalRequestSemanticFingerprint = originalRecord.origin?.requestSemanticFingerprint;
+    const processCount = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
+
+    git(workRoot, ['add', 'src/lib.ts']);
+    git(workRoot, ['commit', '-m', 'content equivalent validation commit']);
+    const head = spawnSync('git', ['-C', workRoot, 'rev-parse', 'HEAD'], { encoding: 'utf-8' }).stdout.trim();
+    const handle = readWorkHandle(fx.controllerHome, fx.repository.repoId, work.workId)!;
+    writeWorkHandle(fx.controllerHome, {
+      ...handle,
+      expectedHead: head,
+      state: 'committed',
+      validatedInputFingerprint: undefined,
+      validationRun: undefined,
+      failureReason: undefined,
+      finalization: { ...handle.finalization, validation: 'pending', commit: 'done', lastError: undefined },
+    });
+
+    const postCommit = await callExecutionTool(fx.ctx, 'work_validate', {
+      session_id: session.sessionId,
+      repo_id: fx.repository.repoId,
+      work_id: work.workId,
+      check_ids: ['slow'],
+      request_id: 'work-validate-postcommit-dedupe-postcommit',
+    });
+    expect(postCommit?.isError).not.toBe(true);
+    const postValidation = (postCommit?.structuredContent as {
+      validation: { passed: boolean; completed: boolean; checks: Array<{ process?: { processId?: string }; status: string }> };
+    }).validation;
+    expect(postValidation).toMatchObject({ passed: true, completed: true });
+    expect(postValidation.checks[0]?.status).toBe('passed');
+    expect(postValidation.checks[0]?.process?.processId).toBe(processId);
+    expect(listProcessRecords(fx.controllerHome, fx.repository.repoId)).toHaveLength(processCount);
+    expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId!)?.origin?.requestSemanticFingerprint).toBe(originalRequestSemanticFingerprint);
+    const completedWork = getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, work.workId)!;
+    expect(completedWork.checkRefs[0]).toMatchObject({ outcome: 'valid_pass', sourceRevision: head });
+    expect(completedWork.checkRefs[0]?.verificationInputFingerprint).not.toBe(originalRequestSemanticFingerprint);
+  });
+
   test('persists the canonical semantic fingerprint and converges a terminal Process on reattach', async () => {
     const fx = fixture();
     roots.push(fx.root);

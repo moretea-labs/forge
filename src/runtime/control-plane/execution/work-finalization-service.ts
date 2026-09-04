@@ -2012,17 +2012,27 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     if (pendingAuthorization) return { authorization: pendingAuthorization, work: compactHandle(current), stages: current.finalization };
     if (!committed.committed) return { ...failStage('commit', committed.error?.message ?? 'commit failed'), commit: committed };
     const checks = contract?.checks ?? [];
-    const committedValidatedWorkspaceFingerprint = exactValidationInput && committed.after.clean
-      ? workspaceValidationFingerprint(validated.worktreeRepository.canonicalRoot, committed.before)
-      : undefined;
-    const validationPreservedAcrossCommit = Boolean(
-      checks.length > 0
-      && exactValidationInput
-      && committedValidatedWorkspaceFingerprint === exactValidationInput.workspaceFingerprint
-    );
     const committedHead = gitHead(validated.worktreeRepository.canonicalRoot);
     if (!committedHead) throw new Error('WORK_COMMIT_HEAD_REQUIRED: committed revision is unavailable');
     const postCommitInput = currentWorkValidationInput(validated.worktreeRepository, { ...current, expectedHead: committedHead }, checks);
+    const postCommitContentFingerprint = implementationReviewContentFingerprint(
+      validated.worktreeRepository.canonicalRoot,
+      preCommitReviewCandidate.changedPaths,
+    );
+    const committedPaths = exactCommitChangedPaths(validated.worktreeRepository.canonicalRoot, committedHead);
+    const reviewedCommitPathsAfterCommit = normalizeImplementationReviewChangedPaths(preCommitReviewCandidate.changedPaths);
+    const exactCommittedPaths = normalizeImplementationReviewChangedPaths(committedPaths);
+    const reviewedContentPreservedAcrossCommit = JSON.stringify(reviewedCommitPathsAfterCommit) === JSON.stringify(exactCommittedPaths)
+      && postCommitContentFingerprint === preCommitReviewCandidate.workspaceFingerprint;
+    // Git staging/commit changes workspace-status shape even when the reviewed bytes
+    // are identical. Preserve validation from exact reviewed content equivalence;
+    // transferWorkVerificationAcrossContentEquivalentCommit remains responsible
+    // for invalidating checks whose semantics are genuinely Git-sensitive.
+    const validationPreservedAcrossCommit = Boolean(
+      checks.length > 0
+      && exactValidationInput
+      && reviewedContentPreservedAcrossCommit
+    );
     current = transact('commit-done', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, 'committed', {
       expectedHead: committedHead,
       finalization: {
@@ -2082,11 +2092,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
       if (postVerification.missingCheckIds.length > 0) {
         throw new Error(`WORK_IMPLEMENTATION_REVIEW_TRANSFER_VERIFICATION_REQUIRED: ${postVerification.missingCheckIds.join(', ')}`);
       }
-      const postContentFingerprint = implementationReviewContentFingerprint(
-        validated.worktreeRepository.canonicalRoot,
-        preCommitReviewCandidate.changedPaths,
-      );
-      const committedPaths = exactCommitChangedPaths(validated.worktreeRepository.canonicalRoot, committedHead);
+      const postContentFingerprint = postCommitContentFingerprint;
       const postCandidate: ImplementationReviewCandidateIdentity = {
         sourceRevision: postCommitInput.head,
         workspaceFingerprint: postContentFingerprint,
